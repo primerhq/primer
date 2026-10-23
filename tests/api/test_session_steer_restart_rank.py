@@ -146,3 +146,21 @@ async def test_a_demoted_admin_still_acts_on_their_own_session_and_nobody_else_b
 
     own = await carol.post(f"/v1/workspaces/ws-r/sessions/ses-own/{action}", json=payload)
     assert own.status_code == 200, own.text
+
+
+# ---- a session recorded as system (review of #853, round 2) --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("action", ["steer", "restart", "cancel", "resume"])
+async def test_an_admin_acts_on_a_session_recorded_as_system_and_a_user_does_not(world, client, carol, fake_storage_provider, action):
+    """A session created while auth was disabled (or fired by system-owned rows) is recorded as ``system``. Before this PR an admin could steer,
+    restart, cancel and resume it, and still can: ``may_drive`` ranks an admin with the system principal. A user-role account may not."""
+    status = {"steer": SessionStatus.WAITING, "restart": SessionStatus.ENDED, "cancel": SessionStatus.WAITING, "resume": SessionStatus.PAUSED}[action]
+    await _seed(fake_storage_provider, "ses-sys", by=PrincipalRef.system(), status=status, ended_reason="completed" if action == "restart" else None)
+    payload = {"steer": {"instruction": "hello"}, "restart": {"input": "hello"}}.get(action, {})
+
+    refused = await carol.post(f"/v1/workspaces/ws-r/sessions/ses-sys/{action}", json=payload)
+    assert refused.status_code == 403, refused.text
+
+    r = await client.post(f"/v1/workspaces/ws-r/sessions/ses-sys/{action}", json=payload)
+    assert r.status_code == 200, r.text

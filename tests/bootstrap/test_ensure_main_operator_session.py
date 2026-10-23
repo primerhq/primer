@@ -346,15 +346,18 @@ async def test_an_api_token_of_the_same_person_is_its_own_principal(prime_sp) ->
 
 
 @pytest.mark.asyncio
-async def test_a_demoted_admin_is_not_handed_the_admin_session_they_can_no_longer_drive(prime_sp) -> None:
-    """Its recorded rank is admin, so the person's own steer would be refused (lead ruling 2): they get a new main session at their rank."""
+async def test_a_demoted_admin_gets_their_own_main_session_back(prime_sp) -> None:
+    """Re-pinned (review of #853, round 2): this used to hand a demoted admin a NEW main session, because their steer of the old, admin-recorded
+    one was refused. A live request may always act on a session its own account started (``may_drive(own_session=True)``, N1), and the session's
+    runs execute at the caller's current role, so the lookup keeps their own session, as for any other role change."""
     from primer.bootstrap.prime import ensure_main_operator_session
 
     admin_main, _ = await ensure_main_operator_session(prime_sp, workspace_id="prime", initiated_by=_principal("ada", "admin"))
 
     row, created = await ensure_main_operator_session(prime_sp, workspace_id="prime", initiated_by=_principal("ada", "user"))
 
-    assert created is True and row.id != admin_main.id and row.initiated_by.role == "user"
+    assert created is False and row.id == admin_main.id
+    assert [r.id for r in await _sessions(prime_sp)] == [admin_main.id]
 
 
 @pytest.mark.asyncio

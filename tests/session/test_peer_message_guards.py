@@ -82,7 +82,9 @@ def test_a_user_run_cannot_message_a_session_an_admin_started():
     assert sender_may_message(user, None) is True            # no recorded creator: it runs as an unattributed user
     assert sender_may_message(None, user) is False           # an unknown sender fails closed
     assert sender_may_message(PrincipalRef.system(), admin) is True
-    assert sender_may_message(admin, PrincipalRef.system()) is False
+    # Re-pinned (review of #853, round 2): an admin run may message a session recorded as system (it clears every role floor anyway); a user may not.
+    assert sender_may_message(admin, PrincipalRef.system()) is True
+    assert sender_may_message(user, PrincipalRef.system()) is False
 
 
 @pytest.mark.parametrize(

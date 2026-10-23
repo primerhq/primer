@@ -430,6 +430,12 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   `session_append` fire never reopens a session an operator cancelled,
   even one queued on the session before the Cancel: only a person
   reopens it. The fire is skipped with `skipped_session_ended`.
+- **A fresh-session subscription whose owner is gone does not fire.**
+  When the account that saved the subscription is deleted or disabled,
+  or the API token it was saved with is revoked or has expired, an
+  `agent_fresh_session` or `graph_fresh_session` fire fails with
+  `owner_unresolvable` and starts no session: the run would have been
+  that owner's. Re-save the subscription as a current account.
 - **A webhook trigger's token is visible only to its owner or an
   admin.** Everyone else (and any call over MCP) sees `•••redacted•••`
   in `config.token`. `trigger__update` on someone else's webhook

@@ -132,3 +132,55 @@ async def test_a_run_carrying_the_same_identity_at_a_lower_rank_may_not(tool):
 
     assert result.is_error and body == {"type": "forbidden", "message": OUTRANKED_MESSAGE}
     assert (await world.sessions.get("ses-b")).model_dump(mode="json") == before
+
+
+# ---- a session recorded as system (review of #853, round 2) --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize(("role", "allowed"), [("admin", True), ("user", False)])
+async def test_an_admin_over_mcp_acts_on_a_session_recorded_as_system(tool, role, allowed):
+    world = make_world(with_bus=True)
+    await _target(world, tool, by=PrincipalRef.system())
+
+    result, body = await _call(world, tool, "ses-b", actor=_principal(role))
+
+    assert (not result.is_error) is allowed, result.output
+    if not allowed:
+        assert body == {"type": "forbidden", "message": OUTRANKED_MESSAGE}
+
+
+@pytest.mark.parametrize("tool", ["cancel_workspace_session", "resume_workspace_session"])
+@pytest.mark.parametrize(("role", "allowed"), [("admin", True), ("user", False)])
+async def test_cancel_and_resume_over_mcp_follow_the_same_system_rule(tool, role, allowed):
+    world = make_world(with_bus=True)
+    status = SessionStatus.WAITING if tool == "cancel_workspace_session" else SessionStatus.PAUSED
+    await seed_session(world, sid="ses-b", status=status, turn_no=1, initiated_by=PrincipalRef.system(), created_at=NOW)
+
+    async def _resumed() -> None:
+        return None
+
+    world.registry.workspace("ws-1").slot("ses-b").request_resume = _resumed  # the on-disk slot the resume tool asks
+    toolset = build_workspaces_toolset(
+        storage_provider=world.sp, workspace_registry=world.registry, scheduler=world.scheduler, claim_engine=_Engine(), event_bus=world.bus,
+    )
+    token = current_actor.set(_principal(role))
+    try:
+        result = await dispatch_inner_tool(
+            provider=toolset, toolset_id=WORKSPACES_TOOLSET_ID, tool_name=tool, arguments={"workspace_id": "ws-1", "session_id": "ses-b"}, ctx=None,
+        )
+    finally:
+        current_actor.reset(token)
+    body = json.loads(result.output)
+    if allowed:
+        assert body.get("type") != "forbidden", result.output
+    else:
+        assert body == {"type": "forbidden", "message": OUTRANKED_MESSAGE}
+
+
+class _Engine:
+    async def upsert(self, *a, **k):
+        return None
+
+    async def delete_lease(self, *a, **k):
+        return None

@@ -149,9 +149,20 @@ async def test_an_admin_fire_still_wakes_a_parked_admin_session(monkeypatch, fak
     assert len(woken) == 1
 
 
-async def test_an_admin_fire_cannot_append_to_a_system_session(monkeypatch, fake_storage_provider):
-    """``system`` outranks every role, ``admin`` included."""
+async def test_an_admin_fire_appends_to_a_system_session_and_a_user_fire_does_not(monkeypatch, fake_storage_provider):
+    """Re-pinned (review of #853, round 2): ``system`` used to outrank ``admin`` here too. ``may_drive``, the one rank rule of every path that drives
+    a session, now ranks an admin with the system principal: an admin clears every role floor, so steering a system session gains nothing, and a
+    person could not otherwise act on a session recorded as system at all. A user-ranked fire is still refused."""
     sub = await _seed(fake_storage_provider, session_by=PrincipalRef.system(), owner=_ref("u-admin", "admin"), config=APPEND)
+
+    res, delivered = await _append(monkeypatch, fake_storage_provider, sub)
+
+    assert res.ok is True, res
+    assert len(delivered) == 1
+
+
+async def test_a_user_fire_cannot_append_to_a_system_session(monkeypatch, fake_storage_provider):
+    sub = await _seed(fake_storage_provider, session_by=PrincipalRef.system(), owner=_ref("u-plain", "user"), config=APPEND)
 
     res, delivered = await _append(monkeypatch, fake_storage_provider, sub)
 

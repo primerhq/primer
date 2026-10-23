@@ -168,7 +168,7 @@ def test_may_drive_is_the_rank_rule_of_every_path_that_drives_a_session():
 
     assert may_drive(ref("admin"), ref("admin")) and may_drive(ref("admin"), ref("user")) and may_drive(ref("user"), ref("user"))
     assert not may_drive(ref("user"), ref("admin"))
-    assert not may_drive(ref("admin"), PrincipalRef.system()) and may_drive(PrincipalRef.system(), ref("admin"))
+    assert may_drive(ref("admin"), PrincipalRef.system()) and may_drive(PrincipalRef.system(), ref("admin"))  # an admin ranks with system
     assert may_drive(None, ref("user")) and may_drive(ref("user"), None) and not may_drive(None, ref("admin"))
     assert not may_drive(ref("restricted"), ref("user")) and not may_drive(ref(None, "api_token"), ref("user"))
 
@@ -188,3 +188,16 @@ def test_the_own_session_rule_is_offered_only_where_asked_and_never_to_nobody():
     assert not same_principal(token, ada_then), "a token is not the account even when the ids collide"
     assert not same_principal(PrincipalRef.unattributed(), PrincipalRef.unattributed())
     assert not same_principal(PrincipalRef.system(), PrincipalRef.system()) and not same_principal(None, ada_then)
+
+
+def test_an_admin_acts_on_a_session_recorded_as_system_and_a_user_does_not():
+    """Review of #853, round 2: sessions created while auth was disabled, and fires whose trigger and subscription owners are both system, are
+    recorded as ``system``. An admin clears every role floor, so ``may_drive`` ranks it with the system principal; a user stays below."""
+    from primer.authz import may_drive
+
+    admin = PrincipalRef(type="user", id="a", display="a", role="admin", source="local")
+    user = PrincipalRef(type="user", id="u", display="u", role="user", source="local")
+    token = PrincipalRef(type="api_token", id="t", display="t", role="admin", source="internal")
+    assert may_drive(admin, PrincipalRef.system()) and may_drive(token, PrincipalRef.system())
+    assert may_drive(PrincipalRef.system(), PrincipalRef.system())
+    assert not may_drive(user, PrincipalRef.system()) and not may_drive(None, PrincipalRef.system())

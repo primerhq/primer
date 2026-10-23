@@ -248,3 +248,17 @@ async def test_create_workspace_session_from_a_session_reaches_only_what_the_ses
         assert body["type"] != "not-found", body
     else:
         assert body == {"type": "not-found", "message": f"Workspace {target!r} does not exist"}
+
+
+@pytest.mark.parametrize("tool", ["cancel_workspace_session", "resume_workspace_session"])
+async def test_cancel_and_resume_from_a_session_are_refused_in_the_words_of_a_message_steer_or_restart(tool):
+    """One refusal text for a run (review of #853, round 2): the rank refusal of a message, a steer and a restart from a session."""
+    from primer.session.peer_messages import REFUSE_RANK
+
+    env = Env(world=_world())
+    env.target_workspace = await _seed(env.world, "cancel tool, in a session" if tool.startswith("cancel") else "resume tool, in a session", "outranked")
+    path = "cancel tool, in a session" if tool.startswith("cancel") else "resume tool, in a session"
+
+    outcome, body = await _tool(env, path, workspace="ws-1", session="ses-t", in_session=True)
+
+    assert (outcome, body["message"]) == (F, REFUSE_RANK.format(session_id="ses-t", target_rank="admin", sender_rank="user"))
