@@ -160,7 +160,9 @@ def _wiki_read_tool(
 def _wiki_search_tool(
     provider_registry,
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
-    from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
+    import json
+
+    from primer.knowledge.system_collection import LIVE_ROOT, SYSTEM_COLLECTION_ID
 
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
         try:
@@ -173,18 +175,48 @@ def _wiki_search_tool(
             return _err_from_primer(exc, error_type="not-found")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="provider-error")
-        # The system collection only; the result passes through unchanged, so
-        # its errors are the collections toolset's (e.g. semantic not enabled).
-        return await collections.call(
+        norm_prefix = (args.path_prefix or "").strip().lstrip("/")
+        include_live = (
+            norm_prefix == LIVE_ROOT or norm_prefix.startswith(LIVE_ROOT + "/")
+        )
+        fetch_limit = (
+            args.limit if include_live else min(100, max(args.limit * 5, 50))
+        )
+        res = await collections.call(
             tool_name="search",
             arguments={
                 "collection": SYSTEM_COLLECTION_ID,
                 "query": args.query,
                 "mode": args.mode,
                 "path_prefix": args.path_prefix,
-                "limit": args.limit,
+                "limit": fetch_limit,
             },
         )
+        if res.is_error:
+            return res.model_copy(
+                update={
+                    "output": res.output.replace(
+                        "available: fulltext, literal, regex",
+                        "available: fulltext, literal",
+                    )
+                }
+            )
+        if not include_live:
+            try:
+                payload = json.loads(res.output)
+                hits = [
+                    h
+                    for h in payload.get("hits", [])
+                    if h.get("path") != LIVE_ROOT
+                    and not str(h.get("path", "")).startswith(LIVE_ROOT + "/")
+                ]
+                if len(hits) > args.limit:
+                    payload["truncated"] = True
+                payload["hits"] = hits[: args.limit]
+                return _ok(payload)
+            except Exception:  # noqa: BLE001
+                return res
+        return res
 
     return "wiki_search", (
         make_tool(

@@ -185,3 +185,121 @@ async def test_semantic_without_an_index_passes_the_collections_error_through(
     body = json.loads(r.output)
     assert r.is_error and body["type"] == "conflict"
     assert "semantic search is not enabled on 'system'" in body["message"]
+    assert "regex" not in body["message"]
+
+
+async def test_wiki_search_semantic_honours_path_prefix(sp, wiki):
+    from primer.model.collection import (
+        Collection,
+        CollectionEmbedder,
+        CollectionSearchConfig,
+    )
+
+    def _hit(path: str, text: str, score: float):
+        rec = type("R", (), {"document_id": path, "text": text, "meta": {"path": path}})()
+        return type("H", (), {"record": rec, "score": score})()
+
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+    colls = sp.get_storage(Collection)
+    coll = await colls.get("system")
+    await colls.update(
+        coll.model_copy(
+            update={
+                "search": CollectionSearchConfig(
+                    embedder=CollectionEmbedder(provider_id="emb", model="m"),
+                    vector_store_provider_id="ssp",
+                    state="ready",
+                )
+            }
+        )
+    )
+
+    class _Emb:
+        async def embed(self, *, model, inputs, **kwargs):
+            class _R:
+                embeddings = [type("E", (), {"vector": [0.1, 0.2]})() for _ in inputs]
+            return _R()
+
+    class _Store:
+        def __init__(self) -> None:
+            self.last_top_k = 0
+
+        async def search(self, cid, vector, top_k):
+            self.last_top_k = top_k
+            return [
+                _hit("reference/tools/misc/get_datetime", "tool ref hit", 0.95),
+                _hit("start-here/calling-tools", "start-here hit", 0.85),
+            ]
+
+    store = _Store()
+
+    class _SSR:
+        async def get_store(self, ssp_id):
+            return store
+
+    class _EmbRegistry(_Registry):
+        async def get_embedder(self, pid):
+            return _Emb()
+
+    reg = _EmbRegistry(None)
+    collections = build_collections_toolset(
+        storage_provider=sp,
+        provider_registry=reg,
+        semantic_search_registry=_SSR(),
+    )
+    reg._collections = collections
+    toolset = build_system_toolset(storage_provider=sp, provider_registry=reg)
+
+    r = await toolset.call(
+        tool_name="wiki_search",
+        ctx=USER,
+        arguments={"query": "calling", "mode": "semantic", "path_prefix": "start-here/", "limit": 5},
+    )
+    assert not r.is_error, r.output
+    out = json.loads(r.output)
+    assert out["mode_used"] == "semantic"
+    assert [h["path"] for h in out["hits"]] == ["start-here/calling-tools"]
+    assert store.last_top_k > 5
+
+
+async def test_this_install_quotes_user_text_and_is_excluded_from_search_by_default(sp, wiki):
+    from primer.model.agent import Agent, AgentModel
+
+    await sp.get_storage(Agent).create(
+        Agent(
+            id="agent-inj",
+            description="narwhal secret instruction",
+            model=AgentModel(profile_id="prov--m"),
+        )
+    )
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+    collections = build_collections_toolset(storage_provider=sp)
+    toolset = build_system_toolset(
+        storage_provider=sp,
+        provider_registry=_Registry(collections),
+    )
+
+    read_res = await toolset.call(
+        tool_name="wiki_read",
+        ctx=USER,
+        arguments={"path": "this-install/agents/agent-inj"},
+    )
+    read_body = json.loads(read_res.output)["body"]
+    assert 'User-supplied description: "narwhal secret instruction"' in read_body
+
+    # Default wiki_search omits this-install/.
+    default_search = await toolset.call(
+        tool_name="wiki_search",
+        ctx=USER,
+        arguments={"query": "narwhal", "mode": "fulltext"},
+    )
+    assert json.loads(default_search.output)["hits"] == []
+
+    # Asking for path_prefix="this-install/" includes it.
+    explicit_search = await toolset.call(
+        tool_name="wiki_search",
+        ctx=USER,
+        arguments={"query": "narwhal", "mode": "fulltext", "path_prefix": "this-install/"},
+    )
+    hits = json.loads(explicit_search.output)["hits"]
+    assert any(h["path"] == "this-install/agents/agent-inj" for h in hits)
