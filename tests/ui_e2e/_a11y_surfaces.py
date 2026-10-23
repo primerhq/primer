@@ -60,10 +60,10 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "services": [Form("New service", MODAL)],
     "workspaces": [Form("New workspace", MODAL)],
     "workspaces/templates": [Form("New template", MODAL)],
-    "workspaces/providers": [],
+    "workspaces/providers": [_register()],
     "channels": [Form("New channel", MODAL)],          # enabled only while a channel provider exists: the sweep seeds one
     "channels/rules": [Form("New rule", MODAL)],        # its toolbar draws only while a channel provider exists
-    "channels/providers": [],
+    "channels/providers": [_register()],
     "knowledge/collections": [Form("New collection", MODAL)],
     "subsystems/internal-collections": [Form("Configure", MODAL)],
     "providers/llm": [_register()],
@@ -136,8 +136,6 @@ SYSTEM_FORMS: dict[str, list[Form]] = {
 
 NO_FORM: dict[str, str] = {
     "overlay-page approvals": "its policies are created on the Platform view (platform-view approvals, + Policy)",
-    "overlay-page workspaces/providers": "provider registration moved to Platform > Providers > Workspace",
-    "overlay-page channels/providers": "provider registration moved to Platform > Providers > Channels",
     "platform-view tools": "the tool catalogue is read-only",
     "system-view dashboard": "the dashboard shows the install's state; nothing is created from it",
     "system-view mcp": "the MCP page lists the install's MCP servers and their tools; nothing is created from it",
@@ -238,11 +236,13 @@ FLOORS: dict[str, int] = {
     "overlay-page workspaces/templates": 1,
     "overlay-page workspaces/templates / New template": 4,
     "overlay-page workspaces/providers": 2,
+    "overlay-page workspaces/providers / + Register": 3,
     "overlay-page channels": 1,
     "overlay-page channels / New channel": 2,
     "overlay-page channels/rules": 2,
     "overlay-page channels/rules / New rule": 6,
     "overlay-page channels/providers": 2,
+    "overlay-page channels/providers / + Register": 4,
     "overlay-page knowledge/collections": 1,
     "overlay-page knowledge/collections / New collection": 2,
     "overlay-page subsystems/internal-collections": 1,

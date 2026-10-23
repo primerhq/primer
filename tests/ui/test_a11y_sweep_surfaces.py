@@ -115,7 +115,7 @@ def test_a_provider_form_opens_directly_in_the_register_overlay() -> None:
     assert 'testid: "pc-register-type"' in (ROOT / "ui" / "components" / "providers" / "register-overlay.jsx").read_text(encoding="utf-8")
     registers = [(route, form) for route, forms in surfaces.LEGACY_FORMS.items() for form in forms if form.button == "+ Register"]
     registers += [(nav, form) for nav, forms in surfaces.PLATFORM_FORMS.items() for form in forms if form.button == "+ Register"]
-    assert len(registers) == 9, [route for route, _ in registers]   # eight provider type pages and the Platform page
+    assert len(registers) == 11, [route for route, _ in registers]   # ten provider type pages and the Platform page
     for route, form in registers:
         assert form.root == surfaces.MODAL, (route, form)
         assert form.then is None, (route, form)
@@ -131,7 +131,7 @@ def test_the_artifact_storage_page_is_swept_through_its_register_overlay_and_no_
     assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("+ Register", surfaces.MODAL)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / + Register" in surfaces.expected_surfaces(7)
-    assert len(surfaces.expected_surfaces(7)) == 98
+    assert len(surfaces.expected_surfaces(7)) == 100
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:
