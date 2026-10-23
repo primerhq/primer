@@ -24,7 +24,7 @@ from primer.api.deps import (
 )
 from primer.api.routers._crud import make_crud_router
 from primer.api.errors import common_responses
-from primer.events.filters import validate_filter_expr
+from primer.events.filters import validate_filter
 from primer.events.redaction import redact_event
 from primer.events.visibility import user_safe
 from primer.model.event import Event, EventSubscription
@@ -136,8 +136,9 @@ async def _reject_converge_sink(
 
 
 def _reject_unsafe_expr(entity: EventSubscription) -> None:
+    """The expr check and the field-regex check (G6-11: the matching engine, at most 1000 characters)."""
     try:
-        validate_filter_expr(entity.filter.expr)
+        validate_filter(entity.filter)
     except ValueError as exc:
         raise SemanticValidationError(str(exc)) from exc
 

@@ -20,13 +20,13 @@ the orphan delivers nothing into it).
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
+from primer.common.user_regex import UserRegexError, compile_user_regex
 from primer.events.filters import validate_filter_expr
 from primer.events.redaction import redact_payload
 from primer.events.visibility import SCOPE_PATHS, needs_scope, user_safe_glob, user_safe_kinds
@@ -160,11 +160,12 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
             return _err(str(exc), error_type="validation-error")
         for matcher in args.fields or []:
             if matcher.op == "regex":
+                # The engine that matches it, at most 1000 characters (G6-11).
                 try:
-                    re.compile(matcher.value)
-                except re.error as exc:
+                    compile_user_regex(matcher.value, what=f"the regex for {matcher.path!r}")
+                except UserRegexError as exc:
                     return _err(
-                        f"invalid regex {matcher.value!r}: {exc}",
+                        f"invalid regex {matcher.value[:200]!r}: {exc}",
                         error_type="validation-error",
                     )
 

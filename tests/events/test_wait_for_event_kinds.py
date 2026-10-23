@@ -248,3 +248,22 @@ async def test_even_an_admin_may_not_store_an_expr_that_references_the_opa_packa
         ),
     }
     assert await _subscriptions(sp) == [], "an unsafe wait stores no subscription"
+
+
+@pytest.mark.parametrize("who", [ADMIN, PrincipalRef.system()], ids=["admin", "system"])
+async def test_even_an_admin_regex_is_capped_and_checked_in_the_matching_dialect(sp, who):  # noqa: F811
+    """G6-11: the field regex is compiled by the engine that matches it, and capped at 1000 characters."""
+    too_long = [{"path": "payload.path", "op": "regex", "value": "g" * 1001}]
+    result = await make_wait_for_event_handler(sp)(
+        {"event_types": ["collection.document_pushed"], "fields": too_long}, ctx=_ctx(who),
+    )
+    body = json.loads(result.output)
+    assert body["type"] == "validation-error"
+    assert "1001 characters long; the limit is 1000" in body["message"]
+    assert await _subscriptions(sp) == [], "a refused wait stores no subscription"
+
+    regex_dialect = [{"path": "payload.path", "op": "regex", "value": r"^\p{Lu}"}]
+    result = await make_wait_for_event_handler(sp)(
+        {"event_types": ["collection.document_pushed"], "fields": regex_dialect}, ctx=_ctx(who),
+    )
+    assert isinstance(result, Yielded), result

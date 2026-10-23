@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import Any
 
 from primer.bus.scheduler_tasks import _BackgroundTask
-from primer.events.filters import matches
+from primer.events.filters import matches_async
 from primer.events.recorder import EVENTS_APPENDED_KEY
 from primer.events.redaction import redact_event
 from primer.int.coordinator import ROLE_EVENT_DISPATCHER, ROLE_EVENT_RETENTION
@@ -161,7 +161,7 @@ class EventDispatcher(_BackgroundTask):
             if not events:
                 return delivered
             for event in events:
-                if matches(event, sub.filter):
+                if await matches_async(event, sub.filter):
                     ok = await self._deliver(sub, event)
                     if ok:
                         delivered += 1
