@@ -334,6 +334,55 @@ def test_saving_a_panel_provider_opens_its_detail(ctx) -> None:
     assert "made-workspace" in ctx.eval("textOf(MR.find('wp-detail'))")
 
 
+def test_a_type_page_registers_only_that_provider_class(ctx) -> None:
+    """A panel-class page cannot register an unrelated row and then open it
+    through the panel class's detail component."""
+    ctx.eval("""
+    window.__REGISTER_PROPS = null;
+    window.PC_RegisterOverlay = function (props) {
+      window.__REGISTER_PROPS = props;
+      return el("div", { "data-testid": "register-stub" }, "Register");
+    };
+    MR.mount(window.ProviderCatalog, {
+      initialClass: "ssp",
+      onNavigate: onNavigate
+    });
+    """)
+    settle(ctx)
+    ctx.eval("press('pc-register-open'); MR.rerender();")
+    assert js(ctx, "window.__REGISTER_PROPS.allowedClasses") == ["ssp"]
+
+
+def test_closing_the_register_overlay_refetches_the_list(ctx) -> None:
+    """Dismissal can race a completed import, so close refreshes even when
+    the overlay did not reach onSaved."""
+    ctx.eval("""
+    CALLS = [];
+    window.__REGISTER_PROPS = null;
+    window.PC_RegisterOverlay = function (props) {
+      window.__REGISTER_PROPS = props;
+      return el("div", { "data-testid": "register-stub" }, "Register");
+    };
+    MR.mount(window.ProviderCatalog, {
+      initialClass: "llm",
+      onNavigate: onNavigate
+    });
+    """)
+    settle(ctx)
+    before = len([
+        call for call in js(ctx, "CALLS")
+        if call["method"] == "GET" and call["path"].startswith("/llm_providers")
+    ])
+    ctx.eval("press('pc-register-open'); MR.rerender();")
+    ctx.eval("window.__REGISTER_PROPS.onClose(); MR.rerender();")
+    settle(ctx)
+    after = len([
+        call for call in js(ctx, "CALLS")
+        if call["method"] == "GET" and call["path"].startswith("/llm_providers")
+    ])
+    assert after == before + 1
+
+
 def test_open_edits_every_other_class_in_the_overlay(ctx) -> None:
     ctx.eval("""
     NAVIGATED = [];

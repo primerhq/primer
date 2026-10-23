@@ -350,6 +350,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     }
     setOverlayState({ open: false, initialClass: null, editRow: null });
     setInstanceId(null);
+    refetch();
     if (typeof onNavigate === "function") {
       onNavigate({ kind: "provider-class", classKey: classKey });
     }
@@ -418,7 +419,6 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
       return;
     }
     closeOverlay();
-    refetch();
   };
 
   // Panel class inline detail
@@ -540,12 +540,12 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
       {overlayState.open && typeof PC_RegisterOverlay === "function" ? (
         <PC_RegisterOverlay
           initialClass={overlayState.initialClass}
+          allowedClasses={classKey === "all" ? undefined : [classKey]}
           editRow={overlayState.editRow}
           onClose={closeOverlay}
           onSaved={savedFromOverlay}
           onDeleted={() => {
             closeOverlay();
-            refetch();
           }}
         />
       ) : null}
