@@ -11,8 +11,11 @@ A fresh-session subscription starts an agent or graph run nobody is sitting in f
   user, so a demoted owner's rows demote with them. The role recorded on the owner is a CEILING the current role cannot
   exceed: a capped run (an admin's identity ranked ``user`` because a user owns the trigger) that saves a trigger or
   subscription records ``role="user"``, and that row must not fire as admin on the next fire. A later promotion therefore
-  needs a re-save, which fails closed. An owner that cannot be resolved (deleted, disabled, revoked or expired token) ranks
-  at most ``user``. A ``system`` owner (an auth-disabled deployment, where every request is
+  needs a re-save, which fails closed. A TRIGGER owner that cannot be resolved (deleted, disabled, revoked or expired token)
+  ranks at most ``user``. A SUBSCRIPTION owner that cannot be resolved refuses the fire before any session is made
+  (:func:`unresolvable_subscription_owner`, ``owner_unresolvable``; review of #853 B1): the run is the subscription owner's, and
+  a run of a gone creator is refused at its first turn anyway (``resolve_run_principal``), so the failure belongs on the
+  subscription, not on a session that never runs. A ``system`` owner (an auth-disabled deployment, where every request is
   ``system``) stays ``system``.
 * A row saved before owners were recorded has none and ranks at most ``user`` (fail closed). A subscription with no owner
   keeps the old trigger-typed attribution (``type="trigger"``, the trigger id) so the run stays traceable, now with
@@ -93,6 +96,34 @@ async def _current_role(owner: PrincipalRef | None, storage_provider: Any) -> st
         owner.type, owner.id, _FAIL_CLOSED_ROLE,
     )
     return _lower(owner.role, _FAIL_CLOSED_ROLE)
+
+
+#: The ``error_code`` of a fresh-session fire refused because its subscription owner is gone.
+OWNER_UNRESOLVABLE = "owner_unresolvable"
+
+
+async def unresolvable_subscription_owner(sub: Subscription, storage_provider: Any) -> str | None:
+    """A reason to refuse a fresh-session fire whose subscription owner can no longer be resolved, else ``None``.
+
+    "Gone" is :func:`resolve_current_role` answering ``None`` for a ``user`` or ``api_token`` owner: the user was deleted or
+    disabled, or the token was revoked or has expired. The fired run would be that owner's, and a run of a gone creator is
+    refused at its first turn (``primer.worker.executor_builders.resolve_run_principal``), so the dispatcher refuses here and
+    makes no session: the subscription then records a failed fire instead of an ``ok`` one whose session fails unseen. A
+    subscription with no owner (saved before owners were recorded) and a ``system`` owner are not refused.
+    """
+    owner = sub.owner
+    if owner is None or owner.type not in ("user", "api_token") or _unattributed(owner):
+        return None
+    if await resolve_current_role(owner, storage_provider) is not None:
+        return None
+    logger.warning(
+        "trigger %s subscription %s: its owner %s can no longer be resolved; the fire starts no session",
+        sub.trigger_id, sub.id, owner.type,
+    )
+    return (
+        "the subscription's owner is deleted or disabled, or its API token was revoked or has expired; "
+        "the fire starts no session (re-save the subscription as a current account)"
+    )
 
 
 async def principal_for_fire(sub: Subscription, storage_provider: Any) -> PrincipalRef:
@@ -230,7 +261,9 @@ async def same_owner(a: PrincipalRef | None, b: PrincipalRef | None, storage_pro
 
 
 __all__ = [
+    "OWNER_UNRESOLVABLE",
     "WEBHOOK_TOKEN_MASK",
+    "unresolvable_subscription_owner",
     "resolve_current_role",
     "may_manage_trigger",
     "principal_for_fire",
