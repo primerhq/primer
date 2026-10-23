@@ -648,6 +648,21 @@ async def test_a_canvas_toolset_that_is_off_is_left_out_of_the_seed_without_a_wa
     assert [r.levelname for r in caplog.records if "canvas" in r.getMessage()] == ["INFO"]
 
 
+async def test_the_mcp_catalogue_leaves_an_off_canvas_toolset_out_without_a_warning(app, fake_storage_provider, caplog):
+    """Review N3 on #856: every MCP tools/list walks the built-ins; the canvas that is off by design is skipped quietly, and listed
+    once it is on."""
+    import logging
+
+    from primer.mcp.exposure import ExposureDeps, _iter_catalogue
+
+    deps = ExposureDeps(storage_provider=fake_storage_provider, provider_registry=app.state.provider_registry)
+    with caplog.at_level(logging.WARNING, logger="primer.mcp.exposure"):
+        off = [tool.toolset_id async for tool, _provider in _iter_catalogue(deps)]
+    assert off and "canvas" not in off and "canvas" not in caplog.text
+    await _enable_canvas_tools(fake_storage_provider)
+    assert "canvas" in [tool.toolset_id async for tool, _provider in _iter_catalogue(deps)]
+
+
 @pytest.mark.asyncio
 async def test_the_catalogue_lists_canvas_last_and_opens_it_when_enabled(client, fake_storage_provider):
     from primer.agent.agent_checks import missing_toolset_ids
