@@ -105,6 +105,8 @@ class MockOAuthState:
         ``token_status_override``: every token request is answered with this status and a matching error, touching nothing (503 is "the server is down").
         ``token_delay_s``: seconds the token endpoint waits before it answers (the request is recorded when it arrives).
         ``deny_next_authorize``: the next valid authorization request is declined with ``access_denied``; the flag is then reset.
+        ``reject_bearer_tokens``: ``/mcp`` answers every bearer token with the 401 challenge, a live one too (a resource server that will not take
+        what its authorization server issues: another audience, a consent revoked on the resource side). The token endpoint is untouched.
         ``static_clients``: pre-registered clients, id to secret. An empty secret makes the client public.
 
     Records
@@ -120,6 +122,7 @@ class MockOAuthState:
     token_status_override: int | None = None
     token_delay_s: float = 0.0
     deny_next_authorize: bool = False
+    reject_bearer_tokens: bool = False
     static_clients: dict[str, str] = field(default_factory=lambda: {"cc-client": "cc-secret", "pre-client": "pre-secret"})
 
     token_requests: list[dict[str, str]] = field(default_factory=list)
@@ -462,7 +465,7 @@ def build_mock_oauth_mcp_app(state: MockOAuthState, *, base_url: str) -> Starlet
             token = token.strip() if scheme.lower() == "bearer" else ""
             if token:
                 state.seen_tokens.append(token)
-            if not token or not self._live(token):
+            if not token or state.reject_bearer_tokens or not self._live(token):
                 refusal = JSONResponse(
                     {"error": "invalid_token", "error_description": "a valid access token is required"},
                     status_code=401,

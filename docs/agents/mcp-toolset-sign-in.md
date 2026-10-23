@@ -49,8 +49,10 @@ no token.
 A client-credentials toolset connects without a browser. Primer sends the
 configured client credentials to the discovered or configured token endpoint.
 For both grants, the shared access token is attached to every MCP request. A
-401 causes one refresh and one retry. Refresh runs under a lease shared across
-pods.
+401 causes one refresh and one retry. If the server rejects the refreshed token
+as well, the toolset is signed out (`needs_sign_in`, reason `The MCP server
+rejected the access token.`) and needs an admin to reconnect it. Refresh runs
+under a lease shared across pods.
 
 Disconnect removes the shared sign-in for every caller and ends any sign-in
 still pending, so a Reconnect left open on the provider's page cannot connect the

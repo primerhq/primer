@@ -74,7 +74,12 @@ writes no token.
 
 For client credentials, an admin starts sign-in and Primer obtains the shared token
 immediately. During normal MCP traffic, `McpBearerAuth` sends that token on every
-request. A 401 triggers at most one refresh and one retry. Refresh is coordinated
+request. A 401 triggers at most one refresh and one retry. When the server
+rejects the refreshed token too, the toolset is signed out with the reason
+`The MCP server rejected the access token.` (`ToolsetOAuthService.sign_out_rejected`,
+fenced on the version that holds that token, so a reconnect or a newer token
+stored meanwhile is left alone): its status stops saying `connected`, and later
+calls fail at once instead of spending a refresh token each. Refresh is coordinated
 under a lease across pods, and a compare-and-set write prevents a late refresher
 from replacing newer credentials. Disconnect first ends the toolset's pending
 sign-ins (a Reconnect left open on the provider's page would otherwise connect the

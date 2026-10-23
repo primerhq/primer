@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 
 import httpx2
 
 from primer.model.mcp_oauth import McpSignInRequiredError
-from primer.toolset.oauth.service import OAuthTarget, ToolsetOAuthService
+from primer.toolset.oauth.service import TOKEN_REJECTED, OAuthTarget, ToolsetOAuthService
+
+logger = logging.getLogger(__name__)
 
 
 class McpBearerAuth(httpx2.Auth):
@@ -17,6 +20,11 @@ class McpBearerAuth(httpx2.Auth):
     exception raised by an auth flow. Refresh failures are therefore recorded
     on this object and the original 401 is returned. The provider inspects the
     record after the transport closes and raises the domain error itself.
+
+    When the server rejects the refreshed token as well, the toolset is signed
+    out (:meth:`ToolsetOAuthService.sign_out_rejected`, fenced on the version
+    that holds that token), so its status stops saying connected and the next
+    call does not spend another refresh token (audit G4-11).
     """
 
     requires_request_body = True
@@ -49,7 +57,11 @@ class McpBearerAuth(httpx2.Auth):
         request.headers["Authorization"] = f"Bearer {token}"
         response = yield request
         if response.status_code == 401:
-            self.sign_in_required = str(McpSignInRequiredError(self._target.toolset_id))
+            try:
+                await self._service.sign_out_rejected(self._target, rejected=token)
+            except Exception:  # never raised into the SDK's task group; the call still fails as needs sign-in
+                logger.warning("MCP toolset %s: the rejected token could not be signed out", self._target.toolset_id, exc_info=True)
+            self.sign_in_required = str(McpSignInRequiredError(self._target.toolset_id, reason=TOKEN_REJECTED))
 
 
 __all__ = ["McpBearerAuth"]

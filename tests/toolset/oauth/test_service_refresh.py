@@ -425,6 +425,40 @@ async def test_refresh_after_401_without_a_refresh_token_signs_out(svc, kb, targ
     assert (row.state, row.reason, row.access_token_enc) == ("needs_sign_in", TOKEN_REJECTED, None)
 
 
+async def test_a_rejected_refreshed_token_signs_out_the_version_that_holds_it(svc, kb, target, store):
+    """Audit G4-11: the server rejected the token a refresh had just stored, too."""
+    await connect(svc, kb)
+    before = await store.get_tokens("kb")
+    access, _ = await _tokens(store)
+    await svc.sign_out_rejected(target, rejected=access)
+    row = await store.get_tokens("kb")
+    assert (row.state, row.reason, row.access_token_enc, row.refresh_token_enc) == ("needs_sign_in", TOKEN_REJECTED, None, None)
+    assert row.version == before.version + 1
+    assert (await svc.status(kb)).state == "needs_sign_in"
+
+
+async def test_a_rejected_token_leaves_a_newer_one_alone(services, kb, target, store, clock):
+    """The sign-out is fenced on the version that holds the rejected token: when another process stored a newer token meanwhile, that one stays."""
+    a, b = services("pod-a"), services("pod-b")
+    await connect(a, kb)
+    old, _ = await _tokens(store)
+    _near_expiry(clock)
+    new = await b.access_token(target)
+    assert new != old
+    before = await store.get_tokens("kb")
+    await a.sign_out_rejected(target, rejected=old)
+    assert (await store.get_tokens("kb")).model_dump() == before.model_dump()
+
+
+async def test_a_rejected_token_of_a_reconnected_toolset_with_new_settings_is_left_alone(svc, kb, store, mock_oauth_mcp):
+    await connect(svc, kb)
+    access, _ = await _tokens(store)
+    before = await store.get_tokens("kb")
+    moved = target_of(make_toolset(mock_oauth_mcp.base_url + "/other-mcp", oauth={}))
+    await svc.sign_out_rejected(moved, rejected=access)
+    assert (await store.get_tokens("kb")).model_dump() == before.model_dump()
+
+
 # ---- client credentials --------------------------------------------------------------------------------------------------------------------------------------------------
 
 
