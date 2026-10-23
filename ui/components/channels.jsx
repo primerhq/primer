@@ -257,7 +257,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing, fram
         if (isEdit && f.secret && existing?.config?.[f.key] !== undefined) {
           out[f.key] = existing.config[f.key];
         } else if (isEdit && !f.secret) {
-          out[f.key] = null;
+          out[f.key] = f.default !== undefined ? f.default : null;
         }
         continue;
       }

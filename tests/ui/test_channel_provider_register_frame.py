@@ -117,10 +117,10 @@ def test_edit_keeps_a_stored_secret_left_blank(ctx) -> None:
     assert cfg["bot_token"] == "**********"
 
 
-def test_edit_can_clear_the_optional_channel_number(ctx) -> None:
+def test_clearing_the_optional_channel_number_restores_its_default(ctx) -> None:
     ctx.eval("""
     CALLS = [];
-    var row = { id: "cp-telegram", provider: "telegram", config: { bot_token: "**********", poll_timeout_seconds: 25 } };
+    var row = { id: "cp-telegram", provider: "telegram", config: { bot_token: "123456:abcdefghijklmnopqrstuvwxyz", poll_timeout_seconds: 25 } };
     MR.mount(window.NewChannelProviderModal, { existing: row, onClose: function () {}, frame: frameFn });
     ALL("frame-body").forEach(function (n) {
       if (n.type === "input" && n.props.type === "number") n.props.onChange({ target: { value: "" } });
@@ -130,7 +130,9 @@ def test_edit_can_clear_the_optional_channel_number(ctx) -> None:
     """)
     settle(ctx)
     call = [c for c in js(ctx, "CALLS") if c["method"] == "PUT"][0]
-    assert call["body"]["config"]["poll_timeout_seconds"] is None
+    assert call["body"]["config"]["poll_timeout_seconds"] == 25
+    # The body must be one the server accepts: a null here is refused (an int with a default).
+    assert ChannelProvider.model_validate(call["body"])
 
 
 def test_edit_round_trips_every_unshown_field(ctx) -> None:
