@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from primer.agent.compaction import CompactionStrategy, CompactionToolExecutor
     from primer.int.llm import LLM
     from primer.model.chat import StreamEvent
+    from primer.model.model_profile import ModelProfileConfig
 
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,7 @@ async def apply_compaction(
     max_tool_turns: int | None = None,
     principal: str | None = None,
     fixed_overhead: int = 0,
+    config: "ModelProfileConfig | None" = None,
 ) -> CompactionResult:
     """Run the :class:`CompactionStrategy` and assemble a :class:`CompactionResult`.
 
@@ -149,9 +151,13 @@ async def apply_compaction(
     back, as far as the caller can count it (see :meth:`CompactionStrategy.estimate_fixed_overhead`):
     it is part of the budget rules and of the figures the result reports.
 
+    ``config`` is the resolved profile's ``config`` (its reasoning level and ``extended``): the summariser
+    applies it to its model call like every call made under the profile does (audit G2-05: the manual Compact
+    route resolved the profile but passed only the name and the window, so the summariser ran without it).
+
     The strategy expects an Agent-like shim with a ``compaction_prompt``
-    field (``list[str]``), and a model shim with ``model_name`` +
-    ``context_length``. Both shapes match the duck-typed access pattern
+    field (``list[str]``), and a model shim with ``model_name``,
+    ``context_length`` and ``config``. Both shapes match the duck-typed access pattern
     used by :meth:`CompactionStrategy._full_compact` and
     :meth:`CompactionStrategy._tier2`.
     """
@@ -168,6 +174,7 @@ async def apply_compaction(
             # ``model.model_name`` since model identity moved onto profiles.
             self.model_name = model_name
             self.context_length = context_length
+            self.config = config
 
     effective_strategy = _clone_strategy_for_apply(strategy, history)
     compacted = await effective_strategy._tier2(  # noqa: SLF001
@@ -225,6 +232,7 @@ async def force_compact(
     max_tool_turns: int | None = None,
     principal: str | None = None,
     fixed_overhead: int = 0,
+    config: "ModelProfileConfig | None" = None,
 ) -> CompactionResult:
     """On-demand compaction -- bypasses the trigger check."""
     return await apply_compaction(
@@ -239,6 +247,7 @@ async def force_compact(
         max_tool_turns=max_tool_turns,
         principal=principal,
         fixed_overhead=fixed_overhead,
+        config=config,
     )
 
 

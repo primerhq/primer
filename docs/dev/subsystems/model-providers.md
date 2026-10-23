@@ -245,7 +245,10 @@ create may override it per run.
 (provider-specific knobs, passed through). Every model call made under a
 profile sends it: each call of an agent turn (`primer/agent/loop.py`, which
 sessions, subagents and graph agent nodes all run) and each call of both
-compaction summarisers (`primer/agent/compaction.py`). The call site hands
+compaction summarisers (`primer/agent/compaction.py`), an in-turn compaction
+and the manual Compact route (`POST /workspaces/{ws}/sessions/{sid}/compact`,
+which passes the resolved profile's `config` through `force_compact` and
+`apply_compaction` in `primer/agent/compaction_mixin.py`). The call site hands
 the resolved profile's config (`ResolvedModel.config`) and the call's model
 to `profile_extended(llm, config, model=...)` in `primer/llm/_reasoning.py`,
 which asks the adapter to translate it (`LLM.profile_extended(config,
