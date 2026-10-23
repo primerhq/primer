@@ -23,21 +23,29 @@ has a running loop the engine is made and used on a worker thread instead. Whate
 wrong with the engine, that or anything else, is a problem in the result ("could not be
 checked"), never an exception: the check fails closed.
 
-Known limits. ``new Function`` accepts a top-level ``return`` that a classic script
-rejects. Module scripts and data blocks (``type=module``, ``application/json``,
-``importmap`` ...) are not compiled. The scripts are found with ``html.parser``, not a
-browser's tree builder, and the check does not look at anything that is not a ``<script>``,
-so it cannot see:
+This is an EARLY WARNING for the agent, not a gate (lead ruling on audit G8-06). The frame's CSP (Task 13), inherited
+by every Html ``srcdoc`` frame, is the only control in the browser. That CSP allows ``'unsafe-inline'``, so anything
+this check does not see and that is inline (an event handler, a ``javascript:`` URL, a script a browser parses where
+this check sees none) RUNS; only external loads are held to the CSP's hosts.
 
-* a script after ``<!-->``, ``<!--->`` or ``<![CDATA[ x >``: a browser ends the comment or
-  the section there, ``html.parser`` reads on to a later ``-->`` or ``]]>``;
+How the scripts are found. ``html.parser`` reads the body with scripting ON, as the frame does (a ``<noscript>`` is
+raw text, so what follows its end tag is markup). It still has no foreign-content rules (inside ``<svg>``, a
+``<style>``, ``<iframe>``, ``<xmp>``, ``<textarea>`` or ``<title>`` holds markup in a browser and text here), and it
+ends a script at its first ``</script>`` where a browser in the double-escaped state does not. So the check fails
+closed: when the body holds more ``<script`` (in any case) than the scripts the parser found, it is refused, because
+a browser may run what the check cannot see. That also refuses the word in text, a comment, an attribute or a JS
+string; the agent splits it (``'<scr' + 'ipt'``).
+
+Known limits. ``new Function`` accepts a top-level ``return`` that a classic script rejects. Module scripts and data
+blocks (``type=module``, ``application/json``, ``importmap`` ...) are not compiled. The check looks at nothing that is
+not a ``<script>``, so it cannot see:
+
 * event-handler attributes (``onerror="..."``);
 * ``javascript:`` URLs;
 * ``import`` and ``import()`` in an inline module (or, for ``import()``, a classic script);
-* a script inside a nested ``<iframe srcdoc>``.
+* a script inside a nested ``<iframe srcdoc>`` whose markup is written with character references (``&lt;script``).
 
-The frame's CSP blocks every one of these in the browser: this check is the first gate, not
-the only one. Pure: no I/O besides the throwaway engine.
+Pure: no I/O besides the throwaway engine.
 """
 
 from __future__ import annotations
@@ -86,7 +94,11 @@ class _Scripts(HTMLParser):
     """Collects every ``<script>``: its attributes (the first of a repeated one wins) and its text."""
 
     def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
+        try:
+            # Scripting ON, as in the frame: <noscript> is raw text (audit G8-06). A Python without the flag still fails closed on the count.
+            super().__init__(convert_charrefs=True, scripting=True)
+        except TypeError:  # pragma: no cover - CPython before the flag
+            super().__init__(convert_charrefs=True)
         self.scripts: list[tuple[dict[str, str | None], str]] = []
         self._attrs: dict[str, str | None] | None = None
         self._text: list[str] = []
@@ -169,6 +181,18 @@ def _unchecked(number: int) -> str:
     return f"script {number} could not be checked: the syntax check failed"
 
 
+def _hidden(raw: int, found: int) -> str | None:
+    """The problem for a body with ``raw`` ``<script`` in it of which the parser read only ``found`` as scripts, else ``None``."""
+    hidden = raw - found
+    if hidden <= 0:
+        return None
+    verb = "is" if hidden == 1 else "are"
+    return (
+        f"{hidden} of the {raw} '<script' in the html {verb} not a script the check can read; write each script as a plain <script> "
+        "element and split '<script' in any text or string ('<scr' + 'ipt')"
+    )
+
+
 def _compile_scripts(scripts: list[tuple[int, int, str]]) -> dict[int, str]:
     """The problem with each inline script that has one, by task index (with ``number`` as its script number in its document).
 
@@ -215,6 +239,7 @@ def check_html_scripts_many(bodies: Sequence[str]) -> dict[str, list[str]]:
     """Problems with the scripts in each distinct body of ``bodies``, using at most ONE V8 engine for the whole batch."""
     unique = list(dict.fromkeys(bodies))
     found_by_body: dict[str, dict[int, list[str]]] = {}
+    hidden_by_body: dict[str, str] = {}
     inline_tasks: list[tuple[int, int, str, str]] = []
     for html in unique:
         parser = _Scripts()
@@ -228,13 +253,16 @@ def check_html_scripts_many(bodies: Sequence[str]) -> dict[str, list[str]]:
             if "src" not in attrs and _is_classic(attrs.get("type")):
                 inline_tasks.append((len(inline_tasks), number, text, html))
         found_by_body[html] = found
+        hidden = _hidden(html.lower().count("<script"), len(parser.scripts))
+        if hidden is not None:
+            hidden_by_body[html] = hidden
     if inline_tasks:
         compiled = _compile([(idx, number, text) for idx, number, text, _ in inline_tasks])
         for idx, problem in compiled.items():
             _, number, _, html = inline_tasks[idx]
             found_by_body[html].setdefault(number, []).append(problem)
     return {
-        html: [problem for number in sorted(found) for problem in found[number]]
+        html: [problem for number in sorted(found) for problem in found[number]] + ([hidden_by_body[html]] if html in hidden_by_body else [])
         for html, found in found_by_body.items()
     }
 
