@@ -32,6 +32,7 @@ from tests._support.runs import (
     make_scripted_agent,
     start_agent_session,
     wait_completed,
+    wait_completed_approving,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import requires
@@ -144,9 +145,11 @@ async def test_meta_agent_builds_from_use_case(
             instructions="Use case: build an agent that returns the current date and time.",
         )
         # 01a0518a: a plain agent session's clean stop now rests it
-        # parked, not ended.
-        final = await wait_completed(authed_client, sid, timeout_s=60)
+        # parked, not ended. system__create_agent is approval-gated by
+        # default (audit G6-1): the run parks on it once and is approved.
+        final, approvals = await wait_completed_approving(authed_client, sid, timeout_s=60)
         assert final.get("session_state") == "parked", final
+        assert approvals == 1, "system__create_agent did not park on its default gate"
 
         # search_tools was dispatched AND returned real hits including the
         # datetime tool (proves the discovery step ran against the catalogue).

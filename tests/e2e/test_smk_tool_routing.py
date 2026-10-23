@@ -17,6 +17,7 @@ from tests._support.runs import (
     make_scripted_agent,
     start_agent_session,
     wait_completed,
+    wait_completed_approving,
 )
 from tests._support.smk import smk
 from tests._support.testconfig import requires
@@ -83,7 +84,11 @@ async def test_call_tool_dispatch(authed_client, mock_llm, unique_suffix, tmp_pa
     )
     wid = await make_local_workspace(authed_client, suffix=unique_suffix, root=tmp_path)
     sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    assert (await wait_completed(authed_client, sid)).get("session_state") == "parked"
+    # The inner system.create_agent is approval-gated by default whatever the
+    # door (audit G6-1): call_tool parks on its gate once, and only the
+    # approval lets the write through.
+    final, approvals = await wait_completed_approving(authed_client, sid)
+    assert final.get("session_state") == "parked" and approvals == 1, (final, approvals)
     got = await authed_client.get(f"/v1/agents/{created}")
     assert got.status_code == 200, got.text
 
@@ -145,7 +150,10 @@ async def test_system_tools_manage_entities(authed_client, mock_llm, unique_suff
     )
     wid = await make_local_workspace(authed_client, suffix=unique_suffix, root=tmp_path)
     sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
-    assert (await wait_completed(authed_client, sid)).get("session_state") == "parked"
+    # system__create_agent is approval-gated by default, like crud__create_agent
+    # (audit G6-1): the call parks once and the approval lets the write through.
+    final, approvals = await wait_completed_approving(authed_client, sid)
+    assert final.get("session_state") == "parked" and approvals == 1, (final, approvals)
     got = await authed_client.get(f"/v1/agents/{new_agent_id}")
     assert got.status_code == 200, got.text
 

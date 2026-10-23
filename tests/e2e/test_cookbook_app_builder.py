@@ -54,7 +54,7 @@ from tests._support.mock_llm import Rule
 from tests._support.runs import (
     make_local_workspace,
     make_scripted_agent,
-    wait_completed,
+    wait_completed_approving,
     wait_terminal,
 )
 from tests._support.smk import smk
@@ -295,10 +295,14 @@ async def test_app_builder_provisions_and_runs_mini_app(
         # no autonomous override) now rests parked on a clean stop instead
         # of ending - unlike run_sid below, which is a trigger-fired GRAPH
         # session and stays autonomous/ends as before.
-        build_final = await wait_completed(authed_client, build_sid, timeout_s=120)
+        # system__create_agent, system__create_graph and trigger__create are
+        # approval-gated by default (audit G6-1): each parks once and is
+        # approved; the collection and document writes are not gated.
+        build_final, approvals = await wait_completed_approving(authed_client, build_sid, timeout_s=120)
         assert build_final.get("session_state") == "parked", (
             f"the builder agent did not finish provisioning the app: {build_final}"
         )
+        assert approvals == 3, f"expected the agent, graph and trigger writes to park once each, approved {approvals}"
 
         # The builder called each distinct CRUD tool exactly in the assembly
         # order (no infinite single-tool loop -- the sequencing guard).
