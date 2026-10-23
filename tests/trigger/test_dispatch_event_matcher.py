@@ -235,3 +235,79 @@ async def test_a_subscription_without_a_text_pattern_still_matches_after_the_bud
     by_id = {r["subscription_id"]: r for r in res.results}
     # Its other fields decide, not the spent budget: no command, so no match.
     assert by_id["tr-mixed-sb-zz-plain"]["error_code"] == "skipped_no_match"
+
+
+# ---- round 2, M1: one owner's slow subscriptions cannot starve another owner's -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_each_owner_matches_under_its_own_share_of_the_event_budget(
+    fake_storage_provider, fake_claim_engine, fake_scheduler,
+):
+    from primer.model.principal import PrincipalRef
+
+    def _owner(uid: str) -> PrincipalRef:
+        return PrincipalRef(type="user", id=uid, display=uid, role="user", source="local")
+
+    await fake_storage_provider.get_storage(Trigger).create(Trigger(
+        id="tr-owners", slug="tr-owners", name="tr-owners", description=None,
+        config=ChannelTriggerConfig(provider_id="channel-provider-1"),
+        enabled=True, next_fire_at=None, created_at=_now(),
+    ))
+    subs = fake_storage_provider.get_storage(Subscription)
+    for index in range(10):  # owner A: ten slow subscriptions, matched first
+        await subs.create(Subscription(
+            id=f"tr-owners-a-{index:02d}", trigger_id="tr-owners",
+            config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
+            event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern=_HOSTILE),
+            enabled=True, created_at=_now(), owner=_owner("u-a"),
+        ))
+    await subs.create(Subscription(
+        id="tr-owners-b", trigger_id="tr-owners",
+        config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
+        event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern=r"^a{3}"),
+        enabled=True, created_at=_now(), owner=_owner("u-b"),
+    ))
+
+    res = await fire_trigger(
+        trigger_id="tr-owners", scheduled_for=None,
+        deps=_deps(fake_storage_provider, fake_claim_engine, fake_scheduler),
+        extra_context={"event": _hostile_event()},
+    )
+
+    by_id = {r["subscription_id"]: r for r in res.results}
+    a_codes = [by_id[f"tr-owners-a-{index:02d}"]["error_code"] for index in range(10)]
+    # A's share is 50 ms of the 100: about five 10 ms searches, then A's later subscriptions are skipped.
+    assert a_codes.count("skipped_match_budget") >= 3, a_codes
+    # B's simple subscription is still matched: whatever its dispatcher answers, it was not skipped by the matcher.
+    assert by_id["tr-owners-b"]["error_code"] not in {"skipped_match_budget", "skipped_no_match"}, by_id["tr-owners-b"]
+
+
+@pytest.mark.asyncio
+async def test_the_router_sizes_the_event_budget_by_the_distinct_owners(fake_storage_provider):
+    from primer.model.principal import PrincipalRef
+    from primer.trigger.dispatch import enabled_subscriptions, text_pattern_owners
+
+    await fake_storage_provider.get_storage(Trigger).create(Trigger(
+        id="tr-count", slug="tr-count", name="tr-count", description=None,
+        config=ChannelTriggerConfig(provider_id="channel-provider-1"),
+        enabled=True, next_fire_at=None, created_at=_now(),
+    ))
+    subs = fake_storage_provider.get_storage(Subscription)
+    for index, uid in enumerate(["u-a", "u-a", "u-b", None]):
+        await subs.create(Subscription(
+            id=f"tr-count-{index}", trigger_id="tr-count",
+            config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
+            event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern="x"),
+            enabled=True, created_at=_now(),
+            owner=PrincipalRef(type="user", id=uid, display=uid, role="user", source="local") if uid else None,
+        ))
+    await subs.create(Subscription(
+        id="tr-count-no-text", trigger_id="tr-count",
+        config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
+        event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED),
+        enabled=True, created_at=_now(),
+        owner=PrincipalRef(type="user", id="u-c", display="u-c", role="user", source="local"),
+    ))
+    owners = text_pattern_owners(await enabled_subscriptions(fake_storage_provider, "tr-count"))
+    assert owners == {("user", "u-a"), ("user", "u-b"), None}

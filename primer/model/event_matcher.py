@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Iterator
+import time
+from collections.abc import Hashable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Literal
@@ -14,7 +15,6 @@ from primer.common.user_regex import (
     MatchBudget,
     UserRegexError,
     UserRegexTimeout,
-    check_user_pattern,
     compile_user_regex,
 )
 from primer.model.channel_event import ChannelEvent, NormalizedEventType
@@ -28,8 +28,9 @@ logger = logging.getLogger(__name__)
 _TEXT_PATTERN_TIMEOUT_SECONDS = 0.01
 # ...and the 10 ms is per search, so one event matched against many
 # subscriptions adds them up (50 hostile subscriptions cost 0.5 s per event).
-# Every text_pattern search one channel event runs, across every subscription
-# of every trigger it fires, shares this total (G6-5).
+# Every text_pattern search and compile one channel event runs, across every
+# subscription of every trigger it fires, shares this total (G6-5), split
+# equally between the subscriptions' distinct owners (round 2, M1).
 _EVENT_TEXT_BUDGET_SECONDS = 0.1
 # The longest text_pattern a subscription may store (G6-5).
 TEXT_PATTERN_MAX_LENGTH = MAX_PATTERN_LENGTH
@@ -92,6 +93,11 @@ class EventMatcherPatternError(ValueError):
     """An EventMatcher text pattern is invalid or unsafe to persist."""
 
 
+def _compile_text_pattern(pattern: str):
+    """The one compile both the save-time check and the matcher use: same engine, same cache entry, refusals cached too."""
+    return compile_user_regex(pattern, max_length=TEXT_PATTERN_MAX_LENGTH, what="text_pattern", stored=True)
+
+
 def validate_text_pattern(pattern: str | None) -> None:
     """Reject malformed, oversized and costly patterns before they are stored.
 
@@ -104,15 +110,13 @@ def validate_text_pattern(pattern: str | None) -> None:
     if pattern is None:
         return
     try:
-        check_user_pattern(pattern, max_length=TEXT_PATTERN_MAX_LENGTH, what="text_pattern")
+        _compile_text_pattern(pattern)
     except UserRegexError as exc:
+        if str(exc).startswith("invalid regex"):
+            raise EventMatcherPatternError(
+                "text_pattern must be a valid regular expression"
+            ) from exc
         raise EventMatcherPatternError(str(exc)) from None
-    try:
-        compile_user_regex(pattern, what="text_pattern")
-    except UserRegexError as exc:
-        raise EventMatcherPatternError(
-            "text_pattern must be a valid regular expression"
-        ) from exc
     if _contains_nested_unbounded_repeat(pattern):
         raise EventMatcherPatternError(
             "text_pattern must not contain nested unbounded repetition"
@@ -131,13 +135,31 @@ class EventMatcher(BaseModel):
 
 
 class EventTextBudget(MatchBudget):
-    """The text_pattern budget of one channel event (:data:`_EVENT_TEXT_BUDGET_SECONDS` in total, 10 ms per search)."""
+    """The text_pattern budget of one channel event: :data:`_EVENT_TEXT_BUDGET_SECONDS` in total, 10 ms per search.
 
-    def __init__(self) -> None:
+    ``owners`` is how many distinct owners' subscriptions the event is
+    matched against. :meth:`for_owner` gives each owner an equal share that
+    draws on this pool, so one owner's slow subscriptions cannot starve
+    another owner's (a share left unused is not handed to anyone else).
+    """
+
+    def __init__(self, owners: int = 1) -> None:
         super().__init__(
             _EVENT_TEXT_BUDGET_SECONDS, per_search=_TEXT_PATTERN_TIMEOUT_SECONDS, what="text_pattern",
         )
+        self.owner_count = max(owners, 1)
+        self._owner_budgets: dict[Hashable, MatchBudget] = {}
         self.warned = False
+
+    def for_owner(self, owner: Hashable) -> MatchBudget:
+        budget = self._owner_budgets.get(owner)
+        if budget is None:
+            budget = MatchBudget(
+                self.seconds / self.owner_count, per_search=_TEXT_PATTERN_TIMEOUT_SECONDS,
+                what="text_pattern", parent=self,
+            )
+            self._owner_budgets[owner] = budget
+        return budget
 
 
 _EVENT_TEXT_BUDGET: ContextVar[EventTextBudget | None] = ContextVar(
@@ -146,14 +168,15 @@ _EVENT_TEXT_BUDGET: ContextVar[EventTextBudget | None] = ContextVar(
 
 
 @contextmanager
-def channel_event_text_budget() -> Iterator[EventTextBudget]:
+def channel_event_text_budget(owners: int = 1) -> Iterator[EventTextBudget]:
     """Share one text_pattern budget across everything one channel event fires.
 
-    ``ChannelEventRouter`` opens it around its trigger fan-out;
-    ``fire_trigger`` reads it with :func:`current_event_text_budget` (and
-    opens its own for a fire outside one).
+    ``ChannelEventRouter`` opens it around its trigger fan-out, with the
+    number of distinct owners of the text_pattern subscriptions it is about
+    to match; ``fire_trigger`` reads it with :func:`current_event_text_budget`
+    (and opens its own for a fire outside one).
     """
-    budget = EventTextBudget()
+    budget = EventTextBudget(owners)
     token = _EVENT_TEXT_BUDGET.set(budget)
     try:
         yield budget
@@ -203,15 +226,24 @@ def _outcome(matcher: EventMatcher, event: ChannelEvent, budget: MatchBudget | N
         return "match"
     if event.text is None:
         return "no_match"
+    bound = budget if budget is not None else EventTextBudget()
+    if bound.exhausted:
+        # Spent: answer before compiling anything (round 2, B3).
+        return "budget_exhausted"
+    started = time.perf_counter()
     try:
-        # Compiled once per process (the cache validate_text_pattern filled).
-        # A legacy row that predates validation, or the size caps, fails
-        # closed here instead of being compiled on every inbound event.
-        compiled = compile_user_regex(matcher.text_pattern, what="text_pattern")
+        # Compiled once per process (the cache validate_text_pattern filled),
+        # and a refusal is cached too. A legacy row that predates validation,
+        # or the caps, fails closed here instead of being checked again.
+        compiled = _compile_text_pattern(matcher.text_pattern)
     except UserRegexError as exc:
         _log_refused(matcher.text_pattern, exc)
         return "no_match"
-    bound = budget if budget is not None else EventTextBudget()
+    finally:
+        # A compile is work done for this event: it is charged like a search.
+        bound.charge(time.perf_counter() - started)
+    if bound.exhausted:
+        return "budget_exhausted"
     try:
         text_match = bound.search(compiled, event.text)
     except UserRegexTimeout:

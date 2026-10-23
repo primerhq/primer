@@ -139,17 +139,29 @@ def test_text_pattern_allows_bounded_nested_repetition():
     assert matches(matcher, _ev(text="https://example.com")) is True
 
 
-def test_legacy_pathological_text_pattern_times_out_as_no_match():
+def test_legacy_pathological_text_pattern_times_out_as_no_match(monkeypatch):
     # (a|aa)+$ passes the nested-repeat check and backtracks exponentially in
-    # both engines (about 90 s here unbounded): the 10 ms bound answers "no
-    # match" instead of stalling the inbound path.
+    # both engines (about 90 s here unbounded): the 10 ms bound (#812) answers
+    # "no match" instead of stalling the inbound path.
+    import primer.common.user_regex as user_regex
+
+    bounds: list[float] = []
+    real_timed = user_regex.timed
+
+    def _recording(call, *, timeout, **kwargs):
+        bounds.append(timeout)
+        return real_timed(call, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(user_regex, "timed", _recording)
     matcher = EventMatcher(
         event_type=NormalizedEventType.MESSAGE_POSTED,
         text_pattern=r"(a|aa)+$",
     )
     started = time.perf_counter()
     assert matches(matcher, _ev(text="a" * 60 + "!")) is False
-    assert time.perf_counter() - started < 0.5
+    elapsed = time.perf_counter() - started
+    assert bounds == [0.01], bounds
+    assert 0.009 <= elapsed < 0.1, elapsed
 
 
 # ---- G6-5: the pattern's size, its compile cost and its dialect -------------------------------------------------------
@@ -162,17 +174,73 @@ def test_text_pattern_is_capped_at_1000_characters():
 
 
 def test_text_pattern_refuses_counted_repeats_that_unroll_past_the_cap_before_compiling():
-    # The regex engine unrolls counted repeats when it compiles: this
-    # 19-character pattern never finishes compiling (and the stdlib check that
-    # #812 used accepts it in microseconds).
-    started = time.perf_counter()
+    # The regex engine unrolls counted repeats when it compiles; the check
+    # prices the engine's own parse tree first. The blow-up shapes themselves
+    # ((?:a{65535}){65535} and the review's bypasses) are driven through
+    # validate_text_pattern in a child process by
+    # tests/common/test_user_regex_entry_points.py; this one would compile in
+    # milliseconds even if the check regressed.
     with pytest.raises(EventMatcherPatternError, match="repeats too much"):
-        validate_text_pattern("(?:a{65535}){65535}")
-    with pytest.raises(EventMatcherPatternError, match="repeats too much"):
-        validate_text_pattern("(?:a{1000}){1000}")
-    assert time.perf_counter() - started < 0.5
+        validate_text_pattern("(?:a{101}){100}")
     validate_text_pattern(r"^\d{4}-\d{2}-\d{2}$")
     validate_text_pattern("(?:ab{1,30}){1,30}")
+
+
+@pytest.mark.parametrize("pattern", [r"(?:deploy){e<=3}", r"(?:deploy){i<=1,s<=1}", r"deploy(?#x)", r"de(?i)ploy"])
+def test_text_pattern_refuses_fuzzy_matching_comments_and_mid_pattern_flags(pattern):
+    with pytest.raises(EventMatcherPatternError):
+        validate_text_pattern(pattern)
+
+
+# ---- round 2, B3: the budget is checked before compiling, compiles are charged, verdicts are cached ---------------------
+
+
+def test_a_spent_budget_answers_before_compiling(monkeypatch):
+    import primer.model.event_matcher as event_matcher_module
+    from primer.model.event_matcher import EventTextBudget, match_outcome
+
+    compiled: list[str] = []
+    monkeypatch.setattr(event_matcher_module, "_compile_text_pattern", lambda p: compiled.append(p))
+    budget = EventTextBudget()
+    budget.charge(budget.seconds)
+    matcher = EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern="never-compiled-[0-9]+")
+    assert match_outcome(matcher, _ev(), budget=budget) == "budget_exhausted"
+    assert compiled == []
+
+
+def test_compile_time_is_charged_to_the_event_budget(monkeypatch):
+    import primer.model.event_matcher as event_matcher_module
+    from primer.model.event_matcher import EventTextBudget, match_outcome
+
+    real = event_matcher_module._compile_text_pattern
+
+    def _slow_compile(pattern):
+        time.sleep(0.03)
+        return real(pattern)
+
+    monkeypatch.setattr(event_matcher_module, "_compile_text_pattern", _slow_compile)
+    budget = EventTextBudget()
+    matcher = EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern="^charged-compile$")
+    assert match_outcome(matcher, _ev(text="other"), budget=budget) == "no_match"
+    assert budget.spent >= 0.03
+
+
+def test_a_refused_stored_pattern_is_not_checked_again(monkeypatch):
+    import primer.common.user_regex as user_regex
+
+    checks: list[str] = []
+    real = user_regex.check_user_pattern
+
+    def _counting(pattern, *args, **kwargs):
+        checks.append(pattern)
+        return real(pattern, *args, **kwargs)
+
+    monkeypatch.setattr(user_regex, "check_user_pattern", _counting)
+    legacy = "(?:" + "|".join(f"r{i:06d}" for i in range(200)) + "|deploy)"  # stored before the length cap
+    matcher = EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern=legacy)
+    for _ in range(5):
+        assert matches(matcher, _ev(text="deploy now")) is False
+    assert checks == [legacy]
 
 
 def test_save_time_validation_uses_the_matching_engine_dialect():

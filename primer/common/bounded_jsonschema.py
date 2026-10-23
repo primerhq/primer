@@ -8,15 +8,15 @@ worker's event loop, the hazard #764 refused for ``ask_user``.
 jsonschema has no hook for its regex engine; its keyword modules call ``re.search`` through their module-level ``re``. Those
 names are pointed at :class:`_BoundedRe`, which is the stdlib module for every caller EXCEPT inside :func:`validate_bounded`,
 where a context variable holds a :class:`~primer.common.user_regex.MatchBudget`: there a pattern is compiled through
-:func:`~primer.common.user_regex.compile_user_regex` (1000 characters, the repeat cap, the ``regex`` engine, cached) and
-searched under the budget with the GIL released. Every other jsonschema user in the process (the MCP argument check, the
+:func:`~primer.common.user_regex.compile_user_regex` (1000 characters, the engine-parsed repeat cap, the ``regex`` engine;
+a stored pattern, so the compile and its verdict are cached) and searched under the budget with the GIL released, on the
+user-regex executor. Every other jsonschema user in the process (the MCP argument check, the
 harness overrides, the ask_user answer) sees no change. ``tests/common/test_bounded_jsonschema.py`` pins each keyword route, so
 a jsonschema release that stops reading ``re`` through those modules fails the suite instead of silently unbounding them.
 """
 
 from __future__ import annotations
 
-import asyncio
 import re
 from contextvars import ContextVar
 from typing import Any
@@ -24,7 +24,7 @@ from typing import Any
 import jsonschema
 from jsonschema import _keywords, _legacy_keywords, _utils
 
-from primer.common.user_regex import MatchBudget, compile_user_regex
+from primer.common.user_regex import MatchBudget, compile_user_regex, run_off_loop
 
 # The total time one validation may spend in its regex keywords.
 OUTPUT_SCHEMA_MATCH_SECONDS = 1.0
@@ -45,7 +45,8 @@ class _BoundedRe:
         budget = _BUDGET.get()
         if budget is None or not isinstance(pattern, str) or not isinstance(string, str) or flags:
             return self._real.search(pattern, string, flags)
-        return budget.search(compile_user_regex(pattern, what="output_schema pattern"), string)
+        # A schema is stored with its graph and runs again: a stored pattern (cached, verdict included).
+        return budget.search(compile_user_regex(pattern, what="output_schema pattern", stored=True), string)
 
 
 _PATCHED_MODULES = (_keywords, _legacy_keywords, _utils)
@@ -83,7 +84,7 @@ async def validate_bounded_off_loop(
 ) -> None:
     """:func:`validate_bounded` in a worker thread (the regex engine releases the GIL while it matches)."""
     bound = OUTPUT_SCHEMA_MATCH_SECONDS if seconds is None else seconds
-    await asyncio.to_thread(validate_bounded, instance, schema, seconds=bound)
+    await run_off_loop(validate_bounded, instance, schema, seconds=bound)
 
 
 __all__ = ["OUTPUT_SCHEMA_MATCH_SECONDS", "validate_bounded", "validate_bounded_off_loop"]
