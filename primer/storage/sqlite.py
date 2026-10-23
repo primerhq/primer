@@ -117,6 +117,13 @@ ModelT = TypeVar("ModelT", bound=Identifiable)
 # ``<table>_<suffix>`` and ``expr`` is a SQLite ``json_extract`` expression
 # list suitable for ``CREATE [UNIQUE] INDEX ... ON "{table}" {expr}``.
 _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
+    "artifactlocation": [
+        (
+            "provider_id",
+            False,
+            "(json_extract(data,'$.provider_id'))",
+        ),
+    ],
     "useridentity": [
         (
             "provider_subject_uniq",

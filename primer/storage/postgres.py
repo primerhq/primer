@@ -29,7 +29,8 @@ emits. A small set of fields queried on hot paths therefore gets a
 dedicated B-tree expression index on the extracted scalar (see
 ``_HOT_FIELD_INDEXES``): ``apitoken.token_hash`` (bearer auth, every
 request), ``sessions.status`` (recovery + live-session sweeps), and
-``channel.(provider_id, external_id)`` (inbound routing). They are
+``channel.(provider_id, external_id)`` (inbound routing), plus
+``artifactlocation.provider_id`` (artifact ownership counts). They are
 created with plain ``CREATE INDEX IF NOT EXISTS`` in the transactional
 table-create path, not ``CONCURRENTLY`` (which cannot run in a
 transaction); see ``_HOT_FIELD_INDEXES`` for the lock tradeoff on
@@ -549,6 +550,8 @@ class PostgresStorageProvider(StorageProvider):
 #   * ``channel.provider_id`` +
 #     ``channel.external_id``        -- channel binding / inbound-routing lookup
 #                                       keyed by ``(provider_id, external_id)``.
+#   * ``artifactlocation.provider_id`` -- ownership counts used before a
+#                                         provider is moved or deleted.
 #
 # These mirror the JSONB expression-index style already used for the
 # ``channelcorrelation`` UNIQUE index in ``primer.channel.correlation`` --
@@ -585,6 +588,9 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             False,
             "((data->>'provider_id'), (data->>'external_id'))",
         ),
+    ],
+    "artifactlocation": [
+        ("provider_id", False, "((data->>'provider_id'))"),
     ],
     "useridentity": [
         ("provider_subject_uniq", True, "((data->>'provider_id'), (data->>'subject'))"),

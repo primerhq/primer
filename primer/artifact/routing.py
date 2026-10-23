@@ -133,7 +133,7 @@ class RoutingArtifactStorage(ArtifactStorage):
 
 
 async def count_artifacts_held(storage_provider: "StorageProvider", provider_id: str) -> int:
-    """How many artifacts the location records say ``provider_id`` holds: one indexed count.
+    """Count artifacts held by ``provider_id`` through its hot-field index.
 
     Database-kind providers write no records, so a ``db`` provider always counts zero (and a spare one can always be deleted).
     """
