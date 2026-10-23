@@ -104,11 +104,13 @@ def test_a_custom_page_link_with_no_component_opens_providers(page: Page, consol
     raised: list[str] = []
     page.on("pageerror", lambda e: raised.append(str(e)))
     expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
-    if page.evaluate("typeof window.WEB_SettingsPage === 'function' || typeof window.WT_TemplatesPage === 'function'"):
-        pytest.skip("a custom page has shipped; its own journey covers its link")
+    component = {"platform:web": "WEB_SettingsPage", "platform:templates": "WT_TemplatesPage"}[view]
+    if page.evaluate("(name) => typeof window[name] === 'function'", component):
+        pytest.skip(f"{component} has shipped; its own journey covers its link")
 
     open_view(page, console_url, default_wid(console_url), view)
 
     expect(page.get_by_test_id("nv-plat-page:providers")).to_be_visible(timeout=20_000)
     expect(page.get_by_test_id("nv-plat-row:providers")).to_have_attribute("aria-current", "page")
+    expect(page).to_have_url(re.compile(r"[?&]view=platform:providers(&.*)?$"))
     assert raised == [], f"a link to a custom page that is not loaded raised: {raised[:2]}"

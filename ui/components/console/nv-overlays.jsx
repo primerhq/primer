@@ -990,7 +990,12 @@ function NV_LegacyOverlay(props) {
                 // overlay (design 10). A section may be the page ("workspaces:templates:<id>" is a template, so its crumb is the templates page) or a
                 // tab ("toolsets:tools:<id>", which is not a page), so the section's own row is tried first and the overlay's name second. An
                 // overlay with no Platform page of its own yet (providers) keeps opening its root.
-                var target = (overlay.section && window.SH_shimListTarget("/" + name + "/" + overlay.section))
+                var sectionPath = overlay.section ? "/" + name + "/" + overlay.section : null;
+                if (sectionPath && window.SH_shimUsesTemplateListOverlay(sectionPath)) {
+                  con.openOverlay(name, overlay.section, null);
+                  return;
+                }
+                var target = (sectionPath && window.SH_shimListTarget(sectionPath))
                   || window.SH_shimListTarget("/" + name);
                 if (target) con.closeOverlayTo(target);
                 else con.openOverlay(name, null, null);

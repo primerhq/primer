@@ -34,7 +34,7 @@ var CALLS = [];
 function rec(n) { return function () { CALLS.push([n].concat([].slice.call(arguments))); }; }
 var CON = {
   username: "ana", role: "admin", wid: "w1", overlay: null, view: { name: "platform", nav: "agents", sub: null },
-  openOverlay: rec("openOverlay"), goView: rec("goView"), closeOverlayTo: rec("closeOverlayTo"), toast: rec("toast"),
+  openOverlay: rec("openOverlay"), goView: rec("goView"), replaceView: rec("replaceView"), closeOverlayTo: rec("closeOverlayTo"), toast: rec("toast"),
 };
 function NV_useConsole() { return CON; }
 var ITEMS = [], LOADING = false, ERROR = null, REFETCHES = 0, RESOURCE_OPTS = {};

@@ -460,6 +460,14 @@ function NV_Shell() {
     setOpenMenu(null);
   }, [setView, setOpenMenu, markPush]);
 
+  // Canonicalise a view without creating a history entry. A surface uses this
+  // when it has already fallen back from an unavailable page to the page it
+  // actually rendered.
+  var replaceView = React.useCallback(function (name, nav, sub) {
+    setView({ name: name, nav: nav || null, sub: sub || null });
+    setOpenMenu(null);
+  }, [setView, setOpenMenu]);
+
   // Closes the open overlay and lands on a view as ONE navigation: one markPush, so one history entry (revamp design 10, D1). A detail overlay's
   // Delete and Back mean "leave this record", and where that lands is the entity's Platform page (target: { name, nav?, sub? }, the shim's
   // SH_SHIM_LIST_TARGETS), not the page the overlay was opened over (a pasted link opens it over the studio). `sub` is the provider type of the
@@ -631,6 +639,7 @@ function NV_Shell() {
       voiceRef: voiceRef,
       paletteRef: paletteRef,
       goView: goView,
+      replaceView: replaceView,
       clearView: clearView,
       closeOverlayTo: closeOverlayTo,
       openSessionInStudio: openSessionInStudio,
@@ -720,7 +729,7 @@ function NV_Shell() {
       },
     };
   }, [wid, view, doc, overlay, anchor, panels, openMenu, registry,
-    frecency, wsItems, status, caps, voiceRef, paletteRef, goView, clearView,
+    frecency, wsItems, status, caps, voiceRef, paletteRef, goView, replaceView, clearView,
     closeOverlayTo, openSessionInStudio,
     tgModel, setTgModel, resolveSessionMeta, stampSessionMeta, setOpenMenu,
     setOverlay, setTick, markPush, setWid]);

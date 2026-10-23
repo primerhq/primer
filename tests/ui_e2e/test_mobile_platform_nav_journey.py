@@ -107,11 +107,11 @@ def test_a_provider_type_link_opens_that_type(page: Page, base_url: str, console
 def test_a_custom_page_is_a_section_only_while_its_component_is_loaded(page: Page, console_url: str) -> None:
     page.set_viewport_size(PHONE)
     open_mobile_shell(page, console_url)
-    if page.evaluate("typeof window.WEB_SettingsPage === 'function'"):
-        pytest.skip("the Web page has shipped; its own journey covers it")
+    web_loaded = page.evaluate("typeof window.WEB_SettingsPage === 'function'")
     page.get_by_role("tab", name="More").click()
     expect(page.get_by_test_id("nv-mob-plat-sections")).to_be_visible(timeout=10_000)
-    expect(page.get_by_test_id("nv-mob-plat-nav:web")).to_have_count(0)   # no placeholder row
+    if not web_loaded:
+        expect(page.get_by_test_id("nv-mob-plat-nav:web")).to_have_count(0)   # no placeholder row
 
     page.add_init_script(WEB_PAGE_STAND_IN)
     page.reload()

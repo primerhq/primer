@@ -68,13 +68,14 @@ def _body(name: str) -> str:
     return PLAT[start:PLAT.index("\n}\n", start) + 3]
 
 
-def test_the_page_that_chooses_calls_no_hook_of_its_own_beyond_reading_the_console() -> None:
+def test_the_page_that_chooses_only_owns_the_canonical_fallback_effect() -> None:
     body = _body("NV_PlatPage")
 
-    assert "React.use" not in body and "useResource" not in body, "the chooser must not own the list page's state, effects or resource"
+    assert body.count("React.useEffect") == 1 and "useResource" not in body, "the chooser owns only the canonical fallback effect"
     assert "var con = NV_useConsole();" in body
-    assert 'var nav = NV_platResolveNav(con.view.nav || "providers");' in body, "a nav whose page is not loaded is Providers (seam I-2)"
-    assert 'return <NV_ProvidersPlatPage type={con.view.sub || "all"} />;' in body, "Providers is mounted at the view's type, or at All (seam I-1)"
+    assert 'var nav = NV_platResolveNav(requestedNav);' in body, "a nav whose page is not loaded is Providers (seam I-2)"
+    assert 'con.replaceView("platform", nav)' in body, "the address names the page that is actually rendered"
+    assert '<NV_ProvidersPlatPage type={type} />' in body, "Providers is mounted at the view's type, or at All (seam I-1)"
     assert "<NV_CustomPlatPage" in body and "NV_PLAT_CUSTOM_PAGES" in body, "a custom page is mounted in its frame (seam I-2)"
 
 

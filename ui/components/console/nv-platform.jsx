@@ -1324,8 +1324,15 @@ function NV_CustomPlatPage(props) {
 // polling every 15 s while Providers stayed open (admin review 2026-10-08; tests/ui/test_platform_page_hooks.py).
 function NV_PlatPage() {
   var con = NV_useConsole();
-  var nav = NV_platResolveNav(con.view.nav || "providers");
-  if (nav === "providers") return <NV_ProvidersPlatPage type={con.view.sub || "all"} />;
+  var requestedNav = con.view.nav || "providers";
+  var nav = NV_platResolveNav(requestedNav);
+  React.useEffect(function () {
+    if (nav !== requestedNav) con.replaceView("platform", nav);
+  }, [nav, requestedNav, con.replaceView]);
+  if (nav === "providers") {
+    var type = requestedNav === "providers" ? (con.view.sub || "all") : "all";
+    return <NV_ProvidersPlatPage type={type} />;
+  }
   if (NV_platHas(NV_PLAT_CUSTOM_PAGES, nav)) return <NV_CustomPlatPage key={nav} nav={nav} />;
   return <NV_PlatListPage key={nav} nav={nav} />;
 }
