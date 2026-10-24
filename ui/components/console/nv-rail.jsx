@@ -1,4 +1,4 @@
-/* global React, SH_api, NV_identity */
+/* global React, SH_api, NV_identity, PR_usePagedResource, PR_PagedNote */
 // The left rail (uiv2 R2, US-007 phase 1): Inbox (cross-workspace
 // attention feed) stacked over the workspace tree, per
 // uiv2/implementer-notes.md sections 2.1-2.2. Replaces nv-sessions-
@@ -295,7 +295,9 @@ window.NV_useSessionList = NV_useSessionList;
 window.NV_anySessionRunning = NV_anySessionRunning;
 
 function NV_Rail(props) {
-  var wsRes = window.primerApi.useResource(
+  // Every workspace (SH_api.workspaces reads every page): polled every 15 s per page read, so a list of three pages costs one request per 15 s
+  // on average, as the one page it replaced did (PR_usePagedResource, ui/foundation/api.js).
+  var wsRes = PR_usePagedResource(
     "nv-workspaces",
     function (signal) { return SH_api.workspaces(signal); },
     { pollMs: 15000, deps: [] }
@@ -554,6 +556,7 @@ function NV_Rail(props) {
             </div>
           );
         })}
+        <PR_PagedNote list={wsRes.data} noun="workspaces" testid="nv-rail-ws-note" />
       </div>
       {menu && menu.kind === "session" ? (
         <NV_Rail_SessionContextMenu session={menu.s} wid={menu.wid} x={menu.x} y={menu.y}

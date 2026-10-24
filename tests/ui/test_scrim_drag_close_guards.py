@@ -41,6 +41,7 @@ SESSION_STORE = (UI / "foundation" / "session-store.js").read_text(encoding="utf
 SHELL_ATTENTION = (UI / "foundation" / "shell-attention.js").read_text(encoding="utf-8")
 SHELL_VERBS = (UI / "foundation" / "shell-verbs.js").read_text(encoding="utf-8")
 SESSION_ADAPTER = UI / "components" / "session-adapter.jsx"
+API = (UI / "foundation" / "api.js").read_text(encoding="utf-8")
 
 _STUBS = r"""
 window.primerApi = Object.assign(window.primerApi || {}, {
@@ -147,7 +148,8 @@ _MOUNTS = {
     ),
     "command palette": (
         CONSOLE_PALETTE,
-        _PALETTE_STUBS,
+        # The palette says a list cut short with the foundation's PR_PagedNote (ticket 01a16dfa): the real api.js loads before its stand-ins.
+        API + _PALETTE_STUBS,
         "MR.mount(NV_Palette, {}); CON.paletteRef.current.open(); MR.rerender();"
         ' SCRIM = MR.find("nv-palette-scrim"); PANEL = MR.find("nv-palette");'
         ' GONE = function () { return !MR.find("nv-palette-scrim"); };',

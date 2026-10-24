@@ -1,5 +1,5 @@
 /* global React, SH_api, NV_useConsole, NV_identity,
-   SharedNewSessionSchemaField, FormField */
+   SharedNewSessionSchemaField, FormField, PR_PagedNote */
 // Overlays (wiring plan P3 T9). Three tiers behind one URL-addressed
 // host:
 //
@@ -342,6 +342,8 @@ function NV_CreateSessionOverlay() {
                       ["agent or graph", "agents or graphs"], q, rows.length)}
                   </div>
                 ) : null}
+                <PR_PagedNote list={agents.data} noun="agents" testid="nv-ns-bind-note:agents" />
+                <PR_PagedNote list={graphs.data} noun="graphs" testid="nv-ns-bind-note:graphs" />
               </div>
             </div>
           ) : null}
@@ -751,6 +753,7 @@ function NV_CreateWorkspaceOverlay() {
             onClick={function () { setMaking(true); }}>Create a template</Btn>
         </div>
         <div className="field-help" data-testid="nv-nw-summary" style={{ textAlign: "center" }}>{WT_summaryLine(template)}</div>
+        <PR_PagedNote list={templates.data} noun="templates" testid="nv-nw-templates-note" />
         {fieldError("template") ? (
           <div className="field-help" role="alert" data-testid="nv-nw-template-error" style={{ color: "var(--red)", textAlign: "center" }}>
             {fieldError("template")}

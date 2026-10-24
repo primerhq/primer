@@ -1,4 +1,4 @@
-/* global React, SH_api */
+/* global React, SH_api, PR_PagedNote */
 
 // The OCCURRED cell (admin review ADM-32): the stored value, "2026-10-07T20:13:43.972680Z", is microseconds, a T and a Z in UTC on every row. This
 // is a short LOCAL time: "20:13:43" for an event on the same local date as the row above it, "7 Oct 20:13:43" for the first row and wherever
@@ -195,12 +195,17 @@ function SH_EventSubscriptionsTable() {
   var busyState = React.useState(null);
   var busyId = busyState[0];
   var setBusyId = busyState[1];
+  // What the last load answered (every page, PR_fetchAllPages): its note says when the list was cut short.
+  var listState = React.useState(null);
+  var list = listState[0];
+  var setList = listState[1];
 
   function load() {
     setLoading(true);
     setError(null);
     SH_api.eventSubscriptions().then(function (out) {
       setLoading(false);
+      setList(out || null);
       setRows((out && out.items) || []);
     }, function (err) {
       setLoading(false);
@@ -299,6 +304,7 @@ function SH_EventSubscriptionsTable() {
             <span>No event subscriptions.</span>
           </div>
         ) : null}
+        <PR_PagedNote list={list} noun="event subscriptions" testid="activity-subs-note" />
       </div>
     </div>
   );

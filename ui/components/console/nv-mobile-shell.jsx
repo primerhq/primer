@@ -1,6 +1,6 @@
 /* global React, SH_api, NV_useConsole, NV_identity, NV_errText,
    NV_renderStudioDoc, NV_themeChoice, NV_applyThemeChoice, NV_useThemeRestore, NV_ThemeChoiceLabel,
-   NV_HealthCards, NV_PLAT_GROUPS, SH_pendingId */
+   NV_HealthCards, NV_PLAT_GROUPS, SH_pendingId, PR_usePagedResource, PR_PagedNote */
 // The mobile shell (US-014 mobile support): entry + skeleton (M1), the
 // Inbox tab's real cards (M2), the mobile chat screen (M3), and the
 // Spaces + Files tabs (M4).
@@ -651,10 +651,11 @@ function NV_MobileSpaces(props) {
             </div>
           );
         })}
+        <PR_PagedNote list={con.workspacesList} noun="workspaces" testid="nv-mob-ws-note" />
       </div>
       <window.Fab icon="plus" label="Create session"
         onClick={function () { setCreateOpen(true); }} />
-      <NV_MobileCreateSessionSheet open={createOpen} workspaces={workspaces}
+      <NV_MobileCreateSessionSheet open={createOpen} workspaces={workspaces} workspacesList={con.workspacesList}
         onClose={function () { setCreateOpen(false); }}
         onCreated={function (row, wid, name, binding) {
           sessRes.refetch();
@@ -812,6 +813,7 @@ function NV_MobileCreateSessionSheet(props) {
               </button>
             );
           })}
+          <PR_PagedNote list={props.workspacesList} noun="workspaces" testid="nv-mob-ns-workspaces-note" />
         </div>
       ) : null}
       {stage === "bind" ? (
@@ -848,6 +850,8 @@ function NV_MobileCreateSessionSheet(props) {
                   ["agent or graph", "agents or graphs"], q, rows.length)}
               </div>
             ) : null}
+            <PR_PagedNote list={agents.data} noun="agents" testid="nv-mob-ns-agents-note" />
+            <PR_PagedNote list={graphs.data} noun="graphs" testid="nv-mob-ns-graphs-note" />
           </div>
         </React.Fragment>
       ) : null}
@@ -1320,7 +1324,8 @@ function NV_MobilePlatform(props) {
   var flightState = React.useState(0);
   var inFlight = flightState[0];
   var setInFlight = flightState[1];
-  var res = window.primerApi.useResource(
+  // Every page of the section's list (its page.list reads them all), polled every 15 s per page read (PR_usePagedResource), as on the desktop.
+  var res = PR_usePagedResource(
     page ? "nv-plat:" + nav : "nv-mob-plat:_none",
     function (signal) {
       if (!page) return Promise.resolve({ items: [] });
@@ -1515,6 +1520,7 @@ function NV_MobilePlatform(props) {
             </button>
           );
         })}
+        <PR_PagedNote list={res.data} noun={page.noun[1]} testid={"nv-mob-plat-note:" + nav} />
       </div>
       <NV_MobileFactSheet open={!!sheet} kind={sheet && sheet.kind}
         cardVM={sheet && sheet.cardVM} row={sheet && sheet.row}

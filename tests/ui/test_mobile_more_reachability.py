@@ -28,6 +28,9 @@ PLATFORM = ROOT / "ui" / "components" / "console" / "nv-platform.jsx"
 ATTENTION = (ROOT / "ui" / "foundation" / "shell-attention.js").read_text(encoding="utf-8")
 # The real grammar: the phone's list of provider types is the sidebar's (window.SH_VIEW_SUBS), so a stand-in list would test the stand-in.
 SHELL_URL = (ROOT / "ui" / "foundation" / "shell-url.js").read_text(encoding="utf-8")
+# The real paged-list helpers (PR_usePagedResource, PR_PagedNote; ticket 01a16dfa), loaded before the stand-ins below, which replace the primerApi namespace
+# api.js makes: the helpers read window.primerApi when they are called, so they reach the stand-ins.
+API = (ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
 
 # What the file's globals need to exist; each is the smallest stand-in that lets the real component render.
 _PRELUDE = r"""
@@ -75,8 +78,8 @@ function TXT(n) {
 var NV_HealthCards = function () { return React.createElement("div", { "data-testid": "health-cards" }); };
 var NV_PLAT_GROUPS = [{ label: "Build", ids: ["agents", "toolsets"] }];
 window.NV_PLAT_PAGES = {
-  agents: { title: "Agents", list: function () {}, card: function (row) { return { id: row.id, name: "agent " + row.id, sub: "", facts: [] }; } },
-  toolsets: { title: "Toolsets", list: function () {}, card: function (row) { return { id: row.id, name: "toolset " + row.id, sub: "", facts: [] }; } },
+  agents: { title: "Agents", noun: ["agent", "agents"], list: function () {}, card: function (row) { return { id: row.id, name: "agent " + row.id, sub: "", facts: [] }; } },
+  toolsets: { title: "Toolsets", noun: ["toolset", "toolsets"], list: function () {}, card: function (row) { return { id: row.id, name: "toolset " + row.id, sub: "", facts: [] }; } },
 };
 window.primerApi = {
   apiFetch: function () {},
@@ -150,7 +153,7 @@ def code() -> str:
 @pytest.fixture
 def app(code):
     """A fresh V8 context with the real shell loaded; closed after the test."""
-    ctx = mini_react_context(code, "var window = globalThis;\n" + ATTENTION + "\n" + SHELL_URL + "\n" + _PRELUDE + _platform_helpers())
+    ctx = mini_react_context(code, "var window = globalThis;\n" + ATTENTION + "\n" + SHELL_URL + "\n" + API + "\n" + _PRELUDE + _platform_helpers())
 
     class App:
         def js(self, expr: str):
