@@ -938,6 +938,7 @@ function NV_ChannelCreateHost(props) {
     return (
       <Dialog
         providers={providers.data.items}
+        providersList={providers.data}
         pushToast={window.primerApi.toastPush}
         onClose={props.onClose}
         onCreated={function () {
@@ -1042,6 +1043,7 @@ function NV_ProfileModalHost(props) {
     <window.MP_ProfileModal open
       existing={props.row || null}
       providers={(providers.data && providers.data.items) || []}
+      providersList={providers.data || null}
       onClose={props.onClose}
       onSaved={props.onSaved} />
   );

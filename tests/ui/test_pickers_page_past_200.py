@@ -116,3 +116,33 @@ def test_a_dropdown_cut_short_says_so_under_it(dialog):
     assert len(js(dialog, "options('tr-sub-workspace')")) == 201
     assert js(dialog, "MR.find('tr-sub-workspaces-note').props.children") == (
         "Showing the first 200 workspaces; the rest did not load: the worker went away")
+
+
+# ---- a dialog handed a list: the new-channel dialog's provider select ------------------------------------------------------------------------------------
+
+CHANNELS = ROOT / "ui" / "components" / "channels.jsx"
+
+_CHANNEL_PRELUDE = API + "\n" + (ROOT / "ui" / "foundation" / "use-mutation.js").read_text(encoding="utf-8") + r"""
+globalThis.Modal = function (props) { return React.createElement("div", { "data-testid": "modal" }, props.children, props.footer); };
+globalThis.Btn = function (props) { return React.createElement("button", { onClick: props.onClick }, props.children); };
+globalThis.Icon = function () { return null; };
+globalThis.FormField = function (props) { return React.createElement("div", null, props.children); };
+window.primerApi.apiFetch = function () { return Promise.resolve({}); };
+window.primerApi.useResource = function () { return { data: null, loading: false, error: null, refetch: function () {} }; };
+"""
+
+
+def test_the_new_channel_dialog_says_a_provider_list_cut_short():
+    """The host (Platform > Channels' create, or the Channels page) reads every channel provider and hands the read over as ``providersList``: a read cut
+    short is said under the provider select, a whole one says nothing."""
+    ctx = mini_react_context(transpile(CHANNELS), _CHANNEL_PRELUDE)
+    try:
+        ctx.eval("MR.mount(NewChannelModal, { providers: [{ id: 'cp-1', provider: 'discord' }], providersList: { items: [{ id: 'cp-1' }], truncated: false },"
+                 " onClose: function () {}, onCreated: function () {}, pushToast: function () {} });")
+        assert js(ctx, "MR.find('ch-new-providers-note')") is None
+        ctx.eval("MR.rerender({ providers: [{ id: 'cp-1', provider: 'discord' }], providersList: { items: [{ id: 'cp-1' }], truncated: true, serverTotal: null,"
+                 " error: 'the store is down' }, onClose: function () {}, onCreated: function () {}, pushToast: function () {} });")
+        assert js(ctx, "MR.find('ch-new-providers-note').props.children") == (
+            "Showing the first 1 channel providers; the rest did not load: the store is down")
+    finally:
+        ctx.close()
