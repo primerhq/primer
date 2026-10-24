@@ -48,7 +48,7 @@ The rest is checked only when a session binds the graph: at least one node, exac
 
 ### How a run ends
 - It completes when no node is ready. Every `end` fires when it is reached; the first one does not stop the others.
-- It fails with a code: `tool_execution_failed`, `tool_output_invalid`, `end_output_invalid`, `template_error`, `routing_failed`, `fanout_source_invalid`, `fanin_upstream_failed`, `tool_turn_cap` or `max_iterations_exceeded`.
+- It fails with a code, such as `tool_execution_failed`, `tool_output_invalid`, `end_output_invalid`, `template_error`, `routing_failed`, `fanout_source_invalid`, `fanin_upstream_failed`, `tool_turn_cap`, `max_iterations_exceeded`. An approval on a `tool_call` node that is refused, times out or is cancelled fails it with `tool_approval_rejected`, `tool_approval_timeout` or `tool_approval_cancelled`.
 - `max_iterations` caps the steps. When the cap is hit, the run fails with `max_iterations_exceeded`, unless `on_max_iterations` names a node: then the run jumps once to that node (a finalize or report node) and goes on to an `end`.
 - A node that needs a person (a `tool_call` on `system__ask_user`, an agent that asks, or an approval gate) parks the whole run until the answer. See [run a graph](graphs/run-a-graph).
 
