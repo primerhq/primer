@@ -351,12 +351,24 @@ def create_test_app(
     harness_toolset = build_harness_toolset_provider(
         storage_provider=storage_provider,
     )
-    # An in-memory scheduler: the /workers router depends on it (app.state.scheduler below), and trigger__fire_now dispatches with it and the
-    # workspace registry, as the REST fire_now route does.
+    # The in-memory scheduler, event bus and (with a worker) claim engine that app.state carries below: trigger__fire_now dispatches with the
+    # same collaborators as the REST fire_now route, which reads them from app.state.
+    from primer.bus.in_memory import InMemoryEventBus
     from primer.scheduler.in_memory import InMemoryScheduler
     _test_scheduler = InMemoryScheduler(storage_provider=storage_provider)
+    _test_event_bus = InMemoryEventBus()
+    _claim_engine = None
+    if start_chat_worker:
+        from primer.claim.factory import ClaimEngineFactory as _CEF
+        _claim_engine = _CEF.create(
+            storage_provider=storage_provider,
+            event_bus=_test_event_bus,
+            workspace_registry=workspace_registry,
+        )
     trigger_toolset = build_trigger_toolset_provider(
         storage_provider=storage_provider,
+        claim_engine=_claim_engine,
+        event_bus=_test_event_bus,
         scheduler=_test_scheduler,
         workspace_registry=workspace_registry,
     )
@@ -404,12 +416,10 @@ def create_test_app(
     # The in-memory scheduler built above, so the /workers router has something to depend on.
     app.state.scheduler = _test_scheduler
     app.state.worker_pool = None
-    # Attach an in-memory event bus so yielding-tool endpoints (ask_user,
+    # Attach the in-memory event bus built above so yielding-tool endpoints (ask_user,
     # tool_approval respond) can publish without raising ConfigError.
     # Tests that need to inspect published events may monkey-patch
     # app.state.event_bus.publish before sending their request.
-    from primer.bus.in_memory import InMemoryEventBus
-    _test_event_bus = InMemoryEventBus()
     app.state.event_bus = _test_event_bus
     # Optional worker pool for integration tests that need a live claim
     # loop (start_chat_worker=True).
@@ -425,12 +435,7 @@ def create_test_app(
             poll_interval_seconds=0.1,
             drain_timeout_seconds=5,
         )
-        from primer.claim.factory import ClaimEngineFactory as _CEF
-        _claim_engine = _CEF.create(
-            storage_provider=storage_provider,
-            event_bus=_test_event_bus,
-            workspace_registry=workspace_registry,
-        )
+        # _claim_engine was built above, with the trigger toolset.
         _pool = _WorkerPool(
             config=_pool_config,
             scheduler=_test_scheduler,
