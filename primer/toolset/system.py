@@ -130,6 +130,7 @@ from primer.model.trigger import Parallelism, SubscriptionConfig
 from primer.trigger.owner import view_for
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE
 from primer.trigger.service import (
+    ParkedSessionOnlyFromYield,
     ServiceDeps,
     SubscriptionNotFound,
     SubscriptionTargetNotFound,
@@ -919,7 +920,9 @@ def build_system_toolset(
             ...,
             description=(
                 "Action discriminated union: agent_fresh_session / "
-                "graph_fresh_session / session_append."
+                "graph_fresh_session / session_append. A parked_session "
+                "config answers a validation-error: those rows are only "
+                "created via the subscribe_to_trigger yielding tool."
             ),
         )
         reply_target: ReplyTarget | None = Field(
@@ -945,6 +948,18 @@ def build_system_toolset(
         except ValidationError as exc:
             return _err_from_validation(exc)
         try:
+            # The service create path is kind-agnostic, so the wrapper enforces the
+            # documented precondition: a binding only makes sense on a channel
+            # trigger, checked before anything is stored.
+            trigger = await get_trigger(
+                trigger_id=args.trigger_id, deps=_binding_deps()
+            )
+            if trigger.config.kind != "channel":
+                return _err(
+                    "trigger_id: a channel binding needs a channel trigger, "
+                    f"not a {trigger.config.kind} trigger",
+                    error_type="validation-error",
+                )
             sub = await create_subscription(
                 trigger_id=args.trigger_id,
                 config=args.config,
@@ -967,6 +982,11 @@ def build_system_toolset(
             return _err(str(exc), error_type="trigger_not_found")
         except EventMatcherPatternError as exc:
             return _err(str(exc), error_type="validation-error")
+        except ParkedSessionOnlyFromYield as exc:
+            # The service refuses a parked_session config on every public create
+            # path (those rows are only created via the subscribe_to_trigger
+            # yielding tool); answer it by name instead of letting it escape.
+            return _err(f"config: {exc}", error_type="validation-error")
         except SubscriptionTargetNotFound as exc:
             return _err(str(exc), error_type="not-found")
         return _ok(sub)
@@ -984,7 +1004,9 @@ def build_system_toolset(
                 "/ command.invoked) to a platform action (agent_fresh_session "
                 "/ graph_fresh_session / session_append). "
                 "The trigger must already exist as a channel-kind trigger; "
-                "unknown trigger returns ``type=trigger_not_found``. From a "
+                "unknown trigger returns ``type=trigger_not_found``, and a "
+                "trigger of another kind answers ``type=validation-error``. "
+                "From a "
                 "session outside the default workspace (prime) the config may "
                 "name only your own workspace or a session in it: another one "
                 "answers type=not-found, as an unknown id does, and every "

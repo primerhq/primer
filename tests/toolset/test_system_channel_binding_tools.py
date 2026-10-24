@@ -24,6 +24,7 @@ from primer.model.trigger import (
     ChannelTriggerConfig,
     Subscription,
     Trigger,
+    WebhookTriggerConfig,
 )
 from primer.model.workspace import (
     Workspace,
@@ -274,6 +275,70 @@ async def test_create_channel_binding_rejects_pathological_text_pattern(
     payload = json.loads(result.output)
     assert payload["type"] == "validation-error"
     assert "nested unbounded repetition" in payload["message"]
+    assert not sp.get_storage(Subscription)._data
+
+
+@pytest.mark.asyncio
+async def test_create_channel_binding_refuses_a_non_channel_trigger(
+    sp: _SP, system_toolset
+):
+    """The tool says the trigger must be a channel trigger; the handler enforces that
+    before anything is stored."""
+    await sp.get_storage(Trigger).create(
+        Trigger(
+            id="trg-wh-1",
+            slug="webhook-trigger",
+            name="Webhook trigger",
+            config=WebhookTriggerConfig(),
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    result = await system_toolset.call(
+        tool_name="create_channel_binding",
+        arguments={
+            "trigger_id": "trg-wh-1",
+            "config": {"kind": "session_append", "session_id": "sess-1"},
+        },
+    )
+
+    assert result.is_error
+    payload = json.loads(result.output)
+    assert payload["type"] == "validation-error"
+    assert payload["message"].startswith("trigger_id:")
+    assert "a channel binding needs a channel trigger" in payload["message"]
+    assert not sp.get_storage(Subscription)._data
+
+
+@pytest.mark.asyncio
+async def test_create_channel_binding_refuses_a_parked_session_config(
+    sp: _SP, system_toolset
+):
+    """A parked_session row is only created by the subscribe_to_trigger yielding tool;
+    the handler answers the service's refusal by name instead of letting it escape."""
+    await _seed_channel_trigger(sp)
+
+    result = await system_toolset.call(
+        tool_name="create_channel_binding",
+        arguments={
+            "trigger_id": "trg-ch-1",
+            "config": {
+                "kind": "parked_session",
+                "session_id": "sess-1",
+                "tool_call_id": "tcl-1",
+                "parked_at": "2026-01-01T00:00:00Z",
+            },
+        },
+    )
+
+    assert result.is_error
+    payload = json.loads(result.output)
+    assert payload["type"] == "validation-error"
+    assert payload["message"].startswith("config:")
+    assert (
+        "subscriptions of kind 'parked_session' are only created via "
+        "the subscribe_to_trigger yielding tool" in payload["message"]
+    )
     assert not sp.get_storage(Subscription)._data
 
 

@@ -283,7 +283,10 @@ suppress the acks while still forwarding gates).
   binding (a Subscription) on a `channel`-kind trigger. Body:
   `trigger_id`, `event_matcher`, `config` (the action), optional
   `reply_target`, `payload_template`, `parallelism`, `enabled`. An
-  unknown trigger returns `type=trigger_not_found`. From a session
+  unknown trigger returns `type=trigger_not_found`; a trigger of
+  another kind, and a `parked_session` config (those rows are only
+  created by the `subscribe_to_trigger` yielding tool), answer
+  `type=validation-error`. From a session
   outside the default workspace (prime) the action may name only your
   own workspace or a session in it: another target answers
   `type=not-found` as one that does not exist, and the binding records
