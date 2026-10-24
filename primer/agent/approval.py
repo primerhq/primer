@@ -108,8 +108,25 @@ def _coerce_approvers(raw: Any, *, policy_id: str) -> ApproverSpec | None:
 def effective_approvers(
     policy: ToolApprovalPolicy, verdict: ApprovalVerdict,
 ) -> ApproverSpec | None:
-    """Per-call routing wins over the policy row's default."""
-    return verdict.approvers or policy.approvers
+    """Who may decide this call: the STRICTER of the policy row's spec and the evaluator's per-call routing (the lead's ruling on #860, R2-4).
+
+    A verdict may narrow who decides, never widen it: the row's spec is the operator's, and a Rego policy or an LLM judge (whose verdict a
+    model's arguments can influence) answering ``anyone`` must not open an admin-only gate. The decider must satisfy both, so:
+
+    * either side absent or ``anyone``: the other side;
+    * both the same kind: the names or roles both admit (none left is admin-only: an admin is always admitted);
+    * different kinds (roles on one side, users on the other): admin-only, the only spec that is sure to satisfy both.
+    """
+    row, routed = policy.approvers, verdict.approvers
+    if routed is None or routed.kind == "anyone":
+        return row
+    if row is None or row.kind == "anyone":
+        return routed
+    if row.kind != routed.kind:
+        return ApproverSpec(kind="roles", roles=[])
+    if row.kind == "roles":
+        return ApproverSpec(kind="roles", roles=[role for role in row.roles if role in routed.roles])
+    return ApproverSpec(kind="users", users=[user for user in row.users if user in routed.users])
 
 
 # How many enabled candidates for one (toolset_id, tool_name) the resolver reads. One is the rule; more than one is a leftover
@@ -214,7 +231,7 @@ def approval_resume_metadata(
     """The ``resume_metadata`` of an approval park, built in ONE place for EVERY site that parks for approval.
 
     Carries the identity of the gate (``policy_id``, ``approval_type``, ``gate_reason``), the call it gates (``original_call``) and WHO MAY
-    DECIDE it: the effective approver spec (the evaluator's per-call routing, else the policy row's), stamped as a dict or ``None`` for
+    DECIDE it: the effective approver spec (the stricter of the policy row's and the evaluator's per-call routing), stamped as a dict or ``None`` for
     "anyone", and the ``gate_id`` minted here, once per park (see :func:`primer.model.yield_.new_gate_id`): a decision names it, so a card left
     open for an earlier gate under the same provider tool_call_id is refused as stale instead of deciding this one. Every path that answers a gate judges the answer against this stamp (:func:`primer.session.approvers.may_decide`), so a
     park site that built its own dict and left the stamp out (the ``call_tool`` meta-dispatch did) silently let any user decide a
