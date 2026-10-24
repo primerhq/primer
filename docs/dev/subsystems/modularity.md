@@ -230,21 +230,31 @@ them on the extra being present, and leave the fallback tests ungated.
     never unrolls), so no spelling can hide a repeat (#859 round 2: round
     1's hand scanner was fooled by `(?#[)(?:a{65535}){65535}]`). The walk
     multiplies a repeat by its largest finite count and adds sequences and
-    alternatives; it refuses fuzzy constraints, unknown node types and
-    group calls;
+    alternatives. The leaves that compile to more code weigh more: `\X`
+    counts 8, and a set counts 1 per property in it plus 1 per 16 other
+    members (measured). It refuses fuzzy constraints, unknown node types
+    and group calls;
   - `MemoryError` and `RecursionError` at compile are refusals.
 
   That private API is pinned: the module refuses to import when a name it
   uses is gone, a self-check at import reads a known shape, and
   `tests/common/test_user_regex.py` covers every shape the review found.
+  `tests/common/test_user_regex_cost.py` compiles a dozen near-cap accepted
+  shapes in a capped child under a fixed time and memory bound, so a
+  `regex` release that makes a node dearer fails a test.
 
-  Patterns compile with `cache_pattern=False`. A stored pattern
-  (`stored=True`: text_pattern, filter field regexes, output_schema) is
-  kept with its verdict, refusals included, in a cache bounded by total
-  expansion; one-shot patterns (grep, the tap) are never cached.
+  Patterns compile with `cache_pattern=False`. On its MATCH path a stored
+  pattern (`stored=True`: text_pattern, filter field regexes,
+  output_schema) is kept with its verdict, refusals included, in a cache
+  bounded by total expansion (100_000 units, about 30 MB at worst). Save
+  paths and one-shot patterns (grep, the tap) never touch it, and a
+  refusal that depends on the process (`MemoryError`, `RecursionError`)
+  is never cached.
 
-  Matching is timed with `concurrent=True`, which releases the GIL, on a
-  dedicated four-thread executor (`run_off_loop`).
+  Matching is timed with `concurrent=True`, which releases the GIL, on one
+  of two four-thread executors: `run_interactive` (tap LIKE,
+  output_schema) and `run_bulk` (grep, collection grep), so hostile greps
+  cannot hold the threads interactive work needs.
 - **The slim image became the default tag (2026-08-09).** Unsuffixed
   `:{version}` and `:latest` now resolve to the slim build; batteries
   included moved to `-full`. The `-slim` and `-fat` aliases are kept one
