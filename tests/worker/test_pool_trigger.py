@@ -181,12 +181,16 @@ async def test_pool_routes_trigger_lease_to_fire(
 async def test_run_engine_trigger_catchup_all_replays_missed_ticks(
     fake_storage_provider, fake_provider_registry, monkeypatch,
 ):
-    """A scheduled trigger with catchup='all' fires once per missed tick.
+    """A scheduled trigger with catchup='all' fires once per missed tick, then the due tick once.
 
     We bypass the engine claim loop and drive ``_run_engine_trigger``
     directly with a synthetic lease, then assert ``fire_trigger`` was
-    invoked one time per missed cron occurrence plus once for the
-    current tick (``scheduled_for=None``).
+    invoked one time per missed cron occurrence plus once for the due
+    tick, each with its own ``scheduled_for`` (ticket 01a16ddb, rulings 3
+    and 4: the due tick used to be replayed AND fired again as "now",
+    with ``scheduled_for=None``). The worker's clock is pinned
+    (``engine_handlers._now``) so a minute boundary cannot move the due
+    tick under the test.
     """
     from primer.int.claim import Lease as ClaimLease
 
@@ -198,16 +202,20 @@ async def test_run_engine_trigger_catchup_all_replays_missed_ticks(
     )
 
     triggers = fake_storage_provider.get_storage(Trigger)
-    # last_fired_at three minutes ago + a once-per-minute cron => 3
-    # missed ticks the catchup loop must replay before the current tick.
-    last_fired = _now() - timedelta(minutes=3, seconds=10)
+    # A once-per-minute cron whose last claim fired the tick four minutes
+    # before the due one: the three ticks between (from next_fire_at) were
+    # missed and are replayed before the due tick.
+    now = _now()
+    monkeypatch.setattr("primer.worker.engine_handlers._now", lambda: now)
+    due = now.replace(second=0, microsecond=0)
+    last_fired = due - timedelta(minutes=4) + timedelta(seconds=2)
     t = Trigger(
         id="tr-cron", slug="tr-cron", name="c", description=None,
         config=ScheduledTriggerConfig(
             cron="* * * * *", timezone="UTC", catchup="all",
         ),
         enabled=True,
-        next_fire_at=_now(),
+        next_fire_at=due - timedelta(minutes=3),
         last_fired_at=last_fired,
         created_at=last_fired,
     )
@@ -252,20 +260,11 @@ async def test_run_engine_trigger_catchup_all_replays_missed_ticks(
     await pool._run_engine_trigger(lease)
     await bus.aclose()
 
-    # We expect ≥3 missed-tick calls (scheduled_for set) + exactly 1
-    # current-tick call (scheduled_for=None). The exact missed count
-    # depends on the wall-clock skew between last_fired and now; we
-    # bound the assertion loosely so the test isn't timing-flaky.
-    missed = [c for c in captured_calls if c[1] is not None]
-    current = [c for c in captured_calls if c[1] is None]
-    assert len(missed) >= 2, (
-        f"expected catchup to replay ≥2 missed ticks, got {len(missed)}: "
-        f"{captured_calls}"
-    )
-    assert len(current) == 1, (
-        f"expected exactly one current-tick fire (scheduled_for=None), "
-        f"got {len(current)}: {captured_calls}"
-    )
+    # The three missed ticks, oldest first, then the due tick: each once,
+    # each with its own scheduled_for.
+    assert [c[1] for c in captured_calls] == [
+        due - timedelta(minutes=3), due - timedelta(minutes=2), due - timedelta(minutes=1), due,
+    ], captured_calls
     # All fires must reference our trigger.
     assert all(c[0] == "tr-cron" for c in captured_calls)
 
@@ -303,13 +302,16 @@ async def test_run_engine_trigger_catchup_failed_deliveries_are_recorded_and_rep
         storage_provider=fake_storage_provider, event_bus=bus,
     )
 
-    last_fired = _now() - timedelta(minutes=3, seconds=10)
+    now = _now()
+    monkeypatch.setattr("primer.worker.engine_handlers._now", lambda: now)
+    due = now.replace(second=0, microsecond=0)
+    last_fired = due - timedelta(minutes=4) + timedelta(seconds=2)
     await fake_storage_provider.get_storage(Trigger).create(Trigger(
         id="tr-cron", slug="tr-cron", name="c", description=None,
         config=ScheduledTriggerConfig(
             cron="* * * * *", timezone="UTC", catchup="all",
         ),
-        enabled=True, next_fire_at=_now(),
+        enabled=True, next_fire_at=due - timedelta(minutes=3),
         last_fired_at=last_fired, created_at=last_fired,
     ))
     await fake_storage_provider.get_storage(Subscription).create(Subscription(
@@ -356,10 +358,11 @@ async def test_run_engine_trigger_catchup_failed_deliveries_are_recorded_and_rep
         e for e in await fake_storage_provider.get_event_store().read_after(0)
         if e.event_type == "trigger.delivery_failed"
     ]
-    scheduled = [e for e in events if e.payload["scheduled_for"] is not None]
-    current = [e for e in events if e.payload["scheduled_for"] is None]
-    assert len(scheduled) >= 2, f"replayed failures not recorded: {events}"
-    assert len(current) == 1
+    # One failed delivery per fire: the three replayed ticks and the due
+    # tick, each recorded with its own scheduled_for and fire_id.
+    assert [e.payload["scheduled_for"] for e in events] == [
+        (due - timedelta(minutes=m)).isoformat() for m in (3, 2, 1, 0)
+    ], f"replayed failures not recorded: {events}"
     assert len({e.payload["fire_id"] for e in events}) == len(events)
 
     sub = await fake_storage_provider.get_storage(Subscription).get("sb-1")
