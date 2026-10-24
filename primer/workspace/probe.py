@@ -30,6 +30,8 @@ from pydantic_core import to_jsonable_python
 
 from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage
+from primer.storage import raw_generation
+from primer.storage.cas import patch_if_checked
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace import WorkspaceProvider, WorkspaceProviderType
 from primer.model.workspace_refusal import WorkspaceRefusedError
@@ -216,13 +218,17 @@ class WorkspaceProbeTask:
             else:
                 self._hit_counts.pop(ws.id, None)
 
-        # ONE field-scoped write of the probe's own fields, fenced on the phase this verdict was made from (ticket 01a16d72 ruling 3). The
-        # ping can take a while, and a whole-document write of the row as listed put back whatever changed meanwhile: the ``terminating``
-        # mark of a destroy that had started (so a reader saw the delete as ``running`` again), the ``failed`` and ``failure_reason`` a
-        # failed destroy leaves, a rename. When the phase moved, the verdict is about a row that is no longer there: it is dropped, and the
-        # next tick judges the row as it is then.
+        # ONE field-scoped write of the probe's own fields, fenced on the row this verdict was made from (ticket 01a16d72 ruling 3; round 2
+        # of #917, item 5). The ping can take a while, and a whole-document write of the row as listed put back whatever changed meanwhile:
+        # the ``terminating`` mark of a destroy that had started (so a reader saw the delete as ``running`` again), the ``failed`` and
+        # ``failure_reason`` a failed destroy leaves, a rename. The fence is the phase, the ``failure_reason`` and the ``last_probe_at`` as
+        # read, in their stored spelling (``raw_generation``): a destroy that marked the row ``terminating`` and failed leaves the phase it
+        # read (``failed``) but not the reason, and a probe in another process that wrote a newer result moved ``last_probe_at``, so an older
+        # verdict never lands over a newer one. When the row moved, the verdict is about a row that is no longer there: it is dropped, and
+        # the next tick judges the row as it is then. ``patch_if_checked`` reports a refusal the fresh row would not explain (drift).
         try:
-            written = await storage.patch_if(ws.id, to_jsonable_python(updates), where={"phase": [ws.phase]})
+            where = {field: [raw_generation(ws, field)] for field in ("phase", "failure_reason", "last_probe_at")}
+            written = await patch_if_checked(storage, ws.id, to_jsonable_python(updates), where=where)
         except NotFoundError:
             return      # deleted while it was being pinged (a destroy that finished)
         except Exception:  # noqa: BLE001 -- log and continue
@@ -231,7 +237,7 @@ class WorkspaceProbeTask:
             )
             return
         if written is None:
-            logger.info("workspace probe: %s left phase %r while it was pinged; its result is dropped", ws.id, ws.phase)
+            logger.info("workspace probe: %s changed while it was pinged (phase %r as read); its result is dropped", ws.id, ws.phase)
             return
 
         # When the workspace transitions to failed, reconcile any

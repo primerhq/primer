@@ -6,10 +6,11 @@ database is already being read on a timer: the probe pages every workspace row e
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from primer.model.workspace import Workspace as WorkspaceRow
-from primer.model.workspace import WorkspaceProvider
+from primer.model.workspace import WorkspaceProvider, WorkspaceRuntimeMeta
 from primer.workspace.probe import WorkspaceProbeTask
 
 
@@ -20,10 +21,12 @@ def _provider(id_: str, kind: str) -> MagicMock:
     return provider
 
 
-def _row(id_: str, provider_id: str, phase: str = "terminating") -> MagicMock:
-    row = MagicMock()
-    row.id, row.provider_id, row.phase = id_, provider_id, phase
-    return row
+def _row(id_: str, provider_id: str, phase: str = "terminating") -> WorkspaceRow:
+    """A real row: the probe pings the running and failed ones and fences its write on their stored fields (``raw_generation``)."""
+    return WorkspaceRow(
+        id=id_, template_id="tpl-1", provider_id=provider_id, created_at=datetime.now(timezone.utc), phase=phase,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://unused", token="unused"),
+    )
 
 
 def _probe(rows: list, providers: list) -> WorkspaceProbeTask:
