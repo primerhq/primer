@@ -209,8 +209,10 @@ first and the one the operator works from. All users share it.
   `reserved_workspace`. It can be renamed.
 - **It ships an `agents.md`.** At boot the platform writes its own
   instructions for prime (this workspace is the management plane and
-  the work happens in other workspaces; keep one ledger file per task
-  under `tasks/`; read the platform wiki first) to prime's root as
+  the work happens in other workspaces; the operator keeps one ledger
+  file per task under `tasks/`, and an agent whose own role says it
+  never writes files leaves the ledger to the operator; read the
+  platform wiki first) to prime's root as
   `agents.md`, but only when neither `agents.md` nor `AGENTS.md` is
   there. A boot never overwrites an edited file and never adds an
   `agents.md` beside an `AGENTS.md` (which would replace it, since

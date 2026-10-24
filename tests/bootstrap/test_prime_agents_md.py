@@ -94,6 +94,20 @@ def test_the_shipped_file_is_packaged_utf8_and_has_no_em_dash():
     assert text.startswith("# prime\n")
 
 
+#: The ledger line, exactly (review of #887, item 3): the explorer's and the planner's prompts say they never write files, so the ledger
+#: is the operator's, and the line says so instead of telling every agent in prime to keep one.
+LEDGER_LINE = (
+    "The operator keeps one ledger file per task under `tasks/` in this workspace, with the goal, where the work runs and what has "
+    "happened so far. An agent whose own role says it never writes files leaves the ledger to the operator."
+)
+
+
+def test_the_ledger_is_the_operator_s():
+    lines = shipped_prime_agents_md().decode("utf-8").splitlines()
+    assert LEDGER_LINE in lines
+    assert [line for line in lines if "ledger" in line] == [LEDGER_LINE]
+
+
 def test_the_shipped_file_names_no_tool_id():
     """The interim text is plain guidance: a tool id in it would go stale with the tool (P4 writes the final text)."""
     text = shipped_prime_agents_md().decode("utf-8")
