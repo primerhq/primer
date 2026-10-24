@@ -365,7 +365,7 @@ function NV_platFilterText(vm) {
 // (the Tools page: tests/ui/test_platform_tools_page.py).
 var NV_PLAT_PAGES = {
   profiles: {
-    title: "LLM Profiles", noun: ["model profile", "model profiles"],
+    title: "LLM Profiles", noun: ["profile", "profiles"],
     // The one action is "+ Aggregate" (design 7.1). There is no single-profile
     // create: a single profile comes from the Register provider overlay's
     // import, so an empty page points there. "+ Aggregate" hosts the profile
@@ -380,28 +380,28 @@ var NV_PLAT_PAGES = {
       label: "Open Providers › LLM",
       run: function (con) { con.goView("platform", "providers", "llm"); },
     },
+    // The profiles, each aggregate given the smallest context window of its
+    // members (MP_withWindows, model-profiles.jsx): the server works that
+    // minimum out only when it resolves the profile, and serves it on no route.
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/model_profiles?limit=200", null, { signal: signal });
+      return apiFetch("GET", "/model_profiles?limit=200", null, { signal: signal })
+        .then(window.MP_withWindows);
     },
-    card: function (row, con) {
-      return {
-        id: row.id, name: row.id,
-        sub: [row.provider_id, row.model_name || row.model]
-          .filter(Boolean).join(" · "),
-        facts: [
-          NV_fact("context", row.context_length),
-          NV_fact("reasoning",
-            (row.config && row.config.reasoning) || row.reasoning),
-        ],
-      };
-    },
+    // The card is MP_profileCard's (model-profiles.jsx, design 7.1): an
+    // "imported" single profile or an "aggregated" one, its context window,
+    // who uses it and the harness that manages it.
+    card: function (row) { return window.MP_profileCard(row); },
     // The profile form is its OWN modal (MP_ProfileModal): opening the
     // Providers overlay for a profile action was a straight mis-route
     // (live finding 2026-08-26).
     open: function (con, row, setModal) {
       setModal({ kind: "profile", row: row });
     },
-    delPath: function (row) { return "/model_profiles/" + encodeURIComponent(row.id); },
+    // A harness-managed profile answers 409 to a DELETE, so its card's menu
+    // offers none (its facts say who manages it).
+    delPath: function (row) {
+      return row.harness_id ? null : "/model_profiles/" + encodeURIComponent(row.id);
+    },
   },
   agents: {
     title: "Agents", noun: ["agent", "agents"], createLabel: "+ Agent",

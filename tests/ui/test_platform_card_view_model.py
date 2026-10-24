@@ -104,7 +104,10 @@ def test_each_entry_maps_its_state_to_one_status(page_ctx, nav, row, expected) -
     ("collections", '{ id: "c" }', None),
     ("harnesses", '{ id: "h", kind: "outbound" }', "outbound"),
     ("harnesses", '{ id: "h" }', None),
-    ("profiles", '{ id: "p" }', None),
+    # Platform revamp Plan 03, Task 4 (design 7.1): a profile's card names its kind, "imported" for a single profile (it comes from the Register
+    # provider overlay's import) and "aggregated" for a chain of them (tests/ui/test_llm_profiles_page.py).
+    ("profiles", '{ id: "p" }', "imported"),
+    ("profiles", '{ id: "p", kind: "aggregated" }', "aggregated"),
     ("agents", '{ id: "a" }', None),
 ])
 def test_each_entry_names_its_badge(page_ctx, nav, row, expected) -> None:
@@ -116,7 +119,11 @@ def test_agents_and_graphs_carry_their_type_icon_in_their_own_tone(page_ctx) -> 
     assert agent["icon"] == {"path": page_ctx.eval("NV_PLAT_ICONS.agents"), "tone": "var(--teal)"}, "the agent's identity colour"
     graph = card(page_ctx, "graphs", '{ id: "g" }')
     assert graph["icon"] == {"path": page_ctx.eval("NV_PLAT_ICONS.graphs"), "tone": "var(--text-3)"}
-    assert "icon" not in card(page_ctx, "profiles", '{ id: "p" }'), "the page's own icon is the default (the kit's card props)"
+    assert "icon" not in card(page_ctx, "collections", '{ id: "c" }'), "the page's own icon is the default (the kit's card props)"
+    # Platform revamp Plan 03, Task 4: a profile's card draws its kind's icon (a single profile's chip, an aggregate's link), so the profiles page is no
+    # longer the example of the default (tests/ui/test_llm_profiles_page.py pins the two paths).
+    assert card(page_ctx, "profiles", '{ id: "p" }')["icon"]["tone"] == "var(--text-2)"
+    assert card(page_ctx, "profiles", '{ id: "p", kind: "aggregated" }')["icon"]["tone"] == "var(--accent)"
 
 
 def test_the_list_page_hands_the_console_to_card(page_ctx) -> None:

@@ -72,10 +72,10 @@ def test_the_helper_block_holds_no_hook_and_no_react() -> None:
 def test_every_helper_is_a_global_of_the_bundle(ctx) -> None:
     for name in ("MP_fmtTokens", "MP_isSingle", "MP_isManaged", "MP_memberRows", "MP_toggleMember", "MP_toggleAllMembers", "MP_moveMember",
                  "MP_aggregateWindow", "MP_windowText", "MP_advancedIsSet", "MP_nameError", "MP_aggregateBody", "MP_editBody", "MP_refusalErrors",
-                 "MP_contextError", "MP_providerOptions"):
+                 "MP_contextError", "MP_providerOptions", "MP_routingLabel", "MP_usageText", "MP_profileCard", "MP_withWindows"):
         assert ctx.eval(f"typeof {name}") == "function", name
     for name in ("MP_AGGREGATE_DEFAULTS", "MP_ROUTING_OPTIONS", "MP_ROUTING_HELP", "MP_FAILOVER_POINT_OPTIONS", "MP_FAILOVER_POINT_HELP",
-                 "MP_FAILOVER_ON_OPTIONS", "MP_FAILOVER_ON_HELP"):
+                 "MP_FAILOVER_ON_OPTIONS", "MP_FAILOVER_ON_HELP", "MP_ICON_SINGLE", "MP_ICON_AGGREGATED"):
         assert ctx.eval(f"typeof {name}") != "undefined", name
 
 
@@ -355,3 +355,28 @@ def test_provider_options_with_no_current_provider_or_no_providers(ctx) -> None:
     assert js(ctx, 'MP_providerOptions([], "gone")') == [{"value": "gone", "label": "gone (not found)"}]
     assert js(ctx, 'MP_providerOptions(null, "")') == []
     assert js(ctx, 'MP_providerOptions([{ id: "bare" }], "bare")') == [{"value": "bare", "label": "bare"}], "a provider with no type is just its id"
+
+
+# ---- the LLM Profiles page's cards (Task 4) ---------------------------------------------------------------------------------------------------------------
+
+
+def test_the_routing_label_of_a_card(ctx) -> None:
+    """The card's words for the routing: the model's default (sequential) for a row that names none or an unknown value."""
+    assert js(ctx, '[MP_routingLabel("round_robin"), MP_routingLabel("sequential"), MP_routingLabel(undefined), MP_routingLabel("other")]') == [
+        "round robin", "sequential fallback", "sequential fallback", "sequential fallback"]
+
+
+@pytest.mark.parametrize(
+    ("agents", "nodes", "text"),
+    [(0, 0, "unbound"), (None, None, "unbound"), (1, 0, "bound by 1 agent"), (2, 0, "bound by 2 agents"), (2, 1, "bound by 2 agents · 1 graph node"),
+     (1, 3, "bound by 1 agent · 3 graph nodes"), (0, 2, "bound by 0 agents · 2 graph nodes"), (-1, 0, "unbound"), ("3", 0, "unbound")],
+)
+def test_the_usage_text(ctx, agents, nodes, text) -> None:
+    """The bound-by copy of the old card (P4): agents always, graph nodes only when there are some; a count that is not a whole number above 0 is none."""
+    assert js(ctx, f"MP_usageText({json.dumps({'agent_count': agents, 'graph_node_count': nodes})})") == text
+
+
+def test_the_card_builder_does_not_change_its_row(ctx) -> None:
+    row = {"id": "agg", "kind": "aggregated", "members": ["p-a", "p-b"], "_window": 8192, "harness_id": "h"}
+    assert js(ctx, f"(function () {{ var r = {json.dumps(row)}; MP_profileCard(r); return r; }})()") == row
+    assert js(ctx, f"(function () {{ var r = {{ items: {R} }}; MP_withWindows(r); return r; }})()") == {"items": ROWS}

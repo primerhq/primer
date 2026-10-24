@@ -247,6 +247,72 @@ function MP_providerOptions(providers, currentId) {
   if (currentId && !listed) options.push({ value: currentId, label: currentId + " (not found)" });
   return options;
 }
+
+// The LLM Profiles page (design 7.1). The `profiles` entry of NV_PLAT_PAGES (nv-platform.jsx) hands each row to MP_profileCard and its list to MP_withWindows. The card is
+// the one card view model of every Platform page (seam I-8): the desktop's PK_Card draws its badge, its icon and up to three facts, and the phone's fact sheet draws each fact
+// as a [label, value] pair of strings. The icons are 14 by 14 paths: a chip for a single profile (one model on one provider), a link for an aggregated one (a chain of them).
+var MP_ICON_SINGLE = "M4.5 4.5h5v5h-5Z M6 2v2.5 M8 2v2.5 M6 9.5V12 M8 9.5V12 M2 6h2.5 M2 8h2.5 M9.5 6H12 M9.5 8H12";
+var MP_ICON_AGGREGATED = "M5.8 8.2 8.2 5.8 M6.6 3.9l.9-.9a2.4 2.4 0 0 1 3.4 3.4l-.9.9 M7.4 10.1l-.9.9a2.4 2.4 0 0 1-3.4-3.4l.9-.9";
+
+// An aggregate's routing as its card says it. A row that names no strategy (or one this console does not know) routes the model's default way, sequentially.
+function MP_routingLabel(strategy) {
+  return strategy === "round_robin" ? "round robin" : "sequential fallback";
+}
+
+// Who uses a profile, from the two counts the list route adds (agent_count, graph_node_count): "unbound", or "bound by 2 agents · 1 graph node". A profile in use cannot be
+// deleted (the server answers 409 in_use_by), so the card says so before anyone tries. A count that is not a whole number above 0 is none.
+function MP_usageText(row) {
+  var count = function (n) { return typeof n === "number" && n > 0 && n % 1 === 0 ? n : 0; };
+  var agents = count(row && row.agent_count);
+  var nodes = count(row && row.graph_node_count);
+  if (!agents && !nodes) return "unbound";
+  var text = "bound by " + agents + " agent" + (agents === 1 ? "" : "s");
+  if (nodes > 0) text += " · " + nodes + " graph node" + (nodes === 1 ? "" : "s");
+  return text;
+}
+
+// One profile's card. A single profile is "imported" (it comes from the Register provider overlay's import) and its type line is its provider and model; an aggregated one
+// is "aggregated" and its type line says how many profiles it chains and how. The facts: the context window (an aggregate's is the smallest of its members', which
+// MP_withWindows worked out from the loaded list into `_window`; "unknown" when it could not, never a guess), who uses it, and the harness that manages it when one does
+// (such a row has no Delete: the entry's delPath answers null for it).
+function MP_profileCard(row) {
+  var single = MP_isSingle(row);
+  var members = Array.isArray(row.members) ? row.members : [];
+  var tokens = MP_fmtTokens(single ? row.context_length : row._window);
+  var facts = [
+    ["context window", tokens ? tokens + (single ? " tokens" : " tokens (smallest)") : "unknown"],
+    ["usage", MP_usageText(row)],
+  ];
+  if (MP_isManaged(row)) facts.push(["managed by", String(row.harness_id)]);
+  return {
+    id: row.id,
+    name: row.id,
+    sub: single
+      ? [row.provider_id, row.model_name].filter(Boolean).join(" · ")
+      : members.length + " profile" + (members.length === 1 ? "" : "s") + " · " + MP_routingLabel(row.strategy),
+    badge: single ? "imported" : "aggregated",
+    icon: single ? { path: MP_ICON_SINGLE, tone: "var(--text-2)" } : { path: MP_ICON_AGGREGATED, tone: "var(--accent)" },
+    facts: facts,
+  };
+}
+
+// The page's list with each aggregate's context window worked out from the profiles in the same answer (MP_aggregateWindow): the server computes that minimum only when
+// it resolves the profile and serves it on no route. A copy: the answer, its items and its single rows are not changed, and each aggregated item is a copy carrying
+// `_window` (a number, or null when a member is not in the answer). A "_" key is the page's own, so an edit never sends it back (MP_editBody).
+function MP_withWindows(resp) {
+  if (!resp || !Array.isArray(resp.items)) return resp;
+  var items = resp.items;
+  var out = {};
+  Object.keys(resp).forEach(function (key) { out[key] = resp[key]; });
+  out.items = items.map(function (item) {
+    if (MP_isSingle(item)) return item;
+    var copy = {};
+    Object.keys(item).forEach(function (key) { copy[key] = item[key]; });
+    copy._window = MP_aggregateWindow(item.members || [], items);
+    return copy;
+  });
+  return out;
+}
 // ---- end MP helpers ----
 
 function MP_ReasoningChip({ level }) {
@@ -489,8 +555,8 @@ const MP_READONLY_FIELDSET = { display: "flex", flexDirection: "column", gap: 16
 // The single profile's overlay (design 7.1: "opening a profile shows its overlay for viewing and editing the fields the model allows"): the id (fixed once the profile exists),
 // the description, the provider and the model it names, and the context window. A profile's `config` (reasoning, extended) is not drawn here: the Reasoning control returns in
 // plan 03 Task 7, and until then `config` is kept as stored. Model calls apply it, so a save must not lose it: an edit sends the stored row back with these four fields laid over
-// it (MP_editBody), and `config` and every other field the form does not draw round-trip untouched. `prefill` is the legacy single create that the Providers page still opens
-// ("New profile" under a provider, until Plan 02 removes it); there is no other single create. The fields start from the profile the overlay is mounted with and then belong to
+// it (MP_editBody), and `config` and every other field the form does not draw round-trip untouched. `prefill` is the legacy single create the Providers page used to open;
+// no surface opens it any more (plan 03 Task 6 removes it), and there is no other single create. The fields start from the profile the overlay is mounted with and then belong to
 // the person typing: a new `providers` array (the host hands over a fresh empty one on every render until its list loads) must not wipe a draft.
 function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSaved }) {
   const isEdit = existing != null;
