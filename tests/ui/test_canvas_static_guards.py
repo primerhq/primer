@@ -155,11 +155,13 @@ def test_the_html_frames_policy_only_narrows_the_headers(renderer, settings, own
     """Ruling 2 on S7 (audit G8-06): CV.htmlSrcdoc never sets a weaker policy than the shell's."""
     meta = json.loads(renderer.eval(f"JSON.stringify(CV.metaCsp({json.dumps(settings)}, {json.dumps(own or '')}))"))
     header = _directives(frame_csp(own_origin=own))
-    if settings["media_policy"] == "any-https":
-        assert meta is None
-        return
     narrowing = _directives(meta)
-    assert set(narrowing) == {"img-src", "media-src", "font-src"}, "only the media directives, never script-src, default-src or sandbox"
+    assert narrowing.pop("webrtc") == ["'block'"], "every Html frame refuses WebRTC (the lead's ruling on #925); the header allows it"
+    if settings["media_policy"] == "any-https":
+        assert narrowing == {}, "under any-https the header's media rule holds"
+    else:
+        assert set(narrowing) == {"img-src", "media-src", "font-src"}, "only the media directives, never script-src, default-src or sandbox"
+    assert "webrtc" not in header
     for name, sources in narrowing.items():
         assert sources, f"{name} is empty"
         for source in sources:

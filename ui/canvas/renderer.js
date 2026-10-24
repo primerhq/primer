@@ -22,17 +22,22 @@
  *    At most 16 KiB each and 20 a second (a token bucket); the rest are dropped. Errors also go out at most 3 at once and then one
  *    a second, so an element that throws in a loop cannot crowd out a person's clicks.
  *  - Renderer to an Html frame: {type: "primer.html.connect", element} with one transferred port on each load of the frame (its
- *    bootstrap takes the first offer whose event.source is its parent), then {type: "value", value} and {type: "theme", theme} on it.
+ *    bootstrap takes the first offer whose event.source is its parent), then {type: "value", value}, {type: "theme", theme} and
+ *    {type: "error", message} (a call the click gate dropped) on it.
  *  - Html frame to renderer, on the port it was given: {type: "emit", name, data}, {type: "set_value", value}, {type: "copy", text},
  *    {type: "open_link", url}, {type: "size", height}, {type: "error", message} (CV.validateHtmlMessage). A message on an element's port
  *    speaks for that element only, and a port the renderer has replaced is no longer heard.
  *
- * The click gate (audit G8-05, the lead's ruling 1 on S7). Agent code shares its frame's realm with the bootstrap and can take the
- * port, so the bootstrap's own check is advisory. The renderer forwards an Html emit, copy or open_link only while THIS document's
- * navigator.userActivation.isActive holds (a click or key press inside an Html frame activates its ancestors, this frame among them,
- * for a few seconds), the element's frame is this document's activeElement, the page is visible, and at most EMIT_BUDGET of them per
- * activation. A browser without navigator.userActivation forwards none. An Html setValue needs no activation: it is sent at most once
- * a second across the canvas, the latest value of each element kept, so a looping element cannot spend the session's silent budget.
+ * The click gate (audit G8-05, the lead's ruling 1 on S7, the review of #925). Agent code shares its frame's realm with the bootstrap
+ * and can take the port, so the bootstrap's own check is advisory. The renderer forwards an Html emit, copy or open_link only while
+ * THIS document's navigator.userActivation.isActive holds (a click or key press inside an Html frame activates its ancestors, this
+ * frame among them), the element's frame is this document's activeElement and the page is visible; and an activation is not every
+ * frame's: input on the renderer's own controls claims it for the renderer, and the first Html frame that passes owns it, so a
+ * frame that takes the focus by script gets nothing from a click it did not receive. The owner gets at most EMIT_BUDGET calls per
+ * activation, which is one continuous isActive window (a few seconds after the last input), not one click. A dropped call is
+ * answered with {type: "error"} on the element's port, and counted to the console. A browser without navigator.userActivation
+ * forwards none. An Html setValue needs no activation: it is sent at most once a second across the canvas, the latest value of each
+ * element kept, so a looping element cannot spend the session's silent budget.
  *
  * The pure part (CV.validateHostMessage, CV.mediaDecision, CV.inlineMarkup, CV.linkTarget, CV.themeCss, CV.selectOptions,
  * CV.metaCsp, CV.htmlSrcdoc and the small machines below) needs no DOM; tests/ui/test_canvas_renderer.py runs it in MiniRacer.
@@ -81,6 +86,16 @@
   var BUSY_TIMEOUT_MS = 30000;
   var PENDING_CHOICE_MS = 10000;
   var ACTIVATION_POLL_MS = 100;
+  //: The trusted input events on the renderer's own document that claim an activation for the renderer (the activation-triggering
+  //: input events of the HTML Standard, and mousedown for a browser that sends no pointer events).
+  var RENDERER_INPUTS = ["pointerdown", "pointerup", "mousedown", "keydown", "touchend"];
+  var DROPPED_REPORT_MS = 1000;
+  //: What an Html element hears when the gate drops a call, and what the console is told (the exact copy).
+  var GATE_REFUSAL = "primer.{fn} was not sent: it needs a click or a key press inside this element, and at most 3 go out in one " +
+    "activation (a few seconds after the input)";
+  var DROPPED_REPORT = "{n} Html call(s) were not sent: an Html element's emit, copy and openLink go out only right after a click or " +
+    "a key press inside it, at most 3 per activation";
+  var HTML_CALL = {emit: "emit", copy: "copy", open_link: "openLink"};
   var HTML_AUTO_MIN = 40;
   var HTML_AUTO_MAX = 1200;
   var HTML_FIRST_HEIGHT = 150;
@@ -120,6 +135,8 @@
   //: A NUL, or a lone surrogate: neither can be stored (primer.canvas.catalog.has_unstorable_char).
   var UNSTORABLE = /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?:^|[^\ud800-\udbff])[\udc00-\udfff]/;
   var SCRIPT_BREAK_RE = /<\/script|<!--/i;
+  //: The CSP3 directive that refuses WebRTC in an Html frame (where a browser knows it).
+  var WEBRTC_BLOCK = "webrtc 'block'";
 
   var THEME_NAME_RE = /^--cv-[a-z0-9-]{1,40}$/;
   var THEME_VALUE_RE = /^[^;{}<>\\\r\n]{0,200}$/;
@@ -165,25 +182,36 @@
   }
 
   //: Whether v is JSON data a canvas can hold: null, booleans, finite numbers under 1e15, strings without a NUL or a lone surrogate,
-  //: arrays and plain objects, at most maxDepth deep and maxNodes values in all (a structured clone can share and cycle).
-  function isJsonData(value, maxDepth, maxNodes) {
+  //: arrays and plain objects, at most maxDepth deep, maxNodes values and maxChars characters of strings and keys in all (a
+  //: structured clone can share and cycle). The bounds are checked BEFORE the work they bound: a string's length before it is
+  //: scanned, an array's length and an object's key count before they are walked, so an over-long value costs nothing to refuse,
+  //: and no caller stringifies or measures a value this has not passed. (A UTF-8 byte is at least one character, so a value over
+  //: maxChars characters is over maxChars bytes of JSON too.)
+  function isJsonData(value, maxDepth, maxNodes, maxChars) {
     var count = 0;
+    var chars = 0;
+    function text(s) {
+      chars += s.length;
+      return chars <= maxChars && !UNSTORABLE.test(s);
+    }
     function walk(v, depth) {
       count += 1;
       if (count > maxNodes) return false;
       if (v === null || typeof v === "boolean") return true;
       if (typeof v === "number") return isFinite(v) && Math.abs(v) < MAX_NUMBER;
-      if (typeof v === "string") return !UNSTORABLE.test(v);
+      if (typeof v === "string") return text(v);
       if (depth >= maxDepth) return false;
       var i;
       if (Array.isArray(v)) {
+        if (v.length > maxNodes - count) return false;
         for (i = 0; i < v.length; i++) if (!walk(v[i], depth + 1)) return false;
         return true;
       }
       if (!isPlainObject(v)) return false;
       var keys = Object.keys(v);
+      if (keys.length > maxNodes - count) return false;
       for (i = 0; i < keys.length; i++) {
-        if (UNSTORABLE.test(keys[i]) || !walk(v[keys[i]], depth + 1)) return false;
+        if (!text(keys[i]) || !walk(v[keys[i]], depth + 1)) return false;
       }
       return true;
     }
@@ -214,7 +242,7 @@
     var authority = m[2].toLowerCase();
     var hp = HOST_PORT_RE.exec(authority);
     if (!hp || (hp[2] !== undefined && Number(hp[2]) > 65535)) return null;
-    return {url: value, scheme: m[1].toLowerCase(), hostname: hp[1], host: authority};
+    return {url: value, scheme: m[1].toLowerCase(), hostname: hp[1], host: authority, port: hp[2] === undefined ? "" : hp[2]};
   }
 
   function cleanAllowlist(list) {
@@ -264,6 +292,9 @@
     var policy = settings && settings.media_policy;
     if (policy === "any-https") return {kind: "load", url: target.url};
     if (policy === "allowlist") {
+      // An allowlist entry becomes the source https://<host> in an Html frame's policy, which is port 443 only: a URL that names
+      // another port is refused here too, so the frame and the renderer agree (review of #925).
+      if (target.port !== "" && target.port !== "443") return {kind: "blocked", host: target.host};
       return allowlisted(target.hostname, settings.media_allowlist) ? {kind: "load", url: target.url} : {kind: "click", host: target.host};
     }
     return {kind: "blocked", host: target.host};
@@ -358,7 +389,21 @@
     while ((m = call.exec(v)) !== null) {
       if (!has(CSS_FUNCTIONS, m[1].toLowerCase())) return false;
     }
-    return (v.split('"').length - 1) % 2 === 0 && (v.split("'").length - 1) % 2 === 0;
+    return quotesClose(v);
+  }
+
+  //: Whether every quoted string in a theme value is closed. Parsed, not counted: "'"' has two of each quote and still leaves a
+  //: string open. A backslash and a line break are refused before this, so a string ends at the next quote of its own kind.
+  function quotesClose(v) {
+    for (var i = 0; i < v.length; i++) {
+      var c = v.charAt(i);
+      if (c === '"' || c === "'") {
+        var end = v.indexOf(c, i + 1);
+        if (end < 0) return false;
+        i = end;
+      }
+    }
+    return true;
   }
 
   //: The theme's [name, value] pairs a frame may use: only --cv-* names, values matching ^[^;{}<>]{0,200}$ with no url(, no
@@ -456,7 +501,7 @@
   }
 
   function validateState(msg) {
-    if (!isJsonData(msg, MAX_JSON_DEPTH + 8, MAX_STATE_NODES)) return null;
+    if (!isJsonData(msg, MAX_JSON_DEPTH + 8, MAX_STATE_NODES, MAX_STATE_BYTES)) return null;
     var size = jsonBytes(msg);
     if (size < 0 || size > MAX_STATE_BYTES) return null;
     if (!isCount(msg.rev) || !isPlainObject(msg.elements) || !isPlainObject(msg.values)) return null;
@@ -512,7 +557,7 @@
       return {type: "busy", element: msg.element, on: msg.on};
     }
     if (msg.type === "theme") {
-      if (!isPlainObject(msg.theme) || !isJsonData(msg.theme, 2, 1000)) return null;
+      if (!isPlainObject(msg.theme) || !isJsonData(msg.theme, 2, 1000, 20000)) return null;
       return {type: "theme", theme: themeObject(msg.theme)};
     }
     return null;
@@ -530,7 +575,7 @@
       return "an emit name is 1 to 64 letters, digits, _ . : or -, and does not start with /";
     }
     if (data === undefined || data === null) return null;
-    if (!isJsonData(data, MAX_JSON_DEPTH, 5000)) return "emit data must be JSON";
+    if (!isJsonData(data, MAX_JSON_DEPTH, 5000, MAX_EMIT_DATA_BYTES)) return "emit data must be JSON of at most " + MAX_EMIT_DATA_BYTES + " bytes";
     var size = jsonBytes(data);
     return size >= 0 && size <= MAX_EMIT_DATA_BYTES ? null : "emit data is at most " + MAX_EMIT_DATA_BYTES + " bytes of JSON";
   }
@@ -538,7 +583,7 @@
   //: A message from an Html frame (on the port the renderer gave it), checked and copied, or null.
   function validateHtmlMessage(msg) {
     if (!isPlainObject(msg) || typeof msg.type !== "string") return null;
-    if (!isJsonData(msg, MAX_JSON_DEPTH + 2, 5000)) return null;
+    if (!isJsonData(msg, MAX_JSON_DEPTH + 2, 5000, MAX_HTML_MESSAGE_BYTES)) return null;
     var size = jsonBytes(msg);
     if (size < 0 || size > MAX_HTML_MESSAGE_BYTES) return null;
     var keys = Object.keys(msg);
@@ -578,21 +623,23 @@
   // Html elements: the narrowing media policy and the srcdoc
   // ---------------------------------------------------------------------------------------------------------------------------------
 
-  //: The <meta> policy an Html frame adds under the media policy (Decision 10): null under any-https (the header's own media rule
-  //: holds); under allowlist, only data:, blob:, the minted-URL origin and the listed hosts; under none (and any policy this renderer
-  //: does not know), only data:, blob: and the minted-URL origin. It names only img-src, media-src and font-src, each a subset of the
-  //: header's, and a second policy is enforced with the first, so it can only narrow.
+  //: The <meta> policy an Html frame adds (Decision 10; the lead's WebRTC ruling on #925). Under any-https only webrtc 'block' (the
+  //: header's own media rule holds); under allowlist, media only from data:, blob:, the minted-URL origin and the listed hosts (port
+  //: 443); under none (and any policy this renderer does not know), only data:, blob: and the minted-URL origin; and webrtc 'block'
+  //: under every policy. It names only img-src, media-src, font-src and webrtc, the media ones a subset of the header's, and a second
+  //: policy is enforced with the first, so it can only narrow. A browser that does not know the webrtc directive ignores it (Chromium
+  //: does, and its WebRTC still sends STUN past connect-src); the bootstrap also removes the RTC constructors, advisory only.
   function metaCsp(settings, ownOrigin) {
     var policy = settings && settings.media_policy;
-    if (policy === "any-https") return null;
+    if (policy === "any-https") return WEBRTC_BLOCK;
     var own = typeof ownOrigin === "string" && ORIGIN_RE.test(ownOrigin) ? " " + ownOrigin.toLowerCase() : "";
     if (policy === "allowlist") {
       var hosts = "";
       var list = cleanAllowlist(settings.media_allowlist);
       for (var i = 0; i < list.length; i++) hosts += " https://" + list[i];
-      return "img-src data: blob:" + own + hosts + "; media-src data: blob:" + own + hosts + "; font-src data:" + hosts;
+      return "img-src data: blob:" + own + hosts + "; media-src data: blob:" + own + hosts + "; font-src data:" + hosts + "; " + WEBRTC_BLOCK;
     }
-    return "img-src data: blob:" + own + "; media-src data: blob:" + own + "; font-src data:";
+    return "img-src data: blob:" + own + "; media-src data: blob:" + own + "; font-src data:; " + WEBRTC_BLOCK;
   }
 
   //: The srcdoc of an Html element: the charset, the narrowing media policy, the theme, the bootstrap, and only then the agent's HTML,
@@ -611,24 +658,37 @@
   // Small machines: the click gate, the outgoing bucket and the setValue throttle
   // ---------------------------------------------------------------------------------------------------------------------------------
 
-  //: The renderer's click gate (audit G8-05). allow() passes only while activation.isActive is true, at most `budget` times per
-  //: activation. An activation is new once the gate has seen isActive false since its last pass (allow() and observe() both look; the
-  //: renderer calls observe() every ACTIVATION_POLL_MS while an activation is open), so a later click gets a fresh budget and a loop
-  //: after one click gets `budget` passes in all.
+  //: The renderer's click gate (audit G8-05; the lead's ruling 1 on S7; the review of #925). A person's input activates the frame
+  //: it lands in AND every ancestor, this document among them, so isActive alone says that someone did something, not where. So:
+  //:  - input on the renderer's own controls (a pointerdown or keydown this document sees: a click on a native Button, a Tab press
+  //:    that moves the focus on into an Html frame) claims the activation for the renderer (claimForRenderer): no Html frame passes
+  //:    until isActive has read false again;
+  //:  - the first Html frame that passes owns the activation: no other frame gets anything from it (a frame that took the focus by
+  //:    script during another element's activation gets nothing);
+  //:  - the owner gets at most `budget` passes.
+  //: An activation is one continuous isActive window, not one click: it lasts a few seconds after the last input (about 5 s in
+  //: Chromium) and further input inside it extends it, so the budget is per window. A window is new only once the gate has read
+  //: isActive false since the last one (allow() and observe() both read it; the renderer calls observe() every ACTIVATION_POLL_MS
+  //: while a window is open or claimed).
   function makeEmitGate(activation, budget) {
     var spent = 0;
     var open = false;
+    var owner = null;
+    var claimed = false;
     function active() { return !!activation && activation.isActive === true; }
+    function reset() { spent = 0; open = false; owner = null; claimed = false; }
     return {
-      allow: function () {
-        if (!active()) { open = false; return false; }
-        if (!open) { open = true; spent = 0; }
-        if (spent >= budget) return false;
+      allow: function (who) {
+        if (!active()) { reset(); return false; }
+        if (claimed) return false;
+        if (!open) { open = true; spent = 0; owner = who; }
+        if (who !== owner || spent >= budget) return false;
         spent += 1;
         return true;
       },
-      observe: function () { if (!active()) open = false; return open; },
-      isOpen: function () { return open; }
+      claimForRenderer: function () { claimed = true; },
+      observe: function () { if (!active()) reset(); return open || claimed; },
+      watching: function () { return open || claimed; }
     };
   }
 
@@ -691,6 +751,8 @@
     var activation = win.navigator ? win.navigator.userActivation : undefined;
     var gate = makeEmitGate(activation, EMIT_BUDGET);
     var gatePoll = null;
+    var dropped = Object.create(null);
+    var droppedTimer = null;
     var bucket = makeBucket(OUT_PER_SECOND, OUT_PER_SECOND, now);
     var errorBucket = makeBucket(ERRORS_PER_SECOND, ERROR_BURST, now);
     var host = null;
@@ -757,6 +819,15 @@
     win.addEventListener("error", function (ev) {
       if (ev && typeof ev.message === "string") reportError("The canvas renderer failed: " + ev.message);
     });
+
+    // A person's input on the renderer's own controls is the renderer's: it claims the activation it makes, so no Html frame can use
+    // it (a Tab press that moves the focus into an Html frame included). Input inside an Html frame never reaches this document.
+    function claim(ev) {
+      if (!ev || ev.isTrusted !== true) return;
+      gate.claimForRenderer();
+      watchActivation();
+    }
+    for (var k = 0; k < RENDERER_INPUTS.length; k++) doc.addEventListener(RENDERER_INPUTS[k], claim, true);
 
     function onHostMessage(port, ev) {
       if (port !== host) return;
@@ -1392,19 +1463,38 @@
       postToHtml(rec, {type: "value", value: value});
     }
 
-    //: Whether this activation lets the Html element `rec` speak (see the header comment, "The click gate").
+    //: Reads isActive every ACTIVATION_POLL_MS while the gate holds an activation, so it sees one end.
+    function watchActivation() {
+      if (gatePoll !== null || !gate.watching()) return;
+      gatePoll = win.setInterval(function () {
+        if (!gate.observe()) {
+          win.clearInterval(gatePoll);
+          gatePoll = null;
+        }
+      }, ACTIVATION_POLL_MS);
+    }
+
+    //: Whether this activation lets the Html element `rec` speak (see "The click gate" above makeEmitGate).
     function htmlMayAct(rec) {
       if (!rec.frame || doc.activeElement !== rec.frame || doc.visibilityState !== "visible") return false;
-      if (!gate.allow()) return false;
-      if (gatePoll === null && gate.isOpen()) {
-        gatePoll = win.setInterval(function () {
-          if (!gate.observe()) {
-            win.clearInterval(gatePoll);
-            gatePoll = null;
-          }
-        }, ACTIVATION_POLL_MS);
-      }
-      return true;
+      var passed = gate.allow(rec.frame);
+      watchActivation();
+      return passed;
+    }
+
+    //: A call the gate dropped: the element hears why at once, and the console gets a count, at most once a second.
+    function refuse(rec, msg) {
+      postToHtml(rec, {type: "error", message: GATE_REFUSAL.replace("{fn}", HTML_CALL[msg.type])});
+      dropped[rec.id] = (dropped[rec.id] || 0) + 1;
+      if (droppedTimer !== null) return;
+      droppedTimer = win.setTimeout(function () {
+        droppedTimer = null;
+        var ids = Object.keys(dropped);
+        for (var i = 0; i < ids.length; i++) {
+          reportError(ids[i] + ": " + DROPPED_REPORT.replace("{n}", String(dropped[ids[i]])));
+        }
+        dropped = Object.create(null);
+      }, DROPPED_REPORT_MS);
     }
 
     function onHtmlMessage(rec, port, ev) {
@@ -1429,7 +1519,10 @@
         throttle.push(rec.id, msg.value);
         return;
       }
-      if (!htmlMayAct(rec)) return;
+      if (!htmlMayAct(rec)) {
+        refuse(rec, msg);
+        return;
+      }
       if (msg.type === "emit") send({type: "event", element: rec.id, kind: "emit", name: msg.name, data: msg.data});
       else if (msg.type === "copy") send({type: "copy", element: rec.id, text: msg.text});
       else if (msg.type === "open_link") send({type: "open_link", url: msg.url});
