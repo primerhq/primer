@@ -188,6 +188,27 @@ async def test_a_turn_that_fails_after_a_mid_turn_pause_rests_paused(two_process
 
 
 @PROCESSES
+async def test_a_turn_that_fails_after_a_pause_written_as_a_status_rests_paused(two_processes, tmp_path, fake_event_bus):
+    """A turn claimed off a WAITING row, paused meanwhile (the pause found the row WAITING and wrote PAUSED, no flag), whose model call then fails
+    in a way an interactive session rests after: it rests PAUSED, the failure on the row. It used to end ``failed``: the failed rest was fenced on a
+    RUNNING or WAITING row (review of #916, probe A)."""
+    async with asyncio.timeout(BOUND_S):
+        api, worker, row, closers = await _world(tmp_path, two_processes=two_processes, status=SessionStatus.WAITING, turn_no=1)
+        try:
+            answers: list = []
+            llm = _ActingLLM(_pauser(api, row, "rest", fake_event_bus, answers), then="raise", scripts=[OK])
+
+            await run_one_session_turn(_make_lease(row.id), worker.dispatch_deps(llm, fake_event_bus))
+
+            assert answers[0][0] == "ok", answers
+            after = await worker.sessions.get(row.id)
+            assert (after.status, after.ended_reason, after.pause_requested) == (SessionStatus.PAUSED, None, False)
+            assert after.last_turn_error is not None and after.last_turn_error.code == "rate_limit"
+        finally:
+            await _close(closers)
+
+
+@PROCESSES
 async def test_a_turn_without_a_pause_still_rests_waiting(two_processes, tmp_path, fake_event_bus):
     """The control: no pause, the clean end rests WAITING as before."""
     async with asyncio.timeout(BOUND_S):

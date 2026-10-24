@@ -3468,22 +3468,24 @@ async def _come_to_rest(
 async def _rest_session(session_storage, session: WorkspaceSession, *, expected_epoch: int) -> SessionStatus | None:
     """Leave ``session`` RESTING after a failed turn: ONE field-scoped ``patch_if`` of ``status``. The status it rested at, or None when it did not.
 
-    WAITING, or PAUSED when a pause landed while the turn ran (``pause_requested``; ticket 01a16d9f): two conditional writes, each fenced on the flag,
-    so a pause committed between them is never rested WAITING. The writes themselves carry the conditions, so they hold on any process (the
-    lifecycle lock is this one's): the row is still RUNNING or WAITING (not ended, not paused as a status), no Cancel is pending (``cancel_requested``
-    is false: a row that rested with it set would end as cancelled, without calling the model, on the next send) and the binding epoch is the one the
-    turn started under. Refused, the session ends instead, as it did before a failure could rest.
+    WAITING, or PAUSED when a pause landed while the turn ran (ticket 01a16d9f), whichever way the pause was written: three conditional writes,
+    tried in turn, each fenced on the shape it rests: a RUNNING or WAITING row with no pause flag rests WAITING; one with the flag rests PAUSED; a row
+    the pause already wrote PAUSED (it found the row WAITING: a turn claimed off a rested row) stays PAUSED (review of #916; it used to end the
+    session ``failed``). A pause committed between two writes is never rested WAITING. Every write also carries the conditions that hold on any
+    process (the lifecycle lock is this one's): the row is not ended, no Cancel is pending (``cancel_requested`` is false: a row that rested with it
+    set would end as cancelled, without calling the model, on the next send) and the binding epoch is the one the turn started under. All three
+    refused, the session ends instead, as it did before a failure could rest.
     """
-    for target, paused in ((SessionStatus.WAITING, False), (SessionStatus.PAUSED, True)):
+    live = [SessionStatus.RUNNING.value, SessionStatus.WAITING.value]
+    for target, shape in (
+        (SessionStatus.WAITING, {"status": live, "pause_requested": [False]}),
+        (SessionStatus.PAUSED, {"status": live, "pause_requested": [True]}),
+        (SessionStatus.PAUSED, {"status": [SessionStatus.PAUSED.value]}),
+    ):
         try:
             written = await session_storage.patch_if(
                 session.id, to_jsonable_python({"status": target}),
-                where={
-                    "status": [SessionStatus.RUNNING.value, SessionStatus.WAITING.value],
-                    "pause_requested": [paused],
-                    "cancel_requested": [False],
-                    "binding_epoch": [expected_epoch],
-                },
+                where={**shape, "cancel_requested": [False], "binding_epoch": [expected_epoch]},
             )
         except NotFoundError:
             return None
