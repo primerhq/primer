@@ -353,7 +353,9 @@ Tracing plus metrics are wired at these call sites:
 The declared metric families (`primer/observability/metrics.py`) are LLM
 (`llm_tokens_total`, `llm_duration_seconds`, `llm_failure_total`,
 `llm_retry_total`), tools (`tool_calls_total`, `tool_duration_seconds`), claims
-(`claim_enqueue_latency_seconds`, `claim_queue_depth`, `claim_active_count`), and
+(`claim_enqueue_latency_seconds`, `claim_queue_depth`, `claim_active_count`,
+`claim_eligibility_read_errors_total{kind}`: the in-memory engine's failed eligibility reads, each one a lease
+skipped for one claim; see claim-machine.md), and
 the worker / turn / session families. Every declared family has a writer:
 `tests/observability/test_metric_families_are_written.py` fails when a family is declared
 that no other `primer/` module mentions (its `KNOWN_UNWRITTEN` exception list is empty,
