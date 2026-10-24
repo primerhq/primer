@@ -34,7 +34,7 @@ from primer.model_profile import ResolvedModel
 from primer.model.model_profile import ModelProfileConfig
 from tests.docs.test_docs_tool_call_bodies import DOC_FILES, REPO, calls_in
 
-COOKBOOK = REPO / "docs" / "agents" / "cookbook" / "multi-agent-graph-research.md"
+COOKBOOK = REPO / "docs" / "wiki" / "cookbook" / "multi-agent-graph-research.md"
 GRAPH_CALLS = ("create_graph", "update_graph")
 
 
