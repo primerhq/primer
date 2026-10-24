@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from tests.ui._agent_form_harness import DEFAULTS, FULL, agent_form, body, calls, click, mount, prop, type_into
+from tests.ui._agent_form_harness import DEFAULTS, FULL, agent_form, body, calls, click, mount, prop, set_picker_selection, type_into
 
 
 @pytest.fixture
@@ -405,3 +405,65 @@ def test_a_stored_part_typed_twice_excuses_only_the_first(ctx):
     type_into(ctx, "agent-system-prompt-editor", " A ")
     click(ctx, "agent-form-submit")
     assert body(ctx)["system_prompt"] == [" A ", "A"]
+
+
+# ---- the stored tool order and description (audit G3-05) ---------------------------------------------------------------------------------------------
+# The order of Agent.tools is the order the model is shown the tools, and the seeded agents store theirs unsorted. A save sorted and de-duplicated the
+# list and trimmed the description, so a one-field edit of a seeded agent rewrote two fields the operator never touched. The FULL fixture's tools are
+# already sorted, which is why no test saw it: these use the seeded operator's own list.
+
+
+def _seeded_operator_tools() -> list[str]:
+    from primer.bootstrap.operator_defaults import SEEDED_AGENT_FACTORIES
+
+    return list(SEEDED_AGENT_FACTORIES["operator"]("slow").tools)
+
+
+def test_a_one_field_edit_keeps_the_seeded_tool_order(ctx):
+    tools = _seeded_operator_tools()
+    assert tools != sorted(tools), "the seeded operator's list is not sorted, so a sort would show"
+    mount(ctx, existing={**FULL, "tools": tools})
+    type_into(ctx, "agent-temperature", "0.5")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["tools"] == tools
+
+
+def test_an_untouched_list_keeps_a_stored_duplicate(ctx):
+    stored = ["web__search", "system__list_files", "web__search"]
+    mount(ctx, existing={**FULL, "tools": stored})
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["tools"] == stored
+
+
+def test_a_new_pick_is_added_after_the_stored_tools_and_an_unpicked_one_leaves_only_its_place(ctx):
+    tools = _seeded_operator_tools()
+    picked = [t for t in tools if t != tools[1]] + ["web__fetch", "collections__search"]
+    mount(ctx, existing={**FULL, "tools": tools})
+    set_picker_selection(ctx, picked)
+    click(ctx, "tool-picker-stub")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["tools"] == [t for t in tools if t != tools[1]] + ["collections__search", "web__fetch"]
+
+
+def test_a_new_agent_sends_its_tools_sorted(ctx):
+    mount(ctx)
+    type_into(ctx, "agent-id", "refund-triage")
+    type_into(ctx, "agent-description", "Triages refunds")
+    set_picker_selection(ctx, ["web__search", "collections__search", "system__list_files"])
+    click(ctx, "tool-picker-stub")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["tools"] == ["collections__search", "system__list_files", "web__search"]
+
+
+def test_an_untouched_description_goes_back_as_stored(ctx):
+    mount(ctx, existing={**FULL, "description": " Triages refunds "})
+    type_into(ctx, "agent-temperature", "0.5")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["description"] == " Triages refunds "
+
+
+def test_an_edited_description_is_trimmed(ctx):
+    mount(ctx, existing={**FULL, "description": " Triages refunds "})
+    type_into(ctx, "agent-description", "  Triages refund requests  ")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["description"] == "Triages refund requests"
