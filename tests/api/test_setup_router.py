@@ -95,17 +95,13 @@ async def test_reset_agents_touches_nothing_else(client, app):
     assert mine.system_prompt == ["mine"] and mine.description == "mine"
 
 
-async def test_setup_endpoints_are_admin_only(raw_client, app):
-    """A role='user' account is rejected on both endpoints.
-
-    There is no non-admin client fixture; this is the construction
+async def _log_in_as_a_plain_user(raw_client, app) -> None:
+    """There is no non-admin client fixture; this is the construction
     tests/api/test_rbac_router_wiring.py:20-53 uses, verbatim in shape:
     register the first account (which becomes the admin), seed a second
     row with role='user', then log in as it on the same client so the
     cookie is replaced.
     """
-    from datetime import datetime, timezone
-
     from primer.auth.passwords import hash_password
     from primer.model.user import User
 
@@ -127,6 +123,11 @@ async def test_setup_endpoints_are_admin_only(raw_client, app):
         "/v1/auth/login", json={"username": "plain", "password": "pw-plain-pw"},
     )
     assert login.status_code == 200, login.text
+
+
+async def test_setup_endpoints_are_admin_only(raw_client, app):
+    """A role='user' account is rejected on both endpoints."""
+    await _log_in_as_a_plain_user(raw_client, app)
 
     for path in ("/v1/setup/seed", "/v1/setup/reset_agents"):
         resp = await raw_client.post(path)
@@ -270,3 +271,82 @@ async def test_reset_agents_iterates_the_factory_mapping(client, app, monkeypatc
     assert r.json()["reset"] == list(SEEDED_AGENT_FACTORIES)
     probe_row = await app.state.storage_provider.get_storage(Agent).get("probe-agent")
     assert probe_row.system_prompt == ["probe"]
+
+
+# ---- POST /v1/setup/reset_prime_instructions (pivot P2 task 10) ------------------------------------------------------------------
+
+
+async def _recorded_prime(app, *, agents_md: bytes | None = b"mine") -> _RecordingRegistry:
+    """A recorded ``prime`` row on the stub backend, its agents.md edited by a person."""
+    sp = app.state.storage_provider
+    await sp.get_storage(Workspace).create(Workspace(
+        id="prime", name="prime", template_id="local-default", provider_id="local",
+        created_at=datetime.now(timezone.utc),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
+    ))
+    await sp.set_default_workspace_id("prime")
+    registry = _RecordingRegistry()
+    app.state.workspace_registry = registry
+    if agents_md is not None:
+        (await registry.get_workspace("prime")).files["agents.md"] = agents_md
+    return registry
+
+
+async def test_reset_prime_instructions_rewrites_agents_md(client, app):
+    registry = await _recorded_prime(app)
+    r = await client.post("/v1/setup/reset_prime_instructions")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"workspace_id": "prime", "path": "agents.md", "bytes": len(shipped_prime_agents_md())}
+    assert registry.live["prime"].files == {"agents.md": shipped_prime_agents_md()}
+
+
+async def test_reset_prime_instructions_is_admin_only(raw_client, app):
+    registry = await _recorded_prime(app)
+    await _log_in_as_a_plain_user(raw_client, app)
+    resp = await raw_client.post("/v1/setup/reset_prime_instructions")
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["extensions"]["error"] == "forbidden_role"
+    assert registry.live["prime"].files == {"agents.md": b"mine"}
+
+
+async def test_reset_prime_instructions_without_a_default_workspace_is_a_404(client, app):
+    assert (await app.state.storage_provider.get_system_state()).default_workspace_id is None
+    r = await client.post("/v1/setup/reset_prime_instructions")
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "no default workspace is recorded"
+
+
+async def test_reset_prime_instructions_is_in_the_schema_with_its_errors(client, app):
+    op = app.openapi()["paths"]["/v1/setup/reset_prime_instructions"]["post"]
+    assert op["summary"] == "Rewrite prime's agents.md with the shipped version"
+    assert {"200", "400", "404", "409", "500", "503"} <= set(op["responses"])
+
+
+async def test_on_a_real_workspace_the_seed_keeps_an_edit_and_only_the_reset_restores_it(client, app, tmp_path):
+    """The journey on the production shape: the test app's real ``WorkspaceRegistry`` over a local provider. The seed creates prime and
+    writes the shipped file; a person edits it; a second seed (a boot) keeps the edit; the reset restores the shipped text."""
+    from primer.bootstrap.defaults import RESERVED_LOCAL_WORKSPACE_PROVIDER
+    from primer.model.workspace import LocalWorkspaceConfig, WorkspaceProvider, WorkspaceProviderType
+
+    await _template(app, "local-default", RESERVED_LOCAL_WORKSPACE_PROVIDER)
+    await app.state.storage_provider.get_storage(WorkspaceProvider).create(WorkspaceProvider(
+        id=RESERVED_LOCAL_WORKSPACE_PROVIDER,
+        provider=WorkspaceProviderType.LOCAL,
+        config=LocalWorkspaceConfig(root_path=str(tmp_path / "ws")),
+    ))
+    registry = app.state.workspace_registry
+
+    first = await client.post("/v1/setup/seed")
+    assert first.status_code == 200 and first.json()["errors"] == [], first.text
+    assert "prime" in first.json()["created"]
+    ws = await registry.get_workspace("prime")
+    assert await ws.read_file("agents.md") == shipped_prime_agents_md()
+
+    await ws.write_file("agents.md", b"edited by a person")
+    again = await client.post("/v1/setup/seed")
+    assert again.status_code == 200 and again.json()["errors"] == [], again.text
+    assert await ws.read_file("agents.md") == b"edited by a person"
+
+    reset = await client.post("/v1/setup/reset_prime_instructions")
+    assert reset.status_code == 200, reset.text
+    assert await ws.read_file("agents.md") == shipped_prime_agents_md()

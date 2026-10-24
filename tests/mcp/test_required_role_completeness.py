@@ -50,9 +50,12 @@ def reserved_provider_registry(fake_storage_provider) -> ProviderRegistry:
         toolset_factory=lambda p: object(),  # type: ignore[arg-type]
     )
 
+    # With a workspace registry, as the lifespan builds it: the tools that exist only then (read_doc_content,
+    # reset_prime_instructions) are real tools and must be classified too.
     system_toolset = build_system_toolset(
         storage_provider=fake_storage_provider,
         provider_registry=registry,
+        workspace_registry=WorkspaceRegistry(fake_storage_provider),
     )
     registry._system_toolset_provider = system_toolset  # noqa: SLF001
 

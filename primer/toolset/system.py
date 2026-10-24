@@ -83,7 +83,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks
 from primer.agent.approval import ApprovalResolver
@@ -103,6 +103,9 @@ from primer.toolset._system_artifact import artifact_store_tools
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.model.collection import Collection, Document
 from primer.model.except_ import (
+    BadRequestError,
+    ConflictError,
+    NotFoundError,
     PrimerError,
 )
 from primer.model.graph import Graph, GraphThread
@@ -249,6 +252,73 @@ if TYPE_CHECKING:
     from primer.api.registries.workspace_registry import WorkspaceRegistry
     from primer.int.storage_provider import StorageProvider
     from primer.toolset.oauth.service import ToolsetOAuthService
+
+
+# ===========================================================================
+# reset_prime_instructions
+# ===========================================================================
+
+
+class _ResetPrimeInstructionsArgs(BaseModel):
+    """No arguments: the file is always ``agents.md`` in the default workspace and the text is always the shipped one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+async def _session_in_default_workspace(storage_provider: "StorageProvider", ctx: ToolContext | None) -> bool:
+    """Whether the calling session may reach the default workspace, by the reach rule of the workspace tools (#870/#874).
+
+    A call with no calling session (the MCP endpoint hands handlers no context, a person) reaches every workspace. A session reaches
+    its own workspace only, and every workspace when that is the default one (:func:`primer.session.peer_messages.reach_of`); its
+    workspace is the context's, else its session row's, as ``workspaces._caller_reach`` reads it. A session whose workspace is unknown
+    reaches nothing.
+    """
+    from primer.session.peer_messages import reach_of
+
+    if ctx is None or not ctx.session_id:
+        return True
+    workspace_id = ctx.workspace_id
+    if not workspace_id:
+        row = await storage_provider.get_storage(WorkspaceSession).get(ctx.session_id)
+        workspace_id = row.workspace_id if row is not None else None
+    if not workspace_id:
+        return False
+    return await reach_of(storage_provider, workspace_id) is None
+
+
+def _make_reset_prime_instructions_handler(
+    *, storage_provider: "StorageProvider", workspace_registry: "WorkspaceRegistry",
+) -> ToolHandler:
+    """The handler of ``system__reset_prime_instructions``: :func:`primer.bootstrap.prime.reset_prime_agents_md`, from where it may run."""
+
+    async def _handler(arguments: dict[str, Any], *, ctx: ToolContext | None = None) -> ToolCallResult:
+        from primer.bootstrap.prime import reset_prime_agents_md
+
+        try:
+            _ResetPrimeInstructionsArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        # The tool writes into prime, so a session outside prime may not call it, whatever its role: such a session reaches only its own
+        # workspace with every workspace tool (#870/#874). Refused before anything is resolved or written.
+        if not await _session_in_default_workspace(storage_provider, ctx):
+            return _err(
+                "reset_prime_instructions runs only from a session in the default workspace (prime), or with no calling "
+                "session (MCP); this session's workspace is outside it, and nothing was written",
+                error_type="forbidden",
+            )
+        try:
+            result = await reset_prime_agents_md(storage_provider, workspace_registry=workspace_registry)
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except BadRequestError as exc:
+            return _err_from_primer(exc, error_type="bad-request")
+        except ConflictError as exc:  # WorkspaceRefusedError: a workspace this deployment refuses
+            return _err_from_primer(exc, error_type="conflict")
+        except PrimerError as exc:  # WorkspaceUnreachableError and other backend failures
+            return _err_from_primer(exc, error_type="unavailable")
+        return _ok(result)
+
+    return _handler
 
 
 # ===========================================================================
@@ -1555,6 +1625,44 @@ def build_system_toolset(
                 required_role="user",
             ),
             make_read_doc_content_handler(
+                workspace_registry=workspace_registry,
+            ),
+        )
+
+    # ---- reset_prime_instructions (admin; prime's shipped agents.md) --
+    # The tool twin of POST /v1/setup/reset_prime_instructions (pivot P2 task 10). Wired only with the workspace layer, like
+    # read_doc_content, but NOT workspace-only: an admin calls it over MCP (no calling session) as well as from a session in prime.
+    if workspace_registry is not None:
+        registry["reset_prime_instructions"] = (
+            make_tool(
+                id="reset_prime_instructions",
+                toolset_id=toolset_id,
+                purpose=(
+                    "Rewrite agents.md in the prime workspace with the platform's shipped version. Returns "
+                    "``{workspace_id, path, bytes}``."
+                ),
+                when=(
+                    "Use when prime's instructions were edited into a broken state and the user asked to restore them; "
+                    "not for editing them (write the file instead). Overwrites ``agents.md`` in the default workspace, "
+                    "whatever it holds, and nothing else (an ``AGENTS.md`` stays, and is not read while ``agents.md`` "
+                    "exists). From a session outside the default workspace (prime) it returns ``type=forbidden`` and "
+                    "writes nothing; with no default workspace yet, ``type=not-found``."
+                ),
+                args_schema=_ResetPrimeInstructionsArgs.model_json_schema(),
+                examples=[
+                    ToolExample(
+                        args={},
+                        returns="{workspace_id, path, bytes}",
+                    ),
+                ],
+                yields=False,
+                required_role="admin",
+                # Workspace.write_file: a local workspace writes in a thread under its scope lock, so a cancel would release the
+                # lock while the write still runs (as for workspaces::write_workspace_file).
+                interruptible=False,
+            ),
+            _make_reset_prime_instructions_handler(
+                storage_provider=storage_provider,
                 workspace_registry=workspace_registry,
             ),
         )

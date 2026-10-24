@@ -1,6 +1,6 @@
-"""Setup router: explicit seeding and the operator/builder reset.
+"""Setup router: explicit seeding, the operator/builder reset and the reset of prime's agents.md.
 
-Both endpoints are admin-only. ``/setup/seed`` is what the first-run
+Every endpoint is admin-only. ``/setup/seed`` is what the first-run
 wizard calls the moment it has created a model profile, which is the
 amendment C3 ordering fix: seeding cannot happen before a profile exists,
 so completion re-runs the pass rather than waiting for the next boot.
@@ -22,7 +22,7 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.bootstrap.operator_defaults import SEEDED_AGENT_FACTORIES
-from primer.bootstrap.prime import resolve_default_workspace_id
+from primer.bootstrap.prime import reset_prime_agents_md, resolve_default_workspace_id
 from primer.bootstrap.seed import builtin_toolset_providers, default_profile_id, run_ensure_pass
 from primer.bootstrap.setup_state import (
     MISSING_BUILDER_AGENT,
@@ -131,6 +131,38 @@ async def reset_agents(request: Request) -> dict:
         reset.append(agent_id)
     logger.info("setup: reset seeded agents %r", reset)
     return {"reset": reset}
+
+
+class PrimeInstructionsReset(BaseModel):
+    """What ``POST /v1/setup/reset_prime_instructions`` rewrote."""
+
+    workspace_id: str = Field(
+        ..., description="The default workspace's id (`prime` on a fresh install; an older install keeps its own, usually `primer`).",
+    )
+    path: str = Field(..., description="The file rewritten, relative to the workspace root: always `agents.md`.")
+    bytes: int = Field(..., description="The size of the shipped instructions now in the file.")
+
+
+@setup_router.post(
+    "/reset_prime_instructions",
+    response_model=PrimeInstructionsReset,
+    summary="Rewrite prime's agents.md with the shipped version",
+    # 404: no default workspace, or its row or live instance is gone; 400: a directory called agents.md; 409: a workspace this
+    # deployment refuses (WorkspaceRefusedError); 503: the workspace runtime does not answer, or no workspace registry.
+    responses=common_responses(400, 404, 409, 500, 503),
+)
+async def reset_prime_instructions(request: Request) -> PrimeInstructionsReset:
+    """Overwrite ``agents.md`` in the default workspace (prime) with the instructions the platform ships.
+
+    The explicit reset of pivot P2 (design 5.1): a boot only ever writes the file when it is absent, so this is the one way back to
+    the shipped text after an edit. Only ``agents.md`` is written; an ``AGENTS.md`` beside it is left in place, and is not read while
+    ``agents.md`` exists. Admin only, like every setup route. The tool twin is ``system__reset_prime_instructions``.
+    """
+    result = await reset_prime_agents_md(
+        get_storage_provider(request), workspace_registry=get_workspace_registry(request),
+    )
+    logger.info("setup: reset prime's agents.md in %r", result["workspace_id"])
+    return PrimeInstructionsReset.model_validate(result)
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ mcp_tools:
   - workspaces::interrupt_workspace_session
   - system::set_reply_binding
   - system::clear_reply_binding
+  - system::reset_prime_instructions
 ---
 
 # Workspaces - execution sandboxes
@@ -193,6 +194,42 @@ nothing: they are text for the model to read, marked as written by the
 workspace's users, and they add no tool, grant or role. Admins should
 treat prime's `agents.md` as shared input, written by everyone who can
 write files there, and not as a file only admins control.
+
+## The prime workspace
+
+The default workspace, shown as `prime`, is the one every user meets
+first and the one the operator works from. All users share it.
+
+- **Find it by `is_default: true`**, never by its name or id: a fresh
+  install's id is `prime`, while an older install keeps the id it had
+  (usually `primer`) and shows `prime` as its name. See "Do not assume
+  the default workspace's id" under Gotchas.
+- **It cannot be deleted.** `workspaces::delete_workspace` returns
+  `type=forbidden` and `DELETE /v1/workspaces/{id}` answers 403
+  `reserved_workspace`. It can be renamed.
+- **It ships an `agents.md`.** At boot the platform writes its own
+  instructions for prime (this workspace is the management plane and
+  the work happens in other workspaces; keep one ledger file per task
+  under `tasks/`; read the platform wiki first) to prime's root as
+  `agents.md`, but only when neither `agents.md` nor `AGENTS.md` is
+  there. A boot never overwrites an edited file and never adds an
+  `agents.md` beside an `AGENTS.md` (which would replace it, since
+  `agents.md` is read first). A deleted `agents.md` comes back at the
+  next boot; to run prime with no instructions, leave the file empty.
+- **Reset prime instructions (admin).**
+  `system::reset_prime_instructions` (no arguments) and
+  `POST /v1/setup/reset_prime_instructions` overwrite `agents.md` in
+  prime with the shipped version and return `{workspace_id, path,
+  bytes}`. Edits to the file are lost. An `AGENTS.md` is left in place,
+  and is not read while `agents.md` exists. From a session outside
+  prime the tool returns `type=forbidden` and writes nothing; with no
+  default workspace yet it returns `type=not-found` (the route answers
+  404). To change the instructions rather than restore them, write the
+  file.
+
+```json
+{"tool": "system::reset_prime_instructions", "arguments": {}}
+```
 
 ## Lifecycle and states
 
