@@ -506,7 +506,9 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   user fires a user's trigger, and a trigger saved before owners were
   recorded (no `owner`) ranks as an ordinary user. Over MCP or REST you
   may also always fire a trigger your own account owns, even after a
-  demotion; from inside a run you may not. Otherwise the tool answers
+  demotion; from inside a run you may not, and a subagent you start over
+  MCP with `system::invoke_agent` is such a run (it runs as an ordinary
+  user, not as you). Otherwise the tool answers
   `type=forbidden` (REST: 403 `forbidden_rank`) naming the trigger and
   both ranks, and nothing fires: no `trigger.fired` event, no
   subscription dispatched, `last_fired_at` unchanged. Scheduled and
