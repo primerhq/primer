@@ -9,7 +9,9 @@ EXTRA ENVIRONMENT, and folds for extra files and extra start-up commands. What i
 * hide a refusal: one the dialog has a field for lands under it, any other in the one line above the footer, in words, never a code (Review Focus 2);
 * turn Create natively disabled for the length of its request, or send twice;
 * leave the dialog for another page to make a template: "Create a template" opens the template overlay over the dialog and hands the new template back,
-  selected (lead ruling 2 of the slice; #886 round 3 added the hand-back for the old dialog).
+  selected (lead ruling 2 of the slice; #886 round 3 added the hand-back for the old dialog). It is offered ALWAYS, as a small action beside the template
+  dropdown (``nv-nw-new-template``; the lead's ruling on #911: every install has ``local-default``, so the empty state alone was never reached), and in the
+  empty state too (``nv-nw-create-template``).
 
 The context holds the REAL ``api.js``, ``shared.jsx``, ``shared/form-field.jsx``, the platform kit, ``workspaces/shared.jsx``, ``templates.jsx`` and
 ``nv-overlays.jsx`` (``tests/ui/_register_harness.py``), with the network, the console and ``useMutation`` stubbed. Every refusal is the real router's
@@ -382,6 +384,8 @@ def test_create_is_busy_not_disabled_while_the_request_is_out(ctx):
     assert ctx.eval("textOf(nativeButton('nv-nw-create'))") == "Creating…"
     cancel = js(ctx, "nativeButton('nv-nw-cancel').props")
     assert cancel.get("aria-disabled") == "true" and not cancel.get("disabled") and not cancel.get("aria-busy")
+    action = js(ctx, "nativeButton('nv-nw-new-template').props")
+    assert action.get("aria-disabled") == "true" and not action.get("disabled"), "no template is made while a workspace is being created"
     ctx.eval("press('nv-nw-create'); press('nv-nw-create');")
     settle(ctx)
     assert len(_posts(ctx)) == 1, "a second Create while one is out sends nothing"
@@ -446,6 +450,44 @@ def test_create_a_template_hands_the_new_one_back_selected(ctx):
     ctx.eval("press('nv-nw-create');")
     settle(ctx)
     assert _posts(ctx)[0]["body"] == {"template_id": "tpl-new"}
+
+
+def test_create_a_template_is_offered_beside_the_dropdown_when_templates_exist(ctx):
+    """The lead's ruling on #911: the action is always there, a small kit action under the "From template" dropdown, the template.create verb's affordance."""
+    _mount(ctx, [K8S, DOCKER, LOCAL])
+    action = js(ctx, "MR.find('nv-nw-new-template').props")
+    assert action["data-verb"] == "template.create" and action["kind"] == "ghost" and action["size"] == "sm"
+    assert ctx.eval("textOf(nativeButton('nv-nw-new-template'))") == "Create a template"
+    assert ctx.eval("MR.find('nv-nw-empty') === null && MR.find('nv-nw-create-template') === null"), "the empty state is for an empty list only"
+    order = js(ctx, "testids('nv-overlay:new-workspace')")
+    assert order.index("nv-nw-template") < order.index("nv-nw-new-template") < order.index("nv-nw-name"), "it sits with the dropdown, above the form"
+
+
+def test_the_action_beside_the_dropdown_hands_the_new_template_back_selected(ctx):
+    """With templates listed, "Create a template" opens the template overlay over the dialog; the template it makes comes back selected (before the
+    refreshed list holds it, and after), its size section follows it, what the person already typed in the dialog stays, and Create sends it."""
+    ctx.eval("HANDLER = function (m, p, b) { if (m === 'POST' && p === '/workspace_templates') return Promise.resolve(Object.assign({ id: 'tpl-new' }, b));"
+             " return Promise.resolve(b == null ? { ok: true } : b); };")
+    _mount(ctx, [K8S, DOCKER])
+    ctx.eval("setValue('nv-nw-name', 'kept'); press('nv-nw-new-template');")
+    assert ctx.eval("!!MR.find('wt-overlay') && !!MR.find('nv-overlay:new-workspace')")
+    assert js(ctx, "FORMS['wt-overlay'].title") == "New workspace template"
+    ctx.eval("setValue('ws-template-description', 'made beside the dropdown'); press('wt-save');")
+    settle(ctx)
+    assert ctx.eval("MR.find('wt-overlay') === null") and js(ctx, "OVERLAY_CLOSED") == 0 and js(ctx, "VERB_RUNS") == []
+    sel = js(ctx, "dialog().selector")
+    assert sel["value"] == "tpl-new" and [o["value"] for o in sel["options"]] == ["tpl-k3s", "tpl-dock", "tpl-new"]
+    assert ctx.eval("textOf(MR.find('nv-nw-summary'))") == "made beside the dropdown · Local on loc"
+    assert ctx.eval("MR.find('nv-nw-size') === null"), "the new template is Local: no size section"
+    assert js(ctx, "value('nv-nw-name')") == "kept"
+    assert js(ctx, f"RES[{json.dumps(KEY)}].refetched") >= 1
+    ctx.eval(f"serve({json.dumps(KEY)}, {{ items: {json.dumps([K8S, DOCKER])}.concat([{{ id: 'tpl-new', description: 'made beside the dropdown',"
+             " provider_id: 'loc', backend: { kind: 'local' } }]) }); MR.rerender();")
+    assert js(ctx, "dialog().selector.value") == "tpl-new"
+    _answer_create_with(ctx, {"id": "ws-new"})
+    ctx.eval("press('nv-nw-create');")
+    settle(ctx)
+    assert _posts(ctx)[0]["body"] == {"template_id": "tpl-new", "name": "kept"}
 
 
 def test_cancelling_the_template_overlay_leaves_the_dialog_as_it_was(ctx):
