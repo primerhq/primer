@@ -97,6 +97,9 @@ async def test_the_rest_list_and_get_serve_a_workspace_whose_snapshot_predates_t
 async def test_the_workspaces_tools_read_a_workspace_whose_snapshot_predates_the_rules(world, legacy):
     sp, _, toolset = world
     await _store_a_legacy_workspace(sp, legacy)
+    # The caller's session is in prime (the default workspace), which reaches every workspace (#870's reach rule): a session in another
+    # workspace is answered "does not exist" for w-old, which this test does not test.
+    await sp.set_default_workspace_id(caller("admin").workspace_id)
 
     got = await toolset.call(tool_name="get_workspace", arguments={"id": "w-old"}, ctx=caller("admin"))
     listed = await toolset.call(tool_name="list_workspaces", arguments={}, ctx=caller("admin"))
