@@ -51,15 +51,28 @@ class SessionClaimAdapter(ClaimAdapter):
         #   * parked_status IS NULL  -> a normal, never-parked session.
         #   * parked_status='resumable' -> a parked session the resume event
         #     has flipped; its lease was re-armed by engine.mark_resumable.
-        # A 'parked' row is excluded so a parked session is not claimable on
-        # Postgres. The in-memory engine's claim_due ignores this filter and
-        # gates only on lease presence, so its no-loop guarantee comes from the
-        # park branch dropping the lease (primer/session/dispatch.py), not from
-        # this SQL. This filter is the Postgres-lane resume gate.
+        # A 'parked' row is excluded so a parked session is not claimable. The
+        # park branch also drops the lease (primer/session/dispatch.py), but a
+        # lease can be armed on a parked row anyway (boot recovery re-arms every
+        # RUNNING session, and a park does not change the status), so this
+        # filter, and its twin is_eligible on the in-memory engine, is what
+        # keeps a parked session from running a fresh turn over its park.
         return (
             "e.data->>'parked_status' IS NULL "
             "OR e.data->>'parked_status' = 'resumable'"
         )
+
+    async def is_eligible(self, entity_id: str, now: datetime) -> bool:
+        """Mirrors :meth:`eligibility_sql`, ``e.data->>'parked_status' IS NULL OR e.data->>'parked_status' = 'resumable'``.
+
+        A missing row is not eligible (the claim query's inner join); with no storage the lease stays claimable.
+        """
+        if self._storage is None:
+            return True
+        session = await self._storage.get(entity_id)
+        if session is None:
+            return False
+        return session.parked_status is None or session.parked_status == "resumable"
 
     def entity_indexes(self, qualified_table: str) -> list[str]:
         # parked_status / parked_event_key / parked_event_keys all live inside
