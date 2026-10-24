@@ -343,7 +343,7 @@ function MP_ProfileModal(props) {
   const existing = props.existing || null;
   if (existing && MP_isSingle(existing)) {
     return (
-      <MP_SingleProfileOverlay key={existing.id} existing={existing} providers={props.providers || []}
+      <MP_SingleProfileOverlay key={existing.id} existing={existing} providers={props.providers || []} providersList={props.providersList || null}
         onClose={props.onClose} onSaved={props.onSaved} />
     );
   }
@@ -361,7 +361,7 @@ const MP_READONLY_FIELDSET = { display: "flex", flexDirection: "column", gap: 16
 // does not draw round-trips untouched. The Extended fold starts open when the profile holds extended settings (or is managed, whose fold cannot be toggled), like the
 // aggregate's Advanced fold. The fields start from the profile the overlay is mounted with and then belong to the person typing: a new `providers` array (the host hands over
 // a fresh empty one on every render until its list loads) must not wipe a draft.
-function MP_SingleProfileOverlay({ existing, providers, onClose, onSaved }) {
+function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, onSaved }) {
   const managed = MP_isManaged(existing);
   const [description, setDescription] = React.useState(() => existing.description || "");
   const [provider, setProvider] = React.useState(() => existing.provider_id || "");
@@ -444,6 +444,8 @@ function MP_SingleProfileOverlay({ existing, providers, onClose, onSaved }) {
           <input value={modelName} autoComplete="off" spellCheck={false} data-testid="mp-single-model" onChange={typed("model", setModelName)} />
         </PK_Field>
       </PK_Grid>
+      {/* The provider select's list, when its read was cut short (providersList: what PR_fetchAllPages answered the host). */}
+      <PR_PagedNote list={providersList} noun="LLM providers" testid="mp-single-providers-note" />
       <PK_Field label="Context window" help="The most tokens the model accepts in one request. Compaction uses it."
         error={shown("context", contextError) || refused.fields.context}>
         <input type="number" min={1} step={1} value={contextText} data-testid="mp-single-context" onChange={typed("context", setContextText)} />

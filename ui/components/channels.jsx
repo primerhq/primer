@@ -851,6 +851,7 @@ function ChannelsPage({ onNavigate, pushToast }) {
       {showNew && (
         <NewChannelModal
           providers={providerItems}
+          providersList={providers.data}
           onClose={() => setShowNew(false)}
           onCreated={() => {
             setShowNew(false);
@@ -862,6 +863,7 @@ function ChannelsPage({ onNavigate, pushToast }) {
       {editing && (
         <NewChannelModal
           providers={providerItems}
+          providersList={providers.data}
           existing={editing}
           onClose={() => setEditing(null)}
           onCreated={() => {
@@ -918,7 +920,8 @@ function CH_Toggle({ checked, onChange, label, help, disabled, testid }) {
   );
 }
 
-function NewChannelModal({ providers, onClose, onCreated, pushToast, existing }) {
+// providersList (optional): what the read of the providers answered (PR_fetchAllPages), so a list cut short is said under the provider select.
+function NewChannelModal({ providers, providersList, onClose, onCreated, pushToast, existing }) {
   const { apiFetch, useResource, useMutation } = window.primerApi;
   const isEdit = !!existing;
   const [id, setId] = React.useState(existing?.id || "");
@@ -1017,6 +1020,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
           {providers.map((p) => <option key={p.id} value={p.id}>{p.id} ({p.provider})</option>)}
         </select>
       </FormField>
+      <PR_PagedNote list={providersList} noun="channel providers" testid="ch-new-providers-note" />
       <FormField label="external id" help="Slack: channel ID · Telegram: chat ID · Discord: snowflake" err={fieldErrors["body.external_id"]}>
         <input
           className="input mono"

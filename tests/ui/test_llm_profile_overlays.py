@@ -1009,6 +1009,17 @@ def test_a_providers_list_that_changes_does_not_wipe_the_draft(ctx) -> None:
 
 
 
+def test_a_provider_list_cut_short_is_said_under_the_provider_select(ctx) -> None:
+    """Ticket 01a16dfa: the host reads every page of the LLM providers (PR_fetchAllPages) and hands the read over as ``providersList``; a read cut short is
+    said under the select (PR_PagedNote), never in silence, and a whole one says nothing."""
+    single(ctx, FULL_SINGLE)
+    assert not present(ctx, "mp-single-providers-note")
+    cut = {"items": PROVIDERS, "truncated": True, "serverTotal": 20000, "error": None}
+    ctx.eval(f"MR.rerender({{ open: true, existing: {json.dumps(FULL_SINGLE)}, providers: {json.dumps(PROVIDERS)}, providersList: {json.dumps(cut)},"
+             " onSaved: function () {}, onClose: function () {} })")
+    assert js(ctx, "MR.find('mp-single-providers-note').props.children") == f"Showing the first {len(PROVIDERS)} of 20000 LLM providers."
+
+
 # ---- the model settings of a single profile (Task 7) ------------------------------------------------------------------------------------------------------
 
 EXTENDED_RULE = 'Enter a JSON object, for example {"top_k": 20}.'
