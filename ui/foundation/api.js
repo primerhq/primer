@@ -305,17 +305,23 @@
 // A list route answers ONE page: {kind: "offset", offset, length, total, items}, at most 200 rows (primer/api/pagination.py caps ?limit at 200), and `total`
 // is null when the backend cannot count. About 35 console lists read the first page of 200 and stopped, so a 201st workspace, agent or session was reachable
 // nowhere in the console. PR_fetchAllPages reads every page, modelled on the templates page's own reader (#886):
-//   GET <path>?limit=<pageSize>&offset=<n * pageSize> with the path's own query after it, until
-//   - a page shorter than the page size, or the server's `total` reached (the list has ended),
-//   - a full page that adds no new id (a server that ignores the offset answers every page with the first one), or
-//   - maxPages pages (the cap: the rows read are kept and `truncated` is set).
-// Each id is listed once: a row created between two pages shifts the next page back by one and repeats a row. A page that fails after the first keeps what was
-// read, with `truncated` set and `error` the failure in words; a failure of the first page, or of a read the caller aborted, rejects as the request did.
+//   GET <path>?limit=<pageSize>&offset=<rows answered so far> with the path's own query after it (the offset advances by the rows a page answered, so a
+//   server that answers fewer than the limit is read on from where it stopped), until
+//   - the list has ended: an empty page; with a `total` from the server, the rows answered reaching it; without one, a page shorter than the page size,
+//   - a page that adds nothing new (a server that ignores the offset answers every page with the first one; rows are told apart by idKey, and a page of
+//     rows without one that repeats the previous page adds nothing), or
+//   - maxPages pages (the cap).
+// Each row is listed once: a row created between two pages shifts the next page back and repeats a row. The read is `truncated` (and its note says so) when it
+// stopped at the cap with rows possibly left, when a page after the first failed (the rows read are kept, `error` says why), and whenever it ended with fewer
+// rows than the server's `total`. A failure of the first page, or of a read the caller aborted, rejects as the request did. A partial answer is for a FIRST
+// read only: useResource (ui/foundation/use-resource.js, PR_partialFailure) keeps the list it already shows when a refresh comes back cut short by a failure.
 // The answer is {items, total: items.length, pages: the requests answered, truncated, limit: maxPages * pageSize, serverTotal: the server's last count or null,
 // error}. Options: signal, pageSize (at most 200), maxPages (default 50), idKey (default "id"; a workspace's sessions are keyed by "session_id") and apiFetch
 // (default window.primerApi.apiFetch, read when called). Pinned by tests/ui/test_fetch_all_pages.py.
 var PR_PAGE_SIZE = 200;
 var PR_MAX_PAGES = 50;
+// The longest a lengthened poll may get (ruling 4 of round 2): a session's status a minute stale is the most a list may show.
+var PR_MAX_POLL_MS = 60000;
 
 function PR_pageUrl(path, limit, offset) {
   var at = path.indexOf("?");
@@ -333,46 +339,80 @@ function PR_fetchAllPages(path, opts) {
   var items = [];
   var seen = Object.create(null);
   var serverTotal = null;
-  function answer(pages, truncated, error) {
-    return {
-      items: items, total: items.length, pages: pages, truncated: truncated, limit: maxPages * size, serverTotal: serverTotal, error: error,
+  var lastPage = null;
+  function answer(pages, cut, error, failure) {
+    var short = serverTotal !== null && items.length < serverTotal;
+    var out = {
+      items: items, total: items.length, pages: pages, truncated: !!(cut || error || short), limit: maxPages * size, serverTotal: serverTotal,
+      error: error,
     };
+    // The failure itself, for useResource to keep a list it already shows (PR_partialFailure); not enumerable, so it is never compared or copied.
+    if (failure) Object.defineProperty(out, "failure", { value: failure, enumerable: false });
+    return out;
   }
-  function page(n) {
-    return fetchPage("GET", PR_pageUrl(path, size, n * size), null, { signal: o.signal }).then(function (body) {
+  function page(n, offset) {
+    return fetchPage("GET", PR_pageUrl(path, size, offset), null, { signal: o.signal }).then(function (body) {
       var rows = body && Array.isArray(body.items) ? body.items : [];
       if (body && typeof body.total === "number") serverTotal = body.total;
+      var signature = rows.length ? JSON.stringify(rows) : null;
       var added = 0;
-      rows.forEach(function (row) {
-        var id = row && row[idKey] != null ? String(row[idKey]) : null;
-        if (id !== null && seen[id]) return;
-        if (id !== null) seen[id] = true;
-        items.push(row);
-        added += 1;
-      });
-      var read = n * size + rows.length;
-      if (rows.length < size || added === 0 || (serverTotal !== null && read >= serverTotal)) return answer(n + 1, false, null);
-      if (n + 1 >= maxPages) return answer(n + 1, true, null);
-      return page(n + 1);
+      if (signature === null || signature !== lastPage) {
+        rows.forEach(function (row) {
+          var id = row && row[idKey] != null ? String(row[idKey]) : null;
+          if (id !== null && seen[id]) return;
+          if (id !== null) seen[id] = true;
+          items.push(row);
+          added += 1;
+        });
+      }
+      lastPage = signature;
+      var read = offset + rows.length;
+      var ended = rows.length === 0 || (serverTotal !== null ? read >= serverTotal : rows.length < size);
+      if (ended || added === 0) return answer(n + 1, false, null, null);
+      if (n + 1 >= maxPages) return answer(n + 1, true, null, null);
+      return page(n + 1, read);
     }, function (err) {
       var aborted = (o.signal && o.signal.aborted) || (err && err.name === "AbortError");
       if (n === 0 || aborted) throw err;
       var said = window.primerApi.readRefusal ? window.primerApi.readRefusal(err).message : (err && err.message) || "Request failed";
-      return answer(n, true, said);
+      return answer(n, true, said, err);
     });
   }
-  return page(0);
+  return page(0, 0);
+}
+
+// The failure that cut an answer of PR_fetchAllPages short (a page after the first failed), or null for any other value. useResource reads it: a refresh that
+// comes back cut short by a failure keeps the list already shown and reports the failure as its error (stale-while-error); only a first read shows the
+// partial list with its note. The error is the request's own (an ApiError), or one made from the answer's words when the answer was copied on the way.
+function PR_partialFailure(data) {
+  if (!data || data.truncated !== true || typeof data.error !== "string" || !data.error) return null;
+  if (data.failure) return data.failure;
+  var err = new Error(data.error);
+  err.detail = data.error;
+  return err;
+}
+
+// The noun for a count: `noun` is [one, many], or a plural such as "agents", "approval policies" or "harnesses" whose singular is worked out.
+function PR_nounFor(noun, n) {
+  if (Array.isArray(noun)) return n === 1 ? noun[0] : noun[1];
+  var many = noun || "rows";
+  if (n !== 1) return many;
+  if (/ies$/.test(many)) return many.replace(/ies$/, "y");
+  if (/sses$/.test(many)) return many.replace(/sses$/, "ss");
+  return many.replace(/s$/, "");
 }
 
 // What a list cut short says, or null for a whole list: "Showing the first 10000 of 12345 agents.", "Showing the first 10000 agents; there may be more." (the
-// cap with no count from the server), or "Showing the first 400 agents; the rest did not load: <why>". Never a silent truncation (ruling 3).
+// cap with no count from the server), or "Showing the first 400 agents; the rest did not load: <why>". Never a silent truncation (ruling 3). `noun` is a
+// plural or [one, many].
 function PR_pagedNote(list, noun) {
   if (!list || !list.truncated) return null;
   var n = (list.items || []).length;
-  var what = noun || "rows";
-  if (list.error) return "Showing the first " + n + " " + what + "; the rest did not load: " + list.error;
-  if (typeof list.serverTotal === "number" && list.serverTotal > n) return "Showing the first " + n + " of " + list.serverTotal + " " + what + ".";
-  return "Showing the first " + n + " " + what + "; there may be more.";
+  if (list.error) return "Showing the first " + n + " " + PR_nounFor(noun, n) + "; the rest did not load: " + list.error;
+  if (typeof list.serverTotal === "number" && list.serverTotal > n) {
+    return "Showing the first " + n + " of " + list.serverTotal + " " + PR_nounFor(noun, list.serverTotal) + ".";
+  }
+  return "Showing the first " + n + " " + PR_nounFor(noun, n) + "; there may be more.";
 }
 
 // The note under a list that was cut short (nothing for a whole one): props {list: what PR_fetchAllPages answered, noun, testid (default pr-paged-note)}.
@@ -382,16 +422,21 @@ function PR_PagedNote(props) {
   return window.React.createElement("div", { className: "pr-paged-note", role: "note", "data-testid": props.testid || "pr-paged-note" }, text);
 }
 
-// useResource for a list read with PR_fetchAllPages, polled at most one page per base tick (ruling 4): the poll is `pollMs` times the pages the last read took,
-// so a list of three pages polled every 15 s is read every 45 s, and a list of one page polls exactly as before. Every page is read on each poll, so a change on
-// any page still shows, only later; a refetch (after a write, on a Refresh, on wake) is not slowed. A pollMs of 0 or null is passed through.
+// The poll of a list read in `pages` pages: `base` times the pages, so a list of three pages polled every 15 s is read every 45 s (one request per 15 s on
+// average, as the one page it replaced), but never longer than PR_MAX_POLL_MS (a minute) unless the base itself is longer. A base of 0 or null is passed through.
+function PR_pagedPollMs(base, pages) {
+  if (!(base > 0)) return base;
+  return Math.max(base, Math.min(base * Math.max(1, pages || 1), PR_MAX_POLL_MS));
+}
+
+// useResource for a list read with PR_fetchAllPages, polled at most one page per base tick (ruling 4), within a minute (PR_pagedPollMs). Every page is read on
+// each poll, so a change on any page still shows, only later; a refetch (after a write, on a Refresh, on wake) is not slowed.
 function PR_usePagedResource(key, fetcher, opts) {
   var o = opts || {};
   var pagesState = window.React.useState(1);
   var pages = pagesState[0];
   var setPages = pagesState[1];
-  var base = o.pollMs;
-  var res = window.primerApi.useResource(key, fetcher, Object.assign({}, o, { pollMs: base > 0 ? base * pages : base }));
+  var res = window.primerApi.useResource(key, fetcher, Object.assign({}, o, { pollMs: PR_pagedPollMs(o.pollMs, pages) }));
   var read = res.data && res.data.pages > 1 ? res.data.pages : 1;
   window.React.useEffect(function () {
     if (read !== pages) setPages(read);
@@ -401,7 +446,11 @@ function PR_usePagedResource(key, fetcher, opts) {
 
 window.PR_PAGE_SIZE = PR_PAGE_SIZE;
 window.PR_MAX_PAGES = PR_MAX_PAGES;
+window.PR_MAX_POLL_MS = PR_MAX_POLL_MS;
 window.PR_fetchAllPages = PR_fetchAllPages;
+window.PR_partialFailure = PR_partialFailure;
+window.PR_nounFor = PR_nounFor;
 window.PR_pagedNote = PR_pagedNote;
 window.PR_PagedNote = PR_PagedNote;
+window.PR_pagedPollMs = PR_pagedPollMs;
 window.PR_usePagedResource = PR_usePagedResource;

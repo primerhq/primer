@@ -143,6 +143,6 @@ def test_the_new_channel_dialog_says_a_provider_list_cut_short():
         ctx.eval("MR.rerender({ providers: [{ id: 'cp-1', provider: 'discord' }], providersList: { items: [{ id: 'cp-1' }], truncated: true, serverTotal: null,"
                  " error: 'the store is down' }, onClose: function () {}, onCreated: function () {}, pushToast: function () {} });")
         assert js(ctx, "MR.find('ch-new-providers-note').props.children") == (
-            "Showing the first 1 channel providers; the rest did not load: the store is down")
+            "Showing the first 1 channel provider; the rest did not load: the store is down")
     finally:
         ctx.close()

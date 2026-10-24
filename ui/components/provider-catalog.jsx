@@ -126,6 +126,8 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   const [classErrors, setClassErrors] = React.useState({});
   // What each class's read answered (PR_fetchAllPages): its note says when it was cut short.
   const [classLists, setClassLists] = React.useState({});
+  // The reads last drawn, per class: a reload cut short by a failure keeps them (as useResource keeps a list it shows; PR_partialFailure).
+  const classListsRef = React.useRef({});
   const [profileCounts, setProfileCounts] = React.useState({});
   const [profilesList, setProfilesList] = React.useState(null);
 
@@ -162,12 +164,15 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
 
   React.useEffect(() => {
     let cancelled = false;
+    // Aborted when the classes change or the page closes, so a read stops asking for pages nobody will draw.
+    const ctrl = new AbortController();
+    const signal = ctrl.signal;
     setLoading(true);
 
     // Every provider of each class and every profile, every page of each (PR_fetchAllPages, ui/foundation/api.js).
     const fetches = classesToFetch.map(async (c) => {
       try {
-        const res = await PR_fetchAllPages(`/${c.plural}`, { apiFetch });
+        const res = await PR_fetchAllPages(`/${c.plural}`, { apiFetch, signal });
         return { key: c.key, items: (res && res.items) || [], list: res, error: null };
       } catch (err) {
         return { key: c.key, items: [], list: null, error: err };
@@ -176,7 +181,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
 
     const hasLlm = classesToFetch.some((c) => c.key === "llm");
     const profilesPromise = hasLlm
-      ? PR_fetchAllPages("/model_profiles", { apiFetch }).catch(() => ({ items: [] }))
+      ? PR_fetchAllPages("/model_profiles", { apiFetch, signal }).catch(() => ({ items: [] }))
       : Promise.resolve({ items: [] });
 
     Promise.all([Promise.all(fetches), profilesPromise]).then(([results, profRes]) => {
@@ -185,10 +190,20 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
       const nextErrors = {};
       const nextLists = {};
       results.forEach((r) => {
+        const failure = window.PR_partialFailure(r.list);
+        const kept = classListsRef.current[r.key];
+        if (failure && kept) {
+          // A reload cut short by a failure: the providers already drawn stay, and the failure is said in the class's error.
+          nextData[r.key] = kept.items || [];
+          nextLists[r.key] = kept;
+          nextErrors[r.key] = failure;
+          return;
+        }
         nextData[r.key] = r.items;
         nextLists[r.key] = r.list;
         if (r.error) nextErrors[r.key] = r.error;
       });
+      classListsRef.current = nextLists;
       const counts = {};
       ((profRes && profRes.items) || []).forEach((p) => {
         if (p.provider_id) {
@@ -205,6 +220,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
 
     return () => {
       cancelled = true;
+      ctrl.abort();
     };
   }, [classesToFetch, reloadKey, apiFetch]);
 

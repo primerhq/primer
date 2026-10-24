@@ -46,6 +46,9 @@ window.ChannelProviderDetail = function (props) {
   return el("div", { "data-testid": "ch-detail" }, "CHDetail:" + props.providerId);
 };
 
+// The catalog aborts its reads when it closes (#923, round 2): the stand-in the browser's AbortController is for MiniRacer, which has none.
+globalThis.AbortController = function () { var s = { aborted: false }; this.signal = s; this.abort = function () { s.aborted = true; }; };
+
 var PROVIDER_FIXTURES = {};
 var FAIL_CLASSES = {};
 window.__FAIL_DELETE = null;
@@ -512,6 +515,35 @@ def test_a_read_cut_short_says_so(ctx) -> None:
     ctx.eval(_PAGED_LLM + 'LLM_FAIL_FROM = 200; MR.mount(window.ProviderCatalog, { initialClass: "llm", onNavigate: onNavigate });')
     settle(ctx)
     assert ctx.eval("textOf(MR.find('pc-truncated:llm'))") == "Showing the first 200 LLM providers; the rest did not load: db failed"
+
+
+def test_the_catalog_passes_its_signal_and_aborts_on_close(ctx) -> None:
+    """Round 2, nit: the reads took no signal, so a closed catalog kept asking for pages nobody would draw."""
+    ctx.eval(_PAGED_LLM + 'var SIGNALS = []; var __af = window.primerApi.apiFetch;'
+             ' window.primerApi.apiFetch = function (m, p, b, o) { SIGNALS.push(o && o.signal); return __af(m, p, b, o); };'
+             ' MR.mount(window.ProviderCatalog, { initialClass: "llm", onNavigate: onNavigate });')
+    settle(ctx)
+    assert js(ctx, "SIGNALS.length") == 3, "two pages of providers and one of profiles"
+    assert js(ctx, "SIGNALS.every(function (s) { return s && s.aborted === false; })")
+    ctx.eval("MR.mount(function () { return null; }, {});")
+    assert js(ctx, "SIGNALS.every(function (s) { return s.aborted === true; })")
+
+
+def test_a_reload_cut_short_keeps_the_providers_already_drawn(ctx) -> None:
+    """Round 2, finding 6, for the catalog's own reads: a reload whose second page fails keeps the 250 cards and says the failure; only a first read
+    draws a partial list with its note."""
+    ctx.eval(_PAGED_LLM + """
+    window.PC_RegisterOverlay = function (props) { window.__REGISTER_PROPS = props; return el("div", { "data-testid": "register-stub" }, "Register"); };
+    MR.mount(window.ProviderCatalog, { initialClass: "llm", onNavigate: onNavigate });
+    """)
+    settle(ctx)
+    assert ctx.eval("textOf(MR.find('pk-count'))") == "250 providers"
+    ctx.eval("LLM_FAIL_FROM = 200; press('pc-register-open'); MR.rerender();")
+    ctx.eval("window.__REGISTER_PROPS.onClose(); MR.rerender();")
+    settle(ctx)
+    assert ctx.eval("textOf(MR.find('pk-count'))") == "250 providers"
+    assert ctx.eval("MR.find('pc-truncated:llm')") is None
+    assert "db failed" in ctx.eval("textOf(MR.find('pc-error:llm'))")
 
 
 def test_an_instance_deep_link_opens_its_row(ctx) -> None:
