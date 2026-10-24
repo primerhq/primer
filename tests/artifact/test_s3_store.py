@@ -86,12 +86,13 @@ def test_auto_addressing_is_path_style_with_an_endpoint_and_botocore_default_on_
 
 
 def test_client_kwargs_carry_the_region_the_endpoint_only_when_set_and_both_keys() -> None:
-    assert s3_client_kwargs(S3ArtifactConfig(bucket="b")) == {"region_name": None}
+    """The region is always the row's: blank is ``us-east-1`` (S3's default region), never one from the environment or a profile."""
+    assert s3_client_kwargs(S3ArtifactConfig(bucket="b")) == {"region_name": "us-east-1"}
     assert s3_client_kwargs(S3ArtifactConfig(bucket="b", region="eu-west-1", endpoint_url="")) == {"region_name": "eu-west-1"}, (
         "a blank endpoint (what the console sends for an empty box) never reaches botocore"
     )
     both = s3_client_kwargs(S3ArtifactConfig(bucket="b", endpoint_url="http://minio:9000", access_key="k", secret_key="s"))
-    assert both == {"region_name": None, "endpoint_url": "http://minio:9000", "aws_access_key_id": "k", "aws_secret_access_key": "s"}
+    assert both == {"region_name": "us-east-1", "endpoint_url": "http://minio:9000", "aws_access_key_id": "k", "aws_secret_access_key": "s"}
 
 
 @pytest.mark.parametrize(("keys", "missing"), [({"access_key": ACCESS_KEY}, "secret_key"), ({"secret_key": SECRET}, "access_key")])
@@ -246,6 +247,63 @@ async def test_the_client_uses_the_addressing_style_timeouts_and_retries(store: 
     assert (config.connect_timeout, config.read_timeout) == (10, 60)
     # ``max_attempts: 3`` counts retries; botocore keeps it as the total, the first attempt and three retries.
     assert config.retries == {"mode": "standard", "total_max_attempts": 4}
+
+
+class _Intercepted(Exception):
+    """Raised by a ``before-send`` handler: the request is stopped before anything leaves the process."""
+
+
+def _intercept_requests(store: S3ArtifactStorage) -> list[str]:
+    """Stop every request of ``store``'s client before it is sent, and record the URL it was going to."""
+    urls: list[str] = []
+
+    def stop(request, **kwargs):
+        urls.append(request.url)
+        raise _Intercepted(request.url)
+
+    store._client.meta.events.register("before-send.s3", stop)
+    return urls
+
+
+@pytest.mark.parametrize("source", ["environment", "profile"])
+async def test_a_configured_endpoint_never_redirects_a_row_without_one(
+    s3_endpoint: str, s3_prefix: str, isolated_aws_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, s3_admin, source: str,
+) -> None:
+    """Review of #899, item 5: the row is the only source of the connection. botocore reads ``AWS_ENDPOINT_URL_S3`` and a profile's
+    ``endpoint_url``; a row that names no endpoint (AWS) must not sign its own keys against that server."""
+    if source == "environment":
+        monkeypatch.setenv("AWS_ENDPOINT_URL_S3", s3_endpoint)
+    else:
+        config_file = tmp_path / "aws-config"
+        config_file.write_text(f"[default]\nendpoint_url = {s3_endpoint}\n", encoding="utf-8")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config_file))
+    s3 = S3ArtifactStorage(_config(None, s3_prefix, region="us-east-1", addressing_style="path"))
+    await s3.initialize()
+    try:
+        urls = _intercept_requests(s3)
+        with pytest.raises(_Intercepted):
+            await s3.put(data=b"env", mime_type="text/plain")
+
+        assert not s3._client.meta.endpoint_url.startswith(s3_endpoint), s3._client.meta.endpoint_url
+        assert urls and all(not url.startswith(s3_endpoint) for url in urls), urls
+        assert "amazonaws.com" in urls[0]
+    finally:
+        await s3.aclose()
+    assert s3_keys_under(s3_admin, s3_prefix) == []
+
+
+async def test_the_region_is_the_rows_never_the_environments(isolated_aws_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    blank = S3ArtifactStorage(_config("http://127.0.0.1:9", region=None))
+    named = S3ArtifactStorage(_config("http://127.0.0.1:9", region="ap-south-1"))
+    await blank.initialize()
+    await named.initialize()
+    try:
+        assert (blank._client.meta.region_name, named._client.meta.region_name) == ("us-east-1", "ap-south-1")
+    finally:
+        await blank.aclose()
+        await named.aclose()
 
 
 async def test_ambient_credentials_are_used_when_the_row_has_no_keys(

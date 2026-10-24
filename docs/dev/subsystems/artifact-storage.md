@@ -104,7 +104,11 @@ finishes, a cleanup task removes both files (the module holds the task until it 
 
 **S3 put, get and delete.** The client is opened by `initialize` (once, also under concurrent calls) with the addressing style
 (`auto` is path-style when `endpoint_url` is set, as MinIO needs, and botocore's own choice on AWS), a 10 s connect and 60 s read timeout
-and standard retries (three retries). A get answers `None` only for a missing key (`NoSuchKey`, `404`, `NotFound`); any other error, a
+and standard retries (three retries). The row is the only source of where it connects: the endpoint is the row's `endpoint_url` (AWS when
+blank) and the client ignores `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and a profile's `endpoint_url` (`ignore_configured_endpoint_urls`),
+and the region is the row's `region`, `us-east-1` when blank, never `AWS_REGION` or a profile's. Only the credentials of a row with no keys
+come from the ambient chain. `endpoint_url` is an admin-only field and, like the admin-configured LLM provider URLs, is not routed through
+the egress guard (accepted in the review of #899). A get answers `None` only for a missing key (`NoSuchKey`, `404`, `NotFound`); any other error, a
 missing bucket or a refused read, is raised, because it is an outage, not an absent file. An id that is not a backend id is never turned
 into a key: a get answers `None` and a delete does nothing, without a request. A put that does not complete (cancelled while its request
 is in flight, or failed in any way but one raised before a request was sent) never hands out its id, and the object it may have left is
