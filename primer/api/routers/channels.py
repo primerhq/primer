@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 
 from primer.api.deps import get_storage_provider
 from primer.api.routers._crud import make_crud_router
@@ -128,7 +129,7 @@ async def _channel_provider_on_pre_create(entity: ChannelProvider, request: Requ
     try:
         check_channel_provider_secrets(entity)
     except EntityCheckError as exc:
-        raise _as_rest_error(exc) from exc
+        raise _as_rest_error(exc, at_field=True) from exc
 
 
 async def _channel_provider_on_pre_update(entity: ChannelProvider, existing: ChannelProvider, request: Request) -> None:
@@ -142,7 +143,7 @@ async def _channel_provider_on_pre_update(entity: ChannelProvider, existing: Cha
     try:
         check_channel_provider_secrets(entity)
     except EntityCheckError as exc:
-        raise _as_rest_error(exc) from exc
+        raise _as_rest_error(exc, at_field=True) from exc
 
 
 def make_channel_provider_router() -> APIRouter:
@@ -202,10 +203,18 @@ async def _channel_on_pre_update(entity: Channel, existing: Channel, request: Re
         raise _as_rest_error(exc) from exc
 
 
-def _as_rest_error(exc: EntityCheckError) -> Exception:
-    """A ``ConflictError`` for a clash, else a 422 whose detail is the plain message (the shape this router has always used)."""
+def _as_rest_error(exc: EntityCheckError, *, at_field: bool = False) -> Exception:
+    """A ``ConflictError`` for a clash, else a 422.
+
+    The channel routes answer a 422 whose detail is the plain message (the shape they have always used). The channel provider's
+    secret check (``at_field``) answers a refusal that names its field as the request-validation envelope at that field's body
+    path, ``body.config.<name>`` (ticket 01a16b64 R5), the shape the routers answer for a refused body field, so a client can
+    show it under the field instead of a detail that does not say which one.
+    """
     if exc.kind == "conflict":
         return ConflictError(exc.message)
+    if at_field and exc.field:
+        return RequestValidationError([{"type": "value_error", "loc": ("body", *exc.field.split(".")), "msg": exc.message}])
     return HTTPException(status_code=422, detail=exc.message)
 
 

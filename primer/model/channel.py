@@ -158,20 +158,18 @@ _TOKEN_RULES: dict[type[BaseModel], dict[str, Callable[[str], str | None]]] = {
 
 
 def channel_token_problem(config: BaseModel) -> tuple[str, str] | None:
-    """The first token of ``config`` that may not be stored, as ``(field, message)``, else ``None``.
+    """The first token of ``config`` that breaks its platform's rule, as ``(field, message)``, else ``None``.
 
     Run on a body AFTER its served masks were restored (audit G2-01): the field validators let the served mask through so the
-    update can restore the stored token, and this is where a mask that was NOT restored is refused, with every token's
-    platform rule applied to the value that will actually be stored.
+    update can restore the stored token, and this applies every token's platform rule to the value that will actually be
+    stored. A mask that was NOT restored never gets here: :func:`primer.channel.checks.check_channel_provider_secrets` refuses
+    it first, naming its field (and a bare mask breaks every platform's rule anyway).
     """
     for name, problem in _TOKEN_RULES.get(type(config), {}).items():
         value = getattr(config, name, None)
         if not isinstance(value, SecretStr):
             continue
-        plain = value.get_secret_value()
-        if plain == MASK:
-            return name, f"{name}: this is the mask a GET serves, not a token: re-enter the token"
-        message = problem(plain)
+        message = problem(value.get_secret_value())
         if message is not None:
             return name, message
     return None
