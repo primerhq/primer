@@ -25,6 +25,10 @@ DEFAULT_ARTIFACT_PROVIDER_ID: str = "artifact-storage-default"
 #: Id of the singleton :class:`ActiveArtifactStorageConfig` row.
 ACTIVE_ARTIFACT_STORAGE_CONFIG_ID: str = "_active_artifact_storage_config"
 
+#: Why a row with exactly one of the two S3 keys is refused (``S3ArtifactConfig.missing_key``): ``primer/artifact/checks.py`` refuses the write
+#: with it and ``primer/artifact/s3.py`` refuses to build a store from such a row.
+S3_KEYS_INCOMPLETE_MESSAGE = "set both access_key and secret_key, or neither to use the server's own credentials"
+
 #: How an S3 request names its bucket: ``path`` puts it in the URL path, ``virtual`` in the host name, and ``auto`` lets primer choose
 #: (``path`` when ``endpoint_url`` is set, which is what MinIO and most S3-compatible servers need, and botocore's own default on AWS).
 S3AddressingStyle = Literal["auto", "path", "virtual"]
@@ -100,6 +104,23 @@ class S3ArtifactConfig(BaseModel):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    def missing_key(self) -> Literal["access_key", "secret_key"] | None:
+        """The key a half pair lacks: ``secret_key`` when only the access key is set, ``access_key`` when only the secret key is, ``None`` for
+        both or neither.
+
+        A half pair is refused, never completed from the server's ambient credentials (a pod role, an env pair): botocore would sign with an
+        identity the operator did not name. It is a check the writes and the S3 store run, not a validator, so a row stored before the rule
+        still loads (and is refused when it is built).
+        """
+        has_access, has_secret = _is_set(self.access_key), _is_set(self.secret_key)
+        if has_access == has_secret:
+            return None
+        return "secret_key" if has_access else "access_key"
+
+
+def _is_set(key: SecretStr | None) -> bool:
+    return key is not None and bool(key.get_secret_value().strip())
 
 
 class ArtifactStorageProvider(Identifiable):

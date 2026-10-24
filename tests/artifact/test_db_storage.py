@@ -8,10 +8,7 @@ import pytest
 
 from primer.artifact.db import DbArtifactStorage
 from primer.artifact.factory import build_artifact_storage
-from primer.model.except_ import ConfigError
-from primer.model.provider import (
-    ArtifactStorageProvider, S3ArtifactConfig, SqliteConfig,
-)
+from primer.model.provider import ArtifactStorageProvider, SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
 
 
@@ -60,11 +57,3 @@ async def test_factory_db_backend(sp: SqliteStorageProvider):
     row = ArtifactStorageProvider(id="asp-1", provider="db")
     store = build_artifact_storage(row, storage_provider=sp)
     assert isinstance(store, DbArtifactStorage)
-
-
-def test_factory_s3_backend_is_not_built_yet():
-    """The filesystem backend builds since plan 09 Task 8 (tests/artifact/test_checks.py pins its class); only s3 still raises."""
-    s3 = ArtifactStorageProvider(
-        id="asp-s3", provider="s3", config=S3ArtifactConfig(bucket="b"))
-    with pytest.raises(ConfigError, match="'s3' is not implemented"):
-        build_artifact_storage(s3, storage_provider=None)

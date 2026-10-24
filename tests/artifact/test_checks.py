@@ -28,7 +28,7 @@ def _check(entity: ArtifactStorageProvider) -> None:
     check_artifact_provider_write(entity)
 
 
-@pytest.mark.parametrize("kind", ["filesystem", "s3"])
+@pytest.mark.parametrize("kind", [k.value for k in ArtifactStorageProviderType if k is not ArtifactStorageProviderType.DB])
 def test_the_default_must_stay_db(kind) -> None:
     with pytest.raises(EntityCheckError) as info:
         _check(_row(kind))
@@ -48,11 +48,15 @@ def test_any_other_row_is_unrestricted() -> None:
     _check(_row("s3", id="asp-spare"))
 
 
-def test_the_buildable_set_is_the_one_the_factory_dispatches_on() -> None:
-    """The guard reads the factory's own list, so the day a backend ships it is allowed without a second edit."""
+def test_the_buildable_set_is_the_one_the_factory_dispatches_on(monkeypatch) -> None:
+    """The guard reads the factory's own list, so the day a backend ships it is allowed without a second edit.
+
+    Every optional extra reads as installed here: a kind whose extra is missing is refused for that reason (``require_extra``), which is not the
+    same as having no builder. Building imports nothing optional (the S3 store imports aiobotocore in ``initialize``)."""
     from primer.artifact.factory import BUILDABLE_KINDS, build_artifact_storage
     from primer.model.except_ import ConfigError
 
+    monkeypatch.setattr("primer.common.optional._find_spec", lambda name: object())
     for kind in ("db", "filesystem", "s3"):
         row = _row(kind)
         try:
@@ -66,24 +70,31 @@ def test_the_buildable_set_is_the_one_the_factory_dispatches_on() -> None:
 def test_a_new_buildable_kind_must_not_relax_the_reserved_database_rule() -> None:
     """#784 review tripwire: a new backend must extend the tests above while the reserved row remains the database fallback.
 
-    ``filesystem`` shipped with plan 09 Task 8 and ``test_the_default_must_stay_db`` already refuses it for the reserved row, so the set pinned
-    here grew by that one kind. The next backend (``s3``, Task 9) moves the tripwire again."""
+    ``filesystem`` shipped with plan 09 Task 8 and ``s3`` with Task 9, so every kind the enum names builds now, and
+    ``test_the_default_must_stay_db`` refuses every kind but ``db`` for the reserved row (its params are read from the enum). A new kind joins
+    both by being added to the enum and given a builder."""
     from primer.artifact.factory import BUILDABLE_KINDS
 
-    assert BUILDABLE_KINDS == {ArtifactStorageProviderType.DB, ArtifactStorageProviderType.FILESYSTEM}, (
-        "another buildable kind shipped; extend test_the_default_must_stay_db "
+    assert BUILDABLE_KINDS == set(ArtifactStorageProviderType), (
+        "the buildable set no longer matches the enum; keep test_the_default_must_stay_db covering every non-db kind "
         "without relaxing the reserved row's database-only rule"
     )
 
 
-def test_each_buildable_kind_builds_its_own_backend() -> None:
+def test_each_buildable_kind_builds_its_own_backend(monkeypatch) -> None:
     """Building SOMETHING is not enough: a ``filesystem`` row that built the DB backend would store its bytes in the database and pass the test
-    above. A kind that becomes buildable must name its backend class here."""
+    above. A kind that becomes buildable must name its backend class here. (The ``s3`` extra reads as installed, as in the test above.)"""
     from primer.artifact.db import DbArtifactStorage
     from primer.artifact.factory import BUILDABLE_KINDS, build_artifact_storage
     from primer.artifact.filesystem import FilesystemArtifactStorage
+    from primer.artifact.s3 import S3ArtifactStorage
 
-    backend_of = {ArtifactStorageProviderType.DB: DbArtifactStorage, ArtifactStorageProviderType.FILESYSTEM: FilesystemArtifactStorage}
+    monkeypatch.setattr("primer.common.optional._find_spec", lambda name: object())
+    backend_of = {
+        ArtifactStorageProviderType.DB: DbArtifactStorage,
+        ArtifactStorageProviderType.FILESYSTEM: FilesystemArtifactStorage,
+        ArtifactStorageProviderType.S3: S3ArtifactStorage,
+    }
 
     assert BUILDABLE_KINDS == set(backend_of), "a kind became buildable without its backend class pinned here"
     for kind, backend in backend_of.items():

@@ -15,9 +15,9 @@ PYTEST_IGNORES := \
 .PHONY: help setup test lint fmt cov docs-hygiene serve docker-build docker-build-slim docker-build-all
 
 # Optional-backend extras baked into the slim image: the light operational
-# set (k8s/docker/channels/lance), dropping the multi-GB huggingface + docling
+# set (k8s/docker/channels/lance/s3), dropping the multi-GB huggingface + docling
 # torch stack. Override on the CLI to curate a different slim set.
-SLIM_EXTRAS ?= --extra kubernetes --extra docker --extra channels --extra lance
+SLIM_EXTRAS ?= --extra kubernetes --extra docker --extra channels --extra lance --extra s3
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \

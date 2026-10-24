@@ -46,6 +46,7 @@ The extra to marker-module map, mirroring `EXTRA_MODULES` in
 | `kubernetes` | the Kubernetes workspace backend | `kubernetes_asyncio` |
 | `docker` | the container workspace backend | `aiodocker` |
 | `channels` | Slack, Telegram and Discord adapters | `slack_bolt`, `telegram`, `discord` |
+| `s3` | the S3 artifact store | `aiobotocore` |
 
 `channels` is the one extra with several markers. It counts as installed
 only when all three import, because a partial install is not the channels

@@ -158,6 +158,7 @@ The bare `pipx install primer-ai` installs a lean core (REST API, console, MCP, 
 | `channels` | Slack, Telegram and Discord | light |
 | `docker` | container workspace backend | light |
 | `kubernetes` | Kubernetes workspace backend | light |
+| `s3` | S3 and S3-compatible artifact storage | light |
 | `full` | all of the above | heaviest |
 
 ```bash
@@ -174,7 +175,7 @@ docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest        # slim
 docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest-full   # batteries included
 ```
 
-`:latest` is the slim image: core plus the light operational extras (lance, channels, docker, kubernetes). It boots cleanly and skips the default providers it cannot construct. For local HuggingFace embeddings, use `:latest-full`.
+`:latest` is the slim image: core plus the light operational extras (lance, channels, docker, kubernetes, s3). It boots cleanly and skips the default providers it cannot construct. For local HuggingFace embeddings, use `:latest-full`.
 
 **From source** (for contributors):
 

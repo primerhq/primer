@@ -1,4 +1,7 @@
-"""Journey: an artifact-storage provider can be registered from Providers > Artifact store."""
+"""Journey: an artifact-storage provider can be registered from Providers > Artifact store.
+
+Every backend the menu offers is built (``db``, ``filesystem`` and, since plan 09 Task 9, ``s3``), so no kind is labelled "not implemented". The S3
+form shows the fields ``GET /v1/artifact_storage_providers/_types`` serves, with both keys as password boxes."""
 
 from __future__ import annotations
 
@@ -26,6 +29,13 @@ def test_an_artifact_storage_provider_can_be_registered_and_deleted_from_the_pro
         options = type_select.locator("option")
         values = [options.nth(i).get_attribute("value") for i in range(options.count())]
         assert "db" in values and "filesystem" in values and "s3" in values
+        expect(type_select).not_to_contain_text("not implemented")
+
+        type_select.select_option("s3")
+        for key in ("bucket", "prefix", "endpoint_url", "region", "addressing_style", "access_key", "secret_key"):
+            expect(overlay.get_by_test_id(f"pc-field:{key}")).to_be_visible(timeout=15_000)
+        expect(overlay.get_by_test_id("pc-field:access_key")).to_have_attribute("type", "password")
+        expect(overlay.get_by_test_id("pc-field:secret_key")).to_have_attribute("type", "password")
 
         type_select.select_option("db")
         overlay.get_by_test_id("pc-field:id").fill(name)

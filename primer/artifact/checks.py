@@ -21,6 +21,7 @@ from primer.model.provider import ArtifactStorageProvider, ArtifactStorageProvid
 from primer.model.providers.artifact import (
     ACTIVE_ARTIFACT_STORAGE_CONFIG_ID,
     DEFAULT_ARTIFACT_PROVIDER_ID,
+    S3_KEYS_INCOMPLETE_MESSAGE,
     ActiveArtifactStorageConfig,
 )
 
@@ -29,22 +30,31 @@ ARTIFACT_DEFAULT_WRITE_NOTE = (
     "The reserved ``artifact-storage-default`` row is the database store that every artifact without a location record is read from, so its "
     "``provider`` must stay ``db``: a create or an update of that row that names another kind returns ``type=validation-error`` naming "
     "``provider``, and nothing is stored. To store new files elsewhere, register another provider and select it with "
-    "``set_active_artifact_store``."
+    "``set_active_artifact_store``. An ``s3`` row takes both ``access_key`` and ``secret_key``, or neither to use the server's own "
+    "credentials: one without the other returns ``type=validation-error`` naming the blank key."
 )
 
 
 def check_artifact_provider_write(entity: ArtifactStorageProvider) -> None:
-    """Refuse a create or update that makes the reserved database fallback any other kind."""
-    if entity.id != DEFAULT_ARTIFACT_PROVIDER_ID or entity.provider is ArtifactStorageProviderType.DB:
-        return
-    raise EntityCheckError(
-        "validation",
-        f"{DEFAULT_ARTIFACT_PROVIDER_ID!r} is the database store that every artifact without a location record is read from, so its provider must stay "
-        f"'db', not {entity.provider.value!r}; register another provider and select it with PUT /v1/artifact_storage_active_config or "
-        "system::set_active_artifact_store",
-        code="artifact_default_must_be_db",
-        field="provider",
-    )
+    """Refuse a create or update that makes the reserved database fallback any other kind, or that gives an S3 row one key without the other.
+
+    The S3 keys go together: both, or neither to use the server's own (ambient) credentials. A half pair is refused
+    (``artifact_s3_keys_incomplete``, naming the blank key) rather than completed from the ambient chain. An update runs this AFTER the served
+    masks are restored (``preserve_masked_secrets``), so a kept mask counts as the stored key and a blanked box as no key.
+    """
+    if entity.id == DEFAULT_ARTIFACT_PROVIDER_ID and entity.provider is not ArtifactStorageProviderType.DB:
+        raise EntityCheckError(
+            "validation",
+            f"{DEFAULT_ARTIFACT_PROVIDER_ID!r} is the database store that every artifact without a location record is read from, so its provider must "
+            f"stay 'db', not {entity.provider.value!r}; register another provider and select it with PUT /v1/artifact_storage_active_config or "
+            "system::set_active_artifact_store",
+            code="artifact_default_must_be_db",
+            field="provider",
+        )
+    if entity.provider is ArtifactStorageProviderType.S3:
+        missing = entity.config.missing_key()
+        if missing is not None:
+            raise EntityCheckError("validation", S3_KEYS_INCOMPLETE_MESSAGE, code="artifact_s3_keys_incomplete", field=f"config.{missing}")
 
 
 async def check_artifact_provider_delete(storage_provider: StorageProvider, provider_id: str) -> None:
