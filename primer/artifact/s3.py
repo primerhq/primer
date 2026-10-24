@@ -17,8 +17,8 @@ and reach botocore only through :func:`s3_client_kwargs`; this module never logs
 The client. One per store, opened by ``initialize`` inside an ``AsyncExitStack`` and closed by ``aclose``. A closed store stays closed: an
 operation on it raises, it never opens a client that nothing would close. An operation on a store that was not initialized initializes it.
 
-A put that does not complete (cancelled while its request is in flight, or failed in a way that may have left the object written) never hands
-out its id, so the object it may have left is removed in the background once the request settles; ``aclose`` waits for those removals.
+A put that does not complete (cancelled while its request is in flight, or failed in any way but one raised before a request was sent) never
+hands out its id, so the object it may have left is removed in the background once the request settles; ``aclose`` waits for those removals.
 """
 
 from __future__ import annotations
@@ -82,12 +82,13 @@ def _error_code(exc: BaseException) -> str:
     return str((response.get("Error") or {}).get("Code", ""))
 
 
-def _nothing_was_stored(exc: BaseException) -> bool:
-    """True for a put failure that cannot have left an object: the server answered with an error, or the request was never sent (no
-    credentials, a parameter botocore refused). Any other failure (a timeout, a dropped connection) may have come after the server stored it."""
-    from botocore.exceptions import ClientError, NoCredentialsError, ParamValidationError, PartialCredentialsError
+def _never_sent(exc: BaseException) -> bool:
+    """True only for a put failure raised before any request was sent (no credentials, partial credentials, a parameter botocore refused):
+    the one kind of failure that proves nothing was stored. Any other may have come after the server stored the object, a ``ClientError``
+    included: botocore retries a timed-out attempt, and the retry can be refused after the first attempt stored it (the review of #899)."""
+    from botocore.exceptions import NoCredentialsError, ParamValidationError, PartialCredentialsError
 
-    return isinstance(exc, (ClientError, NoCredentialsError, PartialCredentialsError, ParamValidationError))
+    return isinstance(exc, (NoCredentialsError, PartialCredentialsError, ParamValidationError))
 
 
 class S3ArtifactStorage(ArtifactStorage):
@@ -196,7 +197,7 @@ class S3ArtifactStorage(ArtifactStorage):
             self._remove_when_settled(client, write, key)
             raise
         except Exception as exc:
-            if not _nothing_was_stored(exc):
+            if not _never_sent(exc):
                 self._remove_when_settled(client, write, key)
             raise
         return artifact_id

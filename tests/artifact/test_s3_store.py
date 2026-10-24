@@ -370,13 +370,35 @@ async def test_a_put_that_times_out_after_the_server_stored_it_leaves_no_object(
     assert s3_keys_under(s3_admin, s3_prefix) == []
 
 
-async def test_a_put_the_server_refused_schedules_no_removal(s3_endpoint: str, s3_prefix: str, isolated_aws_env: None) -> None:
-    """A put the server answered with an error stored nothing, so there is nothing to remove."""
+async def test_a_put_whose_retry_ends_in_a_client_error_after_the_first_attempt_stored_leaves_no_object(
+    store: S3ArtifactStorage, s3_admin, s3_prefix: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of #899, item 3: botocore retries a timed-out attempt, and the retry can end in a ``ClientError`` even though the first attempt
+    stored the object. A ``ClientError`` is therefore no proof that nothing was stored: the object is removed in the background."""
     from botocore.exceptions import ClientError
 
-    s3 = S3ArtifactStorage(_config(s3_endpoint, s3_prefix, bucket="no-such-bucket"))
+    real = store._client.put_object
+
+    async def stored_then_refused_on_retry(**kwargs):
+        await real(**kwargs)                         # the first attempt reached the server and stored the object, then timed out
+        raise ClientError({"Error": {"Code": "SlowDown", "Message": "Please reduce your request rate."}}, "PutObject")
+
+    monkeypatch.setattr(store._client, "put_object", stored_then_refused_on_retry)
+    with pytest.raises(ClientError, match="SlowDown"):
+        await store.put(data=b"maybe", mime_type="text/plain", filename="m.txt")
+    async with asyncio.timeout(10):
+        await store.drain()
+
+    assert s3_keys_under(s3_admin, s3_prefix) == []
+
+
+async def test_a_put_that_was_never_sent_schedules_no_removal(s3_endpoint: str, s3_prefix: str, isolated_aws_env: None) -> None:
+    """Only a failure raised before any request was sent (no credentials, refused parameters) proves nothing was stored."""
+    from botocore.exceptions import NoCredentialsError
+
+    s3 = S3ArtifactStorage(_config(s3_endpoint, s3_prefix, access_key=None, secret_key=None))
     try:
-        with pytest.raises(ClientError, match="NoSuchBucket"):
+        with pytest.raises(NoCredentialsError):
             await s3.put(data=b"x", mime_type="text/plain")
         assert not s3._pending
     finally:
