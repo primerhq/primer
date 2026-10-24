@@ -61,6 +61,12 @@ var LAST_OVERLAY = null;
 var __PKFO = window.PK_FormOverlay;
 window.PK_FormOverlay = function (p) { LAST_OVERLAY = p; return __PKFO(p); };
 function overlayProps() { return LAST_OVERLAY; }
+// What the server holds now, by path: a save reads the template again before it writes (round 2 of #886, item 2), and a GET answers from here.
+var ROWS = {};
+HANDLER = function (method, path, body) {
+  if (method === "GET" && ROWS[path]) return Promise.resolve(JSON.parse(JSON.stringify(ROWS[path])));
+  return Promise.resolve(body == null ? { ok: true } : JSON.parse(JSON.stringify(body)));
+};
 function onClose() { CLOSED += 1; }
 function onSaved(row) { SAVED.push(row); }
 // The error line of a field: the alert under the control or table with that test id (a kit field's, or a table's own line).
@@ -94,6 +100,11 @@ def ctx(code: str):
         c.close()
 
 
+def _stored(ctx, row: dict) -> None:
+    """The row the server holds now (what the save's GET reads)."""
+    ctx.eval(f"ROWS[{json.dumps('/workspace_templates/' + row['id'])}] = {json.dumps(row)};")
+
+
 def _mount(ctx, props: str, role: str = "admin") -> None:
     ctx.eval(f"ROLE = {json.dumps(role)}; MR.mount(window.WT_TemplateOverlay, Object.assign({{ onClose: onClose, onSaved: onSaved }}, {props}));")
 
@@ -114,6 +125,7 @@ def _open_fold(ctx, testid: str) -> None:
 
 
 def test_edit_save_puts_the_row_back_with_only_the_description_changed(ctx):
+    _stored(ctx, FULL_K8S)
     _mount(ctx, "{ row: " + json.dumps(FULL_K8S) + " }")
     assert js(ctx, "overlayProps().title") == "Edit workspace template"
     ctx.eval("setValue('ws-template-description', 'changed'); press('wt-save');")
@@ -127,12 +139,37 @@ def test_edit_save_puts_the_row_back_with_only_the_description_changed(ctx):
 
 def test_an_edit_by_id_loads_the_row_and_puts_it_back(ctx):
     ctx.eval("serve('ws:template:k8s-full', " + json.dumps(FULL_K8S) + ");")
+    _stored(ctx, FULL_K8S)
     _mount(ctx, "{ templateId: 'k8s-full' }")
     assert "ws:template:k8s-full" in js(ctx, "KEYS")
     ctx.eval("setValue('wt-cpu', '3'); press('wt-save');")
     settle(ctx)
     body = _calls(ctx, "PUT")[0]["body"]
     assert body == {**FULL_K8S, "resources": {**FULL_K8S["resources"], "cpu_cores": 3}}
+
+
+def test_a_save_reads_the_template_again_so_a_concurrent_edit_survives(ctx):
+    """Round 2 of #886, item 2 (the reviewer's probe): another admin raises the memory and sets the storage class while I edit the description. The
+    server's PUT replaces the whole row, so a save built on the row I opened would put their values back; the save reads the row again and writes only
+    what I changed onto it."""
+    theirs = {**FULL_K8S, "resources": {**FULL_K8S["resources"], "memory_bytes": 8 * 2**30}, "backend": {**FULL_K8S["backend"], "storage_class": "fast"}}
+    _stored(ctx, theirs)
+    _mount(ctx, "{ row: " + json.dumps(FULL_K8S) + " }")
+    ctx.eval("setValue('ws-template-description', 'mine'); press('wt-save');")
+    settle(ctx)
+    assert [(c["method"], c["path"]) for c in js(ctx, "CALLS")] == [("GET", "/workspace_templates/k8s-full"), ("PUT", "/workspace_templates/k8s-full")]
+    assert _calls(ctx, "PUT")[0]["body"] == {**theirs, "description": "mine"}
+
+
+def test_a_template_deleted_meanwhile_is_a_refusal_not_a_write(ctx):
+    status, gone = envelope("GET", "/v1/workspace_templates/k8s-full")
+    assert status == 404
+    _mount(ctx, "{ row: " + json.dumps(FULL_K8S) + " }")
+    ctx.eval("var GONE = " + json.dumps(gone) + "; HANDLER = function (m) { return m === 'GET' ? refuse(GONE) : Promise.resolve({}); };")
+    ctx.eval("setValue('ws-template-description', 'mine'); press('wt-save');")
+    settle(ctx)
+    assert _calls(ctx, "PUT") == [] and js(ctx, "CLOSED") == 0
+    assert ctx.eval("textOf(MR.find('wt-error'))") == js(ctx, "window.primerApi.readRefusal(new window.primerApi.ApiError(GONE)).message")
 
 
 def test_the_edit_says_existing_workspaces_keep_their_copy(ctx):
