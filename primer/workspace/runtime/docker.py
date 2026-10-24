@@ -37,6 +37,7 @@ from primer.model.workspace import (
 )
 from primer.workspace.base_backend import close_shielded, roll_back_shielded
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
+from primer.workspace.size_overrides import ProviderSizeRefused
 from primer.workspace.runtime.runtime_client import RuntimeClient
 from primer.workspace.runtime.ws_sandbox import WSSandbox
 
@@ -96,6 +97,37 @@ def _refused(exc: BaseException) -> bool:
     connection is NOT a refusal: the daemon may have carried the request out."""
     status = getattr(exc, "status", None)
     return isinstance(status, int) and 400 <= status < 500
+
+
+def _daemon_message(exc: BaseException) -> str:
+    """The daemon's own words in a ``DockerError``: aiodocker 0.27 keeps the message string, an older one the response body's dict."""
+    message = getattr(exc, "message", None)
+    if isinstance(message, dict):
+        message = message.get("message")
+    return str(message) if message else str(exc)
+
+
+def _refused_size(exc: BaseException, resources: ResourceLimits) -> ProviderSizeRefused | None:
+    """The 422 for a container create the daemon refused (4xx) over a size it was given, else ``None``.
+
+    Inside the caps, Docker refuses sizes of its own: more CPUs than the host has (``Range of CPUs is from 0.01 to 16.00, as there
+    are only 16 CPUs available``), memory under its minimum (``Minimum memory limit allowed is 6MB``). The raw ``DockerError`` is no
+    ``PrimerError``, so it used to answer the generic 500 after the rollback (the G5 audit, G5-07). A refusal whose message names
+    CPUs or memory, of a create that set that size, is the size's: a 422 naming the field (the backend says where the size came
+    from). Any other refusal is not a size's and passes on as it was.
+    """
+    if not _refused(exc):
+        return None
+    reason = _daemon_message(exc)
+    text = reason.lower()
+    fields = [
+        field for field, value, word in (
+            ("cpu_cores", resources.cpu_cores, "cpu"),
+            ("memory_bytes", resources.memory_bytes, "memory"),
+        )
+        if value is not None and word in text
+    ]
+    return ProviderSizeRefused("container", fields, reason) if fields else None
 
 
 async def _wait_for_ready(container, *, timeout_s: float = _READY_TIMEOUT_S) -> None:
@@ -428,6 +460,10 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             except Exception as exc:
                 if _refused(exc):
                     owns_container = False
+                # A size the daemon refused is the caller's 422, not a 500; the rollback below still removes what this call made.
+                size_refusal = _refused_size(exc, resources)
+                if size_refusal is not None:
+                    raise size_refusal from exc
                 raise
             await container.start()
             try:

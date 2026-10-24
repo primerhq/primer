@@ -32,6 +32,12 @@ less (``gt=0``), on every write. A row stored before those rules still loads (th
 checks the same three things on the size the workspace will really get: :func:`refuse_oversized_template_sizes` refuses a
 template disk that is not a valid quantity of at most 64 TiB (unless ``overrides.resources.disk_bytes`` replaces it) and a
 template CPU or memory that is not more than zero, as it refuses one above the cap.
+
+**A size the runtime itself refuses** (the G5 audit, G5-07). Inside the caps, Docker still refuses sizes of its own: more CPUs than
+the host has (``Range of CPUs is from 0.01 to 16.00``), memory under its minimum (``Minimum memory limit allowed is 6MB``). The
+adapter answers such a refusal with :class:`ProviderSizeRefused` (a 422) instead of the raw ``DockerError`` (a generic 500), and the
+backend names each field where the size came from: ``overrides.resources.<field>`` when the override set it, else the template's
+``backend.<field>``. The create's rollback runs as for any other failure.
 """
 
 from __future__ import annotations
@@ -156,6 +162,65 @@ class TemplateSizeRefused(ValidationError):
         return {}
 
 
+class ProviderSizeRefused(ValidationError):
+    """The 422 for a size the provider's runtime refused when the workspace was created (Docker's own limits, inside the caps).
+
+    ``fields`` are the size fields at fault in the model's order (``cpu_cores``, ``memory_bytes``) and ``reason`` the runtime's own
+    words. :meth:`located` names each field where the size came from: a field the per-workspace override set is
+    ``overrides.resources.<field>`` and gets an ``errors`` entry with its ``loc`` (the console shows it under the field), any other is
+    the template's ``backend.<field>`` (stored in the template, not sent in this request: no ``loc``).
+    """
+
+    def __init__(
+        self,
+        provider_kind: str,
+        fields: list[str],
+        reason: str,
+        *,
+        override_fields: frozenset[str] = frozenset(),
+        template_id: str | None = None,
+    ) -> None:
+        self.provider_kind = provider_kind
+        self.fields = [field for field in SIZE_FIELDS if field in fields]
+        self.reason = reason
+        self.template_id = template_id
+        self.override_fields = [field for field in self.fields if field in override_fields]
+        runtime = _RUNTIME_NAMES.get(provider_kind, f"The {provider_kind} runtime")
+        self._sentence = f"{runtime} refused this size: {reason.rstrip('. ')}."
+        names = [
+            f"overrides.resources.{field}" if field in override_fields else f"backend.{field}" for field in self.fields
+        ]
+        message = f"{', '.join(names)}: {self._sentence}"
+        from_template = [f"backend.{field}" for field in self.fields if field not in override_fields]
+        if template_id is not None and from_template:
+            message += (
+                f" Template {template_id!r} sets {' and '.join(from_template)}: edit the template, or give this workspace its own "
+                "size in overrides.resources."
+            )
+        super().__init__(message)
+
+    def located(self, *, override_fields: frozenset[str], template_id: str) -> "ProviderSizeRefused":
+        """The same refusal, with each field named where the workspace's size came from."""
+        return ProviderSizeRefused(
+            self.provider_kind, self.fields, self.reason, override_fields=override_fields, template_id=template_id,
+        )
+
+    @property
+    def problem_extensions(self) -> dict[str, Any]:
+        if not self.override_fields:
+            return {}
+        return {
+            "errors": [
+                {"loc": ["body", "overrides", "resources", field], "msg": self._sentence, "type": "refused_by_provider"}
+                for field in self.override_fields
+            ],
+        }
+
+
+#: How a refusal names the runtime that refused (per ``WorkspaceProviderType`` value).
+_RUNTIME_NAMES: dict[str, str] = {"container": "Docker"}
+
+
 def refuse_oversized_template_sizes(template: "WorkspaceTemplate", overrides: "WorkspaceTemplateOverrides | None") -> None:
     """Raise :class:`TemplateSizeRefused` when a size this workspace will get from its TEMPLATE is one no workspace may have.
 
@@ -207,6 +272,7 @@ __all__ = [
     "MAX_WORKSPACE_MEMORY_BYTES",
     "SIZE_FIELDS",
     "UNSUPPORTED_RESOURCE_OVERRIDES",
+    "ProviderSizeRefused",
     "ResourceOverrideRefused",
     "TemplateSizeRefused",
     "asks_for_a_size",

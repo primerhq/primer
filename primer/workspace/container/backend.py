@@ -54,6 +54,7 @@ from primer.workspace.files import FileResolvers
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
 from primer.workspace.runtime.url import build_runtime_url
 from primer.workspace.sandbox.workspace import SandboxWorkspace
+from primer.workspace.size_overrides import ProviderSizeRefused
 
 
 logger = logging.getLogger(__name__)
@@ -179,27 +180,36 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         # field; build the legacy ResourceLimits shape the adapter still consumes.
         resources = _container_limits(spec, overrides)
 
-        sandbox = await self._adapter.create_sandbox(
-            name=name,
-            image=image,
-            command=spec.entrypoint or ["sleep", "infinity"],
-            env=env_str,
-            workdir=spec.workdir,
-            volume_name=volume,
-            volume_target=spec.workdir,
-            # The template's ContainerMount (host/container/readonly) is not the adapter's VolumeMount
-            # (source/target/read_only); passing it through crashed provisioning on any mount (INJ-05).
-            extra_mounts=[
-                VolumeMount(source=m.host, target=m.container, read_only=m.readonly)
-                for m in spec.extra_mounts
-            ],
-            user=spec.user or _host_uid_gid(),
-            resources=resources,
-            network="full",
-            pull_policy="if_missing",
-            reachability=reachability,
-            token=token,
-        )
+        try:
+            sandbox = await self._adapter.create_sandbox(
+                name=name,
+                image=image,
+                command=spec.entrypoint or ["sleep", "infinity"],
+                env=env_str,
+                workdir=spec.workdir,
+                volume_name=volume,
+                volume_target=spec.workdir,
+                # The template's ContainerMount (host/container/readonly) is not the adapter's VolumeMount
+                # (source/target/read_only); passing it through crashed provisioning on any mount (INJ-05).
+                extra_mounts=[
+                    VolumeMount(source=m.host, target=m.container, read_only=m.readonly)
+                    for m in spec.extra_mounts
+                ],
+                user=spec.user or _host_uid_gid(),
+                resources=resources,
+                network="full",
+                pull_policy="if_missing",
+                reachability=reachability,
+                token=token,
+            )
+        except ProviderSizeRefused as exc:
+            # The adapter knows the size it was given, not where it came from: name each field the per-workspace override set as
+            # overrides.resources.<field>, any other as the template's backend.<field>.
+            size = overrides.resources if overrides is not None else None
+            from_override = frozenset(
+                field for field in exc.fields if size is not None and getattr(size, field) is not None
+            )
+            raise exc.located(override_fields=from_override, template_id=template.id) from exc
 
         cached = False
         try:
