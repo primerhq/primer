@@ -291,6 +291,52 @@ async def test_a_toolset_write_that_runs_no_code_on_the_host_is_not_gated(tmp_pa
         await sp.aclose()
 
 
+@pytest.mark.parametrize("door", _DOORS["system"])
+@pytest.mark.parametrize("case", ["stdio-to-http-update", "internal-create"])
+async def test_a_body_that_stops_or_runs_no_code_runs_ungated_end_to_end(tmp_path, case, door):
+    """Review of #860, R860-9: the gate reads the body, so an update that turns a stdio toolset into an http one (it starts nothing) and an
+    internal toolset run without an approval card, through every door, and are stored."""
+    sp, registry, toolsets, resolver = await _world(tmp_path, "fresh")
+    try:
+        if case == "stdio-to-http-update":
+            await sp.get_storage(Toolset).create(Toolset.model_validate(STDIO))
+            tool_name, arguments, row_id = "update_toolset", {"id": "ts-stdio", "entity": {**HTTP, "id": "ts-stdio"}}, "ts-stdio"
+        else:
+            tool_name, arguments, row_id = "create_toolset", {"entity": INTERNAL}, "ts-int"
+
+        result = await _manager(toolsets, resolver, registry).execute(_call(door, "system", tool_name, arguments))
+
+        assert not result.error, result.output
+        stored = await sp.get_storage(Toolset).get(row_id)
+        if case == "stdio-to-http-update":
+            assert stored.config.transport.value == "http"
+        else:
+            assert stored.provider.value == "internal"
+    finally:
+        await sp.aclose()
+
+
+@pytest.mark.parametrize("toolset_id, tool_name, arguments", [(t, n, a) for c, t, n, a, _ in GATED if c in {
+    "delete-the-gate-on-create-agent", "create-a-python-toolset", "create-a-stdio-toolset", "uninstall-a-harness",
+}], ids=["delete-a-policy", "create-a-python-toolset", "create-a-stdio-toolset", "uninstall-a-harness"])
+async def test_a_disabled_shipped_gate_lets_the_call_run(tmp_path, toolset_id, tool_name, arguments):
+    """R860-9: the shipped gates are ordinary rows; an operator who disables one lets an admin-role run make the write without a card (a delete
+    is written again by the next boot, so disabling is the way to turn one off; docs/agents/tool-approval.md)."""
+    sp, registry, toolsets, resolver = await _world(tmp_path, "fresh")
+    try:
+        store = sp.get_storage(ToolApprovalPolicy)
+        gate = await store.get(default_policy_id(toolset_id, tool_name))
+        await store.update(gate.model_copy(update={"enabled": False}))
+        before = await _state(sp)
+
+        result = await _manager(toolsets, resolver, registry).execute(_call("through-call-tool", toolset_id, tool_name, arguments))
+
+        assert not result.error, result.output
+        assert await _state(sp) != before, "the call ran but wrote nothing"
+    finally:
+        await sp.aclose()
+
+
 async def test_the_table_is_every_policy_toolset_and_harness_lifecycle_write_in_every_built_in_toolset(tmp_path):
     """A new tool that writes an approval policy, writes a toolset row from a body, or installs, syncs or uninstalls a harness, in ANY built-in
     toolset, fails here until it is in the table (and so gated)."""
