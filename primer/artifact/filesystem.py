@@ -97,6 +97,19 @@ def _write_probe(root: str) -> None:
                 os.unlink(name)
 
 
+def _fsync_dir(path: Path | str) -> None:
+    """Sync a folder, so the entries renamed into it or created in it survive a crash. A filesystem that cannot sync a folder says EINVAL or
+    ENOTSUP, and there is nothing more to do on it."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
+            raise
+    finally:
+        os.close(fd)
+
+
 def _write_atomic(path: Path, payload: bytes) -> None:
     """Write ``payload`` to a new temporary file next to ``path``, sync it and rename it over ``path``. The temporary file never follows a link."""
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
@@ -150,6 +163,7 @@ def prepare_root(root: str) -> None:
     if not marker.is_file():
         try:
             _write_atomic(marker, _MARKER_TEXT)
+            _fsync_dir(root)
         except OSError as exc:
             raise _not_writable(root, exc) from exc
 
@@ -205,8 +219,12 @@ def _shard_dir(root: str, path: Path, *, create: bool) -> Path | None:
     for part in path.parent.relative_to(root).parts:
         current = current / part
         if create:
-            with contextlib.suppress(FileExistsError):
+            try:
                 os.mkdir(current)
+            except FileExistsError:
+                pass
+            else:
+                _fsync_dir(current.parent)          # the new folder's entry in its parent survives a crash
         try:
             mode = os.lstat(current).st_mode
         except FileNotFoundError:
@@ -245,9 +263,11 @@ def _write_files(root: str, path: Path, data: bytes, sidecar: bytes) -> None:
     _write_atomic(path, data)
     try:
         _write_atomic(_sidecar_of(path), sidecar)
+        _fsync_dir(path.parent)                     # both renames survive a crash
     except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(path)
+        for written in (_sidecar_of(path), path):
+            with contextlib.suppress(OSError):
+                os.unlink(written)
         raise
 
 
