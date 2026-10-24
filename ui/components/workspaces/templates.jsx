@@ -1577,9 +1577,8 @@ function _fromTemplate(t, providers) {
   };
 }
 
-function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
-  const { navigate } = useRouter();
+function WorkspaceTemplateCreateModal({ onClose, pushToast, existing, onCreated }) {
+  const { useResource, useMutation, apiFetch } = window.primerApi;
 
   const providers = useResource(
     "ws:templates:providers-picker",
@@ -1615,7 +1614,9 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
       onSuccess: (row) => {
         onClose();
         if (pushToast) pushToast({ kind: "success", title: isEdit ? "Template updated" : "Template created", detail: row.id });
-        if (!isEdit) navigate(`/workspaces/templates/${encodeURIComponent(row.id)}`);
+        // A create returns to whoever opened the form, with the new row (the template overlay's rule, platform revamp 08 Task 10). It used to navigate
+        // to /workspaces/templates/<id>, the old detail page; that address is the template overlay in edit mode now, so a create ended in an edit form.
+        if (!isEdit && typeof onCreated === "function") onCreated(row);
       },
       onError: (err) => {
         if (err?.status === 422 && Array.isArray(err.fieldErrors)) {

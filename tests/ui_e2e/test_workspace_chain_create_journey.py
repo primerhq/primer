@@ -2,7 +2,7 @@
 
 Walks the full chain from a clean state through the UI:
   1. Create a local Workspace Provider via the modal.
-  2. Create a Workspace Template referencing it via the modal.
+  2. Create a Workspace Template referencing it via the modal; the modal closes back onto the list.
   3. Open the Workspaces page; click New Workspace; the new template
      appears in the template row picker; submit; workspace materialises.
   4. The workspace detail page renders.
@@ -96,7 +96,12 @@ def test_workspace_chain_create_journey(
         modal.locator("[data-testid='ws-template-description']").fill("chain test template")
         modal.get_by_role("button", name="Create").first.click()
         expect(modal).not_to_be_visible(timeout=10_000)
-        wait_for_overlay_url(page, f"workspaces/templates/{template_id}")
+        # The create returns to the list it was made from (platform revamp 08: a create closes and returns to its caller). It used to navigate to
+        # workspaces:templates:<id>, the old detail page; that address is the template overlay in edit mode now, which is not what a create ends in.
+        expect(page.get_by_test_id("wt-overlay")).to_have_count(0)
+        expect(page).to_have_url(re.compile(r"overlay=workspaces(:|%3A)templates(&|$)"), timeout=5_000)
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            assert c.get(f"/v1/workspace_templates/{template_id}").status_code == 200
 
         # ---- 3. Create the workspace via the existing modal --------------
         page.wait_for_function(
