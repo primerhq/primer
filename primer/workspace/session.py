@@ -4,8 +4,7 @@ One execution of one agent on one workspace. Holds the per-session
 state handle, mediates writes to the shared :class:`StateRepo` and the
 shared :class:`TruncationStore`, validates lifecycle transitions, and
 exposes the user-facing surface (``append_instruction`` /
-``request_pause`` / ``request_resume`` / ``request_end``) plus the
-runtime-facing surface (``commit_state`` / ``cache_output`` /
+``request_end``) plus the runtime-facing surface (``commit_state`` / ``cache_output`` /
 ``set_status`` / ``take_pending_messages``).
 
 Use :meth:`AgentSession.start` to allocate a fresh slot; the workspace
@@ -369,7 +368,6 @@ class AgentSession:
         self._cache = truncation_store
         self._tools: list["WorkspaceTool"] = list(workspace_tools)
         self._lock = asyncio.Lock()
-        self._pause_requested = False
         self._end_requested = False
         # Read-tracker for the write tool's read-before-write rule.
         # Populated by the read tool via :meth:`mark_read`; consulted by
@@ -484,11 +482,10 @@ class AgentSession:
         """
         return self._state.messages_lock(self.session_id)
 
-    # ---- Pause / end flag accessors (set by request_*; read by runtime) --
-
-    @property
-    def pause_requested(self) -> bool:
-        return self._pause_requested
+    # ---- End flag accessor (set by request_end; read by runtime) --------
+    #
+    # A pause is not a slot flag: it is written on the session ROW (``primer.workspace.session_factory.pause_session``), which
+    # the worker reads before a turn and at its end (ticket 01a16d8e removed the in-memory pause flag no caller set any more).
 
     @property
     def end_requested(self) -> bool:
@@ -705,34 +702,6 @@ class AgentSession:
             )
             self._info = updated_info
             return updated_info
-
-    async def request_pause(self, *, reason: str | None = None) -> None:
-        """Set the pause flag the runtime checks before each turn.
-
-        Idempotent. Raises :class:`ConflictError` if the session is
-        already ENDED. The actual status transition to PAUSED happens
-        when the runtime observes the flag at the next turn boundary
-        and calls :meth:`set_status`.
-        """
-        del reason  # captured by callers for logging; not persisted here
-        if self._info.status == SessionStatus.ENDED:
-            raise ConflictError(
-                f"cannot pause ENDED session {self.session_id!r}"
-            )
-        self._pause_requested = True
-
-    async def request_resume(self) -> None:
-        """Clear the pause flag.
-
-        Idempotent. Raises :class:`ConflictError` if the session is
-        ENDED. The runtime moves PAUSED back to RUNNING (or WAITING if
-        ``waiting.json`` is still present) at its next opportunity.
-        """
-        if self._info.status == SessionStatus.ENDED:
-            raise ConflictError(
-                f"cannot resume ENDED session {self.session_id!r}"
-            )
-        self._pause_requested = False
 
     async def request_end(
         self,
