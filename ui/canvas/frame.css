@@ -1,5 +1,94 @@
-/* The canvas frame's own styles (pivot P5, Task 13). The trusted renderer (Task 16) styles its elements here. */
-html, body { margin: 0; padding: 0; background: transparent; }
-body { font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1f2328; }
+/* The canvas frame's own styles (pivot P5, Tasks 13 and 16). The console sends its theme as --cv-* variables (CV.themeCss rules what
+   they may hold); these are the defaults until it does. Every element the renderer draws is a cv-* class below. */
+:root {
+  --cv-bg: transparent;
+  --cv-surface: #f6f8fa;
+  --cv-fg: #1f2328;
+  --cv-muted: #59636e;
+  --cv-accent: #0969da;
+  --cv-accent-fg: #ffffff;
+  --cv-danger: #cf222e;
+  --cv-border: #d1d9e0;
+  --cv-radius: 8px;
+  --cv-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --cv-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cv-surface: #151b23;
+    --cv-fg: #e6edf3;
+    --cv-muted: #9198a1;
+    --cv-accent: #4493f8;
+    --cv-accent-fg: #ffffff;
+    --cv-danger: #f85149;
+    --cv-border: #3d444d;
+  }
+}
+html, body { margin: 0; padding: 0; background: var(--cv-bg); }
+body { font: 14px/1.45 var(--cv-font); color: var(--cv-fg); }
+[hidden] { display: none !important; }
 #cv-root { box-sizing: border-box; padding: 12px; }
-@media (prefers-color-scheme: dark) { body { color: #e6edf3; } }
+#cv-root *, #cv-root *::before, #cv-root *::after { box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--cv-accent); outline-offset: 2px; }
+
+/* layout */
+.cv-col { display: flex; flex-direction: column; min-width: 0; }
+.cv-row { display: flex; flex-direction: row; min-width: 0; }
+.cv-card { border: 1px solid var(--cv-border); border-radius: var(--cv-radius); background: var(--cv-surface); padding: 12px; min-width: 0; }
+.cv-card-title { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+.cv-card-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cv-divider { width: 100%; border: 0; border-top: 1px solid var(--cv-border); margin: 4px 0; }
+
+/* text */
+.cv-text { min-width: 0; overflow-wrap: anywhere; }
+.cv-text h1, .cv-text h2, .cv-text h3, .cv-text p, .cv-text pre { margin: 0; }
+.cv-text-h1 { font-size: 24px; line-height: 1.25; font-weight: 600; }
+.cv-text-h2 { font-size: 19px; line-height: 1.3; font-weight: 600; }
+.cv-text-h3 { font-size: 16px; line-height: 1.35; font-weight: 600; }
+.cv-text-caption { font-size: 12px; color: var(--cv-muted); }
+.cv-text-code { font: 13px/1.45 var(--cv-mono); white-space: pre-wrap; background: var(--cv-surface); border: 1px solid var(--cv-border);
+  border-radius: var(--cv-radius); padding: 8px 10px; overflow-x: auto; }
+.cv-text code { font-family: var(--cv-mono); font-size: 0.92em; }
+.cv-text p code, .cv-text h1 code, .cv-text h2 code, .cv-text h3 code { background: var(--cv-surface); border-radius: 4px; padding: 0 3px; }
+
+/* controls */
+.cv-btn, .cv-link, .cv-media-load {
+  font: inherit; min-height: 32px; padding: 5px 12px; border-radius: var(--cv-radius); border: 1px solid var(--cv-border);
+  background: var(--cv-surface); color: var(--cv-fg); cursor: pointer; text-align: center;
+}
+.cv-btn-primary { background: var(--cv-accent); border-color: var(--cv-accent); color: var(--cv-accent-fg); }
+.cv-btn-danger { color: var(--cv-danger); border-color: var(--cv-danger); }
+.cv-btn:disabled, .cv-link:disabled { opacity: 0.55; cursor: not-allowed; }
+.cv-btn[aria-busy="true"], .cv-link[aria-busy="true"] { cursor: progress; opacity: 0.7; }
+.cv-btn[aria-busy="true"]::after { content: ""; display: inline-block; width: 10px; height: 10px; margin-left: 8px; vertical-align: -1px;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cv-spin 0.8s linear infinite; }
+@keyframes cv-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .cv-btn[aria-busy="true"]::after { animation: none; } }
+.cv-link { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; max-width: 100%; }
+.cv-link-label { color: var(--cv-accent); text-decoration: underline; overflow-wrap: anywhere; }
+.cv-link-host { font-size: 12px; color: var(--cv-muted); overflow-wrap: anywhere; }
+
+.cv-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cv-field-label { font-size: 12px; font-weight: 600; color: var(--cv-muted); }
+.cv-select-control { font: inherit; min-height: 32px; padding: 4px 8px; border-radius: var(--cv-radius); border: 1px solid var(--cv-border);
+  background: var(--cv-surface); color: var(--cv-fg); max-width: 100%; }
+.cv-checks { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cv-checks legend { padding: 0; margin-bottom: 4px; }
+.cv-check { display: flex; align-items: center; gap: 8px; min-height: 28px; cursor: pointer; }
+.cv-check input { width: 16px; height: 16px; margin: 0; }
+
+/* media */
+.cv-image { min-width: 0; }
+.cv-img { display: block; max-width: 100%; height: auto; border-radius: var(--cv-radius); }
+.cv-audio { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cv-audio-title { font-weight: 600; }
+.cv-audio-control { width: 100%; max-width: 480px; }
+.cv-media-note { margin: 0; padding: 8px 10px; font-size: 13px; color: var(--cv-muted); border: 1px dashed var(--cv-border);
+  border-radius: var(--cv-radius); }
+
+/* Html elements */
+.cv-html { min-width: 0; }
+.cv-html-frame { display: block; width: 100%; border: 0; background: transparent; }
+.cv-html-inert { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; border: 1px dashed var(--cv-border);
+  border-radius: var(--cv-radius); background: var(--cv-surface); }
+.cv-html-inert-text { margin: 0; color: var(--cv-muted); }
