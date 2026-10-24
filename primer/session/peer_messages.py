@@ -144,9 +144,11 @@ NOTE_QUEUED_EVENT = (
 )
 NOTE_QUEUED_PAUSED = "Queued: the session is paused; it reads your message after it is resumed."
 NOTE_QUEUED_BEHIND = "Queued: older messages are waiting for the session; it reads yours after them, one turn each."
-NOTE_GRAPH = " This restarts the graph: your message is the input of its next run."
-NOTE_GRAPH_STORED_INPUT = (
-    " This graph session runs on its stored graph_input, so its next run uses that input and your message is only recorded."
+# A graph never reads a message: ``run_one_session_turn`` invokes the graph with no messages (``executor.invoke([])``), and the executor seeds the
+# run from the stored ``graph_input`` alone (lead ruling 1 of ticket 01a16d48: say so, the behaviour stays).
+NOTE_GRAPH = (
+    " This restarts the graph: your message is recorded in its transcript, but the graph never reads it."
+    " A run takes its input only from the session's stored graph_input (an empty list when it has none)."
 )
 
 
@@ -656,7 +658,8 @@ async def send_peer_message(
             message_id=message.id,
         )
         graph_target = isinstance(target.binding, GraphSessionBinding)
-        # A graph takes the message as its input, and a prefix would become part of it; the sender is on the record (``payload["peer"]``).
+        # A graph target keeps the raw text, with no prefix: the graph never reads it (NOTE_GRAPH), it is only recorded, and the record names
+        # the sender (``payload["peer"]``).
         body = text if graph_target else f"{peer_prefix(sender)}\n{text}"
         # Older messages waiting in the target's queue make this one wait behind them (route_steer's ``queued``: first in, first out), as the
         # delivery itself decides; the events and the note say so.
@@ -763,8 +766,6 @@ async def send_peer_message(
         note = NOTE_QUEUED_BUSY
     if graph_target:
         note += NOTE_GRAPH
-        if "graph_input" in target.metadata:
-            note += NOTE_GRAPH_STORED_INPUT
     logger.info(
         "peer message %s: session %s -> session %s (%s, hop %d, mode %s)", message.id, sender.id, target.id, how, hops, mode,
     )
@@ -793,7 +794,6 @@ __all__ = [
     "PEER_RATE_LIMIT",
     "PEER_RATE_WINDOW",
     "NOTE_GRAPH",
-    "NOTE_GRAPH_STORED_INPUT",
     "NOTE_QUEUED_BEHIND",
     "NOTE_QUEUED_BUSY",
     "NOTE_QUEUED_EVENT",

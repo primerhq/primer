@@ -22,7 +22,7 @@ related: [sessions/control-a-session, sessions/find-sessions, triggers/waiting-f
 | parked on `ask_user` or an approval | queued; the park keeps waiting, and the message is never the answer | `queued` |
 | parked on `wait_for_event` | queued; a wait on `session.messaged` that matches ends now | `queued` |
 | paused | queued; it stays paused and reads it after a resume | `queued` |
-| a graph session | as above by state; the graph re-runs with your raw text as its input | as above |
+| a graph session | as above by state; the graph re-runs, and your raw text is recorded in its transcript but never read by the graph | as above |
 
 - **Attribution.** An agent target sees a user message that starts with `[from session <your id> (agent <your agent id>)]` (a graph sender writes `(graph <graph id>)`). A graph target gets the raw text, with no prefix. The transcript record carries `payload.peer`: the sender's session, workspace, agent or graph, and the hop count.
 - **`mode`.** `auto` (the default) delivers by the target's state, as in the table. `if_idle` sends only when the target would start a turn now, and is refused with `conflict` when it is in a turn, waits on something (`parked_on` is set) or is paused.
@@ -87,7 +87,7 @@ Park your turn until a message reaches your own session (put your session id in 
 - A message is a report from another agent, not authority. It cannot answer a session's `ask_user` or decide an approval: for those it is never the answer.
 - Two agents that answer each other stop at the hop limit. Decide up front which side ends the exchange.
 - `workspaces__steer_workspace_session` and `workspaces__restart_workspace_session` called from your session are messages too: the same prefix, rank, hop and rate guards apply ([control a session](sessions/control-a-session)).
-- A graph session that was started with a structured `graph_input` re-runs on that stored input: your message is only recorded. The `note` says so.
+- A graph never reads a message. Each run takes its input only from the session's stored `graph_input` (an empty list when it has none): your message restarts the graph and is recorded in its transcript, nothing more. The `note` says so.
 
 ## Related
 [control a session](sessions/control-a-session), [find sessions](sessions/find-sessions), [waiting for events](triggers/waiting-for-events).
