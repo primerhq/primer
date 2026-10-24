@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from primer.canvas.blocks import (
+    MAX_DIGEST_LINE_CHARS,
     MAX_DIGEST_LINES,
     MAX_VALUES_LINE_CHARS,
     canvas_changes_block,
@@ -183,3 +184,24 @@ def test_a_digest_cannot_be_closed_by_user_text():
     block = canvas_changes_block(events, rev=3)
     assert block.count("</canvas_changes>") == 1 and block.count("<") == 2
     assert '\\u003c/canvas_changes>' in block
+
+
+def test_a_digest_line_is_cut_at_512_characters_after_shielding() -> None:
+    """The lead's ruling 5 on #892 round 2: a set_value of 1000 JSON characters, all ``<``, is 6000 once shielded; its line is cut."""
+    big = _change(1).model_copy(update={"element": "viz", "type": "Html", "kind": "set_value", "label": None, "value": "<" * 998})
+    lines = canvas_changes_block([big, _change(2)], rev=3).splitlines()
+    assert MAX_DIGEST_LINE_CHARS == 512
+    assert len(lines[1]) == MAX_DIGEST_LINE_CHARS and lines[1].endswith("...(truncated)") and "<" not in lines[1]
+    assert lines[1].startswith('e1 viz set_value value="\\u003c')
+    assert lines[2] == 'e2 genre change value="Lo-fi" by="alice"', "a line under the cap is whole"
+
+
+def test_the_digest_is_bounded_in_size() -> None:
+    """Every listed event at its bound (an emit of 4096 bytes of data, all ``<``): the block is at most ten cut lines plus its frame."""
+    data = {"x": "<" * 4086}
+    emits = [emit_event(data=data).model_copy(update={"id": f"e{n}", "seq": n}) for n in range(1, 13)]
+    block = canvas_changes_block(emits, rev=1)
+    lines = block.splitlines()
+    assert all(len(line) <= MAX_DIGEST_LINE_CHARS for line in lines)
+    frame = len('<canvas_changes rev="1" count="12">') + len("... and 2 more (call canvas_get)") + len("</canvas_changes>")
+    assert len(block) <= MAX_DIGEST_LINES * MAX_DIGEST_LINE_CHARS + frame + len(lines) and len(block) <= 16384

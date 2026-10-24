@@ -33,6 +33,9 @@ from primer.model.canvas import MAX_EMIT_DATA_BYTES, CanvasEvent
 MAX_VALUES_LINE_CHARS = 2000
 #: The most events a digest lists one per line; past it the rest are counted (and stay unread: audit G8-07).
 MAX_DIGEST_LINES = 10
+#: The most characters of one digest line, after shielding; a longer one is cut with ``...(truncated)`` (the lead's ruling 5 on #892 round
+#: 2), so a digest is at most ten such lines and its frame however big the events are.
+MAX_DIGEST_LINE_CHARS = 512
 
 _TRUNCATED = "...(truncated)"
 #: The attributes of the opening tag, in their order; ``label`` only when the event has one.
@@ -112,15 +115,23 @@ def canvas_event_block(event: CanvasEvent, *, state: CanvasState) -> str:
     return "\n".join(lines)
 
 
+def _digest_line(event: CanvasEvent) -> str:
+    """``event``'s digest line, shielded, then cut at :data:`MAX_DIGEST_LINE_CHARS` characters with ``...(truncated)``."""
+    line = _shield(event_line(event.public()))
+    if len(line) > MAX_DIGEST_LINE_CHARS:
+        line = line[: MAX_DIGEST_LINE_CHARS - len(_TRUNCATED)] + _TRUNCATED
+    return line
+
+
 def canvas_changes_block(events: Sequence[CanvasEvent], *, rev: int) -> str:
-    """The ``<canvas_changes>`` digest of ``events`` (oldest first) on a canvas at ``rev``: the first :data:`MAX_DIGEST_LINES` as lines,
-    the rest counted."""
+    """The ``<canvas_changes>`` digest of ``events`` (oldest first) on a canvas at ``rev``: the first :data:`MAX_DIGEST_LINES` as lines of
+    at most :data:`MAX_DIGEST_LINE_CHARS` characters, the rest counted."""
     lines = [f'<canvas_changes rev="{int(rev)}" count="{len(events)}">']
-    lines += [_shield(event_line(event.public())) for event in events[:MAX_DIGEST_LINES]]
+    lines += [_digest_line(event) for event in events[:MAX_DIGEST_LINES]]
     if len(events) > MAX_DIGEST_LINES:
         lines.append(f"... and {len(events) - MAX_DIGEST_LINES} more (call canvas_get)")
     lines.append("</canvas_changes>")
     return "\n".join(lines)
 
 
-__all__ = ["MAX_DIGEST_LINES", "MAX_VALUES_LINE_CHARS", "canvas_changes_block", "canvas_event_block"]
+__all__ = ["MAX_DIGEST_LINES", "MAX_DIGEST_LINE_CHARS", "MAX_VALUES_LINE_CHARS", "canvas_changes_block", "canvas_event_block"]
