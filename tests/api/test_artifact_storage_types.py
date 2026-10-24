@@ -81,11 +81,19 @@ async def test_the_endpoint_of_an_s3_store_is_a_url_and_its_region_and_prefix_ar
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", sorted(CONFIG_OF))
-async def test_a_row_built_from_the_served_form_is_accepted(client, kind: str) -> None:
+async def test_a_row_built_from_the_served_form_is_accepted(client, tmp_path, kind: str) -> None:
     """What the console posts: ``provider`` is the kind, ``config`` holds the REQUIRED fields it was told to ask for. If the served form asked for too little the create would come back 422, and for too much
-    the model would refuse a field it does not have."""
+    the model would refuse a field it does not have.
+
+    A filesystem root is a real absolute folder in ``tmp_path``: since plan 09 Task 8 a create prepares the root, and refuses a relative one (as it should)."""
     meta = (await _types(client))[kind]
-    config = {f["key"]: ("https://objects.example" if f["type"] == "url" else "value") for f in meta["config_fields"] if f["required"]}
+
+    def value(field: dict[str, Any]) -> str:
+        if (kind, field["key"]) == ("filesystem", "root"):
+            return str(tmp_path / "root")
+        return "https://objects.example" if field["type"] == "url" else "value"
+
+    config = {f["key"]: value(f) for f in meta["config_fields"] if f["required"]}
     r = await client.post("/v1/artifact_storage_providers", json={"id": f"asp-types-{kind}", "provider": kind, "config": config})
     assert r.status_code == 201, r.text
     try:
@@ -120,7 +128,7 @@ CONFIG_FIELDS = {
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", sorted(CONFIG_OF))
 async def test_a_kind_the_factory_cannot_build_says_so_in_its_label_and_one_it_can_does_not(client, kind: str) -> None:
-    """B1: the menu must not offer as working a backend that is stored and never used. Every consumer reads only the reserved default row, and ``build_artifact_storage`` builds only ``db``; so the label of
+    """B1: the menu must not offer as working a backend that is stored and never used. ``build_artifact_storage`` builds ``db`` and ``filesystem`` (plan 09 Task 8) and refuses ``s3``; so the label of
     every kind the factory refuses says 'not implemented yet: stored, never used', and when a backend ships the label has to lose it (this test flips by itself)."""
     from primer.artifact.factory import build_artifact_storage
     from primer.model.except_ import ConfigError
@@ -139,6 +147,20 @@ async def test_a_kind_the_factory_cannot_build_says_so_in_its_label_and_one_it_c
 @pytest.mark.asyncio
 async def test_the_database_kind_says_the_bytes_stay_in_primers_database(client) -> None:
     assert (await _types(client))["db"]["label"] == "Database (in primer's own database)"
+
+
+@pytest.mark.asyncio
+async def test_the_filesystem_label_and_help(client) -> None:
+    """The folder must be ONE shared volume mounted at the same path in every pod (Review Focus 1): the form says so where the operator types it."""
+    meta = (await _types(client))["filesystem"]
+    root = {f["key"]: f for f in meta["config_fields"]}["root"]
+
+    assert meta["label"] == "Filesystem (a folder shared by every server pod)"
+    assert root["help"] == (
+        "Absolute path of a folder that the API and every worker read and write: one shared volume, mounted at this path in every pod. "
+        "It is created if missing."
+    )
+    assert root["placeholder"] == "/var/lib/primer/artifacts"
 
 
 @pytest.mark.asyncio

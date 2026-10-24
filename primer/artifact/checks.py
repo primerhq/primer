@@ -10,8 +10,12 @@ default id therefore comes from the leaf ``primer.model.providers.artifact`` (``
 
 from __future__ import annotations
 
+import asyncio
+
+from primer.artifact.filesystem import prepare_root
 from primer.artifact.routing import count_artifacts_held
 from primer.common.entity_checks import EntityCheckError
+from primer.model.except_ import ConfigError
 from primer.int.storage_provider import StorageProvider
 from primer.model.provider import ArtifactStorageProvider, ArtifactStorageProviderType
 from primer.model.providers.artifact import (
@@ -97,9 +101,24 @@ async def check_artifact_provider_update(
         )
 
 
+async def prepare_artifact_provider(entity: ArtifactStorageProvider) -> None:
+    """Prepare the location a provider row names before the row is written: a filesystem root is created when missing, checked for a write and
+    given its marker (``primer.artifact.filesystem.prepare_root``, run in a thread). Other kinds have nothing to prepare.
+
+    The REST route and the system tools run it LAST in their create and update checks, so a write that another check refuses prepares nothing.
+    """
+    if entity.provider is not ArtifactStorageProviderType.FILESYSTEM:
+        return
+    try:
+        await asyncio.to_thread(prepare_root, entity.config.root)
+    except ConfigError as exc:
+        raise EntityCheckError("validation", str(exc), code="artifact_root_unusable", field="config.root") from exc
+
+
 __all__ = [
     "ARTIFACT_DEFAULT_WRITE_NOTE",
     "check_artifact_provider_delete",
     "check_artifact_provider_update",
     "check_artifact_provider_write",
+    "prepare_artifact_provider",
 ]

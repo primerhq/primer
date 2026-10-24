@@ -22,7 +22,12 @@ from primer.api.routers._crud import make_crud_router
 from primer.api.routers._probe_text import draft_error
 from primer.api.routers.providers import _form_field
 from primer.artifact.active import read_active_artifact_store, set_active_artifact_store
-from primer.artifact.checks import check_artifact_provider_delete, check_artifact_provider_update, check_artifact_provider_write
+from primer.artifact.checks import (
+    check_artifact_provider_delete,
+    check_artifact_provider_update,
+    check_artifact_provider_write,
+    prepare_artifact_provider,
+)
 from primer.artifact.probe import probe_artifact_provider
 from primer.common.entity_checks import EntityCheckError
 from primer.model.common import preserve_masked_secrets
@@ -52,19 +57,31 @@ def _refuse_an_unbuildable_default(entity: ArtifactStorageProvider) -> None:
         _raise_check(exc, kind="artifact_storage_provider")
 
 
+async def _prepare(entity: ArtifactStorageProvider) -> None:
+    """Prepare the row's location (a filesystem root and its marker): 422 ``artifact_root_unusable`` naming ``config.root`` when it cannot be."""
+    try:
+        await prepare_artifact_provider(entity)
+    except EntityCheckError as exc:
+        _raise_check(exc, kind="artifact_storage_provider")
+
+
 async def _pre_create(entity: ArtifactStorageProvider, request: Request) -> None:
-    """Refuse a create of the reserved default (its row went missing) that names a kind the factory cannot build."""
+    """Refuse a create of the reserved default (its row went missing) that names a kind the factory cannot build, then prepare the location.
+    The preparation runs last, so a refused create prepares nothing."""
     _refuse_an_unbuildable_default(entity)
+    await _prepare(entity)
 
 
 async def _pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider, request: Request) -> None:
-    """Restore masked secrets, then refuse a write that leaves the reserved default naming a kind the factory cannot build."""
+    """Restore masked secrets, refuse a write that leaves the reserved default naming a kind the factory cannot build or that moves a store
+    holding artifacts, then prepare the (possibly new) location, last."""
     preserve_masked_secrets(entity, existing)
     _refuse_an_unbuildable_default(entity)
     try:
         await check_artifact_provider_update(request.app.state.storage_provider, entity, existing)
     except EntityCheckError as exc:
         _raise_check(exc, kind="artifact_storage_provider")
+    await _prepare(entity)
 
 
 async def _reject_reserved_delete(entity_id: str, request: Request) -> None:
@@ -96,9 +113,10 @@ async def _pre_delete(entity: ArtifactStorageProvider, request: Request) -> None
 # lists mirror the config models in primer/model/providers/artifact.py (tests/api/test_artifact_storage_types.py holds them to the models); a row of this class has no fields of its own, no limits
 # block and no model list to discover.
 #
-# THE LABELS TELL THE TRUTH ABOUT WHAT A ROW DOES. ``build_artifact_storage`` (primer/artifact/factory.py) builds only the ``db`` backend, and every consumer goes through ``ArtifactStorageRegistry.get_default()``, the routing store
-# (primer/artifact/routing.py): a put goes to the ACTIVE provider (``ActiveArtifactStorageConfig``; the database, through the reserved ``artifact-storage-default``, until another is selected) and a get or a delete follows the
-# artifact's location record. So a ``filesystem`` or ``s3`` row can be stored but cannot be built, and a ``db`` row registered here is not the default.
+# THE LABELS TELL THE TRUTH ABOUT WHAT A ROW DOES. ``build_artifact_storage`` (primer/artifact/factory.py) builds the ``db`` and ``filesystem`` backends, and every consumer goes through ``ArtifactStorageRegistry.get_default()``, the
+# routing store (primer/artifact/routing.py): a put goes to the ACTIVE provider (``ActiveArtifactStorageConfig``; the database, through the reserved ``artifact-storage-default``, until another is selected) and a get or a delete
+# follows the artifact's location record. So an ``s3`` row can be stored but cannot be built, and a ``db`` row registered here is not the default. A ``filesystem`` root must be ONE folder that every server pod mounts at the
+# same path; its label and help say so.
 # The test builds a row of each kind and requires 'not implemented' in the label of every kind the factory refuses, so the labels change by themselves when a backend ships.
 #
 # This router MUST be mounted before the CRUD router in _app_routes.py, or GET /{id} swallows "_types".
@@ -136,10 +154,13 @@ async def test_artifact_storage_draft(
                 preserve_masked_secrets(draft, stored)
     except Exception as exc:  # noqa: BLE001 - a partial draft is a 200 diagnostic
         return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
+    # A draft is tested as it would be saved: its location is prepared first (a filesystem root is created and given its marker), as the
+    # create will. The saved-row Test below does not prepare: it checks what every process will find.
     return (
         await probe_artifact_provider(
             draft,
             storage_provider=request.app.state.storage_provider,
+            prepare=True,
         )
     ).as_dict()
 
@@ -179,9 +200,16 @@ async def list_artifact_storage_types() -> dict[str, dict[str, Any]]:
             "discoverable": False,
         },
         "filesystem": {
-            "label": "Filesystem (not implemented yet: stored, never used)",
+            "label": "Filesystem (a folder shared by every server pod)",
             "config_fields": [
-                _form_field("root", "Root directory", "text", required=True, help_="Directory under which artifact bytes are written.", placeholder="/var/lib/primer/artifacts"),
+                _form_field(
+                    "root", "Root directory", "text", required=True,
+                    help_=(
+                        "Absolute path of a folder that the API and every worker read and write: one shared volume, mounted at this path in every pod. "
+                        "It is created if missing."
+                    ),
+                    placeholder="/var/lib/primer/artifacts",
+                ),
             ],
             "row_fields": [],
             "discoverable": False,

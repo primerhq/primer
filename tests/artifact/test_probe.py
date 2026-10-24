@@ -76,3 +76,37 @@ def test_the_failure_text_masks_the_s3_keys() -> None:
     assert "AKIAEXAMPLEKEY1" not in text
     assert "secret-example-1" not in text
     assert "[REDACTED]" in text
+
+
+# ---- the draft Test prepares a filesystem root first (plan 09 Task 8) -------------------------------------------------------------------------
+
+
+def _fs_row(root: Path) -> ArtifactStorageProvider:
+    return ArtifactStorageProvider(id="fs-probe", provider="filesystem", config={"root": str(root)})
+
+
+async def test_a_draft_probe_prepares_the_root_and_a_saved_row_probe_does_not(sp, tmp_path: Path) -> None:
+    from primer.artifact.filesystem import ROOT_MARKER
+
+    saved = await probe_artifact_provider(_fs_row(tmp_path / "new"), storage_provider=sp)
+    assert (saved.ok, saved.step) == (False, "initialize") and "does not exist in this process" in saved.error
+    assert not (tmp_path / "new").exists(), "a probe without prepare never creates the root"
+
+    draft = await probe_artifact_provider(_fs_row(tmp_path / "new"), storage_provider=sp, prepare=True)
+
+    assert draft == ArtifactProbeResult(ok=True)
+    assert (tmp_path / "new" / ROOT_MARKER).is_file()
+    assert [p for p in (tmp_path / "new").rglob("*") if p.is_file() and p.name != ROOT_MARKER] == [], "the probe object is gone"
+
+
+async def test_a_root_that_cannot_be_prepared_names_prepare(sp, tmp_path: Path) -> None:
+    (tmp_path / "f").write_text("x")
+
+    result = await probe_artifact_provider(_fs_row(tmp_path / "f"), storage_provider=sp, prepare=True)
+
+    assert (result.ok, result.step) == (False, "prepare")
+    assert "is not a directory" in result.error
+
+
+async def test_prepare_on_a_database_row_is_a_plain_probe(sp) -> None:
+    assert await probe_artifact_provider(_row(), storage_provider=sp, prepare=True) == ArtifactProbeResult(ok=True)

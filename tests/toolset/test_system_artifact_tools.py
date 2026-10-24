@@ -133,3 +133,43 @@ async def test_a_store_deleted_while_the_tool_checks_it_is_a_conflict(world, mon
     assert answer["message"].startswith("provider_id: artifact store 'db-2' was deleted while it was being checked")
     _, current = await _call(toolset, "get_active_artifact_store")
     assert current["provider_id"] == "artifact-storage-default"
+
+
+# ---- a create or an update through a tool prepares a filesystem root (plan 09 Task 8) ----------------------------------------------------------
+
+
+async def test_a_tool_create_on_an_unusable_root_names_config_root(world, tmp_path) -> None:
+    sp, toolset, _ = world
+    (tmp_path / "f").write_text("x")
+
+    is_error, answer = await _call(
+        toolset,
+        "create_artifact_storage_provider",
+        entity={"id": "fs-bad", "provider": "filesystem", "config": {"root": str(tmp_path / "f")}},
+    )
+
+    assert is_error and answer["type"] == "validation-error", answer
+    assert answer["message"].startswith("config.root: ") and "is not a directory" in answer["message"], answer
+    assert await sp.get_storage(ArtifactStorageProvider).get("fs-bad") is None, "nothing is stored"
+
+
+async def test_a_tool_create_and_update_prepare_the_root(world, tmp_path) -> None:
+    from primer.artifact.filesystem import ROOT_MARKER
+
+    sp, toolset, _ = world
+    body = {"id": "fs-1", "provider": "filesystem", "config": {"root": str(tmp_path / "a")}}
+
+    created_error, _ = await _call(toolset, "create_artifact_storage_provider", entity=body)
+    assert not created_error and (tmp_path / "a" / ROOT_MARKER).is_file()
+
+    moved_error, _ = await _call(
+        toolset, "update_artifact_storage_provider", id="fs-1", entity={**body, "config": {"root": str(tmp_path / "b")}},
+    )
+    assert not moved_error and (tmp_path / "b" / ROOT_MARKER).is_file()
+
+    (tmp_path / "f").write_text("x")
+    refused_error, refused = await _call(
+        toolset, "update_artifact_storage_provider", id="fs-1", entity={**body, "config": {"root": str(tmp_path / "f")}},
+    )
+    assert refused_error and refused["type"] == "validation-error" and refused["message"].startswith("config.root: "), refused
+    assert (await sp.get_storage(ArtifactStorageProvider).get("fs-1")).config.root == str(tmp_path / "b"), "the row is unchanged"
