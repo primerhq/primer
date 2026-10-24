@@ -422,6 +422,7 @@ _TOO_MANY_CPUS = "Range of CPUs is from 0.01 to 16.00, as there are only 16 CPUs
     (ResourceLimits(cpu_cores=64), _TOO_MANY_CPUS, ["cpu_cores"]),
     (ResourceLimits(memory_bytes=2**20), "Minimum memory limit allowed is 6MB", ["memory_bytes"]),
     (ResourceLimits(cpu_cores=64, memory_bytes=2**20), _TOO_MANY_CPUS, ["cpu_cores"]),
+    (ResourceLimits(cpu_cores=2), "NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted", ["cpu_cores"]),
 ])
 async def test_a_size_the_daemon_refuses_is_a_422_naming_the_field_and_the_rollback_still_runs(resources, message, fields, as_dict):
     """Inside the caps Docker refuses sizes of its own. The raw ``DockerError`` is no ``PrimerError``, so it used to answer the generic 500
@@ -444,6 +445,12 @@ async def test_a_size_the_daemon_refuses_is_a_422_naming_the_field_and_the_rollb
     (400, "invalid mount config for type \"bind\": bind source path does not exist", ResourceLimits(cpu_cores=64)),
     (400, _TOO_MANY_CPUS, ResourceLimits()),                 # the create set no CPU, so the refusal is not that size's
     (500, _TOO_MANY_CPUS, ResourceLimits(cpu_cores=64)),     # a server error is not a refusal of the request
+    # The review of #869, F3: a refusal that only MENTIONS a CPU or memory word is not a size refusal.
+    (404, "No such image: acme/memory-profiler:1", ResourceLimits(memory_bytes=2**30)),
+    (400, 'invalid mount config for type "bind": bind source path does not exist: /sys/fs/cgroup/cpu', ResourceLimits(cpu_cores=2)),
+    (409, 'Conflict. The container name "/workspace-cpu-lab" is already in use by container "abc"', ResourceLimits(cpu_cores=2)),
+    (400, "invalid environment variable: MEMORY_LIMIT", ResourceLimits(memory_bytes=2**30)),
+    (409, _TOO_MANY_CPUS, ResourceLimits(cpu_cores=64)),     # only the daemon's "invalid parameter" 400 carries a size refusal
 ])
 async def test_a_failure_that_is_not_a_size_refusal_passes_on_as_it_was(status, message, resources):
     docker = _FakeDocker()
