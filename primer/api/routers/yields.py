@@ -32,7 +32,7 @@ from fastapi import APIRouter, Body, Depends, Path
 from pydantic import BaseModel, Field
 
 from primer.api.approver_guard import enforce_approvers
-from primer.api.gate_fence import count_gate_token, decided_gate_error, stale_gate_error
+from primer.api.gate_fence import GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
@@ -433,12 +433,17 @@ async def post_ask_user_respond(
     engine: ClaimEngine | None = Depends(get_claim_engine),
     storage_provider=Depends(get_storage_provider),
 ) -> dict[str, str]:
+    # A prompt that is no longer pending while the session is there and its park reads (answered elsewhere and the session moved on, re-parked
+    # under a fresh id, parked on another tool) is a 404 ``gate_not_pending`` (GateNotPendingError), so a client reloads instead of showing an
+    # error. A missing session and a park that cannot be read (no state, no tool, no call id, no event key) stay a plain 404.
     sess = await _load_session_or_404(session_storage, session_id)
     blob = _parked_blob(sess)
     if blob is None:
-        raise NotFoundError(
-            f"Session {session_id!r} has no pending ask_user prompt"
-        )
+        if sess.parked_status not in ("parked", "resumable"):
+            raise GateNotPendingError(
+                f"Session {session_id!r} has no pending ask_user prompt"
+            )
+        raise NotFoundError(f"Session {session_id!r} park names nothing it waits on")
     yielded = blob.get("yielded") or {}
     # Graph park: the outer yield is typed "_approval"; the real ask_user
     # nodes live in the checkpoint's pending_agent_yields. Match the
@@ -487,10 +492,15 @@ async def post_ask_user_respond(
             )
             if disp is not None else None
         )
-        if disp is None or tc is None:
-            raise NotFoundError(
+        if disp is None:
+            raise GateNotPendingError(
                 f"No pending ask_user prompt with tool_call_id "
                 f"{body.tool_call_id!r} on session {session_id!r}"
+            )
+        if tc is None:
+            # The checkpoint's dispatch list names the prompt but no pending tool call carries it: the park does not read.
+            raise NotFoundError(
+                f"Session {session_id!r} names ask_user prompt {body.tool_call_id!r} with no pending tool call"
             )
         disp_meta = disp.get("resume_metadata") or {}
         _validate_response_against_schema(
@@ -511,13 +521,19 @@ async def post_ask_user_respond(
             storage_provider=storage_provider,
         )
         return {"status": "accepted"}
+    if not yielded.get("tool_name"):
+        raise NotFoundError(f"Session {session_id!r} park names nothing it waits on")
     if yielded.get("tool_name") != "ask_user":
-        raise NotFoundError(
+        raise GateNotPendingError(
             f"Session {session_id!r} is parked on a different tool"
         )
     expected = _tool_call_id_for(blob)
-    if expected != body.tool_call_id:
+    if not expected:
         raise NotFoundError(
+            f"Session {session_id!r} has a malformed ask_user park"
+        )
+    if expected != body.tool_call_id:
+        raise GateNotPendingError(
             f"No pending ask_user prompt with tool_call_id "
             f"{body.tool_call_id!r} on session {session_id!r}"
         )

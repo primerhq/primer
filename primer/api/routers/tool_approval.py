@@ -35,7 +35,7 @@ from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.api.approver_guard import enforce_approvers
-from primer.api.gate_fence import count_gate_token, decided_gate_error, stale_gate_error
+from primer.api.gate_fence import GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
 from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
 from primer.session.yields import durably_wake_session
@@ -196,13 +196,17 @@ class ToolApprovalRespondBody(BaseModel):
     reason: str | None = Field(default=None, max_length=1024)
 
 
-def _approval_blob_or_404(sess: Any, id_str: str) -> dict:
+def _approval_blob_or_404(sess: Any, id_str: str, *, not_pending: type[NotFoundError] = NotFoundError) -> dict:
     """Return parked_state blob when the row has a pending _approval gate.
 
     Raises :class:`NotFoundError` if:
     * the row is None (doesn't exist),
     * it isn't in a parked/resumable state, or
     * none of its pending entries is an approval gate.
+
+    ``not_pending`` is what the two "no approval is pending" cases raise: the respond route passes
+    :class:`~primer.api.gate_fence.GateNotPendingError` (404 ``gate_not_pending``: the session is there, the gate it named has moved on).
+    A missing row, and a park that names nothing it waits on (unreadable, not a gate that moved on), stay a plain 404.
 
     Checks every pending entry via
     :func:`~primer.session.pending_gates.enumerate_pending_gates`, not
@@ -217,12 +221,15 @@ def _approval_blob_or_404(sess: Any, id_str: str) -> dict:
     if sess is None:
         raise NotFoundError(f"{id_str!r} does not exist")
     if sess.parked_status not in ("parked", "resumable"):
-        raise NotFoundError(f"{id_str!r} has no pending tool_approval")
+        raise not_pending(f"{id_str!r} has no pending tool_approval")
     blob: dict = sess.parked_state or {}
-    if not any(
-        gate["kind"] == "_approval" for gate in enumerate_pending_gates(blob)
-    ):
-        raise NotFoundError(f"{id_str!r} is parked on a different tool")
+    gates = enumerate_pending_gates(blob)
+    if not any(gate["kind"] == "_approval" for gate in gates):
+        if not gates and not blob.get("graph_checkpoint"):
+            # A non-graph park with no yielded tool: there is nothing to read, so this is not a gate that moved on. (A graph park can
+            # wait on something that is not a human gate, a tool wait, so an empty enumeration there is "a different tool".)
+            raise NotFoundError(f"{id_str!r} park names nothing it waits on")
+        raise not_pending(f"{id_str!r} is parked on a different tool")
     return blob
 
 
@@ -478,7 +485,7 @@ def make_tool_approval_ops_router() -> APIRouter:
         user=Depends(require_user),
     ) -> dict[str, str]:
         sess = await session_storage.get(session_id)
-        blob = _approval_blob_or_404(sess, session_id)
+        blob = _approval_blob_or_404(sess, session_id, not_pending=GateNotPendingError)
         # Resolve the SPECIFIC gate body.tool_call_id names -- a graph park
         # can have several pending approval gates open at once, and only
         # the primary one is projected onto the top-level `yielded` blob
@@ -495,7 +502,9 @@ def make_tool_approval_ops_router() -> APIRouter:
             ) is not None:
                 count_gate_token(kind="approval", session_id=session_id, token=body.gate_id, stale=True)
                 raise stale_gate_error("approval")
-            raise NotFoundError(
+            # The id is pending under no approval gate (the first gate of a graph ToolCall node that re-parked under a fresh id, one decided
+            # elsewhere): the gate moved on, 404 ``gate_not_pending``.
+            raise GateNotPendingError(
                 f"No pending tool_approval with tool_call_id "
                 f"{body.tool_call_id!r} on {session_id!r}"
             )
