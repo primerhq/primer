@@ -58,6 +58,9 @@ def _ctx():
     end = SRC.index(_HELPERS_END)
     ctx = MiniRacer()
     _OPEN_CONTEXTS.append(ctx)
+    # SW_loadResume reads every page of each list with the foundation's PR_fetchAllPages (ticket 01a16dfa), so the real api.js loads first.
+    ctx.eval("var window = globalThis;")
+    ctx.eval((ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8"))
     ctx.eval(SRC[start:end])
     return ctx
 

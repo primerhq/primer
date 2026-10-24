@@ -13,7 +13,7 @@ Tests the rewrite of ui/components/provider-catalog.jsx against the Plan 01 kit:
 - Open opens PC_RegisterOverlay in edit mode for non-panel classes
 - Extras slot renders above that type's cards (tts gets rows; stub renders; none on all)
 - A failed class shows Banner error with Retry while other classes still load
-- More than 200 rows displays the truncation notice
+- More than 200 rows are all read (every page); a read cut short says so
 - An instance deep link opens its row
 - The provider.register verb is registered in nv-shell.jsx
 - The provider.register verb requests the overlay
@@ -478,21 +478,40 @@ def test_a_failed_class_shows_its_error_and_the_others_still_load(ctx) -> None:
     assert ctx.eval("MR.find('pk-card:embedding:emb-ok') !== null")
 
 
-def test_more_than_200_rows_says_so(ctx) -> None:
-    ctx.eval("""
-    var items = [];
-    for (var i = 0; i < 200; i++) items.push({ id: "llm-" + i, provider: "anthropic" });
-    PROVIDER_FIXTURES["/llm_providers"] = { items: items };
+# A server holding LLM_COUNT LLM providers, paged by limit and offset as the real route pages; LLM_FAIL_FROM is the first offset that answers 500.
+_PAGED_LLM = r"""
+var LLM_COUNT = 250, LLM_FAIL_FROM = null;
+HANDLER = function (method, path) {
+  var m = /^\/llm_providers\?limit=(\d+)&offset=(\d+)$/.exec(path);
+  if (method !== "GET" || !m) return Promise.resolve({ items: [] });
+  var limit = Number(m[1]), offset = Number(m[2]);
+  if (LLM_FAIL_FROM !== null && offset >= LLM_FAIL_FROM) {
+    return refuse({ type: "/errors/internal", title: "Internal Error", status: 500, detail: "db failed" });
+  }
+  var n = Math.max(0, Math.min(limit, LLM_COUNT - offset)), items = [];
+  for (var i = 0; i < n; i++) items.push({ id: "llm-" + (offset + i), provider: "anthropic" });
+  return Promise.resolve({ kind: "offset", offset: offset, length: n, total: LLM_COUNT, items: items });
+};
+"""
 
-    MR.mount(window.ProviderCatalog, {
-      initialClass: "llm",
-      onNavigate: onNavigate
-    });
-    """)
+
+def test_more_than_200_rows_are_all_read(ctx) -> None:
+    """Ticket 01a16dfa: the catalog read one page of 200 and, holding 200, said "Showing the first 200"; it reads every page now and says nothing of a
+    whole list."""
+    ctx.eval(_PAGED_LLM + 'MR.mount(window.ProviderCatalog, { initialClass: "llm", onNavigate: onNavigate });')
     settle(ctx)
-    trunc = ctx.eval("MR.find('pc-truncated:llm')")
-    assert trunc is not None
-    assert "Showing the first 200 LLM providers" in ctx.eval("textOf(MR.find('pc-truncated:llm'))")
+    assert [c["path"] for c in js(ctx, "CALLS") if c["path"].startswith("/llm_providers")] == [
+        "/llm_providers?limit=200&offset=0", "/llm_providers?limit=200&offset=200"]
+    assert ctx.eval("MR.find('pc-truncated:llm')") is None
+    assert ctx.eval("textOf(MR.find('pk-count'))") == "250 providers"
+    ctx.eval("setValue('pc-filter', 'llm-249');")
+    assert ctx.eval("MR.find('pk-card:llm:llm-249') !== null"), "the 250th provider, on the second page, has its card"
+
+
+def test_a_read_cut_short_says_so(ctx) -> None:
+    ctx.eval(_PAGED_LLM + 'LLM_FAIL_FROM = 200; MR.mount(window.ProviderCatalog, { initialClass: "llm", onNavigate: onNavigate });')
+    settle(ctx)
+    assert ctx.eval("textOf(MR.find('pc-truncated:llm'))") == "Showing the first 200 LLM providers; the rest did not load: db failed"
 
 
 def test_an_instance_deep_link_opens_its_row(ctx) -> None:

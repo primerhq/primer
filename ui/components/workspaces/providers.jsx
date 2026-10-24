@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, WS_FieldRow, WS_Section */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, WS_FieldRow, WS_Section, PR_fetchAllPages, PR_PagedNote */
 
 const WP_LIST_KEY = "ws:providers";
 
@@ -728,9 +728,11 @@ function WorkspaceProviderDetail({ providerId, pushToast, onBack = null, onDelet
     { deps: [providerId] }
   );
 
+  // Every template, every page (PR_fetchAllPages, ui/foundation/api.js), filtered to this provider's. A read cut short never claims
+  // "Deletion is safe".
   const templates = useResource(
     `ws:provider:${providerId}:templates`,
-    (signal) => apiFetch("GET", "/workspace_templates?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/workspace_templates", { signal, apiFetch }),
     { deps: [providerId] }
   );
   const templatesState = window.primerApi.resourceState(templates);
@@ -866,6 +868,7 @@ function WorkspaceProviderDetail({ providerId, pushToast, onBack = null, onDelet
                 </tbody>
               </table>
             )}
+            <PR_PagedNote list={templates.data} noun="templates" testid="wp-templates-note" />
           </PK_Section>
         </div>
       </div>
@@ -914,6 +917,11 @@ function WorkspaceProviderDetail({ providerId, pushToast, onBack = null, onDelet
               <ul>{referencingTemplates.slice(0, 6).map((t) => <li key={t.id} className="mono">{t.id}</li>)}</ul>
               Delete or repoint those templates first.
             </>
+          ) : templates.data?.truncated ? (
+            <div data-testid="wp-delete-templates-partial">
+              <PR_PagedNote list={templates.data} noun="templates" testid="wp-delete-templates-note" />
+              None of these reference this provider. The rest were not checked here; the server refuses the delete if one of them does.
+            </div>
           ) : (
             <>
               No templates reference this provider. Deletion is safe.

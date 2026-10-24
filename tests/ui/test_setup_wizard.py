@@ -167,6 +167,9 @@ def _helpers():
     start = src.index("function SW_providerId(")
     end = src.index(_HELPERS_END)
     ctx = MiniRacer()
+    # SW_loadResume reads every page of each list with the foundation's PR_fetchAllPages (ticket 01a16dfa), so the real api.js loads first.
+    ctx.eval("var window = globalThis;")
+    ctx.eval((ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8"))
     ctx.eval(src[start:end])
     return ctx
 

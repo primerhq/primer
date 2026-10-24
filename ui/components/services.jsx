@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner */
+/* global React, Icon, Btn, Modal, Banner, PR_fetchAllPages, PR_usePagedResource, PR_PagedNote */
 // Services console page — agent-published web apps served at /svc/{name}/.
 // Spec: docs/superpowers/specs/2026-08-08-services-design.md section 9.
 //
@@ -79,9 +79,10 @@ function SV_ServicesList() {
   const [filter, setFilter] = React.useState("");
   const [creating, setCreating] = React.useState(false);
 
-  const list = useResource(
+  // Every service, every page (PR_fetchAllPages), polled every 5 s per page read (PR_usePagedResource, ui/foundation/api.js).
+  const list = PR_usePagedResource(
     "services:list",
-    (signal) => apiFetch("GET", "/services?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/services", { signal, apiFetch }),
     { pollMs: 5000 },
   );
   const items = (list.data && list.data.items) || [];
@@ -122,6 +123,7 @@ function SV_ServicesList() {
           actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
         />
       )}
+      <PR_PagedNote list={list.data} noun="services" testid="services-note" />
       {!list.loading && !list.error && shown.length === 0 && (
         <div className="empty" style={{ padding: "40px 20px" }} data-testid="services-empty">
           <div className="ico-wrap"><Icon name="box" size={22} /></div>

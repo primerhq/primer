@@ -1,5 +1,5 @@
 /* global React, Btn, Banner, NV_useConsole, PK_Field, PK_Grid, PK_Section, PK_Fold, PK_FormOverlay, PK_Segmented, PK_RowTable, PK_PageHeader,
-   PK_CardGrid, PK_Card, PK_usePagedFilter */
+   PK_CardGrid, PK_Card, PK_usePagedFilter, PR_fetchAllPages, PR_usePagedResource, PR_PagedNote */
 
 // ---- WT pure helpers: no JSX, no React (tests/ui/test_wt_helpers.py runs them in MiniRacer) ----
 // The Workspace templates page and its template overlay (platform revamp Plan 08, Tasks 9 to 11; design 14.2) are built on these. They decide the units
@@ -1180,7 +1180,8 @@ function WT_TemplatesPage() {
   var api = window.primerApi;
   var apiFetch = api.apiFetch;
   var isAdmin = con.role === "admin";
-  var list = api.useResource(WT_LIST_KEY, function (signal) { return WT_fetchAllTemplates(apiFetch, signal); }, { pollMs: 15000 });
+  // Every page, polled every 15 s per page read (PR_usePagedResource, ui/foundation/api.js): one request per 15 s on average.
+  var list = PR_usePagedResource(WT_LIST_KEY, function (signal) { return WT_fetchAllTemplates(apiFetch, signal); }, { pollMs: 15000 });
   var choicesRes = api.useResource("ws:provider-choices", function (signal) {
     return apiFetch("GET", "/workspace_providers/_choices", null, { signal: signal });
   }, { pollMs: 0 });
@@ -1267,6 +1268,7 @@ function WT_TemplatesPage() {
         filter={{ value: paged.q, onChange: paged.setQ, label: "Filter workspace templates", testid: "wt-filter" }}
         pager={{ page: paged.page, pages: paged.pages, from: paged.from, to: paged.to, total: paged.total, onPage: paged.setPage }}
         action={{ label: "+ Template", onClick: openCreate, testid: "wt-new" }} />
+      <PR_PagedNote list={list.data} noun="workspace templates" testid="wt-list-note" />
       {body}
       {open ? (
         <WT_TemplateOverlay key={open.create ? "new" : "row:" + open.row.id} create={!!open.create} row={open.row || null}

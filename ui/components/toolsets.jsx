@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, CapabilityBadges, FormField */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, CapabilityBadges, FormField, PR_fetchAllPages, PR_PagedNote */
 
 // Toolsets page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
@@ -1193,10 +1193,10 @@ function TS_ToolsTab({ id, ts, pushToast, onInvalidate }) {
     { pollMs: null, deps: [id] }
   );
   // §12.4 of tool-approval spec: per-tool approval badge. Fetch all
-  // policies once and look up by (toolset_id, tool_name).
+  // policies once (every page, PR_fetchAllPages) and look up by (toolset_id, tool_name).
   const policies = useResource(
     "toolsets:approval-policies",
-    (signal) => apiFetch("GET", "/tool_approval_policies?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/tool_approval_policies", { signal, apiFetch }),
     { pollMs: null, deps: [] }
   );
 
@@ -1266,6 +1266,7 @@ function TS_ToolsTab({ id, ts, pushToast, onInvalidate }) {
       <div className="muted text-sm mb-3">
         {items.length} tool{items.length === 1 ? "" : "s"}. Canonical identifier is <span className="mono">id</span> (T0140/T0141), not <span className="mono">name</span>.
       </div>
+      <PR_PagedNote list={policies.data} noun="approval policies" testid="ts-tools-policies-note" />
       <table className="tbl">
         <thead>
           <tr>
@@ -1320,14 +1321,15 @@ function TS_ToolsTab({ id, ts, pushToast, onInvalidate }) {
 function TS_SessionsTab({ id }) {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
+  // Every session and every agent, every page of each (PR_fetchAllPages), joined here.
   const sessions = useResource(
     "toolset-sessions:" + id,
-    (signal) => apiFetch("GET", "/sessions?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/sessions", { signal, apiFetch }),
     { pollMs: null, deps: [id] }
   );
   const agents = useResource(
     "toolset-agents-for-filter:" + id,
-    (signal) => apiFetch("GET", "/agents?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/agents", { signal, apiFetch }),
     { pollMs: null, deps: [id] }
   );
 
@@ -1361,6 +1363,8 @@ function TS_SessionsTab({ id }) {
       <div className="muted text-sm mb-3">
         Sessions whose bound agent references <span className="mono">{id}</span> ({agentsUsing.size} agent{agentsUsing.size === 1 ? "" : "s"}).
       </div>
+      <PR_PagedNote list={sessions.data} noun="sessions" testid="ts-sessions-note" />
+      <PR_PagedNote list={agents.data} noun="agents" testid="ts-agents-note" />
       {matched.length === 0 ? (
         <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>No sessions reference this toolset.</div>
       ) : (

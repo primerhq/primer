@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, CardList, Card, Fab, relativeTime, Banner */
+/* global React, Icon, StatusPill, Btn, Modal, CardList, Card, Fab, relativeTime, Banner, PR_fetchAllPages, PR_usePagedResource, PR_PagedNote */
 
 const SL_STATUS_CHIPS = [
   { s: "created",   color: "var(--text-3)" },
@@ -48,24 +48,26 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
   // search doesn't get rug-pulled by a refresh.
   const filterFocused = React.useRef(false);
 
-  const list = useResource(
+  // Every session, every page of 200 (PR_fetchAllPages, ui/foundation/api.js). The 3 s poll is per page read (PR_usePagedResource): a list of
+  // five pages is read every 15 s, one request per 3 s on average, as the one page it replaced.
+  const list = PR_usePagedResource(
     "sessions:list",
-    (signal) => apiFetch("GET", "/sessions?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/sessions", { signal, apiFetch }),
     {
       pollMs: 3000,
       pauseWhile: () => filterFocused.current,
     }
   );
 
-  // Combobox sources — cached for the page's lifetime.
+  // Combobox sources: cached for the page's lifetime, every page of each.
   const agents = useResource(
     "sessions-list:agents",
-    (s) => apiFetch("GET", "/agents?limit=200", null, { signal: s }),
+    (s) => PR_fetchAllPages("/agents", { signal: s, apiFetch }),
     {}
   );
   const workspaces = useResource(
     "sessions-list:workspaces",
-    (s) => apiFetch("GET", "/workspaces?limit=200", null, { signal: s }),
+    (s) => PR_fetchAllPages("/workspaces", { signal: s, apiFetch }),
     {}
   );
 
@@ -463,6 +465,9 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
           </a>
         </div>
       )}
+      <PR_PagedNote list={list.data} noun="sessions" testid="sl-sessions-note" />
+      <PR_PagedNote list={agents.data} noun="agents" testid="sl-agents-note" />
+      <PR_PagedNote list={workspaces.data} noun="workspaces" testid="sl-workspaces-note" />
 
       {isMobile ? (
         <CardList
@@ -587,9 +592,6 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
             Showing <strong style={{ color: "var(--text)" }}>{total === 0 ? 0 : (page - 1) * SL_PAGE_SIZE + 1}</strong>–
             <strong style={{ color: "var(--text)" }}>{Math.min(page * SL_PAGE_SIZE, total)}</strong> of{" "}
             <strong style={{ color: "var(--text)" }}>{total}</strong>
-            {list.data?.total > items.length && (
-              <span className="muted text-sm"> (server reports {list.data.total} total)</span>
-            )}
           </span>
           <div className="pager">
             <button disabled={page === 1} onClick={() => setPage(page - 1)}><Icon name="chevron-left" size={12} /></button>

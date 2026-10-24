@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, MobileTabs, relativeTime, fmtDate */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, MobileTabs, relativeTime, fmtDate, PR_fetchAllPages, PR_usePagedResource, PR_PagedNote */
 
 // A workspace's Settings overlay (WorkspaceDetail, overlay=workspaces:<tab>:<wid>) and its tabs, wired to the real API: every fetch goes through
 // window.primerApi.{apiFetch, useResource, useMutation}. Cache keys: "workspace-detail:${wid}", "workspace-files:${wid}:${path}",
@@ -123,11 +123,12 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
     { deps: [wid] }
   );
 
-  // Only used to flag the Sessions tab badge — same poll cadence as the
-  // tab body itself (5s) so the count stays in sync with the rows.
-  const sessionsForBadge = useResource(
+  // Only used to flag the Sessions tab badge: same key, reader and poll
+  // cadence as the tab body itself (every page, 5 s per page read) so the
+  // count stays in sync with the rows.
+  const sessionsForBadge = PR_usePagedResource(
     `workspace-sessions:${wid}`,
-    (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(wid)}/sessions?limit=200`, null, { signal }),
+    (signal) => PR_fetchAllPages(`/workspaces/${encodeURIComponent(wid)}/sessions`, { signal, apiFetch, idKey: "session_id" }),
     { pollMs: 5000, deps: [wid] }
   );
   const sessionCount = sessionsForBadge.data?.items?.length ?? null;
@@ -883,9 +884,11 @@ function WS_SessionsTab({ wid, onOpen }) {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
-  const list = useResource(
+  // Every session of the workspace, every page (PR_fetchAllPages; its rows are keyed by session_id), polled every 5 s per page read
+  // (PR_usePagedResource, ui/foundation/api.js).
+  const list = PR_usePagedResource(
     `workspace-sessions:${wid}`,
-    (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(wid)}/sessions?limit=200`, null, { signal }),
+    (signal) => PR_fetchAllPages(`/workspaces/${encodeURIComponent(wid)}/sessions`, { signal, apiFetch, idKey: "session_id" }),
     { pollMs: 5000, deps: [wid] }
   );
   const items = list.data?.items ?? [];
@@ -905,6 +908,7 @@ function WS_SessionsTab({ wid, onOpen }) {
           <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
         </div>
       </div>
+      <PR_PagedNote list={list.data} noun="sessions" testid="ws-sessions-note" />
 
       {list.error && items.length === 0 ? (
         <Banner
@@ -1181,10 +1185,10 @@ function WS_ChannelsTab({ wid, ws, pushToast }) {
   const linkedChannelId = currentBinding?.channel_id || null;
   const boundAnchor = currentBinding?.anchor || null;
 
-  // Fetch channels list for display (label) + link picker
+  // Fetch channels list for display (label) + link picker: every page (PR_fetchAllPages)
   const channelsList = useResource(
     "workspace-channels-options",
-    (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/channels", { signal, apiFetch }),
     {}
   );
   const channels = channelsList.data?.items ?? [];
@@ -1284,6 +1288,7 @@ function WS_ChannelsTab({ wid, ws, pushToast }) {
         <WS_LinkChannelModal
           wid={wid}
           channels={channels}
+          channelsList={channelsList.data}
           onClose={() => setShowLink(false)}
           onLinked={() => { ws.refetch && ws.refetch(); }}
           pushToast={pushToast}
@@ -1293,7 +1298,7 @@ function WS_ChannelsTab({ wid, ws, pushToast }) {
   );
 }
 
-function WS_LinkChannelModal({ wid, channels, onClose, onLinked, pushToast }) {
+function WS_LinkChannelModal({ wid, channels, channelsList, onClose, onLinked, pushToast }) {
   const { useMutation, apiFetch } = window.primerApi;
   const [channelId, setChannelId] = React.useState(channels[0]?.id || "");
   const [anchor, setAnchor] = React.useState("");
@@ -1353,6 +1358,7 @@ function WS_LinkChannelModal({ wid, channels, onClose, onLinked, pushToast }) {
             ))}
           </select>
         )}
+        <PR_PagedNote list={channelsList} noun="channels" testid="ws-link-channels-note" />
       </div>
       <div className="field" style={{ marginTop: 12 }}>
         <label className="field-label">anchor <span className="hint">optional</span></label>
