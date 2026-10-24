@@ -423,6 +423,15 @@ async def run_ensure_pass(
     if created_workspace:
         result.created.append(created_workspace)
 
+    # Prime's shipped instructions, written only when the default workspace has neither agents.md nor AGENTS.md (pivot P2):
+    # after the workspace step, which may have just created the workspace, so a fresh install gets the file on its first boot.
+    from primer.bootstrap.prime import ensure_prime_agents_md
+
+    await _step(
+        "prime_agents_md",
+        lambda: ensure_prime_agents_md(storage_provider, workspace_registry=workspace_registry),
+    )
+
     # The registries let regeneration re-index the documents it rewrites,
     # so a platform change shows up in search without a re-bootstrap. It
     # writes only what actually differs, so the cost tracks the diff.

@@ -1,8 +1,8 @@
 """Prime: the default workspace.
 
 Every rule about the default workspace lives in this module (pivot plan P2): which id it has (below), adopting an existing
-install's legacy row, the caller's main operator session (per user, made on demand by the ensure route), and, in later
-tasks, seeding its ``agents.md`` and the reset.
+install's legacy row, the caller's main operator session (per user, made on demand by the ensure route), seeding its
+``agents.md`` and the reset of that file.
 
 The default workspace is the one a person meets on first login, and it can never be deleted. Its id is not a
 constant: a fresh install creates ``prime``, while an install that predates ``SystemState.default_workspace_id``
@@ -30,10 +30,23 @@ The main operator session
 The default workspace's main operator session is NOT seeded at boot: each user has their own, made on demand by
 ``POST /v1/workspaces/{id}/main_session`` (:func:`ensure_main_operator_session`) and created as the caller, so it runs at
 exactly the caller's rank. The id is :func:`main_session_id`.
+
+Prime's agents.md
+-----------------
+
+The platform ships ``primer/bootstrap/prime_agents.md`` (:func:`shipped_prime_agents_md`). The ensure pass writes it to the
+default workspace's root as ``agents.md`` only when neither ``agents.md`` nor ``AGENTS.md`` is there
+(:func:`ensure_prime_agents_md`), so a boot never overwrites a file a person edited, and never shadows an ``AGENTS.md`` (the
+loader, :mod:`primer.workspace.instructions`, reads ``AGENTS.md`` only while ``agents.md`` is absent). A deleted file comes back
+at the next boot, as every ensured object does; an EMPTY file is kept and adds nothing to a prompt. Only the explicit reset
+(:func:`reset_prime_agents_md`: ``POST /v1/setup/reset_prime_instructions`` and the admin tool
+``system__reset_prime_instructions``) rewrites an existing file.
 """
 
 from __future__ import annotations
 
+import asyncio
+import importlib.resources
 import logging
 from typing import Any
 
@@ -47,6 +60,15 @@ from primer.model.workspace import Workspace
 from primer.storage import raw_generation
 
 logger = logging.getLogger(__name__)
+
+#: The name prime's shipped instructions are written under: the name the loader reads first (``AGENTS_MD_NAMES[0]``).
+PRIME_AGENTS_MD: str = "agents.md"
+
+#: How long, in seconds, the ensure pass may spend checking the default workspace for an existing ``agents.md`` or
+#: ``AGENTS.md`` before it gives up for this boot. The pass runs before the server serves, so a stuck backend must not hold
+#: the boot; a check that outlasts this writes nothing and the step is retried at the next boot. Read when the check runs,
+#: so a test can shorten it.
+PRIME_AGENTS_MD_CHECK_TIMEOUT_S: float = 10.0
 
 #: The display name a created main session carries (task 14 finds it by this name).
 MAIN_SESSION_NAME: str = "main"
@@ -256,11 +278,81 @@ async def ensure_main_operator_session(
             n += 1
 
 
+def shipped_prime_agents_md() -> bytes:
+    """The bytes of the instructions the platform ships for prime (``primer/bootstrap/prime_agents.md``, packaged with the code)."""
+    return importlib.resources.files("primer.bootstrap").joinpath("prime_agents.md").read_bytes()
+
+
+async def _has_instructions_file(workspace: Any) -> bool:
+    """Whether ``agents.md`` or ``AGENTS.md`` is at the workspace's root, as an entry of any kind.
+
+    Only :class:`NotFoundError` means absent. Any other failure propagates: a name that cannot be checked may be there, and
+    writing ``agents.md`` beside an ``AGENTS.md`` would shadow it.
+    """
+    from primer.workspace.instructions import AGENTS_MD_NAMES
+
+    for name in AGENTS_MD_NAMES:
+        try:
+            await workspace.file_info(name)
+        except NotFoundError:
+            continue
+        return True
+    return False
+
+
+async def ensure_prime_agents_md(storage_provider: Any, *, workspace_registry: Any) -> bool:
+    """Write the shipped instructions to the default workspace as ``agents.md`` when it has neither instructions file.
+
+    Returns ``True`` only when this call wrote the file. ``False``, with nothing written, when there is no registry or no default
+    workspace yet, when the default workspace's row is missing (the default-workspace step deferred or failed; the pass that
+    creates the row seeds the file), when the backend cannot find the workspace, and when ``agents.md`` or ``AGENTS.md`` is
+    already there, whatever it holds (an edited file, an empty one, a directory): the boot never overwrites or shadows what a
+    person put there. Only :func:`reset_prime_agents_md` rewrites an existing file.
+
+    Any other failure propagates, so the ensure pass records it under its step and the next boot tries again: a check that
+    fails, or that outlasts :data:`PRIME_AGENTS_MD_CHECK_TIMEOUT_S` (``TimeoutError``), never reads as "absent".
+
+    Two processes seeding at once both see no file and write the same bytes, so the result is the same file. A person writing
+    the file between the check and the write is the one window this leaves; the pass runs at boot and on the setup seed only.
+    """
+    if workspace_registry is None:
+        return False
+    workspace_id = await resolve_default_workspace_id(storage_provider)
+    if workspace_id is None:
+        return False
+    if await storage_provider.get_storage(Workspace).get(workspace_id) is None:
+        return False
+    try:
+        workspace = await workspace_registry.get_workspace(workspace_id)
+    except NotFoundError as exc:
+        logger.warning(
+            "prime: the default workspace could not be reached; its agents.md is seeded at a later boot: %s", exc,
+            extra={"workspace_id": workspace_id},
+        )
+        return False
+    timeout = PRIME_AGENTS_MD_CHECK_TIMEOUT_S
+    try:
+        present = await asyncio.wait_for(_has_instructions_file(workspace), timeout=timeout)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"checking {workspace_id!r} for agents.md or AGENTS.md took longer than {timeout:g} seconds; nothing was written"
+        ) from exc
+    if present:
+        return False
+    await workspace.write_file(PRIME_AGENTS_MD, shipped_prime_agents_md())
+    logger.info("prime: wrote the shipped agents.md to the default workspace", extra={"workspace_id": workspace_id})
+    return True
+
+
 __all__ = [
     "MAIN_SESSION_NAME",
+    "PRIME_AGENTS_MD",
+    "PRIME_AGENTS_MD_CHECK_TIMEOUT_S",
     "adopt_legacy_default_workspace",
     "ensure_main_operator_session",
+    "ensure_prime_agents_md",
     "main_session_id",
     "record_default_workspace_id",
     "resolve_default_workspace_id",
+    "shipped_prime_agents_md",
 ]

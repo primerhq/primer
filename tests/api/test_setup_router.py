@@ -15,6 +15,7 @@ from primer.bootstrap.operator_defaults import (
     OPERATOR_PROMPT,
     OPERATOR_TOOLS,
 )
+from primer.bootstrap.prime import shipped_prime_agents_md
 from primer.model.agent import Agent
 from primer.model.workspace import Workspace, WorkspaceRuntimeMeta, WorkspaceTemplate
 
@@ -139,15 +140,36 @@ class _LiveWorkspace:
         self.runtime_meta = WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="stub-token")
 
 
+class _Files:
+    """A live workspace handle with an in-memory root: ``file_info`` raises NotFoundError for a missing path, ``write_file`` stores."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, bytes] = {}
+
+    async def file_info(self, path):
+        from primer.model.except_ import NotFoundError
+
+        if path not in self.files:
+            raise NotFoundError(f"{path!r} not found")
+        return path
+
+    async def write_file(self, path, content):
+        self.files[path] = content
+
+
 class _RecordingRegistry:
-    """Materialises anything and notes which template and id it was asked for."""
+    """Materialises anything and notes which template and id it was asked for; serves one live handle per id."""
 
     def __init__(self) -> None:
         self.seen: list[tuple[str, str | None]] = []
+        self.live: dict[str, _Files] = {}
 
     async def materialise(self, *, template, overrides=None, workspace_id=None):
         self.seen.append((template.id, workspace_id))
         return _LiveWorkspace(workspace_id)
+
+    async def get_workspace(self, workspace_id):
+        return self.live.setdefault(workspace_id, _Files())
 
 
 async def _template(app, template_id: str, provider_id: str) -> None:
@@ -177,6 +199,9 @@ async def test_seed_uses_the_configured_default_template(client, app):
     assert (row.template_id, row.provider_id, row.name) == ("cluster-default", "k3s", "prime")
     assert registry.seen == [("cluster-default", "prime")]
     assert (await sp.get_system_state()).default_workspace_id == "prime"
+    # The same seed writes prime's shipped agents.md into the workspace it created (pivot P2 task 9).
+    assert r.json()["errors"] == []
+    assert registry.live["prime"].files == {"agents.md": shipped_prime_agents_md()}
 
 
 async def test_seed_without_a_configured_template_uses_the_reserved_local_one(client, app):
@@ -220,6 +245,10 @@ async def test_seed_adopts_a_legacy_primer_workspace(client, app):
     assert await sp.get_storage(Workspace).get("prime") is None
     assert (await sp.get_system_state()).default_workspace_id == "primer"
     assert "default_workspace" not in r.json()["setup_missing"]
+    # The adopted workspace gets prime's agents.md under its own id; no "prime" workspace is touched.
+    assert r.json()["errors"] == []
+    assert registry.live["primer"].files == {"agents.md": shipped_prime_agents_md()}
+    assert "prime" not in registry.live
 
 
 async def test_reset_agents_iterates_the_factory_mapping(client, app, monkeypatch):
