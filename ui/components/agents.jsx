@@ -499,6 +499,30 @@ function AG_otherFieldErrors(fieldErrors, paths) {
     });
 }
 
+// The messages of a save the server refused, keyed by the form's field paths ("body.temperature", "body.model.profile_id"), or null when the
+// refusal names no field (it is then a toast). The server says a field in two shapes (audit G3-03), and both land under the field:
+// - request validation, one entry per field in `fieldErrors` (ApiError's extensions.errors). The create route locates them in the body
+//   (["body", "temperature"]); the edit route validates the body itself, so the same refusal is ["temperature"]. A location without the
+//   "body" prefix gets it, so the two map to the same field.
+// - a pre-write check's {error, field, message} (a tool binding naming a toolset that does not exist, a profile that does not exist), which
+//   has no field list: the console's one reader (window.primerApi.readRefusal) gives its field and its words.
+function AG_refusalFieldErrors(err) {
+  if (!err || err.status !== 422) return null;
+  var map = {};
+  if (Array.isArray(err.fieldErrors) && err.fieldErrors.length > 0) {
+    err.fieldErrors.forEach(function (fe) {
+      var loc = fe && Array.isArray(fe.loc) ? fe.loc.slice() : [];
+      if (loc[0] !== "body" && loc[0] !== "query" && loc[0] !== "path") loc.unshift("body");
+      map[loc.join(".")] = fe && fe.msg;
+    });
+    return map;
+  }
+  var refusal = window.primerApi.readRefusal(err);
+  if (!refusal.field) return null;
+  map["body." + refusal.field] = refusal.sentence || refusal.message;
+  return map;
+}
+
 // A save the form refuses is brought into view (platform revamp Review Focus 5; review of #779, required fix 3). The overlay's body scrolls (the edit form is
 // about 1900px tall and the window shows about 620 of it), and a message sits under its own field, often far from the Save button the operator just pressed: a
 // refusal out of sight reads as a button that does nothing. After every refused save the FIRST message of the overlay (the first role="alert" in the dialog) is
@@ -771,9 +795,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
         : ["agents:list"],
       onSuccess: (row) => onCreate(row),
       onError: (err) => {
-        if (err.status === 422 && Array.isArray(err.fieldErrors)) {
-          const map = {};
-          for (const fe of err.fieldErrors) map[(fe.loc || []).join(".")] = fe.msg;
+        const map = AG_refusalFieldErrors(err);
+        if (map) {
           setFieldErrors(map);
           // A refusal on a field inside a fold would be said where nobody looks: open the fold it belongs to.
           if (AG_fieldError(map, "body.response_format")) setAdvancedOpens((n) => n + 1);
@@ -783,7 +806,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
           pushToast({
             kind: "error",
             title: err.title || (isEdit ? "Save failed" : "Create failed"),
-            detail: err.detail || err.message,
+            detail: window.primerApi.readRefusal(err, isEdit ? "Save failed" : "Create failed").message,
             requestId: err.requestId,
           });
         }
@@ -840,10 +863,13 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     // uiv2 Wave 2 (a-11): always sent, never conditionally dropped - see
     // the maxToolTurns state comment above for why (real non-null server
     // default means omitting it on a PUT-replace save would silently
-    // reset a customized value). An empty field is null, no limit.
-    const parsedMaxToolTurns = Number(maxToolTurns);
+    // reset a customized value). An empty field is null, no limit. A number
+    // that rounds down to under 1 (0, a negative, 0.5) is no cap: it saves the
+    // server default, 50, as "0" does (it used to send 0.5 as 0, which the
+    // server refuses; audit G3-03).
+    const parsedMaxToolTurns = Math.floor(Number(maxToolTurns));
     body.max_tool_turns = maxToolTurns.trim() === "" ? null
-      : Number.isFinite(parsedMaxToolTurns) && parsedMaxToolTurns > 0 ? Math.floor(parsedMaxToolTurns) : 50;
+      : Number.isFinite(parsedMaxToolTurns) && parsedMaxToolTurns >= 1 ? parsedMaxToolTurns : 50;
     // max_output_tokens defaults to null (unbounded) - same
     // always-on-edit/conditional-on-create pattern as response_format.
     let maxOutputTokensValue = null;

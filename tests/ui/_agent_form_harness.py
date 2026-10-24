@@ -14,7 +14,7 @@ The stubs stand in for what the console around the form provides:
   ``PK_Field`` wraps the real ``FormField``. ``PK_Fold`` draws its children even when it is closed, so a test can reach a folded control; the real fold does
   not mount them (the journeys run on the real kit). ``PK_FormOverlay`` registers its ``onClose`` on the real Escape stack, as the ``Modal`` it is built on does.
 * ``window.ToolPicker`` is one button, ``tool-picker-stub``. Its ``data-selected`` is the sorted selection as JSON, and a click selects
-  ``web__search`` and ``system__list_files``.
+  ``web__search`` and ``system__list_files`` (``set_picker_selection`` names another selection).
 * ``window.primerApi.useResource`` answers the model profile choices (``PROFILES``, the shape ``GET /v1/model_profiles/choices`` lists) and the
   voices. Any other key has no data. It keeps the fetcher of each key, and ``resource_request`` tells which request a key's fetcher makes.
 * ``window.primerApi.ApiError`` and ``readRefusal`` are the real ones. ``reject_with`` and ``fail_resource`` turn a problem envelope (one a real
@@ -78,6 +78,8 @@ DEFAULTS = {
 }
 # A row a harness manages: the form shows a locked summary instead of inputs.
 MANAGED = {**FULL, "harness_id": "h1"}
+# What an edit of FULL that changes nothing sends (the form does not send harness_id).
+FULL_SENT = {k: v for k, v in FULL.items() if k != "harness_id"}
 
 _FILES = ("foundation/escape-stack.js", "foundation/use-mutation.js", "components/shared/form-field.jsx", "components/agents.jsx")
 _KIT_FILE = "components/shared/platform-kit.jsx"
@@ -92,6 +94,7 @@ var __rejectNext = null;
 var __apiAnswers = {};
 var __navigations = [];
 var __focusTraps = [];
+var __pickerSelection = ["web__search", "system__list_files"];
 var __resources = {};
 __resources[PROFILE_CHOICES_KEY] = { data: { items: PROFILES }, loading: false, error: null };
 __resources["agents:voices"] = { data: { voices: ["alloy", "nova"] }, loading: false };
@@ -113,7 +116,7 @@ window.ToolPicker = function (p) {
   return React.createElement("button", {
     "data-testid": "tool-picker-stub",
     "data-selected": JSON.stringify(Array.from(p.selected || []).sort()),
-    onClick: function () { p.onChange(new Set(["web__search", "system__list_files"])); },
+    onClick: function () { p.onChange(new Set(__pickerSelection)); },
   });
 };
 window.primerApi = {
@@ -486,6 +489,41 @@ def fail_resource(ctx: Any, key: str, envelope: dict) -> None:
     ctx.eval(
         f"__resources[{json.dumps(key)}] = {{ data: null, loading: false, error: new window.primerApi.ApiError({json.dumps(envelope)}) }}"
     )
+
+
+def real_refusal(change: dict, *, create: bool = False) -> dict:
+    """The problem envelope the REAL agent router refuses a save with (``tests/_support/agent_form_server.py``): the edit of ``FULL`` with
+    ``change`` (``PUT /v1/agents/refund-triage``, over a store that holds ``FULL``), or with ``create`` the same body posted as a new agent
+    (``POST /v1/agents``, id ``another-agent`` unless ``change`` names one). Fails when the router does not answer 422."""
+    from tests._support.agent_form_server import agent_form_server
+
+    with agent_form_server(profiles=PROFILE_ROWS, agents=[FULL]) as server:
+        if create:
+            return server.refusal("POST", "/v1/agents", {**FULL_SENT, "id": "another-agent", **change})
+        return server.refusal("PUT", "/v1/agents/" + FULL["id"], {**FULL_SENT, **change})
+
+
+def real_answer(
+    drive: Any, *, existing: dict | None = None, tts_configured: bool = True, profiles: list[dict] | None = None,
+) -> tuple[dict, dict]:
+    """``(body, envelope)``: what the form sends when ``drive(ctx)`` has filled it and Save is pressed (the edit form of ``existing``, else the
+    create form), and the problem envelope the REAL agent router refuses exactly that body with, over a store that holds ``FULL`` and the
+    profile rows ``profiles`` (default ``PROFILE_ROWS``). The form runs in a context of its own, so a test then drives a fresh form that is
+    answered with the envelope (``reject_with``)."""
+    from tests._support.agent_form_server import agent_form_server
+
+    with agent_form(tts_configured=tts_configured) as ctx:
+        mount(ctx, existing)
+        drive(ctx)
+        click(ctx, "agent-form-submit")
+        [call] = calls(ctx)
+    with agent_form_server(profiles=PROFILE_ROWS if profiles is None else profiles, agents=[FULL]) as server:
+        return call["body"], server.refusal(call["method"], "/v1" + call["path"], call["body"])
+
+
+def set_picker_selection(ctx: Any, tool_ids: list[str]) -> None:
+    """What a click on the tool picker stub selects from now on (the default is ``web__search`` and ``system__list_files``)."""
+    ctx.eval(f"__pickerSelection = {json.dumps(tool_ids)}")
 
 
 def resource_request(ctx: Any, key: str) -> list[dict]:
