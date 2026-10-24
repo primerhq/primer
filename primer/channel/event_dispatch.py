@@ -43,7 +43,7 @@ from primer.model.trigger import Trigger
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.steer_delivery import DELIVERED_MISSING, deliver_steer
 from primer.storage.q import Q
-from primer.trigger.dispatch import enabled_subscriptions, text_pattern_owners
+from primer.trigger.dispatch import enabled_subscriptions, owner_keys
 from primer.trigger.dispatch import fire_trigger as _default_fire_trigger
 from primer.trigger.subscribers import DispatchDeps
 
@@ -273,10 +273,12 @@ class ChannelEventRouter:
         # (G6-5): fire_trigger reads it, so N triggers cannot multiply it. It
         # is split equally between the distinct owners of the text_pattern
         # subscriptions about to be matched (round 2, M1).
-        owners: set = set()
-        for trigger in triggers:
-            owners |= text_pattern_owners(await enabled_subscriptions(self._sp, trigger.id))
-        with channel_event_text_budget(len(owners)):
+        # The subscriptions are read once here and handed to fire_trigger
+        # through the budget (#859 round 3, R2-11); an API token counts as
+        # its user when the shares are made (R2-1).
+        subscriptions = {trigger.id: await enabled_subscriptions(self._sp, trigger.id) for trigger in triggers}
+        keys = await owner_keys(self._sp, [sub for subs in subscriptions.values() for sub in subs])
+        with channel_event_text_budget(owner_keys=keys, subscriptions=subscriptions):
             for trigger in triggers:
                 try:
                     result = await self._fire_trigger(

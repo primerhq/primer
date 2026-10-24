@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from primer.model.channel_event import ChannelEvent
 from primer.model.event_matcher import EventTextBudget, current_event_text_budget, match_outcome
+from primer.model.principal import PrincipalRef
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import Subscription, Trigger
 from primer.storage.q import Q
@@ -172,17 +173,47 @@ async def enabled_subscriptions(storage_provider, trigger_id: str) -> list[Subsc
     return enabled
 
 
-def owner_key(sub: Subscription) -> tuple[str, str] | None:
-    """Whose share of a channel event's text budget a subscription matches under (None: rows saved before owners)."""
-    return (sub.owner.type, sub.owner.id) if sub.owner is not None else None
+OwnerKey = tuple[str, str]
 
 
-def text_pattern_owners(subs: list[Subscription]) -> set[tuple[str, str] | None]:
-    """The distinct owners of the subscriptions that match an event's text."""
-    return {
-        owner_key(sub) for sub in subs
-        if sub.event_matcher is not None and sub.event_matcher.text_pattern is not None
-    }
+async def owner_keys(storage_provider, subs: list[Subscription]) -> dict[str, OwnerKey]:
+    """Subscription id -> whose share of a channel event's text budget it matches under, for the text_pattern subscriptions.
+
+    The key is the USER behind the owner (#859 round 3, R2-1): an
+    ``api_token`` owner is resolved to the token's user here, at fire time,
+    so one user's many tokens share one share (rows saved before this, and
+    tokens that no longer resolve, keep the token as their key). A
+    subscription with no owner (a row saved before owners were recorded, or
+    one saved over MCP, whose tools get no context) is keyed by its own id
+    (R2-6), so such rows never pool into one shared bucket.
+    """
+    tokens: dict[str, str | None] = {}
+    keys: dict[str, OwnerKey] = {}
+    for sub in subs:
+        if sub.event_matcher is None or sub.event_matcher.text_pattern is None:
+            continue
+        keys[sub.id] = await _owner_key(storage_provider, sub, tokens)
+    return keys
+
+
+async def _owner_key(storage_provider, sub: Subscription, tokens: dict[str, str | None]) -> OwnerKey:
+    owner = sub.owner
+    unknown = PrincipalRef.unattributed()
+    if owner is None or (owner.type, owner.id) == (unknown.type, unknown.id):
+        return ("subscription", sub.id)
+    if owner.type == "api_token":
+        if owner.id not in tokens:
+            from primer.model.api_token import ApiToken
+
+            try:
+                token = await storage_provider.get_storage(ApiToken).get(owner.id)
+            except Exception:  # noqa: BLE001 - an unresolved token keeps its own key
+                logger.exception("trigger owner: could not resolve api token %s", owner.id)
+                token = None
+            tokens[owner.id] = token.user_id if token is not None else None
+        user_id = tokens[owner.id]
+        return ("user", user_id) if user_id is not None else ("api_token", owner.id)
+    return (owner.type, owner.id)
 
 
 def _warn_text_budget_spent(
@@ -280,16 +311,21 @@ async def fire_trigger(
         },
     )
 
-    enabled_subs = await enabled_subscriptions(deps.storage_provider, trigger.id)
+    # One text_pattern budget per channel event (G6-5): the router opens it
+    # around every trigger the event fires, with the subscriptions it already
+    # read (#859 round 3, R2-11: not read twice) and the owner of each; a fire
+    # outside one reads its own and opens a budget for this trigger's owners.
+    # Each owner matches under an equal share of it (round 2, M1).
+    text_budget = current_event_text_budget()
+    preloaded = text_budget.subscriptions_for(trigger.id) if text_budget is not None else None
+    enabled_subs = (
+        preloaded if preloaded is not None
+        else await enabled_subscriptions(deps.storage_provider, trigger.id)
+    )
+    if text_budget is None:
+        text_budget = EventTextBudget(owner_keys=await owner_keys(deps.storage_provider, enabled_subs))
 
     results: list[dict] = []
-    # One text_pattern budget per channel event (G6-5): the router opens it
-    # around every trigger the event fires, sized by the distinct owners it
-    # will match; a fire outside one gets its own for this trigger's owners.
-    # Each owner matches under an equal share of it (round 2, M1).
-    text_budget = current_event_text_budget() or EventTextBudget(
-        len(text_pattern_owners(enabled_subs)),
-    )
     for sub in enabled_subs:
         # Channel-event predicate: a sub with an event_matcher only fires when
         # the inbound ChannelEvent (carried in fire_context["event"]) matches.
@@ -306,7 +342,7 @@ async def fire_trigger(
             outcome = (
                 "no_match" if event is None
                 else match_outcome(
-                    sub.event_matcher, event, budget=text_budget.for_owner(owner_key(sub)),
+                    sub.event_matcher, event, budget=text_budget.for_subscription(sub.id),
                 )
             )
             if outcome == "budget_exhausted":
