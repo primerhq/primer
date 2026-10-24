@@ -117,6 +117,31 @@ async def test_a_directory_swapped_in_after_the_stat_is_still_eisdir(tmp_path: P
     assert (await _refused(target, tmp_path)).code == ErrorCode.EISDIR
 
 
+async def test_a_symbolic_link_swapped_in_after_the_stat_is_not_followed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The path is resolved, and contained in the root, before the read; a link swapped in after that would take the open outside the
+    root, so the open does not follow one (O_NOFOLLOW; the review of #869, F7)."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside-secret"
+    outside.write_text("not the workspace's")
+    target = root / "agents.md"
+    target.write_text("# instructions\n")
+
+    class _SwapsInALink(_SwapsInAFifoAfterTheStat):
+        def stat(self, path, *args, **kwargs):
+            answer = os.stat(path, *args, **kwargs)
+            if Path(path) == self._target:
+                os.unlink(path)
+                os.symlink(outside, path)
+            return answer
+
+    monkeypatch.setattr(ops, "os", _SwapsInALink(target))
+    refused = await _refused(target, root)
+
+    assert refused.code == ErrorCode.EACCES and "symbolic link" in refused.message
+    assert target.is_symlink(), "the swap happened, so the refusal came from the open"
+
+
 async def test_a_regular_file_larger_than_one_read_is_read_whole(tmp_path: Path) -> None:
     data = os.urandom(3 * (1 << 20) + 17)
     target = tmp_path / "big.bin"
