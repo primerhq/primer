@@ -130,9 +130,11 @@ def test_creating_and_editing_both_check_before_they_post_and_only_creating_chec
 
 
 def test_the_description_sent_is_the_trimmed_one_and_no_placeholder_is_ever_substituted() -> None:
+    """A typed description is trimmed; one the operator did not touch on an edit goes back as stored (audit G3-05, pinned by behaviour in
+    tests/ui/test_agent_form_body.py)."""
     body = _modal()
 
-    assert "description: description.trim()," in body
+    assert "description: isEdit && description === existing.description ? existing.description : description.trim()," in body
     assert '"(no description)"' not in body, "a blank description is refused, not replaced by a placeholder that is then saved"
 
 

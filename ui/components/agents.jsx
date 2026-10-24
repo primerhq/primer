@@ -653,6 +653,16 @@ function AG_systemPromptForSave(parts, stored) {
   return out;
 }
 
+// What a save sends for the tools. `selected` is the Set the picker holds, `stored` the list the agent was loaded with. The order of the list is the
+// order the model is shown the tools, and the seeded agents store theirs unsorted: a save that was about another field must not rewrite it (audit
+// G3-05; it used to sort and de-duplicate the list on every save). The stored ids still selected stay where they were, a stored duplicate
+// included, and the ids picked since are added after them, sorted. A new agent has no stored list, so its tools are sorted.
+function AG_toolsForSave(selected, stored) {
+  var kept = (Array.isArray(stored) ? stored : []).filter(function (toolId) { return selected.has(toolId); });
+  var added = Array.from(selected).filter(function (toolId) { return kept.indexOf(toolId) < 0; }).sort();
+  return kept.concat(added);
+}
+
 function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading }) {
   // Same modal serves both create (existing == null) and edit
   // (existing == agent row). In edit mode the id field is locked,
@@ -718,8 +728,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   const [compactionToolAccess, setCompactionToolAccess] = React.useState(existing?.compaction_tool_access ?? false);
   const [allowExternalTools, setAllowExternalTools] = React.useState(existing?.allow_external_tools ?? false);
   const [ttsVoice, setTtsVoice] = React.useState(existing?.tts_voice ?? null);
-  // selectedScopedIds is a Set so toggles are O(1); persisted as a
-  // sorted list at submit time for stable JSON.
+  // selectedScopedIds is a Set so toggles are O(1); persisted in the
+  // stored order at submit time (AG_toolsForSave).
   const [selectedScopedIds, setSelectedScopedIds] = React.useState(_initialTools);
   const [temperature, setTemperature] = React.useState(
     existing?.temperature != null ? String(existing.temperature) : ""
@@ -838,12 +848,14 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
       }
     }
     // Agent.tools is the list of scoped tool ids - no separate
-    // allowlist field; an empty list means no tools registered.
-    const tools = [...selectedScopedIds].sort();
+    // allowlist field; an empty list means no tools registered. The stored
+    // order is kept (AG_toolsForSave).
+    const tools = AG_toolsForSave(selectedScopedIds, existing?.tools);
     const body = {
       // On edit the id is locked but still sent (PUT-replace contract).
       ...(isEdit ? { id: existing.id } : (id.trim() ? { id: id.trim() } : {})),
-      description: description.trim(),
+      // A description the operator did not touch goes back exactly as stored; an edited one is trimmed (audit G3-05).
+      description: isEdit && description === existing.description ? existing.description : description.trim(),
       model: { profile_id: profileId },
       tools,
       // The parts nobody touched go back as stored; a typed part is trimmed and a blank one dropped (AG_systemPromptForSave).
