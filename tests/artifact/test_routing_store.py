@@ -266,6 +266,8 @@ async def test_a_failed_record_removal_is_logged_and_the_bytes_are_still_removed
         await _put(world)
 
     assert "records table down" in caplog.text, "the record cleanup failure is logged"
+    # Worded for any failure after the bytes were written, not only a failed record write (the review of #869, F8).
+    assert "failed, and removing its location record also failed" in caplog.text
     assert world.mem.blobs == {}, "the bytes are removed whatever the record cleanup did"
 
 

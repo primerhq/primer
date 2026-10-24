@@ -139,21 +139,22 @@ class RoutingArtifactStorage(ArtifactStorage):
             return None
 
     async def _discard(self, store: ArtifactStorage, provider_id: str, artifact_id: str) -> None:
-        """Undo a put whose id was never handed out: its location record, if one was written, and its bytes. Best effort, each on its own."""
+        """Undo a put that failed after its bytes were written (the record write failed or was cancelled, or the provider was gone at the
+        re-read): its location record, if one was written, and its bytes. The id was never handed out. Best effort, each on its own."""
         try:
             await self._locations.delete(artifact_id)
         except NotFoundError:
             pass                                    # the usual case: the record was never written
         except Exception as exc:  # noqa: BLE001 - best effort: the failure the caller needs to see is the put's own
             logger.warning(
-                "artifact %s failed after its location record on provider %r was written, and removing the record also failed: %s",
+                "the put of artifact %s on provider %r failed, and removing its location record also failed: %s",
                 artifact_id, provider_id, exc,
             )
         try:
             await store.delete(artifact_id)
         except Exception as exc:  # noqa: BLE001 - best effort: the failure the caller needs to see is the put's own
             logger.warning(
-                "artifact %s was written to provider %r but its location record failed, and removing it again also failed: %s",
+                "the put of artifact %s on provider %r failed, and removing its bytes also failed: %s",
                 artifact_id, provider_id, exc,
             )
 
