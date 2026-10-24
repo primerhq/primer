@@ -187,6 +187,9 @@ flowchart TD
 - [services](subsystems/services.md) - agent-published web apps: immutable versioned
   bundles served at /svc/{name}/ by any API replica, with bundle python executing
   per-request in the python-runner sandbox.
+- [artifact-storage](subsystems/artifact-storage.md) - where artifact files go and how
+  they are found again: the active store for new files, a location record per file, the
+  database fallback, and the refusal to delete or move a store that holds files (a stub).
 - [external-tools](subsystems/external-tools.md) - invoker-supplied tool calls: an
   API caller attaches tool definitions to an invocation, the model calls them, the
   turn parks, and the caller resumes it with the result through the same
