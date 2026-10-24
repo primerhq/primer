@@ -54,6 +54,7 @@ SUBSYSTEM_DOCS = [
     "external-tools",
     "python-runner-toolset",
     "services",
+    "artifact-storage",
 ]
 
 ARCH_HEADINGS = [
