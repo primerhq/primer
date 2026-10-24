@@ -265,27 +265,6 @@ class _ResetPrimeInstructionsArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-async def _session_in_default_workspace(storage_provider: "StorageProvider", ctx: ToolContext | None) -> bool:
-    """Whether the calling session may reach the default workspace, by the reach rule of the workspace tools (#870/#874).
-
-    A call with no calling session (the MCP endpoint hands handlers no context, a person) reaches every workspace. A session reaches
-    its own workspace only, and every workspace when that is the default one (:func:`primer.session.peer_messages.reach_of`); its
-    workspace is the context's, else its session row's, as ``workspaces._caller_reach`` reads it. A session whose workspace is unknown
-    reaches nothing.
-    """
-    from primer.session.peer_messages import reach_of
-
-    if ctx is None or not ctx.session_id:
-        return True
-    workspace_id = ctx.workspace_id
-    if not workspace_id:
-        row = await storage_provider.get_storage(WorkspaceSession).get(ctx.session_id)
-        workspace_id = row.workspace_id if row is not None else None
-    if not workspace_id:
-        return False
-    return await reach_of(storage_provider, workspace_id) is None
-
-
 def _make_reset_prime_instructions_handler(
     *, storage_provider: "StorageProvider", workspace_registry: "WorkspaceRegistry",
 ) -> ToolHandler:
@@ -299,8 +278,9 @@ def _make_reset_prime_instructions_handler(
         except ValidationError as exc:
             return _err_from_validation(exc)
         # The tool writes into prime, so a session outside prime may not call it, whatever its role: such a session reaches only its own
-        # workspace with every workspace tool (#870/#874). Refused before anything is resolved or written.
-        if not await _session_in_default_workspace(storage_provider, ctx):
+        # workspace with every workspace tool (#870/#874). ``caller_reach`` is None exactly when the caller reaches every workspace: no
+        # calling session (MCP, a person), or a session in prime. Refused before anything is resolved or written.
+        if await caller_reach(storage_provider, ctx) is not None:
             return _err(
                 "reset_prime_instructions runs only from a session in the default workspace (prime), or with no calling "
                 "session (MCP); this session's workspace is outside it, and nothing was written",
