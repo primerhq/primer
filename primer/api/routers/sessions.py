@@ -275,8 +275,9 @@ async def pause_session(
     * For sessions that no worker is holding a lease on (CREATED /
       WAITING) we transition directly to PAUSED.
     * For RUNNING sessions we set ``pause_requested=True`` on the row and
-      return - the worker will observe the flag at the next turn boundary
-      and transition the row itself.
+      return - the worker observes the flag at the next turn boundary: a
+      turn not yet started goes PAUSED without running, and a turn in
+      flight finishes and leaves the row WAITING with the flag still set.
     * 409 when the session is already ENDED.
     * 403 ``forbidden_rank`` when the session's creator outranks the caller
       (ticket 01a16d3c-a8bc; ``primer.api.routers._session_rank``), before

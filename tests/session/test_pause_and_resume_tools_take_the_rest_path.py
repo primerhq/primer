@@ -239,6 +239,49 @@ async def test_a_tool_resume_after_a_tool_pause_runs_the_next_turn(two_processes
         await _close(closers)
 
 
+class _PausingLLM(_FakeLLM):
+    """Runs ``action`` inside the model call, while the turn is in flight (the dispatcher holds no lifecycle lock there)."""
+
+    def __init__(self, action, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._action = action
+
+    def stream(self, *, model, messages, **kwargs):
+        inner = super().stream(model=model, messages=messages, **kwargs)
+        action = self._action
+
+        async def events():
+            await action()
+            async for ev in inner:
+                yield ev
+
+        return events()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("two_processes", [False, True], ids=["one process", "another process"])
+async def test_a_tool_pause_that_lands_mid_turn_lets_the_turn_finish_and_rests_waiting_with_the_flag(two_processes, tmp_path, fake_event_bus):
+    """What the descriptor and the docs say (review of #904): a pause that lands while a turn runs does not cut it short and does not end it; the
+    row then rests WAITING with ``pause_requested`` still set (not PAUSED), and nothing re-arms it."""
+    api, worker, row, closers = await _world(tmp_path, two_processes=two_processes)
+    try:
+        answers: list[tuple[str, Any]] = []
+
+        async def pause() -> None:
+            answers.append(await _tool(api, "pause_workspace_session", row, fake_event_bus))
+
+        llm = _PausingLLM(pause, scripts=[OK])
+        await run_one_session_turn(_make_lease(row.id), worker.dispatch_deps(llm, fake_event_bus))
+
+        kind, body = answers[0]
+        assert (kind, body["status"], body["pause_requested"]) == ("ok", "running", True), body
+        after = await worker.sessions.get(row.id)
+        assert (after.status, after.pause_requested, after.ended_reason, len(llm.calls)) == (SessionStatus.WAITING, True, None, 1)
+        assert (worker.scheduler.enqueued, worker.engine.upserts) == ([], []), "something re-armed the paused session"
+    finally:
+        await _close(closers)
+
+
 # ---- the tools answer as the REST routes do, in every state --------------------------------------------------------------------------------
 
 #: state -> the row's fields. "never started" is a session created with ``auto_start: false``: CREATED, no ``started_at``.
