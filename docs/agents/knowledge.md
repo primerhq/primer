@@ -79,8 +79,12 @@ A `Collection`:
   `.` or `..`) to use it verbatim, or omit it and the server assigns
   `collection-<hex>`. Anything else is refused on create (422 at
   `body.id`, error type `collection_id_invalid` over REST, and
-  `type=validation-error` from `create_collection`). Immutable after
-  creation.
+  `type=validation-error` from `create_collection`). The platform
+  reserves every id that starts with `_internal_` and the platform
+  wiki's id `system`: a create under one of them is refused too (422
+  at `body.id`, error type `collection_id_reserved` over REST, and
+  `type=validation-error` naming `id` from `create_collection`), and
+  nothing is stored. Immutable after creation.
 - `description` - free text. This is what the collection's page in the
   `system` collection's live map (`this-install/collections/<id>`)
   carries, so it is what a search for the collection matches.
@@ -185,7 +189,9 @@ path-addressed document tools, and the per-collection extras.
   `collection-3f9a1c8d`); supply a valid slug (`[a-z0-9._-]+`, not
   `.` or `..`) to use it verbatim (refused with `collection_id_invalid`
   / `type=validation-error` otherwise). Immutable after creation.
-  Reject reserved ids (`_internal_*`).
+  An id reserved for the platform (any that starts with `_internal_`,
+  and `system`) is refused with `type=validation-error` naming `id`
+  (`collection_id_reserved` over REST).
 - `system::update_collection` - partial update. `embedder` and
   `search_provider_id` are not editable post-create - attempting
   triggers 422.
@@ -343,9 +349,12 @@ searchable via `system::search_collection`.
   from the collection, drop and re-create the collection with the new
   `embedder` binding, then re-write. Alternatively, create a separate
   collection for the new embedding model.
-- **Reserved ids start with `_internal_`.** `system::create_collection`
-  rejects them with 422. The five internal collections are managed
-  by the IC subsystem; don't try to CRUD them via these tools.
+- **Reserved ids: `_internal_*` and `system`.** `POST /v1/collections`
+  answers 422 `collection_id_reserved` (at `body.id`) and
+  `system::create_collection` answers `type=validation-error` naming
+  `id`; nothing is stored. The internal collections are managed by the
+  IC subsystem and `system` is the platform wiki; don't try to CRUD
+  them via these tools.
 - **`harness_id` makes a Document immutable through CRUD.** Document
   rows installed by a harness are tagged with `harness_id`; mutating
   them through the public CRUD endpoints returns 409. Use the
