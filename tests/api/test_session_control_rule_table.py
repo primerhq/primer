@@ -5,7 +5,9 @@ get, read-messages, pause, resume, interrupt and create tools (an agent that cou
 out-of-reach target answers exactly as an unknown id does. Cancel, resume, pause and interrupt (Stop) also follow the rank rule
 (``primer.authz.may_drive``) from a session, over MCP and on their REST routes: they stop or start a run at the creator's rank (pause and interrupt
 since ticket 01a16d3c-a8bc; before, only the console hid their controls). The drive rows are pinned by
-``tests/api/test_session_drive_rule_table.py``; these are the rest of ``docs/dev/subsystems/sessions.md`` section 9's table.
+``tests/api/test_session_drive_rule_table.py``; these are the rest of ``docs/dev/subsystems/sessions.md`` section 9's table. The REST canvas
+routes follow the rank rule too (pivot P5 S6, the lead's ruling 1): a click on a session's canvas drives it like a steer, and an operator's
+batch or clear puts input its agent reads into it.
 
 The tool rows go through :func:`primer.agent.inner_dispatch.dispatch_inner_tool`, as ``system__call_tool`` reaches a tool (with the request's actor
 on ``current_actor`` and no context for the MCP rows); the REST rows go over HTTP through the auth middleware as a user-role account.
@@ -39,6 +41,7 @@ from primer.authz import OUTRANKED_MESSAGE
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.mcp.server import current_actor
 from primer.model.agent import Agent, AgentModel
+from primer.model.canvas import SessionCanvas
 from primer.model.channel import Channel, ChannelProviderType, TelegramChannelConfig
 from primer.model.chat import ToolCallPart
 from primer.model.except_ import NotFoundError
@@ -106,6 +109,11 @@ TABLE: dict[str, tuple[SessionStatus, dict[str, str]]] = {
     "interrupt tool, in a session":     (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": N, P: D}),
     "interrupt tool, no session":       (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
     "REST interrupt":                   (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    # The session canvas (pivot P5 S6, the lead's ruling 1): a click drives the session like a steer, and an operator's batch or clear puts
+    # input its agent reads into it, so all three follow the REST steer's rank rule; people keep their reach over every workspace.
+    "REST canvas click":                (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST canvas draw":                 (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST canvas clear":                (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
     "get session tool, in a session":   (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
     "read messages tool, in a session": (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
 }
@@ -163,7 +171,20 @@ async def _seed(world: World, path: str, scenario: str) -> str:
         initiated_by=ADMIN if scenario == "outranked" else USER,
     )
     world.registry.remove("ws-nope")
+    if path.startswith("REST canvas"):
+        await world.sp.get_storage(SessionCanvas).create(SessionCanvas(
+            id="ses-t", workspace_id=workspace, rev=1,
+            elements={"root": {"type": "Column", "props": {}, "children": ["go"]}, "go": {"type": "Button", "props": {"label": "Go"}}},
+        ))
     return workspace
+
+
+#: The REST canvas rows: (method, the path under the session, the body).
+CANVAS_REST = {
+    "REST canvas click": ("post", "/canvas/events", {"element": "go", "kind": "click"}),
+    "REST canvas draw": ("post", "/canvas/ops", {"source": 'note = Text("hello")\nroot += [note]'}),
+    "REST canvas clear": ("delete", "/canvas", None),
+}
 
 
 def _world(sp=None) -> World:
@@ -196,6 +217,12 @@ async def _tool(env: Env, path: str, *, workspace: str, session: str, in_session
 
 
 async def _drive(env: Env, path: str) -> tuple[str, dict]:
+    if path in CANVAS_REST:
+        method, tail, body = CANVAS_REST[path]
+        r = await getattr(env.rest, method)(
+            f"/v1/workspaces/{env.target_workspace}/sessions/ses-t{tail}", **({"json": body} if body is not None else {}),
+        )
+        return {200: D, 202: D, 403: F, 404: N}[r.status_code], r.json()
     if path.startswith("REST"):
         verb = path.removeprefix("REST ")
         r = await env.rest.post(f"/v1/workspaces/{env.target_workspace}/sessions/ses-t/{verb}", json={})
@@ -206,6 +233,12 @@ async def _drive(env: Env, path: str) -> tuple[str, dict]:
 async def _delivered(env: Env, path: str) -> bool:
     """Read off the session ROW, where every one of these paths writes (the pause and resume tools too, since ticket 01a16d3c-9984)."""
     row = await env.world.sessions.get("ses-t")
+    if path in CANVAS_REST:
+        canvas = await env.world.sp.get_storage(SessionCanvas).get("ses-t")
+        if path == "REST canvas click":
+            slot = env.world.registry.workspace(env.target_workspace).slot("ses-t")
+            return canvas.event_seq == 1 and len(slot.appended) == 1 and slot.appended[0].startswith("<canvas_event")
+        return canvas.rev == 2
     if path.startswith(("cancel", "REST cancel")):
         return (row.status, row.ended_reason) == (SessionStatus.ENDED, "cancelled")
     if path == "REST resume":
@@ -219,8 +252,14 @@ async def _delivered(env: Env, path: str) -> bool:
     return True  # get, read: the answer is the delivery
 
 
+async def _canvas_of(env: Env) -> dict | None:
+    canvas = await env.world.sp.get_storage(SessionCanvas).get("ses-t")
+    return canvas.model_dump(mode="json") if canvas is not None else None
+
+
 async def _check(env: Env, path: str, scenario: str) -> None:
     before = (await env.world.sessions.get("ses-t")).model_dump(mode="json")
+    canvas_before = await _canvas_of(env)
 
     outcome, body = await _drive(env, path)
 
@@ -230,6 +269,7 @@ async def _check(env: Env, path: str, scenario: str) -> None:
         return
     assert (await env.world.sessions.get("ses-t")).model_dump(mode="json") == before, f"{path} wrote to the target it refused ({scenario})"
     assert env.world.scheduler.enqueued == [], f"{path} armed the target it refused ({scenario})"
+    assert await _canvas_of(env) == canvas_before, f"{path} wrote the canvas it refused ({scenario})"
     if outcome == N:
         # The out-of-reach answer is exactly what an unknown workspace and session answer (asked with no calling session, past every reach rule).
         _, unknown = await _tool(env, path, workspace="ws-nope", session="ses-nobody", in_session=False)
@@ -247,7 +287,7 @@ async def test_every_tool_that_acts_on_a_session_obeys_the_rule_table(path, scen
 
 @pytest.mark.parametrize("scenario", SCENARIOS)
 @pytest.mark.parametrize("path", [p for p in TABLE if p.startswith("REST")])
-async def test_the_rest_cancel_resume_pause_and_interrupt_obey_the_rule_table(app, client, fake_storage_provider, path, scenario):
+async def test_the_rest_routes_obey_the_rule_table(app, client, fake_storage_provider, path, scenario):
     world = _world(fake_storage_provider)
     app.state.workspace_registry.get_workspace = world.registry.get_workspace  # type: ignore[method-assign]
     r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})

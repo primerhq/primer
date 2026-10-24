@@ -260,6 +260,11 @@ def _mount_routers(
     # Sessions — feature => require_user.
     app.include_router(sessions_router.nested_session_router, prefix=prefix, dependencies=user_dep)
     app.include_router(sessions_router.top_session_router, prefix=prefix, dependencies=user_dep)
+    # The session canvas (pivot P5): read by any signed-in user (the shared session read); written and clicked under the rank rule of a
+    # steer, inside the routes. Its settings are system configuration => admin.
+    from primer.api.routers.canvas import canvas_router, canvas_settings_router
+    app.include_router(canvas_router, prefix=prefix, dependencies=user_dep)
+    app.include_router(canvas_settings_router, prefix=prefix, dependencies=admin_dep)
     # Workspace tap — read-only SSE (workspace feature) => require_user.
     # (WS role gate lives in the handler — Task 8.)
     from primer.api.routers.tap import tap_router

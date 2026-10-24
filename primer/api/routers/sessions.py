@@ -552,6 +552,21 @@ async def delete_session(
             extra={"session_id": session_id, "error": str(exc)},
         )
 
+    # The session's canvas (pivot P5, plan Decision 3: one SessionCanvas row per session, id = session id) goes with it. Best-effort, like
+    # the cleanups above: a session that never drew has no row (NotFoundError is no failure), and a failure is logged and never blocks the
+    # delete (the lead's ruling 7 on S6). A row left behind holds no session and serves nothing: every canvas route reads the session first.
+    try:
+        from primer.model.canvas import SessionCanvas
+
+        await storage_provider.get_storage(SessionCanvas).delete(session_id)
+    except NotFoundError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "delete_session: canvas cleanup failed (row still removed)",
+            extra={"session_id": session_id, "error": str(exc)},
+        )
+
     await sessions.delete(session_id)
 
 
