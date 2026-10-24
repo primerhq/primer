@@ -76,7 +76,8 @@ that may be named) and changes it with
 `system::set_web_search_active_config` and
 `system::set_web_fetch_active_config`. Over REST it is
 `GET` and `PUT /v1/web_search_active_config`, and
-`GET` and `PUT /v1/web_fetch_active_config`. The providers themselves
+`GET` and `PUT /v1/web_fetch_active_config`. In the console an operator
+sets both on the Platform › Web page. The providers themselves
 (with their API keys) are registered by an operator, in the console or
 with `POST /v1/web_search_providers` and `POST /v1/web_fetch_providers`;
 no tool creates them.
