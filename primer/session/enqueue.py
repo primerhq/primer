@@ -28,6 +28,7 @@ raises ConflictError.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -102,20 +103,29 @@ def _queueable(extra_payload: dict | None) -> bool:
     return not extra_payload or set(extra_payload) == {CANVAS_EVENT_PAYLOAD_KEY}
 
 
+#: How long a wake waits on the canvas (its digest read, its read marks) before it goes on without them (the lead's ruling 6 on #892 round
+#: 2): the wake holds the session's turn while it waits, so a canvas table that does not answer must not hold the session with it.
+_CANVAS_TIMEOUT_S = 2.0
+
+
 async def _canvas_digest(deps: "SessionWakeDeps", session_id: str, extra_payload: dict | None) -> Any:
     """The canvas changes the agent has not read, to ride the instruction this wake writes (pivot P5, plan Decision 9), or ``None``.
 
     The click this wake delivers is left out (it is the instruction). Session core reaches the canvas lazily, and a canvas never fails a
-    wake: any failure is logged and the wake goes on without a digest.
+    wake: a failure, or no answer within :data:`_CANVAS_TIMEOUT_S`, is logged once and the wake goes on without a digest.
     """
     try:
         from primer.canvas.delivery import canvas_digest_for
 
         delivered = _delivered_canvas_event(extra_payload)
         exclude = delivered.get("id") if delivered is not None else None
-        return await canvas_digest_for(
-            deps.storage_provider, session_id, exclude_event_id=exclude if isinstance(exclude, str) else None,
-        )
+        async with asyncio.timeout(_CANVAS_TIMEOUT_S):
+            return await canvas_digest_for(
+                deps.storage_provider, session_id, exclude_event_id=exclude if isinstance(exclude, str) else None,
+            )
+    except TimeoutError:
+        logger.warning("canvas digest skipped for %s: the canvas did not answer within %s s", session_id, _CANVAS_TIMEOUT_S)
+        return None
     except Exception:  # noqa: BLE001 -- the canvas is advisory to a wake
         logger.warning("canvas digest skipped for %s", session_id, exc_info=True)
         return None
@@ -135,7 +145,12 @@ async def _mark_canvas_read(deps: "SessionWakeDeps", session_id: str, digest: An
     try:
         from primer.canvas.delivery import mark_delivered
 
-        await mark_delivered(deps.storage_provider, session_id, seqs)
+        async with asyncio.timeout(_CANVAS_TIMEOUT_S):
+            await mark_delivered(deps.storage_provider, session_id, seqs)
+    except TimeoutError:
+        logger.warning(
+            "canvas events %s of session %s stayed unread: the canvas did not answer within %s s", seqs, session_id, _CANVAS_TIMEOUT_S,
+        )
     except Exception:  # noqa: BLE001 -- the instruction is written; the marks are advisory
         logger.warning("canvas events %s of session %s stayed unread", seqs, session_id, exc_info=True)
 
