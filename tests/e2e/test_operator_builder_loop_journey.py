@@ -77,16 +77,25 @@ async def _wait_for(
     resolves the inner tool's policy - parks the OPERATOR's session (the
     builder runs INLINE inside the operator's turn); there is one session
     id to watch and one to approve on.
+
+    A gate is answered once: the poller keeps the gates it answered
+    (``tool_call_id`` with ``gate_id``: the provider id alone repeats
+    across rounds, a gate id does not) and skips one served again
+    (ticket 01a16ca6: the pending read served a decided gate until a
+    worker claimed the row, and the second answer was a 404).
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
     approvals = 0
+    answered: set[tuple[str, str | None]] = set()
     while loop.time() < deadline:
         pending = await client.get(
             f"/v1/sessions/{session_id}/tool_approval/pending",
         )
-        if pending.status_code == 200:
-            body = pending.json()
+        body = pending.json() if pending.status_code == 200 else None
+        gate = (body["tool_call_id"], body.get("gate_id")) if body else None
+        if body is not None and gate not in answered:
+            answered.add(gate)
             resp = await client.post(
                 f"/v1/sessions/{session_id}/tool_approval/respond",
                 json={
