@@ -10,7 +10,7 @@ mcp_tools:
   - system::update_graph
   - system::delete_graph
   - system::find_graphs
-  - search::search_graphs
+  - system::wiki_search
 ---
 
 # Graphs - multi-step agent orchestration
@@ -23,8 +23,8 @@ control from one node to the next. Each node builds its input by
 rendering a **Jinja2 template** against the accumulated graph context,
 so any node can pull data from any earlier node. Author one with
 `system::create_graph`, discover existing ones with
-`search::search_graphs`, and run one by creating a session with a
-graph binding.
+`system::wiki_search` (`path_prefix: "this-install/graphs/"`), and run
+one by creating a session with a graph binding.
 
 Where a single agent is a turn-loop with one LLM, a graph is a
 higher-level orchestrator: each `agent` node runs its own complete
@@ -67,7 +67,7 @@ graph terminates when an `end` node fires or no ready nodes remain.
 ## Mental model
 
 A `Graph` row carries:
-- `id`, `description` (embedded for `search::search_graphs`). A new graph's `id` is optional (omitted, the server generates `graph-<hex>`); when supplied on create it must match `[a-z0-9._-]+` and not be `.` or `..` (refused with 422 at `body.id`, error type `graph_id_invalid` over REST, and `type=validation-error` from `create_graph`). Immutable after creation.
+- `id`, `description` (what the graph's live-map page, `this-install/graphs/<id>`, carries for search). A new graph's `id` is optional (omitted, the server generates `graph-<hex>`); when supplied on create it must match `[a-z0-9._-]+` and not be `.` or `..` (refused with 422 at `body.id`, error type `graph_id_invalid` over REST, and `type=validation-error` from `create_graph`). Immutable after creation.
 - `nodes` - list of node configs (a discriminated union on `kind`).
 - `edges` - list of edge configs connecting nodes (static or
   conditional).
@@ -319,10 +319,13 @@ reachable from `begin`.
   after its graph was deleted, and then fails at its next turn.
 - `system::find_graphs` - predicate query. A secret-bearing field (a `SecretStr`, a masked URL, or anything nesting one) cannot be a predicate or `order_by` key: such a query is refused `type=validation-error`.
 
-### Discovery (search toolset)
+### Discovery (the system collection)
 
-- `search::search_graphs` - semantic search over graph description +
-  node ids.
+- `system::wiki_search` with `path_prefix: "this-install/graphs/"` -
+  searches every graph's live-map page (its description), by keyword
+  and, once internal search is on, by meaning. Returns ranked page
+  paths, `this-install/graphs/<id>`; see
+  [semantic-search](semantic-search.md).
 
 To run a graph, create a session whose subject is the graph: call
 `workspaces::create_workspace_session` with a graph binding
@@ -707,5 +710,5 @@ re-parks until every pending decision is resolved, then advances.
   over a channel (Slack / Telegram / Discord) or over REST.
 - [yielding](yielding.md) - the park/resume mechanics a mid-graph
   `ask_user` pause rides on.
-- [semantic-search](semantic-search.md) - `search::search_graphs` is
-  the discovery path.
+- [semantic-search](semantic-search.md) - `system::wiki_search` over
+  the `system` collection is the discovery path.

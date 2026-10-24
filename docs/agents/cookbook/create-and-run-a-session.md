@@ -18,7 +18,7 @@ Run an existing agent headlessly inside a new workspace and read back the file i
 
 ## Prerequisites
 - Run it over MCP or from a session in the default workspace (prime). From a session in any other workspace `workspaces::create_workspace` answers `type=forbidden`, and the workspace tools reach only that session's own workspace.
-- A registered agent to run; find one with `search::search_agents` if you do not know its id.
+- A registered agent to run; find one with `system::wiki_search` (`path_prefix: "this-install/agents/"`) if you do not know its id (see `cookbook/discover-a-capability`).
 - A workspace template; list them with `workspaces::list_workspace_templates`. If none is configured, create one first with `workspaces::create_workspace_template` (out of scope here).
 
 ## Steps

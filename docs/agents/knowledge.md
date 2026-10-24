@@ -40,17 +40,21 @@ The Collections + Documents model is the primer-provided answer to
 "give my agent access to a body of reference material." Operators
 create one Collection per knowledge domain - engineering runbooks,
 support FAQs, product documentation - and write Documents into it by
-path. Agents discover collections via `search::search_collections`
-(metadata search), browse a collection's paths via
+path. Agents discover collections with `system::wiki_search` over the
+`system` collection's live map (`path_prefix:
+"this-install/collections/"`, which matches each collection's
+description), browse a collection's paths via
 `system::list_documents`, and fetch a body via
 `system::get_document_content`.
 
 Use `system::find_collection_documents_by_meta` when you want
 documents by exact metadata predicate; not when you want a ranked
-natural-language match (that is what the `search::search_*` tools in
-[semantic-search](semantic-search.md) do). Note
-`search::search_collections` ranks collection *metadata*, not the
-documents inside them.
+natural-language match (that is what `system::search_collection` does
+inside one collection, and `system::wiki_search` across the install's
+catalogue in the `system` collection; see
+[semantic-search](semantic-search.md)). Note that a
+`system::wiki_search` hit under `this-install/collections/` matches a
+collection's description, not the documents inside it.
 
 Search is **on** in this release. Writing a document with
 `system::put_document` both stores its body in the content store and
@@ -60,13 +64,13 @@ collection's contents. The vector index is a derived, optional index
 over the body rather than the place the body lives.
 
 A different special-purpose corner of the knowledge surface is the
-**internal collections** - five reserved collections owned by
-primer itself, including `_internal_ai_docs` (the docs you're
-reading). Those are documented separately at
-[semantic-search](semantic-search.md). The collection CRUD tools
-listed here work uniformly across user collections and the internal
-ones, but the internal ones are managed by the IC subsystem (their
-CDC keeps them in sync) and shouldn't be edited via these tools.
+reserved **`system` collection** - the read-only platform wiki that
+primer writes itself: the guides, a reference page per tool, these
+docs (its `docs/` subtree) and a live map of this install's agents,
+graphs and collections (`this-install/`). It is documented separately
+at [semantic-search](semantic-search.md). The read and search tools
+listed here work on it like on any collection, but primer regenerates
+it, so read and search it and never write to it.
 
 ## Mental model
 
@@ -77,8 +81,9 @@ A `Collection`:
   `body.id`, error type `collection_id_invalid` over REST, and
   `type=validation-error` from `create_collection`). Immutable after
   creation.
-- `description` - free text. This is what
-  `search::search_collections` embeds.
+- `description` - free text. This is what the collection's page in the
+  `system` collection's live map (`this-install/collections/<id>`)
+  carries, so it is what a search for the collection matches.
 - `embedder` - `{provider_id, model}`. Bound at create time; not
   changeable (changing the embedder would invalidate every existing
   chunk's vector dimensions). PUT returns 422 if you attempt to
@@ -122,9 +127,10 @@ A typical use case ties a Collection to an agent: the agent's
 tools include `system::list_documents` +
 `system::get_document_content` so it can browse paths and read. With
 semantic search available, the agent first calls
-`search::search_collections` to locate the right collection by
-description, then `system::search_collection` to pull the most
-relevant chunks or `system::list_documents` to enumerate paths.
+`system::wiki_search` with `path_prefix: "this-install/collections/"`
+to locate the right collection by description, then
+`system::search_collection` to pull the most relevant chunks or
+`system::list_documents` to enumerate paths.
 
 ## Lifecycle and states
 
@@ -352,8 +358,9 @@ searchable via `system::search_collection`.
 
 ## Related
 
-- [semantic-search](semantic-search.md) - user-defined collections and
-  the internal `_internal_*` collections + `search::*` toolset.
+- [semantic-search](semantic-search.md) - the reserved `system`
+  collection (the platform wiki and this install's live map) and how
+  agents search it.
 - [agents](agents.md) - agents typically bind one or more
   collections via their `system_prompt` or via tool calls in their
   prompt template.

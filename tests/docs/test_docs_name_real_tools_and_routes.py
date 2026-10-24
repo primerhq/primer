@@ -1,6 +1,6 @@
 """The docs name only tools and endpoints that exist (finding A-19 of the 2026-10-08 review).
 
-The agent-facing docs (``docs/agents/``) are ingested into ``_internal_ai_docs`` and served to agents by search, so a tool name in them is
+The agent-facing docs (``docs/agents/``) are written into the ``system`` collection and served to agents by search, so a tool name in them is
 acted on: ``docs/agents/workspaces.md`` told an agent to bind a workspace to a channel with ``system::set_workspace_channel_association`` and
 ``system::clear_workspace_channel_association``, neither of which has been a tool since the field became a reply binding
 (``set_reply_binding`` / ``clear_reply_binding``), and three docs sent the agent to ``trigger::subscribe_to_trigger``, a yielding tool that lives in

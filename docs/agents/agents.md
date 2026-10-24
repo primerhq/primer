@@ -10,7 +10,7 @@ mcp_tools:
   - system::update_agent
   - system::delete_agent
   - system::find_agents
-  - search::search_agents
+  - system::wiki_search
 ---
 
 # Agents - definitions and runtime
@@ -41,11 +41,12 @@ land back in the LLM history, the LLM continues until it stops
 with a non-tool message. That stop is the end of a turn. The next
 turn begins with the next user input.
 
-Agents are the primary indexed entity in the semantic catalogue. An
-agent's description + system_prompt are embedded into
-`_internal_agents`; `search::search_agents` is the discovery path.
-This is why agent descriptions matter for usability - they're
-what shows up in semantic search results.
+Every agent has a page in the `system` collection's live map,
+`this-install/agents/<id>`, holding its description and model profile;
+`system::wiki_search` with `path_prefix: "this-install/agents/"` is the
+discovery path (by keyword, and by meaning once internal search is on;
+see [semantic-search](semantic-search.md)). This is why agent
+descriptions matter for usability - they're what a search matches.
 
 Use a single agent when one LLM with one toolset does the whole
 job; not when you need to chain several agents with conditional
@@ -437,10 +438,13 @@ unset on the row:
 }
 ```
 
-### Discovery (search toolset)
+### Discovery (the system collection)
 
-- `search::search_agents` - semantic search over agent
-  description + system_prompt. Returns ranked agent ids.
+- `system::wiki_search` with `path_prefix: "this-install/agents/"` -
+  searches every agent's live-map page (its description and model
+  profile). Returns ranked page paths, `this-install/agents/<id>`.
+- `collections::search` with `"collection": "system"` and the same
+  `path_prefix` does the same through the collections toolset.
 
 ## Workflows
 
@@ -507,18 +511,19 @@ Response threads the session `id` and a `status` of `running`:
 **Goal.** Connected agent doesn't know what's available. Find an
 agent that does code review.
 
-1. Search:
+1. Search the live map's agents:
 
 ```json
 {
-  "tool": "search::search_agents",
-  "arguments": {"query": "code review lint static analysis", "top_k": 5}
+  "tool": "system::wiki_search",
+  "arguments": {"query": "code review lint static analysis", "path_prefix": "this-install/agents/", "limit": 5}
 }
 ```
 
-Returns hits ranked by description similarity. Top hits
-typically include both a `review-code` agent and a `lint-pr`
-agent depending on what's installed.
+Returns hits ranked by how well each agent's description matches,
+each a page path such as `this-install/agents/review-code`. Top hits
+typically include both a `review-code` agent and a `lint-pr` agent
+depending on what's installed.
 
 2. Inspect the best candidate:
 

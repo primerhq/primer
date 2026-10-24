@@ -387,5 +387,5 @@ set). Status returns to `installed`. If something went wrong,
 - [knowledge](knowledge.md) - harness Documents seed user
   collections.
 - [semantic-search](semantic-search.md) - installed agents/graphs
-  are automatically indexed by the IC subsystem; `search::search_agents`
-  picks them up.
+  appear in the `system` collection's live map (rebuilt at every
+  startup), where `system::wiki_search` finds them.
