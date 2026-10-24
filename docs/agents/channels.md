@@ -552,7 +552,11 @@ the trigger.
   one field and send the rest back as served. POSTing the served body
   as a new provider (or `create_channel_provider`) is refused with a
   422 (`validation-error`): there is no stored token to restore the
-  mask from, so send the real tokens.
+  mask from, so send the real tokens. The same goes for a PUT that sends
+  a mask where nothing was stored (an optional Slack `signing_secret`
+  that was never set): the refusal names the field, at
+  `body.config.<field>` on REST and as `config.<field>: ...` from the
+  tool.
 
 ## Related
 

@@ -109,13 +109,21 @@ def check_channel_provider_secrets(entity: ChannelProvider) -> None:
     reaches :func:`~primer.model.common.preserve_masked_secrets`, which puts the stored token back. This judges the value that will
     actually be stored: a secret that is still a served mask (the optional Slack ``signing_secret`` included) is refused, and each
     token must pass its platform's rule. The REST router's create and update hooks and the system ``create_channel_provider`` /
-    ``update_channel_provider`` tools call it, so neither path can store a mask.
+    ``update_channel_provider`` tools call it, so neither path can store a mask. Each refusal names its field (``config.<name>``,
+    ticket 01a16b64 R5): the REST router answers it at that field's body path, the tools name it first in their message.
     """
+    config = entity.config
+    for name in type(config).model_fields:
+        try:
+            # A one-key mapping, so that the refusal's message names the field (a bare secret would be called "secret").
+            refuse_served_masks({name: getattr(config, name, None)})
+        except ValidationError as exc:
+            raise EntityCheckError("validation", exc.message, field=f"config.{name}") from None
     try:
-        refuse_served_masks(entity)
+        refuse_served_masks(entity)  # anything outside the config (nothing today)
     except ValidationError as exc:
         raise EntityCheckError("validation", exc.message) from None
-    found = channel_token_problem(entity.config)
+    found = channel_token_problem(config)
     if found is not None:
         name, message = found
         raise EntityCheckError("validation", message, field=f"config.{name}")

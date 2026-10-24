@@ -205,6 +205,7 @@ class TestAModelThatValidatesItsTokensKeepsThemThroughTheMask:
         result = await system_toolset.call(tool_name="update_channel_provider", arguments={"id": "cp-1", "entity": served})
 
         assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+        assert "config.signing_secret" in result.output, "the refusal names the field it is about (ticket 01a16b64 R5)"
         config = sp.get_storage(ChannelProvider)._data["cp-1"].config
         assert config.signing_secret is None
         assert config.bot_token.get_secret_value() == "xoxb-live-9876543210"

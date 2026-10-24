@@ -202,12 +202,21 @@ def test_the_served_mask_passes_the_token_rules_for_the_restore_and_nothing_else
             DiscordChannelProviderConfig(bot_token=SecretStr(near))
 
 
-def test_channel_token_problem_refuses_a_mask_that_was_not_restored():
+def test_channel_token_problem_judges_a_bare_mask_by_the_platform_rule():
+    """Ticket 01a16b64 R5: an unrestored mask never reaches ``channel_token_problem`` (``check_channel_provider_secrets`` refuses a
+    served mask first), so it has no mask branch of its own. A bare mask passed to it directly still breaks every platform's rule."""
     from primer.common.url_userinfo import MASK
     from primer.model.channel import TelegramChannelProviderConfig, channel_token_problem
 
-    assert channel_token_problem(SlackChannelProviderConfig(app_token=SecretStr("xapp-1"), bot_token=SecretStr(MASK)))[0] == "bot_token"
-    assert channel_token_problem(TelegramChannelProviderConfig(bot_token=SecretStr(MASK)))[0] == "bot_token"
+    assert channel_token_problem(SlackChannelProviderConfig(app_token=SecretStr("xapp-1"), bot_token=SecretStr(MASK))) == (
+        "bot_token", "bot_token must start with 'xoxb-' (Slack bot token)",
+    )
+    assert channel_token_problem(SlackChannelProviderConfig(app_token=SecretStr(MASK), bot_token=SecretStr("xoxb-1"))) == (
+        "app_token", "app_token must start with 'xapp-' (Slack app-level token)",
+    )
+    assert channel_token_problem(TelegramChannelProviderConfig(bot_token=SecretStr(MASK))) == (
+        "bot_token", "bot_token must be in the '123456:ABCDEF...' shape",
+    )
     assert channel_token_problem(DiscordChannelProviderConfig(bot_token=SecretStr(MASK)))[0] == "bot_token"
     assert channel_token_problem(SlackChannelProviderConfig(app_token=SecretStr("xapp-1"), bot_token=SecretStr("xoxb-1"))) is None
     assert channel_token_problem(DiscordChannelProviderConfig(bot_token=SecretStr("a" * 40))) is None

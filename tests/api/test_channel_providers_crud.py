@@ -151,6 +151,27 @@ async def test_a_mask_with_nothing_stored_to_restore_is_refused_and_never_stored
 
 
 @pytest.mark.asyncio
+async def test_the_refusal_after_the_restore_is_answered_at_its_field(client, fake_storage_provider) -> None:
+    """Ticket 01a16b64 R5: the 422 of the restore-then-validate hook names the field it refuses, as the request-validation envelope at
+    that field's body path (the shape the routers answer for a refused body field), where it used to be a plain detail with no field."""
+    from primer.common.url_userinfo import MASK
+
+    r = await client.post("/v1/channel_providers", json={"id": "cp-loc", "provider": "slack", "config": {"app_token": SLACK_APP, "bot_token": SLACK_BOT}})
+    assert r.status_code == 201, r.text
+    served = (await client.get("/v1/channel_providers/cp-loc")).json()
+
+    r = await client.put("/v1/channel_providers/cp-loc", json={**served, "config": {**served["config"], "signing_secret": MASK}})
+
+    assert r.status_code == 422, r.text
+    assert r.json().get("extensions", {}).get("errors") == [{
+        "type": "value_error",
+        "loc": ["body", "config", "signing_secret"],
+        "msg": "signing_secret: this is the mask a GET serves, not a secret: re-enter the secret",
+    }], r.text
+    assert (await _stored_config(fake_storage_provider, "cp-loc")).signing_secret is None
+
+
+@pytest.mark.asyncio
 async def test_a_mask_sent_for_another_platform_is_refused(client, fake_storage_provider) -> None:
     """A PUT that moves the row to another platform has no stored token of that shape to restore the mask from."""
     from primer.common.url_userinfo import MASK
