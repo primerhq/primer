@@ -543,10 +543,23 @@ def test_server_errors_split_into_fields_and_a_line():
     assert out["fields"] == {} and "backend.tolerations" in out["general"]
 
 
+def test_pydantics_value_error_prefix_is_not_said():
+    """Round 2 of #886, item 6: a validator's refusal reaches the console as "Value error, <the sentence>"; the person reads the sentence (as toolsets.jsx
+    does), under the field and in the line."""
+    status, env = envelope("POST", "/v1/workspace_templates", {**K8S_BODY, "backend": {**K8S_BODY["backend"], "node_selector": {"bad key": "x"}}})
+    raw = env["extensions"]["errors"][0]["msg"]
+    assert status == 422 and raw.startswith("Value error, node_selector key 'bad key'")
+    assert _split(env)["fields"]["nodeSelectorRows"] == raw.removeprefix("Value error, ")
+    line = _split(env, "function () { return null; }", {"withPath": True})["general"]
+    assert line == "backend.node_selector: " + raw.removeprefix("Value error, ") and "Value error" not in line
+    status, env = envelope("POST", "/v1/workspace_templates", {**K8S_BODY, "state_path": "/abs"})
+    assert status == 422 and _split(env)["fields"]["statePath"].startswith("workspace path '/abs' must be relative")
+
+
 def test_a_field_error_nobody_shows_goes_to_the_line_with_its_field():
     status, env = envelope("POST", "/v1/workspace_templates", {**K8S_BODY, "backend": {**K8S_BODY["backend"], "node_selector": {"bad key": "x"}}})
     assert status == 422
-    message = env["extensions"]["errors"][0]["msg"]
+    message = env["extensions"]["errors"][0]["msg"].removeprefix("Value error, ")
     assert _split(env, "function () { return null; }") == {"fields": {}, "general": message}
     assert _split(env, "function () { return null; }", {"withPath": True}) == {"fields": {}, "general": "backend.node_selector: " + message}
 
