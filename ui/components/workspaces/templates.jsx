@@ -551,15 +551,24 @@ function WT_splitErrors(err, keyForLoc, opts) {
   return { fields: fields, general: rest.length ? rest.join("; ") : null };
 }
 
-// Every template, a page of 200 at a time in id order, until a short page says the list has ended (or WT_MAX_PAGES pages were read).
+// Every template, a page of 200 at a time in id order, until a short page says the list has ended (or WT_MAX_PAGES pages were read). Each id is listed once:
+// a template created between two pages shifts the next page back and repeats a row, and a repeated id would be a second card with the same key. A full page
+// that adds no new id ends the listing too (a server that ignores the offset answers every page with the first).
 function WT_fetchAllTemplates(apiFetch, signal) {
   var items = [];
+  var seen = {};
   function page(n) {
     var path = "/workspace_templates?limit=200&offset=" + n * 200 + "&order_by=id:asc";
     return apiFetch("GET", path, null, { signal: signal }).then(function (answer) {
       var rows = (answer && answer.items) || [];
-      items = items.concat(rows);
-      if (rows.length < 200 || n + 1 >= WT_MAX_PAGES) return { items: items, total: items.length };
+      var added = 0;
+      rows.forEach(function (row) {
+        if (row && row.id != null && WT_has(seen, row.id)) return;
+        if (row && row.id != null) seen[row.id] = true;
+        items.push(row);
+        added += 1;
+      });
+      if (rows.length < 200 || added === 0 || n + 1 >= WT_MAX_PAGES) return { items: items, total: items.length };
       return page(n + 1);
     });
   }

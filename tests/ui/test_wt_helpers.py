@@ -528,6 +528,34 @@ def test_fetch_all_templates_stops_at_a_short_page():
     assert len(out["items"]) == 400 and len(urls) == 3, "two full pages, then an empty one says the list ended"
 
 
+def _fetch_with(fake_body: str):
+    """WT_fetchAllTemplates against a fake whose body (JS, with ``offset`` in scope) answers each page; the result and the request count."""
+    ctx = _ctx()
+    ctx.eval("var URLS = []; var OUT = null; function fake(method, path) { URLS.push(path); var offset = Number(/offset=(\\d+)/.exec(path)[1]); "
+             + fake_body + " } WT_fetchAllTemplates(fake, null).then(function (r) { OUT = r; });")
+    return _js("OUT", ctx), _js("URLS.length", ctx)
+
+
+def test_a_template_created_between_pages_is_listed_once():
+    """Round 2 of #886, item 3: a template created (sorting before the offset) between page 1 and page 2 shifts page 2 back by one, so the 250 templates
+    come back as 251 rows. The repeat is dropped: one card per template (a repeated id is a repeated React key)."""
+    out, requests = _fetch_with(
+        "var base = offset === 0 ? 0 : offset - 1; var items = [];"
+        " for (var i = base; i < Math.min(250, base + 200); i++) items.push({ id: 't-' + String(i).padStart(4, '0') });"
+        " return Promise.resolve({ items: items });"
+    )
+    ids = [r["id"] for r in out["items"]]
+    assert len(ids) == 250 and ids == sorted(set(ids)) and out["total"] == 250 and requests == 2
+
+
+def test_a_server_that_ignores_the_offset_is_asked_twice_and_listed_once():
+    """A full page that adds no new id ends the listing: a server that answers every page with the first one is asked twice, not WT_MAX_PAGES times."""
+    out, requests = _fetch_with(
+        "var items = []; for (var i = 0; i < 200; i++) items.push({ id: 't-' + i }); return Promise.resolve({ items: items });"
+    )
+    assert requests == 2 and len(out["items"]) == 200 and len({r["id"] for r in out["items"]}) == 200
+
+
 def test_fetch_all_templates_stops_at_the_guard():
     out, urls = _fetch_all(always_full=True)
     assert len(urls) == 100 and len(out["items"]) == 100 * 200
