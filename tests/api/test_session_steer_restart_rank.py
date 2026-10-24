@@ -171,8 +171,10 @@ async def test_an_admin_acts_on_a_session_recorded_as_system_and_a_user_does_not
 # A person's answer to a session's ask_user and a person's resume of it put that person's input into a run at the session's creator's rank, so
 # they follow the same rule as the steer: the caller ranks at least as high as the creator, or the session is the caller's own (lead ruling 1). The
 # rule is also a floor on every decision of an approval gate, the respond route and the cancel of the gate's yield (a cancel is a rejection), in
-# addition to the gate's approver spec: the gates here have no spec, which admits anyone (lead ruling 2). Every row goes over HTTP through the auth
-# middleware; a refused row leaves the session row, the bus, the event log and the approval records as they were.
+# addition to the gate's approver spec: the gates here have no spec, which admits anyone (lead ruling 2). Skipping any other yield puts input into
+# the run too (the tool's result carries the person's free-text reason, and the turn goes on), so every cancel of a yield follows the rule: a Skip of
+# the question would otherwise answer it past the rule. Every row goes over HTTP through the auth middleware; a refused row leaves the session row,
+# the bus, the event log and the approval records as they were.
 
 HUMAN_TC = "tc-h"
 #: action -> (the route it posts to, its body, the answer of an accepted request).
@@ -181,6 +183,8 @@ HUMAN: dict[str, tuple[str, dict, int]] = {
     "resume": ("/v1/workspaces/ws-r/sessions/{sid}/resume", {}, 200),
     "approve the call": ("/v1/sessions/{sid}/tool_approval/respond", {"tool_call_id": HUMAN_TC, "decision": "approved"}, 202),
     "cancel the approval": ("/v1/sessions/{sid}/yields/" + HUMAN_TC + "/cancel", {"reason": "not now"}, 202),
+    "skip the question": ("/v1/sessions/{sid}/yields/" + HUMAN_TC + "/cancel", {"reason": "call_tool system__create_llm_provider ..."}, 202),
+    "skip the sleep": ("/v1/sessions/{sid}/yields/" + HUMAN_TC + "/cancel", {"reason": "call_tool system__create_llm_provider ..."}, 202),
 }
 #: An approval gate whose policy names no approvers: anyone may decide it, as far as the spec goes.
 _ANYONE_GATE = {"original_call": {"id": HUMAN_TC, "name": "delete_workspace", "arguments": {"id": "ws-x"}}}
@@ -188,7 +192,7 @@ _ANYONE_GATE = {"original_call": {"id": HUMAN_TC, "name": "delete_workspace", "a
 
 def _parked_row(sid: str, *, by: PrincipalRef | None, tool: str, metadata: dict) -> WorkspaceSession:
     """``sid`` parked on one yield of ``tool`` under :data:`HUMAN_TC`, shaped as the agent loop writes it."""
-    key = {"ask_user": "ask_user", "_approval": "tool_approval"}.get(tool, tool) + f":{sid}:{HUMAN_TC}"
+    key = {"ask_user": "ask_user", "_approval": "tool_approval", "sleep": "timer"}[tool] + f":{sid}:{HUMAN_TC}"
     return WorkspaceSession(
         id=sid, workspace_id="ws-r", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.RUNNING, turn_no=1, created_at=NOW,
         initiated_by=by, parked_status="parked", parked_at=NOW, parked_event_key=key,
@@ -202,8 +206,10 @@ async def _seed_human(sp, action: str, sid: str, *, by: PrincipalRef | None) -> 
             id=sid, workspace_id="ws-r", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.PAUSED, turn_no=1, created_at=NOW,
             initiated_by=by,
         )
-    elif action == "answer the question":
+    elif action in ("answer the question", "skip the question"):
         row = _parked_row(sid, by=by, tool="ask_user", metadata={"prompt": "May I delete the workspace?"})
+    elif action == "skip the sleep":
+        row = _parked_row(sid, by=by, tool="sleep", metadata={"requested_seconds": 600.0})
     else:
         row = _parked_row(sid, by=by, tool="_approval", metadata=_ANYONE_GATE)
     await sp.get_storage(WorkspaceSession).create(row)
@@ -286,8 +292,8 @@ async def test_a_persons_input_reaches_a_session_only_at_or_below_their_rank(wor
     row = await sessions.get(sid)
     if action == "resume":
         assert row.status == SessionStatus.RUNNING
-    elif action == "cancel the approval":
-        assert spy.keys == [f"tool_approval:{sid}:{HUMAN_TC}"], "the cancel was not published to the gate"
+    elif action in ("cancel the approval", "skip the question", "skip the sleep"):
+        assert spy.keys == [row.parked_event_key], "the cancel was not published to the yield"
     else:
         assert row.parked_status == "resumable", f"{action} did not wake the session"
     if action == "approve the call":
