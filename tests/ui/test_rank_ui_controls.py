@@ -162,6 +162,9 @@ def _mobile_view_ctx():
     start = MOBILE.index("function NV_mobileMayDecide")
     end = MOBILE.index("\nfunction NV_mobileInboxHeading", start)
     ctx.eval(MOBILE[start:end])
+    decide_start = MOBILE.index("function NV_inboxDecide")
+    decide_end = MOBILE.index("\n}\n", decide_start) + len("\n}\n")
+    ctx.eval(MOBILE[decide_start:decide_end])
     return ctx
 
 
