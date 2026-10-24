@@ -134,6 +134,28 @@ def prepare_root(root: str) -> None:
             raise _not_writable(root, exc) from exc
 
 
+def _root_missing(root: str) -> ConfigError:
+    return ConfigError(
+        f"artifact root {root!r} does not exist in this process; mount the shared artifact volume at this path in every server pod "
+        "(the API and every worker)"
+    )
+
+
+def _marker_missing(root: str) -> ConfigError:
+    return ConfigError(
+        f"artifact root {root!r} has no {ROOT_MARKER} marker in this process, so it is not the folder the provider was prepared on; "
+        "mount the shared artifact volume here in every server pod, or save the provider again to prepare the folder"
+    )
+
+
+def _require_marker(root: str) -> None:
+    """Refuse a root that has lost its marker (the volume is gone from this process) without creating anything."""
+    if not os.path.exists(root):
+        raise _root_missing(root)
+    if not (Path(root) / ROOT_MARKER).is_file():
+        raise _marker_missing(root)
+
+
 def check_root(root: str) -> None:
     """Refuse a root this process cannot use: not absolute, missing, not a folder, never prepared (no marker), or not writable.
 
@@ -142,17 +164,10 @@ def check_root(root: str) -> None:
     """
     _require_absolute(root)
     if not os.path.exists(root):
-        raise ConfigError(
-            f"artifact root {root!r} does not exist in this process; mount the shared artifact volume at this path in every server pod "
-            "(the API and every worker)"
-        )
+        raise _root_missing(root)
     if not os.path.isdir(root):
         raise ConfigError(f"artifact root {root!r} is not a directory")
-    if not (Path(root) / ROOT_MARKER).is_file():
-        raise ConfigError(
-            f"artifact root {root!r} has no {ROOT_MARKER} marker in this process, so it is not the folder the provider was prepared on; "
-            "mount the shared artifact volume here in every server pod, or save the provider again to prepare the folder"
-        )
+    _require_marker(root)
     _write_probe(root)
 
 
@@ -198,7 +213,11 @@ def _read_nofollow(path: Path) -> bytes:
 
 
 def _write_files(root: str, path: Path, data: bytes, sidecar: bytes) -> None:
-    """Write the bytes, then the sidecar. A sidecar that fails removes the bytes again."""
+    """Write the bytes, then the sidecar. A sidecar that fails removes the bytes again.
+
+    The marker is checked first, on every put: ``initialize`` runs once per process and the store is cached, so a volume that went away later
+    would otherwise leave this process writing into the empty mount point on its own disk, where no other pod can read the files."""
+    _require_marker(root)
     _shard_dir(root, path, create=True)
     _write_atomic(path, data)
     try:

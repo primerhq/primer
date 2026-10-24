@@ -160,6 +160,23 @@ async def test_a_pod_without_the_volume_cannot_use_the_store(tmp_path: Path) -> 
     assert list(bare.iterdir()) == [], "initialize never writes the marker"
 
 
+@pytest.mark.parametrize("swap", ["empty mount point", "no folder"])
+async def test_a_volume_lost_after_initialize_refuses_the_put_and_writes_nothing(tmp_path: Path, swap: str) -> None:
+    """Review of #890, item 4: ``initialize`` runs once per process and the store is cached. When the shared volume goes away afterwards, the
+    root is an empty folder on the pod's own disk (or no folder at all), and a put must refuse rather than write files no other pod can read."""
+    store = await _ready(tmp_path)
+    root = tmp_path / "root"
+    os.rename(root, tmp_path / "volume-elsewhere")
+    if swap == "empty mount point":
+        root.mkdir()
+
+    with pytest.raises(ConfigError, match=re.escape(repr(str(root)))) as info:
+        await store.put(data=b"local only", mime_type="text/plain")
+
+    assert "mount the shared artifact volume" in str(info.value)
+    assert (list(root.iterdir()) == []) if swap == "empty mount point" else not root.exists(), "nothing is written"
+
+
 def test_building_the_store_touches_nothing(tmp_path: Path) -> None:
     FilesystemArtifactStorage(str(tmp_path / "never"))
 
