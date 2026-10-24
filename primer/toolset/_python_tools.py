@@ -16,8 +16,9 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from primer.model.chat import Tool, ToolExample
+from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
+from primer.toolset._helpers import err as _err
 from primer.toolset._helpers import ok as _ok
 from primer.toolset._system_common import SYSTEM_TOOLSET_ID
 from primer.toolset._system_guards import refuse_create, refuse_update, toolset_guards
@@ -63,6 +64,37 @@ class _ListPythonToolsArgs(BaseModel):
     )
 
 
+# What the three tools answer (ticket 01a16f1d ruling 2; ``tests/toolset/test_python_toolset_tool_handlers.py`` compares these keys with a real
+# result). Each entry of ``tools`` is what ``_derived`` builds: ``args`` is the list of the tool's argument NAMES, not its schema.
+_TOOLS_SHAPE = "tools: [{id, yields, timeout_seconds, args}]"
+_TOOLS_NOTE = (
+    "Each entry of ``tools`` is one tool the source derives: ``yields`` says whether it "
+    "pauses the turn, ``timeout_seconds`` is its wall-clock ceiling, and ``args`` is the "
+    "list of its argument names, not a schema (``describe_tool`` gives the schema)."
+)
+_REGISTRATION_FAILURE = (
+    "A source that does not register returns ``{ok: false, error, field, lineno}`` (a "
+    "result, not an error) and %s."
+)
+_NOT_PYTHON_NOTE = (
+    "The id of a toolset that is not a Python toolset returns ``type=validation-error``."
+)
+
+
+def _refuse_unless_python(existing) -> ToolCallResult | None:
+    """The answer for a stored toolset that is not a Python toolset (ticket 01a16f1d ruling 3): its config has no ``source``, so reading one used to
+    raise ``AttributeError`` out of the handler. ``None`` for a Python toolset."""
+    from primer.model.providers.toolset import ToolsetProviderType
+
+    if existing.provider == ToolsetProviderType.PYTHON:
+        return None
+    return _err(
+        f"toolset {existing.id!r} is not a Python toolset (its provider is "
+        f"{existing.provider.value!r}); pass the id of a Python toolset",
+        error_type="validation-error",
+    )
+
+
 def _derived(source: str, toolset_id: str, timeout: float) -> list[dict]:
     from primer.toolset.python_runner.registration import register_module
 
@@ -87,8 +119,9 @@ def build_python_toolset_tools(
 
     These tools write Toolset rows directly, so they carry the toolset router's guards themselves (the shared
     :func:`~primer.toolset._system_guards.toolset_guards`): a reserved scope id cannot be created and a harness-managed toolset's
-    source cannot be edited, both answered as typed errors. Registration failures and an unknown id keep their untyped
-    ``{"ok": false, ...}`` answers. ``provider_registry`` is the registry whose cached adapter an update must evict (the toolset
+    source cannot be edited, both answered as typed errors, and so is the id of a toolset that is not a Python toolset
+    (``validation-error``). Registration failures and an unknown id keep their untyped ``{"ok": false, ...}`` answers. An update keeps
+    ``source_version`` when the source is unchanged, as the REST route does (``toolset_checks.own_python_source_version``). ``provider_registry`` is the registry whose cached adapter an update must evict (the toolset
     router does it on every update): ``None`` (standalone builds) skips it; the app wiring always passes it.
     """
     guards = toolset_guards()
@@ -130,12 +163,16 @@ def build_python_toolset_tools(
     async def _update_python_toolset_source_handler(args_json: dict):
         from primer.model.providers.toolset import Toolset
         from primer.toolset.python_runner.registration import RegistrationError
+        from primer.toolset.toolset_checks import own_python_source_version
 
         args = _UpdatePythonToolsetSourceArgs(**args_json)
         store = storage_provider.get_storage(Toolset)
         existing = await store.get(args.toolset_id)
         if existing is None:
             return _ok({"ok": False, "error": "not-found"})
+        refusal = _refuse_unless_python(existing)
+        if refusal is not None:
+            return refusal
         # The stored row decides (as REST): a harness-managed toolset's source is not editable here. ``existing`` is passed as the
         # incoming entity too, because this tool replaces only the source, never the owner.
         refusal = refuse_update(guards, existing, existing)
@@ -152,9 +189,12 @@ def build_python_toolset_tools(
                 {"ok": False, "error": str(exc), "field": exc.field,
                  "lineno": exc.lineno}
             )
-        existing.config.source = args.source
-        existing.config.source_version += 1
-        await store.update(existing)
+        updated = existing.model_copy(deep=True)
+        updated.config.source = args.source
+        # The REST route's rule, through the same helper: the version moves when the source does and stays when it does not, so an update that
+        # sends the stored source again leaves a parked call resumable (ticket 01a16f1d ruling 5).
+        own_python_source_version(updated, existing)
+        await store.update(updated)
         if provider_registry is not None:
             # The registry caches the adapter built from the row at first use, and the python adapter registers its tools from
             # ``config.source`` when it is built, so without this the OLD source keeps serving until a restart. Same call the
@@ -164,7 +204,7 @@ def build_python_toolset_tools(
             {
                 "ok": True,
                 "toolset_id": args.toolset_id,
-                "source_version": existing.config.source_version,
+                "source_version": updated.config.source_version,
                 "tools": tools,
             }
         )
@@ -179,6 +219,9 @@ def build_python_toolset_tools(
         )
         if existing is None:
             return _ok({"ok": False, "error": "not-found"})
+        refusal = _refuse_unless_python(existing)
+        if refusal is not None:
+            return refusal
         try:
             tools = _derived(
                 existing.config.source,
@@ -204,7 +247,10 @@ def build_python_toolset_tools(
                     "tools. Every @primer_tool function needs a docstring "
                     "with a 'Use when' line and a documented entry per "
                     "argument, or registration fails and names the offending "
-                    "parameter."
+                    "parameter. "
+                    + _REGISTRATION_FAILURE % "stores nothing"
+                    + " "
+                    + _TOOLS_NOTE
                 ),
                 args_schema=_CreatePythonToolsetArgs.model_json_schema(),
                 examples=[
@@ -220,10 +266,7 @@ def build_python_toolset_tools(
                                 "    return 'hi ' + name\n"
                             ),
                         },
-                        returns=(
-                            "``{ok: true, toolset_id, tools: "
-                            "[{id, yields, args}]}``"
-                        ),
+                        returns=f"``{{ok: true, toolset_id, {_TOOLS_SHAPE}}}``",
                     )
                 ],
                 required_role="admin",
@@ -236,13 +279,20 @@ def build_python_toolset_tools(
                 toolset_id=toolset_id,
                 purpose="Replace a python toolset's module source.",
                 when=(
-                    "Use when a python tool needs changing. The version is "
-                    "bumped so a session parked in one of its tools resumes "
-                    "against the code that parked, not the new code. The "
-                    "running toolset is dropped from the registry's cache, so "
-                    "the next call resolves the new source. A harness-managed "
-                    "toolset returns ``type=conflict``; an unknown id returns "
-                    "``{ok: false, error: not-found}``."
+                    "Use when a python tool needs changing. When the new source "
+                    "differs from the stored one, ``source_version`` goes up by "
+                    "one, and a call parked in one of the toolset's tools no "
+                    "longer resumes: when it is answered, it ends with an error "
+                    "that names both versions, and the answer is not applied. "
+                    "The same source keeps the version, so a parked call still "
+                    "resumes. The running toolset is dropped from the registry's "
+                    "cache, so the next call resolves the new source. A "
+                    "harness-managed toolset returns ``type=conflict``. "
+                    + _NOT_PYTHON_NOTE
+                    + " An unknown id returns ``{ok: false, error: not-found}``. "
+                    + _REGISTRATION_FAILURE % "changes nothing"
+                    + " "
+                    + _TOOLS_NOTE
                 ),
                 args_schema=(
                     _UpdatePythonToolsetSourceArgs.model_json_schema()
@@ -253,7 +303,10 @@ def build_python_toolset_tools(
                             "toolset_id": "my-tools",
                             "source": "# new source\n",
                         },
-                        returns="``{ok: true, toolset_id, source_version, tools}``",
+                        returns=(
+                            "``{ok: true, toolset_id, source_version, "
+                            f"{_TOOLS_SHAPE}}}``"
+                        ),
                     )
                 ],
                 required_role="admin",
@@ -275,16 +328,19 @@ def build_python_toolset_tools(
                 when=(
                     "Use when you want to see what a python toolset exposes, "
                     "including whether each tool yields and what arguments it "
-                    "takes, without calling any of them."
+                    "takes, without calling any of them. It only reads. "
+                    + _TOOLS_NOTE
+                    + " "
+                    + _NOT_PYTHON_NOTE
+                    + " An unknown id returns ``{ok: false, error: not-found}``, "
+                    "and a stored source that no longer registers returns "
+                    "``{ok: false, error}``."
                 ),
                 args_schema=_ListPythonToolsArgs.model_json_schema(),
                 examples=[
                     ToolExample(
                         args={"toolset_id": "my-tools"},
-                        returns=(
-                            "``{ok: true, toolset_id, tools: "
-                            "[{id, yields, args}]}``"
-                        ),
+                        returns=f"``{{ok: true, toolset_id, {_TOOLS_SHAPE}}}``",
                     )
                 ],
                 required_role="user",
