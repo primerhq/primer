@@ -9,20 +9,22 @@ one, and three consecutive hits bring a ``failed`` one back to ``running``.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.workspace.probe import WorkspaceProbeTask
 from tests._support.reconcile_guard import reconcile_query_must_not_fail  # noqa: F401  (autouse: see the module)
 
 
-def _ws(phase: str, id_: str = "ws-1") -> MagicMock:
-    """Build a minimal mock workspace row: an id and a phase."""
-    ws = MagicMock()
-    ws.id = id_
-    ws.phase = phase
-    return ws
+def _ws(phase: str, id_: str = "ws-1") -> Workspace:
+    """A real workspace row: the probe's write is fenced on its stored fields (``raw_generation``), so a mock will not do."""
+    return Workspace(
+        id=id_, template_id="tpl-1", provider_id="local-1", created_at=datetime.now(timezone.utc), phase=phase,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://unused", token="unused"),
+    )
 
 
 def _storage_provider(items: list) -> MagicMock:
@@ -73,10 +75,10 @@ async def test_running_to_failed_after_three_misses() -> None:
     assert last_update.get("failure_reason") is not None
     assert storage.patch_if.await_count == 3
     storage.update.assert_not_called()
-    # Each write is fenced on the phase the verdict was made from: a destroy's terminating mark landing meanwhile is not put back.
-    assert {tuple(sorted((k, tuple(v)) for k, v in c.kwargs["where"].items())) for c in storage.patch_if.await_args_list} == {
-        (("phase", ("running",)),)
-    }
+    # Each write is fenced on the row the verdict was made from (its phase, failure_reason and last_probe_at as read): a destroy's
+    # terminating mark, a failed destroy's reason or a newer probe result landing meanwhile is not overwritten.
+    for c in storage.patch_if.await_args_list:
+        assert c.kwargs["where"] == {"phase": ["running"], "failure_reason": [None], "last_probe_at": [None]}
 
 
 @pytest.mark.asyncio

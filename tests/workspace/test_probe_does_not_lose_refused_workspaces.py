@@ -7,22 +7,25 @@ usable again once it moves to a docker or kubernetes provider, so the probe must
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.workspace.probe import WorkspaceProbeTask
 
 REFUSED = WorkspaceRefusedError("provider 'local' refused", provider_id="local", signals=("runtime_mode is 'worker'",))
 
 
-def _row(id_: str, phase: str = "running") -> MagicMock:
-    row = MagicMock()
-    row.id = id_
-    row.phase = phase
-    return row
+def _row(id_: str, phase: str = "running") -> Workspace:
+    """A real row: the probe's write is fenced on its stored fields (``raw_generation``)."""
+    return Workspace(
+        id=id_, template_id="tpl-1", provider_id="local-1", created_at=datetime.now(timezone.utc), phase=phase,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://unused", token="unused"),
+    )
 
 
-def _task(rows: list[MagicMock], registry: MagicMock) -> tuple[WorkspaceProbeTask, MagicMock]:
+def _task(rows: list[Workspace], registry: MagicMock) -> tuple[WorkspaceProbeTask, MagicMock]:
     storage = MagicMock()
     storage.list = AsyncMock(return_value=MagicMock(items=rows))
     # The probe writes its fields with one fenced patch_if (ticket 01a16d72 ruling 3); a non-None answer is "the guard matched".

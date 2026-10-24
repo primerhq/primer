@@ -207,3 +207,38 @@ async def test_the_probe_writes_only_its_own_fields(sp, wsr, wid) -> None:  # no
     row = await _row(sp, wid)
     assert (row.name, row.phase, row.last_probe_ok) == ("renamed", "running", True)
     assert row.last_probe_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_slower_probe_never_overwrites_a_newer_result(sp, wsr, wid) -> None:  # noqa: F811
+    """Round 2 of #917, item 5: the fence also holds ``last_probe_at`` as read, so a probe whose ping outlived a newer probe's write (another
+    process, same phase) drops its older verdict instead of writing it over the newer one."""
+    newer = "2099-01-01T00:00:00Z"
+    await _tick_while(sp, wsr, wid, {"last_probe_at": newer, "last_probe_ok": True}, ok=False)
+
+    row = await _row(sp, wid)
+    assert (row.last_probe_ok, row.last_probe_at.year) == (True, 2099)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_destroy_between_two_failed_phases_is_not_undone_by_a_recovery_verdict(sp, wsr, wid) -> None:  # noqa: F811
+    """The reviewer's ABA probe: the row is ``failed`` with two good probes counted; during the third ping a delete marks it ``terminating``
+    and fails, so it reads ``failed`` again, with the delete's reason. The phase is the one the probe read, but ``failure_reason`` is not: the
+    fence holds it too, so the stale "back to running" verdict (a ping made before the teardown) is dropped."""
+    from primer.workspace.probe import WorkspaceProbeTask
+
+    store = sp.get_storage(Workspace)
+    await store.patch_if(wid, {"phase": "failed", "failure_reason": "runtime unreachable"}, where={"phase": ["running"]})
+
+    async def _ping():
+        await store.patch_if(wid, {"phase": "terminating"}, where={"phase": ["failed"]})
+        await store.patch_if(wid, {"phase": "failed", "failure_reason": "the delete did not finish (X)"}, where={"phase": ["terminating"]})
+        return True
+
+    (await wsr.get_workspace(wid)).ping = AsyncMock(side_effect=_ping)
+    probe = WorkspaceProbeTask(storage_provider=sp, registry=wsr, interval_seconds=0.01, start_delay_seconds=0)
+    probe._hit_counts[wid] = 2  # noqa: SLF001  (this hit is the third: the verdict would be running)
+    await probe.tick()
+
+    row = await _row(sp, wid)
+    assert (row.phase, row.failure_reason) == ("failed", "the delete did not finish (X)")
