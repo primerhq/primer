@@ -74,9 +74,8 @@ const PC_CLASSES = [
   { key: "channel", label: "Channels", noun: "Channel", plural: "channel_providers", form: "panel", nav: true,
     iconPath: "M2 2.5h10v7H6L3 12V9.5H2Z",
     detail: () => window.ChannelProviderDetail },
-  // Plan 09 adds draftTest with the artifact storage _test route.
   { key: "artifact_storage", label: "Artifact Store", noun: "Artifact Store", plural: "artifact_storage_providers", form: "form", nav: true,
-    iconPath: "M3 1.5h5.5L11 4v8.5H3Z M8.5 1.5V4H11" },
+    iconPath: "M3 1.5h5.5L11 4v8.5H3Z M8.5 1.5V4H11", draftTest: true },
   { key: "tts", label: "TTS", noun: "TTS", plural: "tts_providers", form: "wizard", nav: true,
     iconPath: "M2 5.5v3h2.3L7.5 11V3L4.3 5.5Z M9.6 5.2a2.6 2.6 0 0 1 0 3.6 M11.1 3.6a5 5 0 0 1 0 6.8" },
   { key: "stt", label: "ASR", noun: "ASR", plural: "stt_providers", form: "wizard", nav: true,
