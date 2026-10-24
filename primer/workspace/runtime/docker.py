@@ -107,25 +107,40 @@ def _daemon_message(exc: BaseException) -> str:
     return str(message) if message else str(exc)
 
 
+#: The daemon's own words for refusing a size, as moby's ``verifyPlatformContainerResources`` writes them (compared lowercased). A
+#: refusal is read as a size's only when its message carries one of these: a word such as "cpu" or "memory" alone also appears in an
+#: image name, a bind source under ``/sys/fs/cgroup/cpu`` or a container name, and those are not size refusals (the review of #869, F3).
+_SIZE_REFUSAL_PHRASES: dict[str, tuple[str, ...]] = {
+    "cpu_cores": (
+        "range of cpus is from",                    # Range of CPUs is from 0.01 to 16.00, as there are only 16 CPUs available
+        "nanocpus can not be set",                  # NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler ...
+        "conflicting options: nano cpus",           # Conflicting options: Nano CPUs and CPU Period cannot both be set
+    ),
+    "memory_bytes": (
+        "minimum memory limit",                     # Minimum memory limit allowed is 6MB
+        "minimum memoryswap limit",                 # Minimum memoryswap limit should be larger than memory limit, see usage
+    ),
+}
+
+
 def _refused_size(exc: BaseException, resources: ResourceLimits) -> ProviderSizeRefused | None:
-    """The 422 for a container create the daemon refused (4xx) over a size it was given, else ``None``.
+    """The 422 for a container create the daemon refused over a size it was given, else ``None``.
 
     Inside the caps, Docker refuses sizes of its own: more CPUs than the host has (``Range of CPUs is from 0.01 to 16.00, as there
     are only 16 CPUs available``), memory under its minimum (``Minimum memory limit allowed is 6MB``). The raw ``DockerError`` is no
-    ``PrimerError``, so it used to answer the generic 500 after the rollback (the G5 audit, G5-07). A refusal whose message names
-    CPUs or memory, of a create that set that size, is the size's: a 422 naming the field (the backend says where the size came
-    from). Any other refusal is not a size's and passes on as it was.
+    ``PrimerError``, so it used to answer the generic 500 after the rollback (the G5 audit, G5-07). A 400 (the daemon's "invalid
+    parameter") whose message carries one of the daemon's own size phrases (:data:`_SIZE_REFUSAL_PHRASES`), for a size this create
+    set, is that size's: a 422 naming the field (the backend says where the size came from). Any other failure, a 404 for an image,
+    a 409 for a name, a 400 about a mount, passes on as it was.
     """
-    if not _refused(exc):
+    if getattr(exc, "status", None) != 400:
         return None
     reason = _daemon_message(exc)
     text = reason.lower()
+    sizes = {"cpu_cores": resources.cpu_cores, "memory_bytes": resources.memory_bytes}
     fields = [
-        field for field, value, word in (
-            ("cpu_cores", resources.cpu_cores, "cpu"),
-            ("memory_bytes", resources.memory_bytes, "memory"),
-        )
-        if value is not None and word in text
+        field for field, phrases in _SIZE_REFUSAL_PHRASES.items()
+        if sizes[field] is not None and any(phrase in text for phrase in phrases)
     ]
     return ProviderSizeRefused("container", fields, reason) if fields else None
 
