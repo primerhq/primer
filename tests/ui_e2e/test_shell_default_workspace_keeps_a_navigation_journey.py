@@ -2,7 +2,8 @@
 
 ``test_unknown_workspace_journey`` failed now and then in CI ("nv-ws-gone" never appeared) with the console sitting on the DEFAULT workspace and
 ``#/w/primer?doc=session:sess-carried-c019`` in the address bar: the workspace of the link was gone and its ``doc=`` was kept. The cause is the shell's
-default-workspace effect, ``if (!wid && wsItems.length) setWid(wsItems[0].id)``: it runs after the render in which the workspace list first arrives
+default-workspace effect, then ``if (!wid && wsItems.length) setWid(wsItems[0].id)`` (today it picks ``NV_defaultWid(wsItems)``, the flagged default workspace, pivot P2
+Task 14, and is a functional update): it runs after the render in which the workspace list first arrives
 and tests the ``wid`` of THAT render. A hashchange handled between that render and its effect had already queued ``setWid(<the link's workspace>)``,
 and the effect, still holding the stale ``wid === null``, queued ``setWid(<first workspace>)`` after it: the link's workspace lost, its document kept,
 and the URL write effect then wrote the first workspace into the address bar. The window is a few milliseconds on a developer machine and long on a
@@ -34,7 +35,7 @@ _LAND_IN_THE_GAP = """
     const original = react.useEffect;
     react.useEffect = function (fn, deps) {
       const src = typeof fn === "function" ? String(fn) : "";
-      if (src.indexOf("wsItems[0].id") < 0 || src.indexOf("setWid") < 0) return original.call(this, fn, deps);
+      if (src.indexOf("NV_defaultWid(wsItems)") < 0 || src.indexOf("setWid") < 0) return original.call(this, fn, deps);
       return original.call(this, function () {
         // deps = [wid, wsItems.length] of the render this effect belongs to.
         if (!window.__landed && deps && deps[1] > 0 && !deps[0]) {

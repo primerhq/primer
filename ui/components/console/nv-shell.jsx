@@ -161,6 +161,16 @@ function NV_usernameOf(status) {
   if (typeof status.username !== "string" || !status.username.trim()) return null;
   return status.username;
 }
+// The workspace the console opens when the address names none (pivot P2 Task 14): the row GET /v1/workspaces flags with the response-only
+// is_default (prime, the default workspace), else the first listed (the list is capped at one page, and an older server sends no flag), else none.
+function NV_defaultWid(items) {
+  var rows = items || [];
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i] && rows[i].is_default === true) return rows[i].id;
+  }
+  return rows.length && rows[0] ? rows[0].id : null;
+}
+
 // The tab groups' working set, kept per user in this browser (console review C-023). Identity and layout only (TG_serialize); storage can be
 // unavailable or hold anything (private mode, quota, another version), so every access is guarded and a bad value is the same as no value.
 function NV_loadTabs(key) {
@@ -303,12 +313,13 @@ function NV_Shell() {
     return sessionMetaById[sid] || stampedMetaById[sid];
   }, [sessionMetaById, stampedMetaById]);
 
-  // Default workspace: the URL's, else the first listed. FUNCTIONAL on purpose: this effect runs after the render in which the list arrived and its closure holds
-  // that render's wid (null). A link followed in between has already queued setWid(<its workspace>) through the hashchange listener, and a plain
-  // setWid(first) from the stale closure queued after it won: the link's workspace was lost, its doc= kept, and the URL write effect then wrote the first
-  // workspace into the address bar (the unknown-workspace CI flake, ticket 01a11d41). The updater sees the latest value and only fills an empty one.
+  // Default workspace: the URL's, else the flagged one (NV_defaultWid: prime, else the first listed). FUNCTIONAL on purpose: this effect runs after the render in
+  // which the list arrived and its closure holds that render's wid (null). A link followed in between has already queued setWid(<its workspace>) through the
+  // hashchange listener, and a plain setWid(first) from the stale closure queued after it won: the link's workspace was lost, its doc= kept, and the URL write
+  // effect then wrote the first workspace into the address bar (the unknown-workspace CI flake, ticket 01a11d41). The updater sees the latest value and only
+  // fills an empty one.
   React.useEffect(function () {
-    if (wsItems.length) setWid(function (current) { return current || wsItems[0].id; });
+    if (wsItems.length) setWid(function (current) { return current || NV_defaultWid(wsItems); });
   }, [wid, wsItems.length]);
 
   // --- URL sync: read on navigation events -------------------------------
@@ -829,3 +840,4 @@ function NV_Shell() {
 
 window.NV_useConsole = NV_useConsole;
 window.NV_Shell = NV_Shell;
+window.NV_defaultWid = NV_defaultWid;

@@ -27,9 +27,11 @@ def test_the_write_effect_reads_a_change_it_has_not_seen_instead_of_overwriting_
 def test_the_default_workspace_pick_is_a_functional_update_so_it_cannot_override_a_navigation() -> None:
     """Flake 01a11d41: the pick runs after the render in which the list arrived and its closure holds that render's wid (null). A link followed in between had already
     queued setWid(<its workspace>); a plain setWid(first) from the stale closure queued after it won."""
-    effect = SHELL[SHELL.index("// Default workspace: the URL's, else the first listed."):]
+    effect = SHELL[SHELL.index("// Default workspace: the URL's, else the flagged one"):]
     effect = effect[:effect.index("}, [wid, wsItems.length]);")]
-    assert "setWid(function (current) { return current || wsItems[0].id; })" in effect
+    # Pivot P2 Task 14: the pick is the flagged default workspace (NV_defaultWid, tests/ui/test_shell_default_workspace.py), no longer the first
+    # listed; it stays a functional update.
+    assert "setWid(function (current) { return current || NV_defaultWid(wsItems); })" in effect
     assert "if (!wid && wsItems.length)" not in effect, "the stale-closure test of wid is the bug"
 
 
