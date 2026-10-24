@@ -476,9 +476,6 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 ended_reason="cancelled",
             )
             return
-        if self._session.pause_requested:
-            await self._session.set_status(SessionStatus.PAUSED)
-            return
         if status == SessionStatus.PAUSED:
             await self._session.set_status(SessionStatus.RUNNING)
         elif status == SessionStatus.WAITING:

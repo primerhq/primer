@@ -176,12 +176,6 @@ class _FakeAgentSession:
     async def status(self) -> SessionStatus:
         return self._status
 
-    async def request_pause(self) -> None:
-        self._status = SessionStatus.PAUSED
-
-    async def request_resume(self) -> None:
-        self._status = SessionStatus.RUNNING
-
     async def reopen(self) -> None:
         # the sanctioned way out of ENDED (AgentSession.reopen): reset and a message to an ended session use it
         self._status = SessionStatus.RUNNING

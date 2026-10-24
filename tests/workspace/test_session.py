@@ -316,56 +316,16 @@ class TestTakePendingMessages:
 
 
 # ===========================================================================
-# Pause / resume / end flag semantics
+# End flag semantics (a pause is written on the session row, not the slot: ticket 01a16d8e)
 # ===========================================================================
 
 
-class TestPauseResumeEndFlags:
-    async def test_initial_flags_are_clear(
+class TestEndFlag:
+    async def test_initial_flag_is_clear(
         self, state_repo: StateRepo, truncation_store: TruncationStore
     ) -> None:
         session = await _start_session(state_repo, truncation_store)
-        assert session.pause_requested is False
         assert session.end_requested is False
-
-    async def test_request_pause_sets_flag(
-        self, state_repo: StateRepo, truncation_store: TruncationStore
-    ) -> None:
-        session = await _start_session(state_repo, truncation_store)
-        await session.request_pause(reason="thinking")
-        assert session.pause_requested is True
-
-    async def test_request_resume_clears_flag(
-        self, state_repo: StateRepo, truncation_store: TruncationStore
-    ) -> None:
-        session = await _start_session(state_repo, truncation_store)
-        await session.request_pause()
-        await session.request_resume()
-        assert session.pause_requested is False
-
-    async def test_request_pause_idempotent(
-        self, state_repo: StateRepo, truncation_store: TruncationStore
-    ) -> None:
-        session = await _start_session(state_repo, truncation_store)
-        await session.request_pause()
-        await session.request_pause()  # no-op
-        assert session.pause_requested is True
-
-    async def test_request_pause_rejected_when_ended(
-        self, state_repo: StateRepo, truncation_store: TruncationStore
-    ) -> None:
-        session = await _start_session(state_repo, truncation_store)
-        await session.aclose()
-        with pytest.raises(ConflictError, match="ENDED"):
-            await session.request_pause()
-
-    async def test_request_resume_rejected_when_ended(
-        self, state_repo: StateRepo, truncation_store: TruncationStore
-    ) -> None:
-        session = await _start_session(state_repo, truncation_store)
-        await session.aclose()
-        with pytest.raises(ConflictError, match="ENDED"):
-            await session.request_resume()
 
     async def test_request_end_sets_flag(
         self, state_repo: StateRepo, truncation_store: TruncationStore

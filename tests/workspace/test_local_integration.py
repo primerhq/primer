@@ -224,16 +224,11 @@ async def test_end_to_end_user_flow(tmp_path: Path) -> None:
         for m in pending
     )
 
-    # 7. User pauses temporarily.
-    await session.request_pause(reason="Want to think about scope.")
-    assert session.pause_requested is True
-    # Runtime would observe the flag and call set_status; we mimic.
+    # 7. The slot goes PAUSED and back (a pause itself is written on the session row, not the slot: ticket 01a16d8e).
     await session.set_status(SessionStatus.PAUSED)
     assert await session.status() == SessionStatus.PAUSED
 
-    # 8. User resumes.
-    await session.request_resume()
-    assert session.pause_requested is False
+    # 8. And RUNNING again.
     await session.set_status(SessionStatus.RUNNING)
     assert await session.status() == SessionStatus.RUNNING
 

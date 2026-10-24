@@ -400,31 +400,6 @@ class TestStatusTransitions:
             await session.aclose()
             await backend.aclose()
 
-    @pytest.mark.asyncio
-    async def test_pause_request_transitions_to_paused(self, tmp_path: Path) -> None:
-        backend, _, session = await _build_session(tmp_path)
-        try:
-            await session.request_pause()
-            llm = _FakeLLM(scripts=[[]])
-            mgr = ToolExecutionManager.for_workspace(
-                toolset_providers={}, session=session
-            )
-            executor = WorkspaceAgentExecutor(
-                agent=_agent(),
-                llm=llm,  # type: ignore[arg-type]
-                llm_model=_model(),
-                tool_manager=mgr,
-                session=session,
-            )
-            await _drain(
-                executor.invoke([Message(role="user", parts=[TextPart(text="hi")])])
-            )
-            assert await session.status() == SessionStatus.PAUSED
-            assert llm.calls == []
-        finally:
-            await session.aclose()
-            await backend.aclose()
-
 
 # ===========================================================================
 # Sandbox (container/k8s) state-repo parity
