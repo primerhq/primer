@@ -376,6 +376,9 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider, frame, 
   const isEdit = !!existing;
   const { useMutation, useRouter, useResource, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
+  // Whether the last press started on the overlay itself: it closes only when the press AND the click both land on it, so a
+  // drag-select that starts inside the form and ends on the overlay keeps it open (the shared Modal's guard, ticket 01a14f37; audit G1-19).
+  const scrimDownRef = React.useRef(false);
 
   // Platform wave P4: same /ssp/_types source the list filter uses -
   // kills the hardcoded pgvector/pgvectorscale/lance <option> triplet
@@ -693,7 +696,9 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider, frame, 
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" data-testid="ssp-modal-scrim"
+      onPointerDown={(e) => { scrimDownRef.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && scrimDownRef.current) onClose(); }}>
       <div
         className="modal"
         style={{ width: 540 }}
