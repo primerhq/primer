@@ -126,8 +126,8 @@ function NV_mobileInboxHeading(count, known) {
 }
 
 // Approve or Deny the call a card showed. The decision names the card's own tool_call_id, so a session that has since parked on
-// something else answers 404 instead of having that other call approved (it used to fetch the session's first pending yield AFTER
-// the tap and approve whatever that was). Every outcome reaches the toast; a stale card is refreshed away.
+// something else answers 404 gate_not_pending instead of having that other call approved (it used to fetch the session's first pending
+// yield AFTER the tap and approve whatever that was). Every outcome reaches the toast; a card whose gate moved on is refreshed away.
 // Resolves {ok}, {stale} or {failed}; never rejects.
 function NV_inboxDecide(decision, it, toast, onResolved) {
   var verb = decision === "approve" ? "Approve" : "Deny";
@@ -143,16 +143,10 @@ function NV_inboxDecide(decision, it, toast, onResolved) {
     if (onResolved) onResolved();
     return { ok: true };
   }, function (err) {
-    // The card names the gate it was drawn from (C-033); a gate replaced since then is refused 409 approval_stale, said in the same words as the desktop card.
-    if (SH_isStaleGate(err)) {
-      toast(SH_staleGateWords("approval"), { kind: "error", requestId: err.requestId || err.request_id || null });
-      if (onResolved) onResolved();
-      return { stale: true };
-    }
-    if (err && (err.status === 404 || err.status === 409)) {
-      toast("That approval has moved on. Open the session to review what it is waiting on now.", {
-        kind: "error", requestId: err.requestId || err.request_id || null,
-      });
+    // The card names the gate it was drawn from (C-033); a gate replaced since then (409 approval_stale) or one that has moved on (404 gate_not_pending)
+    // is said in the same words and kind as the desktop card and the banner, and the card is refreshed away. Any other 404 or 409 is the error it is.
+    if (SH_isMovedOnGate(err)) {
+      toast(SH_movedOnGateWords(err, "approval"), { kind: "warning", requestId: err.requestId || err.request_id || null });
       if (onResolved) onResolved();
       return { stale: true };
     }

@@ -846,9 +846,10 @@ function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
 
   const { prompt, response_schema, parked_at, gate_id } = pending.data;
   // A decision names the gate it answers (C-033): the provider repeats tool_call_id across rounds, so the id is what stops this panel's answer (or
-  // its Skip) landing on a LATER prompt. A prompt that was replaced under it is refused 409 approval_stale: say so and reload, nothing was sent.
+  // its Skip) landing on a LATER prompt. A prompt that was replaced under it is refused 409 approval_stale, and one that has moved on (answered
+  // elsewhere, asked again under a fresh id) 404 gate_not_pending: say so in the shared words and reload, nothing was sent. Any other 404 is an error.
   const gateBody = gate_id ? { gate_id } : {};
-  const staleWords = (err) => (window.SH_isStaleGate && window.SH_isStaleGate(err) ? window.SH_staleGateWords("question") : null);
+  const staleWords = (err) => (window.SH_isMovedOnGate && window.SH_isMovedOnGate(err) ? window.SH_movedOnGateWords(err, "question") : null);
   const expectsJson = response_schema && response_schema.type === "object";
   const isShortPrompt = !prompt.includes("\n") && prompt.length <= 80;
 
