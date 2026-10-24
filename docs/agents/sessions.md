@@ -113,10 +113,18 @@ create sessions in batches and start them on demand.
 
 `Session.status` transitions:
 
-- `RUNNING` - currently claimed and executing.
-- `WAITING` - parked on an external event (yield). Set when
-  `parked_status="parked"`. The session won't be claimed by workers
-  until the event fires.
+- `RUNNING` - a turn is armed, running, or parked on a yielding tool.
+  A yield (`ask_user`, a tool approval, `wait_for_event`, a timer,
+  `subscribe_to_trigger`) does NOT change `status`: the session stays
+  `RUNNING` with `parked_status="parked"` and `parked_event_key` set,
+  holds no lease, and is not claimed by a worker until the event fires
+  (`parked_status` then turns `resumable` and the next claim resumes the
+  turn). Read `session_state` (`parked`) or `parked_status` to tell a
+  parked session from one that is working.
+- `WAITING` - alive and idle between turns: the agent finished a turn
+  and waits for the next message (or asked a question in plain text, or
+  stopped on `max_tokens`), a Stop ended its turn, or its model call
+  failed on a transport error (below). A yield does not set it.
 - `PAUSED` - a pause asked for with `POST .../pause` or
   `workspaces::pause_workspace_session` (one implementation behind
   both). It is recorded on the session row, so whichever worker runs
@@ -146,7 +154,11 @@ create sessions in batches and start them on demand.
   `session.ended`.
 
 Transitions:
-- `RUNNING ↔ WAITING` - yield enters; resume exits.
+- `RUNNING → WAITING` - a turn ends and the session rests; a new
+  message or instruction starts the next turn (`WAITING → RUNNING`).
+- A yield parks the session inside `RUNNING` (`parked_status`
+  `parked`, then `resumable` when the event fires); `status` does not
+  move.
 - `RUNNING → PAUSED` - operator action; takes effect at the next turn
   boundary (a turn in flight finishes first, and the row then rests
   `WAITING` with `pause_requested: true`).
@@ -213,9 +225,13 @@ can run an agent or graph headlessly end to end.
   optional `initial_instructions`, `auto_start` (default true),
   optional `graph_input`, `parent_session_id`, `metadata`. Returns
   the session row with its `id` and `status`.
-- `workspaces::get_workspace_session` - fetch the row including
-  `status`, parked fields, and any error message. Args:
-  `workspace_id`, `session_id`.
+- `workspaces::get_workspace_session` - answers `{info, status}`:
+  `status` and `info` (`ended_reason`, `ended_detail`,
+  `last_turn_error`, the times) come from the durable row. It carries
+  no `session_state` and no park fields: read those from
+  `workspaces::find_sessions` (the full row) or, for your own
+  workspace, `workspaces::list_my_sessions` (`state`, `parked_on`).
+  Args: `workspace_id`, `session_id`.
 - `workspaces::list_workspace_sessions` - list sessions on a
   workspace. From a session outside the default workspace (prime) only
   your own workspace is reachable: another one answers
@@ -449,20 +465,24 @@ and `.tmp/` are admin-only; use the transcript tool instead.
 
 ### Workflow 2 - read why a session is stuck
 
-**Goal.** Operator clicked into a `WAITING` session. They need to
-know what it's waiting on.
+**Goal.** Operator opened a session that is not working and needs to
+know what it is waiting on. A session parked on a gate still reads
+`status="running"`; its `session_state` is `parked`.
 
-1. Inspect status:
+1. Read the full row (`get_workspace_session` carries no park fields):
 
 ```json
 {
-  "tool": "workspaces::get_workspace_session",
-  "arguments": {"workspace_id": "ws-analysis-01", "session_id": "sid-xyz"}
+  "tool": "workspaces::find_sessions",
+  "arguments": {"workspace_id": "ws-analysis-01", "state": "parked"}
 }
 ```
 
-Returns `status="waiting"`, `parked_status="parked"`,
-`parked_event_key="ask_user:sid-xyz:tc-42"`.
+The row for `sid-xyz` has `status="running"`,
+`session_state="parked"`, `parked_status="parked"` and
+`parked_event_key="ask_user:sid-xyz:tc-42"`. A session that only rests
+after a clean turn is `parked` too, with `status="waiting"` and no
+`parked_event_key`.
 
 2. Read the prompt with `GET /v1/sessions/{session_id}/ask_user/pending`
    (below), or read the session's latest records with
@@ -607,11 +627,12 @@ principal's id (`PrincipalRef.id`), not its display name.
 - **Yield-cancellation differs from session-end.** Cancelling a
   yield produces a `tool_cancelled` result; the agent continues
   the turn. Ending the session stops the agent entirely.
-- **`status=WAITING` and `parked_status="parked"` are redundant
-  surface views of the same underlying fact.** The high-level
-  status is what UIs display; the parked_status is what the worker
-  pool checks for claim eligibility. Stay consistent when reading
-  one; the other will agree.
+- **A parked session's `status` is `RUNNING`, not `WAITING`.** A
+  yield sets `parked_status="parked"` and leaves `status` alone; the
+  worker pool checks `parked_status` for claim eligibility. `WAITING`
+  means a session resting between turns. To tell the cases apart,
+  read `session_state` (`running`, `parked`, `waiting`, `ended`) and
+  `parked_event_key` (set only when something is awaited).
 - **Tool output caching is opt-in by size.** Tools whose output
   exceeds a threshold get cached to `.tmp/<sid>/` and the agent
   sees a preview + a hint to read the full output if needed.
@@ -624,8 +645,8 @@ principal's id (`PrincipalRef.id`), not its display name.
   workspaces own the filesystem + git state.
 - [agents](agents.md) - the agent defines what a session does;
   the session is one instance of running an agent.
-- [yielding](yielding.md) - yields are how sessions transition
-  to WAITING; covers the `ask_user/pending` + `ask_user/respond`
+- [yielding](yielding.md) - yields are how a session parks (it stays
+  RUNNING with `parked_status` set); covers the `ask_user/pending` + `ask_user/respond`
   resume endpoints in depth.
 - [tool-approval](tool-approval.md) - the approval-gate park and its
   own `tool_approval/pending` + `tool_approval/respond` endpoints.
