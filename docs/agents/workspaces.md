@@ -216,12 +216,16 @@ first and the one the operator works from. All users share it.
   `agents.md` beside an `AGENTS.md` (which would replace it, since
   `agents.md` is read first). A deleted `agents.md` comes back at the
   next boot; to run prime with no instructions, leave the file empty.
+  A symlinked `agents.md` is written where it points (a dangling link
+  counts as absent, and the boot creates its target).
 - **Reset prime instructions (admin).**
   `system::reset_prime_instructions` (no arguments) and
   `POST /v1/setup/reset_prime_instructions` overwrite `agents.md` in
   prime with the shipped version and return `{workspace_id, path,
   bytes}`. Edits to the file are lost. An `AGENTS.md` is left in place,
-  and is not read while `agents.md` exists. From a session outside
+  and is not read while `agents.md` exists. A symlinked `agents.md` is
+  written where it points: with `agents.md` linked to `AGENTS.md`, the
+  reset rewrites `AGENTS.md`. From a session outside
   prime the tool returns `type=forbidden` and writes nothing; with no
   default workspace yet it returns `type=not-found` (the route answers
   404). When the workspace does not answer within 10 seconds (to reach
