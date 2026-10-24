@@ -13,12 +13,18 @@ channel inbox), so the flip to a 422 can be scheduled once that count is zero.
 A gate takes ONE decision (ticket 01a12606): a respond for a gate that already holds one (another operator's, or this client's own earlier
 different answer) is refused by the durable flip and answered 409 ``already_decided``; nothing moves, and the first decision is the one that
 runs and the one the audit names. The same decision sent again is the one that landed, and is accepted again.
+
+A respond for a gate that is no longer pending at all (the session is there and its park reads, but no gate of the kind is pending under the
+``tool_call_id``: decided elsewhere and the session moved on, re-parked under a fresh id, parked on the tool's own yield) is a 404 with the code
+``gate_not_pending`` (:class:`GateNotPendingError`), so a client can reload instead of showing an error. A missing session, or a park that cannot
+be read (a gate without an event key, a park that names nothing), stays a plain 404: those are not a gate that moved on.
 """
 
 from __future__ import annotations
 
 from fastapi import HTTPException
 
+from primer.model.except_ import NotFoundError
 from primer.session.gate_token import count_gate_token
 
 
@@ -29,7 +35,24 @@ ALREADY_DECIDED = "already_decided"
 """The RFC 7807 ``code`` of a decision on a gate that already holds one (409): the decision was not applied, recorded or published. One code for
 approvals and ask_user alike."""
 
+GATE_NOT_PENDING = "gate_not_pending"
+"""The RFC 7807 ``code`` of a respond whose session is there and readable but whose gate is no longer pending (404). One code for approvals and
+ask_user alike; a missing session or an unreadable park answers a 404 without it."""
+
 _NOUN = {"approval": "approval", "ask_user": "question", "yield": "yield"}
+
+
+class GateNotPendingError(NotFoundError):
+    """The 404 of a respond that names a gate which is no longer pending: the session exists and its park reads, the gate has moved on.
+
+    Raised only there. The problem details carry ``extensions.code = "gate_not_pending"`` (the RFC 7807 handler merges ``problem_extensions``),
+    which is what the console's ``SH_isMovedOnGate`` matches; any other 404 (a missing session, a corrupt park, an unknown route) carries no
+    code and is shown as the error it is.
+    """
+
+    @property
+    def problem_extensions(self) -> dict[str, object]:
+        return {"code": GATE_NOT_PENDING}
 
 
 def stale_gate_error(kind: str, *, queued: bool = False) -> HTTPException:
@@ -54,4 +77,6 @@ def decided_gate_error(kind: str) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": ALREADY_DECIDED, "message": f"this {noun} was already {verb}; reload the pending list"})
 
 
-__all__ = ["ALREADY_DECIDED", "APPROVAL_STALE", "count_gate_token", "decided_gate_error", "stale_gate_error"]
+__all__ = [
+    "ALREADY_DECIDED", "APPROVAL_STALE", "GATE_NOT_PENDING", "GateNotPendingError", "count_gate_token", "decided_gate_error", "stale_gate_error",
+]
