@@ -197,6 +197,14 @@ whose body runs code on the server host, the harness install, sync
 and uninstall): it creates the shipped gate of each tool that has no
 policy under any id or spelling, and carries its own frozen copy of
 the table and of the toolset gate's Rego text.
+`m017_orphan_mcp_oauth_rows.py` deletes rather than writes: it removes
+the MCP OAuth token rows, registered clients and pending sign-ins whose
+toolset no longer exists (left by the toolset deletes before #852),
+reading the toolsets and the three OAuth tables through migration-local
+views (`extra="allow"`, so no sealed value is opened and a row of an
+older shape still reads), every row before any delete, and looking the
+toolset up right before each delete. A row whose toolset exists is never
+touched.
 
 ### The `document_content` table
 
