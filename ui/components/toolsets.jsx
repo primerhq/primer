@@ -1321,10 +1321,10 @@ function TS_ToolsTab({ id, ts, pushToast, onInvalidate }) {
 function TS_SessionsTab({ id }) {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
-  // Every session and every agent, every page of each (PR_fetchAllPages), joined here.
+  // Every session (newest first, so the page cap keeps the newest; ids are random) and every agent, every page of each (PR_fetchAllPages), joined here.
   const sessions = useResource(
     "toolset-sessions:" + id,
-    (signal) => PR_fetchAllPages("/sessions", { signal, apiFetch }),
+    (signal) => PR_fetchAllPages("/sessions?order_by=created_at:desc", { signal, apiFetch }),
     { pollMs: null, deps: [id] }
   );
   const agents = useResource(

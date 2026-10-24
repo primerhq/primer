@@ -384,10 +384,11 @@ function AG_SessionsPanel({ agentId }) {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [open, setOpen] = React.useState(false);
-  // Every session of the agent, every page (PR_fetchAllPages), polled every 5 s per page read while open (PR_usePagedResource).
+  // Every session of the agent, newest first (the panel lists the first ten, and the page cap keeps the newest), every page (PR_fetchAllPages),
+  // polled every 5 s per page read while open (PR_usePagedResource).
   const sessions = PR_usePagedResource(
     `agent-sessions:${agentId}`,
-    (signal) => PR_fetchAllPages("/sessions?agent_id=" + encodeURIComponent(agentId), { signal, apiFetch }),
+    (signal) => PR_fetchAllPages("/sessions?agent_id=" + encodeURIComponent(agentId) + "&order_by=created_at:desc", { signal, apiFetch }),
     { pollMs: open ? 5000 : 0, deps: [agentId] }
   );
   const items = sessions.data?.items ?? [];
