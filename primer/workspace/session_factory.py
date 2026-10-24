@@ -35,6 +35,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from pydantic_core import to_jsonable_python
+
 import primer.observability.metrics as _metrics
 from primer.int.claim import ClaimKind
 from primer.model.agent import Agent
@@ -48,6 +50,7 @@ from primer.model.graph import Graph
 from primer.model.principal import PrincipalRef
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.storage import raw_generation
 from primer.model.workspace_session import (
     AgentBinding as OnDiskAgentBinding,
 )
@@ -568,39 +571,66 @@ async def cancel_session(
     # this branch drops the lease, leaving a RUNNING row no worker can
     # claim (T0432). See primer.session.mutation_lock.
     async with session_lifecycle_lock().acquire(session_id):
-        s = await sessions.get(session_id)
-        if s is None or s.workspace_id != workspace_id:
-            raise NotFoundError(
-                f"Session {session_id!r} does not exist on workspace "
-                f"{workspace_id!r}"
-            )
-        if s.status == SessionStatus.ENDED:
-            raise ConflictError(f"Session {session_id!r} has ended")
-        if s.status in {
-            SessionStatus.CREATED,
-            SessionStatus.WAITING,
-            SessionStatus.PAUSED,
-        }:
-            s.status = SessionStatus.ENDED
-            s.ended_reason = "cancelled"
-            s.ended_at = datetime.now(timezone.utc)
-            await sessions.update(s)
-            # Mirror onto the on-disk slot so workspace-side reads agree (no
-            # worker runs for an inline-cancelled session, so nothing else
-            # would update session.json).
-            await _mirror_inline_cancel_to_slot(
-                workspace_id=workspace_id, session_id=session_id, deps=deps,
-            )
-            # Drop the lease -- session is gone, no point claiming it.
-            if deps.claim_engine is not None:
-                await deps.claim_engine.delete_lease(
-                    ClaimKind.SESSION, session_id
+        # Each write is ONE field-scoped patch_if fenced on the status it was decided from, never the whole row read here: the lock is this
+        # process's alone, and a wake on another process may have reserved a seq or armed a turn since the read (its last_seq and turn
+        # would be put back, and the next writer would repeat its seq: review N5 of the G7-03 fix). A refused fence is decided again.
+        for _attempt in range(3):
+            s = await sessions.get(session_id)
+            if s is None or s.workspace_id != workspace_id:
+                raise NotFoundError(
+                    f"Session {session_id!r} does not exist on workspace "
+                    f"{workspace_id!r}"
                 )
-            return s
-        now = datetime.now(timezone.utc)
-        s.cancel_requested = True
-        s.cancel_requested_at = now
-        await sessions.update(s)
+            if s.status == SessionStatus.ENDED:
+                raise ConflictError(f"Session {session_id!r} has ended")
+            if s.status in {
+                SessionStatus.CREATED,
+                SessionStatus.WAITING,
+                SessionStatus.PAUSED,
+            }:
+                try:
+                    ended = await sessions.patch_if(
+                        session_id,
+                        to_jsonable_python({
+                            "status": SessionStatus.ENDED, "ended_reason": "cancelled", "ended_at": datetime.now(timezone.utc),
+                        }),
+                        where={"status": [raw_generation(s, "status")]},
+                    )
+                except NotFoundError:
+                    raise NotFoundError(
+                        f"Session {session_id!r} does not exist on workspace {workspace_id!r}"
+                    ) from None
+                if ended is None:
+                    continue
+                # Mirror onto the on-disk slot so workspace-side reads agree (no
+                # worker runs for an inline-cancelled session, so nothing else
+                # would update session.json).
+                await _mirror_inline_cancel_to_slot(
+                    workspace_id=workspace_id, session_id=session_id, deps=deps,
+                )
+                # Drop the lease -- session is gone, no point claiming it.
+                if deps.claim_engine is not None:
+                    await deps.claim_engine.delete_lease(
+                        ClaimKind.SESSION, session_id
+                    )
+                return ended
+            now = datetime.now(timezone.utc)
+            try:
+                flagged = await sessions.patch_if(
+                    session_id,
+                    to_jsonable_python({"cancel_requested": True, "cancel_requested_at": now}),
+                    where={"status": [raw_generation(s, "status")]},
+                )
+            except NotFoundError:
+                raise NotFoundError(
+                    f"Session {session_id!r} does not exist on workspace {workspace_id!r}"
+                ) from None
+            if flagged is None:
+                continue
+            s = flagged
+            break
+        else:
+            raise ConflictError(f"Session {session_id!r} changed status while it was being cancelled; try again")
         # Publish on the bus so the engine-path worker's _cancel_watcher
         # preempts the running turn. The WS interrupt handler publishes the
         # same key.
