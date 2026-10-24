@@ -186,7 +186,7 @@ answers 405. The classes that serve one are embedding and cross_encoder (`primer
 openai or gemini server lists, or the Hub check of a Hugging Face one; see `docs/dev/subsystems/model-providers.md`), stt and
 tts (`speech.py`), web_search and web_fetch, and ssp (`ssp/_test`). The LLM class has no `_test`: its draft is probed by
 `POST /v1/llm_providers/_discover_models`. artifact_storage serves one too (`POST /v1/artifact_storage_providers/_test`, a live
-round trip that first prepares a new filesystem root, as the save would), but the console does not offer its Test button yet;
+round trip that first prepares a new filesystem root, as the save would), and the console offers its Test button on it;
 `channel_providers` and `workspace_providers` serve none. The
 console offers a Test button only on a class that serves one, so a Test that answers 405 is never on screen.
 

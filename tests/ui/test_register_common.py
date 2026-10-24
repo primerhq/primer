@@ -80,7 +80,7 @@ def test_classes_follow_the_sidebar_order_with_web_fetch_hidden(ctx) -> None:
         "workspace": [False, False, False, "function", None],
         "web_search": [False, False, True, "undefined", None],
         "channel": [False, False, False, "function", None],
-        "artifact_storage": [False, False, False, "undefined", None],
+        "artifact_storage": [False, False, True, "undefined", None],
         "tts": [False, False, False, "undefined", None],
         "stt": [False, False, False, "undefined", None],
         "web_fetch": [False, False, True, "undefined", None],
