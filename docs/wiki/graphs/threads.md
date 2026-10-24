@@ -15,7 +15,7 @@ Graph runs in sessions do not write threads. A graph session, and a graph starte
 - `iteration` is the last step the run reached.
 - `node_states` maps each node id to its state: `status` (`pending`, `running`, `waiting`, `ended` or `failed`), `last_run_iteration`, `last_run_at` and `error`. A credential in an `error` text is masked.
 - `status` is the run's aggregate state: `created`, `running`, `waiting`, `paused` or `ended`.
-- `ended_reason` is set once the status is `ended`: `completed`, `failed`, `cancelled` or `max_iterations_exceeded`. `ended_detail` carries the failure code of a failed run (`routing_failed`, `template_error`, `end_output_invalid` and the others on [what a graph is](graphs/what-a-graph-is)).
+- `ended_reason` is set once the status is `ended`: `completed`, `failed`, `cancelled` or `max_iterations_exceeded` (the cap stopped the run). `ended_detail` carries the failure code of a failed run (`routing_failed`, `template_error`, `end_output_invalid` and the others on [what a graph is](graphs/what-a-graph-is)), and `max_iterations_exceeded` for a capped one.
 - Each node's message history is kept in separate per-node rows. No tool serves them, and deleting a thread does not delete them.
 - Every thread tool is open to the `user` role and ships ungated.
 
@@ -27,7 +27,7 @@ Graph runs in sessions do not write threads. A graph session, and a graph starte
 
 ## Tool calls
 ### Find a graph's failed runs
-`system__find_graph_threads` filters rows by field; this one keeps the runs of one graph that ended `failed`.
+`system__find_graph_threads` filters rows by field; this one keeps the runs of one graph that ended `failed`. A run the cap stopped ended `max_iterations_exceeded` instead: filter on that value to find those.
 
 ```json
 {"toolset_id": "system", "tool_name": "find_graph_threads", "arguments": {"predicate": {"kind": "predicate", "left": {"kind": "predicate", "left": {"kind": "field", "name": "graph_id"}, "op": "=", "right": {"kind": "value", "value": "triage-and-route"}}, "op": "and", "right": {"kind": "predicate", "left": {"kind": "field", "name": "ended_reason"}, "op": "=", "right": {"kind": "value", "value": "failed"}}}}}
@@ -83,7 +83,7 @@ Reference: [`system__update_graph_thread`](reference/tools/system/update_graph_t
 ## Gotchas
 - An empty list is the normal answer: session runs never write here. Look for a session-run graph in the session's transcript, not in the threads.
 - A create or update does not check that `graph_id` names a graph, and deleting a graph leaves its threads in place.
-- `max_iterations_exceeded` is an allowed `ended_reason`, but the runner records a capped run as `failed` with `ended_detail` `max_iterations_exceeded`. Filter on both when you look for capped runs.
+- A capped run has its own `ended_reason`, `max_iterations_exceeded`, not `failed`: a filter on `failed` alone misses it. A graph session that hits the cap still ends `failed`, because a session has no cap reason.
 - An update replaces the row: a field you leave out is reset to its default (`node_states` empty, `iteration` 0).
 
 ## Related

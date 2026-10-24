@@ -819,8 +819,7 @@ class Graph(Describeable):
         default=None,
         description=(
             "Optional node id to route to (once) when ``max_iterations`` is "
-            "hit, INSTEAD of ending ``failed`` with "
-            "``ended_detail='max_iterations_exceeded'``. Use it to point a "
+            "hit, INSTEAD of failing with ``max_iterations_exceeded``. Use it to point a "
             "bounded loop at its finalize/report node so the cap is a "
             "graceful landing rather than a crash. Must reference an existing "
             "node that can still reach an End. ``None`` keeps the hard-fail "
@@ -1246,16 +1245,21 @@ class GraphThread(Identifiable):
         "max_iterations_exceeded",
     ] | None = Field(
         default=None,
-        description="Set when ``status == ENDED``.",
+        description=(
+            "Set when ``status == ENDED``. A run that ``max_iterations`` "
+            "stopped (with no ``on_max_iterations`` landing) ends "
+            "``max_iterations_exceeded``; every other failure ends "
+            "``failed``."
+        ),
     )
     ended_detail: str | None = Field(
         default=None,
         description=(
             "Spec §5.4 failure code (e.g. ``end_output_invalid``, "
-            "``template_error``, ``routing_failed``, "
-            "``max_iterations_exceeded``) carried alongside "
-            "``ended_reason='failed'``. ``None`` for successful "
-            "completions and for ``cancelled``."
+            "``template_error``, ``routing_failed``) carried alongside "
+            "``ended_reason='failed'``, and ``max_iterations_exceeded`` "
+            "alongside the ``ended_reason`` of the same name. ``None`` for "
+            "successful completions and for ``cancelled``."
         ),
     )
 
@@ -1292,8 +1296,14 @@ class GraphNodeMessage(Identifiable):
     )
 
 
+#: The ``ended_reason`` values of a run that did not succeed and was not cancelled: a reader of a graph run's outcome that asks "did it fail"
+#: matches on these, never on ``failed`` alone (a capped run ends ``max_iterations_exceeded``: lead ruling 4 of ticket 01a16d48).
+FAILED_ENDED_REASONS: frozenset[str] = frozenset({"failed", "max_iterations_exceeded"})
+
+
 __all__ = [
     "BranchCondition",
+    "FAILED_ENDED_REASONS",
     "ExecutionContext",
     "Graph",
     "GraphContext",

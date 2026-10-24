@@ -1628,9 +1628,13 @@ class _BaseGraphExecutor(
             if ended_reason is not None:
                 break
 
-            # Cycle bound check. Spec §5.4 maps this to ended_reason='failed'
-            # with the detail code carried separately so the public contract
-            # has a single failure reason and a finite set of codes.
+            # Cycle bound check. A capped run ends with its own reason,
+            # ``max_iterations_exceeded`` (the value GraphThread.ended_reason
+            # allows and this module's docstring documents), and keeps the
+            # code in ended_detail (lead ruling 4 of ticket 01a16d48). Every
+            # reader of the outcome treats it as a failure: last_done_reason
+            # maps any outcome but ``completed`` to ``graph_failed``, and the
+            # child readers match on ``FAILED_ENDED_REASONS``.
             if (
                 self._graph.max_iterations is not None
                 and context.iteration >= self._graph.max_iterations
@@ -1662,7 +1666,7 @@ class _BaseGraphExecutor(
                     message=f"graph ran for {context.iteration} iterations",
                     node_id=None,
                 )
-                ended_reason = "failed"
+                ended_reason = "max_iterations_exceeded"
                 ended_detail = "max_iterations_exceeded"
                 break
 

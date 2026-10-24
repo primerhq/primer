@@ -430,10 +430,10 @@ class TestCycle:
         loaded = await ts.get(thread.id)
         assert loaded is not None
         assert loaded.status == SessionStatus.ENDED
-        # Spec A §5.4: ended_reason is the bucket; the detail code carries
-        # the bound-exceeded signal so the public contract has a finite
-        # `ended_reason` enum and an open-ended `ended_detail` string.
-        assert loaded.ended_reason == "failed"
+        # The thread records the cap as its own ended_reason (the value the
+        # model allows; lead ruling 4 of ticket 01a16d48) and keeps the code
+        # in ended_detail.
+        assert loaded.ended_reason == "max_iterations_exceeded"
         assert loaded.ended_detail == "max_iterations_exceeded"
         assert len(llm.calls) == 3
 

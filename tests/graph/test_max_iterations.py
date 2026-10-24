@@ -1,5 +1,8 @@
-"""When ``max_iterations`` is hit, the executor ends ``failed`` with
-``ended_detail='max_iterations_exceeded'`` and emits a terminal
+"""When ``max_iterations`` is hit, the executor ends with
+``ended_reason='max_iterations_exceeded'`` (the value ``GraphThread`` allows and
+``primer/graph/base.py`` documents; lead ruling 4 of ticket 01a16d48), keeps
+``ended_detail='max_iterations_exceeded'``, reports the run as failed to the
+session (``last_done_reason == "graph_failed"``) and emits a terminal
 :class:`_GraphErrorEvent`."""
 
 from __future__ import annotations
@@ -171,9 +174,9 @@ def _model() -> ResolvedModel:
 async def test_max_iterations_exceeded_ended_detail() -> None:
     """Build a Begin -> Agent -> (loop-back to Agent) graph with
     ``max_iterations=2``; the agent's response always routes back, so the
-    cycle bound trips on iteration 2. Assert the executor ends ``failed``
-    with ``ended_detail='max_iterations_exceeded'`` and yields a terminal
-    ``_GraphErrorEvent``."""
+    cycle bound trips on iteration 2. Assert the executor ends
+    ``max_iterations_exceeded`` with the same ``ended_detail``, reports a
+    failed run to the session, and yields a terminal ``_GraphErrorEvent``."""
     graph = Graph(
         id="g-max-iter",
         description="Begin -> A -> A (forever, bounded)",
@@ -248,8 +251,9 @@ async def test_max_iterations_exceeded_ended_detail() -> None:
     loaded = await thread_storage.get(thread.id)
     assert loaded is not None
     assert loaded.status == SessionStatus.ENDED
-    assert loaded.ended_reason == "failed"
+    assert loaded.ended_reason == "max_iterations_exceeded"
     assert loaded.ended_detail == "max_iterations_exceeded"
+    assert executor.last_done_reason == "graph_failed", "a session that runs a capped graph still ends failed"
 
 
 @pytest.mark.asyncio

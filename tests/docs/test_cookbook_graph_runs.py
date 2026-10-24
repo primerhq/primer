@@ -306,7 +306,8 @@ async def test_without_on_max_iterations_the_cap_ends_the_run_failed(fake_storag
         land_on_writer=False,
     )
 
-    assert thread.ended_reason == "failed" and thread.ended_detail == "max_iterations_exceeded", (thread.ended_reason, thread.ended_detail)
+    # The session the page runs ends failed (any outcome but completed is graph_failed); the thread records the cap as its own reason.
+    assert thread.ended_reason == "max_iterations_exceeded" and thread.ended_detail == "max_iterations_exceeded", (thread.ended_reason, thread.ended_detail)
     assert "writer" not in order
 
 

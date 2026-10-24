@@ -68,9 +68,10 @@ def failure_without_an_event(child: Any) -> ChildGraphFailed | None:
     The code is the executor's ``_last_ended_detail`` when it has one, else ``edge_config_error`` for an edge and ``node_failed`` for a node (the console already words ``node_failed``). A
     child that is not an executor (a stub with none of these attributes) is never a failure here.
     """
-    if getattr(child, "_last_ended_reason", None) != "failed":
+    from primer.model.graph import FAILED_ENDED_REASONS, NodeRuntimeStatus
+
+    if getattr(child, "_last_ended_reason", None) not in FAILED_ENDED_REASONS:  # a capped run ends max_iterations_exceeded (ticket 01a16d48)
         return None
-    from primer.model.graph import NodeRuntimeStatus
 
     code = getattr(child, "_last_ended_detail", None)
     edge_text = getattr(child, "_last_failure_text", None)
