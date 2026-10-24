@@ -169,15 +169,21 @@ async def test_an_admin_acts_on_a_session_recorded_as_system_and_a_user_does_not
 # ---- the human-input paths (ticket 01a16a35, from the review of #853) -------------------------------------------------------------------
 #
 # A person's answer to a session's ask_user and a person's resume of it put that person's input into a run at the session's creator's rank, so
-# they follow the same rule as the steer: the caller ranks at least as high as the creator, or the session is the caller's own (lead ruling 1). Every
-# row goes over HTTP through the auth middleware; a refused row leaves the session row, the bus and the event log as they were.
+# they follow the same rule as the steer: the caller ranks at least as high as the creator, or the session is the caller's own (lead ruling 1). The
+# rule is also a floor on every decision of an approval gate, the respond route and the cancel of the gate's yield (a cancel is a rejection), in
+# addition to the gate's approver spec: the gates here have no spec, which admits anyone (lead ruling 2). Every row goes over HTTP through the auth
+# middleware; a refused row leaves the session row, the bus, the event log and the approval records as they were.
 
 HUMAN_TC = "tc-h"
 #: action -> (the route it posts to, its body, the answer of an accepted request).
 HUMAN: dict[str, tuple[str, dict, int]] = {
     "answer the question": ("/v1/sessions/{sid}/ask_user/respond", {"tool_call_id": HUMAN_TC, "response": "go ahead"}, 202),
     "resume": ("/v1/workspaces/ws-r/sessions/{sid}/resume", {}, 200),
+    "approve the call": ("/v1/sessions/{sid}/tool_approval/respond", {"tool_call_id": HUMAN_TC, "decision": "approved"}, 202),
+    "cancel the approval": ("/v1/sessions/{sid}/yields/" + HUMAN_TC + "/cancel", {"reason": "not now"}, 202),
 }
+#: An approval gate whose policy names no approvers: anyone may decide it, as far as the spec goes.
+_ANYONE_GATE = {"original_call": {"id": HUMAN_TC, "name": "delete_workspace", "arguments": {"id": "ws-x"}}}
 
 
 def _parked_row(sid: str, *, by: PrincipalRef | None, tool: str, metadata: dict) -> WorkspaceSession:
@@ -196,8 +202,10 @@ async def _seed_human(sp, action: str, sid: str, *, by: PrincipalRef | None) -> 
             id=sid, workspace_id="ws-r", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.PAUSED, turn_no=1, created_at=NOW,
             initiated_by=by,
         )
-    else:
+    elif action == "answer the question":
         row = _parked_row(sid, by=by, tool="ask_user", metadata={"prompt": "May I delete the workspace?"})
+    else:
+        row = _parked_row(sid, by=by, tool="_approval", metadata=_ANYONE_GATE)
     await sp.get_storage(WorkspaceSession).create(row)
     return row
 
@@ -272,10 +280,53 @@ async def test_a_persons_input_reaches_a_session_only_at_or_below_their_rank(wor
         assert (await sessions.get(sid)).model_dump(mode="json") == before, f"a refused {action} wrote to the session"
         assert spy.keys == [], f"a refused {action} reached the event bus"
         assert await fake_storage_provider.get_event_store().read_after(0) == events_before, f"a refused {action} was recorded"
+        assert await _approval_records(fake_storage_provider) == [], f"a refused {action} wrote an approval record"
         return
     assert r.status_code == ok, f"{who} could not {action}: {r.text}"
     row = await sessions.get(sid)
     if action == "resume":
         assert row.status == SessionStatus.RUNNING
+    elif action == "cancel the approval":
+        assert spy.keys == [f"tool_approval:{sid}:{HUMAN_TC}"], "the cancel was not published to the gate"
     else:
         assert row.parked_status == "resumable", f"{action} did not wake the session"
+    if action == "approve the call":
+        assert [rec.decision for rec in await _approval_records(fake_storage_provider)] == ["approved"]
+
+
+async def _approval_records(sp) -> list:
+    from primer.model.storage import OffsetPage
+    from primer.model.tool_approval import ToolApprovalRecord
+
+    return list((await sp.get_storage(ToolApprovalRecord).list(OffsetPage(offset=0, length=10))).items)
+
+
+@pytest.mark.parametrize("action", ["approve the call", "cancel the approval"])
+async def test_the_rank_floor_holds_even_when_the_approver_spec_names_the_user(world, app, carol, fake_storage_provider, action):
+    """The floor is in addition to the spec: a gate routed to carol by name is still not hers to decide on a session that runs above her rank."""
+    await fake_storage_provider.get_storage(WorkspaceSession).create(
+        _parked_row("ses-named", by=ADMIN, tool="_approval", metadata={**_ANYONE_GATE, "approvers": {"kind": "users", "users": ["carol"]}}),
+    )
+    spy = _Spy(app.state.event_bus)
+    route, body, _ = HUMAN[action]
+
+    r = await carol.post(route.format(sid="ses-named"), json=body)
+
+    assert r.status_code == 403, r.text
+    assert r.json()["extensions"]["error"] == "forbidden_rank"
+    assert spy.keys == [] and await _approval_records(fake_storage_provider) == []
+
+
+@pytest.mark.parametrize("action", ["approve the call", "cancel the approval"])
+async def test_the_approver_spec_still_refuses_a_user_the_rank_admits(world, app, carol, fake_storage_provider, action):
+    """And the spec still runs: carol ranks with the session's creator, but the gate is routed to alice."""
+    carol_ref = PrincipalRef(type="user", id=await _user_id(app, "carol"), display="carol", role="user", source="local")
+    await fake_storage_provider.get_storage(WorkspaceSession).create(
+        _parked_row("ses-alice", by=carol_ref, tool="_approval", metadata={**_ANYONE_GATE, "approvers": {"kind": "users", "users": ["alice"]}}),
+    )
+    route, body, _ = HUMAN[action]
+
+    r = await carol.post(route.format(sid="ses-alice"), json=body)
+
+    assert r.status_code == 403, r.text
+    assert r.json()["extensions"]["error"] == "approver_mismatch"

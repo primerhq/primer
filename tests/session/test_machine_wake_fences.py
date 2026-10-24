@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -23,6 +24,7 @@ from pydantic_core import to_jsonable_python
 
 import primer.observability.metrics as metrics
 from primer.model.external_tool import ExternalToolCall
+from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
 from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import WAKE_ENTRY_KEY, with_wake_entry
@@ -348,8 +350,10 @@ async def test_the_cancel_of_a_tool_call_nodes_trigger_wait_names_the_subscripti
     await sessions.create(_graph_park("gs", parked_at=datetime.now(UTC) - timedelta(minutes=5), toolcalls=(wait,), agent_yields=(_ASK_N2,)))
     bus = _HoldBus()
 
+    # Called in-process, as the auth-disabled middleware would hand it over: the request carries the system principal, which the rank rule admits.
+    request = SimpleNamespace(state=SimpleNamespace(actor=PrincipalRef.system()))
     await post_cancel_yielded_tool(
-        session_id="gs", tool_call_id="uuid-1", body=CancelYieldedToolBody(reason="skip"), session_storage=sessions, event_bus=bus,
+        request=request, session_id="gs", tool_call_id="uuid-1", body=CancelYieldedToolBody(reason="skip"), session_storage=sessions, event_bus=bus,
         call_storage=sp.get_storage(ExternalToolCall), user=None,
     )
 
