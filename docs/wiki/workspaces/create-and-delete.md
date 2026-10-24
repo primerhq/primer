@@ -17,7 +17,7 @@ related: [workspaces/templates, workspaces/prime, sessions/start-a-session]
   - `resources` sizes this workspace: `cpu_cores`, `memory_bytes` and `disk_bytes`. Kubernetes takes all three, Docker takes `cpu_cores` and `memory_bytes`, and Local takes none. A size the provider cannot take is a `validation-error` that names `overrides.resources.<field>`, and nothing is created. The ceilings are 1024 cores and 64 TiB of memory or disk.
   - An env name follows the Kubernetes rule (`^[-._a-zA-Z][-._a-zA-Z0-9]*$`, at most 256 characters). `PRIMER_RUNTIME_TOKEN` and `RUNTIME_TOKEN` are reserved. A bad name is a `validation-error` that names it.
   - A file whose source `kind` is `secret` needs an admin, in `overrides.files` as in a template.
-- The answer is the stored row. A row this tool creates starts `pending` and turns `running` at its first good probe: [what a workspace is](workspaces/what-a-workspace-is).
+- The answer is the stored row. A new workspace starts `pending`, whoever creates it (this tool, the REST route or the console), and turns `running` at its first good probe: [what a workspace is](workspaces/what-a-workspace-is). A `pending` workspace is already usable: you can start sessions in it at once.
 - Every row that `list_workspaces` and `get_workspace` serve carries `is_default`, which is `true` on the default workspace (prime) only.
 - The reach rule:
   - From a session outside prime, `create_workspace` is refused with `forbidden` before anything is looked up, so the answer confirms neither the template nor the id.

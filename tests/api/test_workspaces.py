@@ -1414,11 +1414,10 @@ class TestWorkspaceRouter:
         assert "last_probe_ok" in body
         assert "failure_reason" in body
         assert "runtime_meta" in body
-        # The create handler marks freshly-materialised workspaces as
-        # "running" so the probe loop owns the row from tick #1; the
-        # ambient row default is "pending" but should never surface
-        # via the create path.
-        assert body["phase"] == "running"
+        # Every create door writes the same first phase (ticket 01a16d72
+        # ruling 2): "pending" until the probe's first good ping promotes
+        # it to "running" (tests/api/test_workspace_one_create_path.py).
+        assert body["phase"] == "pending"
         assert body["last_probe_at"] is None
         assert body["last_probe_ok"] is False
         assert body["failure_reason"] is None
@@ -1518,7 +1517,7 @@ class TestWorkspaceRouter:
             assert "last_probe_ok" in item
             assert "failure_reason" in item
             assert "runtime_meta" in item
-            assert item["phase"] == "running"
+            assert item["phase"] == "pending", "a new workspace is pending until its first good probe"
 
     @pytest.mark.asyncio
     async def test_workspace_list_includes_session_count(self, client, sp) -> None:

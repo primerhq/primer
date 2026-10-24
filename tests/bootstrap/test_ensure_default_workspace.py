@@ -96,7 +96,8 @@ async def test_a_fresh_install_creates_prime_and_records_it(fake_storage_provide
     assert row.template_snapshot is not None
     assert row.template_snapshot.id == RESERVED_LOCAL_WORKSPACE_TEMPLATE
     assert row.provider_id == "local"
-    assert row.phase == "running"
+    # The first phase every create door writes (ticket 01a16d72 ruling 2): pending until the probe's first good ping.
+    assert row.phase == "pending"
     assert await _recorded(fake_storage_provider) == "prime"
     assert registry.ids == ["prime"], "the live instance is pinned to the id the row is keyed by"
 
