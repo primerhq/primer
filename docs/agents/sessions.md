@@ -117,9 +117,13 @@ create sessions in batches and start them on demand.
 - `WAITING` - parked on an external event (yield). Set when
   `parked_status="parked"`. The session won't be claimed by workers
   until the event fires.
-- `PAUSED` - operator-requested pause via `request_pause()`. The
-  worker finishes the current turn and stops; the session stays at
-  this state until `request_resume()` lifts it.
+- `PAUSED` - a pause asked for with `POST .../pause` or
+  `workspaces::pause_workspace_session` (one implementation behind
+  both). It is recorded on the session row, so whichever worker runs
+  the session sees it: an idle or not yet started session pauses at
+  once; a running one finishes the turn it is in and starts no other.
+  The session stays paused until `POST .../resume` or
+  `workspaces::resume_workspace_session` lifts it.
 - `ENDED` - terminal. Either the agent stopped, the operator ended
   it, or an unrecoverable error occurred. No further work runs.
   A transient failure of the model call (a provider 5xx, a rate limit,
@@ -144,13 +148,14 @@ Transitions:
 - any → `ENDED` - terminal; not reversible.
 
 The transitions are driven via REST routes and the matching
-`workspaces` MCP tools:
+`workspaces` MCP tools, one implementation behind each pair:
 
-- `request_pause(session_id)` / `workspaces::pause_workspace_session`
-- `request_resume(session_id)` / `workspaces::resume_workspace_session`
-- `request_end(session_id)` / `workspaces::cancel_workspace_session`
+- `POST .../sessions/{session_id}/pause` / `workspaces::pause_workspace_session`
+- `POST .../sessions/{session_id}/resume` / `workspaces::resume_workspace_session`
+- `POST .../sessions/{session_id}/cancel` / `workspaces::cancel_workspace_session`
 
-The worker pool reads these flags between turns and acts on them.
+Each writes the session row; the worker reads the row before each turn
+and acts on it.
 
 Every session row also serves `session_state`, one derived value
 (`waiting`, `running`, `parked` or `ended`) computed from those fields.
@@ -215,9 +220,18 @@ can run an agent or graph headlessly end to end.
   `limit` (1..200, default 20). Returns the page of session rows,
   like `POST /v1/sessions/find`. From a session outside the default
   workspace it finds only your own workspace's sessions.
-- `workspaces::pause_workspace_session` /
-  `workspaces::resume_workspace_session` - pause a running session at
-  the next turn boundary, or resume it.
+- `workspaces::pause_workspace_session` - pause a session, the same
+  operation as `POST .../pause`: an idle or not yet started session is
+  paused at once (`status: "paused"`); a running one finishes the turn
+  it is in and starts no other (`pause_requested: true` on the row
+  until then). Returns the session row; `type=conflict` when the
+  session has ended.
+- `workspaces::resume_workspace_session` - start or resume a session,
+  the same operation as `POST .../resume`: a paused, waiting or never
+  started (`auto_start=false`) session goes `running` and is queued for
+  its next turn; a running one is returned as it is, with nothing
+  changed. Returns the session row; `type=conflict` when the session
+  has ended.
 - `workspaces::steer_workspace_session` - send a user instruction (an idle or ended session starts its next turn with it; a busy, parked or paused one, or one with older messages still waiting, reads it at its next turn boundary, after those messages: first in, first out; a queued message is delivered even when no other message follows it; it never answers an `ask_user`). Called from inside a workspace session it is a message from that session, with every limit of `workspaces::message_session`: the target sees a user message that starts with `[from session <your session id> (agent <your agent id>)]`; a session outside your reach (your own workspace, or any workspace from the default one) answers `type=not-found` exactly as an unknown id; `type=forbidden` when the target runs at a higher rank than your run; `type=hop-limit` at 8 messages in a chain; `type=rate-limited` at 20 messages per 10 minutes; `type=conflict` for a session an operator cancelled (only a person reopens it), an ended session that cannot reopen, or a full queue. Called with no session (MCP) the caller must rank at least as high as the session's creator (`type=forbidden`), and a cancelled session is refused too.
 - From a session outside the default workspace (prime), every one of
   these tools that names a session or a workspace reaches only your own

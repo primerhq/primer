@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -741,12 +742,145 @@ async def interrupt_session(
         return s
 
 
+#: The statuses resume starts from: a session never started (``auto_start: false``), paused, or waiting for its next message.
+_RESUMABLE = {SessionStatus.CREATED, SessionStatus.PAUSED, SessionStatus.WAITING}
+
+#: A caller's refusal of a session it may not act on (the rank rule, ``primer.authz.may_drive``), run on the row the helper reads under the session's
+#: lifecycle lock, once it is known to exist on the workspace and before anything is decided or written. It raises to refuse, each surface in its own
+#: words: the REST routes a 403 ``forbidden_rank``, the tools a ``forbidden`` answer. The rank is decided on the same read as the write.
+SessionGuard = Callable[[WorkspaceSession], None]
+
+
+async def pause_session(
+    *, workspace_id: str, session_id: str, sessions: Any, guard: SessionGuard | None = None,
+) -> WorkspaceSession:
+    """Soft pause (shared by ``POST .../sessions/{sid}/pause`` and the ``pause_workspace_session`` tool; ticket 01a16d3c-9984).
+
+    * A session no worker holds a lease on (CREATED / WAITING) goes PAUSED at once.
+    * Any other live session (RUNNING, or PAUSED already) gets ``pause_requested=True`` on its ROW: the worker that claims it next, in whatever
+      process, reads the flag off the row before it builds an executor (``primer.session.dispatch.run_one_session_turn``), moves it to PAUSED and
+      runs no turn. A turn already in flight finishes; no other starts until a resume.
+    * ``NotFoundError`` when the session does not exist on the workspace, ``ConflictError`` when it has ended.
+
+    Returns the row as written. ``sessions`` is the ``WorkspaceSession`` storage handle; ``guard`` (:data:`SessionGuard`) is the caller's rank rule.
+    """
+    # Serialize against a concurrent resume/cancel on the same session so the
+    # PAUSED write is not clobbered (and does not clobber) a racing
+    # transition. See primer.session.mutation_lock / T0432.
+    async with session_lifecycle_lock().acquire(session_id):
+        # ONE field-scoped write fenced on the status it decided from, never a whole row read earlier: the lock is this process's alone, and a
+        # wake on another process may have reserved a seq or armed a turn since the read (audit G7-03, review M5). A refused fence is decided
+        # again on a fresh read.
+        for _attempt in range(2):
+            s = await sessions.get(session_id)
+            if s is None or s.workspace_id != workspace_id:
+                raise NotFoundError(
+                    f"Session {session_id!r} does not exist on workspace "
+                    f"{workspace_id!r}"
+                )
+            if guard is not None:
+                guard(s)
+            if s.status == SessionStatus.ENDED:
+                raise ConflictError(f"Session {session_id!r} has ended")
+            patch = (
+                {"status": SessionStatus.PAUSED}
+                if s.status in {SessionStatus.WAITING, SessionStatus.CREATED}
+                else {"pause_requested": True}
+            )
+            written = await sessions.patch_if(
+                session_id, to_jsonable_python(patch), where={"status": [raw_generation(s, "status")]},
+            )
+            if written is not None:
+                return written
+        raise ConflictError(f"Session {session_id!r} changed status twice while pausing; try again")
+
+
+async def resume_session(
+    *, workspace_id: str, session_id: str, sessions: Any, scheduler: Any, claim_engine: Any | None, guard: SessionGuard | None = None,
+) -> WorkspaceSession:
+    """Idempotent start-or-resume (shared by ``POST .../sessions/{sid}/resume`` and the ``resume_workspace_session`` tool; ticket 01a16d3c-9984).
+
+    * No-op when the session is already RUNNING: nothing written, nothing armed, the row returned as read.
+    * CREATED (never started: ``auto_start: false``), PAUSED and WAITING go RUNNING: ``started_at`` is stamped if unset (or restarted after a
+      rested failure), the pause flag and a workspace refusal are cleared, and the session is enqueued and its claim lease upserted.
+    * ``NotFoundError`` when the session does not exist on the workspace, ``ConflictError`` when it has ended.
+
+    The write is ONE field-scoped ``patch_if`` of the fields resume changes (``status``, ``pause_requested``, ``workspace_refusal``, and
+    ``started_at`` when the row it read has none), fenced on the status it read ALONE. It writes no park field, so a park, the hook's
+    ``parked -> resumable`` flip or a cancel flag committed after the read is never written back over, and a PAUSED row whose park is
+    ``resumable`` still resumes (the hook flips ``parked`` to ``resumable`` under a PAUSED row, so a park term in the fence would reject resume in
+    normal use). A rejected write means the status moved: the row is re-read ONCE and the decision taken again (ENDED is a conflict, RUNNING the
+    no-op, any other resumable status retries the write once; a second rejection is a conflict). The session is enqueued and its lease upserted
+    only after a write that LANDED. ``guard`` (:data:`SessionGuard`) is the caller's rank rule, run on the first read.
+    """
+    # Serialize against a concurrent cancel/pause on the same session: the
+    # status read-modify-write and the lease upsert must not interleave with
+    # a cancel's ENDED write + delete_lease, or the row can land RUNNING with
+    # no lease - a stuck session no worker can claim (T0432). See
+    # primer.session.mutation_lock.
+    async with session_lifecycle_lock().acquire(session_id):
+        s = await sessions.get(session_id)
+        if s is None or s.workspace_id != workspace_id:
+            raise NotFoundError(
+                f"Session {session_id!r} does not exist on workspace "
+                f"{workspace_id!r}"
+            )
+        if guard is not None:
+            guard(s)
+        for attempt in range(2):
+            if s.status == SessionStatus.ENDED:
+                raise ConflictError(f"Session {session_id!r} has ended")
+            if s.status == SessionStatus.RUNNING:
+                return s  # idempotent no-op: nothing written, nothing armed
+            if s.status not in _RESUMABLE:
+                raise ConflictError(
+                    f"Session {session_id!r} cannot resume from status {s.status.value}"
+                )
+            # workspace_refusal: a session paused because its workspace was refused (ticket 01a1072f) shows why
+            # until it is resumed; the retry is a fresh attempt, so the reason goes now and not at the next turn.
+            patch: dict[str, Any] = {
+                "status": SessionStatus.RUNNING, "pause_requested": False, "workspace_refusal": None,
+            }
+            if s.started_at is None or s.last_turn_error is not None:
+                # a rested failure (C-024) restarts the clock the stuck-session sweeper's age check reads: it is RUNNING with no lease row until
+                # the claim below is armed, and the sweeper may be on another pod (see ``wake_session``)
+                patch["started_at"] = datetime.now(timezone.utc)
+            written = await sessions.patch_if(
+                session_id, to_jsonable_python(patch),
+                where={"status": [raw_generation(s, "status")]},
+            )
+            if written is not None:
+                await scheduler.enqueue(session_id)
+                # Notify the ClaimEngine (forward-compat; no-op when not wired).
+                if claim_engine is not None:
+                    await claim_engine.upsert(ClaimKind.SESSION, session_id)
+                return written
+            logger.warning(
+                "resume of session %s: its status moved from %s under the write; %s",
+                session_id, s.status.value, "re-reading once" if attempt == 0 else "giving up",
+            )
+            if attempt == 0:
+                fresh = await sessions.get(session_id)
+                if fresh is None:
+                    raise NotFoundError(
+                        f"Session {session_id!r} does not exist on workspace "
+                        f"{workspace_id!r}"
+                    )
+                s = fresh
+        raise ConflictError(
+            f"Session {session_id!r} changed status twice while resuming; try again"
+        )
+
+
 __all__ = [
     "SessionCancelDeps",
     "SessionFactoryDeps",
+    "SessionGuard",
     "SessionInterruptDeps",
     "cancel_session",
     "create_session",
     "interrupt_session",
+    "pause_session",
+    "resume_session",
     "start_workspace_session",
 ]
