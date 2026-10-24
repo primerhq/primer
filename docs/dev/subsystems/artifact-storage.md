@@ -109,7 +109,8 @@ names the root and says the shared artifact volume is not mounted there (and tha
 says to save the provider again. A failed `initialize` is not cached by the registry, so
 every later use checks again.
 
-**Boot check.** `check_filesystem_artifact_stores` resolves every filesystem provider row (up to 200) through the registry and logs, at
+**Boot check.** `check_filesystem_artifact_stores` resolves every filesystem provider row (found with a `provider == "filesystem"`
+predicate, 200 rows a page until they run out) through the registry and logs, at
 ERROR, `artifact store <id> (filesystem, root <root>) is not usable in this process: <reason>` for each one that fails, giving each 30
 seconds. It never raises. The lifespan starts it as a background task after the invalidation bus is bound (a store it caches is evicted by
 a later edit in any process) and cancels it at shutdown, so it never holds the boot.

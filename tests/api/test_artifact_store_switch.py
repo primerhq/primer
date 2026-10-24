@@ -291,14 +291,41 @@ async def test_the_startup_check_names_every_unusable_filesystem_store(sp, tmp_p
     await registry.aclose()
 
 
+async def test_the_startup_check_reads_every_filesystem_row_past_the_first_page(sp, tmp_path: Path) -> None:
+    """Review of #890, item 6: the check listed the first 200 provider rows of any kind, so a filesystem store at row 201 was never checked."""
+    storage = sp.get_storage(ArtifactStorageProvider)
+    for index in range(200):
+        await storage.create(ArtifactStorageProvider(id=f"db-{index:03d}", provider="db"))
+    (tmp_path / "bare").mkdir()
+    await storage.create(ArtifactStorageProvider(id="zz-fs-bare", provider="filesystem", config={"root": str(tmp_path / "bare")}))
+    registry = ArtifactStorageRegistry(storage=storage, storage_provider=sp)
+
+    assert await check_filesystem_artifact_stores(registry, storage) == ["zz-fs-bare"]
+    await registry.aclose()
+
+
+async def test_the_startup_check_pages_through_many_filesystem_rows(sp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from primer.api import _app_lifespan_phases as phases
+
+    monkeypatch.setattr(phases, "_STORE_CHECK_PAGE", 3)
+    storage = sp.get_storage(ArtifactStorageProvider)
+    for index in range(7):
+        await storage.create(ArtifactStorageProvider(id=f"fs-{index}", provider="filesystem", config={"root": str(tmp_path / f"missing-{index}")}))
+    registry = ArtifactStorageRegistry(storage=storage, storage_provider=sp)
+
+    assert sorted(await check_filesystem_artifact_stores(registry, storage)) == [f"fs-{index}" for index in range(7)]
+    await registry.aclose()
+
+
 class _Rows:
     def __init__(self, rows=(), *, fail: bool = False) -> None:
         self._rows, self._fail = list(rows), fail
 
-    async def list(self, page, **kwargs):
+    async def find(self, predicate, page, **kwargs):
         if self._fail:
             raise RuntimeError("database is down")
-        return SimpleNamespace(items=self._rows, total=len(self._rows))
+        items = self._rows[page.offset:page.offset + page.length]
+        return SimpleNamespace(items=items, total=len(self._rows))
 
 
 async def test_the_startup_check_never_raises(caplog: pytest.LogCaptureFixture) -> None:
