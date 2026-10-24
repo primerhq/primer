@@ -624,6 +624,8 @@ _ENV_NAME_RULE = (
 _CREATE_WORKSPACE_PURPOSE = (
     "Materialise a new Workspace from a template. Looks up the template, asks the matching backend to create the live "
     "instance, then persists a Workspace row with the assigned id and a full create-time template snapshot used for re-attachment. "
+    "The row starts ``phase=pending`` and the workspace is usable at once (start sessions in it); the health probe turns it "
+    "``running`` at its first good probe, about 30 seconds later, and ``failed`` after three missed probes. "
     "Optional ``overrides`` layer per-instantiation env "
     "vars / files / init commands on top of the template. "
     "``overrides.resources`` sizes THIS workspace instead of the template: ``cpu_cores`` and ``memory_bytes`` on Kubernetes "
@@ -1785,7 +1787,15 @@ def build_workspaces_toolset(
             "workspace there, so it answers type=not-found from outside it. "
             "Deleting a workspace ends every open session in it, so "
             "``type=forbidden`` while one of them runs at a higher rank than "
-            "you (the rule of ``cancel_workspace_session``)."
+            "you (the rule of ``cancel_workspace_session``). While the delete "
+            "runs the workspace reads ``phase=terminating``. "
+            "``type=backend-error`` when the teardown fails part way (a "
+            "backend that is down during it included): the workspace then "
+            "reads ``phase=failed`` with a ``failure_reason`` that says the "
+            "delete did not finish, its open sessions are ended "
+            "``workspace_lost``, and you delete it again to finish. Only when "
+            "its backend cannot be resolved at all is nothing torn down; the "
+            "phase it had is then put back."
         ),
         _IdArgs,
         _delete_workspace,
