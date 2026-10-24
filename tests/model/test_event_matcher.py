@@ -271,7 +271,19 @@ def test_save_time_validation_precompiles_the_pattern_the_matcher_uses(monkeypat
     matcher = EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern=pattern)
     assert matches(matcher, _ev(text="precompiled-0123abcd once")) is True
     assert matches(matcher, _ev(text="nope")) is False
-    assert compiled.count(pattern) == 1
+    # The save path compiles once (same engine, same dialect) but never fills the verdict cache
+    # (#859 round 3, R2-8); the match path compiles once and caches it for every later event.
+    assert compiled.count(pattern) == 2
+
+
+def test_the_save_path_never_touches_the_verdict_cache():
+    from primer.common.user_regex import stored_cache_size
+
+    before = stored_cache_size()
+    validate_text_pattern(r"^save-path-only-[0-9]+$")
+    with pytest.raises(EventMatcherPatternError):
+        validate_text_pattern(r"(?:a{101}){100}save-path-refusal")
+    assert stored_cache_size() == before
 
 
 def test_a_legacy_text_pattern_over_the_cap_never_matches():

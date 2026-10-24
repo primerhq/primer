@@ -284,30 +284,166 @@ async def test_each_owner_matches_under_its_own_share_of_the_event_budget(
 
 
 @pytest.mark.asyncio
-async def test_the_router_sizes_the_event_budget_by_the_distinct_owners(fake_storage_provider):
+async def test_each_owner_key_is_the_user_behind_the_subscription(fake_storage_provider):
+    """R2-1 (a): an API token counts as its user; R2-6: a subscription with no owner is its own owner."""
+    from primer.model.api_token import ApiToken
     from primer.model.principal import PrincipalRef
-    from primer.trigger.dispatch import enabled_subscriptions, text_pattern_owners
+    from primer.trigger.dispatch import enabled_subscriptions, owner_keys
 
+    await fake_storage_provider.get_storage(ApiToken).create(ApiToken(
+        id="tok-1", user_id="u-a", name="t1", token_hash="0" * 64, prefix="prmr_abc", created_at=_now(),
+    ))
     await fake_storage_provider.get_storage(Trigger).create(Trigger(
         id="tr-count", slug="tr-count", name="tr-count", description=None,
         config=ChannelTriggerConfig(provider_id="channel-provider-1"),
         enabled=True, next_fire_at=None, created_at=_now(),
     ))
     subs = fake_storage_provider.get_storage(Subscription)
-    for index, uid in enumerate(["u-a", "u-a", "u-b", None]):
+    owners = {
+        "by-user": PrincipalRef(type="user", id="u-a", display="u-a", role="user", source="local"),
+        "by-token": PrincipalRef(type="api_token", id="tok-1", display="t1", role="user", source="internal"),
+        "by-gone-token": PrincipalRef(type="api_token", id="tok-gone", display="t9", role="user", source="internal"),
+        "by-b": PrincipalRef(type="user", id="u-b", display="u-b", role="user", source="local"),
+        "no-owner-1": None,
+        "no-owner-2": None,
+        "unattributed": PrincipalRef.unattributed(),
+    }
+    for sub_id, owner in owners.items():
         await subs.create(Subscription(
-            id=f"tr-count-{index}", trigger_id="tr-count",
+            id=sub_id, trigger_id="tr-count",
             config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
             event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern="x"),
-            enabled=True, created_at=_now(),
-            owner=PrincipalRef(type="user", id=uid, display=uid, role="user", source="local") if uid else None,
+            enabled=True, created_at=_now(), owner=owner,
         ))
     await subs.create(Subscription(
-        id="tr-count-no-text", trigger_id="tr-count",
+        id="no-text", trigger_id="tr-count",
         config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
         event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED),
         enabled=True, created_at=_now(),
-        owner=PrincipalRef(type="user", id="u-c", display="u-c", role="user", source="local"),
     ))
-    owners = text_pattern_owners(await enabled_subscriptions(fake_storage_provider, "tr-count"))
-    assert owners == {("user", "u-a"), ("user", "u-b"), None}
+    keys = await owner_keys(fake_storage_provider, await enabled_subscriptions(fake_storage_provider, "tr-count"))
+    assert keys == {
+        "by-user": ("user", "u-a"),
+        "by-token": ("user", "u-a"),
+        "by-gone-token": ("api_token", "tok-gone"),
+        "by-b": ("user", "u-b"),
+        "no-owner-1": ("subscription", "no-owner-1"),
+        "no-owner-2": ("subscription", "no-owner-2"),
+        "unattributed": ("subscription", "unattributed"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_many_tokens_of_one_user_cannot_starve_another_user(
+    fake_storage_provider, fake_claim_engine, fake_scheduler, monkeypatch,
+):
+    """R2-1: the review's probe as a test. 25 API tokens of one user, each with a near-cap pattern whose cold
+    compile is slow, used to be 25 owners whose overshooting compiles spent the whole pool; the second user's
+    simple subscription was then skipped. Now the tokens are one user with one share, and a share charges the
+    pool at most what it had left."""
+    import time as _time
+
+    import primer.model.event_matcher as event_matcher_module
+    from primer.model.api_token import ApiToken
+    from primer.model.principal import PrincipalRef
+
+    real = event_matcher_module._compile_text_pattern
+
+    def _cold_compile(pattern):
+        _time.sleep(0.01)  # a cold near-cap compile after a restart, made deterministic
+        return real(pattern)
+
+    monkeypatch.setattr(event_matcher_module, "_compile_text_pattern", _cold_compile)
+    await fake_storage_provider.get_storage(Trigger).create(Trigger(
+        id="tr-tokens", slug="tr-tokens", name="tr-tokens", description=None,
+        config=ChannelTriggerConfig(provider_id="channel-provider-1"),
+        enabled=True, next_fire_at=None, created_at=_now(),
+    ))
+    tokens = fake_storage_provider.get_storage(ApiToken)
+    subs = fake_storage_provider.get_storage(Subscription)
+    for k in range(25):
+        await tokens.create(ApiToken(
+            id=f"tok-{k:02d}", user_id="u-attacker", name=f"t{k}", token_hash=f"{k:064d}",
+            prefix="prmr_xyz", created_at=_now(),
+        ))
+        await subs.create(Subscription(
+            id=f"tr-tokens-a-{k:02d}", trigger_id="tr-tokens",
+            config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
+            event_matcher=EventMatcher(
+                event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern=f"(?:a{{100}}){{99}}q{k:03d}",
+            ),
+            enabled=True, created_at=_now(),
+            owner=PrincipalRef(type="api_token", id=f"tok-{k:02d}", display=f"t{k}", role="user", source="internal"),
+        ))
+    await subs.create(Subscription(
+        id="tr-tokens-victim", trigger_id="tr-tokens",
+        config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
+        event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern="deploy"),
+        enabled=True, created_at=_now(),
+        owner=PrincipalRef(type="user", id="u-victim", display="victim", role="user", source="local"),
+    ))
+    event = ChannelEvent(
+        provider=ChannelProviderType.SLACK, provider_id="channel-provider-1",
+        event_id="ev-tokens", type=NormalizedEventType.MESSAGE_POSTED,
+        occurred_at=_now(), room_external_id="C123", surface="channel",
+        sender=EventSender(external_id="u-1"), text="the deploy of build 4512 finished",
+    ).model_dump(mode="json")
+
+    res = await fire_trigger(
+        trigger_id="tr-tokens", scheduled_for=None,
+        deps=_deps(fake_storage_provider, fake_claim_engine, fake_scheduler),
+        extra_context={"event": event},
+    )
+
+    by_id = {r["subscription_id"]: r for r in res.results}
+    attacker = [by_id[f"tr-tokens-a-{k:02d}"]["error_code"] for k in range(25)]
+    assert attacker.count("skipped_match_budget") >= 15, attacker  # one 50 ms share, 10 ms a compile
+    assert by_id["tr-tokens-victim"]["error_code"] not in {"skipped_match_budget", "skipped_no_match"}, by_id["tr-tokens-victim"]
+
+
+@pytest.mark.asyncio
+async def test_the_router_reads_each_triggers_subscriptions_once(tmp_path, async_closers, monkeypatch):
+    """R2-11: the subscriptions the router read for the owner shares reach fire_trigger; they are not read twice."""
+    import primer.channel.event_dispatch as event_dispatch_module
+    import primer.trigger.dispatch as dispatch_module
+    from primer.channel.correlation import CorrelationStore
+    from primer.channel.event_dispatch import ChannelEventRouter
+    from primer.model.provider import SqliteConfig
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
+    await provider.initialize()
+    async_closers.push_async_callback(provider.aclose)
+    for trigger_id in ("tr-r1", "tr-r2"):
+        await provider.get_storage(Trigger).create(Trigger(
+            id=trigger_id, slug=trigger_id, name=trigger_id, description=None,
+            config=ChannelTriggerConfig(provider_id="channel-provider-1"),
+            enabled=True, next_fire_at=None, created_at=_now(),
+        ))
+        await provider.get_storage(Subscription).create(Subscription(
+            id=f"{trigger_id}-sub", trigger_id=trigger_id,
+            config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
+            event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern="nothing-here"),
+            enabled=True, created_at=_now(),
+        ))
+    reads: list[str] = []
+    real = dispatch_module.enabled_subscriptions
+
+    async def _counting(storage_provider, trigger_id):
+        reads.append(trigger_id)
+        return await real(storage_provider, trigger_id)
+
+    monkeypatch.setattr(dispatch_module, "enabled_subscriptions", _counting)
+    monkeypatch.setattr(event_dispatch_module, "enabled_subscriptions", _counting)
+    router = ChannelEventRouter(
+        storage_provider=provider, correlation_store=CorrelationStore(provider),
+        fire_deps=DispatchDeps(storage_provider=provider, claim_engine=None, scheduler=None),
+    )
+    event = ChannelEvent(
+        provider=ChannelProviderType.SLACK, provider_id="channel-provider-1",
+        event_id="ev-once", type=NormalizedEventType.MESSAGE_POSTED,
+        occurred_at=_now(), room_external_id="C123", surface="channel",
+        sender=EventSender(external_id="u-1"), text="hello",
+    )
+    await router.route_event(event=event, channel=None)
+    assert sorted(reads) == ["tr-r1", "tr-r2"], reads

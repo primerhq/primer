@@ -94,23 +94,26 @@ class EventMatcherPatternError(ValueError):
 
 
 def _compile_text_pattern(pattern: str):
-    """The one compile both the save-time check and the matcher use: same engine, same cache entry, refusals cached too."""
+    """The matcher's compile: the same engine and checks as the save path, cached with its verdict (refusals too)."""
     return compile_user_regex(pattern, max_length=TEXT_PATTERN_MAX_LENGTH, what="text_pattern", stored=True)
 
 
 def validate_text_pattern(pattern: str | None) -> None:
     """Reject malformed, oversized and costly patterns before they are stored.
 
-    The pattern is compiled with the engine that matches it (``regex``,
-    ``VERSION0``), so the save-time and match-time dialects agree, and the
-    compiled pattern stays in the process cache the matcher reads. The size
-    checks run first: at most :data:`TEXT_PATTERN_MAX_LENGTH` characters,
-    and counted repeats that do not unroll past the compile cap.
+    The pattern passes the same checks and is compiled with the engine that
+    matches it (``regex``, ``VERSION0``), so the save-time and match-time
+    dialects agree. The checks run first: at most
+    :data:`TEXT_PATTERN_MAX_LENGTH` characters, the refused constructs, and
+    the expansion cap read from the engine's parse tree. Only the matcher
+    caches a compile and its verdict.
     """
     if pattern is None:
         return
     try:
-        _compile_text_pattern(pattern)
+        # The save path checks and compiles but never touches the verdict
+        # cache (#859 round 3, R2-8): only the match path fills it.
+        compile_user_regex(pattern, max_length=TEXT_PATTERN_MAX_LENGTH, what="text_pattern")
     except UserRegexError as exc:
         if str(exc).startswith("invalid regex"):
             raise EventMatcherPatternError(
@@ -137,19 +140,40 @@ class EventMatcher(BaseModel):
 class EventTextBudget(MatchBudget):
     """The text_pattern budget of one channel event: :data:`_EVENT_TEXT_BUDGET_SECONDS` in total, 10 ms per search.
 
-    ``owners`` is how many distinct owners' subscriptions the event is
-    matched against. :meth:`for_owner` gives each owner an equal share that
-    draws on this pool, so one owner's slow subscriptions cannot starve
-    another owner's (a share left unused is not handed to anyone else).
+    ``owner_keys`` maps each text_pattern subscription the event will be
+    matched against to its owner (``primer.trigger.dispatch.owner_keys``:
+    an API token counts as its user, a row with no owner as itself), and
+    ``owners`` is the count to use without them. :meth:`for_owner` gives
+    each owner an equal share that draws on this pool, so one owner's slow
+    subscriptions cannot starve another owner's (a share left unused is not
+    handed to anyone else, and a share is charged to the pool at most what
+    it had left). ``subscriptions`` carries what the router read, by
+    trigger id, so ``fire_trigger`` does not read it again.
     """
 
-    def __init__(self, owners: int = 1) -> None:
+    def __init__(
+        self,
+        owners: int = 1,
+        *,
+        owner_keys: dict[str, Hashable] | None = None,
+        subscriptions: dict[str, list] | None = None,
+    ) -> None:
         super().__init__(
             _EVENT_TEXT_BUDGET_SECONDS, per_search=_TEXT_PATTERN_TIMEOUT_SECONDS, what="text_pattern",
         )
-        self.owner_count = max(owners, 1)
+        self.owner_keys = dict(owner_keys or {})
+        self.owner_count = max(len(set(self.owner_keys.values())) if self.owner_keys else owners, 1)
+        self.subscriptions = subscriptions
         self._owner_budgets: dict[Hashable, MatchBudget] = {}
         self.warned = False
+
+    def subscriptions_for(self, trigger_id: str) -> list | None:
+        """The enabled subscriptions the router read for ``trigger_id``, or None when it read none."""
+        return None if self.subscriptions is None else self.subscriptions.get(trigger_id)
+
+    def for_subscription(self, subscription_id: str) -> MatchBudget:
+        """The share of the subscription's owner (a subscription the router did not see is its own owner)."""
+        return self.for_owner(self.owner_keys.get(subscription_id, ("subscription", subscription_id)))
 
     def for_owner(self, owner: Hashable) -> MatchBudget:
         budget = self._owner_budgets.get(owner)
@@ -168,15 +192,20 @@ _EVENT_TEXT_BUDGET: ContextVar[EventTextBudget | None] = ContextVar(
 
 
 @contextmanager
-def channel_event_text_budget(owners: int = 1) -> Iterator[EventTextBudget]:
+def channel_event_text_budget(
+    owners: int = 1,
+    *,
+    owner_keys: dict[str, Hashable] | None = None,
+    subscriptions: dict[str, list] | None = None,
+) -> Iterator[EventTextBudget]:
     """Share one text_pattern budget across everything one channel event fires.
 
     ``ChannelEventRouter`` opens it around its trigger fan-out, with the
-    number of distinct owners of the text_pattern subscriptions it is about
-    to match; ``fire_trigger`` reads it with :func:`current_event_text_budget`
-    (and opens its own for a fire outside one).
+    subscriptions it read and the owner of each text_pattern subscription;
+    ``fire_trigger`` reads it with :func:`current_event_text_budget` (and
+    opens its own for a fire outside one).
     """
-    budget = EventTextBudget(owners)
+    budget = EventTextBudget(owners, owner_keys=owner_keys, subscriptions=subscriptions)
     token = _EVENT_TEXT_BUDGET.set(budget)
     try:
         yield budget
