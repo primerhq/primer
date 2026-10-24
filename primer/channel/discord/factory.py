@@ -64,9 +64,35 @@ async def _route_channel_event(
             ch_kind = "text"
             parent_id = None
         author = message.author
+        # mentions_bot: True only when the bot user is named directly;
+        # @everyone / @here and role mentions never appear in
+        # ``message.mentions`` (they live in mention_everyone /
+        # mention_roles), so they cannot count. A missing client or bot
+        # user (before initialize()) is False.
+        client = getattr(adapter, "_client", None)
+        bot_user = getattr(client, "user", None) if client is not None else None
+        bot_id = getattr(bot_user, "id", None) if bot_user is not None else None
+        mentions = getattr(message, "mentions", None) or []
+        mentions_bot = bool(
+            bot_id is not None
+            and any(getattr(u, "id", None) == bot_id for u in mentions)
+        )
+        # The sender's guild role ids as strings, without @everyone (its id
+        # is the guild's own id). A DM sender is a bare User and has no
+        # roles attribute, so a DM carries an empty list.
+        guild_id = getattr(getattr(message, "guild", None), "id", None)
+        roles: list[str] = []
+        for role in (getattr(author, "roles", None) or []):
+            role_id = getattr(role, "id", None)
+            if role_id is None:
+                continue
+            if guild_id is not None and str(role_id) == str(guild_id):
+                continue
+            roles.append(str(role_id))
         payload = {
             "id": message.id,
             "content": message.content or "",
+            "mentions_bot": mentions_bot,
             "author": {
                 "id": getattr(author, "id", None) if author else None,
                 "name": getattr(author, "name", None) if author else None,
@@ -74,6 +100,7 @@ async def _route_channel_event(
                 if author
                 else None,
                 "bot": bool(getattr(author, "bot", False)) if author else False,
+                "roles": roles,
             },
             "channel": {
                 "id": getattr(ch, "id", None),

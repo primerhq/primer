@@ -8,6 +8,61 @@ from primer.model.channel_event import NormalizedEventType
 
 
 @pytest.mark.asyncio
+async def test_message_payload_with_bot_mention_and_sender_roles():
+    """The payload the factory derives (a direct bot mention, the sender's
+    guild role ids) lands on the event: the mentions_bot and
+    sender_roles_any matchers now have data to match against."""
+    normalizer = DiscordEventNormalizer(provider_id="channel-provider-d")
+    event = await normalizer.normalize(
+        {
+            "type": "message",
+            "payload": {
+                "id": 910,
+                "content": "hello",
+                "mentions_bot": True,
+                "author": {
+                    "id": 42,
+                    "name": "ada",
+                    "display_name": "Ada",
+                    "bot": False,
+                    "roles": [111, 222],
+                },
+                "channel": {"id": 700, "kind": "text", "parent_id": None},
+            },
+        }
+    )
+    assert event is not None
+    assert event.mentions_bot is True
+    assert event.sender.roles == ["111", "222"]
+
+
+@pytest.mark.asyncio
+async def test_message_payload_without_mention_or_roles_defaults():
+    """A payload without the keys (Slack / Telegram / a message with no
+    mention) normalizes to mentions_bot False and no sender roles."""
+    normalizer = DiscordEventNormalizer(provider_id="channel-provider-d")
+    event = await normalizer.normalize(
+        {
+            "type": "message",
+            "payload": {
+                "id": 911,
+                "content": "plain",
+                "author": {
+                    "id": 42,
+                    "name": "ada",
+                    "display_name": "Ada",
+                    "bot": False,
+                },
+                "channel": {"id": 700, "kind": "text", "parent_id": None},
+            },
+        }
+    )
+    assert event is not None
+    assert event.mentions_bot is False
+    assert event.sender.roles == []
+
+
+@pytest.mark.asyncio
 async def test_text_channel_message():
     normalizer = DiscordEventNormalizer(provider_id="channel-provider-d")
     event = await normalizer.normalize(

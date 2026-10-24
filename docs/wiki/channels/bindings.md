@@ -17,7 +17,8 @@ An inbound binding routes messages from a room to work: it starts an agent or a 
   - Slack: `message.posted`, surface `channel` or `thread` (a Slack DM is `channel`). Slack slash commands are not received.
   - Discord: `message.posted`, surface `channel`, `thread` or `dm`. Discord slash commands are not received.
   - Telegram: `message.posted`, and `command.invoked` for a message that starts with `/name` (`command.name` is `name`, `command.args` the rest). Surface `dm` or `channel`.
-  - The other types (`component.acted`, `reaction.added` and the rest) never reach a binding. No platform fills `mentions_bot` or `sender.roles` today.
+  - Discord fills `mentions_bot` (true when the message mentions the bot user directly; `@everyone`, `@here` and role mentions do not count) and `sender.roles` (the sender's guild role IDs, not names, without the `@everyone` role). Slack and Telegram do not fill them yet. To find a role ID, enable Developer Mode in Discord (User Settings > Advanced). Then right-click a role and choose Copy Role ID.
+  - The other types (`component.acted`, `reaction.added` and the rest) never reach a binding.
 - **`event_matcher`** holds when every field you set holds. `event_type` is required. The rest are optional: `surface` (a list), `room_external_ids` (platform room ids), `command_name`, `mentions_bot`, `sender_ids_any` (platform user ids), `sender_roles_any` and `text_pattern`. Leave `event_matcher` out to act on every event of the trigger.
 - **`text_pattern`** is a regular expression searched anywhere in `text`, at most 1000 characters. Nested unbounded repeats such as `(a+)+`, comment groups, verbose mode and inline flags past the start are refused (`validation-error`). Each search may take 10 ms, and one event has 100 ms for every pattern, shared between the bindings' owners; a binding past its owner's share is skipped (`skipped_match_budget`).
 - **`config`** is the action:
@@ -95,7 +96,7 @@ Reference: [`system__delete_channel_binding`](reference/tools/system/delete_chan
 - `trigger__fire_now` on a channel trigger carries no event: every binding with a matcher skips (`skipped_no_match`). Test with a real message.
 - The trigger's `channel_id` is the channel's id (`ch-...`). `room_external_ids` holds the platform's ids.
 - A template that reads a missing value fails the delivery (`payload_template_failed`): a plain message has no `event.command`. Match `command.invoked` before you read `command`.
-- A matcher on `mentions_bot: true` or on `sender_roles_any` never matches today.
+- On Slack and Telegram a matcher on `mentions_bot: true` or on `sender_roles_any` never matches: those platforms do not fill `mentions_bot` or `sender.roles`. On Discord they do.
 - In a Slack or Discord thread with an open question, the next reply is its answer, whatever it says. The replies after it go to the session as new messages, and the thread keeps its session. A reply while an approval waits is a new message too, not a decision: use the buttons.
 - `parallelism` must be `skip` or `queue`. The tool accepts any string, and another value fails the call.
 

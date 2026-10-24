@@ -69,8 +69,10 @@ class DiscordEventNormalizer:
                     display_name=author.get("display_name")
                     or author.get("name"),
                     is_bot=bool(author.get("bot")),
+                    roles=[str(r) for r in author.get("roles") or []],
                 ),
                 text=p.get("content"),
+                mentions_bot=bool(p.get("mentions_bot")),
                 raw=p,
             )
 
