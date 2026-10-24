@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,6 +31,8 @@ from primer.session.peer_messages import (
 from tests.session._peer_fakes import World, make_world, seed_session
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+#: The request the route is called with: no actor, and the sessions here name no creator, so the delete's rank rule (ticket 01a16d9f) admits it.
+_REQ = SimpleNamespace(state=SimpleNamespace(actor=None))
 BOUND_S = 15.0
 
 
@@ -57,7 +60,7 @@ async def test_deleting_a_session_deletes_the_ledger_rows_of_the_messages_it_sen
         await _sent(world, "ses-c", "ses-d", NOW)
 
         await delete_session(
-            workspace_id="ws-1", session_id="ses-b", force=False, sessions=world.sessions, scheduler=world.scheduler, engine=None,
+            _REQ, workspace_id="ws-1", session_id="ses-b", force=False, sessions=world.sessions, scheduler=world.scheduler, engine=None,
             workspace_registry=world.registry, event_bus=None, call_storage=world.sp.get_storage(ExternalToolCall), storage_provider=world.sp,
         )
 
@@ -76,7 +79,7 @@ async def test_a_ledger_that_cannot_be_cleaned_does_not_stop_the_delete(monkeypa
 
         monkeypatch.setattr("primer.session.peer_messages.delete_peer_ledger_of", broken)
         await delete_session(
-            workspace_id="ws-1", session_id="ses-b", force=False, sessions=world.sessions, scheduler=world.scheduler, engine=None,
+            _REQ, workspace_id="ws-1", session_id="ses-b", force=False, sessions=world.sessions, scheduler=world.scheduler, engine=None,
             workspace_registry=world.registry, event_bus=None, call_storage=world.sp.get_storage(ExternalToolCall), storage_provider=world.sp,
         )
 

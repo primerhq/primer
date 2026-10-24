@@ -365,9 +365,10 @@ async def cancel_session(
     "/workspaces/{workspace_id}/sessions/{session_id}",
     status_code=204,
     summary="Permanently delete a session (auto-cancels non-RUNNING)",
-    responses=common_responses(404, 409, 500),
+    responses=common_responses(403, 404, 409, 500),
 )
 async def delete_session(
+    request: Request,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     force: bool = Query(
@@ -402,6 +403,13 @@ async def delete_session(
     The on-disk slot cleanup is best-effort: if the workspace is
     unreachable (e.g. its backing storage was wiped), the row is
     still removed.
+
+    403 ``forbidden_rank`` when the session's creator outranks the caller
+    and the session is not the caller's own (ticket 01a16d9f;
+    ``primer.api.routers._session_rank``): a delete ends a live session
+    and, forced, cancels a running one, so it follows the Cancel route's
+    rule, decided first as Cancel decides it (whatever the status), before
+    anything is resolved, written or published.
     """
     s = await sessions.get(session_id)
     if s is None or s.workspace_id != workspace_id:
@@ -409,6 +417,7 @@ async def delete_session(
             f"Session {session_id!r} does not exist on workspace "
             f"{workspace_id!r}"
         )
+    refuse_outranked(request, s)
     # Resolve any still-pending invoker-supplied tool calls before the
     # row goes away (the audit rows outlive the session).
     from primer.session.external_tools import cancel_pending_external
