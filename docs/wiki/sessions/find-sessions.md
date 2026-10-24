@@ -58,7 +58,7 @@ Parked sessions in every workspace you reach; read `parked_event_key` on each ro
 - `state` `parked` includes sessions that only rest after a clean turn. Those have no `parked_event_key`; the ones with a key wait on something.
 - Filter on `state`, not on `status`: a session parked on a gate has `status` `running`.
 - Ended sessions match too unless you filter them out; ask for the state you need.
-- Finding a session does not let you drive it: steering, restarting, cancelling and messaging still check your rank against the session's creator ([control a session](sessions/control-a-session)).
+- Finding a session does not let you drive it: steering, restarting, stopping, pausing, resuming, cancelling and messaging still check your rank against the session's creator ([control a session](sessions/control-a-session)).
 
 ## Related
 [observe a session](sessions/observe-a-session), [messaging other sessions](sessions/messaging-other-sessions), [prime](workspaces/prime).

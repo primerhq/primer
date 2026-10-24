@@ -13,9 +13,9 @@ Six tools change what a session does. Pick the one verb that matches your intent
 - **Stop** (`workspaces__interrupt_workspace_session`) ends the running turn and keeps the session: it lands `waiting` with its history, and the next message continues it. The answer is the session row; read `interrupt_requested`: `true` means a Stop was recorded, `false` means nothing was running and nothing was recorded.
 - **Cancel** (`workspaces__cancel_workspace_session`) ends the session for good: `status` `ended`, `ended_reason` `cancelled`. A created, waiting or paused session ends at once; a running or parked one is preempted at the next safe point. Cancel is the way out of a parked session.
 - **Restart** (`workspaces__restart_workspace_session`) reopens an ended session in place, with an "invocation N" divider in the same transcript, and starts a turn with `input`. It refuses a session that has not ended (`conflict`). A session that rests after a failed model call (`waiting` with `last_turn_error`) is not ended: steer it instead.
-- **Pause and resume** (`workspaces__pause_workspace_session`, `workspaces__resume_workspace_session`) set and clear a pause request on the session's handle in the process that serves the call. They do not write the session row: its `status` does not change, a worker in another process does not see the request, and resume does not start a `created` session. A person pauses, resumes and starts a session from the console.
+- **Pause and resume** (`workspaces__pause_workspace_session`, `workspaces__resume_workspace_session`) are the console's Pause and Resume, one implementation behind both, and they write the session row, so whichever worker runs the session sees them. Pause stops a `created` or `waiting` session at once (`status` `paused`); a running one finishes the turn it is in and starts no other (`pause_requested: true` until then). Resume puts a `paused`, `waiting` or never started session (`created`, made with `auto_start: false`) back to `running` and queues its next turn; a running session is answered as it is. Both answer the session row and refuse an ended session (`conflict`).
 - **From inside a session**, a steer or a restart is a message from your session: the target sees a user message that starts with `[from session <your id> (agent <your agent id>)]`, and the limits of `workspaces__message_session` apply (rank, `hop-limit`, `rate-limited`; see [messaging other sessions](sessions/messaging-other-sessions)). A restart from a session needs `input`.
-- **Rank.** Steer, restart, cancel and resume refuse a session that runs at a higher rank than you (`forbidden`): its creator outranks you, or your run. An admin is never outranked, and a person over MCP may always act on a session they started. Pause and Stop have no rank rule.
+- **Rank.** Steer, restart, cancel, resume, pause and Stop refuse a session that runs at a higher rank than you (`forbidden`): its creator outranks you, or your run. An admin is never outranked, and a person over MCP may always act on a session they started.
 - **Reach.** From a session outside the default workspace (prime) only your own workspace is reachable; another one answers `not-found`, as an unknown id does. Prime and a caller with no session reach every workspace.
 - **A cancelled session stays cancelled for tools.** A steer, a restart or a message to a session an operator cancelled is refused (`conflict`); only a person reopens it.
 
@@ -23,7 +23,7 @@ Six tools change what a session does. Pick the one verb that matches your intent
 1. Read the session first ([observe a session](sessions/observe-a-session)) and pick the verb from its state.
 2. To redirect running work, steer it; to stop a turn that went wrong, interrupt it and then steer it.
 3. To end it, cancel it. To run an ended session again, restart it with new `input`.
-4. Check the answer: `delivery` for a steer, `interrupt_requested` for a Stop, `status` and `ended_reason` for a cancel.
+4. Check the answer: `delivery` for a steer, `interrupt_requested` for a Stop, `status` and `pause_requested` for a pause, `status` for a resume, `status` and `ended_reason` for a cancel.
 
 ## Tool calls
 ### Steer
@@ -63,7 +63,7 @@ Reopen it and start a turn with new input.
 Reference: [`workspaces__restart_workspace_session`](reference/tools/workspaces/restart_workspace_session)
 
 ### Pause and resume
-Set, then clear, the pause request on the session's handle.
+Pause the session, then resume it; read `status` (and `pause_requested`) in each answer.
 
 ```json
 {"toolset_id": "workspaces", "tool_name": "pause_workspace_session", "arguments": {"workspace_id": "ws-docs", "session_id": "sess-3f9a1c8d2b7e"}}
@@ -79,6 +79,7 @@ Reference: [`workspaces__resume_workspace_session`](reference/tools/workspaces/r
 
 ## Gotchas
 - A success answer to interrupt is not a Stop. Read `interrupt_requested`.
+- A pause does not cut the running turn short: the turn finishes first. To stop it now and keep it stopped, interrupt it, then pause it.
 - Interrupt refuses (`conflict`) an ended session and a parked one (waiting on an approval, an answer or a timer) or one resuming from a park: there is no turn to stop. Cancel it instead.
 - A Stop lands at the turn's next wait for the model. A tool call already running is cancelled and answered `interrupted: stopped by user (the call may have run, and its result was not recorded)`; a call whose tool cannot be cut short (file writes, session starts) is waited for up to 5 seconds first. Calls that had not started are answered `not run: stopped by user`.
 - A graph session stops between graph events, not mid-node. A subagent running inside the turn gets the same Stop.
