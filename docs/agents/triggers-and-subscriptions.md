@@ -58,7 +58,8 @@ A `Trigger` row:
 - `slug` - human-friendly unique id (required on create); `name` -
   display name (required on create).
 - `config` - discriminated union keyed by an inner `kind`. For
-  `delayed`: `{kind: "delayed", fire_at: <timestamp>}`. For
+  `delayed`: `{kind: "delayed", fire_at: <timestamp>}` (a timestamp
+  without a zone is read as UTC). For
   `scheduled`: `{kind: "scheduled", cron: "<5-field>", timezone:
   "UTC", catchup: "one|all|none"}`. For `webhook`: `{kind: "webhook",
   token: "<32-hex-server-minted>", hmac_secret: "<optional>"}`. For

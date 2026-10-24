@@ -255,7 +255,8 @@ TOOL_CREATE = make_tool(
     purpose="Create a new trigger and return the created Trigger.",
     when=(
         "Use when registering a new trigger. ``config`` is the "
-        "discriminated union (delayed: ``{kind:'delayed', fire_at}``; "
+        "discriminated union (delayed: ``{kind:'delayed', fire_at}``, an ISO 8601 "
+        "time, read as UTC when it has no zone; "
         "scheduled: ``{kind:'scheduled', cron, timezone?, catchup?}``). "
         "Duplicate slug surfaces as ``type=trigger_slug_conflict``; bad "
         "cron / timezone surface as ``type=cron_invalid`` / "
