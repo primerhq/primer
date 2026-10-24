@@ -73,7 +73,7 @@ async def test_the_tool_delivers_a_session_append_like_the_rest_route(app, clien
 
 @pytest.mark.asyncio
 async def test_the_tool_and_the_route_hand_the_fire_the_same_collaborators(app, client, monkeypatch):
-    """One fire path: both call ``service.fire_now``, and both hand the dispatch the app's workspace registry and scheduler."""
+    """One fire path: both call ``service.fire_now``, and both hand the dispatch the app's workspace registry, scheduler, event bus and claim engine."""
     import primer.trigger.dispatch as dispatch_mod
     from primer.trigger.dispatch import FireResult
 
@@ -95,6 +95,9 @@ async def test_the_tool_and_the_route_hand_the_fire_the_same_collaborators(app, 
     assert rest_deps.workspace_registry is app.state.workspace_registry
     assert tool_deps.workspace_registry is app.state.workspace_registry, "the tool's fire has no workspace registry"
     assert tool_deps.scheduler is rest_deps.scheduler is app.state.scheduler
+    assert tool_deps.event_bus is rest_deps.event_bus is app.state.event_bus
+    assert tool_deps.claim_engine is rest_deps.claim_engine
+    assert tool_deps.claim_engine is getattr(app.state, "claim_engine", None)
     assert tool_deps.storage_provider is rest_deps.storage_provider is sp
 
 
@@ -112,7 +115,7 @@ def test_the_lifespan_hands_the_trigger_toolset_what_the_rest_route_passes():
         assert arg in call, f"the lifespan builds the trigger toolset without {arg}"
 
 
-def test_the_test_app_hands_the_trigger_toolset_its_workspace_registry_and_scheduler():
+def test_the_test_app_hands_the_trigger_toolset_what_app_state_carries():
     call = _call("primer/api/app.py", "trigger_toolset = build_trigger_toolset_provider(")
-    assert "workspace_registry=workspace_registry" in call
-    assert "scheduler=_test_scheduler" in call
+    for arg in ("workspace_registry=workspace_registry", "scheduler=_test_scheduler", "event_bus=_test_event_bus", "claim_engine=_claim_engine"):
+        assert arg in call, f"the test app builds the trigger toolset without {arg}"
