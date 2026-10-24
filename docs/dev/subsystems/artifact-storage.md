@@ -86,7 +86,8 @@ record second, so a delete that fails in the store keeps the record and can be r
 **Filesystem put, get and delete.** A put first checks that the root still holds its marker (in the thread, on every put: the store is
 cached after `initialize`, and a volume that went away later would leave the process writing into the empty mount point on its own disk),
 and refuses with the same named-root message as `initialize`. It then writes the bytes, then the sidecar, each to a temporary file that is synced and renamed into
-place; a sidecar that fails removes the bytes again, so a sidecar is never seen without its bytes. A get reads the sidecar, then the
+place, and syncs the shard folder after the sidecar rename (and the parent of each shard folder it creates), so the renames survive a
+crash; a sidecar (or the folder sync) that fails removes the files again, so a sidecar is never seen without its bytes. A get reads the sidecar, then the
 bytes, and answers `None` when either is missing. A delete removes the sidecar, then the bytes; missing files are fine. Every file
 operation runs in a worker thread (`asyncio.to_thread`), so a slow or hung volume never blocks the event loop. A put cancelled while its
 thread is writing (a client that went away) cannot stop the thread and never hands out its id, so the write is shielded and, once the thread

@@ -604,3 +604,52 @@ async def test_a_root_moved_while_a_put_is_in_flight_loses_nothing_silently(tmp_
         await registry.aclose()
     finally:
         await sp.aclose()
+
+
+async def test_a_put_syncs_the_folders_it_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #890, item 7: a rename is durable only once its folder is synced. The shard folder is synced after the sidecar rename, and the
+    parent of each shard folder the put creates is synced after the creation."""
+    import stat as stat_
+
+    store = await _ready(tmp_path)
+    root = tmp_path / "root"
+    synced: list[tuple[str, str]] = []
+    real = os.fsync
+
+    def spy(fd: int) -> None:
+        kind = "dir" if stat_.S_ISDIR(os.fstat(fd).st_mode) else "file"
+        synced.append((kind, os.readlink(f"/proc/self/fd/{fd}")))
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", spy)
+    monkeypatch.setattr(filesystem, "new_backend_artifact_id", lambda: "artifact-abcd" + "0" * 28)
+    first = await store.put(data=b"x", mime_type="text/plain")
+
+    dirs = [path for kind, path in synced if kind == "dir"]
+    assert dirs == [str(root), str(root / "ab"), str(root / "ab" / "cd")], synced
+    assert synced[-1] == ("dir", str(root / "ab" / "cd")), "the shard folder is synced last, after the sidecar rename"
+    assert [kind for kind, _ in synced].count("file") == 2, "the bytes and the sidecar"
+
+    synced.clear()
+    monkeypatch.setattr(filesystem, "new_backend_artifact_id", lambda: "artifact-abcd" + "1" * 28)
+    await store.put(data=b"y", mime_type="text/plain")
+
+    assert [path for kind, path in synced if kind == "dir"] == [str(root / "ab" / "cd")], "no folder was created, so only the shard is synced"
+    assert (await store.get(first)).data == b"x"
+
+
+def test_preparing_a_root_syncs_it_after_writing_the_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import stat as stat_
+
+    synced: list[str] = []
+    real = os.fsync
+
+    def spy(fd: int) -> None:
+        if stat_.S_ISDIR(os.fstat(fd).st_mode):
+            synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", spy)
+    prepare_root(str(tmp_path / "root"))
+
+    assert synced == [str(tmp_path / "root")]
