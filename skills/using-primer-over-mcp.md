@@ -24,20 +24,19 @@ Primer is a **multi-agent orchestration platform**. Its primary
 abstractions are:
 
 - **Agents** - LLM-backed workers with a system prompt, a tool set,
-  and an LLM provider. Each agent runs inside a context (a chat for
-  interactive turns; a session for headless work; a graph node for
+  and an LLM provider. Each agent runs inside a context (a session in
+  a workspace for interactive or headless turns; a graph node for
   multi-step orchestration).
 - **Workspaces** - isolated filesystems plus git-tracked state that
   sessions run inside. The unit of execution isolation.
-- **Chats** - multi-turn human-in-the-loop conversations with an
-  agent. Each turn is worker-claimed; turns survive disconnects.
-- **Sessions** - long-running headless agent runs in a workspace.
+- **Sessions** - agent runs in a workspace, long-running headless or
+  interactive multi-turn (messages can be sent to a running session).
   Can pause, resume, and yield on external events.
 - **Graphs** - directed graphs of agents (and other node types) with
   conditional routing. Run to completion in one invocation.
 - **Triggers and subscriptions** - event scheduling (delayed, cron,
-  channel) that dispatches to chats, fresh sessions, or parked
-  yielding tools.
+  channel) that dispatches to fresh agent or graph sessions, parked
+  sessions, or appends to an existing session.
 - **Collections and documents** - knowledge containers with
   embedding-backed semantic search. Plus the reserved **`system`
   collection**, a read-only wiki primer writes itself: guides, a
@@ -166,7 +165,7 @@ collection. Read the full doc with
 | `sessions` | Long-running headless agent runs. Status enum (RUNNING/WAITING/PAUSED/ENDED), pause/resume/end controls, `waiting.json` contract. |
 | `knowledge` | User-defined collections and documents. CRUD, content storage (`meta.content`), ingest pipeline status, `get_document_content`. |
 | `semantic-search` | The `system` collection (this wiki, the tool reference, these docs and the live install map), internal search, and how to search and read it. |
-| `triggers-and-subscriptions` | Event scheduling. Trigger kinds (delayed/scheduled/channel), subscription kinds (chat_message/agent_fresh_session/graph_fresh_session/parked_session), fire semantics, catch-up policy. |
+| `triggers-and-subscriptions` | Event scheduling. Trigger kinds (delayed/scheduled/channel), subscription kinds (agent_fresh_session/graph_fresh_session/parked_session/session_append), fire semantics, catch-up policy. |
 | `yielding` | The park/resume primitive. `Yielded` sentinel, parked state fields, event keys, timeout sweeper, cancellation; why yielding tools are invisible from MCP. |
 | `tool-approval` | Pre-dispatch gates on tool calls. Approval kinds (required/policy/llm), fail-closed semantics, supersession by new user turns, interaction with MCP exposure. |
 | `harnesses` | Git-installed entity bundles. Lifecycle (draft → ready → installed → outdated), fetch/install/sync/uninstall, managed entity guard. |
@@ -266,12 +265,15 @@ Full recipe: `cookbook/create-and-run-a-session`.
 
 ## 5. Things primer can't do (yet)
 
-- **`system::search_collection`** - searching documents *within* a
-  user-defined collection - is a stub. Use
-  `system::find_collection_documents_by_meta` or read by id.
+- **`system::refresh_collection`** - re-embedding a collection's
+  documents after swapping the embedder - is a stub: it returns
+  `type=not-implemented` until the SearchService ingestion pipeline
+  lands. `system::search_collection` is not a stub: it runs real
+  semantic search over a collection's document contents when search
+  is enabled on the collection.
 - **Mid-graph yield/pause** - graphs run to completion in one
-  invocation. For human-in-the-loop multi-step work, use chats or
-  sessions with the `subscribe_to_trigger` yielding tool.
+  invocation. For human-in-the-loop multi-step work, use sessions
+  with the `subscribe_to_trigger` yielding tool.
 - **Yielding tools over MCP** - `ask_user`, `subscribe_to_trigger`,
   `_approval` are not exposed to MCP clients. Poll instead, or rely
   on primer's own internal agents.
