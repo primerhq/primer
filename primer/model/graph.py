@@ -1220,7 +1220,14 @@ class GraphThread(Identifiable):
     ``GraphThread``. The G2 sub-project introduces this as the
     parent row for per-node :class:`GraphNodeMessage` rows; the
     type lives here so the model layer is self-contained.
+
+    A create without an ``id`` is assigned ``gt-<hex>``, the scheme every
+    entity with an ``_id_prefix`` uses and the prefix
+    :meth:`primer.graph.executor.GraphExecutor.open_thread` writes (lead
+    ruling 3 of ticket 01a16d48).
     """
+
+    _id_prefix: ClassVar[str] = "gt"
 
     graph_id: str = Field(..., min_length=1)
     title: str | None = Field(default=None)

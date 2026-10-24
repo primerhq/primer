@@ -63,7 +63,7 @@ Reference: [`system__get_graph_thread`](reference/tools/system/get_graph_thread)
 Reference: [`system__delete_graph_thread`](reference/tools/system/delete_graph_thread)
 
 ### Create a thread
-`system__create_graph_thread` stores a new row. The `id` is required: a thread gets no generated id.
+`system__create_graph_thread` stores a new row. The `id` is optional: omitted, the server assigns `gt-<hex>`. A given id is used as it is.
 
 ```json
 {"toolset_id": "system", "tool_name": "create_graph_thread", "arguments": {"entity": {"id": "gt-nightly-2026-10-24", "graph_id": "triage-and-route", "title": "Nightly triage", "created_at": "2026-10-24T02:00:00Z", "last_activity_at": "2026-10-24T02:00:00Z"}}}
