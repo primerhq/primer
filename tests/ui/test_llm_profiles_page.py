@@ -219,3 +219,16 @@ def test_the_entry_hands_its_card_and_list_to_the_helpers() -> None:
     entry = profiles_entry_source()
     assert re.search(r"card: function \(row\) \{ return window\.MP_profileCard\(row\); \}", entry), entry
     assert "window.MP_withWindows" in entry
+
+
+# ---- what the file exports (Task 6) ------------------------------------------------------------------------------------------------------------------
+
+
+def test_model_profiles_exports_only_the_overlays() -> None:
+    """The profile card, grid and all-profiles panel were mounted by the Providers page's profile panels, which left with Plan 02 (#804); the LLM
+    Profiles page draws its cards through the kit (MP_profileCard). The legacy single create (``prefill``) was the Providers page's "New profile"."""
+    exported = set(re.findall(r"^window\.(MP_\w+) = ", MODEL_PROFILES_SRC, re.M))
+    assert exported == {"MP_ProfileModal", "MP_AggregateOverlay"}
+    for gone in ("function MP_ProfileCard(", "function MP_ProfilesGrid(", "function MP_AllProfilesPanel(", "function MP_BoundBadge(",
+                 "function MP_KindChip(", "function MP_ReasoningChip(", "MP_REASONING_LEVELS", "PC_ProfilesPanel", "prefill"):
+        assert gone not in MODEL_PROFILES_SRC, gone

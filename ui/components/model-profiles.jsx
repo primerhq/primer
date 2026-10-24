@@ -1,29 +1,15 @@
-/* global React, Icon, Btn, Modal, StatusPill, Banner, PK_FormOverlay, PK_Field, PK_Grid, PK_Fold, PK_Segmented, PK_CheckTable */
-// Model profiles: one (provider, model) pair plus its API-level config --
-// OR (01a067c4) an ORDERED pool of other "single" profiles with a routing/
-// failover policy, kind="aggregated". The two kinds share this module and
-// its card/grid/modal, but not a provider: an aggregated profile has no
-// provider_id of its own, which is why it also gets its own provider-
-// agnostic browse surface (MP_AllProfilesPanel, below) alongside the
-// existing per-provider panel (provider-catalog.jsx's PC_ProfilesPanel,
-// unchanged, single-kind only, scoped to one provider's own rows).
+/* global React, Btn, Banner, PK_FormOverlay, PK_Field, PK_Grid, PK_Fold, PK_Segmented, PK_CheckTable */
+// LLM profiles: a "single" profile is one (provider, model) pair plus its API-level config; an "aggregated" one (kind="aggregated", 01a067c4) is an
+// ORDERED chain of single profiles with a routing and failover policy, and has no provider of its own.
 //
-// The entity exists so ONE model can be registered several times under one
-// provider with different settings -- a reasoning and a non-reasoning
-// variant of the same model, say. That is why the list groups by provider
-// and shows model_name as a secondary column rather than as the identity:
-// two rows sharing a model_name is the normal case here, not a duplicate.
+// The entity exists so ONE model can be registered several times under one provider with different settings (a reasoning and a non-reasoning variant
+// of the same model, say), so two profiles sharing a model_name is the normal case here, not a duplicate.
 //
-// Platform revamp Plan 03: the profile forms are overlays on the platform kit
-// (ui/components/shared/platform-kit.jsx). MP_ProfileModal, which the Platform
-// page's NV_ProfileModalHost mounts, is a dispatcher with no state: a new
-// profile or an aggregated one is MP_AggregateOverlay, any other is
-// MP_SingleProfileOverlay. Everything that is not drawing (the order of the
-// members, the smallest window, the bodies that go on the wire, which field a
-// refusal belongs under) is a plain function in the helper block below, which
-// tests/ui/test_llm_profiles_helpers.py evaluates as written.
-
-const MP_REASONING_LEVELS = ["off", "minimal", "low", "medium", "high"];
+// Platform revamp Plan 03: the LLM Profiles page (the `profiles` entry of NV_PLAT_PAGES, nv-platform.jsx) draws its cards through the platform kit
+// from MP_profileCard, and its forms are overlays on the kit (ui/components/shared/platform-kit.jsx). MP_ProfileModal, which the page's
+// NV_ProfileModalHost mounts, is a dispatcher with no state: a new profile or an aggregated one is MP_AggregateOverlay, a single one is
+// MP_SingleProfileOverlay. Everything that is not drawing (the order of the members, the smallest window, the bodies that go on the wire, which field
+// a refusal belongs under, the cards) is a plain function in the helper block below, which tests/ui/test_llm_profiles_helpers.py evaluates as written.
 
 // ---- MP helpers: plain JS, no JSX (tests/ui/test_llm_profiles_helpers.py evaluates this block) ----
 // Everything the profile forms decide that is not drawing: plain functions of their arguments, `function` declarations and `var` constants, so each is a global in the
@@ -315,258 +301,39 @@ function MP_withWindows(resp) {
 }
 // ---- end MP helpers ----
 
-function MP_ReasoningChip({ level }) {
-  if (!level) {
-    return (
-      <span style={{ color: "var(--text-4)", fontSize: 11.5 }}>
-        vendor default
-      </span>
-    );
-  }
-  const strong = level === "high" || level === "off";
-  return (
-    <span style={{
-      display: "inline-block", padding: "1px 7px", borderRadius: 4,
-      fontSize: 11, fontWeight: 600, letterSpacing: "0.02em",
-      background: strong ? "var(--accent-dim)" : "var(--bg-2)",
-      color: strong ? "var(--accent)" : "var(--text-3)",
-      border: "1px solid var(--border)",
-    }}>{level}</span>
-  );
-}
-
-// Kind chip: rendered on every aggregated card so an operator scanning the
-// provider-agnostic grid (mixed single + aggregated rows) can tell them
-// apart at a glance without opening each one.
-function MP_KindChip({ kind }) {
-  if (kind !== "aggregated") return null;
-  return (
-    <span className="pill" data-testid="profile-card-kind-chip"
-      style={{ color: "var(--accent)", borderColor: "var(--border)", background: "var(--accent-dim)" }}>
-      aggregated
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Platform wave P1b item 1: card anatomy (screenshot 8). Platform wave P4
-// wired these into provider-catalog.jsx's PC_ProfilesPanel (the only live
-// mount today - see that file) and added the bound-by/unbound and
-// provider-down badges below, now that the backend P2 wave actually
-// serves agent_count/graph_node_count on the list route
-// (api/routers/model_profiles.py's ModelProfileWithUsage) and the panel
-// can join its own already-fetched provider row for reachability. The
-// "overridable"/"delete blocked" rows stay static copy describing system
-// behavior (the reference's own framing), not derived facts.
-//
-// 01a067c4: also mounted from MP_AllProfilesPanel now (provider-agnostic),
-// so providerDown is optional -- an aggregated row has no single provider
-// to be down, and a single row reached through that panel has no
-// pre-fetched provider list to join against the way the per-provider panel
-// does.
-// ---------------------------------------------------------------------------
-function MP_BoundBadge({ agentCount, graphNodeCount }) {
-  const agents = agentCount || 0;
-  const nodes = graphNodeCount || 0;
-  const bound = agents > 0 || nodes > 0;
-  const color = bound ? "var(--text-2)" : "var(--amber)";
-  return (
-    <span className="pill" data-testid="profile-card-bound-badge"
-      style={{ color, borderColor: "var(--border)", background: "var(--bg-2)" }}>
-      <span className="dot" style={{ background: color }}></span>
-      {bound
-        ? `bound by ${agents} agent${agents === 1 ? "" : "s"}`
-          + (nodes > 0 ? ` · ${nodes} graph node${nodes === 1 ? "" : "s"}` : "")
-        : "unbound"}
-    </span>
-  );
-}
-
-function MP_ProfileCard({ profile, onOpen, onDeleted, providerDown }) {
-  const { apiFetch } = window.primerApi;
-  const [confirmDelete, setConfirmDelete] = React.useState(false);
-  const [err, setErr] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-
-  const doDelete = async () => {
-    setErr("");
-    setBusy(true);
-    try {
-      await apiFetch("DELETE", `/model_profiles/${encodeURIComponent(profile.id)}`);
-      setConfirmDelete(false);
-      if (onDeleted) onDeleted();
-    } catch (e) {
-      // The backend's ReferenceCheck (routers/model_profiles.py) 409s with a
-      // PLAIN FORMATTED STRING in `detail` - "in_use_by: N agent(s) reference
-      // '<id>' (first: '<id>')" - not a structured payload, and it names ONE
-      // blocking reference (the count is the size of a one-row page: "at
-      // least one"). The one reader (window.primerApi.readRefusal) says it in
-      // words (admin review ADM-12); this also covers the "member of an
-      // aggregate" reference kind (model_profiles.py's second ReferenceCheck),
-      // which has the same shape. The referrer is named, not linked.
-      setErr(window.primerApi.readRefusal(e, String(e)).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const isAggregated = profile.kind === "aggregated";
-  const ctxK = profile.context_length
-    ? Math.round(profile.context_length / 1000) : null;
-  const reasoning = profile.config && profile.config.reasoning;
-  const members = profile.members || [];
-
-  // harness_id is set on a profile a harness owns (managed lifecycle,
-  // e.g. a bootstrap operator default) - the pre-P4 <ul> in
-  // PC_ProfilesPanel showed a "managed by" pill instead of Delete for
-  // these; that guard moves onto the card itself here so it survives
-  // wherever the card is mounted next, not just that one panel.
-  const harnessManaged = !!profile.harness_id;
-
-  return (
-    <div className="pc-card" data-testid={`profile-card-${profile.id}`}>
-      <div className="pc-card-head">
-        <span className="pc-card-title mono">{profile.id}</span>
-        <span style={{ flex: 1 }} />
-        <MP_KindChip kind={profile.kind} />
-        <MP_BoundBadge agentCount={profile.agent_count} graphNodeCount={profile.graph_node_count} />
-        {providerDown ? (
-          <span className="pill" data-testid={`profile-card-provider-down-${profile.id}`}
-            style={{ color: "var(--red)", borderColor: "var(--border)", background: "var(--bg-2)" }}>
-            <span className="dot" style={{ background: "var(--red)" }}></span>
-            provider down
-          </span>
-        ) : null}
-      </div>
-      <div className="pc-card-subtitle" data-testid={`profile-card-subtitle-${profile.id}`}>
-        {isAggregated
-          ? `${members.length} member${members.length === 1 ? "" : "s"}`
-          : [profile.provider_id, profile.model_name,
-              ctxK != null ? `${ctxK}k ctx` : null].filter(Boolean).join(" · ")}
-      </div>
-      <div className="pc-card-facts">
-        {isAggregated ? (
-          <>
-            <div className="pc-card-fact">
-              <span className="muted">members</span>
-              <span className="mono text-sm" data-testid={`profile-card-members-${profile.id}`}>
-                {members.length ? members.join(", ") : "(none)"}
-              </span>
-            </div>
-            <div className="pc-card-fact">
-              <span className="muted">strategy</span>
-              <span>{profile.strategy || "sequential"}</span>
-            </div>
-          </>
-        ) : (
-          <div className="pc-card-fact">
-            <span className="muted">reasoning</span>
-            <MP_ReasoningChip level={reasoning} />
-          </div>
-        )}
-        <div className="pc-card-fact">
-          <span className="muted">overridable</span>
-          <span>at create · switch · per graph node</span>
-        </div>
-        <div className="pc-card-fact">
-          <span className="muted">delete</span>
-          <span>blocked while referenced</span>
-        </div>
-      </div>
-      <div className="pc-card-footer">
-        <Btn kind="primary" size="sm" onClick={() => onOpen && onOpen(profile)}>
-          Open
-        </Btn>
-        <span style={{ flex: 1 }} />
-        {harnessManaged ? (
-          <span className="pill" title="managed by a harness">{profile.harness_id}</span>
-        ) : confirmDelete ? (
-          <>
-            <Btn kind="danger" size="sm" disabled={busy}
-              data-testid={`profile-card-delete-confirm-${profile.id}`}
-              onClick={doDelete}>
-              Confirm
-            </Btn>
-            <Btn kind="ghost" size="sm" onClick={() => setConfirmDelete(false)}>
-              Cancel
-            </Btn>
-          </>
-        ) : (
-          <Btn kind="ghost" size="sm"
-            data-testid={`profile-card-delete-${profile.id}`}
-            onClick={() => { setErr(""); setConfirmDelete(true); }}>
-            Delete
-          </Btn>
-        )}
-      </div>
-      {err ? (
-        <div className="field-help" data-testid={`profile-card-error-${profile.id}`}>
-          delete blocked while referenced - {err}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function MP_ProfilesGrid({ profiles, onOpen, onDeleted, providerDown }) {
-  const items = profiles || [];
-  if (!items.length) {
-    return (
-      <div className="empty-state" data-testid="profiles-empty">
-        <h3>No model profiles yet</h3>
-        <p>Register one to give agents a named model + config to bind to.</p>
-      </div>
-    );
-  }
-  return (
-    <div className="pc-card-grid" data-testid="profiles-grid">
-      {items.map((p) => (
-        <MP_ProfileCard key={p.id} profile={p} onOpen={onOpen} onDeleted={onDeleted}
-          providerDown={providerDown} />
-      ))}
-    </div>
-  );
-}
-
-// Create/edit modal. MP_ProfileModal is the component the Platform page's NV_ProfileModalHost mounts, and it is a dispatcher with no state and no hook: it decides which
-// overlay a profile belongs to and mounts that one. Nothing to draw (open is false) draws nothing. A new profile with no prefill, and an aggregated one, is the aggregated
-// overlay (create / edit): "+ Aggregate" is the page's one create (design 7.1), and a single profile comes from the Register provider overlay's import. Every other profile
-// (a single one to view or edit, or the legacy single create the Providers page still reaches with a prefill) is the single-profile overlay. The overlay is keyed on the
-// profile's id, so a different profile mounted in its place starts from its own fields and never inherits the first one's draft. `allProfiles` is ignored: the aggregated
-// overlay fetches the list it needs itself.
+// The profile overlays. MP_ProfileModal is the component the Platform page's NV_ProfileModalHost mounts, and it is a dispatcher with no state and no hook: it
+// decides which overlay a profile belongs to and mounts that one. Nothing to draw (open is false) draws nothing. A new profile is the aggregated overlay's
+// create: "+ Aggregate" is the page's one create (design 7.1), and a single profile comes from the Register provider overlay's import. An aggregated
+// profile is the aggregated overlay's edit, and a single one is the single-profile overlay. The overlay is keyed on the profile's id, so a different
+// profile mounted in its place starts from its own fields and never inherits the first one's draft.
 function MP_ProfileModal(props) {
   if (!props.open) return null;
   const existing = props.existing || null;
-  const single = existing ? MP_isSingle(existing) : !!props.prefill;
-  const key = existing ? existing.id : "new";
-  if (single) {
+  if (existing && MP_isSingle(existing)) {
     return (
-      <MP_SingleProfileOverlay key={key} existing={existing} providers={props.providers || []}
-        prefill={props.prefill || null} onClose={props.onClose} onSaved={props.onSaved} />
+      <MP_SingleProfileOverlay key={existing.id} existing={existing} providers={props.providers || []}
+        onClose={props.onClose} onSaved={props.onSaved} />
     );
   }
-  return <MP_AggregateOverlay key={key} existing={existing} onClose={props.onClose} onSaved={props.onSaved} />;
+  return <MP_AggregateOverlay key={existing ? existing.id : "new"} existing={existing} onClose={props.onClose} onSaved={props.onSaved} />;
 }
 
 // A harness-managed profile is shown, not edited: its fields sit in a disabled fieldset, so every native control under it (the kit's checkboxes and segmented buttons too) is
 // read-only without the kit growing a prop for it. The fieldset takes over the column layout of the overlay body it sits in.
 const MP_READONLY_FIELDSET = { display: "flex", flexDirection: "column", gap: 16, minWidth: 0, margin: 0, padding: 0, border: "none" };
 
-// The single profile's overlay (design 7.1: "opening a profile shows its overlay for viewing and editing the fields the model allows"): the id (fixed once the profile exists),
-// the description, the provider and the model it names, and the context window. A profile's `config` (reasoning, extended) is not drawn here: the Reasoning control returns in
-// plan 03 Task 7, and until then `config` is kept as stored. Model calls apply it, so a save must not lose it: an edit sends the stored row back with these four fields laid over
-// it (MP_editBody), and `config` and every other field the form does not draw round-trip untouched. `prefill` is the legacy single create the Providers page used to open;
-// no surface opens it any more (plan 03 Task 6 removes it), and there is no other single create. The fields start from the profile the overlay is mounted with and then belong to
-// the person typing: a new `providers` array (the host hands over a fresh empty one on every render until its list loads) must not wipe a draft.
-function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSaved }) {
-  const isEdit = existing != null;
+// The single profile's overlay (design 7.1: "opening a profile shows its overlay for viewing and editing the fields the model allows"): the id (fixed: the profile exists),
+// the description, the provider and the model it names, and the context window. It is only ever an edit or, for a harness-managed row, a view: a single profile is created by
+// the Register provider overlay's import, never here. A profile's `config` (reasoning, extended) is not drawn here: the Reasoning control returns in plan 03 Task 7, and until
+// then `config` is kept as stored. Model calls apply it, so a save must not lose it: an edit sends the stored row back with these four fields laid over it (MP_editBody), and
+// `config` and every other field the form does not draw round-trip untouched. The fields start from the profile the overlay is mounted with and then belong to the person
+// typing: a new `providers` array (the host hands over a fresh empty one on every render until its list loads) must not wipe a draft.
+function MP_SingleProfileOverlay({ existing, providers, onClose, onSaved }) {
   const managed = MP_isManaged(existing);
-  const seed = existing || prefill || {};
-  const [id, setId] = React.useState(() => seed.id || "");
-  const [description, setDescription] = React.useState(() => seed.description || "");
-  const [providerId, setProviderId] = React.useState(() => seed.provider_id || "");
-  const [modelName, setModelName] = React.useState(() => seed.model_name || "");
-  const [contextText, setContextText] = React.useState(() => String(seed.context_length || 128000));
+  const [description, setDescription] = React.useState(() => existing.description || "");
+  const [provider, setProvider] = React.useState(() => existing.provider_id || "");
+  const [modelName, setModelName] = React.useState(() => existing.model_name || "");
+  const [contextText, setContextText] = React.useState(() => (existing.context_length != null ? String(existing.context_length) : ""));
   const [touched, setTouched] = React.useState({});
   const [saving, setSaving] = React.useState(false);
   const [refused, setRefused] = React.useState({ fields: {}, form: null });
@@ -579,13 +346,10 @@ function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSave
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Until a provider is chosen the select shows the first one, so that is the value (the list may arrive after the overlay opens).
-  const provider = providerId || (providers && providers[0] ? providers[0].id : "");
-  const idError = !isEdit && id.trim() ? MP_nameError(id) : null;
   const descriptionError = description.trim() ? null : "Enter a description.";
   const modelError = modelName.trim() ? null : "Enter the model name.";
   const contextError = MP_contextError(contextText);
-  const formReady = !managed && (isEdit || MP_nameError(id) === null) && !descriptionError && !!provider && !modelError && !contextError;
+  const formReady = !managed && !descriptionError && !!provider && !modelError && !contextError;
   // A blank field is not a mistake until it has been typed in; a complaint from the server is about what was in the field, so editing the field takes it away.
   const shown = (field, error) => (touched[field] ? error : null) || undefined;
   const forget = (field) => setRefused((r) => {
@@ -608,19 +372,14 @@ function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSave
     const draft = { description: description.trim(), provider_id: provider, model_name: modelName.trim(), context_length: Number(contextText) };
     let row;
     try {
-      row = isEdit
-        ? await api.apiFetch("PUT", "/model_profiles/" + encodeURIComponent(existing.id), MP_editBody(existing, draft))
-        : await api.apiFetch("POST", "/model_profiles", Object.assign({ id: id.trim() }, draft));
+      row = await api.apiFetch("PUT", "/model_profiles/" + encodeURIComponent(existing.id), MP_editBody(existing, draft));
     } catch (err) {
-      const where = { description: "description", provider_id: "provider", model_name: "model", context_length: "context" };
-      if (!isEdit) where.id = "id";
-      setRefused(MP_refusalErrors(err, where));
+      setRefused(MP_refusalErrors(err, { description: "description", provider_id: "provider", model_name: "model", context_length: "context" }));
       setSaving(false);
       return;
     }
     setSaving(false);
-    const name = isEdit ? existing.id : id.trim();
-    api.toastPush({ kind: "success", text: (isEdit ? "Saved " : "Created ") + name });
+    api.toastPush({ kind: "success", text: "Saved " + existing.id });
     // The row is saved, so the toast says so. A save that lands after the overlay was dismissed has nobody to report to, and onClose would close whatever the host shows by now.
     if (!mountedRef.current) return;
     if (onSaved) onSaved(row);
@@ -629,16 +388,15 @@ function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSave
 
   const fields = (
     <>
-      <PK_Field label="Id" error={idError || refused.fields.id || undefined}>
-        <input value={id} readOnly={isEdit} autoFocus={!isEdit} autoComplete="off" spellCheck={false}
-          placeholder="<provider>--<model>" data-testid="mp-single-id" onChange={typed("id", setId)} />
+      <PK_Field label="Id">
+        <input value={existing.id} readOnly autoComplete="off" spellCheck={false} data-testid="mp-single-id" />
       </PK_Field>
       <PK_Field label="Description" error={shown("description", descriptionError) || refused.fields.description}>
         <input value={description} data-testid="mp-single-description" onChange={typed("description", setDescription)} />
       </PK_Field>
       <PK_Grid cols={2}>
         <PK_Field label="Provider" error={refused.fields.provider || undefined}>
-          <select value={provider} data-testid="mp-single-provider" onChange={typed("provider", setProviderId)}>
+          <select value={provider} data-testid="mp-single-provider" onChange={typed("provider", setProvider)}>
             {MP_providerOptions(providers, provider).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </PK_Field>
@@ -655,15 +413,13 @@ function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSave
 
   return (
     <PK_FormOverlay
-      title={managed ? "LLM profile" : isEdit ? "Edit LLM profile" : "New LLM profile"}
+      title={managed ? "LLM profile" : "Edit LLM profile"}
       testid="mp-single"
       onClose={onClose}
       footer={{
         left: <Btn data-testid="mp-single-cancel" onClick={onClose}>{managed ? "Close" : "Cancel"}</Btn>,
         right: managed ? null : (
-          <Btn kind="primary" data-testid="mp-single-submit" disabled={!formReady} busy={saving} onClick={submit}>
-            {isEdit ? "Save" : "Create"}
-          </Btn>
+          <Btn kind="primary" data-testid="mp-single-submit" disabled={!formReady} busy={saving} onClick={submit}>Save</Btn>
         ),
       }}
     >
@@ -885,62 +641,5 @@ function MP_MemberExtra({ id, tokens, order, onUp, onDown, movable }) {
   );
 }
 
-// Provider-agnostic browse/create/edit surface for EVERY model profile,
-// single and aggregated alike (01a067c4, approved IA ruling). Mounted as a
-// provider-catalog "class" panel (form:"panel", same precedent as ssp/
-// workspace/channel), NOT a standalone page -- tests/ui/test_model_profiles_
-// page.py's ban is specifically about a separate PAGE/nav entry breaking
-// the providers one-page IA doctrine; this satisfies that same doctrine
-// (profiles stay reachable only from the providers page) while giving an
-// aggregated profile -- which has no provider_id, so it can never appear
-// in PC_ProfilesPanel's provider-scoped list -- a home the original
-// per-provider design never needed to have.
-function MP_AllProfilesPanel({ pushToast }) {
-  const { useResource, apiFetch } = window.primerApi;
-  const [open, setOpen] = React.useState(false);
-  const [editing, setEditing] = React.useState(null);
-  const rows = useResource(
-    "mp-all:profiles",
-    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
-    { pollMs: null },
-  );
-  const providers = useResource(
-    "mp-all:llm-providers",
-    (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
-    { pollMs: null },
-  );
-  const allProfiles = (rows.data && rows.data.items) || [];
-  const providerRows = (providers.data && providers.data.items) || [];
-
-  return (
-    <div className="col" style={{ gap: 8 }} data-testid="all-model-profiles">
-      <div className="muted text-sm">
-        Every model profile across every provider, plus aggregated pools
-        of two or more profiles. An aggregated profile has no provider of
-        its own, so it lives only here, not under any one provider's page.
-      </div>
-      <window.MP_ProfilesGrid
-        profiles={allProfiles}
-        onOpen={(row) => setEditing(row)}
-        onDeleted={() => rows.refetch()}
-      />
-      <Btn kind="ghost" onClick={() => setOpen(true)}>+ Aggregate</Btn>
-      {(open || editing) && (
-        <MP_ProfileModal
-          open
-          existing={editing}
-          providers={providerRows}
-          allProfiles={allProfiles}
-          onClose={() => { setOpen(false); setEditing(null); }}
-          onSaved={() => rows.refetch()}
-        />
-      )}
-    </div>
-  );
-}
-
 window.MP_ProfileModal = MP_ProfileModal;
 window.MP_AggregateOverlay = MP_AggregateOverlay;
-window.MP_ProfileCard = MP_ProfileCard;
-window.MP_ProfilesGrid = MP_ProfilesGrid;
-window.MP_AllProfilesPanel = MP_AllProfilesPanel;

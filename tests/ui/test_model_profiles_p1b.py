@@ -1,7 +1,10 @@
 """Platform wave P1b item 1/2/3: model-profiles.jsx card anatomy,
 create/edit modal (verb chip, two-column Provider|Model picker with
 the discoverable degrade path, Reasoning segment), and the honest
-409 delete-guard surfacing.
+409 delete-guard surfacing. Platform revamp Plan 03 retired the card
+(the LLM Profiles page draws its cards through the kit) and turned the
+modal into the profile overlays; what is left here pins the overlay's
+source.
 
 Static-source checks only (the tests/ui suite convention) - these pin
 NEW P1b surface that test_model_profiles_page.py and
@@ -23,51 +26,18 @@ def _src() -> str:
     return SRC.read_text(encoding="utf-8")
 
 
-def _fn_block(src: str, start_marker: str, end_marker: str) -> str:
-    start = src.index(start_marker)
-    end = src.index(end_marker, start)
-    return src[start:end]
-
-
-def _card_src() -> str:
-    src = _src()
-    return _fn_block(src, "function MP_ProfileCard(", "function MP_ProfilesGrid(")
-
-
 def _modal_src() -> str:
     src = _src()
     return src[src.index("function MP_ProfileModal("):]
 
 
-# ---- Item 1: card anatomy -------------------------------------------------
-
-
-def test_bound_by_and_provider_down_badges_are_data_driven() -> None:
-    """SUPERSEDED (platform wave P4): P1b deferred these as P2-dependent
-    (the backend didn't serve agent_count/graph_node_count yet); P4
-    landed them once it did. Pin that they're derived from real props,
-    not static copy invented ahead of the data - see
-    test_model_profiles_p4.py for the full badge behavior."""
-    card = _card_src()
-    assert "MP_BoundBadge" in card
-    assert "providerDown" in card
-
-
-def test_card_fact_rows_are_static_system_behavior_copy() -> None:
-    card = _card_src()
-    assert "at create · switch · per graph node" in card
-    assert "blocked while referenced" in card
-
-
-def test_card_footer_has_open_and_delete() -> None:
-    card = _card_src()
-    assert "Open" in card
-    assert "Delete" in card
-
-
-def test_grid_has_an_empty_state() -> None:
-    src = _src()
-    assert 'data-testid="profiles-empty"' in src
+# RETIRED (Plan 03, Task 6): the card anatomy tests (test_bound_by_and_provider_down_badges_are_data_driven,
+# test_card_fact_rows_are_static_system_behavior_copy, test_card_footer_has_open_and_delete, test_grid_has_an_empty_state). MP_ProfileCard and
+# MP_ProfilesGrid were mounted only by the Providers page's profile panels, which left with Plan 02 (#804); the LLM Profiles page draws its cards
+# through the platform kit. The bound-by copy is pinned by test_a_single_card_shows_imported_provider_model_window_and_usage and
+# test_usage_says_unbound_at_zero (tests/ui/test_llm_profiles_page.py), the open and delete by the page's card (pk-card-open, the menu's
+# nv-plat-delete: tests/ui/test_platform_list_page.py), and its empty state by tests/ui/test_platform_empty_states.py. The provider-down badge is
+# not carried over: the provider's own card on Platform > Providers shows its reachability.
 
 
 # ---- Item 2: create/edit modal --------------------------------------------
@@ -108,29 +78,12 @@ def test_modal_footnote_is_present() -> None:
     assert "Deleting is refused while anything uses it." in modal
 
 
-# ---- Item 3: honest 409 delete-guard surfacing -----------------------------
-
-
-def test_delete_guard_surfaces_the_real_error_detail_not_an_invented_shape() -> None:
-    """The backend's ReferenceCheck 409s with a plain string in
-    `detail` (routers/model_profiles.py via
-    api/routers/_references.py's build_reference_block_hook) - never a
-    structured {child_kind, count} payload despite that hook's own
-    docstring example. Pin that the UI reads err.detail verbatim
-    rather than a names list or a parsed JSON shape the wire never
-    sends. The words come from the one refusal reader (window.primerApi.readRefusal, ticket 01a11cd1-7aaf), which says the
-    `in_use_by: ...` sentence in plain words (ADM-12) from the same string; it reads no `child_kind`, no names list."""
-    card = _card_src()
-    delete = card.split("const doDelete")[1].split("finally")[0]
-    assert "window.primerApi.readRefusal(e" in delete
-    assert "child_kind" not in delete and "JSON.parse" not in delete, "no structured shape is read from the refusal"
-
-
-def test_delete_confirm_flow_has_a_confirm_and_cancel_step() -> None:
-    card = _card_src()
-    assert "confirmDelete" in card
-    assert "Confirm" in card
-    assert "Cancel" in card
+# ---- Item 3: the delete guard ----------------------------------------------
+# RETIRED (Plan 03, Task 6): test_delete_guard_surfaces_the_real_error_detail_not_an_invented_shape and
+# test_delete_confirm_flow_has_a_confirm_and_cancel_step pinned MP_ProfileCard's own confirm and its reading of the 409. A profile is deleted from
+# the LLM Profiles page's card menu now, through NV_deleteRow: its confirm and the refusal said in the words of window.primerApi.readRefusal are
+# pinned by tests/ui/test_platform_delete_confirm.py, and a harness-managed profile has no Delete at all
+# (test_a_managed_profile_has_no_delete_and_says_who_manages_it).
 
 
 def test_bundle_transpiles_with_model_profiles_p1b() -> None:

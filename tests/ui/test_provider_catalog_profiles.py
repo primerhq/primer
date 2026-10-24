@@ -49,43 +49,11 @@ def test_no_speech_class_offers_a_profile_affordance() -> None:
         assert "profiles" not in entry, f"{key} must not carry a profiles flag"
 
 
-def test_profiles_can_be_deleted_from_the_panel() -> None:
-    """RETARGET (platform wave P4): delete now lives on MP_ProfileCard,
-    wired in via MP_ProfilesGrid rather than reimplemented in the
-    panel."""
-    src = _read("components/model-profiles.jsx")
-    assert 'data-testid={`profile-card-delete-${profile.id}`}' in src
-    assert "/model_profiles/${encodeURIComponent(profile.id)}" in src
 
-
-def test_harness_managed_rows_hide_mutation() -> None:
-    """Mirrors the backend's 409-on-public-CRUD discipline
-    (managed_by_field="harness_id"). RETARGET (platform wave P4): the
-    guard moved onto MP_ProfileCard itself so it survives wherever the
-    card is mounted next, not just this one panel."""
-    src = _read("components/model-profiles.jsx")
-    assert "harness_id" in src
-    assert "harnessManaged" in src
-
-
-def test_a_delete_conflict_renders_inline_not_as_a_toast() -> None:
-    """409 means an agent still points at it; the operator needs to act on
-    that without losing their place. RETARGET (platform wave P4): the
-    per-row error now lives on MP_ProfileCard, scoped per card instead
-    of one panel-wide error string."""
-    src = _read("components/model-profiles.jsx")
-    assert "setErr" in src
-    assert 'data-testid={`profile-card-error-${profile.id}`}' in src
-
-
-def test_profile_delete_is_gated_behind_a_confirm() -> None:
-    """The dialog that regressed on the old page
-    (tests/ui/test_modal_open_prop.py) stays gated here. RETARGET
-    (platform wave P4): confirmDelete is now a plain per-card boolean
-    (React.useState(false)) rather than a panel-wide id comparison -
-    a stronger form of the same gate, since there is no id to compare
-    against at all, so the old confirmProfile?.id-style bug class
-    cannot recur."""
-    src = _read("components/model-profiles.jsx")
-    assert "const [confirmDelete, setConfirmDelete] = React.useState(false);" in src
-    assert 'data-testid={`profile-card-delete-confirm-${profile.id}`}' in src
+# RETIRED (Plan 03, Task 6): test_profiles_can_be_deleted_from_the_panel, test_harness_managed_rows_hide_mutation,
+# test_a_delete_conflict_renders_inline_not_as_a_toast and test_profile_delete_is_gated_behind_a_confirm pinned the source of MP_ProfileCard, which
+# nothing has mounted since the panel left the catalog (#804); the card is deleted. On the LLM Profiles page a profile is deleted from its card's
+# menu (tests/ui/test_platform_list_page.py::test_every_deletable_entry_gets_one_danger_item_in_its_menu), behind NV_deleteRow's confirm, and a
+# refusal (409 in_use_by, say) is a toast in the words of window.primerApi.readRefusal (tests/ui/test_platform_delete_confirm.py), as on every
+# Platform page; a harness-managed profile has no Delete and says who manages it
+# (tests/ui/test_llm_profiles_page.py::test_a_managed_profile_has_no_delete_and_says_who_manages_it).
