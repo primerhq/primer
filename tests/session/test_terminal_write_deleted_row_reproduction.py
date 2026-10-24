@@ -1,6 +1,9 @@
 """A turn's terminal write that races a DELETED row raises ``NotFoundError`` out of the helper (ticket 01a1134b).
 
-Reproduction only: the fix is held for the independent verifiers (the terminal write is on the session core path).
+Reproduction only: the fix is held for the independent verifiers (the terminal write is on the session core path). The
+REST of a turn (a WAITING write, or PAUSED under a pause) is no longer an ``update_unless``: since ticket 01a16d9f it is a
+field-scoped ``patch_if`` of ``status`` that takes a vanished row as the read-time absence is taken, so its row of the
+helper test passes now and is no longer marked; the ENDED writes still carry the gap.
 
 ``_transition_session_status`` reads the row, decides, and then writes with ``update_unless`` (a conditional write that
 refuses an ENDED row). A row that is DELETED between that read and the write is neither "ended" nor "absent" as far as
@@ -51,6 +54,12 @@ WRITES = [
     pytest.param(SessionStatus.ENDED, "failed", id="failure"),
     pytest.param(SessionStatus.WAITING, None, id="rest-waiting"),
 ]
+#: The same writes, the ENDED ones still marked with the held gap; the rest handles a vanished row since ticket 01a16d9f.
+WRITES_WITH_THE_GAP = [
+    pytest.param(SessionStatus.ENDED, "completed", id="completion", marks=xfail_the_race),
+    pytest.param(SessionStatus.ENDED, "failed", id="failure", marks=xfail_the_race),
+    pytest.param(SessionStatus.WAITING, None, id="rest-waiting"),
+]
 
 
 def _delete_the_row_between_the_helpers_read_and_write(storage, session_id: str) -> dict[str, Any]:
@@ -58,20 +67,34 @@ def _delete_the_row_between_the_helpers_read_and_write(storage, session_id: str)
 
     Returns what the store did, so a test can say the race really happened: ``deleted`` (the delete ran) and ``raised``
     (the store itself raised ``NotFoundError`` for the write, as the real backends do)."""
-    real_update_unless = storage.update_unless
+    real_update_unless, real_patch_if = storage.update_unless, storage.patch_if
     seen: dict[str, Any] = {"deleted": False, "raised": None}
 
-    async def update_unless(entity, **kwargs):
-        if kwargs.get("field") == "status" and not seen["deleted"]:
+    async def delete_first() -> None:
+        if not seen["deleted"]:
             seen["deleted"] = True
             await storage.delete(session_id)
+
+    async def update_unless(entity, **kwargs):
+        if kwargs.get("field") == "status":
+            await delete_first()
         try:
             return await real_update_unless(entity, **kwargs)
         except NotFoundError as exc:
             seen["raised"] = exc
             raise
 
-    storage.update_unless = update_unless
+    async def patch_if(entity_id, patch=None, **kwargs):
+        # a turn's rest is one field-scoped write of ``status`` (ticket 01a16d9f)
+        if "status" in (patch or {}):
+            await delete_first()
+        try:
+            return await real_patch_if(entity_id, patch, **kwargs)
+        except NotFoundError as exc:
+            seen["raised"] = exc
+            raise
+
+    storage.update_unless, storage.patch_if = update_unless, patch_if
     return seen
 
 
@@ -105,8 +128,7 @@ async def test_scenario_the_row_is_deleted_between_the_helpers_read_and_its_writ
     assert await storage.get(sid) is None, "the row must still be gone"
 
 
-@xfail_the_race
-@pytest.mark.parametrize("new_status, reason", WRITES)
+@pytest.mark.parametrize("new_status, reason", WRITES_WITH_THE_GAP)
 async def test_a_row_deleted_between_the_read_and_the_write_is_reported_like_a_row_that_was_already_gone(
     seeded_session, fake_storage_provider, new_status, reason,
 ) -> None:

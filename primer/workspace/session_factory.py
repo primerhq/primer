@@ -763,8 +763,9 @@ async def pause_session(
     * A session no worker holds a lease on (CREATED / WAITING) goes PAUSED at once.
     * Any other live session (RUNNING, or PAUSED already) gets ``pause_requested=True`` on its ROW: the worker that claims it next, in whatever
       process, reads the flag off the row before it builds an executor (``primer.session.dispatch.run_one_session_turn``), moves it to PAUSED and
-      runs no turn. A turn already in flight does not see it and finishes: the row then rests WAITING with ``pause_requested`` still set, and
-      ``wake_session``'s pause hold keeps every machine wake off it until a resume or a person's message.
+      runs no turn. A turn already in flight does not see it and finishes (or a Stop cuts it short): the turn's end then rests the row PAUSED,
+      ``pause_requested`` still set (ticket 01a16d9f; an autonomous session whose turn ends it still ends), and ``wake_session``'s pause hold
+      keeps every machine wake off it until a resume or a person's message.
     * ``NotFoundError`` when the session does not exist on the workspace, ``ConflictError`` when it has ended.
 
     Returns the row as written. ``sessions`` is the ``WorkspaceSession`` storage handle; ``guard`` (:data:`SessionGuard`) is the caller's rank rule.

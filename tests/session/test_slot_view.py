@@ -81,6 +81,13 @@ def test_a_clean_rest_shows_through_a_slot_that_still_says_running():
     assert got.status == SessionStatus.WAITING
 
 
+def test_a_pause_shows_through_a_slot_that_still_says_running():
+    """A pause is written on the row alone, and a turn a pause landed in rests PAUSED (ticket 01a16d9f): the slot never learns either."""
+    got = overlay_row_on_info(_slot(status=SessionStatus.RUNNING), _row(status=SessionStatus.PAUSED), workspace_id="ws-1")
+
+    assert got.status == SessionStatus.PAUSED
+
+
 @pytest.mark.parametrize(
     ("slot_status", "row_status"),
     [

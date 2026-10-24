@@ -18,7 +18,7 @@ Every reader that serves the slot to a person or a tool therefore passes it thro
 :func:`overlay_rows_on_infos` (a page) first, so two routes can never tell two stories. The overlay owns the LIFECYCLE fields only
 (``status``, ``ended_reason``, ``ended_detail``, ``ended_at``) and ``last_turn_error`` (the row's alone); everything else in the slot (name, agent, timestamps) is served as it
 is. It corrects exactly three disagreements: a row that is ENDED (the row's end, whatever the slot says), a slot that says ENDED under a
-row that is not, and a slot still RUNNING under a WAITING row. Every OTHER disagreement between two live states (a slot WAITING or
+row that is not, and a slot still RUNNING under a WAITING or a PAUSED row (a pause is written on the row alone). Every OTHER disagreement between two live states (a slot WAITING or
 PAUSED under a RUNNING row, a slot RUNNING under a CREATED row) is left alone on purpose: those are in-turn states the executor writes to
 the slot first, nothing shows the row is more current there, and the claim here is about how a session ENDED, not a general merge. A slot with no row, or whose row belongs to another workspace, is served unchanged: there is nothing to derive it from.
 
@@ -51,7 +51,8 @@ def overlay_row_on_info(
 
     * ``row`` ENDED: the session ended, with the row's reason, detail and time (the slot's reason is kept only if the row has none).
     * the slot says ENDED but the row does not: the session is alive, so it has no end reason, detail or time.
-    * the slot still RUNNING under a WAITING row: a clean rest, which the row records and the slot never learns about.
+    * the slot still RUNNING under a WAITING or a PAUSED row: a clean rest, or a pause (written on the row alone, and a turn a pause landed in
+      rests PAUSED: ticket 01a16d9f), which the row records and the slot never learns about.
 
     ``workspace_id`` (when given) must match the row's: a row for the same id on another workspace is not this session's.
     """
@@ -72,8 +73,8 @@ def overlay_row_on_info(
         return info.model_copy(update={
             "status": row.status, "ended_reason": None, "ended_detail": None, "ended_at": None, **failure,
         })
-    if info.status == SessionStatus.RUNNING and row.status == SessionStatus.WAITING:
-        return info.model_copy(update={"status": SessionStatus.WAITING, **failure})
+    if info.status == SessionStatus.RUNNING and row.status in (SessionStatus.WAITING, SessionStatus.PAUSED):
+        return info.model_copy(update={"status": row.status, **failure})
     return info.model_copy(update=failure)
 
 
