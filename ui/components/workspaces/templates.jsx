@@ -1138,8 +1138,9 @@ function WT_TemplatesPage() {
   var setOpen = openState[1];
 
   React.useEffect(function () {
+    // A request is taken either way, but an overlay that is already open (an edit with unsaved changes, or a create) is left as it is.
     function take() {
-      if (WT_consumeCreateRequest()) setOpen({ create: true });
+      if (WT_consumeCreateRequest()) setOpen(function (o) { return o || { create: true }; });
     }
     take();
     window.addEventListener("wt:create", take);
