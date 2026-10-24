@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from primer.artifact.checks import check_artifact_provider_delete
 from primer.artifact.db import DbArtifactStorage
 from primer.artifact.routing import RoutingArtifactStorage, count_artifacts_held
 from primer.int.artifact_storage import ArtifactStorage
@@ -213,6 +214,54 @@ async def test_a_cancelled_record_write_removes_the_blob_too(world: World, monke
         await _put(world)
 
     assert world.mem.blobs == {}
+
+
+@pytest.mark.parametrize("failure", [asyncio.CancelledError, ConnectionResetError])
+async def test_a_record_that_committed_before_the_put_failed_is_removed_too(
+    world: World, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException],
+) -> None:
+    """The record INSERT commits and the call still fails (a cancel from a client that went away, a connection lost after the commit).
+    The bytes were removed but the record stayed, so the provider counted an artifact it did not hold and refused every delete and move
+    with "holds 1 artifact(s)", which no one could clear: no id was handed out and no route lists the records (the G5 audit, G5-05)."""
+    await _activate(world.sp, "mem-1")
+    real_create = world.locations.create
+
+    async def commit_then_fail(row):
+        await real_create(row)
+        raise failure
+
+    monkeypatch.setattr(world.locations, "create", commit_then_fail)
+    with pytest.raises(failure):
+        await _put(world)
+    monkeypatch.undo()
+
+    assert world.mem.blobs == {}
+    assert (await world.locations.list(OffsetPage(offset=0, length=10))).items == [], "the committed record was removed"
+    assert await count_artifacts_held(world.sp, "mem-1") == 0
+    await _activate(world.sp, DEFAULT_ARTIFACT_PROVIDER_ID)
+    await check_artifact_provider_delete(world.sp, "mem-1")          # no "holds 1 artifact(s)" left to block the delete
+
+
+async def test_a_failed_record_removal_is_logged_and_the_bytes_are_still_removed(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    await _activate(world.sp, "mem-1")
+    real_create = world.locations.create
+
+    async def commit_then_fail(row):
+        await real_create(row)
+        raise RuntimeError("connection lost after the commit")
+
+    async def cannot_delete(artifact_id: str) -> None:
+        raise OSError("records table down")
+
+    monkeypatch.setattr(world.locations, "create", commit_then_fail)
+    monkeypatch.setattr(world.locations, "delete", cannot_delete)
+    with caplog.at_level(logging.WARNING, logger="primer.artifact.routing"), pytest.raises(RuntimeError, match="after the commit"):
+        await _put(world)
+
+    assert "records table down" in caplog.text, "the record cleanup failure is logged"
+    assert world.mem.blobs == {}, "the bytes are removed whatever the record cleanup did"
 
 
 # ---- get ------------------------------------------------------------------------------------------------------------------------------------------
