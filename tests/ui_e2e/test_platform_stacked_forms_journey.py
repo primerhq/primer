@@ -8,6 +8,7 @@ Approval policies are opened and cancelled only: creating one needs a tool and a
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -67,10 +68,6 @@ def _delete(base_url: str, path: str) -> None:
             pass
 
 
-def _plain_url(page) -> str:
-    return page.url.replace("%3A", ":")
-
-
 def test_new_agent_opens_the_form_with_no_list_behind_it_and_a_created_agent_lands_on_its_detail(page, base_url: str, console_url: str, unique_suffix: str) -> None:
     agent_id = f"ag-adm06-{unique_suffix}"
     with _seeded_llm_provider(base_url, unique_suffix) as provider_id:
@@ -91,7 +88,9 @@ def test_new_agent_opens_the_form_with_no_list_behind_it_and_a_created_agent_lan
 
             # The created agent lands on its own detail overlay, and its card is in the grid behind it.
             expect(page.get_by_test_id("nv-overlay-body")).to_be_visible(timeout=15_000)
-            assert f"overlay=agents::{agent_id}" in _plain_url(page), page.url
+            # The console writes the overlay URL a moment after the body becomes visible (CI saw the body with the
+            # URL still on the list view), so wait for the URL; the query percent-encodes the "::", so match both.
+            expect(page).to_have_url(re.compile(r"overlay=agents(::|%3A%3A)" + re.escape(agent_id)), timeout=15_000)
             page.get_by_test_id("nv-plat-filter").fill(agent_id)
             expect(page.get_by_test_id(f"pk-card:{agent_id}")).to_be_attached(timeout=15_000)
         finally:
@@ -142,7 +141,9 @@ def test_new_graph_opens_the_dialog_with_no_list_behind_it_and_a_created_graph_l
             modal.get_by_role("button", name="Create").first.click()
 
             expect(page.get_by_test_id("nv-overlay-body")).to_be_visible(timeout=15_000)
-            assert f"overlay=graphs::{graph_id}" in _plain_url(page), page.url
+            # The overlay URL is written a moment after the body becomes visible, so wait for the URL; the query
+            # percent-encodes the "::", so match both forms.
+            expect(page).to_have_url(re.compile(r"overlay=graphs(::|%3A%3A)" + re.escape(graph_id)), timeout=15_000)
             page.get_by_test_id("nv-plat-filter").fill(graph_id)
             expect(page.get_by_test_id(f"pk-card:{graph_id}")).to_be_attached(timeout=15_000)
         finally:
