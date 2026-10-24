@@ -24,7 +24,7 @@ from primer.model.trigger import (
     Trigger,
 )
 from primer.storage.q import Q
-from primer.trigger.reach import refuse_target_out_of_reach, subscription_reaches_outside
+from primer.trigger.reach import refuse_target_out_of_reach, subscription_in_reach, subscription_reaches_outside
 from primer.trigger.cron import (
     CronInvalid,
     TimezoneInvalid,
@@ -507,11 +507,7 @@ async def update_subscription(
     if event_matcher is not _UNSET and event_matcher is not None:
         validate_text_pattern(event_matcher.text_pattern)
     subs_storage = deps.storage_provider.get_storage(Subscription)
-    sub = await subs_storage.get(subscription_id)
-    if sub is None or sub.trigger_id != trigger_id:
-        raise SubscriptionNotFound(subscription_id)
-    if await refuse_target_out_of_reach(deps.storage_provider, reach, sub.config) is not None:
-        raise SubscriptionNotFound(subscription_id)
+    sub = await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
     sub.owner = owner
     sub.reach = reach
     if payload_template is not _UNSET:
@@ -530,14 +526,29 @@ async def update_subscription(
     return sub
 
 
-async def delete_subscription(
-    *, trigger_id: str, subscription_id: str, deps: ServiceDeps,
-) -> None:
-    subs_storage = deps.storage_provider.get_storage(Subscription)
-    sub = await subs_storage.get(subscription_id)
-    if sub is None or sub.trigger_id != trigger_id:
+async def _subscription_in_reach(trigger_id: str, subscription_id: str, reach: str | None, deps: ServiceDeps) -> Subscription:
+    """The subscription ``subscription_id`` of ``trigger_id``, else :class:`SubscriptionNotFound`.
+
+    ``reach`` is the calling session's (:func:`primer.session.peer_messages.caller_reach`): a subscription whose target is outside it raises the
+    same :class:`SubscriptionNotFound` as an unknown id or another trigger's subscription (ticket 01a16c22; review of #874, C1), so the single
+    subscription tools never confirm an id out of reach. ``None`` (prime, a person, an API client) reaches every subscription.
+    """
+    sub = await deps.storage_provider.get_storage(Subscription).get(subscription_id)
+    if sub is None or sub.trigger_id != trigger_id or not await subscription_in_reach(deps.storage_provider, reach, sub):
         raise SubscriptionNotFound(subscription_id)
-    await subs_storage.delete(subscription_id)
+    return sub
+
+
+async def delete_subscription(
+    *, trigger_id: str, subscription_id: str, reach: str | None = None, deps: ServiceDeps,
+) -> None:
+    """Delete one subscription of ``trigger_id``.
+
+    ``reach`` is the calling session's: a subscription whose target is outside it raises :class:`SubscriptionNotFound`, exactly as an unknown id,
+    and nothing is deleted (ticket 01a16c22).
+    """
+    await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
+    await deps.storage_provider.get_storage(Subscription).delete(subscription_id)
 
 
 # ---------------------------------------------------------------------------
@@ -603,13 +614,10 @@ async def rotate_webhook_token(
 
 
 async def get_subscription(
-    *, trigger_id: str, subscription_id: str, deps: ServiceDeps,
+    *, trigger_id: str, subscription_id: str, reach: str | None = None, deps: ServiceDeps,
 ) -> Subscription:
-    subs_storage = deps.storage_provider.get_storage(Subscription)
-    sub = await subs_storage.get(subscription_id)
-    if sub is None or sub.trigger_id != trigger_id:
-        raise SubscriptionNotFound(subscription_id)
-    return sub
+    """One subscription of ``trigger_id``; ``reach`` as in :func:`delete_subscription` (out of reach is an unknown id)."""
+    return await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
 
 
 # Window size for the paginated list helpers below. Each list walks the
@@ -666,13 +674,26 @@ async def list_triggers(
 
 
 async def list_subscriptions(
-    *, trigger_id: str, deps: ServiceDeps,
+    *, trigger_id: str, reach: str | None = None, deps: ServiceDeps,
 ) -> list[Subscription]:
     """Return ALL subscriptions for a trigger, paging through every row
-    (previously capped at the first 200)."""
+    (previously capped at the first 200).
+
+    ``reach`` is the calling session's: a subscription whose target is
+    outside it is left out (ticket 01a16c22). The filter runs over the
+    drained rows, never per page: the storage query cannot tell a session
+    target's workspace (that is the target session's row), and a page is
+    read in full whatever share of it is in reach, so no page short of
+    in-reach rows ends the read and no row is skipped. ``None`` (prime, a
+    person, an API client, and the trigger-level checks and the delete
+    cascade, which must see every subscription) returns them all.
+    """
     subs_storage = deps.storage_provider.get_storage(Subscription)
     q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger_id)
-    return await _drain_list(subs_storage, predicate=q.build())
+    rows = await _drain_list(subs_storage, predicate=q.build())
+    if reach is None:
+        return rows
+    return [sub for sub in rows if await subscription_in_reach(deps.storage_provider, reach, sub)]
 
 
 __all__ = [

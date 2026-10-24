@@ -21,6 +21,10 @@ A trigger is not in a workspace, but its subscriptions are, so the tools that ac
 outside prime, ``trigger::update``, ``trigger::fire_now`` and ``trigger::delete`` answer exactly as an unknown trigger when any subscription of the
 trigger reaches outside the caller's reach (:func:`subscription_reaches_outside`). Without that, re-enabling or firing a person's trigger would start
 a session in prime, or wake a session parked in another workspace.
+
+The tools that read, update or delete ONE subscription, or list a trigger's subscriptions, ask of each subscription (ticket 01a16c22,
+:func:`subscription_in_reach`): from a session outside prime one whose target is out of reach is left out of a list and answered exactly as an
+unknown subscription id, so a target id seen nowhere else is never served, and a delete removes nothing.
 """
 
 from __future__ import annotations
@@ -64,6 +68,34 @@ async def refuse_target_out_of_reach(storage_provider: Any, reach: str | None, c
         return REFUSE_NOT_FOUND.format(session_id=config.session_id)
     # A kind added later without a rule here is refused from a session outside prime until it gets one (fail closed).
     return f"a {getattr(config, 'kind', '?')} subscription cannot be saved from a session outside the default workspace (prime)"
+
+
+async def subscription_in_reach(storage_provider: Any, reach: str | None, sub: Subscription) -> bool:
+    """Whether a caller whose reach is ``reach`` may see or act on the one subscription ``sub`` (ticket 01a16c22).
+
+    The question of every tool that names a single subscription or lists them (``list_subscriptions``, ``get_subscription``,
+    ``update_subscription``, ``delete_subscription``, and the channel-binding twins ``list_channel_bindings`` and ``delete_channel_binding``):
+    one that is not in reach is left out of a list and answered exactly as an unknown subscription id. The target is classified as the save
+    check classifies it (:func:`refuse_target_out_of_reach`), so what a session may save, read, update and delete agree: ``reach`` ``None``
+    (prime, a person, an API client) reaches every subscription; otherwise a fresh-session subscription is in reach when its ``workspace_id`` is
+    the caller's workspace, a ``session_append`` or ``parked_session`` one when its target session is in the caller's workspace. A target session
+    that no longer exists is in no workspace, so out of reach (from prime or as a person it is still read and deleted), and a kind with no rule
+    there is out of reach (fail closed).
+    """
+    return await refuse_target_out_of_reach(storage_provider, reach, sub.config) is None
+
+
+#: What a session outside prime reads about the tools that name one subscription (ticket 01a16c22).
+SUBSCRIPTION_REACH_NOTE = (
+    " From a session outside the default workspace (prime) a subscription whose target is not your own workspace or a session in it answers "
+    "``type=subscription_not_found``, as an unknown id does."
+)
+
+#: What a session outside prime reads about the tools that list a trigger's subscriptions (ticket 01a16c22).
+SUBSCRIPTION_LIST_REACH_NOTE = (
+    " From a session outside the default workspace (prime) only the subscriptions whose target is your own workspace or a session in it are "
+    "listed; the others are left out, as if they did not exist."
+)
 
 
 async def subscription_reaches_outside(storage_provider: Any, reach: str | None, sub: Subscription) -> bool:
@@ -123,4 +155,12 @@ async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> 
     )
 
 
-__all__ = ["TARGET_OUT_OF_REACH", "refuse_fire_out_of_reach", "refuse_target_out_of_reach", "subscription_reaches_outside"]
+__all__ = [
+    "SUBSCRIPTION_LIST_REACH_NOTE",
+    "SUBSCRIPTION_REACH_NOTE",
+    "TARGET_OUT_OF_REACH",
+    "refuse_fire_out_of_reach",
+    "refuse_target_out_of_reach",
+    "subscription_in_reach",
+    "subscription_reaches_outside",
+]

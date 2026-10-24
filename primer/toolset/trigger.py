@@ -62,6 +62,7 @@ from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.owner import view_for
+from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ServiceDeps,
@@ -337,7 +338,7 @@ TOOL_LIST_SUBS = make_tool(
         "Use when you need all subscriptions for a given ``trigger_id``; "
         "for one known subscription use ``get_subscription``. Returns an "
         "array of Subscription rows, or ``type=trigger_not_found`` if the "
-        "parent trigger doesn't exist."
+        "parent trigger doesn't exist." + SUBSCRIPTION_LIST_REACH_NOTE
     ),
     args_schema=_SubListArgs.model_json_schema(),
     examples=[
@@ -358,7 +359,7 @@ TOOL_GET_SUB = make_tool(
         "``subscription_id`` and want that subscription's full row; to "
         "enumerate all of a trigger's subscriptions use "
         "``list_subscriptions``. Missing returns "
-        "``type=subscription_not_found``."
+        "``type=subscription_not_found``." + SUBSCRIPTION_REACH_NOTE
     ),
     args_schema=_SubIdArgs.model_json_schema(),
     examples=[
@@ -411,10 +412,7 @@ TOOL_UPDATE_SUB = make_tool(
         "Use when changing a subscription's payload_template / parallelism "
         "/ enabled / description; only supplied fields are modified. To "
         "change trigger-level fields use ``update``. Missing returns "
-        "``type=subscription_not_found``. From a session outside the "
-        "default workspace (prime) a subscription whose target is not your "
-        "own workspace or a session in it answers "
-        "``type=subscription_not_found`` too, as an unknown id does."
+        "``type=subscription_not_found``." + SUBSCRIPTION_REACH_NOTE
     ),
     args_schema=_SubUpdateArgs.model_json_schema(),
     examples=[
@@ -438,7 +436,7 @@ TOOL_DELETE_SUB = make_tool(
         "Use when removing a single subscription while keeping the trigger "
         "and its other subscriptions; to remove the whole trigger use "
         "``delete``. Returns ``{ok: true}`` or "
-        "``type=subscription_not_found``."
+        "``type=subscription_not_found``." + SUBSCRIPTION_REACH_NOTE
     ),
     args_schema=_SubIdArgs.model_json_schema(),
     examples=[
@@ -720,8 +718,9 @@ def _make_list_subs_handler(
             await get_trigger(trigger_id=args.trigger_id, deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
+        # From a session outside prime, a subscription whose target is out of reach is left out (ticket 01a16c22).
         items = await list_subscriptions(
-            trigger_id=args.trigger_id, deps=deps,
+            trigger_id=args.trigger_id, reach=await caller_reach(storage_provider, ctx), deps=deps,
         )
         # A non-manager sees only the owner's display and role (A-20).
         caller = _caller(ctx)
@@ -747,6 +746,8 @@ def _make_get_sub_handler(
             sub = await get_subscription(
                 trigger_id=args.trigger_id,
                 subscription_id=args.subscription_id,
+                # Out of the caller's reach answers as an unknown subscription (ticket 01a16c22).
+                reach=await caller_reach(storage_provider, ctx),
                 deps=deps,
             )
         except SubscriptionNotFound as exc:
@@ -841,7 +842,7 @@ def _make_delete_sub_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], *, ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _SubIdArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -851,6 +852,8 @@ def _make_delete_sub_handler(
             await delete_subscription(
                 trigger_id=args.trigger_id,
                 subscription_id=args.subscription_id,
+                # Out of the caller's reach answers as an unknown subscription and deletes nothing (ticket 01a16c22).
+                reach=await caller_reach(storage_provider, ctx),
                 deps=deps,
             )
         except SubscriptionNotFound as exc:
