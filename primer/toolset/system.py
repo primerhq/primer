@@ -125,7 +125,7 @@ from primer.model.channel import (
 from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.channel.reply_binding import ReplyTarget
-from primer.model.trigger import SubscriptionConfig
+from primer.model.trigger import Parallelism, SubscriptionConfig
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE
 from primer.trigger.service import (
     ServiceDeps,
@@ -925,7 +925,7 @@ def build_system_toolset(
             ),
         )
         payload_template: str | None = None
-        parallelism: str = "skip"
+        parallelism: Parallelism = "skip"
         description: str | None = Field(default=None, max_length=2000)
         enabled: bool = True
 

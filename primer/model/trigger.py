@@ -116,7 +116,10 @@ TriggerConfig = Annotated[
 ]
 
 
-_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
+#: What a trigger slug must match. The tool and REST arguments check it too, so a bad slug is refused as an argument (``validation-error``,
+#: 422) before a ``Trigger`` is built (ticket 01a16ddb, ruling 5).
+SLUG_PATTERN = r"^[a-z][a-z0-9-]{1,63}$"
+_SLUG_RE = re.compile(SLUG_PATTERN)
 
 
 class Trigger(Identifiable):
@@ -204,11 +207,15 @@ SubscriptionConfig = Annotated[
 ]
 
 
+#: A subscription's ``parallelism``; every way in types its argument with it, on create and on update (ticket 01a16ddb, ruling 5).
+Parallelism = Literal["skip", "queue"]
+
+
 class Subscription(Identifiable):
     trigger_id: str
     config: SubscriptionConfig
     payload_template: str | None = None  # Jinja2 rendered against fire context
-    parallelism: Literal["skip", "queue"] = "skip"
+    parallelism: Parallelism = "skip"
     event_matcher: EventMatcher | None = None
     # ``reply_target`` carries a ``ReplyTarget`` defined in a later part. Until
     # that part lands (and calls ``Subscription.model_rebuild()``), the field is
