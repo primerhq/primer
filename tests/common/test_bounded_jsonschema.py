@@ -101,3 +101,48 @@ async def test_the_off_loop_form_leaves_the_event_loop_running():
     state["stop"] = True
     await task
     assert max(gaps) < 0.2, max(gaps)
+
+
+# ---- #859 round 3: R2-9 (the budget before and around compiling), R2-3 (the interactive executor) -----------------------
+
+
+def test_a_spent_budget_refuses_before_compiling_a_schema_pattern(monkeypatch):
+    import primer.common.bounded_jsonschema as bounded
+
+    compiled: list[str] = []
+    monkeypatch.setattr(bounded, "compile_user_regex", lambda p, **kw: compiled.append(p))
+    with pytest.raises(UserRegexTimeout):
+        validate_bounded("abc", {"type": "string", "pattern": "^never-compiled$"}, seconds=0.0)
+    assert compiled == []
+
+
+def test_compile_time_is_charged_to_the_validation_budget(monkeypatch):
+    import primer.common.bounded_jsonschema as bounded
+
+    real = bounded.compile_user_regex
+
+    def _slow(pattern, **kwargs):
+        time.sleep(0.05)
+        return real(pattern, **kwargs)
+
+    monkeypatch.setattr(bounded, "compile_user_regex", _slow)
+    # A trivial pattern: only the charged compile can spend this 30 ms budget.
+    with pytest.raises(UserRegexTimeout):
+        validate_bounded("abc", {"type": "string", "pattern": "^charged-compile-[a-z]+$"}, seconds=0.03)
+
+
+async def test_output_schema_validation_runs_on_the_interactive_executor(monkeypatch):
+    import threading
+
+    import primer.common.bounded_jsonschema as bounded
+
+    names: list[str] = []
+    real = bounded.validate_bounded
+
+    def _recording(*args, **kwargs):
+        names.append(threading.current_thread().name)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(bounded, "validate_bounded", _recording)
+    await validate_bounded_off_loop("abc", {"type": "string", "pattern": "^a"})
+    assert names and names[0].startswith("user-regex-interactive"), names

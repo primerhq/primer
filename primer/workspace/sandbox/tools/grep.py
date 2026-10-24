@@ -6,7 +6,7 @@ Slower than ``rg`` shelled into the container but fully portable.
 
 The pattern is bounded exactly as on the local backend (G6-4): the same
 compile, the same per-call budget and per-search bound, and each file is
-matched on the user-regex executor with the GIL released, never inside the
+matched on the user-regex bulk executor with the GIL released, never inside the
 coroutine.
 """
 
@@ -17,7 +17,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
-from primer.common.user_regex import UserRegexTimeout, run_off_loop
+from primer.common.user_regex import UserRegexTimeout, run_bulk
 from primer.int.sandbox import Sandbox
 from primer.model.chat import ToolExample
 from primer.model.except_ import NotFoundError
@@ -100,7 +100,7 @@ class SandboxGrep(WorkspaceTool):
             text = body.decode("utf-8", errors="replace")
             rel = workspace_relative(self._root, path_abs)
             try:
-                lines, count = await run_off_loop(
+                lines, count = await run_bulk(
                     grep_text,
                     text,
                     rel,

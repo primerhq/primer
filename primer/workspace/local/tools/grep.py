@@ -3,11 +3,11 @@
 The pattern is the agent's (G6-4): it is checked and compiled through
 :mod:`primer.common.user_regex` (at most 1000 characters, the engine-parsed
 repeat cap, the ``regex`` engine, never cached) and matched on the user-regex
-executor with the GIL released, under one :data:`GREP_MATCH_SECONDS` budget
+bulk executor with the GIL released, under one :data:`GREP_MATCH_SECONDS` budget
 per call and a :data:`GREP_PER_SEARCH_SECONDS` bound per line search, so a
 catastrophic pattern ends in an error that names its cause instead of
 stalling every session on the worker. An ordinary pattern is matched with
-one whole-text scan per file (:func:`~primer.common.user_regex.matching_lines`).
+one timed scan per file (:func:`~primer.common.user_regex.line_scanner`).
 The sandbox backend shares :func:`compile_grep_pattern` and :func:`grep_text`.
 """
 
@@ -28,9 +28,9 @@ from primer.common.user_regex import (
     UserRegexError,
     UserRegexTimeout,
     compile_user_regex,
-    line_prefilter,
+    line_scanner,
     matching_lines,
-    run_off_loop,
+    run_bulk,
 )
 from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
@@ -143,7 +143,7 @@ class Grep(WorkspaceTool):
         files = await asyncio.to_thread(_collect_files, target, args.glob)
         budget = grep_budget()
         try:
-            lines, match_count, file_count = await run_off_loop(
+            lines, match_count, file_count = await run_bulk(
                 _grep_files,
                 files,
                 rx=rx,
@@ -185,16 +185,16 @@ class Grep(WorkspaceTool):
 
 @dataclass(frozen=True)
 class GrepPattern:
-    """A grep pattern, compiled, with its whole-text prefilter when the pattern allows one."""
+    """A grep pattern, compiled, with its one-scan-per-file line scanner when the pattern allows one."""
 
     rx: regex.Pattern
-    prefilter: regex.Pattern | None = None
+    scanner: regex.Pattern | None = None
 
 
 def compile_grep_pattern(args: GrepArgs) -> GrepPattern:
     """The bounded, compiled pattern for ``args``; a refusal is a ``BadRequestError`` (an error result to the model).
 
-    A one-shot pattern: neither it nor its prefilter enters the long-lived
+    A one-shot pattern: neither it nor its scanner enters the long-lived
     pattern cache.
     """
     flags = 0
@@ -206,8 +206,8 @@ def compile_grep_pattern(args: GrepArgs) -> GrepPattern:
         rx = compile_user_regex(args.pattern, flags, what="grep pattern")
     except UserRegexError as exc:
         raise BadRequestError(str(exc)) from None
-    prefilter = None if args.multiline else line_prefilter(args.pattern, flags, what="grep pattern")
-    return GrepPattern(rx=rx, prefilter=prefilter)
+    scanner = None if args.multiline else line_scanner(args.pattern, flags, what="grep pattern")
+    return GrepPattern(rx=rx, scanner=scanner)
 
 
 class GrepBudget(MatchBudget):
@@ -281,7 +281,7 @@ def grep_text(
 
     all_lines = text.splitlines()
     try:
-        hits = matching_lines(pattern.rx, all_lines, budget, prefilter=pattern.prefilter)
+        hits = matching_lines(pattern.rx, all_lines, budget, scanner=pattern.scanner)
     except UserRegexTimeout as exc:
         if isinstance(budget, GrepBudget):
             line = getattr(exc, "line", 0)

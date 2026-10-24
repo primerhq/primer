@@ -165,11 +165,12 @@ async def test_grep_matches_on_the_user_regex_executor(tmp_path, backend, monkey
     tool = await BACKENDS[backend](tmp_path, "needle\n")
     result = await tool.execute(GrepArgs(pattern="need", path="."), None)
     assert result.output == "f.txt"
-    assert names and all(name.startswith("user-regex") for name in names), names
+    # R2-3: grep is bulk work, on its own executor, so it cannot hold the tap's threads.
+    assert names and all(name.startswith("user-regex-bulk") for name in names), names
 
 
 @pytest.mark.parametrize("backend", sorted(BACKENDS))
-async def test_the_whole_text_prefilter_keeps_every_answer(tmp_path, backend):
+async def test_the_line_scanner_keeps_every_answer(tmp_path, backend):
     body = "\r\n".join(
         ["def alpha():", "    return 1", "", "x = alpha()  # TODO", "class Beta:", "  def alpha(self): pass", "TODO"]
     )
@@ -184,3 +185,13 @@ async def test_the_whole_text_prefilter_keeps_every_answer(tmp_path, backend):
     for (pattern, mode, context), expected in cases.items():
         result = await tool.execute(GrepArgs(pattern=pattern, path=".", output_mode=mode, context=context), None)
         assert result.output == expected, (pattern, mode, result.output)
+
+
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+async def test_a_pattern_whose_leaf_can_cross_a_line_end_stays_linear(tmp_path, backend):
+    """R2-2: round 2's fast path scanned x[^y]*z across lines and ran out of its 10 s budget over 8,001 lines."""
+    tool = await BACKENDS[backend](tmp_path, "\n".join(["x" * 30] * 8000 + ["yz"]) + "\n")
+    started = time.perf_counter()
+    result = await tool.execute(GrepArgs(pattern=r"x[^y]*z", path=".", output_mode="count"), None)
+    assert result.output == ""
+    assert time.perf_counter() - started < 1.0

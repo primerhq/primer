@@ -13,9 +13,9 @@ from primer.common.user_regex import (
     UserRegexError,
     UserRegexTimeout,
     compile_user_regex,
-    line_prefilter,
+    line_scanner,
     matching_lines,
-    run_off_loop,
+    run_bulk,
 )
 from primer.int.document_content import DocumentContentStore
 from primer.model.except_ import BadRequestError
@@ -80,19 +80,19 @@ async def grep_collection(
 
     A regex is bounded (G6-4): at most 1000 characters, the engine-parsed
     repeat cap, compiled with the ``regex`` engine (one-shot, never cached),
-    and matched on the user-regex executor with the GIL released under one
+    and matched on the user-regex bulk executor with the GIL released under one
     :data:`GREP_MATCH_SECONDS` budget for the call and a
     :data:`GREP_PER_SEARCH_SECONDS` bound per line search. A pattern that is
     refused or runs out of time is a :class:`BadRequestError` naming the
     cause. A literal search is a substring test, with no cap.
     """
-    rx = prefilter = budget = None
+    rx = scanner = budget = None
     if not literal:
         try:
             rx = compile_user_regex(pattern, what="grep pattern")
         except UserRegexError as exc:
             raise BadRequestError(str(exc)) from None
-        prefilter = line_prefilter(pattern, what="grep pattern")
+        scanner = line_scanner(pattern, what="grep pattern")
         budget = MatchBudget(GREP_MATCH_SECONDS, per_search=GREP_PER_SEARCH_SECONDS, what="grep pattern")
 
     cap = max(1, min(max_results, _MAX_RESULTS_CAP))
@@ -108,10 +108,10 @@ async def grep_collection(
         # One more than the room left, so a hit past the cap is seen.
         room = cap - len(hits) + 1
         if literal:
-            found = await run_off_loop(_literal_lines, lines, pattern, room)
+            found = await run_bulk(_literal_lines, lines, pattern, room)
         else:
             try:
-                found = await run_off_loop(matching_lines, rx, lines, budget, prefilter=prefilter, limit=room)
+                found = await run_bulk(matching_lines, rx, lines, budget, scanner=scanner, limit=room)
             except UserRegexTimeout as exc:
                 raise _timeout_error(budget, exc, entry.path, lines_done) from exc
         lines_done += len(lines)
