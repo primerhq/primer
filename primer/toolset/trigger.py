@@ -193,6 +193,14 @@ class _SubscribeChannelArgs(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+#: What a session outside prime reads about the tools that act on a whole trigger (review of #874, B1).
+_TRIGGER_REACH_NOTE = (
+    " From a session outside the default workspace (prime) a trigger with a "
+    "subscription that starts or feeds a session outside your own workspace "
+    "answers ``type=trigger_not_found``, as an unknown trigger does."
+)
+
+
 TOOL_LIST = make_tool(
     id="list",
     toolset_id=TRIGGER_TOOLSET_ID,
@@ -268,7 +276,7 @@ TOOL_UPDATE = make_tool(
         "config. Only supplied fields change. Changing ``config.kind`` is "
         "rejected with ``type=trigger_kind_immutable`` (delete + recreate "
         "to switch kinds). For subscription fields use "
-        "``update_subscription`` instead."
+        "``update_subscription`` instead." + _TRIGGER_REACH_NOTE
     ),
     args_schema=_UpdateArgs.model_json_schema(),
     examples=[
@@ -290,7 +298,7 @@ TOOL_DELETE = make_tool(
         "Use when permanently removing a trigger; this cascade-deletes all "
         "its subscriptions. To remove a single subscription only, use "
         "``delete_subscription``. Returns ``{ok: true}`` or "
-        "``type=trigger_not_found``."
+        "``type=trigger_not_found``." + _TRIGGER_REACH_NOTE
     ),
     args_schema=_IdArgs.model_json_schema(),
     examples=[
@@ -308,7 +316,7 @@ TOOL_FIRE_NOW = make_tool(
         "Use when you need to fire a trigger immediately, bypassing the "
         "scheduler, e.g. for testing dispatch. Returns ``{fire_id, "
         "results: [...]}`` where each result mirrors the per-subscription "
-        "dispatch envelope."
+        "dispatch envelope." + _TRIGGER_REACH_NOTE
     ),
     args_schema=_IdArgs.model_json_schema(),
     examples=[
@@ -629,6 +637,8 @@ def _make_update_handler(
                 enabled=args.enabled,
                 config=args.config,
                 owner=_caller(ctx),
+                # From a session outside prime: refused as an unknown trigger when a subscription of it reaches outside (review of #874, B1).
+                reach=await caller_reach(storage_provider, ctx),
                 deps=deps,
             )
         except TriggerNotFound as exc:
@@ -651,14 +661,14 @@ def _make_delete_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], *, ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _IdArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_validation(exc)
         deps = _make_deps(storage_provider, claim_engine, event_bus)
         try:
-            await delete_trigger(trigger_id=args.id, deps=deps)
+            await delete_trigger(trigger_id=args.id, reach=await caller_reach(storage_provider, ctx), deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         return _ok({"ok": True})
@@ -671,14 +681,14 @@ def _make_fire_now_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], *, ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _IdArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_validation(exc)
         deps = _make_deps(storage_provider, claim_engine, event_bus)
         try:
-            result = await fire_now(trigger_id=args.id, deps=deps)
+            result = await fire_now(trigger_id=args.id, reach=await caller_reach(storage_provider, ctx), deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         return _ok({
