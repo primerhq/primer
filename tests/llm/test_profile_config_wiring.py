@@ -1138,3 +1138,16 @@ class TestOpenAIReasoningModelsGetTheRequestOpenAIAccepts:
         cfg = None if level is None else _cfg(level)
         body = await _whole_body("openresponses", OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI)), cfg, model, monkeypatch)
         assert body == _responses_body(model, max_output_tokens=4096)
+
+    # Ticket 01a16b64 R2 (lead ruling: keep the safe drop): gpt-5.1 to 5.x default to the effort ``none``, the one effort at which
+    # they take the sampling knobs, but a call that sends no effort does not rely on that default: the knobs are dropped, as for every
+    # other reasoning family. A profile that wants them sets its reasoning to off, which sends ``none`` and keeps them.
+    @pytest.mark.parametrize("model", ["gpt-5.1", "gpt-5.2"])
+    async def test_chat_gpt_5_1_with_no_effort_sent_drops_the_sampling_knobs_on_purpose(self, monkeypatch, model) -> None:
+        body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), None, model, monkeypatch)
+        assert body == _chat_body(model, max_completion_tokens=4096)
+
+    @pytest.mark.parametrize("model", ["gpt-5.1", "gpt-5.2"])
+    async def test_responses_gpt_5_1_with_no_effort_sent_drops_the_sampling_knobs_on_purpose(self, monkeypatch, model) -> None:
+        body = await _whole_body("openresponses", OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI)), None, model, monkeypatch)
+        assert body == _responses_body(model, max_output_tokens=4096)
