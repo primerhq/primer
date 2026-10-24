@@ -224,43 +224,49 @@ _RUNTIME_NAMES: dict[str, str] = {"container": "Docker"}
 def refuse_oversized_template_sizes(template: "WorkspaceTemplate", overrides: "WorkspaceTemplateOverrides | None") -> None:
     """Raise :class:`TemplateSizeRefused` when a size this workspace will get from its TEMPLATE is one no workspace may have.
 
-    Only the size that really applies is looked at: a field the per-workspace override sets replaces the template's, so whatever
-    the template says there is not what runs. Kubernetes reads ``resources.cpu_cores`` / ``resources.memory_bytes`` and the disk
-    ``backend.pvc_size``, Docker ``backend.cpu_cores`` / ``backend.memory_bytes``; a Local template's size is ignored, so it is not
-    checked. A CPU or memory is refused above the cap (a value that is not a number at all, ``nan``, is above any cap) and when it
-    is not more than zero; the disk is refused when it is not a Kubernetes quantity, not more than zero or above 64 TiB. A
-    template written since the G5 audit cannot hold any of these (the model refuses them), so what this catches below the caps is
-    a row stored before (the model loads it as it is).
+    The size that runs: a field the per-workspace override sets replaces the template's, so whatever the template says there is
+    not what runs. Kubernetes reads ``resources.cpu_cores`` / ``resources.memory_bytes`` and the disk ``backend.pvc_size``, Docker
+    ``backend.cpu_cores`` / ``backend.memory_bytes``. Such a CPU or memory is refused above the cap (a value that is not a number at
+    all, ``nan``, is above any cap) and when it is not more than zero; the disk is refused when it is not a Kubernetes quantity, not
+    more than zero or above 64 TiB.
+
+    The sizes that do not run: a Local template's ``resources``, and a Docker template's, are ignored by the backend, so no cap
+    applies to them, but they are copied into the workspace's ``template_snapshot`` like the rest of the template, and the model
+    refuses a value of zero or less there (``gt=0``). So such a value is refused too (the review of #869, F1): a new workspace never
+    carries a snapshot the model refuses, though one stored before still loads.
+
+    A template written since the G5 audit cannot hold any of these below the caps (the model refuses them), so what this catches
+    there is a row stored before (the model loads it as it is).
     """
     backend = template.backend
-    disk: tuple[str, str] | None = None
-    if isinstance(backend, KubernetesTemplateConfig):
-        cpu = ("resources.cpu_cores", template.resources.cpu_cores)
-        memory = ("resources.memory_bytes", template.resources.memory_bytes)
-        disk = ("backend.pvc_size", backend.pvc_size)
-    elif isinstance(backend, ContainerTemplateConfig):
-        cpu = ("backend.cpu_cores", backend.cpu_cores)
-        memory = ("backend.memory_bytes", backend.memory_bytes)
-    else:
-        return
-    resources = overrides.resources if overrides is not None else None
-    replaced = {field for field in SIZE_FIELDS if resources is not None and getattr(resources, field) is not None}
+    overriding = overrides.resources if overrides is not None else None
+    replaced = {field for field in SIZE_FIELDS if overriding is not None and getattr(overriding, field) is not None}
     refused: list[tuple[str, Any, str]] = []
-    for (name, value), field, cap, limit in (
-        (cpu, "cpu_cores", MAX_WORKSPACE_CPU_CORES, f"{MAX_WORKSPACE_CPU_CORES} CPU cores"),
-        (memory, "memory_bytes", MAX_WORKSPACE_MEMORY_BYTES, f"{MAX_WORKSPACE_MEMORY_BYTES // _TIB} TiB of memory"),
-    ):
-        if field in replaced or value is None:
-            continue
-        if not value <= cap:     # written so that nan, which compares false with everything, is refused
+
+    def check(name: str, value: Any, field: str, *, cap: float | None, limit: str = "") -> None:
+        if value is None or (cap is not None and field in replaced):
+            return
+        if cap is not None and not value <= cap:     # written so that nan, which compares false with everything, is refused
             refused.append((name, value, f"more than the {limit} a workspace may have"))
         elif not value > 0:
             refused.append((name, value, "not more than zero"))
-    if disk is not None and "disk_bytes" not in replaced:
-        name, quantity = disk
-        problem = disk_quantity_problem(quantity)
-        if problem is not None:
-            refused.append((name, quantity, problem))
+
+    cpu_limit = f"{MAX_WORKSPACE_CPU_CORES} CPU cores"
+    memory_limit = f"{MAX_WORKSPACE_MEMORY_BYTES // _TIB} TiB of memory"
+    if isinstance(backend, KubernetesTemplateConfig):
+        check("resources.cpu_cores", template.resources.cpu_cores, "cpu_cores", cap=MAX_WORKSPACE_CPU_CORES, limit=cpu_limit)
+        check("resources.memory_bytes", template.resources.memory_bytes, "memory_bytes", cap=MAX_WORKSPACE_MEMORY_BYTES, limit=memory_limit)
+        if "disk_bytes" not in replaced:
+            problem = disk_quantity_problem(backend.pvc_size)
+            if problem is not None:
+                refused.append(("backend.pvc_size", backend.pvc_size, problem))
+    else:
+        if isinstance(backend, ContainerTemplateConfig):
+            check("backend.cpu_cores", backend.cpu_cores, "cpu_cores", cap=MAX_WORKSPACE_CPU_CORES, limit=cpu_limit)
+            check("backend.memory_bytes", backend.memory_bytes, "memory_bytes", cap=MAX_WORKSPACE_MEMORY_BYTES, limit=memory_limit)
+        # Not what runs on Docker or Local, but part of the snapshot the workspace keeps.
+        check("resources.cpu_cores", template.resources.cpu_cores, "cpu_cores", cap=None)
+        check("resources.memory_bytes", template.resources.memory_bytes, "memory_bytes", cap=None)
     if refused:
         raise TemplateSizeRefused(template.id, refused)
 
