@@ -75,7 +75,8 @@ async def test_a_pause_that_a_wake_overtakes_between_its_read_and_its_write_does
             await deliver_steer(session_id="ses-b", text="go", parallelism="queue", human_intent=True, **world.deliver_kwargs())
 
         sessions = _install(world, a_wake)
-        await pause_session(workspace_id="ws-1", session_id="ses-b", sessions=sessions)
+        # The route takes the request for its rank rule (ticket 01a16d3c-a8bc), decided on the read the hook follows; no creator is recorded.
+        await pause_session(SimpleNamespace(state=SimpleNamespace(actor=None)), workspace_id="ws-1", session_id="ses-b", sessions=sessions)
 
         row = await world.sessions.get("ses-b")
         assert (row.status, row.turn_status, row.last_seq, row.pause_requested) == (SessionStatus.RUNNING, "claimable", 5, True)

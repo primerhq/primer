@@ -225,13 +225,15 @@ can run an agent or graph headlessly end to end.
   paused at once (`status: "paused"`); a running one finishes the turn
   it is in and starts no other (`pause_requested: true` on the row
   until then). Returns the session row; `type=conflict` when the
-  session has ended.
+  session has ended; `type=forbidden` when the session runs at a higher
+  rank than you (or your run).
 - `workspaces::resume_workspace_session` - start or resume a session,
   the same operation as `POST .../resume`: a paused, waiting or never
   started (`auto_start=false`) session goes `running` and is queued for
   its next turn; a running one is returned as it is, with nothing
   changed. Returns the session row; `type=conflict` when the session
-  has ended.
+  has ended; `type=forbidden` when the session runs at a higher rank
+  than you (or your run).
 - `workspaces::steer_workspace_session` - send a user instruction (an idle or ended session starts its next turn with it; a busy, parked or paused one, or one with older messages still waiting, reads it at its next turn boundary, after those messages: first in, first out; a queued message is delivered even when no other message follows it; it never answers an `ask_user`). Called from inside a workspace session it is a message from that session, with every limit of `workspaces::message_session`: the target sees a user message that starts with `[from session <your session id> (agent <your agent id>)]`; a session outside your reach (your own workspace, or any workspace from the default one) answers `type=not-found` exactly as an unknown id; `type=forbidden` when the target runs at a higher rank than your run; `type=hop-limit` at 8 messages in a chain; `type=rate-limited` at 20 messages per 10 minutes; `type=conflict` for a session an operator cancelled (only a person reopens it), an ended session that cannot reopen, or a full queue. Called with no session (MCP) the caller must rank at least as high as the session's creator (`type=forbidden`), and a cancelled session is refused too.
 - From a session outside the default workspace (prime), every one of
   these tools that names a session or a workspace reaches only your own
@@ -240,11 +242,13 @@ can run an agent or graph headlessly end to end.
   `delete_workspace`, `get_workspace`, `list_workspaces`, the file
   tools, `get_workspace_log` and `workspace_tap`, see
   [workspaces](workspaces.md)). Another workspace answers
-  `type=not-found` exactly as an unknown id does. Cancel and resume are
-  also refused (`type=forbidden`) when the session runs at a higher rank
-  than your run. With no calling session (MCP) the caller keeps its reach,
-  and cancel and resume follow the same rank rule (a person may always
-  act on a session they started).
+  `type=not-found` exactly as an unknown id does. Cancel, resume, pause
+  and interrupt are also refused (`type=forbidden`) when the session runs
+  at a higher rank than your run. With no calling session (MCP) the caller
+  keeps its reach, and cancel, resume, pause and interrupt follow the same
+  rank rule (a person may always act on a session they started; an API
+  token ranks as its owner). Their REST routes follow it too (403
+  `forbidden_rank`).
 - `workspaces::restart_workspace_session` - reopen an ENDED session and run it again with optional `input`. From inside a workspace session it is a message from that session like the steer above: `input` is required, the same limits apply, the reopened turn carries the hop count, and a session that has not ended is `type=conflict`. A session an operator cancelled is never reopened by this tool (`type=conflict`); a person reopens it (the console, `POST .../restart`).
 - `workspaces::interrupt_workspace_session` - Stop the turn a session is
   running without ending the session. Args: `workspace_id`, `session_id`.
@@ -254,7 +258,8 @@ can run an agent or graph headlessly end to end.
   idle, paused or not started), nothing was recorded and nothing will
   stop. `type=conflict` when the session has ended or is parked waiting on
   an approval, an answer or a timer (cancel it instead);
-  `type=not-found` for an unknown session. It is the same operation as the
+  `type=forbidden` when the session runs at a higher rank than you (or
+  your run); `type=not-found` for an unknown session. It is the same operation as the
   console's Stop button, one implementation behind both. It does not end
   the session, so a parent waiting for a stopped child to END waits on:
   use `workspaces::cancel_workspace_session` to end one.

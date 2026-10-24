@@ -2,8 +2,9 @@
 
 A session outside the default workspace reaches only its own workspace, for every workspaces tool that names a session or a workspace: the cancel,
 get, read-messages, pause, resume, interrupt and create tools (an agent that could create a session in prime would reach everything from there). An
-out-of-reach target answers exactly as an unknown id does. Cancel and resume also follow the rank rule (``primer.authz.may_drive``) from a session,
-over MCP and on their REST routes: they stop or start a run at the creator's rank. The drive rows are pinned by
+out-of-reach target answers exactly as an unknown id does. Cancel, resume, pause and interrupt (Stop) also follow the rank rule
+(``primer.authz.may_drive``) from a session, over MCP and on their REST routes: they stop or start a run at the creator's rank (pause and interrupt
+since ticket 01a16d3c-a8bc; before, only the console hid their controls). The drive rows are pinned by
 ``tests/api/test_session_drive_rule_table.py``; these are the rest of ``docs/dev/subsystems/sessions.md`` section 9's table.
 
 The tool rows go through :func:`primer.agent.inner_dispatch.dispatch_inner_tool`, as ``system__call_tool`` reaches a tool (with the request's actor
@@ -77,6 +78,8 @@ from primer.trigger.service import _LIST_PAGE_SIZE
 from primer.worker.engine_handlers import run_engine_trigger
 from primer.worker.pool import WorkerPool
 from primer.workspace.local.state import LocalStateRepo
+from tests.api.test_session_steer_restart_rank import WHO as PERSONS
+from tests.api.test_session_steer_restart_rank import _Spy, _token_client, _user_id
 from tests.session._peer_fakes import FakeBus, FakeEngine, FakeRegistry, FakeScheduler, FakeSlot, FakeWorkspace, World, seed_session
 from tests.conftest import _FakeStorageProvider
 
@@ -96,8 +99,13 @@ TABLE: dict[str, tuple[SessionStatus, dict[str, str]]] = {
     "resume tool, in a session":        (SessionStatus.PAUSED, {"outranked": F, "same rank": D, "out of reach": N, P: D}),
     "resume tool, no session":          (SessionStatus.PAUSED, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
     "REST resume":                      (SessionStatus.PAUSED, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
-    "pause tool, in a session":         (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
-    "interrupt tool, in a session":     (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
+    "pause tool, in a session":         (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": N, P: D}),
+    "pause tool, no session":           (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST pause":                       (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    # a RUNNING target (not parked), so a delivered Stop is recorded (``interrupt_requested``) and a refused one is seen to record nothing
+    "interrupt tool, in a session":     (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": N, P: D}),
+    "interrupt tool, no session":       (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST interrupt":                   (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
     "get session tool, in a session":   (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
     "read messages tool, in a session": (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
 }
@@ -189,9 +197,9 @@ async def _tool(env: Env, path: str, *, workspace: str, session: str, in_session
 
 async def _drive(env: Env, path: str) -> tuple[str, dict]:
     if path.startswith("REST"):
-        verb = "cancel" if path == "REST cancel" else "resume"
+        verb = path.removeprefix("REST ")
         r = await env.rest.post(f"/v1/workspaces/{env.target_workspace}/sessions/ses-t/{verb}", json={})
-        return {200: D, 403: F, 404: N}[r.status_code], r.json()
+        return {200: D, 204: D, 403: F, 404: N}[r.status_code], (r.json() if r.content else {})
     return await _tool(env, path, workspace=env.target_workspace, session="ses-t", in_session=path.endswith("in a session"))
 
 
@@ -206,7 +214,9 @@ async def _delivered(env: Env, path: str) -> bool:
         return row.status == SessionStatus.RUNNING and env.world.scheduler.enqueued == ["ses-t"]
     if path.startswith(("pause", "REST pause")):
         return row.status == SessionStatus.PAUSED  # the target waits, so it pauses at once
-    return True  # interrupt, get, read: the answer is the delivery
+    if path.startswith(("interrupt", "REST interrupt")):
+        return row.interrupt_requested is True  # the target runs a turn, so the Stop is recorded
+    return True  # get, read: the answer is the delivery
 
 
 async def _check(env: Env, path: str, scenario: str) -> None:
@@ -237,7 +247,7 @@ async def test_every_tool_that_acts_on_a_session_obeys_the_rule_table(path, scen
 
 @pytest.mark.parametrize("scenario", SCENARIOS)
 @pytest.mark.parametrize("path", [p for p in TABLE if p.startswith("REST")])
-async def test_the_rest_cancel_and_resume_obey_the_rule_table(app, client, fake_storage_provider, path, scenario):
+async def test_the_rest_cancel_resume_pause_and_interrupt_obey_the_rule_table(app, client, fake_storage_provider, path, scenario):
     world = _world(fake_storage_provider)
     app.state.workspace_registry.get_workspace = world.registry.get_workspace  # type: ignore[method-assign]
     r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
@@ -292,18 +302,133 @@ async def test_create_workspace_session_from_a_session_reaches_only_what_the_ses
         assert body == {"type": "not-found", "message": f"Workspace {target!r} does not exist"}
 
 
-@pytest.mark.parametrize("tool", ["cancel_workspace_session", "resume_workspace_session"])
-async def test_cancel_and_resume_from_a_session_are_refused_in_the_words_of_a_message_steer_or_restart(tool):
+@pytest.mark.parametrize("verb", ["cancel", "resume", "pause", "interrupt"])
+async def test_cancel_resume_pause_and_interrupt_from_a_session_are_refused_in_the_words_of_a_message_steer_or_restart(verb):
     """One refusal text for a run (review of #853, round 2): the rank refusal of a message, a steer and a restart from a session."""
     from primer.session.peer_messages import REFUSE_RANK
 
+    path = f"{verb} tool, in a session"
     env = Env(world=_world())
-    env.target_workspace = await _seed(env.world, "cancel tool, in a session" if tool.startswith("cancel") else "resume tool, in a session", "outranked")
-    path = "cancel tool, in a session" if tool.startswith("cancel") else "resume tool, in a session"
+    env.target_workspace = await _seed(env.world, path, "outranked")
 
     outcome, body = await _tool(env, path, workspace="ws-1", session="ses-t", in_session=True)
 
     assert (outcome, body["message"]) == (F, REFUSE_RANK.format(session_id="ses-t", target_rank="admin", sender_rank="user"))
+
+
+# ---- pause and Stop follow the rank rule, person by person (ticket 01a16d3c-a8bc) ------------------------------------------------------------
+#
+# A pause stops a run at its creator's rank and a Stop (interrupt) cuts its turn short, so both follow the cancel's rule on every surface: the REST
+# routes (over HTTP, through the auth middleware, as a logged-in account or with an API token, which ranks as its owner), the tools over MCP (no
+# calling session, the request's actor on ``current_actor``) and the tools from another session (a run, which is ranked by its principal and never
+# gets the own-session rule). A refused call answers 403 ``forbidden_rank`` (REST) or ``type=forbidden`` (a tool), and nothing moves: the row, the
+# bus and the queue are as they were.
+
+#: verb -> (the target's status, what a delivered call leaves on the row).
+CONTROLS: dict[str, tuple[SessionStatus, Callable[[WorkspaceSession], bool]]] = {
+    "pause": (SessionStatus.WAITING, lambda row: row.status == SessionStatus.PAUSED),
+    "interrupt": (SessionStatus.RUNNING, lambda row: row.interrupt_requested is True),
+}
+
+
+@pytest.mark.parametrize("who", list(PERSONS))
+@pytest.mark.parametrize("verb", list(CONTROLS))
+async def test_a_persons_pause_or_stop_over_rest_reaches_a_session_only_at_or_below_their_rank(app, client, fake_storage_provider, verb, who):
+    started_by, asker, accepted = PERSONS[who]
+    r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
+    assert r.status_code == 201, r.text
+    carol_id = await _user_id(app, "carol")
+    creator = {
+        "admin": ADMIN,
+        "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
+        "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
+    }[started_by]
+    status, moved = CONTROLS[verb]
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    await sessions.create(WorkspaceSession(
+        id="ses-p", workspace_id="ws-r", binding=AgentSessionBinding(agent_id="operator"), status=status, turn_no=1, created_at=NOW,
+        initiated_by=creator,
+    ))
+    before = (await sessions.get("ses-p")).model_dump(mode="json")
+    spy = _Spy(app.state.event_bus)
+    route = f"/v1/workspaces/ws-r/sessions/ses-p/{verb}"
+
+    if asker.endswith("token"):
+        async with await _token_client(app, carol_id if asker.startswith("carol") else await _user_id(app, "testuser")) as tok:
+            r = await tok.post(route, json={})
+    elif asker == "carol":
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
+            assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
+            r = await carol.post(route, json={})
+    else:
+        r = await client.post(route, json={})
+
+    if not accepted:
+        assert r.status_code == 403, f"{who} could {verb}: {r.text}"
+        assert (r.json()["detail"], r.json()["extensions"]["error"]) == (OUTRANKED_MESSAGE, "forbidden_rank")
+        assert (await sessions.get("ses-p")).model_dump(mode="json") == before, f"a refused {verb} wrote to the session"
+        assert spy.keys == [], f"a refused {verb} reached the event bus"
+        return
+    assert r.status_code in (200, 204), f"{who} could not {verb}: {r.text}"
+    assert moved(await sessions.get("ses-p")), f"{who}'s {verb} did not land"
+
+
+#: who -> (the session's creator, the caller: a request's actor over MCP, or a run's principal from another session; whether it is accepted).
+ADA_THEN = PrincipalRef(type="user", id="u-ada", display="ada", role="admin", source="local")
+TOOL_CALLERS: dict[str, tuple[PrincipalRef, Principal | PrincipalRef, bool]] = {
+    "MCP: a user on an admin's session": (ADMIN, Principal(type="user", id="u-mcp", display="mcp", role="user", source="local"), False),
+    "MCP: an admin on a user's session": (USER, Principal(type="user", id="u-root", display="root", role="admin", source="local"), True),
+    "MCP: a user on their own session": (USER, Principal(type="user", id="u-user", display="user", role="user", source="local"), True),
+    "MCP: a demoted admin on their own session": (ADA_THEN, Principal(type="user", id="u-ada", display="ada", role="user", source="local"), True),
+    "MCP: a user's token on an admin's session": (
+        ADMIN, Principal(type="api_token", id="at-user", display="automation", role="user", source="internal"), False,
+    ),
+    "MCP: an admin's token on a user's session": (
+        USER, Principal(type="api_token", id="at-root", display="automation", role="admin", source="internal"), True,
+    ),
+    "a user's run on an admin's session": (ADMIN, USER, False),
+    "an admin's run on a user's session": (USER, ADMIN, True),
+    "a user's run on a user's session": (USER, USER, True),
+    "a run with its creator's identity at a lower rank (a trigger-capped run)": (ADA_THEN, ADA_THEN.model_copy(update={"role": "user"}), False),
+}
+
+
+@pytest.mark.parametrize("who", list(TOOL_CALLERS))
+@pytest.mark.parametrize("verb", list(CONTROLS))
+async def test_the_pause_and_interrupt_tools_reach_a_session_only_at_or_below_the_callers_rank(verb, who):
+    creator, caller, accepted = TOOL_CALLERS[who]
+    status, moved = CONTROLS[verb]
+    world = _world()
+    await seed_session(world, sid="ses-a", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER, created_at=NOW)
+    await seed_session(world, sid="ses-t", workspace_id="ws-1", status=status, turn_no=1, created_at=NOW, initiated_by=creator)
+    before = (await world.sessions.get("ses-t")).model_dump(mode="json")
+    toolset = build_workspaces_toolset(
+        storage_provider=world.sp, workspace_registry=world.registry, scheduler=world.scheduler, claim_engine=world.engine, event_bus=world.bus,
+    )
+    arguments = {"workspace_id": "ws-1", "session_id": "ses-t"}
+    tool = f"{verb}_workspace_session"
+    if isinstance(caller, Principal):
+        token = current_actor.set(caller)
+        try:
+            result = await dispatch_inner_tool(provider=toolset, toolset_id=WORKSPACES_TOOLSET_ID, tool_name=tool, arguments=arguments, ctx=None)
+        finally:
+            current_actor.reset(token)
+    else:
+        ctx = ToolContext(tool_call_id="call-1", session_id="ses-a", workspace_id="ws-1", initiated_by=caller)
+        result = await dispatch_inner_tool(provider=toolset, toolset_id=WORKSPACES_TOOLSET_ID, tool_name=tool, arguments=arguments, ctx=ctx)
+    body = json.loads(result.output)
+
+    if not accepted:
+        words = (
+            OUTRANKED_MESSAGE if isinstance(caller, Principal)
+            else REFUSE_RANK.format(session_id="ses-t", target_rank="admin", sender_rank="user")
+        )
+        assert (result.is_error, body) == (True, {"type": F, "message": words}), body
+        assert (await world.sessions.get("ses-t")).model_dump(mode="json") == before, f"a refused {verb} wrote to the session"
+        assert world.bus.published == [], f"a refused {verb} reached the event bus"
+        return
+    assert not result.is_error, body
+    assert moved(await world.sessions.get("ses-t")), f"{who}'s {verb} did not land"
 
 
 # ---- The workspace tools (ticket 01a16ad1) ----------------------------------------------------------------------------------------------

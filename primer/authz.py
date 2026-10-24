@@ -71,8 +71,8 @@ def may_drive(
     *,
     own_session: bool = False,
 ) -> bool:
-    """Whether ``actor`` may act on a session ``target_creator`` started (steer, restart, message, cancel or resume it): ``actor`` ranks at least as
-    high.
+    """Whether ``actor`` may act on a session ``target_creator`` started (steer, restart, message, cancel, resume, pause or Stop it): ``actor`` ranks
+    at least as high.
 
     The one rank rule of every path that drives another session (lead rulings 2 and 3 of the G7 fixes): a person's REST steer and restart, the
     steer and restart tools called with no calling session (the MCP endpoint), a message or a steer or a restart from another session

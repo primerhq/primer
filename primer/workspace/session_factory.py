@@ -670,7 +670,7 @@ class SessionInterruptDeps:
 
 
 async def interrupt_session(
-    *, workspace_id: str, session_id: str, deps: SessionInterruptDeps
+    *, workspace_id: str, session_id: str, deps: SessionInterruptDeps, guard: SessionGuard | None = None,
 ) -> WorkspaceSession:
     """Stop (interrupt) the running turn without ending the session (shared by the REST route + the workspaces tool).
 
@@ -686,7 +686,9 @@ async def interrupt_session(
     (the event fired and a worker is resuming the parked turn): 409 as well, with its own
     text, because a graph or subagent resume runs model calls inline.
 
-    Raises NotFoundError (missing/mismatched) / ConflictError (ended, parked, resuming).
+    Raises NotFoundError (missing/mismatched) / ConflictError (ended, parked, resuming). ``guard``
+    (:data:`SessionGuard`) is the caller's rank rule (ticket 01a16d3c-a8bc), run on the row read under
+    the lock before anything is recorded or published.
 
     Extracted verbatim from ``POST .../sessions/{sid}/interrupt``
     (:mod:`primer.api.routers.workspaces`) so the REST endpoint and the
@@ -703,6 +705,8 @@ async def interrupt_session(
                 f"Session {session_id!r} does not exist on workspace "
                 f"{workspace_id!r}"
             )
+        if guard is not None:
+            guard(s)
         if s.status == SessionStatus.ENDED:
             raise ConflictError(f"Session {session_id!r} has ended")
         if s.status == SessionStatus.RUNNING and s.parked_status is not None:

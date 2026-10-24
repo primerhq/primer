@@ -203,20 +203,21 @@ async def test_a_session_can_stop_itself_the_tool_does_not_special_case_the_call
 
 
 async def test_the_route_and_the_tool_call_the_one_shared_helper(client, toolset, fake_storage_provider, monkeypatch):
-    """One implementation, not two: both surfaces reach ``session_factory.interrupt_session`` (imported at call time, as Cancel's)."""
+    """One implementation, not two: both surfaces reach ``session_factory.interrupt_session`` (imported at call time, as Cancel's), each with its own
+    rank refusal as the helper's guard (ticket 01a16d3c-a8bc)."""
     import primer.workspace.session_factory as session_factory
 
     await _seed(fake_storage_provider, sid="s-one", status=SessionStatus.RUNNING)
     real = session_factory.interrupt_session
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, bool]] = []
 
-    async def spy(*, workspace_id, session_id, deps):
-        calls.append((workspace_id, session_id))
-        return await real(workspace_id=workspace_id, session_id=session_id, deps=deps)
+    async def spy(*, workspace_id, session_id, deps, guard=None):
+        calls.append((workspace_id, session_id, guard is not None))
+        return await real(workspace_id=workspace_id, session_id=session_id, deps=deps, guard=guard)
 
     monkeypatch.setattr(session_factory, "interrupt_session", spy)
 
     await _stop("route", client, toolset, "s-one")
     await _stop("tool", client, toolset, "s-one")
 
-    assert calls == [(WID, "s-one"), (WID, "s-one")]
+    assert calls == [(WID, "s-one", True), (WID, "s-one", True)]

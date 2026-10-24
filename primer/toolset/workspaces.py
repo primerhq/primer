@@ -201,8 +201,8 @@ def _refuse_outranked(ctx: ToolContext | None, row: WorkspaceSession) -> ToolCal
     """``forbidden`` when the caller ranks below the creator of ``row`` (lead ruling 2 of the G7 fixes, audit G7-06; review of #853), else ``None``.
 
     The caller must out-rank or equal the session's creator, the rule of the REST routes, of a trigger's fire and of a message from another session
-    (:func:`primer.authz.may_drive`): for the steer and restart tools called with no calling session, and for the cancel and resume tools from a session
-    or not. The message is fixed: it names neither the creator nor the rank. A call with no ToolContext is the MCP endpoint, a live request whose actor
+    (:func:`primer.authz.may_drive`): for the steer and restart tools called with no calling session, and for the cancel, resume, pause and interrupt
+    tools from a session or not (pause and interrupt: ticket 01a16d3c-a8bc). The message is fixed: it names neither the creator nor the rank. A call with no ToolContext is the MCP endpoint, a live request whose actor
     carries the account's current role, so it may always act on a session its own account or token started (``own_session``, N1); a run may not
     (a trigger-capped run carries an admin's identity at a lower rank).
     """
@@ -1990,7 +1990,12 @@ def build_workspaces_toolset(
                 workspace_id=args.workspace_id,
                 session_id=args.session_id,
                 deps=deps,
+                # A Stop acts on a run at its creator's rank: the caller must out-rank or equal the creator, as the REST route asks
+                # (ticket 01a16d3c-a8bc).
+                guard=_rank_guard(ctx),
             )
+        except _Refused as exc:
+            return exc.result
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
         except ConflictError as exc:
@@ -2018,6 +2023,7 @@ def build_workspaces_toolset(
             "instead). A session may stop itself; an autonomous session that "
             "does waits until something wakes it, and a graph session stops "
             "between graph events, not at the next model call. " + REACH_NOTE
+            + " type=forbidden when the session runs at a higher rank than you (or your run)."
         ),
         _WorkspaceSessionArgs,
         _interrupt_workspace_session,
@@ -2303,7 +2309,14 @@ def build_workspaces_toolset(
         from primer.workspace.session_factory import pause_session
 
         try:
-            session = await pause_session(workspace_id=args.workspace_id, session_id=args.session_id, sessions=_session_row_storage())
+            session = await pause_session(
+                workspace_id=args.workspace_id, session_id=args.session_id, sessions=_session_row_storage(),
+                # A pause stops a run at its creator's rank: the caller must out-rank or equal the creator, as the REST route asks
+                # (ticket 01a16d3c-a8bc).
+                guard=_rank_guard(ctx),
+            )
+        except _Refused as exc:
+            return exc.result
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
         except ConflictError as exc:
@@ -2356,7 +2369,7 @@ def build_workspaces_toolset(
             "is in. The answer is the session row: ``status: \"paused\"`` "
             "when it paused at once, ``pause_requested: true`` when a turn "
             "is running and the pause lands at its end. ``type=conflict`` "
-            "when the session has ended. " + REACH_NOTE
+            "when the session has ended. " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
         ),
         _WorkspaceSessionArgs,
         _pause_workspace_session,

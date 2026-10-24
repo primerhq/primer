@@ -262,9 +262,10 @@ async def resume_session(
     "/workspaces/{workspace_id}/sessions/{session_id}/pause",
     status_code=204,
     summary="Soft pause request",
-    responses=common_responses(404, 409, 500),
+    responses=common_responses(403, 404, 409, 500),
 )
 async def pause_session(
+    request: Request,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
@@ -277,6 +278,9 @@ async def pause_session(
       return - the worker will observe the flag at the next turn boundary
       and transition the row itself.
     * 409 when the session is already ENDED.
+    * 403 ``forbidden_rank`` when the session's creator outranks the caller
+      (ticket 01a16d3c-a8bc; ``primer.api.routers._session_rank``), before
+      anything is written: a pause stops a run at the creator's rank.
 
     Delegates to :func:`primer.workspace.session_factory.pause_session`, the
     one path the ``pause_workspace_session`` tool takes too (ticket
@@ -284,7 +288,9 @@ async def pause_session(
     """
     from primer.workspace.session_factory import pause_session as _pause_session_helper
 
-    await _pause_session_helper(workspace_id=workspace_id, session_id=session_id, sessions=sessions)
+    await _pause_session_helper(
+        workspace_id=workspace_id, session_id=session_id, sessions=sessions, guard=lambda row: refuse_outranked(request, row),
+    )
 
 
 @nested_session_router.post(
