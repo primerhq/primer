@@ -400,6 +400,10 @@ class TestUrlSecretRedaction:
         ("many callback queries", "/oauth/callback?" * 10_000),
         ("a callback query of many parameters", "/oauth/callback?" + "code=a&state=b&" * 10_000),
         ("a callback query of ampersands", "/oauth/callback?code=" + "&" * 40_000),
+        # The canvas file token rule (pivot P5 S6) runs on every record; its token class holds "." and its end is a lookahead.
+        ("a canvas file token of dots", "/canvas/sessions/s1/files/" + "a." * 20_000),
+        ("many canvas file paths", "/canvas/sessions/s1/files/" * 10_000),
+        ("a canvas file path with a long session id", "/canvas/sessions/" + "s" * 40_000 + "/files/abcd"),
     ]
 
     @pytest.mark.parametrize("name,text", _HOSTILE, ids=[case[0] for case in _HOSTILE])
@@ -516,6 +520,48 @@ class TestUrlSecretRedaction:
         assert _WEBHOOK_TOKEN not in out
         assert "/v1/webhooks/***cdef?x=1" in out
         assert "202" in out
+
+    def test_uvicorn_access_line_masks_the_canvas_file_token(self):
+        """A canvas file URL (pivot P5 S6) is its own credential, so its token is masked like a webhook's: the last 4 characters stay
+        for correlation, and the dots between the token's parts do not end the mask (review of #908, round 2)."""
+        from uvicorn.logging import AccessFormatter
+
+        from primer.canvas.files import mint_file_url
+
+        url = mint_file_url("s3cret", "ses-01a1", "assets/c.png")
+        token = url.rsplit("/", 1)[1]
+        assert "." in token
+        configure_logging()
+        access = logging.getLogger("uvicorn.access")
+        buf = io.StringIO()
+        handler = logging.StreamHandler(buf)
+        handler.setFormatter(AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s', use_colors=False))
+        saved = (list(access.handlers), access.propagate, access.level)
+        access.handlers = [handler]
+        access.propagate = False
+        access.setLevel(logging.INFO)
+        try:
+            access.info('%s - "%s %s HTTP/%s" %d', "10.0.0.1:5555", "GET", url, "1.1", 200)
+        finally:
+            access.handlers, access.propagate, access.level = saved
+        out = buf.getvalue()
+        assert token not in out and token.split(".")[0] not in out and token.split(".")[-1] not in out
+        assert f"/canvas/sessions/ses-01a1/files/***{token[-4:]} HTTP/1.1" in out
+
+    @pytest.mark.parametrize("token_end, after", [
+        ("p0", ""), ("p0", "?x=1"), ("p0", " HTTP/1.1"), ("p0", '"'), ("x-", ""), ("x-", " HTTP/1.1"), ("_-", '"'),
+    ])
+    def test_a_canvas_file_token_is_masked_to_its_end(self, token_end, after):
+        """A token may end in "-" (base64url): the mask runs to the last token character, whatever follows, and keeps only 4."""
+        from primer.common.log import redact_url_secrets
+
+        token = "eyJzIjoiczEiLCJwIjoiYS5wbmcifQ.aBcD9w.Q1w2E3r4T5y6U7i8O9" + token_end
+        assert redact_url_secrets(f"/canvas/sessions/s1/files/{token}{after}") == f"/canvas/sessions/s1/files/***{token[-4:]}{after}"
+
+    def test_the_frame_url_is_left_alone(self):
+        from primer.common.log import redact_url_secrets
+
+        assert redact_url_secrets("/canvas/frame?v=0123456789abcdef") == "/canvas/frame?v=0123456789abcdef"
 
     def test_uvicorn_access_line_masks_the_oauth_callback_code_and_state(self):
         """Audit G4-13: the access line of an MCP OAuth callback carries the authorization code and the state; both are masked there, and a
