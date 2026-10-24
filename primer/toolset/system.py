@@ -150,6 +150,7 @@ from primer.session.peer_messages import REACH_NOTE, caller_reach, in_reach
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
 from primer.artifact.checks import (
     ARTIFACT_DEFAULT_WRITE_NOTE,
+    ARTIFACT_DELETE_NOTE,
     check_artifact_provider_delete,
     check_artifact_provider_update,
     check_artifact_provider_write,
@@ -586,6 +587,7 @@ def build_system_toolset(
     from primer.bootstrap.defaults import RESERVED_BUILDER_AGENT, RESERVED_OPERATOR_AGENT
 
     delete_notes_by_label: dict[str, str] = {
+        "artifact_storage_provider": ARTIFACT_DELETE_NOTE,
         "collection": (
             "Deleting a collection also deletes its documents, their content and its vector chunks (the vector namespace is dropped first, "
             "then the documents, then the collection). If the vector store cannot be reached the delete is refused with ``type=provider-error`` "

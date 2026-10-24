@@ -346,8 +346,8 @@ def _crud_tools_for(
     it writes, for an entity whose pre-write check can refuse a field rule: ``type=forbidden`` (a collection's ``system`` flag) or
     ``type=validation-error`` (an agent's id and description, ticket 01a11c1c).
 
-    ``delete_note`` is appended to the delete descriptor only: a consequence of removing the row that the agent should read before it
-    acts, for a delete the tool still performs (it is not a refusal).
+    ``delete_note`` is appended to the delete descriptor only: what the agent should read before it acts, a consequence of removing the
+    row or a refusal the delete answers (an artifact store that is active or still holds files, an agent or graph still in use).
 
     Create/update use a self-contained wrapper-model schema (built via
     ``_create_schema`` / ``_update_schema``) so the embedded ``$defs``

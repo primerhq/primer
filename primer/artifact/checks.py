@@ -34,6 +34,14 @@ ARTIFACT_DEFAULT_WRITE_NOTE = (
     "credentials: one without the other returns ``type=validation-error`` naming the blank key."
 )
 
+#: Appended to the delete descriptor of the system ``artifact_storage_provider`` tool: the two refusals of ``check_artifact_provider_delete``,
+#: which the agent reads before it acts.
+ARTIFACT_DELETE_NOTE = (
+    "The delete is refused with ``type=conflict``, and the row stays, while the store is the active artifact store (select another store "
+    "with ``set_active_artifact_store`` first) and while it still holds files (the message gives the count: the files are read from it, "
+    "so it can be deleted once they are gone). The reserved ``artifact-storage-default`` row cannot be deleted (``type=forbidden``)."
+)
+
 
 def check_artifact_provider_write(entity: ArtifactStorageProvider) -> None:
     """Refuse a create or update that makes the reserved database fallback any other kind, or that gives an S3 row one key without the other.
@@ -144,6 +152,7 @@ async def prepare_artifact_provider(entity: ArtifactStorageProvider, existing: A
 
 __all__ = [
     "ARTIFACT_DEFAULT_WRITE_NOTE",
+    "ARTIFACT_DELETE_NOTE",
     "check_artifact_provider_delete",
     "check_artifact_provider_update",
     "check_artifact_provider_write",

@@ -115,6 +115,20 @@ async def test_a_tool_cannot_delete_or_move_a_store_that_holds_artifacts(world, 
     assert update_answer["message"].startswith("config.root: ")
 
 
+async def test_the_delete_descriptor_names_its_two_refusals(world) -> None:
+    """The agent reads both refusals of an artifact-store delete before it acts: the store is the active one (select another first), and
+    the store still holds files (it can go once they are gone). Each is a ``type=conflict``, as the two tests above show."""
+    _, toolset, _ = world
+    tools = {tool.id: tool async for tool in toolset.list_tools()}
+
+    description = tools["delete_artifact_storage_provider"].description
+
+    assert "``type=conflict``" in description, description
+    assert "active artifact store" in description and "set_active_artifact_store" in description, description
+    assert "still holds files" in description, description
+    assert "active artifact store" not in tools["delete_channel_provider"].description
+
+
 async def test_a_store_deleted_while_the_tool_checks_it_is_a_conflict(world, monkeypatch) -> None:
     """The G5 audit, G5-06, through the tool: ``type=conflict`` naming the field, and the selection is unchanged."""
     from primer.artifact.probe import ArtifactProbeResult
