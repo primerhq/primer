@@ -4,7 +4,7 @@ Spec §4.2, §8. Pure functions; all I/O-free.
 """
 
 from __future__ import annotations
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections.abc import Iterator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -86,11 +86,76 @@ def iter_missed_fires(
         emitted += 1
 
 
+def previous_fire_at(
+    cron_expr: str,
+    tz_name: str,
+    *,
+    at_or_before: datetime,
+) -> datetime:
+    """Return the latest cron occurrence at or before ``at_or_before``, as UTC datetime.
+
+    Cron is evaluated in ``tz_name``. ``croniter.get_prev`` answers strictly before its start, so the start is nudged one microsecond past
+    ``at_or_before``: an instant that is itself a tick is its own answer.
+    """
+    validate_cron(cron_expr)
+    validate_timezone(tz_name)
+    tz = ZoneInfo(tz_name)
+    base_local = (at_or_before + timedelta(microseconds=1)).astimezone(tz)
+    prev_local = croniter(cron_expr, base_local).get_prev(datetime)
+    if prev_local.tzinfo is None:
+        prev_local = prev_local.replace(tzinfo=tz)
+    return prev_local.astimezone(timezone.utc)
+
+
+#: The most missed ticks one claim of a ``catchup: all`` trigger replays (the oldest first), besides the due tick.
+CATCHUP_LIMIT = 64
+
+
+def scheduled_ticks_to_fire(
+    cron_expr: str,
+    tz_name: str,
+    *,
+    catchup: str,
+    first_unfired: datetime | None,
+    now: datetime,
+    limit: int = CATCHUP_LIMIT,
+) -> list[datetime]:
+    """The ticks one claim of a ``scheduled`` trigger fires, oldest first: the missed ticks its ``catchup`` keeps, then the due tick.
+
+    ``first_unfired`` is the trigger's ``next_fire_at``: the first tick no claim has fired. It is computed after each claim's fire, on create
+    and on every update, so a trigger enabled again has missed nothing while it was disabled.
+
+    * The due tick is the latest tick at or before the claim: at or before ``now``, or at ``first_unfired`` when the worker's clock reads a
+      little before the tick the claim was made for (the engine claims on the database's clock). It fires in every policy, exactly once.
+    * A missed tick is one the platform did not fire when it came: from ``first_unfired`` up to, not including, the due tick.
+    * ``none`` fires no missed tick; ``one`` fires the most recent one; ``all`` fires each, at most ``limit``, the oldest first.
+
+    Ticket 01a16ddb (ruling 3): ``all`` used to replay from ``last_fired_at`` THROUGH the due tick and then fire the current tick again (every
+    tick twice, with or without downtime), and ``one`` and ``none`` both fired the current tick alone.
+    """
+    claim_at = now if first_unfired is None else max(now, first_unfired)
+    due = previous_fire_at(cron_expr, tz_name, at_or_before=claim_at)
+    if first_unfired is None or first_unfired >= due or catchup == "none":
+        return [due]
+    if catchup == "one":
+        latest_missed = previous_fire_at(cron_expr, tz_name, at_or_before=due - timedelta(microseconds=1))
+        return [latest_missed, due] if latest_missed >= first_unfired else [due]
+    missed: list[datetime] = []
+    tick = next_fire_at(cron_expr, tz_name, after=first_unfired - timedelta(microseconds=1))
+    while tick < due and len(missed) < limit:
+        missed.append(tick)
+        tick = next_fire_at(cron_expr, tz_name, after=tick)
+    return [*missed, due]
+
+
 __all__ = [
+    "CATCHUP_LIMIT",
     "CronInvalid",
     "TimezoneInvalid",
     "validate_cron",
     "validate_timezone",
     "next_fire_at",
     "iter_missed_fires",
+    "previous_fire_at",
+    "scheduled_ticks_to_fire",
 ]
