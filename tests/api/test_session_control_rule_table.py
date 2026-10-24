@@ -1227,3 +1227,51 @@ async def test_a_session_started_while_a_delete_runs_its_rank_scan_is_refused(mo
     assert outcome == D and await world.sp.get_storage(Workspace).get("ws-2") is None, body
     sessions = (await world.sp.get_storage(WorkspaceSession).list(OffsetPage(offset=0, length=100))).items
     assert [s.id for s in sessions if s.initiated_by == ADMIN] == [], "the delete ended an admin's session it never ranked"
+
+
+# -- the rank scan fails loud (review of #874, E1) --------------------------------------------------------------------------------------------
+
+
+async def test_open_sessions_on_raises_on_a_repeated_cursor():
+    """Probe E of the #874 review: a storage that hands back a cursor it already gave ended the scan as if it were complete, so the session on the
+    page it never read was never ranked."""
+    from primer.model.except_ import PrimerError
+    from primer.workspace.session_reconcile import open_sessions_on
+
+    pages = [SimpleNamespace(items=["s1"], next_cursor="c1"), SimpleNamespace(items=["s2"], next_cursor="c1"), SimpleNamespace(items=["s3"], next_cursor=None)]
+    asked: list = []
+
+    class _Sessions:
+        async def find(self, predicate, page):
+            asked.append(page.cursor)
+            return pages[len(asked) - 1]
+
+    seen: list = []
+    with pytest.raises(PrimerError, match="repeated"):
+        async for row in open_sessions_on(SimpleNamespace(get_storage=lambda cls: _Sessions()), "ws-2"):
+            seen.append(row)
+    assert seen == ["s1", "s2"] and asked == [None, "c1"]
+
+
+async def test_a_delete_whose_rank_scan_cannot_see_every_session_tears_nothing_down(monkeypatch):
+    """The delete's scan reads the open sessions of ws-2 through the real storage, which here repeats a cursor before the page holding an admin's
+    session: the delete is refused (nothing is torn down) instead of ending a session it never ranked."""
+    world = await _ws_world()
+    await _admin_session_in_ws2(world)
+    store = world.sp.get_storage(WorkspaceSession)
+    real_find = store.find
+
+    async def _find_repeating_a_cursor(predicate, page, *args, **kwargs):
+        if getattr(page, "cursor", "absent") == "absent":  # an offset page: not the scan
+            return await real_find(predicate, page, *args, **kwargs)
+        rows = {"ses-o": await store.get("ses-o"), "ses-t": await store.get("ses-t")}
+        first = page.cursor is None
+        return SimpleNamespace(items=[rows["ses-o" if first else "ses-t"]], next_cursor="c1", total=None)
+
+    monkeypatch.setattr(store, "find", _find_repeating_a_cursor)
+    before = await world.snapshot()
+
+    outcome, body = await asyncio.wait_for(_ws_call(world, "delete_workspace", "ws-2", own="ws-2", door="tool manager"), 30)
+
+    assert outcome == "backend-error" and "repeated" in body["message"], body
+    assert await world.snapshot() == before
