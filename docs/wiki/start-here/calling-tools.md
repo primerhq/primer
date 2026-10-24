@@ -1,28 +1,25 @@
 ---
-title: Calling tools
-summary: "The call_tool contract, describe_tool and list_toolset_tools, and the tools that are called directly."
+title: "Calling tools"
+summary: "The call_tool contract: scoped ids, arguments, results, pausing tools, and the tools you call directly."
+order: 2
 tools: [system__call_tool, system__describe_tool, system__list_toolset_tools]
-related: [start-here/roles-and-approvals, start-here/errors]
+related: [start-here/roles-and-approvals, start-here/errors, toolsets/list-and-describe-tools]
 ---
 ## What it is
-`system__call_tool` is the door to the tools of every toolset you can reach: the built-in toolsets, and the MCP and Python toolsets stored on the platform. It is one tool with three arguments, and you get the inner tool's own result. The session file tools and `client__open_file` are not behind the door; they are called directly by their scoped id.
+`system__call_tool` ([reference](reference/tools/system/call_tool)) is the door to the tools of every toolset you can reach: the built-in toolsets, and the MCP and Python toolsets stored on the platform. It is one tool with three arguments, and you get the inner tool's own result. The session file tools and `client__open_file` are not behind the door; they are called directly by their scoped id.
 
 ## Concepts
-- The three arguments: a `toolset_id`, a `tool_name` (the wire id inside its toolset, as `system__list_toolset_tools` shows it) and an `arguments` object. The ids are scoped only on the wire: the toolset's own id and the bare wire id, never the combined `<toolset>__<tool>` spelling.
+- The three arguments: a `toolset_id`, a `tool_name` (the wire id inside its toolset, as `system__list_toolset_tools` ([reference](reference/tools/system/list_toolset_tools)) shows it) and an `arguments` object. The ids are scoped only on the wire: the toolset's own id and the bare wire id, never the combined `<toolset>__<tool>` spelling.
 - Scoped ids: a direct tool is named `<toolset>__<tool>` (`system__call_tool`, `workspace__read`); a call through the door names the toolset and the tool separately.
-- The result passes through unchanged: the dispatched tool's own output and error flag come back as `call_tool`'s result, wrapped in nothing.
-- A pausing tool (one that parks the turn, like `system__ask_user`) parks under the `call_tool` call's id and answers that call when it resumes; the outer turn does not continue until it does.
+- The result passes through unchanged: the dispatched tool's own output and error flag come back as the `call_tool` result, wrapped in nothing.
+- A pausing tool (one that parks the turn, like `system__ask_user`) parks the turn under the `call_tool` call's id, and the answer arrives as the `call_tool` result when the turn resumes: the outer turn does not continue until it does.
 - Reachable through the door: the ten built-in toolsets, and the stored MCP and Python toolsets. Name a stored toolset by its id. The `workspace` and `client` scopes are direct-only.
+- The decision order when you face a tool you have not called: `system__wiki_search` for the page, the tool's reference page for the exact call, `system__describe_tool` ([reference](reference/tools/system/describe_tool)) for the live answer (schema, role, gate), then `system__call_tool`.
 
 ## How to
-1. Discover before you call: `system__describe_tool` shows a tool's schema and its live approval gate; `system__list_toolset_tools` lists a toolset's tools.
-2. Call the tool through the door:
-
-```json
-{"toolset_id": "misc", "tool_name": "get_datetime", "arguments": {}}
-```
-
-3. Call the direct tools by their scoped id:
+1. Discover before you call: `system__describe_tool` shows a tool's schema and its live approval gate, and `system__list_toolset_tools` lists a toolset's tools. Both are reached through the door (they are not in the core kit).
+2. Call the tool through the door: the door takes the toolset id, the tool's wire id and the tool's own arguments, and passes the inner result through unchanged. To show the door itself, the direct form wraps the inner call.
+3. Call the direct tools by their scoped id. The session file tools and `client__open_file` are not behind the door:
 
 ```json
 {"name": "workspace__read", "arguments": {"path": "README.md"}}
@@ -32,11 +29,39 @@ related: [start-here/roles-and-approvals, start-here/errors]
 {"name": "client__open_file", "arguments": {"path": "README.md"}}
 ```
 
+## Tool calls
+### `system__list_toolset_tools`
+Lists a toolset's tools by their wire ids, the names the door wants; it is not in the kit, so the call goes through the door.
+
+```json
+{"toolset_id": "system", "tool_name": "list_toolset_tools", "arguments": {"toolset_id": "misc"}}
+```
+
+Reference: [`system__list_toolset_tools`](reference/tools/system/list_toolset_tools)
+
+### `system__describe_tool`
+Shows a tool's live schema, role and approval gate; the reference page is the same data rendered, and this is the live answer.
+
+```json
+{"toolset_id": "system", "tool_name": "describe_tool", "arguments": {"toolset_id": "misc", "tool_name": "inform_user"}}
+```
+
+Reference: [`system__describe_tool`](reference/tools/system/describe_tool)
+
+### `system__call_tool`
+The door, shown in its direct form around an inner call: the inner arguments are the inner tool's own.
+
+```json
+{"name": "system__call_tool", "arguments": {"toolset_id": "misc", "tool_name": "get_datetime", "arguments": {}}}
+```
+
+Reference: [`system__call_tool`](reference/tools/system/call_tool)
+
 ## Gotchas
 - The arguments are the inner tool's arguments: no `principal`, no session id, nothing the inner schema does not name. An unknown key is ignored; a wrong type is a `validation-error`.
 - The door looks the tool up in its toolset first: a name the toolset does not list is a `not-found` that names its tools, for every run. Then it checks the run's principal against the inner tool's role: a run below the floor is a `forbidden` before any approval gate. The roles are on [roles and approvals](start-here/roles-and-approvals).
 - A gated inner tool parks the turn under the `call_tool` call, exactly as a direct gated call would.
-- The reference pages under [reference/tools](reference/tools) carry the exact, validating call for every tool; read one before you invent arguments.
+- The reference pages under [reference/tools](reference/tools) carry the exact, validating call for every tool; read one before you invent arguments. The toolset pages say more about listing and describing: [list and describe tools](toolsets/list-and-describe-tools).
 
 ## Related
-[roles and approvals](start-here/roles-and-approvals), [errors](start-here/errors).
+[roles and approvals](start-here/roles-and-approvals), [errors](start-here/errors), [list and describe tools](toolsets/list-and-describe-tools).
