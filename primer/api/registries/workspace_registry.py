@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Literal
 
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.model.common import dump_for_storage
-from primer.model.except_ import NotFoundError, ValidationError
+from primer.model.except_ import ConflictError, NotFoundError, ValidationError
 from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceNotImplementedError, WorkspaceRefusedError
 from primer.model.workspace import WORKSPACE_ID_PATTERN, Workspace as WorkspaceRow
 from primer.model.workspace import (
@@ -149,6 +149,8 @@ class WorkspaceRegistry:
         self._lock = asyncio.Lock()
         # Workspace ids a destroy() is running for in this process (a count, so two overlapping destroys of one id hold the mark until both end).
         self._destroying: dict[str, int] = {}
+        # Creates of one explicit workspace id in this process, run one at a time (round 2 of #917): a lock and how many creates hold or wait on it.
+        self._creating: dict[str, tuple[asyncio.Lock, list[int]]] = {}
 
     # ---- backend cache -----------------------------------------------
 
@@ -405,7 +407,40 @@ class WorkspaceRegistry:
 
         What the callers check first stays theirs (the template lookup, an id already in use, the admin-only overrides, served masks, a
         session's reach), and so does what REST does after (seeding the ``main`` session).
+
+        Two creates of one explicit id (round 2 of #917, item 10): both can pass a door's "is the id free" check, and a local backend ADOPTS an
+        existing workspace directory, so the loser materialised over the winner's files and its rollback then deleted them under the
+        winner's live row. Creates of one id in this process now run one at a time, and the second is refused with :class:`ConflictError`
+        (the doors' words) before anything is materialised. A conflict at the row write itself (a create in another process won the row
+        first) is never rolled back when the id was given: the instance is the winner's. Without an id the platform picked a fresh one, so
+        the instance is this create's own and is torn down as before.
         """
+        if workspace_id is None:
+            return await self._create(template=template, overrides=overrides, workspace_id=None, name=name, reply_binding=reply_binding)
+        lock, holders = self._creating.setdefault(workspace_id, (asyncio.Lock(), [0]))
+        holders[0] += 1
+        try:
+            async with lock:
+                if await self._sp.get_storage(WorkspaceRow).get(workspace_id) is not None:
+                    raise ConflictError(f"Workspace with id {workspace_id!r} already exists")
+                return await self._create(
+                    template=template, overrides=overrides, workspace_id=workspace_id, name=name, reply_binding=reply_binding,
+                )
+        finally:
+            holders[0] -= 1
+            if holders[0] == 0:
+                self._creating.pop(workspace_id, None)
+
+    async def _create(
+        self,
+        *,
+        template: WorkspaceTemplate,
+        overrides: WorkspaceTemplateOverrides | None,
+        workspace_id: str | None,
+        name: str | None,
+        reply_binding: WorkspaceChannelLink | None,
+    ) -> WorkspaceRow:
+        """:meth:`create`'s body: materialise, then the row, with the rollback."""
         live = await self.materialise(template=template, overrides=overrides, workspace_id=workspace_id)
         try:
             row = new_workspace_row(
@@ -417,7 +452,12 @@ class WorkspaceRegistry:
                 reply_binding=reply_binding,
             )
             await self._sp.get_storage(WorkspaceRow).create(row)
-        except BaseException:
+        except BaseException as exc:
+            if workspace_id is not None and isinstance(exc, ConflictError):
+                # Another create of this id won the row (in another process: this one runs them one at a time). The live instance is the
+                # winner's (a local backend adopted its directory), so it is never torn down here.
+                logger.warning("create_workspace: workspace %s was created by another caller first; its instance is left alone", workspace_id)
+                raise
             try:
                 backend = await self.get_backend(template.provider_id)
                 await backend.destroy(live.id)

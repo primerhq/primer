@@ -232,3 +232,19 @@ async def test_a_new_workspace_that_never_answers_is_failed_and_its_sessions_end
     assert row.phase == "failed" and row.failure_reason
     session = await sp.get_storage(WorkspaceSession).get("sess-1")
     assert (session.status, session.ended_reason) == (SessionStatus.ENDED, "workspace_lost")
+
+
+# ---- round 2 of #917, item 10: a template whose provider is gone ------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_template_whose_provider_is_gone_is_not_found_from_both_doors(client, toolset, sp, built) -> None:  # noqa: F811
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(id="tpl-x", description="t", provider_id="nope"))
+
+    rest = await client.post("/v1/workspaces", json={"id": "ws-x", "template_id": "tpl-x"})
+    tool = json.loads((await toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-x"})).output)
+
+    assert rest.status_code == 404, rest.text
+    assert tool["type"] == "not-found", tool
+    assert tool["message"] == rest.json()["detail"] == "WorkspaceProvider 'nope' does not exist"
+    assert built == [] and await _rows(sp) == []
