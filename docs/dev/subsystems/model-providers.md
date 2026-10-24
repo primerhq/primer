@@ -433,6 +433,20 @@ So `openresponses` + `vllm` maps nothing and says so once per process at
 DEBUG, naming the `openchat` provider type as the way to get the control.
 An operator who needs reasoning control against vLLM must use `openchat`.
 
+**The console.** Platform > LLM Profiles (`view=platform:profiles`, the `profiles` entry of `NV_PLAT_PAGES` in
+`ui/components/console/nv-platform.jsx`) lists every profile as a card: a single profile is badged
+"imported" and shows its provider and model, an aggregated one is badged "aggregated" and shows how many
+profiles it chains and how it routes. Each card shows the context window and who uses the profile
+(`agent_count`, `graph_node_count`), and a harness-managed profile has no Delete. An aggregate's window is
+the smallest of its members' windows, worked out by the console from the list it loaded (`MP_withWindows`
+in `ui/components/model-profiles.jsx`; the resolver takes the same minimum at resolve time and no route
+serves it), and "unknown" when a member is not in that list. There is no single-profile create: a single
+profile comes from the Register provider overlay's import. The page's one action, "+ Aggregate", opens
+`MP_AggregateOverlay`; a card opens `MP_AggregateOverlay` or `MP_SingleProfileOverlay` by the row's kind.
+Both overlays send an edit as the stored row with the form's fields laid over it (`MP_editBody`), because
+the PUT is a full replace: a field the form does not draw comes back as stored. The console detail is in
+`docs/dev/subsystems/ui-pages.md`.
+
 ### Transport retries
 
 Every adapter except `aggregated` is wrapped in
