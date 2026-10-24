@@ -254,6 +254,18 @@ def test_plus_template_and_the_verb_open_the_create_overlay(ctx):
     assert ctx.eval("WT_consumeCreateRequest()") is False
 
 
+def test_the_create_verb_leaves_an_open_edit_alone(ctx):
+    """Round 2 of #886, item 4 (the reviewer's probe): the palette's Create Workspace Template while a template is open in the overlay used to replace it
+    with the create overlay, and the unsaved edit was gone. An overlay that is open stays; the request is taken, so it does not open later either."""
+    _mount(ctx, [PYTHON_DEV])
+    ctx.eval("MR.click('pk-card-open:python-dev'); setValue('ws-template-description', 'unsaved'); WT_requestCreate(); MR.rerender();")
+    assert js(ctx, "LAST_OVERLAY.title") == "Edit workspace template"
+    assert js(ctx, "MR.find('ws-template-description').props.value") == "unsaved"
+    assert ctx.eval("WT_consumeCreateRequest()") is False
+    ctx.eval("LAST_OVERLAY.onClose(); MR.rerender(); LAST_OVERLAY = null; MR.rerender();")
+    assert ctx.eval("LAST_OVERLAY === null"), "closing the edit does not open a create nobody asked for any more"
+
+
 def test_the_page_stops_listening_when_it_goes(ctx):
     _mount(ctx, [PYTHON_DEV])
     assert js(ctx, "(LISTENERS['wt:create'] || []).length") == 1
