@@ -78,7 +78,7 @@ function NV_mobileMayDecide(approvers, who) {
 // that is not a list counts, and so does a value withheld whole (a bare string or list as the arguments: `arguments` is "<hidden>" and the
 // server has no names to send). An older server sends neither key: the card is as it always was.
 function NV_mobileInboxView(it, who, shownAll) {
-  var view = { kindLabel: "Parked", line: "", args: "", truncated: false, canApprove: false, canDeny: false, notApprover: false, note: "", withheld: "", blind: false };
+  var view = { kindLabel: "Parked", line: "", args: "", truncated: false, canApprove: false, canDeny: false, notApprover: false, rankBlocked: false, note: "", withheld: "", blind: false };
   if (it.kind === "approval") {
     var a = it.approval;
     view.kindLabel = "Approval";
@@ -100,11 +100,15 @@ function NV_mobileInboxView(it, who, shownAll) {
       }
     }
     var decidable = !!(a && a.tool_name && it.tool_call_id);
-    var may = NV_mobileMayDecide(it.approvers, who);
+    var rankMay = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(who, it);
+    var specMay = NV_mobileMayDecide(it.approvers, who);
+    var may = rankMay && specMay;
     view.canApprove = decidable && may && (!view.blind || !!shownAll);
     view.canDeny = decidable && may;
-    view.notApprover = decidable && !may;
-    if (view.notApprover) view.note = "Only its approvers can decide this. You can still open it.";
+    view.notApprover = decidable && rankMay && !specMay;
+    view.rankBlocked = decidable && !rankMay;
+    if (view.rankBlocked) view.note = SH_rankDecisionWords(it);
+    else if (view.notApprover) view.note = "Only its approvers can decide this. You can still open it.";
     else if (decidable && view.blind && !shownAll) {
       var declared = a.preview === "tool" || a.preview === "policy";
       view.note = (declared ? "The tool's author or your operator chose what this card shows, and some arguments are hidden. " : "Some arguments are hidden on this card. ")
@@ -129,8 +133,11 @@ function NV_mobileInboxHeading(count, known) {
 // something else answers 404 gate_not_pending instead of having that other call approved (it used to fetch the session's first pending
 // yield AFTER the tap and approve whatever that was). Every outcome reaches the toast; a card whose gate moved on is refreshed away.
 // Resolves {ok}, {stale} or {failed}; never rejects.
-function NV_inboxDecide(decision, it, toast, onResolved) {
+function NV_inboxDecide(decision, it, toast, onResolved, viewer) {
   var verb = decision === "approve" ? "Approve" : "Deny";
+  if (typeof SH_mayDecideFor === "function" && !SH_mayDecideFor(viewer, it)) {
+    return Promise.resolve({ blocked: true });
+  }
   if (!it.tool_call_id) {
     toast(verb + " failed: this approval does not name a call. Open it to review.", { kind: "error", requestId: null });
     return Promise.resolve({ failed: true });
@@ -197,7 +204,7 @@ function NV_MobileDecisionButton(props) {
       onClick={function (ev) {
         ev.stopPropagation();
         setBusy(true);
-        NV_inboxDecide(props.decision, it, con.toast, props.onResolved).then(function () { setBusy(false); });
+        NV_inboxDecide(props.decision, it, con.toast, props.onResolved, props.viewer).then(function () { setBusy(false); });
       }}>{busy ? (approve ? "Approving…" : "Denying…") : (approve ? "Approve" : "Deny")}</button>
   );
 }
@@ -209,7 +216,8 @@ function NV_MobileInboxCard(props) {
   var full = NV_inboxFullFor(fullState[0], it);
   var setFull = fullState[1];
   var shownAll = !!(full && full.text !== undefined);
-  var view = NV_mobileInboxView(it, { username: con.username, role: con.role }, shownAll);
+  var viewer = Object.assign({ username: con.username, role: con.role }, con.viewer || {});
+  var view = NV_mobileInboxView(it, viewer, shownAll);
   var ident = NV_identity(it.agent_binding);
 
   function review() {
@@ -273,10 +281,10 @@ function NV_MobileInboxCard(props) {
       ) : null}
       <div className="nv-mobile-inbox-actions">
         {view.canApprove ? (
-          <NV_MobileDecisionButton decision="approve" item={it} onResolved={props.onResolved} />
+          <NV_MobileDecisionButton decision="approve" item={it} viewer={viewer} onResolved={props.onResolved} />
         ) : null}
         {view.canDeny ? (
-          <NV_MobileDecisionButton decision="deny" item={it} onResolved={props.onResolved} />
+          <NV_MobileDecisionButton decision="deny" item={it} viewer={viewer} onResolved={props.onResolved} />
         ) : null}
         <button type="button"
           className={(openToReview ? "nv-btn-primary" : "nv-btn-secondary") + " touch-target"}

@@ -660,6 +660,7 @@ function NV_Shell() {
       workspaces: wsItems,
       username: NV_usernameOf(status.data),
       role: (status.data && status.data.role) || "user",
+      viewer: status.data && status.data.principal,
       speech: (caps.data && caps.data.speech) || {},
       voiceRef: voiceRef,
       paletteRef: paletteRef,

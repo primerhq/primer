@@ -1084,6 +1084,7 @@ function NV_LifecycleRow(props) {
 function NV_DecisionCard(props) {
   var con = NV_useConsole();
   var item = props.item;
+  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session);
   var rejState = React.useState(false);
   var rejOpen = rejState[0];
   var setRej = rejState[1];
@@ -1122,55 +1123,62 @@ function NV_DecisionCard(props) {
             <pre className="nv-card-preview">{item.preview}</pre>
           )
         ) : null}
-        <div className="nv-card-actions">
-          <button type="button" className="nv-btn-primary"
-            data-testid="nv-approve" disabled={!!props.ended}
-            onClick={function () {
-              SH_api.approve(item.sessionId, item.toolCallId, item.gateId).then(
-                props.onResolved,
-                function (err) {
-                  // A gate replaced since this card was drawn (C-033: 409 "replaced"), or one that has moved on (404 gate_not_pending, "moved on": the first gate of a node that re-parked, a gate decided
-                  // elsewhere): say so as a warning, the same words and kind as the banner and the mobile Inbox, and reload; nothing was decided. Any other 404 is the error it is.
-                  if (SH_isMovedOnGate(err)) { con.toast(SH_movedOnGateWords(err, "approval"), { kind: "warning" }); props.onResolved(); return; }
-                  con.toast("Approve failed: " + (err.detail || err.message));
-                }
-              );
-            }}>Approve</button>
-          <button type="button" className="nv-btn-reject"
-            data-testid="nv-reject" data-armed={rejOpen ? "true" : undefined}
-            // uiv2 Wave 3 (a-14 fold): this card is now the ONLY reject
-            // path (the records-sheet's AP_RecordRow, which explicitly
-            // disabled its own Send-rejection until reason.trim(), is
-            // deleted) - the second-click submit needs the same guard,
-            // not just the first-click "open the reason box" step.
-            disabled={!!props.ended || (rejOpen && !reason.trim())}
-            onClick={function () {
-              if (!rejOpen) { setRej(true); return; }
-              SH_api.reject(item.sessionId, item.toolCallId, reason, item.gateId).then(
-                props.onResolved,
-                function (err) {
-                  if (SH_isMovedOnGate(err)) { con.toast(SH_movedOnGateWords(err, "approval"), { kind: "warning" }); props.onResolved(); return; }
-                  con.toast("Reject failed: " + (err.detail || err.message));
-                }
-              );
-            }}>{rejOpen ? "Send rejection" : "Reject with feedback"}</button>
-          {rejOpen ? (
-            // Folds the form without a request and drops the draft, so the next open starts empty and its first click cannot send old text.
-            <button type="button" className="nv-btn-secondary"
-              data-testid="nv-reject-cancel"
-              onClick={function () { setRej(false); setReason(""); }}>Cancel</button>
-          ) : null}
-          <span className="nv-card-note" data-testid="nv-decision-ended-note">
-            {props.ended
-              ? "session ended before this could be resolved"
-              : "also in your attention feed — keep scrolling while you judge"}
-          </span>
-        </div>
-        {rejOpen ? (
+        {!mayDecide ? (
+          <div className="nv-card-note" data-testid="nv-decision-rank-note">
+            {SH_rankDecisionWords(props.session)}
+          </div>
+        ) : null}
+        {mayDecide ? (
+          <div className="nv-card-actions">
+            <button type="button" className="nv-btn-primary"
+              data-testid="nv-approve" disabled={!!props.ended}
+              onClick={function () {
+                SH_api.approve(item.sessionId, item.toolCallId, item.gateId).then(
+                  props.onResolved,
+                  function (err) {
+                    // A gate replaced since this card was drawn (C-033: 409 "replaced"), or one that has moved on (404 gate_not_pending, "moved on": the first gate of a node that re-parked, a gate decided
+                    // elsewhere): say so as a warning, the same words and kind as the banner and the mobile Inbox, and reload; nothing was decided. Any other 404 is the error it is.
+                    if (SH_isMovedOnGate(err)) { con.toast(SH_movedOnGateWords(err, "approval"), { kind: "warning" }); props.onResolved(); return; }
+                    con.toast("Approve failed: " + (err.detail || err.message));
+                  }
+                );
+              }}>Approve</button>
+            <button type="button" className="nv-btn-reject"
+              data-testid="nv-reject" data-armed={rejOpen ? "true" : undefined}
+              // uiv2 Wave 3 (a-14 fold): this card is now the ONLY reject
+              // path (the records-sheet's AP_RecordRow, which explicitly
+              // disabled its own Send-rejection until reason.trim(), is
+              // deleted) - the second-click submit needs the same guard,
+              // not just the first-click "open the reason box" step.
+              disabled={!!props.ended || (rejOpen && !reason.trim())}
+              onClick={function () {
+                if (!rejOpen) { setRej(true); return; }
+                SH_api.reject(item.sessionId, item.toolCallId, reason, item.gateId).then(
+                  props.onResolved,
+                  function (err) {
+                    if (SH_isMovedOnGate(err)) { con.toast(SH_movedOnGateWords(err, "approval"), { kind: "warning" }); props.onResolved(); return; }
+                    con.toast("Reject failed: " + (err.detail || err.message));
+                  }
+                );
+              }}>{rejOpen ? "Send rejection" : "Reject with feedback"}</button>
+            {rejOpen ? (
+              // Folds the form without a request and drops the draft, so the next open starts empty and its first click cannot send old text.
+              <button type="button" className="nv-btn-secondary"
+                data-testid="nv-reject-cancel"
+                onClick={function () { setRej(false); setReason(""); }}>Cancel</button>
+            ) : null}
+            <span className="nv-card-note" data-testid="nv-decision-ended-note">
+              {props.ended
+                ? "session ended before this could be resolved"
+                : "also in your attention feed - keep scrolling while you judge"}
+            </span>
+          </div>
+        ) : null}
+        {mayDecide && rejOpen ? (
           <textarea className="nv-card-reason" value={reason}
             data-testid="nv-reject-reason" disabled={!!props.ended}
             aria-label="Reason for rejecting" autoFocus
-            placeholder="Why not — the agent reads this"
+            placeholder="Why not - the agent reads this"
             onChange={function (ev) { setReason(ev.target.value); }} />
         ) : null}
       </div>
@@ -1417,6 +1425,7 @@ function NV_toolCallWithRows(row, resultFor, running) {
 function NV_AskCard(props) {
   var con = NV_useConsole();
   var item = props.item;
+  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session);
   // Wave 6 (audit A item 15 render half): SH_askOptionsOf (shell-
   // attention.js, wave 3) normalizes _AskUserArgs.response_schema's
   // {enum: [...]} into a radio-friendly list, or null for the SAME
@@ -1465,7 +1474,11 @@ function NV_AskCard(props) {
       </div>
       <div className="nv-card-body">
         <div className="nv-ask-prompt">{item.preview || item.title}</div>
-        {options ? (
+        {!mayDecide ? (
+          <div className="nv-card-note" data-testid="nv-ask-rank-note">
+            {SH_rankDecisionWords(props.session)}
+          </div>
+        ) : options ? (
           <div className="nv-ask-options" data-testid="nv-ask-options">
             {options.map(function (opt, i) {
               var optVal = String(opt.value);
@@ -1502,11 +1515,13 @@ function NV_AskCard(props) {
             session ended before this could be answered
           </div>
         ) : null}
-        <div className="nv-card-actions">
-          <button type="button" className="nv-btn-primary"
-            data-testid="nv-ask-submit" disabled={!!props.ended}
-            onClick={submit}>Answer & resume</button>
-        </div>
+        {mayDecide ? (
+          <div className="nv-card-actions">
+            <button type="button" className="nv-btn-primary"
+              data-testid="nv-ask-submit" disabled={!!props.ended}
+              onClick={submit}>Answer & resume</button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -3325,6 +3340,7 @@ function NV_SessionDoc(props) {
         : null}
       {typeof window.ExternalPendingBanner === "function" ? (
         <window.ExternalPendingBanner sessionId={sid}
+          session={session} viewer={con.viewer}
           pollMs={calm ? NV_CALM_POLL_MS : 5000}
           pushToast={window.primerApi.toastPush} />
       ) : null}
@@ -3438,11 +3454,11 @@ function NV_SessionDoc(props) {
                 return <NV_ResolvedDecisionCard key={item.id} item={item} />;
               }
               return item.kind === "approval" ? (
-                <NV_DecisionCard key={item.id} item={item} ended={ended}
+                <NV_DecisionCard key={item.id} item={item} ended={ended} session={session}
                   live={NV_arrivedLive(gatesFirstLoad, item.id)}
                   onResolved={refetchAll} />
               ) : (
-                <NV_AskCard key={item.id} item={item} ended={ended}
+                <NV_AskCard key={item.id} item={item} ended={ended} session={session}
                   onResolved={refetchAll} />
               );
             })}

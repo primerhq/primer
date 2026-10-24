@@ -254,7 +254,8 @@ def test_the_card_tells_the_view_when_the_whole_call_has_been_loaded() -> None:
 
     assert "var full = NV_inboxFullFor(fullState[0], it);" in source
     assert "var shownAll = !!(full && full.text !== undefined);" in source
-    assert "NV_mobileInboxView(it, { username: con.username, role: con.role }, shownAll)" in source
+    assert "var viewer = Object.assign({ username: con.username, role: con.role }, con.viewer || {});" in source
+    assert "NV_mobileInboxView(it, viewer, shownAll)" in source
     assert source.index("var fullState = React.useState(null);") < source.index("var shownAll"), "the loaded state has to exist before the view reads it"
     assert source.count("callId: it.tool_call_id") == 2, "the loading state and the loaded text both name the call they belong to"
     assert source.count("parkedAt: it.created_at") == 2, "and the park they were loaded for (the raw call id is not unique across rounds)"
