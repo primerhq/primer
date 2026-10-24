@@ -399,6 +399,30 @@ def test_create_of_each_kind_is_a_body_the_model_takes():
     assert set(k8s) == {"provider_id", "backend", "description", "files", "env", "init_commands", "state_path", "tmp_path", "strict_write_locking", "resources"}
 
 
+MULTILINE = {**FULL_K8S, "backend": {**FULL_K8S["backend"], "entrypoint": ["sh", "-c", "echo a\necho b", ""], "args": ["--verbose"]},
+             "init_commands": ["cat <<EOF > f\nline\nEOF", "echo ok"]}
+
+
+def test_a_line_list_that_one_item_per_line_cannot_show_is_locked():
+    """Round 2 of #886, item 7: Command, Arguments and Start-up commands are one item per line. A stored item with a line break, an empty item or one with
+    spaces at its ends cannot be shown that way, and re-splitting it changes the argv or the commands, so such a field is read-only and kept as stored."""
+    assert _call("WT_lockedLineKeys", MULTILINE) == ["command", "init"]
+    assert _call("WT_lockedLineKeys", {**FULL_K8S, "backend": {**FULL_K8S["backend"], "args": [" --flag", "x"]}}) == ["args"]
+    assert _call("WT_lockedLineKeys", FULL_K8S) == [] and _call("WT_lockedLineKeys", LOCAL_ROW) == []
+    assert _call("WT_lockedLineKeys", {**LOCAL_ROW, "init_commands": ["a", ""]}) == ["init"]
+    form = _call("WT_formFromTemplate", MULTILINE)
+    assert json.loads(form["command"]) == ["sh", "-c", "echo a\necho b", ""] and json.loads(form["init"]) == MULTILINE["init_commands"]
+    assert form["args"] == "--verbose"
+
+
+@pytest.mark.parametrize("key", ["description", "command", "init"])
+def test_a_locked_line_list_is_never_re_split(key):
+    body = _edit(MULTILINE, key, "changed\nby a script")
+    assert body["backend"]["entrypoint"] == ["sh", "-c", "echo a\necho b", ""]
+    assert body["init_commands"] == ["cat <<EOF > f\nline\nEOF", "echo ok"]
+    assert _edit(MULTILINE, "args", "--a\n--b")["backend"]["args"] == ["--a", "--b"], "a list that fits is still one item per line"
+
+
 # ---- validation -----------------------------------------------------------------------------------------------------------------------------------------
 
 
