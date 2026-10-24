@@ -186,7 +186,8 @@ async def test_no_match_parks_on_a_one_shot_subscription(provider, ctx, world):
     assert sub.filter == canvas_wait_filter("s1", ids=["ok"], kinds=[]) and y.resume_metadata["subscription_id"] == sub.id
     assert sub.sink == SessionWakeSink(event_key="canvaswait:s1:call-1", session_id="s1", one_shot=True)
     assert sub.managed_by == "system"
-    assert y.resume_metadata == {"subscription_id": sub.id, "ids": ["ok"], "kinds": [], "after_event_seq": 0}
+    # keep_input: the wake keeps what the user entered, because the wait reads the calling session's own canvas (audit G8-08).
+    assert y.resume_metadata == {"subscription_id": sub.id, "ids": ["ok"], "kinds": [], "after_event_seq": 0, "keep_input": True}
     store = world.sp.get_event_store()
     assert await store.get_cursor(sub.id) == await store.max_id(), "the cursor is pinned at the head of the log"
 

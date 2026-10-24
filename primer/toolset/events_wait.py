@@ -29,7 +29,15 @@ from primer.authz import _role_allows
 from primer.common.user_regex import UserRegexError
 from primer.events.filters import check_field_regex, validate_filter_expr
 from primer.events.redaction import redact_payload
-from primer.events.visibility import SCOPE_PATHS, needs_scope, user_safe_glob, user_safe_kinds
+from primer.events.visibility import (
+    KEEP_INPUT_KEY,
+    SCOPE_PATHS,
+    input_glob,
+    needs_scope,
+    reads_input,
+    user_safe_glob,
+    user_safe_kinds,
+)
 from primer.model.event import (
     EventFilter,
     EventSubscription,
@@ -92,7 +100,7 @@ def _non_admin_refusal(ctx: ToolContext, args: _WaitForEventArgs) -> str | None:
     """Why this run may not make this wait (the ``forbidden`` message), or ``None``: always ``None`` for an admin.
 
     The tool is role user (pivot P1). A run whose principal is not an admin (``run_principal`` under the role floor's own predicate: a
-    context with no initiator is not an admin, the system principal is) is held to three limits, checked in this order:
+    context with no initiator is not an admin, the system principal is) is held to these limits, checked in this order:
 
     * the kinds: the event that wakes the wait becomes the run's tool result, so it may wait only on what ``GET /v1/events`` shows a
       non-admin (``primer.events.visibility``, the feed's own rule; a glob that could match a hidden kind is refused too);
@@ -102,7 +110,11 @@ def _non_admin_refusal(ctx: ToolContext, args: _WaitForEventArgs) -> str | None:
       subscription. ``eq`` and ``prefix`` stay open;
     * a scope on a canvas wait: a ``canvas.*`` event carries what a user entered (a value, Html emit data, who did it), so a wait whose
       kinds can match one must name the run's OWN workspace or session with an ``eq`` matcher on ``workspace_id`` or ``session_id``
-      (audit G8-08); without it, or with another workspace's or session's id, a user-role run would wake on a canvas that is not its own.
+      (audit G8-08); without it, or with another workspace's or session's id, a user-role run would wake on a canvas that is not its own;
+    * no matcher on the input of a canvas event: the event that wakes such a wait reaches the run without its ``value`` and ``data``
+      (``primer.events.visibility.INPUT_KEYS``; the default workspace is shared, so a workspace-scoped wait can wake on another user's
+      click), and an ``eq`` or ``prefix`` matcher on them (or on the whole payload) would tell the run what was entered by whether it
+      wakes (``reads_input``).
     """
     if _role_allows(run_principal(ctx), "admin"):
         return None
@@ -131,6 +143,13 @@ def _non_admin_refusal(ctx: ToolContext, args: _WaitForEventArgs) -> str | None:
             _NOT_ADMIN + "a wait on canvas events must name this run's own workspace or session: add a fields matcher "
             "{path: workspace_id or session_id, op: eq, value: this run's own id}; refused: " + ", ".join(repr(glob) for glob in unscoped)
         )
+    if any(input_glob(glob) for glob in args.event_types):
+        reading = [matcher.path for matcher in args.fields or [] if reads_input(matcher.path)]
+        if reading:
+            return (
+                _NOT_ADMIN + "a wait on canvas.event may not match on what a user entered (the payload's value or data, or the whole "
+                "payload): the event reaches this run without them; refused: " + ", ".join(repr(path) for path in reading)
+            )
     return None
 
 
@@ -198,6 +217,9 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
             resume_metadata={
                 "subscription_id": created.id,
                 "event_types": args.event_types,
+                # Whether the wake keeps what a user entered (a canvas.event's value and data): an admin's run only. The dispatcher reads it
+                # from the park and drops them before it publishes otherwise (primer.events.visibility; audit G8-08).
+                KEEP_INPUT_KEY: _role_allows(run_principal(ctx), "admin"),
             },
         )
 
@@ -213,7 +235,9 @@ def wait_for_event_resume(
 
     The dispatcher delivered the full event envelope as the bus
     payload, with stored secrets masked (``redact_payload``, the same
-    masking GET /v1/events applies); synthetic YieldTimeout / YieldCancelled payloads surface
+    masking GET /v1/events applies) and, for a run that is not an
+    admin's, a canvas.event's ``value`` and ``data`` already dropped
+    (``keep_input``); synthetic YieldTimeout / YieldCancelled payloads surface
     as {timed_out} / {cancelled}. The one-shot subscription is deleted
     by the dispatcher on delivery; a timed-out or cancelled park's
     subscription is garbage-collected by the dispatcher later, so the
