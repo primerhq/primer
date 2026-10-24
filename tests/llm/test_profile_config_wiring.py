@@ -126,6 +126,9 @@ class TestEachAdapterTranslatesForItsOwnWire:
         ("gpt-4o", ReasoningLevel.LOW, {}),  # does not reason: no effort at all
         ("gpt-4.1", ReasoningLevel.HIGH, {}),
         ("gpt-5-chat-latest", ReasoningLevel.OFF, {}),
+        # o1-mini and o1-preview reason but take no effort (ticket 01a16b64 R1: the request around it is still fitted).
+        ("o1-mini", ReasoningLevel.HIGH, {}),
+        ("o1-preview", ReasoningLevel.OFF, {}),
         ("o3", ReasoningLevel.OFF, {"reasoning_effort": "low"}),
         ("o4-mini", ReasoningLevel.MINIMAL, {"reasoning_effort": "low"}),
         ("gpt-5", ReasoningLevel.OFF, {"reasoning_effort": "minimal"}),
@@ -1119,3 +1122,19 @@ class TestOpenAIReasoningModelsGetTheRequestOpenAIAccepts:
         hits = [r for r in caplog.records if "max_completion_tokens" in r.getMessage()]
         assert len(hits) == 1
         assert "temperature, top_p dropped" in hits[0].getMessage()
+
+    # Ticket 01a16b64 R1: o1-mini and o1-preview take no ``reasoning_effort`` (none is sent, whatever the profile's level), but
+    # they are reasoning models all the same: like the rest of the o-series they refuse ``max_tokens``, ``temperature`` and ``top_p``.
+    @pytest.mark.parametrize("model", ["o1-mini", "o1-preview", "o1-mini-2024-09-12"])
+    @pytest.mark.parametrize("level", [ReasoningLevel.LOW, ReasoningLevel.OFF, None])
+    async def test_chat_o1_mini_and_preview_take_no_effort_and_the_reasoning_shape(self, monkeypatch, model, level) -> None:
+        cfg = None if level is None else _cfg(level)
+        body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), cfg, model, monkeypatch)
+        assert body == _chat_body(model, max_completion_tokens=4096)
+
+    @pytest.mark.parametrize("model", ["o1-mini", "o1-preview"])
+    @pytest.mark.parametrize("level", [ReasoningLevel.HIGH, None])
+    async def test_responses_o1_mini_and_preview_take_no_effort_and_no_sampling(self, monkeypatch, model, level) -> None:
+        cfg = None if level is None else _cfg(level)
+        body = await _whole_body("openresponses", OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI)), cfg, model, monkeypatch)
+        assert body == _responses_body(model, max_output_tokens=4096)

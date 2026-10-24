@@ -72,9 +72,11 @@ _OPENAI_GPT = re.compile(r"gpt-(\d+)(?:\.(\d+))?")
 
 
 def openai_family(model: str | None) -> str | None:
-    """The effort family of an OpenAI model id: ``"no-reasoning"``, an effort
-    family of :data:`_OPENAI_EFFORT_BY_FAMILY`, or None when the table does
-    not know it (a deployment name, a self-hosted model)."""
+    """The effort family of an OpenAI model id: ``"no-reasoning"`` (a model
+    that does not reason), ``"no-effort"`` (o1-mini and o1-preview, which
+    reason but predate ``reasoning_effort`` and take none), an effort family
+    of :data:`_OPENAI_EFFORT_BY_FAMILY`, or None when the table does not know
+    it (a deployment name, a self-hosted model)."""
     name = (model or "").lower()
     if name.startswith("ft:"):
         name = name[3:]
@@ -83,7 +85,7 @@ def openai_family(model: str | None) -> str | None:
         return "no-reasoning"
     if re.match(r"o\d", name):
         if name.startswith(("o1-mini", "o1-preview")):
-            return "no-reasoning"
+            return "no-effort"
         return "o-series"
     match = _OPENAI_GPT.match(name)
     if match and int(match.group(1)) >= 5:
@@ -99,23 +101,42 @@ def openai_family(model: str | None) -> str | None:
     return None
 
 
+def openai_reasons(model: str | None) -> bool | None:
+    """Whether ``model`` is an OpenAI reasoning model: True for every family
+    but ``"no-reasoning"`` (o1-mini and o1-preview included, although they
+    take no ``reasoning_effort``), False for a model that does not reason,
+    None when the table does not know it.
+
+    Separate from whether the model takes an effort (:func:`_openai_effort`):
+    a reasoning model refuses the request settings of one
+    (:func:`primer.llm._openai_common.fit_openai_reasoning_request`) whether
+    or not it takes the parameter.
+    """
+    family = openai_family(model)
+    if family is None:
+        return None
+    return family != "no-reasoning"
+
+
 def _openai_effort(config: ModelProfileConfig, model: str | None) -> dict[str, Any]:
     """``reasoning_effort`` for an OpenAI model, with the value the model takes.
 
-    A model that does not reason (gpt-4o, gpt-4.1, the chat models) refuses
-    the parameter, so none is sent, logged once at DEBUG. A model the table
-    does not know gets the generic value; the stream-open guard retries once
-    without it if the model refuses.
+    A model that does not reason (gpt-4o, gpt-4.1, the chat models), and a
+    reasoning model that predates the parameter (o1-mini, o1-preview), refuse
+    it, so none is sent, logged once at DEBUG. A model the table does not know
+    gets the generic value; the stream-open guard retries once without it if
+    the model refuses.
     """
     level = config.reasoning
     assert level is not None
     family = openai_family(model)
-    if family == "no-reasoning":
+    if family in ("no-reasoning", "no-effort"):
         debug_once(
             ("openai-no-reasoning", str(model)),
-            "OpenAI model %s does not reason; the profile's reasoning level "
-            "(%s) is not sent",
-            model, level.value,
+            "OpenAI model %s %s; the profile's reasoning level (%s) is not sent",
+            model,
+            "does not reason" if family == "no-reasoning" else "takes no reasoning effort",
+            level.value,
         )
         out = dict(config.extended or {})
         out.pop("reasoning_effort", None)
@@ -779,6 +800,7 @@ __all__ = [
     "gemini_extended",
     "ollama_extended",
     "openai_family",
+    "openai_reasons",
     "openchat_extended",
     "openresponses_extended",
     "openrouter_extended",

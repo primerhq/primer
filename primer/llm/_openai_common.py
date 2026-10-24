@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from primer.llm._reasoning import debug_once, openai_family
+from primer.llm._reasoning import debug_once, openai_reasons
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +80,10 @@ def fit_openai_reasoning_request(
 ) -> None:
     """Fit, in place, a request for an OpenAI reasoning model to what OpenAI accepts (audit G2-02, G2-03, G2-04).
 
-    Only for the ``openai`` flavor, and decided from the model's family (:func:`primer.llm._reasoning.openai_family`), not from
-    whether an effort was sent: o-series, codex, gpt-5 and the later models reason by default, so a call that sends no effort
-    is refused for the same settings. For such a model:
+    Only for the ``openai`` flavor, and decided from whether the model reasons (:func:`primer.llm._reasoning.openai_reasons`),
+    not from whether an effort was sent, nor from whether the model takes one: o-series, codex, gpt-5 and the later models
+    reason by default, so a call that sends no effort is refused for the same settings, and o1-mini and o1-preview, which take
+    no ``reasoning_effort`` at all, refuse them too (ticket 01a16b64 R1). For such a model:
 
     * Chat Completions: ``max_tokens`` is sent as ``max_completion_tokens`` (the reasoning models refuse ``max_tokens``).
     * Both wires: ``temperature`` and ``top_p`` are dropped, unless the request sets the effort to ``none`` (OpenAI accepts
@@ -95,8 +96,8 @@ def fit_openai_reasoning_request(
     """
     if flavor != "openai":
         return
-    family = openai_family(model)
-    if family == "no-reasoning":
+    reasons = openai_reasons(model)
+    if reasons is False:
         return
     if target == "chat_completions":
         effort = request.get("reasoning_effort")
@@ -104,7 +105,7 @@ def fit_openai_reasoning_request(
         reasoning = request.get("reasoning")
         effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
     changed: list[str] = []
-    if family is None:
+    if reasons is None:
         if target != "chat_completions" or effort in (None, "none"):
             return
     elif target == "chat_completions" and "max_tokens" in request:
