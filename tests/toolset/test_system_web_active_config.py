@@ -16,11 +16,15 @@ lifespan seeds it.
 from __future__ import annotations
 
 import inspect
+import random
+
+import pytest
 
 from primer.api._app_bootstrap import _bootstrap_web_fetch, _bootstrap_web_search
 from primer.mcp.safety import is_exposable
+from primer.model.storage import OffsetPage
 from primer.model.web_fetch import ACTIVE_WEB_FETCH_CONFIG_ID, ActiveWebFetchConfig, JinaFetchConfig, WebFetchProvider
-from primer.model.web_search import ACTIVE_WEB_SEARCH_CONFIG_ID, ActiveWebSearchConfig
+from primer.model.web_search import ACTIVE_WEB_SEARCH_CONFIG_ID, ActiveWebSearchConfig, DuckDuckGoConfig, WebSearchProvider
 from primer.web_fetch.service import WebFetchService
 from primer.web_search.service import WebSearchService
 from tests.toolset._desc_conformance import assert_tool_conforms
@@ -112,3 +116,29 @@ async def test_get_says_unavailable_when_the_row_is_missing(world) -> None:
 def test_the_five_seconds_the_descriptions_promise_is_the_services_cache_ttl() -> None:
     for cls in (WebSearchService, WebFetchService):
         assert inspect.signature(cls.__init__).parameters["cache_ttl_seconds"].default == 5.0
+
+
+@pytest.mark.parametrize("setting", ["web_search", "web_fetch"])
+async def test_get_lists_the_first_200_providers_by_id_in_order(world, setting) -> None:  # audit G3-06
+    """The get tools promise the providers a set may name as "the first 200 provider rows by id". More than 200 rows, stored in a shuffled order,
+    come back as the 200 smallest ids in id order: dropping the order (the rows come back in the order they were stored) or the cap fails here."""
+    sp, toolset, _ = world
+    if setting == "web_search":
+        await _bootstrap_web_search(sp)
+        model, make = WebSearchProvider, lambda pid: WebSearchProvider(id=pid, provider_type="duckduckgo", config=DuckDuckGoConfig())
+    else:
+        await _bootstrap_web_fetch(sp)
+        model, make = WebFetchProvider, lambda pid: WebFetchProvider(id=pid, provider_type="jina", config=JinaFetchConfig())
+    bootstrapped = [row.id for row in (await sp.get_storage(model).list(OffsetPage(offset=0, length=200))).items]
+    ids = [f"p-{n:03d}" for n in range(230)]
+    stored_order = ids[:]
+    random.Random(3).shuffle(stored_order)
+    for pid in stored_order:
+        await sp.get_storage(model).create(make(pid))
+
+    is_error, body = await _call(toolset, f"get_{setting}_active_config")
+
+    assert not is_error, body
+    listed = [p["id"] for p in body["providers"]]
+    assert len(listed) == 200, "the cap"
+    assert listed == sorted(ids + bootstrapped)[:200], "the first 200 by id, in id order"
