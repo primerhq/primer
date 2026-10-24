@@ -86,7 +86,7 @@ Read whatever file the agent was told to write.
 `status` is `ended` with `ended_reason: "completed"` (not `failed`), and the expected output file exists and is non-empty.
 
 ## Gotchas
-- If `status` stays `running` past your timeout the agent may be parked on a yielding tool; the surface shows `status: "waiting"`. See `cookbook/monitor-and-resume-a-parked-session`.
+- If `status` stays `running` past your timeout the agent may be parked on a yielding tool: a park keeps `status` `running` and sets `parked_status` on the row (`workspaces::find_sessions`). See `cookbook/monitor-and-resume-a-parked-session`.
 - To end a run early, call `workspaces::cancel_workspace_session`; it ends with `ended_reason: "cancelled"`.
 - To stop only the turn it is running and keep the session (you can steer it afterwards), call `workspaces::interrupt_workspace_session`. A success answer alone is not a Stop: check `interrupt_requested` in it (`false` means nothing was running).
 - Clean up the sandbox when finished with `workspaces::delete_workspace` `{ "id": "ws-1" }`.

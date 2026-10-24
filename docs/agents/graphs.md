@@ -646,8 +646,10 @@ either way the whole graph parks, not just the node.
 ```
 
 Run it with a graph-bound session as in Workflow 1. When the `confirm`
-node fires, the session parks: `get_workspace_session` returns
-`status="waiting"`. There are two ways to answer.
+node fires, the session parks: it keeps `status="running"` with
+`parked_status` set (`get_workspace_session` answers `{info, status}` and
+carries no park field; the full row, from `workspaces::find_sessions`,
+carries it). There are two ways to answer.
 
 Over a channel: if the graph session has a channel reply binding, primer
 forwards the `ask_user` prompt to the bound Slack / Telegram / Discord
@@ -723,7 +725,8 @@ re-parks until every pending decision is resolved, then advances.
   output and iteration count yourself.
 - **Human-in-the-loop parks the whole graph, not just one node.** When
   a node hits an `ask_user` (value-yield) or a tool-approval gate, the
-  executor checkpoints the run, parks the session WAITING, and resumes
+  executor checkpoints the run, parks the session (it keeps
+  `status="running"` with `parked_status` set), and resumes
   the graph from the checkpoint once the human answers. If several nodes
   in the same superstep park, the run parks on all of them and re-parks
   until each is answered (multi-event park), so concurrent branches that

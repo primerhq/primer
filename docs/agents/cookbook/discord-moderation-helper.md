@@ -151,7 +151,7 @@ When a borderline message arrives and the agent calls `delete_message`, the sess
 ```
 Response:
 ```json
-{ "items": [ { "id": "ses-1", "status": "waiting" } ] }
+{ "items": [ { "id": "ses-1", "status": "running" } ] }
 ```
 Inspect the parked session:
 
@@ -161,11 +161,11 @@ Inspect the parked session:
 ```
 Response:
 ```json
-{ "id": "ses-1", "status": "waiting" }
+{ "info": { "session_id": "ses-1", "status": "running" }, "status": "running" }
 ```
 
 ## Verify
-A borderline message produces a session with `status: "waiting"` parked on the `delete_message` call. There is no MCP tool to approve; an operator resolves it from the console Approvals > Pending tab or via the REST respond endpoint. Approving resumes the session and deletes the message; rejecting returns a clean error to the agent.
+A borderline message parks the session on the `delete_message` call (it reads `status: "running"` with `parked_status` set). There is no MCP tool to approve; an operator resolves it from the console Approvals > Pending tab or via the REST respond endpoint. Approving resumes the session and deletes the message; rejecting returns a clean error to the agent.
 
 ## Gotchas
 - Approving or rejecting a parked call is an operator/REST action, not an MCP call. The MCP tools here create the policy and observe the parked state.

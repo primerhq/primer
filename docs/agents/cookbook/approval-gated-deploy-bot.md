@@ -140,12 +140,12 @@ Poll until it parks on the gated call:
 ```
 Response:
 ```json
-{ "id": "ses-1", "status": "waiting" }
+{ "info": { "session_id": "ses-1", "status": "running" }, "status": "running" }
 ```
-`status: "waiting"` means the session is parked on the `deploy_prod` approval. In production the inbound Slack message drives the session instead of `create_workspace_session`: a `channel` trigger and a binding on it (`system::create_channel_binding`, see `channels`) start the session, and the reply binding above forwards its gates.
+The session is parked on the `deploy_prod` approval: it reads `status: "running"` with `parked_status` set, and the park fields are the full row's (`workspaces::find_sessions`). In production the inbound Slack message drives the session instead of `create_workspace_session`: a `channel` trigger and a binding on it (`system::create_channel_binding`, see `channels`) start the session, and the reply binding above forwards its gates.
 
 ## Verify
-The session reaches `status: "waiting"` on the `deploy_prod` call and does not deploy until approved. There is no MCP approve tool: an operator approves or rejects from the console Approvals > Pending tab or via the REST respond endpoint. Approving resumes the session and dispatches `deploy_prod`; rejecting returns a clean error the agent reports back to `#deploys`.
+The session parks on the `deploy_prod` call (it reads `status: "running"` with `parked_status` set) and does not deploy until approved. There is no MCP approve tool: an operator approves or rejects from the console Approvals > Pending tab or via the REST respond endpoint. Approving resumes the session and dispatches `deploy_prod`; rejecting returns a clean error the agent reports back to `#deploys`.
 
 ## Gotchas
 - Approving or rejecting a parked deploy is an operator/REST action, not an MCP call. The MCP tools here create the gate and observe the parked session.
