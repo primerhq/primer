@@ -450,6 +450,58 @@ def test_only_an_admin_names_another_gpu_resource():
     assert _errors({"gpuCount": "1", "gpuResource": "nvidia.com/gpu"}, is_admin=False) == {}
 
 
+STORED_THE_SERVER_TOOK = [
+    ("pvc_size", "1Mi"), ("pvc_size", "500m"), ("pvc_size", "1e3"), ("memory_bytes", 2**20), ("memory_bytes", 4 * 2**20), ("cpu_cores", 1e-7),
+    ("cpu_cores", 2000), ("memory_bytes", 2**47),
+]
+
+
+def _stored_k8s(field: str, value) -> dict:
+    row = {"id": "lim", "description": "d", "provider_id": "k3s", "backend": {"kind": "kubernetes", "image": "i"}, "resources": {}}
+    (row["resources"] if field in ("cpu_cores", "memory_bytes") else row["backend"])[field] = value
+    return WorkspaceTemplate.model_validate(row).model_dump(mode="json")
+
+
+@pytest.mark.parametrize("field,value", STORED_THE_SERVER_TOOK, ids=[f"{f}={v}" for f, v in STORED_THE_SERVER_TOOK])
+def test_a_stored_value_the_form_did_not_change_never_blocks_a_save(field, value):
+    """Round 2 of #886, item 5: the form shows a stored 1Mi disk as "0" GiB, 1e-7 cores as "1e-7" and 2000 cores as over the cap. The server took them, so
+    a save of another field must not be refused by the form; it keeps them as stored. A value the person changes is checked."""
+    row = _stored_k8s(field, value)
+    out = _js(
+        "(function () { var row = " + json.dumps(row) + "; var form = WT_formFromTemplate(row); var initial = JSON.parse(JSON.stringify(form));"
+        " form.description = 'changed'; return { errs: WT_validateForm(form, { isAdmin: true, initial: initial }), body: WT_templateBody(row, form, initial),"
+        " all: WT_validateForm(form, { isAdmin: true }) }; })()"
+    )
+    assert out["errs"] == {}
+    assert out["body"] == {**row, "description": "changed"}
+    assert out["all"] != {}, "without the form as it was opened (a create) every value is checked"
+
+
+def test_a_stored_mode_the_form_did_not_change_never_blocks_a_save():
+    row = {**LOCAL_ROW, "files": [{"path": "odd", "source": {"kind": "inline", "content": "x"}, "mode": "rwxr-xr-x"}]}
+    out = _js(
+        "(function () { var row = " + json.dumps(row) + "; var form = WT_formFromTemplate(row); var initial = JSON.parse(JSON.stringify(form));"
+        " form.description = 'changed'; var kept = WT_validateForm(form, { isAdmin: true, initial: initial });"
+        " form.files = form.files.concat([{ path: 'new', source: { kind: 'inline', content: '' }, mode: '999' }]);"
+        " return { kept: kept, added: WT_validateForm(form, { isAdmin: true, initial: initial }) }; })()"
+    )
+    assert out["kept"] == {}
+    assert out["added"] == {"files": "Use an octal mode such as 0644"}, "a mode the person wrote is checked"
+
+
+@pytest.mark.parametrize("key,typed,error", [("diskGiB", "0", "Enter a positive number"), ("cpu", "2000", "At most 1024 CPU cores"),
+                                             ("memoryGiB", "0.0000000001", "Enter a positive number"), ("gpuCount", "0", "Enter a whole number of at least 1"),
+                                             ("podGrace", "1.5", "Enter a whole number of seconds")])
+def test_a_value_the_person_changes_is_checked(key, typed, error):
+    row = _stored_k8s("pvc_size", "1Mi")
+    errs = _js(
+        "(function () { var row = " + json.dumps(row) + "; var form = WT_formFromTemplate(row); var initial = JSON.parse(JSON.stringify(form));"
+        " form[" + json.dumps(key) + "] = " + json.dumps(typed) + "; if (" + json.dumps(key) + " === 'diskGiB') initial.diskGiB = '5';"
+        " return WT_validateForm(form, { isAdmin: true, initial: initial }); })()"
+    )
+    assert errs == {key: error}
+
+
 # ---- refusals -----------------------------------------------------------------------------------------------------------------------------------------
 
 
