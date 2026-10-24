@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from primer.bootstrap import prime as prime_module
 from primer.bootstrap.prime import (
     PRIME_AGENTS_MD,
     ensure_prime_agents_md,
+    reset_prime_agents_md,
     shipped_prime_agents_md,
 )
 from primer.bootstrap.seed import run_ensure_pass
@@ -378,3 +380,31 @@ async def test_on_a_real_workspace_an_AGENTS_md_is_not_shadowed(local_prime):
     with pytest.raises(NotFoundError):
         await ws.file_info("agents.md")
     assert await load_workspace_instructions(ws) == "the team's own instructions"
+
+
+# ---- symlinks: written where they point (documented; an lstat-based refusal is a separate ticket) -------------------------------------
+
+
+def _root(ws) -> str:
+    return str(ws._root.resolve())  # noqa: SLF001 - the test plants a link the platform has no API for
+
+
+async def test_a_dangling_agents_md_link_is_absent_and_the_seed_writes_where_it_points(local_prime):
+    """``file_info`` follows the link, so a dangling one reads as absent, and the write lands on its target."""
+    sp, registry = local_prime
+    ws = await registry.get_workspace("prime")
+    os.symlink("missing.md", f"{_root(ws)}/agents.md")
+    assert await ensure_prime_agents_md(sp, workspace_registry=registry) is True
+    assert os.path.islink(f"{_root(ws)}/agents.md")
+    assert await ws.read_file("missing.md") == shipped_prime_agents_md()
+
+
+async def test_the_reset_writes_through_an_agents_md_link_to_AGENTS_md(local_prime):
+    """The common "both names" link: ``agents.md -> AGENTS.md``. The reset writes where it points, so AGENTS.md is rewritten."""
+    sp, registry = local_prime
+    ws = await registry.get_workspace("prime")
+    await ws.write_file("AGENTS.md", b"the team's own instructions")
+    os.symlink("AGENTS.md", f"{_root(ws)}/agents.md")
+    await reset_prime_agents_md(sp, workspace_registry=registry)
+    assert os.path.islink(f"{_root(ws)}/agents.md")
+    assert await ws.read_file("AGENTS.md") == shipped_prime_agents_md()
