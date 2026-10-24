@@ -11,14 +11,15 @@ An `ArtifactStorageProvider` row is a store for attachment bytes and large outpu
 
 ## Concepts
 - `provider` is `db`, `filesystem` or `s3`, and `config` must match it. `db` has no fields: the bytes live in the deployment's own storage. `filesystem` takes a required `root` directory. `s3` takes a required `bucket` plus optional `prefix`, `endpoint_url`, `region`, `addressing_style` (`auto`, `path` or `virtual`) and `access_key` and `secret_key`, which come back masked on every read.
-- On this release the factory builds only the `db` backend. A `filesystem` or `s3` row can be stored, but building it fails with `not implemented` until its backend ships; the console labels those kinds "not implemented yet: stored, never used".
+- On this release the factory builds the `db` and `filesystem` backends. An `s3` row can be stored, but building it fails with `not implemented` until its backend ships; the console labels that kind "not implemented yet: stored, never used".
+- A `filesystem` `root` is the absolute path of ONE folder that every server pod (the API and every worker) mounts at the same path. Creating or updating the row creates the folder when missing and writes a `.primer-artifact-root` marker in it; a root that is relative, is a file or cannot be written is a `validation-error` whose message starts `config.root: `, and nothing is stored. A process that finds no folder, or a folder without the marker, refuses the store with a message that names the root and says to mount the shared volume.
 - The reserved row `artifact-storage-default` is the database store seeded at bootstrap. It is the store every artifact without a location record is read from, so its `provider` must stay `db`: a write that makes it another kind is a `validation-error`, and its delete is a 403.
 - The active store is a deployment-wide setting, read on every write and never cached, so a switch is seen by every process at once. `system__get_active_artifact_store` reads it; `system__set_active_artifact_store` probes a saved provider and selects it for new writes. Existing artifacts stay where they were written.
 - The `id` is optional on create: the server assigns `artifact-storage-provider-<hex>`, and it is immutable after creation.
-- `system__test_artifact_storage_provider` runs a live round trip on a saved row: build, initialise, write a small file, read it back, delete it. It answers `{ok: true}` or `{ok: false, step, error}`, with the store's keys redacted out of the error.
+- `system__test_artifact_storage_provider` runs a live round trip on a saved row: build, initialise, write a small file, read it back, delete it. It answers `{ok: true}` or `{ok: false, step, error}`, with the store's keys redacted out of the error. It prepares nothing: a filesystem root that has lost its marker fails at `initialize`.
 
 ## How to
-1. Register the store: `db` needs nothing, `filesystem` a directory, `s3` a bucket and, for a non-AWS endpoint, its `endpoint_url`.
+1. Register the store: `db` needs nothing, `filesystem` the absolute path of a folder every server pod mounts, `s3` a bucket and, for a non-AWS endpoint, its `endpoint_url`.
 2. Test it before selecting it.
 3. Select it for new writes, and read back the selection to confirm.
 
@@ -112,7 +113,8 @@ Reference: [`system__list_artifact_storage_providers`](reference/tools/system/li
 
 ## Gotchas
 - Every tool on this page needs an admin; a run below the floor is a `forbidden`.
-- Only `db` builds on this release: a `filesystem` or `s3` row stores, but its probe and its selection as the active store fail at the build step with `not implemented` until the backend ships.
+- `db` and `filesystem` build on this release: an `s3` row stores, but its probe and its selection as the active store fail at the build step with `not implemented` until the backend ships.
+- A filesystem store works only when every server pod mounts the same volume at its `root`. A pod without it refuses the store, and at boot each pod logs every filesystem store it cannot use. Select a filesystem store only on a deployment whose pods all share that volume.
 - `system__set_active_artifact_store` probes first: an unknown or unusable provider is a `validation-error`, and the current selection is unchanged.
 - Deleting the active store is refused with `cascade_blocked`: select another store first. Deleting a store that still holds artifacts is refused with `artifact_provider_holds_artifacts`: the artifacts are read from it, and the row can go once they are gone.
 - Moving a store that holds artifacts is refused the same way: changing its kind, or its `config.root`, `bucket` or `prefix`, would leave the stored artifacts unreadable. Register a new provider and select it instead.
