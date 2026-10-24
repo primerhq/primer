@@ -127,16 +127,21 @@ def test_the_palette_ranks_each_label_first(shell):
 
 
 def test_the_verb_has_its_pointer_affordances():
-    """The new-workspace dialog's "Create a template" is the verb's affordance in the console. Since slice 5 of Plan 08 (lead ruling 2) it makes the
-    template in place: it opens the template overlay over the dialog and takes the new template back, selected, where the verb would send the person to
-    the templates page with no way back to the workspace they were making (tests/ui/test_new_workspace_dialog.py drives it)."""
+    """The new-workspace dialog's "Create a template" is the verb's affordance in the console, twice: a small action beside the template dropdown, always
+    there (the lead's ruling on #911), and the empty state's button. Since slice 5 of Plan 08 (lead ruling 2) both make the template in place: they open the
+    template overlay over the dialog and take the new template back, selected, where the verb would send the person to the templates page with no way back
+    to the workspace they were making (tests/ui/test_new_workspace_dialog.py drives both)."""
     assert 'data-verb="template.create"' in _all_console_text(), "the dual-render guard reads the console files"
     assert 'data-verb="template.create"' in TEMPLATES.read_text(encoding="utf-8"), "the page's empty state"
     dialog = OVERLAYS[OVERLAYS.index("function NV_CreateWorkspaceOverlay("):OVERLAYS.index("// Legacy adapter")]
-    at = dialog.index('data-verb="template.create"')
-    button = dialog[dialog.rindex("<Btn", 0, at):dialog.index("</Btn>", at) + len("</Btn>")]
-    assert "Create a template" in button and "setMaking(true)" in button
-    assert "con.closeOverlay" not in button and 'registry.get("template.create")' not in dialog, "the dialog is not left"
+    assert dialog.count('data-verb="template.create"') == 2
+    at = -1
+    for testid in ("nv-nw-new-template", "nv-nw-create-template"):
+        at = dialog.index(f'data-testid="{testid}"')
+        button = dialog[dialog.rindex("<Btn", 0, at):dialog.index("</Btn>", at) + len("</Btn>")]
+        assert 'data-verb="template.create"' in button and "Create a template" in button and "setMaking(true)" in button, testid
+        assert "con.closeOverlay" not in button, testid
+    assert 'registry.get("template.create")' not in dialog, "the dialog is not left"
     assert "<window.WT_TemplateOverlay create={true} onSaved={handBack}" in dialog
 
 

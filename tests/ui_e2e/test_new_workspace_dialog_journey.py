@@ -10,8 +10,9 @@
 * ``test_the_dialog_on_a_phone``: 390x844, the dialog is the kit's bottom sheet, nothing overflows sideways and Create is on screen.
 
 A template's item in "From template" is ``nv-nw-template:<id>`` (the kit's item test id, ``<selector testid>:<value>``), behind its search box
-``nv-nw-template:search``. "Create a template" (the hand-back of the template it makes, lead ruling 2 of slice 5) shows only when there is no template at
-all, and every install has the reserved ``local-default``, so no journey can reach it; ``tests/ui/test_new_workspace_dialog.py`` pins it.
+``nv-nw-template:search``. "Create a template" beside the dropdown (``nv-nw-new-template``: the template overlay over the dialog, and the template it makes
+handed back, selected) is driven by ``tests/ui_e2e/test_workspace_chain_create_journey.py``; the empty state's own button needs an install with no
+template, and every install has the reserved ``local-default``, so ``tests/ui/test_new_workspace_dialog.py`` pins that one.
 """
 
 from __future__ import annotations

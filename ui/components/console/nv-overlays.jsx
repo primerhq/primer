@@ -538,8 +538,9 @@ Object.assign(window, { NV_NW_ID_PATTERN, NV_nwIdError, NV_nwSizeFields, NV_nwIn
 // over EVERY template (WT_fetchAllTemplates, a page of 200 at a time); the template's summary line under it; Name and Id; a SIZE section for a provider
 // that takes one, filled in from the template; EXTRA ENVIRONMENT; and folds for extra files and extra start-up commands. Create sends NV_nwBody to
 // POST /v1/workspaces: a size goes only when the person changed it. A refusal lands under the field its loc names, and anything the dialog has no field
-// for in the one line above the footer (NV_nwFieldKey, WT_splitErrors). With no template yet, "Create a template" opens the template overlay over the
-// dialog and hands the new template back, selected: nobody is sent to another page and left to find the way back (lead ruling 2 of slice 5).
+// for in the one line above the footer (NV_nwFieldKey, WT_splitErrors). "Create a template", a small action beside the dropdown (always) and the empty
+// state's button, opens the template overlay over the dialog and hands the new template back, selected: nobody is sent to another page and left to find
+// the way back (lead ruling 2 of slice 5, and the lead's ruling on #911 that it is always offered).
 var NV_NW_FOLDS = ["files", "init"];
 
 function NV_CreateWorkspaceOverlay() {
@@ -719,6 +720,12 @@ function NV_CreateWorkspaceOverlay() {
     };
     body = (
       <React.Fragment>
+        {/* Beside the dropdown, always: a template is made in place and handed back, selected (the lead's ruling on #911; every install has the
+            reserved local-default, so the empty state's button alone was never reached). Held off while a Create is out. */}
+        <div style={{ display: "flex", justifyContent: "center" }}>
+          <Btn size="sm" kind="ghost" icon="plus" data-testid="nv-nw-new-template" data-verb="template.create" blocked={busy}
+            onClick={function () { setMaking(true); }}>Create a template</Btn>
+        </div>
         <div className="field-help" data-testid="nv-nw-summary" style={{ textAlign: "center" }}>{WT_summaryLine(template)}</div>
         {fieldError("template") ? (
           <div className="field-help" role="alert" data-testid="nv-nw-template-error" style={{ color: "var(--red)", textAlign: "center" }}>
