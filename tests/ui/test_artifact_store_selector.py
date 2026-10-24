@@ -269,7 +269,7 @@ def test_while_loading_the_select_is_disabled_and_says_so(ctx) -> None:
     assert ctx.eval("MR.find('as-active-store-retry')") is None
 
 
-@pytest.mark.parametrize("which", [ACTIVE_KEY, STORES_KEY])
+@pytest.mark.parametrize("which", [ACTIVE_KEY, STORES_KEY], ids=["active", "stores"])
 def test_a_load_failure_says_why_and_offers_retry(ctx, served, which: str) -> None:
     other = STORES_KEY if which == ACTIVE_KEY else ACTIVE_KEY
     _serve_key(ctx, other, served["stores"] if other == STORES_KEY else served["active_fs"])
