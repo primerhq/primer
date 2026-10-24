@@ -76,7 +76,9 @@ place when they empty.
 **Put** (`RoutingArtifactStorage.put`): read the active store, write the bytes to its backend, then, for a backend that needs one, write
 the location record and read the provider row again. A failure from the record write on (a cancel included) removes the record, best
 effort, and the bytes. A provider row that is gone at the re-read (the store was switched away and deleted while the upload was in
-flight) removes the record and the bytes and fails with a 409; retried, the put goes to the store that is active now.
+flight) removes the record and the bytes and fails with a 409; retried, the put goes to the store that is active now. So does a row
+that was moved meanwhile: the cached store was built from the old row, and when `store.serves(row)` answers False (a filesystem root that
+changed while the store held no record, so the move check let it through) the put removes its record and bytes and fails with a 409.
 
 **Get and delete** follow the record, even when the recorded provider is not the active one. A delete removes the bytes first and the
 record second, so a delete that fails in the store keeps the record and can be retried.

@@ -156,6 +156,12 @@ creates the root and writes its `.primer-artifact-root` marker on a create and a
 answers 422 `artifact_root_unusable` naming `config.root` when it cannot. Building a backend does no IO: `initialize` checks the location in
 the process that uses it (see [artifact-storage](../subsystems/artifact-storage.md)).
 
+A cached live instance is built from the row as it was read, so a backend whose row names a LOCATION says whether it still serves a row:
+`ArtifactStorage.serves(row)` (`primer/int/artifact_storage.py`, default True). The routing store asks it at the re-read after a put writes
+its location record; a store that no longer serves the row (the location moved while the put was in flight) has its bytes and record
+removed and the put answers 409. The filesystem store compares the row's kind and `root` as the `Path` it writes under; the S3 store compares
+its kind, `bucket` and `prefix` (the fields the move check guards), after the same normalisation it applies to the keys it writes.
+
 Serve a draft test where a draft can be tested. A class whose provider can be exercised before it is saved exposes
 `POST /v1/{plural}/_test`, taking the draft row with every key optional and answering HTTP 200 with `{ok: true, ...}` or
 `{ok: false, error}` (a draft that cannot be a row is `invalid draft: ...`, and the configured secrets are masked out of an

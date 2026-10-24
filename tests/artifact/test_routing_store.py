@@ -316,6 +316,26 @@ async def test_a_put_in_flight_when_its_provider_is_deleted_records_nothing_and_
     assert await world.artifacts.get(again) is not None
 
 
+async def test_a_put_whose_store_no_longer_serves_its_row_records_nothing_and_fails(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #890, item 3: the row still exists at the re-read but now names another location (a move that landed while the put was in
+    flight, before any record made the move check refuse it). The store asks the row (``serves``); a store that no longer serves it gets its record
+    and bytes removed and the put fails with a 409, as for a deleted provider."""
+    monkeypatch.setattr(world.mem, "serves", lambda row: False)
+    await _activate(world.sp, "mem-1")
+
+    with pytest.raises(ConflictError, match="'mem-1' was moved to another location while this upload was being written"):
+        await _put(world, b"user upload")
+
+    assert (await world.locations.list(OffsetPage(offset=0, length=10))).items == []
+    assert world.mem.blobs == {}
+
+
+def test_a_backend_serves_every_row_unless_it_says_otherwise() -> None:
+    """The default answer is True: a backend whose location cannot move (the database) never needs to say anything."""
+    row = ArtifactStorageProvider(id="db-x", provider="db")
+    assert MemStore().serves(row) is True
+
+
 async def test_a_put_whose_provider_still_exists_after_the_record_returns_its_id(world: World) -> None:
     await _activate(world.sp, "mem-1")
     aid = await _put(world)
