@@ -89,6 +89,11 @@ def _mount_routers(
     if runtime_mode == RuntimeMode.WORKER:
         return
     app.include_router(svc_serve_router)
+    # The canvas frame's public routes (pivot P5): the static frame shell and the capability URLs of the workspace files a canvas shows.
+    # OUTSIDE /v1 and WITHOUT an auth dependency: the frame is a sandboxed, cross-origin document, so it sends no cookies; a file URL is
+    # its own credential. Never in WORKER or serve-only mode (both returned above).
+    from primer.api.routers.canvas import canvas_public_router
+    app.include_router(canvas_public_router)
 
     # RBAC role gates (§6.2), applied at include-router time:
     #   admin_dep -> require_admin (role == "admin")            provider/

@@ -1,0 +1,5 @@
+/* The canvas frame's own styles (pivot P5, Task 13). The trusted renderer (Task 16) styles its elements here. */
+html, body { margin: 0; padding: 0; background: transparent; }
+body { font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1f2328; }
+#cv-root { box-sizing: border-box; padding: 12px; }
+@media (prefers-color-scheme: dark) { body { color: #e6edf3; } }
