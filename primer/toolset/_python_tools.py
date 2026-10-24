@@ -121,8 +121,9 @@ def build_python_toolset_tools(
     :func:`~primer.toolset._system_guards.toolset_guards`): a reserved scope id cannot be created and a harness-managed toolset's
     source cannot be edited, both answered as typed errors, and so is the id of a toolset that is not a Python toolset
     (``validation-error``). Registration failures and an unknown id keep their untyped ``{"ok": false, ...}`` answers. An update keeps
-    ``source_version`` when the source is unchanged, as the REST route does (``toolset_checks.own_python_source_version``). ``provider_registry`` is the registry whose cached adapter an update must evict (the toolset
-    router does it on every update): ``None`` (standalone builds) skips it; the app wiring always passes it.
+    ``source_version`` when the source is unchanged, as the REST route does (``toolset_checks.own_python_source_version``).
+    ``provider_registry`` is the registry whose cached adapter an update must evict (the toolset router does it on every update):
+    ``None`` (standalone builds) skips it; the app wiring always passes it.
     """
     guards = toolset_guards()
 
