@@ -8,7 +8,7 @@
 (function () {
   const { useResource, apiFetch } = window.primerApi;
 
-  function ExternalPendingBanner({ sessionId, chatId, pushToast, pollMs = 5000 }) {
+  function ExternalPendingBanner({ sessionId, chatId, session, viewer, pushToast, pollMs = 5000 }) {
     const owner = sessionId || chatId;
     const base = sessionId ? `/sessions/${sessionId}` : `/chats/${chatId}`;
     const res = useResource(
@@ -18,6 +18,7 @@
       { pollMs },
     );
     const items = (res.data && res.data.items) || [];
+    const mayDecide = !sessionId || !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session);
     if (!items.length) return null;
 
     async function cancel(tcid) {
@@ -84,7 +85,7 @@
             >
               {JSON.stringify(it.arguments || {}).slice(0, 120)}
             </span>
-            {sessionId && window.Btn ? (
+            {sessionId && window.Btn && mayDecide ? (
               <window.Btn
                 size="sm"
                 kind="ghost"
@@ -95,6 +96,11 @@
             ) : null}
           </div>
         ))}
+        {sessionId && !mayDecide ? (
+          <div style={{ fontSize: 11, color: "var(--text-4)" }} data-testid="external-rank-note">
+            {window.SH_rankDecisionWords(session)}
+          </div>
+        ) : null}
         <div style={{ fontSize: 11, color: "var(--text-4)" }}>
           The invoking application must respond through the invocation API.
         </div>

@@ -814,9 +814,10 @@ window.SD_NodeTurnLog = SD_NodeTurnLog;
 // render; 404 = render nothing). Submit/Skip post to the real
 // endpoints; 422/500 are surfaced INLINE via data-testid="ask-user-error"
 // (U0051/U0060), success surfaces as a toast (U0049/U0050).
-function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
+function AskUserPanel({ sid, sessionStatus, session, viewer, pushToast }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = SESSION_TERMINAL.has(sessionStatus);
+  const mayDecide = !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session);
 
   const pending = useResource(
     `ask-user:${sid}`,
@@ -925,7 +926,11 @@ function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
       </div>
       <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ whiteSpace: "pre-wrap", color: "var(--text)" }}>{prompt}</div>
-        {isShortPrompt && !expectsJson ? (
+        {!mayDecide ? (
+          <div className="muted text-sm" data-testid="ask-user-rank-note">
+            {window.SH_rankDecisionWords(session)}
+          </div>
+        ) : isShortPrompt && !expectsJson ? (
           <input
             type="text"
             className="textarea"
@@ -957,24 +962,26 @@ function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
             {inlineError}
           </div>
         )}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <Btn
-            kind="ghost"
-            onClick={onSkip}
-            disabled={submitting || skipping}
-            data-testid="ask-user-skip"
-          >
-            Skip this prompt
-          </Btn>
-          <Btn
-            kind="primary"
-            onClick={onSubmit}
-            disabled={!draft.trim() || submitting || skipping}
-            data-testid="ask-user-submit"
-          >
-            {submitting ? "Sending…" : "Send response"}
-          </Btn>
-        </div>
+        {mayDecide ? (
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <Btn
+              kind="ghost"
+              onClick={onSkip}
+              disabled={submitting || skipping}
+              data-testid="ask-user-skip"
+            >
+              Skip this prompt
+            </Btn>
+            <Btn
+              kind="primary"
+              onClick={onSubmit}
+              disabled={!draft.trim() || submitting || skipping}
+              data-testid="ask-user-submit"
+            >
+              {submitting ? "Sending…" : "Send response"}
+            </Btn>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -983,7 +990,7 @@ function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
 // WatchFilesPanel — polls /yields/active for this session and renders
 // the watch_files-yield panel when one is parked. Cancel posts the
 // tool-agnostic yield-cancel endpoint.
-function WatchFilesPanel({ sid, wid, session, pushToast }) {
+function WatchFilesPanel({ sid, wid, session, viewer, pushToast }) {
   // The session row's parked_state (when present) is the authoritative
   // signal — the server keeps it in sync with the yield row. We rely on
   // it directly rather than polling a separate endpoint.
@@ -1006,7 +1013,7 @@ function WatchFilesPanel({ sid, wid, session, pushToast }) {
         <span style={{ color: "var(--amber)" }}>Watching</span>
         <span className="mono sub">· watch_files · {tcid}</span>
         <div className="right">
-          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} toolName="watch_files" pushToast={pushToast} />
+          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} toolName="watch_files" session={session} viewer={viewer} pushToast={pushToast} />
         </div>
       </div>
       <div className="panel-body">
@@ -1035,7 +1042,7 @@ function WatchFilesPanel({ sid, wid, session, pushToast }) {
 }
 
 // SleepPanel — same parked_state-driven approach as WatchFilesPanel.
-function SleepPanel({ sid, wid, session, pushToast }) {
+function SleepPanel({ sid, wid, session, viewer, pushToast }) {
   const yld = session?.parked_state?.yielded;
   const toolName = yld?.tool_name || (session?.parked_state ? session.parked_state.tool_name : null);
   const isParked = session?.parked_status === "parked" || session?.parked_status === "waiting";
@@ -1057,7 +1064,7 @@ function SleepPanel({ sid, wid, session, pushToast }) {
         <span style={{ color: "var(--amber)" }}>Sleeping</span>
         <span className="mono sub">· sleep · {tcid}</span>
         <div className="right">
-          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} toolName="sleep" pushToast={pushToast} />
+          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} toolName="sleep" session={session} viewer={viewer} pushToast={pushToast} />
         </div>
       </div>
       <div className="panel-body">
@@ -1078,8 +1085,9 @@ function SleepPanel({ sid, wid, session, pushToast }) {
 }
 
 // Shared cancel-yield button (WatchFiles + Sleep panels).
-function CancelYieldBtn({ sid, wid, tcid, toolName, pushToast }) {
+function CancelYieldBtn({ sid, wid, tcid, toolName, session, viewer, pushToast }) {
   const { useMutation, apiFetch } = window.primerApi;
+  const mayDecide = !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session);
   const cancel = useMutation(
     () => apiFetch(
       "POST",
@@ -1098,6 +1106,9 @@ function CancelYieldBtn({ sid, wid, tcid, toolName, pushToast }) {
       onError: _sdToastErr(pushToast, "Cancel failed"),
     }
   );
+  if (!mayDecide) {
+    return <span className="muted text-sm" data-testid="yield-rank-note">{window.SH_rankDecisionWords(session)}</span>;
+  }
   return (
     <Btn size="sm" kind="ghost" icon="x" disabled={cancel.loading || !tcid} onClick={() => cancel.mutate()}>
       Cancel yield
@@ -1109,7 +1120,7 @@ function CancelYieldBtn({ sid, wid, tcid, toolName, pushToast }) {
 // (200 = render banner; 404 = render nothing) and renders ApprovalBanner
 // from approvals.jsx. The banner owns the respond mutation; this wrapper
 // owns the poll so session-detail can keep wiring concerns local.
-function ApprovalBannerPanel({ sid, sessionStatus, session, pushToast }) {
+function ApprovalBannerPanel({ sid, sessionStatus, session, viewer, pushToast }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = SESSION_TERMINAL.has(sessionStatus);
   const pending = useResource(
@@ -1126,7 +1137,7 @@ function ApprovalBannerPanel({ sid, sessionStatus, session, pushToast }) {
     <div>
       <ApprovalBanner
         key={window.SH_pendingId ? window.SH_pendingId(sid, pending.data.gate_id, pending.data.tool_call_id) : pending.data.tool_call_id}
-        data={pending.data} scope="sessions" id={sid} pushToast={pushToast}
+        data={pending.data} scope="sessions" id={sid} viewer={viewer} session={session} pushToast={pushToast}
       />
       <window.SessionCountdown to={pending.data?.parked_until || pending.data?.timeout_at || session?.parked_until} prefix="expires in " />
     </div>

@@ -123,6 +123,36 @@ function SH_viewerQualifies(approvers, viewer) {
   return (approvers.users || []).indexOf(v.username) >= 0;
 }
 
+// The browser mirror of authz.may_drive for human-input affordances. This is
+// not an authorization boundary: every mutation is checked again by the
+// server. Unknown viewer or session data fails open, so a loading or failed
+// read does not hide an action on a guess. A known system actor and an admin
+// are never outranked, and a demoted person or token may still decide their
+// own session by the same type-and-id identity rule as the server.
+var SH_ROLE_RANK = { restricted: 0, user: 1, admin: 2 };
+
+function SH_mayDecideFor(viewer, session) {
+  var v = viewer || null;
+  var creator = session && session.initiated_by;
+  if (!v || !session || !creator) return true;
+  if (v.type === "system" || v.role === "admin") return true;
+  if (!v.role || !v.type || !v.id) return true;
+  if (!creator.role || !creator.type || !creator.id) return true;
+  if ((v.type === "user" || v.type === "api_token")
+      && v.type === creator.type && v.id === creator.id) return true;
+  if (creator.type === "system") return false;
+  if (SH_ROLE_RANK[v.role] === undefined || SH_ROLE_RANK[creator.role] === undefined) return true;
+  return SH_ROLE_RANK[v.role] >= SH_ROLE_RANK[creator.role];
+}
+
+function SH_rankDecisionWords(session) {
+  var creator = session && session.initiated_by;
+  if (creator && creator.type !== "system" && creator.role === "user") {
+    return "Only a user or admin can decide this.";
+  }
+  return "Only an admin can decide this.";
+}
+
 // The approval card's routing label. "anyone" stays exactly as it reads
 // today (qualifying is trivial and universal there, so personalizing it
 // would be noise); a roles/users-scoped spec gets the reference's own
@@ -333,6 +363,8 @@ window.SH_approvedByMap = SH_approvedByMap;
 window.SH_emptyTriage = SH_emptyTriage;
 window.SH_triageKey = SH_triageKey;
 window.SH_applyTriage = SH_applyTriage;
+window.SH_mayDecideFor = SH_mayDecideFor;
+window.SH_rankDecisionWords = SH_rankDecisionWords;
 window.SH_isStaleGate = SH_isStaleGate;
 window.SH_isMovedOnGate = SH_isMovedOnGate;
 window.SH_movedOnWords = SH_movedOnWords;
