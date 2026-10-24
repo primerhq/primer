@@ -28,7 +28,7 @@ function PK_focusLeft(ev) {
 }
 
 // Arrow keys, Home and End move the focus between the items of an open menu (the WAI-ARIA menu pattern); Tab leaves it. In a searchable selector's filter
-// box, Home and End stay the box's own (they move the caret), and the arrows step from the box into the items.
+// box, Home and End stay the box's own (they move the caret), and the arrows step from the box into the items: ArrowDown to the first, ArrowUp to the last.
 function PK_menuKeys(ev) {
   var box = ev.currentTarget;
   var moves = { ArrowDown: 1, ArrowUp: -1, Home: "first", End: "last" };
@@ -39,7 +39,11 @@ function PK_menuKeys(ev) {
   ev.preventDefault();
   var at = items.indexOf(document.activeElement);
   var move = moves[ev.key];
-  var next = move === "first" ? 0 : move === "last" ? items.length - 1 : (at + move + items.length) % items.length;
+  var next;
+  if (move === "first") next = 0;
+  else if (move === "last") next = items.length - 1;
+  else if (at < 0) next = move > 0 ? 0 : items.length - 1;
+  else next = (at + move + items.length) % items.length;
   items[next].focus();
 }
 
@@ -293,9 +297,10 @@ function PK_usePagedFilter(items, opts) {
 // the list. A locked selector (edit mode) shows its type and opens nothing.
 //
 // Each item carries the test id `<selector.testid>:<value>` (Plan 08's K-3 asked for one per item; this is it). `searchable: true` (Plan 08's K-1, for a
-// long list such as every workspace template) puts a filter box at the top of the open menu, `<selector.testid>:search`: it takes the focus when the menu
-// opens, keeps the items whose label or value holds what is typed (any case), says "No match" when none does, and Enter picks the first item left. The
-// box starts empty each time the menu opens.
+// long list such as every workspace template) puts a filter box above the list, `<selector.testid>:search`, in the popup that holds both
+// (`<selector.testid>:popup`): the box is not a menu item, so it sits outside the role="menu" list and names it (aria-controls). It takes the focus when the
+// list opens, keeps the items whose label or value holds what is typed (any case), says "No match" (outside the list) when none does, and Enter picks the
+// first item left. The box starts empty each time the list opens.
 function PK_Selector(props) {
   var sel = props.selector;
   var openState = React.useState(false);
@@ -308,6 +313,7 @@ function PK_Selector(props) {
   var triggerRef = React.useRef(null);
   var listRef = React.useRef(null);
   var searchRef = React.useRef(null);
+  var menuId = React.useId() + "menu";
   function close() {
     setOpen(false);
     setQuery("");
@@ -330,6 +336,24 @@ function PK_Selector(props) {
   }, [open]);
   var options = sel.options || [];
   var current = options.filter(function (o) { return o.value === sel.value; })[0] || { value: sel.value, label: String(sel.value || "") };
+  function item(o) {
+    var on = o.value === sel.value;
+    return (
+      <button type="button" key={o.value} role="menuitemradio" aria-checked={on ? "true" : "false"} className="pk-selector-item"
+        data-testid={sel.testid + ":" + o.value}
+        onClick={function (ev) {
+          PK_stop(ev);
+          pick(o.value);
+        }}>
+        {o.iconPath ? (
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" aria-hidden="true">
+            <path d={o.iconPath} />
+          </svg>
+        ) : <span className="pk-selector-noicon" aria-hidden="true" />}
+        <span>{o.label}</span>
+      </button>
+    );
+  }
   var needle = sel.searchable ? query.trim().toLowerCase() : "";
   var shown = needle ? options.filter(function (o) {
     return String(o.label).toLowerCase().indexOf(needle) >= 0 || String(o.value).toLowerCase().indexOf(needle) >= 0;
@@ -350,40 +374,27 @@ function PK_Selector(props) {
           <span className="pk-selector-label">{current.label}</span>
           {sel.locked ? null : <span className="pk-selector-caret" aria-hidden="true">▾</span>}
         </button>
-        {open ? (
-          <div className="pk-selector-menu" role="menu" ref={listRef} data-testid={sel.testid + ":menu"}
+        {open && sel.searchable ? (
+          <div className="pk-selector-menu" data-testid={sel.testid + ":popup"} onClick={PK_stop} onKeyDown={PK_menuKeys}>
+            <div style={{ padding: "2px 2px 6px" }}>
+              <input ref={searchRef} className="input" data-testid={sel.testid + ":search"} aria-label="Filter the list" aria-controls={menuId}
+                placeholder="Filter…" value={query} style={{ width: "100%" }}
+                onChange={function (ev) { setQuery(ev.target.value); }}
+                onKeyDown={function (ev) {
+                  if (ev.key !== "Enter") return;
+                  ev.preventDefault();
+                  if (shown.length) pick(shown[0].value);
+                }} />
+            </div>
+            <div role="menu" id={menuId} ref={listRef} data-testid={sel.testid + ":menu"} style={{ display: "flex", flexDirection: "column" }}>
+              {shown.map(item)}
+            </div>
+            {!shown.length ? <div className="field-help" style={{ padding: "4px 8px" }}>No match</div> : null}
+          </div>
+        ) : open ? (
+          <div className="pk-selector-menu" role="menu" id={menuId} ref={listRef} data-testid={sel.testid + ":menu"}
             onClick={PK_stop} onKeyDown={PK_menuKeys}>
-            {sel.searchable ? (
-              <div role="none" style={{ padding: "2px 2px 6px" }}>
-                <input ref={searchRef} className="input" data-testid={sel.testid + ":search"} aria-label="Filter the list" placeholder="Filter…"
-                  value={query} style={{ width: "100%" }}
-                  onChange={function (ev) { setQuery(ev.target.value); }}
-                  onKeyDown={function (ev) {
-                    if (ev.key !== "Enter") return;
-                    ev.preventDefault();
-                    if (shown.length) pick(shown[0].value);
-                  }} />
-              </div>
-            ) : null}
-            {sel.searchable && !shown.length ? <div role="none" className="field-help">No match</div> : null}
-            {shown.map(function (o) {
-              var on = o.value === sel.value;
-              return (
-                <button type="button" key={o.value} role="menuitemradio" aria-checked={on ? "true" : "false"} className="pk-selector-item"
-                  data-testid={sel.testid + ":" + o.value}
-                  onClick={function (ev) {
-                    PK_stop(ev);
-                    pick(o.value);
-                  }}>
-                  {o.iconPath ? (
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" aria-hidden="true">
-                      <path d={o.iconPath} />
-                    </svg>
-                  ) : <span className="pk-selector-noicon" aria-hidden="true" />}
-                  <span>{o.label}</span>
-                </button>
-              );
-            })}
+            {shown.map(item)}
           </div>
         ) : null}
       </span>
