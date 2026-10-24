@@ -24,7 +24,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from primer.model.provider import ArtifactStorageProvider
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,18 @@ class ArtifactStorage(ABC):
     #: :class:`~primer.model.artifact.ArtifactLocation` for it. The default is True, the safe side: a backend that forgets to say so gets records
     #: it may not need, never artifacts it cannot find. Only a backend that stores in the ``Artifact`` table (the database) sets it False.
     needs_location_record: ClassVar[bool] = True
+
+    def serves(self, row: "ArtifactStorageProvider") -> bool:
+        """True when this live store still writes where ``row`` says.
+
+        A store is built from the provider row read when it was resolved and is cached. The routing store reads the row again after a put has
+        written its record and asks the store: a store whose row now names another location (a root, bucket or prefix moved while the put was in
+        flight, before any record made the move check refuse it) answers False, and the put removes its bytes and record and fails with a
+        conflict. The default is True: a backend whose location cannot move (the database) has nothing to compare. A backend with a location
+        compares it after the same normalisation it applies when it writes.
+        """
+        del row
+        return True
 
     @abstractmethod
     async def initialize(self) -> None:

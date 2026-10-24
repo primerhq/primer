@@ -11,9 +11,11 @@ backend does the work:
 * After the record is written, the provider row is read again. The delete of a provider is refused while it is active or holds a record, but a
   put reads the active setting once, at its start: an upload still in flight when an admin switched away and deleted the provider would
   otherwise record its artifact on a provider that no longer exists, and hand back an id that reads as missing (the G5 audit, G5-03). A put
-  that finds the row gone removes its record and its bytes and fails with a 409; retried, it goes to the store that is active now. What is
-  left is a window two statements wide: a delete whose check counted the records before this record was written, and whose row delete
-  lands after this re-read.
+  that finds the row gone removes its record and its bytes and fails with a 409; retried, it goes to the store that is active now. The same
+  holds for a row that was MOVED meanwhile (a filesystem root, an S3 bucket or prefix changed while the store held no record yet): the store
+  was built from the old row, so the put asks it whether it still serves the row it read (``ArtifactStorage.serves``) and, when it does not,
+  removes its record and bytes and fails with a 409. What is left is a window two statements wide: a delete or a move whose check counted
+  the records before this record was written, and whose row write lands after this re-read.
 * ``get`` and ``delete`` follow the record, even when the recorded provider is not the active one, so an artifact stays readable after a switch.
 * An id with no record is a database artifact and goes to ``fallback``, a DIRECT ``DbArtifactStorage``. It is never a registry lookup: the reserved
   provider row must not be able to break the reading of every old artifact.
@@ -94,10 +96,16 @@ class RoutingArtifactStorage(ArtifactStorage):
         if store.needs_location_record:
             try:
                 await self._locations.create(ArtifactLocation(id=artifact_id, provider_id=provider_id))
-                if await self._providers.get(provider_id) is None:
+                row = await self._providers.get(provider_id)
+                if row is None:
                     raise ConflictError(
                         f"artifact store {provider_id!r} was deleted while this upload was being written, so nothing was stored; "
                         "try again: new uploads go to the active artifact store"
+                    )
+                if not store.serves(row):
+                    raise ConflictError(
+                        f"artifact store {provider_id!r} was moved to another location while this upload was being written, so nothing was "
+                        "stored; try again: new uploads go to the active artifact store"
                     )
             except (Exception, asyncio.CancelledError):
                 # The id was never returned, so no one can ask for these bytes: remove them rather than leave a file no record points to. A cancel

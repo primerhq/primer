@@ -35,6 +35,7 @@ from typing import ClassVar
 from primer.artifact.ids import is_backend_artifact_id, new_backend_artifact_id
 from primer.int.artifact_storage import ArtifactBlob, ArtifactStorage
 from primer.model.except_ import ConfigError
+from primer.model.providers.artifact import ArtifactStorageProvider, ArtifactStorageProviderType
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,13 @@ class FilesystemArtifactStorage(ArtifactStorage):
     @property
     def root(self) -> str:
         return self._root
+
+    def serves(self, row: ArtifactStorageProvider) -> bool:
+        """True for a filesystem row whose root is this store's, compared as the paths the store writes under (``Path`` drops a trailing slash
+        and a ``.`` component, and keeps a ``..``)."""
+        if row.provider is not ArtifactStorageProviderType.FILESYSTEM:
+            return False
+        return Path(row.config.root) == Path(self._root)
 
     async def initialize(self) -> None:
         await asyncio.to_thread(check_root, self._root)

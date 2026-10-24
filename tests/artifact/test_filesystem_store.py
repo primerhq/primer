@@ -485,3 +485,67 @@ async def test_a_cancelled_put_leaves_no_file_and_no_record(tmp_path: Path, monk
         assert (await routing.get(aid)).data == b"kept", "a put that is not cancelled still round-trips"
     finally:
         await sp.aclose()
+
+
+def test_a_filesystem_store_serves_only_a_filesystem_row_with_its_root(tmp_path: Path) -> None:
+    store = FilesystemArtifactStorage(str(tmp_path / "a"))
+
+    def row(provider: str, root: str | None = None) -> ArtifactStorageProvider:
+        config = {"root": root} if root is not None else ({"bucket": "b"} if provider == "s3" else {})
+        return ArtifactStorageProvider(id="fs-1", provider=provider, config=config)
+
+    assert store.serves(row("filesystem", str(tmp_path / "a")))
+    assert store.serves(row("filesystem", str(tmp_path / "a") + "/")), "the same folder, written with a trailing slash"
+    assert not store.serves(row("filesystem", str(tmp_path / "b")))
+    assert not store.serves(row("db"))
+    assert not store.serves(row("s3"))
+
+
+async def test_a_root_moved_while_a_put_is_in_flight_loses_nothing_silently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #890, item 3: an admin moves the store's root while an upload to it is in flight. The move check passes (no record yet), the
+    cached store goes on writing under the OLD root, and the record would point at a provider whose root is now elsewhere: an id that reads as
+    missing. The put sees at its re-read that its store no longer serves the row, removes its files and record, and fails with a 409."""
+    from primer.api.registries.artifact_storage_registry import ArtifactStorageRegistry
+    from primer.artifact.checks import check_artifact_provider_update
+
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "a.sqlite"))
+    await sp.initialize()
+    try:
+        prepare_root(str(tmp_path / "A"))
+        prepare_root(str(tmp_path / "B"))
+        providers = sp.get_storage(ArtifactStorageProvider)
+        row = await providers.create(ArtifactStorageProvider(id="fs-1", provider="filesystem", config={"root": str(tmp_path / "A")}))
+        await sp.get_storage(ActiveArtifactStorageConfig).create(
+            ActiveArtifactStorageConfig(id=ACTIVE_ARTIFACT_STORAGE_CONFIG_ID, provider_id="fs-1"),
+        )
+        registry = ArtifactStorageRegistry(storage=providers, storage_provider=sp)
+        routing = await registry.get_default()
+        entered, release = threading.Event(), threading.Event()
+        real = filesystem._write_files
+
+        def held(*args, **kwargs):
+            entered.set()
+            release.wait(10)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(filesystem, "_write_files", held)
+        put = asyncio.create_task(routing.put(data=b"in flight", mime_type="text/plain"))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        moved = row.model_copy(update={"config": type(row.config)(root=str(tmp_path / "B"))})
+        await check_artifact_provider_update(sp, moved, row)                    # passes: the store holds no record yet
+        await providers.update(moved)
+        await registry.invalidate("fs-1")
+        release.set()
+
+        with pytest.raises(ConflictError, match="'fs-1' was moved to another location while this upload was being written"):
+            await asyncio.wait_for(put, 10)
+
+        assert _files_under(tmp_path / "A") == [] and _files_under(tmp_path / "B") == []
+        assert (await sp.get_storage(ArtifactLocation).list(OffsetPage(length=10))).total == 0
+        monkeypatch.setattr(filesystem, "_write_files", real)
+        again = await routing.put(data=b"retried", mime_type="text/plain")
+        assert (await routing.get(again)).data == b"retried" and _files_under(tmp_path / "B"), "the retry goes to the new root"
+        await registry.aclose()
+    finally:
+        await sp.aclose()

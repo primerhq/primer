@@ -31,6 +31,10 @@ class _StubArtifactStorage:
     async def initialize(self):
         self.initialized = True
 
+    def serves(self, row):
+        # ``ArtifactStorage.serves``: the routing store asks it at the re-read after a put's record. A stub's location never moves.
+        return True
+
     async def aclose(self):
         self.closed = True
 
