@@ -5,6 +5,7 @@ The core is pure: no I/O, no storage, no clock. The parser (``lang``), the eleme
 data.
 
 Around it sit the parts that touch storage, the event log and the session log: the settings row (``settings``), the service that writes
-the canvas and announces it (``service``, with ``records`` for the transcript lines) and the rule of ``canvas_wait`` (``wait``). The
-agent's tools are in ``primer.toolset.canvas``.
+the canvas and announces it (``service``, with ``records`` for the transcript lines), the rule of ``canvas_wait`` (``wait``), and the
+delivery of a user's interaction to the agent by the state of its session (``delivery``, with ``blocks`` for the text it reaches the agent
+as). The agent's tools are in ``primer.toolset.canvas``.
 """
