@@ -49,6 +49,25 @@ class TriggerClaimAdapter(ClaimAdapter):
             "AND (e.data->>'next_fire_at')::timestamptz <= now()"
         )
 
+    async def is_eligible(self, entity_id: str, now: datetime) -> bool:
+        """Mirrors :meth:`eligibility_sql`: ``(e.data->>'enabled')::boolean = true AND e.data->>'next_fire_at' IS NOT NULL
+        AND e.data->'config'->>'kind' IN ('delayed', 'scheduled') AND (e.data->>'next_fire_at')::timestamptz <= now()``, with
+        ``now`` (the engine's clock) for ``now()``.
+
+        A missing row is not eligible (the claim query's inner join); with no storage the lease stays claimable.
+        """
+        if self._storage is None:
+            return True
+        trigger = await self._storage.get(entity_id)
+        if trigger is None:
+            return False
+        return (
+            trigger.enabled
+            and trigger.next_fire_at is not None
+            and trigger.config.kind in ("delayed", "scheduled")
+            and trigger.next_fire_at <= now
+        )
+
     async def on_release(
         self, conn, entity_id: str, *, outcome: ReleaseOutcome,
     ) -> None:

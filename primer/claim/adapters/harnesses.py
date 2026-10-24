@@ -19,6 +19,16 @@ class HarnessClaimAdapter(ClaimAdapter):
     def eligibility_sql(self) -> str:
         return "e.data->>'pending_operation' IS NOT NULL"
 
+    async def is_eligible(self, entity_id: str, now: datetime) -> bool:
+        """Mirrors :meth:`eligibility_sql`, ``e.data->>'pending_operation' IS NOT NULL``.
+
+        A missing row is not eligible (the claim query's inner join); with no storage the lease stays claimable.
+        """
+        if self._storage is None:
+            return True
+        harness = await self._storage.get(entity_id)
+        return harness is not None and harness.pending_operation is not None
+
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
         if self._storage is None:
             raise RuntimeError(

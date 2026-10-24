@@ -89,6 +89,16 @@ class ToolCallClaimAdapter(ClaimAdapter):
         # eligible again.
         return "e.data->>'state' IN ('queued', 'running')"
 
+    async def is_eligible(self, entity_id: str, now: datetime) -> bool:
+        """Mirrors :meth:`eligibility_sql`, ``e.data->>'state' IN ('queued', 'running')``.
+
+        A missing row is not eligible (the claim query's inner join); with no storage the lease stays claimable.
+        """
+        if self._storage is None:
+            return True
+        task = await self._storage.get(entity_id)
+        return task is not None and task.state in (ToolCallTaskState.QUEUED, ToolCallTaskState.RUNNING)
+
     def entity_indexes(self, qualified_table: str) -> list[str]:
         # Backs the eligibility filter above (runs every claim cycle) and
         # the dispatch seam's own "all tasks for this turn done?" query
@@ -262,9 +272,9 @@ class ToolCallClaimAdapter(ClaimAdapter):
         Fenced like every other write (live state AND the claim token), so a stale or token-less release still
         writes nothing, and a token no backend can store is refused here too (the ``_InvalidEntityUpdate`` this write
         raises then leaves ``on_release``). The engine then drops the lease (gated and terminal outcomes) or requeues one whose task is
-        now FAILED. On Postgres the eligibility filter keeps that lease from being claimed again; the in-memory
-        engine applies no eligibility, so there it can be claimed again, and what stops the task running is the
-        handler's own state guard (execute only a QUEUED or RUNNING row). ``prune_dead_leases`` removes the lease
+        now FAILED. Neither engine claims that lease again: the eligibility filter excludes a failed task on Postgres,
+        and its twin ``is_eligible`` does on the in-memory engine (before ticket 01a16e79 that engine applied no
+        eligibility and claimed it again at once). ``prune_dead_leases`` removes the lease
         once something calls it (the reconciler rule that does is planned, not built), so until then it is an inert row.
         ``exc.reason`` becomes the task's ``last_error``, which is what the model is shown for a failed task with no
         result; ``exc.detail`` is logged only.

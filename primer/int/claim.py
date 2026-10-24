@@ -177,6 +177,20 @@ class ClaimAdapter(ABC):
     @abstractmethod
     def eligibility_sql(self) -> str: ...
 
+    async def is_eligible(self, entity_id: str, now: datetime) -> bool:
+        """The in-process twin of :meth:`eligibility_sql`: whether a lease of this entity may be claimed at ``now``.
+
+        The Postgres engine joins each lease to its entity row and applies :meth:`eligibility_sql` in the claim query; the
+        in-memory engine has no SQL, so it asks this instead, for every lease that is otherwise due (unclaimed or expired,
+        ``next_attempt_at`` reached). The two are one rule in two languages and must agree; a parity test runs both over the
+        same rows (``tests/claim/test_eligibility_parity.py``). ``now`` is the engine's clock, standing in for the SQL ``now()``.
+
+        An adapter answers False for an entity that is missing, as the claim query's inner join does. One that cannot read its
+        entity (it has no storage) answers True, and so does this default: the lease stays claimable, as it was before the
+        in-memory engine applied eligibility at all (``is_dead`` makes the opposite, equally conservative choice for a prune).
+        """
+        return True
+
     @abstractmethod
     async def on_release(
         self, conn, entity_id: str, *, outcome: ReleaseOutcome,
