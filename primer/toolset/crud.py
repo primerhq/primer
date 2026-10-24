@@ -79,6 +79,14 @@ CRUD_TOOL_NAMES: tuple[str, ...] = (
     "list_python_tools",
 )
 
+#: The crud tools that only read. ``list_python_tools`` derives a Python toolset's tools from its stored source and writes nothing, so no shipped gate
+#: parks it (ticket 01a16f1d ruling 4): the crud gates are for the builder's platform writes, and this one was seeded only because the seed gated every
+#: crud tool. Migration 18 removes the gate an older seed wrote, when it is as seeded.
+CRUD_READ_TOOL_NAMES: tuple[str, ...] = ("list_python_tools",)
+
+#: The crud tools a fresh install gates: every one but the reads.
+CRUD_GATED_TOOL_NAMES: tuple[str, ...] = tuple(name for name in CRUD_TOOL_NAMES if name not in CRUD_READ_TOOL_NAMES)
+
 
 # The OTHER doors to the writes the crud tools make (audit G6-1): every tool that creates, updates or deletes an agent, a graph or a trigger, keyed
 # ``(toolset_id, tool_name)``, with the crud tool that makes the same write (``None`` for a delete: crud has none). The system tools share the crud
@@ -97,11 +105,11 @@ CRUD_TWINS: Mapping[tuple[str, str], str | None] = MappingProxyType({
     (TRIGGER_TOOLSET_ID, "delete"): None,
 })
 
-#: Every ``(toolset_id, tool_name)`` a fresh install gates with an approval policy: the crud tools, their twins, then the admin-tier writes
+#: Every ``(toolset_id, tool_name)`` a fresh install gates with an approval policy: the crud writes (not the read ``list_python_tools``), their twins, then the admin-tier writes
 #: (``primer.toolset.admin_gates``: the policy writes, the toolset writes that run code on the host, the harness lifecycle). :func:`shipped_gate`
 #: says which gate each gets.
 DEFAULT_GATED_TOOLS: tuple[tuple[str, str], ...] = (
-    *((CRUD_TOOLSET_ID, name) for name in CRUD_TOOL_NAMES),
+    *((CRUD_TOOLSET_ID, name) for name in CRUD_GATED_TOOL_NAMES),
     *CRUD_TWINS,
     *ADMIN_GATES,
 )
@@ -125,7 +133,8 @@ def shipped_gate(toolset_id: str, tool_name: str) -> RequiredApprovalConfig | Po
     return gate.model_copy(deep=True) if gate is not None else RequiredApprovalConfig()
 
 
-# What the approval card of each default-gated tool may show (design note 01a11cd3-66b0). bootstrap/seed.py gates these nine with a required policy, and their twins
+# What the approval card of each crud tool may show (design note 01a11cd3-66b0). bootstrap/seed.py gates the eight writes among them with a required policy (an
+# operator may gate the read, list_python_tools, too, so it declares its card as well), and their twins
 # (CRUD_TWINS, which take the same paths through apply_twin_previews), so these are the cards a fresh install shows. Each path names WHAT is created or changed; the free text that can hold a pasted secret is not listed, so it is withheld:
 # an agent's system_prompt, compaction_prompt, description and response_format (a schema with free text inside), a graph's and a node's description and templates and
 # arguments, a trigger's description, a webhook trigger's token and hmac_secret, a Python toolset's source. A description is free text a person pastes a key into as
@@ -270,6 +279,8 @@ def build_crud_toolset(
 
 
 __all__ = [
+    "CRUD_GATED_TOOL_NAMES",
+    "CRUD_READ_TOOL_NAMES",
     "CRUD_TOOLSET_ID",
     "CRUD_TOOL_NAMES",
     "CRUD_TWINS",

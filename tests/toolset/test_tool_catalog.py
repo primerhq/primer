@@ -28,7 +28,7 @@ from primer.model.except_ import AuthRequiredError, NotFoundError, ProviderError
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.toolset import tool_catalog
-from primer.toolset.crud import CRUD_TOOL_NAMES, CRUD_TWINS, build_crud_toolset
+from primer.toolset.crud import CRUD_GATED_TOOL_NAMES, CRUD_TOOL_NAMES, CRUD_TWINS, build_crud_toolset
 from primer.toolset.misc import build_misc_toolset
 from primer.toolset.tool_catalog import (
     DIRECT_CALL_TOOLSETS,
@@ -97,7 +97,9 @@ def test_the_crud_tools_and_their_twins_are_gated_by_default_and_nothing_else_is
     pinned the old shipped set, in which ``system::create_agent`` was the ungated twin of ``crud::create_agent``."""
     assert default_gate("crud", "create_agent") == "required"
     assert default_gate("system", "call_tool") is None and default_gate("workspace", "write") is None
-    assert {name for name in CRUD_TOOL_NAMES if default_gate("crud", name) == "required"} == set(CRUD_TOOL_NAMES)
+    # Every crud write; the read ``list_python_tools`` ships ungated (ticket 01a16f1d).
+    assert {name for name in CRUD_TOOL_NAMES if default_gate("crud", name) == "required"} == set(CRUD_GATED_TOOL_NAMES)
+    assert default_gate("crud", "list_python_tools") is None
     assert default_gate("crud", "not_a_crud_tool") is None
     assert {key for key in CRUD_TWINS if default_gate(*key) == "required"} == set(CRUD_TWINS)
     assert default_gate("system", "create_agent") == "required" and default_gate("trigger", "delete") == "required"

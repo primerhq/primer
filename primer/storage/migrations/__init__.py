@@ -71,6 +71,9 @@ from primer.storage.migrations.m016_admin_run_gates import M016AdminRunGates
 from primer.storage.migrations.m017_orphan_mcp_oauth_rows import (
     M017OrphanMcpOAuthRows,
 )
+from primer.storage.migrations.m018_ungate_list_python_tools import (
+    M018UngateListPythonTools,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +109,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M015SeededAgentsV3(),
     M016AdminRunGates(),
     M017OrphanMcpOAuthRows(),
+    M018UngateListPythonTools(),
 )
 
 #: Highest version this build knows how to apply.

@@ -36,7 +36,7 @@ from primer.model.trigger import Trigger
 from primer.model.yield_ import YieldToWorker
 from primer.storage.migrations import LATEST_VERSION, run_migrations
 from primer.storage.sqlite import SqliteStorageProvider
-from primer.toolset.crud import CRUD_TOOL_NAMES, CRUD_TWINS, DEFAULT_GATED_TOOLS, PREVIEW_ARGS, build_crud_toolset
+from primer.toolset.crud import CRUD_GATED_TOOL_NAMES, CRUD_TOOL_NAMES, CRUD_TWINS, DEFAULT_GATED_TOOLS, PREVIEW_ARGS, build_crud_toolset
 from primer.toolset.system import build_system_toolset
 from primer.toolset.tool_catalog import default_gate
 from primer.toolset.trigger import build_trigger_toolset_provider
@@ -96,7 +96,8 @@ async def _world(tmp_path: Path, kind: str):
         await ensure_crud_approval_policies(sp)
     else:
         # What the seed before the fix wrote: one required policy per crud tool and nothing else. The install is at schema version 13, the last
-        # version before the twins were gated, and its boot runs the migrations and then the ensure pass, in that order.
+        # version before the twins were gated, and its boot runs the migrations and then the ensure pass, in that order. That seed gated the read
+        # ``list_python_tools`` too; migration 18 removes it (ticket 01a16f1d).
         store = sp.get_storage(ToolApprovalPolicy)
         for name in CRUD_TOOL_NAMES:
             await store.create(ToolApprovalPolicy(id=crud_policy_id(name), toolset_id="crud", tool_name=name, approval=RequiredApprovalConfig()))
@@ -180,7 +181,7 @@ async def test_both_worlds_end_with_the_same_gates(tmp_path):
 def test_the_shipped_gate_of_every_twin_is_required():
     """The reference pages and ``describe_tool``'s callers read the shipped gate from ``default_gate``: the twins ship gated like the crud tools. (The
     other default gates, on the admin-tier writes, are pinned by ``tests/toolset/test_admin_run_gates.py``.)"""
-    assert all(default_gate("crud", n) == "required" for n in CRUD_TOOL_NAMES)
+    assert all(default_gate("crud", n) == "required" for n in CRUD_GATED_TOOL_NAMES)
     assert all(default_gate(t, n) == "required" for t, n in CRUD_TWINS)
     assert default_gate("system", "get_agent") is None and default_gate("trigger", "list") is None
 
