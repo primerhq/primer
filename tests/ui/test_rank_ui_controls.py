@@ -124,6 +124,14 @@ def test_a_session_with_no_recorded_creator_ranks_as_a_user(attention) -> None:
         assert got is expected, (viewer, session, got)
 
 
+def test_an_unattributed_session_reads_the_user_floor(attention) -> None:
+    """A loaded row with no recorded creator (the key present with null) ranks as a user on the server (``principal_rank(None)``), so its
+    floor line reads the user words, as for a user-role creator. A row still loading (no key) and a system creator keep the admin wording."""
+    assert _js(attention, 'SH_rankDecisionWords({"initiated_by": null})') == "Only a user or admin can decide this."
+    assert _js(attention, "SH_rankDecisionWords({})") == "Only an admin can decide this."
+    assert _js(attention, 'SH_rankDecisionWords({"initiated_by": {"type": "system", "id": "system", "display": "system", "role": null}})') == "Only an admin can decide this."
+
+
 _CARD_PRELUDE = r"""
 var window = globalThis;
 var VIEWER = null;
