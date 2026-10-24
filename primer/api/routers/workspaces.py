@@ -120,6 +120,7 @@ from primer.model.workspace import (
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.state_helpers import has_unsafe_commit_chars
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
+from primer.workspace.session_reconcile import open_sessions_on
 from primer.workspace.diagnostic import (
     DIAGNOSTIC_COMMANDS,
     DiagnosticCommandError,
@@ -1230,10 +1231,20 @@ async def clear_workspace_reply_binding(
     responses=common_responses(403, 404, 500),
 )
 async def delete_workspace(
+    request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    sp=Depends(get_storage_provider),
 ) -> None:
-    """Destroy the workspace and everything in it. The default workspace (prime) is refused: 403 ``reserved_workspace``."""
+    """Destroy the workspace and everything in it. The default workspace (prime) is refused: 403 ``reserved_workspace``.
+
+    Destroying a workspace ends every open session in it, so the caller must be allowed to act on each of them, by the rank rule of the cancel
+    route (:func:`primer.api.routers._session_rank.refuse_outranked`): 403 ``forbidden_rank`` while one of them runs at a higher rank than the
+    caller, and nothing is torn down (review of #870, F3).
+    """
+    if workspace_id != await resolve_default_workspace_id(sp):
+        async for row in open_sessions_on(sp, workspace_id):
+            refuse_outranked(request, row)
     try:
         await registry.destroy(workspace_id)
     except ReservedWorkspaceError as exc:

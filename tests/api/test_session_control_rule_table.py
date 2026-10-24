@@ -857,3 +857,85 @@ async def test_a_fire_never_starts_or_feeds_a_session_outside_the_reach_recorded
         return
     assert json.loads(sub.last_fire_error)["code"] == "target_out_of_reach", sub.last_fire_error
     assert [o.success for o in released] == [False], "a refused fire is a failed delivery, not a clean run"
+
+
+# -- delete_workspace and the rank rule (F3) --------------------------------------------------------------------------------------------------
+
+
+async def _admin_session_in_ws2(world: WsWorld, *, status: SessionStatus = SessionStatus.WAITING) -> None:
+    await world.sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="ses-adm", workspace_id="ws-2", binding=AgentSessionBinding(agent_id="planner"), status=status, created_at=NOW, initiated_by=ADMIN,
+    ))
+
+
+_IN_SESSION_RANK = REFUSE_RANK.format(session_id="ses-adm", target_rank="admin", sender_rank="user")
+
+
+@pytest.mark.parametrize(("who", "door", "message"), [
+    pytest.param("own workspace", "tool manager", _IN_SESSION_RANK, id="a user-rank session in ws-2, by name"),
+    pytest.param("own workspace", "system__call_tool", _IN_SESSION_RANK, id="a user-rank session in ws-2, through call_tool"),
+    pytest.param(P, "system__call_tool", _IN_SESSION_RANK, id="a user-rank session in prime"),
+    pytest.param("no session", "MCP", OUTRANKED_MESSAGE, id="a user over MCP"),
+])
+async def test_delete_workspace_is_refused_while_a_session_of_a_higher_rank_is_open_in_it(who, door, message):
+    """F3: deleting a workspace ends every open session in it, so it follows the cancel tool's rank rule for each of them: refused (``forbidden``, in
+    the words a cancel of that session is refused in) while one ranks above the caller, and nothing is torn down."""
+    world = await _ws_world()
+    await _admin_session_in_ws2(world)
+    before = await world.snapshot()
+
+    outcome, body = await asyncio.wait_for(_ws_call(world, "delete_workspace", "ws-2", own=WS_CALLERS[who][0], door=door), 30)
+
+    assert (outcome, body) == (F, {"type": F, "message": message})
+    assert await world.snapshot() == before
+
+
+@pytest.mark.parametrize(("case", "own", "door"), [
+    pytest.param("an admin run", "ws-2", "system__call_tool", id="an admin-rank session in ws-2"),
+    pytest.param("an admin run", None, "MCP", id="an admin over MCP"),
+    pytest.param("the session has ended", "ws-2", "tool manager", id="a user-rank session, the admin's session ended"),
+])
+async def test_delete_workspace_goes_on_when_every_open_session_in_it_is_at_or_below_the_caller(case, own, door):
+    world = await _ws_world()
+    await _admin_session_in_ws2(world, status=SessionStatus.ENDED if case == "the session has ended" else SessionStatus.WAITING)
+    admin = Principal(type="user", id="u-root", display="root", role="admin", source="local")
+
+    outcome, body = await asyncio.wait_for(_call(
+        world, "workspaces", "delete_workspace", {"id": "ws-2"}, own=own, door=door, run_as=ADMIN if case == "an admin run" else USER, actor=admin,
+    ), 30)
+
+    assert outcome == D, body
+    assert await world.sp.get_storage(Workspace).get("ws-2") is None
+
+
+async def test_the_rest_delete_follows_the_rank_rule_of_the_rest_cancel(app, client, fake_storage_provider):
+    """F3 over REST: the cancel route refuses a person ranked below the session's creator (403 ``forbidden_rank``), so the delete of the workspace
+    the session is open in does too; an admin deletes it."""
+    world = await _ws_world()
+    backend = world.backend
+    app.state.workspace_registry = WorkspaceRegistry(fake_storage_provider, factory=lambda row: backend)
+    await fake_storage_provider.set_default_workspace_id("ws-prime")
+    for wid in ("ws-2", "ws-prime"):
+        await fake_storage_provider.get_storage(Workspace).create(await world.sp.get_storage(Workspace).get(wid))
+    await fake_storage_provider.get_storage(WorkspaceProvider).create(await world.sp.get_storage(WorkspaceProvider).get("local-1"))
+    await fake_storage_provider.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="ses-adm", workspace_id="ws-2", binding=AgentSessionBinding(agent_id="planner"), status=SessionStatus.WAITING, created_at=NOW,
+        initiated_by=ADMIN,
+    ))
+    r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
+    assert r.status_code == 201, r.text
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
+        assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
+
+        refused = await asyncio.wait_for(carol.delete("/v1/workspaces/ws-2"), 30)
+
+    assert refused.status_code == 403, refused.text
+    assert (refused.json()["detail"], refused.json()["extensions"]["error"]) == (OUTRANKED_MESSAGE, "forbidden_rank")
+    assert await fake_storage_provider.get_storage(Workspace).get("ws-2") is not None
+    assert (await fake_storage_provider.get_storage(WorkspaceSession).get("ses-adm")).status == SessionStatus.WAITING
+    assert "ws-2" in backend.live
+
+    deleted = await asyncio.wait_for(client.delete("/v1/workspaces/ws-2"), 30)
+
+    assert deleted.status_code == 204, deleted.text
+    assert await fake_storage_provider.get_storage(Workspace).get("ws-2") is None
