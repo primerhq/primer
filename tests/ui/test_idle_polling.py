@@ -163,3 +163,12 @@ def test_an_ended_row_with_a_surviving_flag_is_calm(ctx, flag) -> None:
     optimistic/live/stopPending legs already cover the in-flight cases. An
     OPEN row with a flag keeps the fast cadence (pinned above)."""
     assert _calm(ctx, row={"status": "ended", "turn_status": "idle", flag: True}) is True, flag
+
+
+def test_a_paused_row_whose_pause_flag_survives_is_calm(ctx) -> None:
+    """Ticket 01a16d9f: a pause that lands while a turn runs rests the row PAUSED with ``pause_requested`` kept (as the start-of-turn pause
+    exit keeps it). The flag is honoured, so the row will not move until a resume or a person's message: it is at rest (review of #916).
+    The flag on any OPEN row that is not paused still keeps the fast cadence (pinned above), and so does a Stop or Cancel flag on a paused row."""
+    assert _calm(ctx, row={"status": "paused", "turn_status": "idle", "pause_requested": True}) is True
+    for flag in ("interrupt_requested", "cancel_requested"):
+        assert _calm(ctx, row={"status": "paused", "turn_status": "idle", "pause_requested": True, flag: True}) is False, flag

@@ -317,8 +317,9 @@ function NV_sessionIsCalm(o) {
   if (row.status === "running") return false;
   // An ENDED row is at rest until a reopen (the optimistic/live/stopPending legs above already cover the in-flight cases): a surviving Stop/Pause/Cancel
   // flag is stale bookkeeping - a Cancel that landed on a row that ended first, or the workspace-lost reconcile, whose patch leaves the flag set. An OPEN row with
-  // a flag still keeps the fast cadence (the row is about to move).
-  if (row.status !== "ended" && (row.interrupt_requested || row.pause_requested || row.cancel_requested)) return false;
+  // a flag still keeps the fast cadence (the row is about to move), except a PAUSED row's pause flag: the pause is honoured (a pause that lands mid-turn rests the
+  // row paused with the flag kept), so nothing moves it until a resume or a message.
+  if (row.status !== "ended" && (row.interrupt_requested || (row.pause_requested && row.status !== "paused") || row.cancel_requested)) return false;
   return true;
 }
 
