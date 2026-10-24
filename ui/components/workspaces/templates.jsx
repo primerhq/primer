@@ -543,12 +543,13 @@ function WT_fieldKeyForLoc(loc) {
 
 // A refused save, split: each field error under the key keyForLoc names (several on one key are joined), and what no field shows in one line. A
 // refusal with no field errors is said through the one reader (window.primerApi.readRefusal). opts.withPath puts each unplaced error's field in front.
+// pydantic's "Value error, " in front of a validator's sentence is dropped, as the toolset form drops it (TS_fieldErrorsOf).
 function WT_splitErrors(err, keyForLoc, opts) {
   var fields = {};
   var rest = [];
   var entries = err && Array.isArray(err.fieldErrors) ? err.fieldErrors : [];
   entries.forEach(function (fe) {
-    var msg = fe && typeof fe.msg === "string" ? fe.msg : "";
+    var msg = fe && typeof fe.msg === "string" ? fe.msg.replace(/^Value error, /, "") : "";
     var key = keyForLoc(fe ? fe.loc : null);
     if (key) {
       fields[key] = fields[key] ? fields[key] + "; " + msg : msg;

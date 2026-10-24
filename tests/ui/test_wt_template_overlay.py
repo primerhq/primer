@@ -329,7 +329,7 @@ def _save_refused(ctx, status_envelope) -> None:
 def test_server_field_errors_land_under_their_fields(ctx):
     bad = envelope("PUT", "/v1/workspace_templates/k8s-full", _sendable({**FULL_K8S, "backend": {**FULL_K8S["backend"], "node_selector": {"bad key": "x"}}}))
     assert bad[0] == 422 and len(bad[1]["extensions"]["errors"]) == 1
-    message = bad[1]["extensions"]["errors"][0]["msg"]
+    message = bad[1]["extensions"]["errors"][0]["msg"].removeprefix("Value error, ")
     _mount(ctx, "{ row: " + json.dumps(FULL_K8S) + " }")
     _save_refused(ctx, bad)
     assert js(ctx, "errorUnder('wt-node-selector')") == message
@@ -351,7 +351,7 @@ def test_a_refusal_in_a_folded_field_opens_its_fold(ctx):
     _mount(ctx, "{ row: " + json.dumps(row) + " }")
     assert ctx.eval("MR.find('wt-state-path') === null"), "Advanced starts folded"
     _save_refused(ctx, bad)
-    assert js(ctx, "errorUnder('wt-state-path')") == bad[1]["extensions"]["errors"][0]["msg"]
+    assert js(ctx, "errorUnder('wt-state-path')") == bad[1]["extensions"]["errors"][0]["msg"].removeprefix("Value error, ")
 
 
 def test_a_refusal_no_field_shows_is_one_line_with_its_field(ctx):
