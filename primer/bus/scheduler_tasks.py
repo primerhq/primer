@@ -34,6 +34,7 @@ from pydantic_core import to_jsonable_python
 
 from primer.int.coordinator import (
     ROLE_HARNESS_SWEEPER,
+    ROLE_SESSION_MESSAGING_SWEEPER,
     ROLE_STUCK_SESSION_SWEEPER,
     ROLE_TIMEOUT_SWEEPER,
     ROLE_TIMER_SCHEDULER,
@@ -41,7 +42,7 @@ from primer.int.coordinator import (
 from primer.int.claim import ClaimKind
 from primer.int.event_bus import EventBus
 from primer.int.storage import Storage
-from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import SessionStatus
 from primer.storage import raw_generation
 from primer.worker.yield_runtime import make_timeout_payload
@@ -519,6 +520,143 @@ def _never_started(session, grace_seconds: float) -> bool:
     return age >= grace_seconds
 
 
+class SessionMessagingSweeper(_BackgroundTask):
+    """Delivers the queued messages of a session that nothing else will (audit G7-14).
+
+    A message that waits in a session's pending queue (``PendingSessionMessage``) is realized at a turn boundary: the drain checkpoint of the
+    turn that ends, the pool's ``_end_session``, the completed-turn guard. A session that comes to rest with messages still queued and no turn
+    to come (the worker died between the turn's terminal write and its drain, a realize whose wake failed and left the message queued, a
+    message queued behind older ones on an idle session) used to keep them until some later message arrived, which then ran first. Each tick,
+    and first when the task takes the role (at boot on the first process to win it), this realizes the queue head of every such session
+    through the same ``realize_next_pending`` a turn boundary uses: the conditional arm of ``wake_session`` (one turn per wake), and the row
+    deleted only after its wake lands. One message per session per tick, as a checkpoint does; the turn it starts drains the rest.
+
+    A session qualifies when it is live and at rest: CREATED, RUNNING or WAITING, ``turn_status`` idle, not parked, no pause requested (a
+    paused session holds its queue on purpose; an ENDED one is reopened by the next message, after which its turn boundary drains it), and with
+    no SESSION lease row. A lease row means a turn is running, queued or awaiting reclaim, and that turn's own boundary drains the queue, so
+    the sweep never races a drain on another process. A queued row whose session no longer exists is deleted: nothing can deliver it.
+
+    Leader-elected (``ROLE_SESSION_MESSAGING_SWEEPER``), so one process sweeps at a time. Without a claim engine it cannot tell a session a
+    turn holds from one at rest, and does nothing.
+    """
+
+    role = ROLE_SESSION_MESSAGING_SWEEPER
+
+    def __init__(
+        self,
+        *,
+        storage_provider,
+        scheduler,
+        claim_engine: "ClaimEngine | None",
+        workspace_registry,
+        event_bus: EventBus | None = None,
+        poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
+    ) -> None:
+        super().__init__(name="session-messaging-sweeper")
+        self._sp = storage_provider
+        self._scheduler = scheduler
+        self._claim_engine = claim_engine
+        self._workspace_registry = workspace_registry
+        self._bus = event_bus
+        self._poll = poll_seconds
+
+    async def _run(self) -> None:
+        while not self._stopping:
+            try:
+                await self._tick()
+            except Exception as exc:  # noqa: BLE001 - a sweeper must never die on one bad row
+                logger.exception("session-messaging-sweeper: tick failed: %s", exc)
+            try:
+                await asyncio.sleep(self._poll)
+            except asyncio.CancelledError:
+                break
+
+    async def _tick(self) -> int:
+        """Realize the queue head of every session at rest that has one. Returns how many sessions were woken."""
+        if self._claim_engine is None:
+            return 0
+        woken = 0
+        for session_id in await self._sessions_with_queued_messages():
+            try:
+                if await self._realize_if_at_rest(session_id):
+                    woken += 1
+            except Exception:  # noqa: BLE001 - one session must not stop the sweep; its message stays queued for the next tick
+                logger.exception("session-messaging-sweeper: realizing the queue of session %s failed", session_id)
+        return woken
+
+    async def _sessions_with_queued_messages(self) -> list[str]:
+        """The ids of the sessions that have a queued message, oldest queue head first. Paged: the queue is capped per session, but a tick
+        that silently read one page would leave the tail stranded while looking like it had swept."""
+        from primer.model.workspace_session import PendingSessionMessage
+
+        storage = self._sp.get_storage(PendingSessionMessage)
+        order = [OrderBy(field="enqueued_at", direction="asc"), OrderBy(field="id", direction="asc")]
+        seen: dict[str, None] = {}
+        offset = 0
+        while True:
+            page = await storage.find(None, OffsetPage(offset=offset, length=_MAX_PAGE), order_by=order)
+            items = list(page.items)
+            for row in items:
+                seen.setdefault(row.session_id, None)
+            if len(items) < _MAX_PAGE:
+                return list(seen)
+            offset += _MAX_PAGE
+
+    async def _realize_if_at_rest(self, session_id: str) -> bool:
+        from primer.model.workspace_session import WorkspaceSession
+        from primer.session.enqueue import SessionWakeDeps
+        from primer.session.pending_messages import drop_queue_of_missing_session, realize_next_pending
+
+        row = await self._sp.get_storage(WorkspaceSession).get(session_id)
+        if row is None:
+            dropped = await drop_queue_of_missing_session(self._sp, session_id)
+            logger.info("session-messaging-sweeper: dropped %d queued message(s) of session %s, which no longer exists", dropped, session_id)
+            return False
+        if not _at_rest(row) or await self._has_lease(session_id):
+            return False
+        woken = await realize_next_pending(
+            storage_provider=self._sp,
+            workspace_id=row.workspace_id,
+            session_id=session_id,
+            wake_deps=SessionWakeDeps(
+                storage_provider=self._sp,
+                scheduler=self._scheduler,
+                claim_engine=self._claim_engine,
+                workspace_registry=self._workspace_registry,
+                event_bus=self._bus,
+            ),
+        )
+        if woken:
+            logger.warning(
+                "session-messaging-sweeper: session %s was at rest with a queued message nothing else would deliver; it is woken with it",
+                session_id,
+            )
+        return woken
+
+    async def _has_lease(self, session_id: str) -> bool:
+        """Whether a SESSION lease row exists (a turn running, queued or awaiting reclaim). Errs toward yes: a message left queued costs one
+        more tick, a realize racing a turn's own drain costs the order of two messages."""
+        try:
+            return await self._claim_engine.has_lease(ClaimKind.SESSION, session_id)
+        except Exception as exc:  # noqa: BLE001 - an unreadable lease table authorises nothing
+            logger.warning("session-messaging-sweeper: lease lookup failed for %s, leaving it alone: %s", session_id, exc)
+            return True
+
+
+#: The statuses a session can be at rest in with a queue only a sweep will deliver.
+_AT_REST_STATUSES = (SessionStatus.CREATED, SessionStatus.RUNNING, SessionStatus.WAITING)
+
+
+def _at_rest(session) -> bool:
+    """Whether ``session`` is live, idle, not parked and not being paused: a turn boundary would have realized its queue, and none is coming."""
+    return (
+        session.status in _AT_REST_STATUSES
+        and session.turn_status == "idle"
+        and session.parked_status is None
+        and not session.pause_requested
+    )
+
+
 class HarnessSweeper(_BackgroundTask):
     """Periodically reclaims harnesses whose worker died mid-operation."""
 
@@ -636,6 +774,7 @@ __all__ = [
     "DEFAULT_SWEEPER_POLL_SECONDS",
     "DEFAULT_TIMER_POLL_SECONDS",
     "HarnessSweeper",
+    "SessionMessagingSweeper",
     "TimeoutSweeper",
     "TimerScheduler",
 ]

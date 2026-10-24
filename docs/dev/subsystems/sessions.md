@@ -219,6 +219,23 @@ Four rules make that safe:
   cross-process order where a concurrent release re-arms the claim between a
   wake's arm and its USER_INPUT write, that turn runs once without the message
   and the message is answered by the next turn.
+- **Queued messages are not stranded (audit G7-14).** A session can come to
+  rest with messages still queued and no turn boundary to come: the worker
+  died between the turn's terminal write and its drain, or a realize's wake
+  failed (the message stays queued: the row is deleted only after its wake
+  lands). The session-messaging sweep (`SessionMessagingSweeper` in
+  `primer/bus/scheduler_tasks.py`, leader-elected under
+  `ROLE_SESSION_MESSAGING_SWEEPER`, so one process sweeps; its first tick runs
+  when it takes the role, at boot, then every 30 s) realizes the queue head of
+  every session at rest that has one, through the same `realize_next_pending`:
+  CREATED, RUNNING or WAITING, `turn_status` idle, not parked, no pause
+  requested, and no SESSION lease row (a lease means a turn holds the session
+  and its own boundary drains the queue, so the sweep never races a drain). One
+  message per session per tick; the turn it starts drains the rest. A PAUSED
+  session keeps its queue on purpose, and an ENDED one is reopened by its next
+  message, whose turn boundary then drains it. Queued rows of a session that no
+  longer exists are deleted. Without a claim engine the sweep does nothing.
+  Pinned by `tests/session/test_queued_messages_are_not_stranded.py`.
 
 The message log stays append-only under all of this. Compaction appends a
 `compaction_marker` carrying its summary, the span it replaced and the tail it kept verbatim (`kept_tail_messages`, read back by `reconstruct_compacted_history` right after the summary) its verdict (`outcome`, `unreducible`, `trigger_tokens`, `fixed_overhead_tokens`) and where the summary sits among the kept messages (`summary_after`, absent or 0 meaning in front); a compaction that could not reduce the prompt, or deliberately skipped, and wrote no marker leaves a `compaction_note` record instead (display and derivation only, never history; a verdict that repeats (skipped or unreducible) is noted once per run, and the reader that tells the executor so, `last_compaction_state`, reports the newest note's outcome and reason since the newest marker, and also the newest marker's `tokens_after`, which the strategy uses to avoid summarising a summary it just wrote); rewind

@@ -51,6 +51,7 @@ ROLE_WATCHER_MANAGER = "watcher-manager"
 ROLE_MCP_BRIDGE = "mcp-bridge"
 ROLE_COORDINATOR_SWEEPER = "coordinator-sweeper"
 ROLE_STUCK_SESSION_SWEEPER = "stuck-session-sweeper"
+ROLE_SESSION_MESSAGING_SWEEPER = "session-messaging-sweeper"
 ROLE_EVENT_DISPATCHER = "event-dispatcher"
 ROLE_EVENT_RETENTION = "event-retention"
 ROLE_WORKSPACE_EVENTS = "workspace-events"
@@ -187,6 +188,7 @@ __all__ = [
     "ROLE_COORDINATOR_SWEEPER",
     "ROLE_HARNESS_SWEEPER",
     "ROLE_MCP_BRIDGE",
+    "ROLE_SESSION_MESSAGING_SWEEPER",
     "ROLE_STUCK_SESSION_SWEEPER",
     "ROLE_TIMEOUT_SWEEPER",
     "ROLE_TIMER_SCHEDULER",
