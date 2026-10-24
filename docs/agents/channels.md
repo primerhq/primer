@@ -107,10 +107,10 @@ ChannelEvent (normalized inbound envelope):
 - `surface` - `dm | channel | thread`.
 - `mentions_bot`, `command` (`{name, args}`), `sender`
   (`{external_id, roles, is_bot}`), `text`, `room_external_id`.
-  Discord fills `mentions_bot` (true only for a direct mention of the bot
-  user; `@everyone`, `@here` and role mentions do not count) and
-  `sender.roles` (the sender's guild role IDs, not names, without the
-  `@everyone` role). Slack and Telegram do not fill them yet.
+  All three platforms fill `mentions_bot` (Slack: the text names the bot
+  user; Discord: a direct mention of the bot user; Telegram: a mention of
+  the bot username or a text mention of the bot user). Only Discord fills
+  `sender.roles`.
 
 EventMatcher (the binding predicate, AND of present fields):
 - `event_type` (required), `surface`, `command_name`, `mentions_bot`,

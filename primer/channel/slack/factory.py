@@ -36,9 +36,16 @@ logger = logging.getLogger(__name__)
 _HANDLERS_INSTALLED: set[str] = set()
 
 
-async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> bool:
+async def _route_channel_event(
+    adapter: Any, provider_id: str, event: dict, *,
+    mentions_bot: bool = False,
+) -> bool:
     """Normalize a fresh inbound Slack message event and, when a channel-trigger
     rule matches it, fire that rule.
+
+    ``mentions_bot`` is the flag the caller computed from the message text
+    (the bot user named as ``<@BOT_USER_ID>``); it is passed into the envelope
+    payload so the normalizer can stamp it on the event.
 
     Returns ``True`` iff a rule matched and was dispatched - in which case the
     caller MUST skip the legacy chat-surface dispatch, so the message is not
@@ -47,18 +54,21 @@ async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> b
     the caller's chat dispatch to own delivery.
 
     The Slack ``event`` dict is already the raw provider payload, so the
-    normalizer envelope is just ``{"type": "message", "payload": event}``. Best
-    effort: any failure is logged and swallowed (returning ``False``) so it
-    never breaks the chat-surface dispatch."""
+    normalizer envelope is ``{"type": "message", "payload": payload}`` with
+    ``payload`` the event plus the ``mentions_bot`` flag. Best effort: any
+    failure is logged and swallowed (returning ``False``) so it never breaks
+    the chat-surface dispatch."""
     router = adapter._inbound_router()
     if router is None:
         return False
     try:
         from primer.channel.slack.normalizer import SlackEventNormalizer
 
+        payload = dict(event)
+        payload["mentions_bot"] = bool(mentions_bot)
         normalizer = SlackEventNormalizer(provider_id=provider_id)
         normalized = await normalizer.normalize(
-            {"type": "message", "payload": event},
+            {"type": "message", "payload": payload},
         )
         if normalized is None:
             return False
@@ -217,7 +227,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
 
 
     @app.event("message")
-    async def _on_message(event, client):
+    async def _on_message(event, client, context):
         # Ignore bot/self messages and edits/deletes (no plain text payload).
         # A "file_share" subtype carries the user's uploaded files, so it is
         # let through (any other subtype - edits, deletes, joins - is dropped).
@@ -269,7 +279,22 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         # to and no matcher pre-pass to gate on.
         if getattr(adapter, "_sp", None) is None:
             return
-        await _route_channel_event(adapter, provider_id, event)
+        # mentions_bot: true when the message text names the bot user,
+        # <@BOT_USER_ID>. The bot id comes from the bolt context (the
+        # authorization middleware resolves it from its one cached
+        # auth.test for bot tokens); the adapter's own cached auth.test
+        # is the fallback. An unknown bot id is False. Only the message
+        # event is routed - the app_mention event Slack sends alongside
+        # it is not, so one mention routes once.
+        bot_user_id = getattr(context, "bot_user_id", None)
+        if not bot_user_id:
+            bot_user_id = await adapter.bot_user_id()
+        mentions_bot = bool(
+            bot_user_id and f"<@{bot_user_id}>" in (event.get("text") or ""),
+        )
+        await _route_channel_event(
+            adapter, provider_id, event, mentions_bot=mentions_bot,
+        )
 
 
 async def _slack_factory(

@@ -50,7 +50,12 @@ class SlackEventNormalizer:
                 message_id=p.get("ts"),
                 sender=EventSender(external_id=p.get("user") or ""),
                 text=p.get("text"),
-                mentions_bot=(kind == "app_mention"),
+                # The factory computes the flag from the message text (the
+                # bot user named as <@BOT_USER_ID>); the normalizer only
+                # reads it. The app_mention event is never routed (Slack
+                # sends it AND the message event for one mention), so the
+                # kind no longer decides the flag.
+                mentions_bot=bool(p.get("mentions_bot")),
                 raw=p,
             )
 

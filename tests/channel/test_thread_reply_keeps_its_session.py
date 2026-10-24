@@ -113,7 +113,7 @@ class _Slack:
     async def reply(self, text: str) -> None:
         self._seq += 1
         event = {"channel": "C01", "thread_ts": self.anchor, "ts": f"1700000001.{self._seq:06d}", "user": "U7", "text": text}
-        await self._app.events["message"](event, self._client)
+        await self._app.events["message"](event, self._client, SimpleNamespace())
 
     async def approve(self) -> None:
         body = {

@@ -36,9 +36,52 @@ async def test_message_to_message_posted():
 
 
 @pytest.mark.asyncio
-async def test_app_mention_sets_mentions_bot():
+async def test_message_payload_with_flag_sets_mentions_bot():
+    # The factory computes the flag from the message text (the bot user
+    # named as <@BOT_USER_ID>) and passes it in the payload; the
+    # normalizer only reads it.
     normalizer = SlackEventNormalizer(provider_id="x")
     event = await normalizer.normalize(
+        {
+            "type": "message",
+            "payload": {
+                "channel": "C1",
+                "user": "U1",
+                "text": "<@bot> hi",
+                "ts": "112.0",
+                "mentions_bot": True,
+            },
+        }
+    )
+    assert event is not None
+    assert event.type == NormalizedEventType.MESSAGE_POSTED
+    assert event.mentions_bot is True
+
+
+@pytest.mark.asyncio
+async def test_app_mention_payload_reads_the_flag_from_the_payload():
+    # The kind no longer decides the flag: the factory routes only the
+    # message event (Slack sends app_mention AND message for one mention),
+    # so even an app_mention-kind envelope is True only when the payload
+    # carries the flag.
+    normalizer = SlackEventNormalizer(provider_id="x")
+    event = await normalizer.normalize(
+        {
+            "type": "app_mention",
+            "payload": {
+                "channel": "C1",
+                "user": "U1",
+                "text": "<@bot> hi",
+                "ts": "112.0",
+                "mentions_bot": True,
+            },
+        }
+    )
+    assert event is not None
+    assert event.type == NormalizedEventType.MESSAGE_POSTED
+    assert event.mentions_bot is True
+
+    without = await normalizer.normalize(
         {
             "type": "app_mention",
             "payload": {
@@ -49,9 +92,8 @@ async def test_app_mention_sets_mentions_bot():
             },
         }
     )
-    assert event is not None
-    assert event.type == NormalizedEventType.MESSAGE_POSTED
-    assert event.mentions_bot is True
+    assert without is not None
+    assert without.mentions_bot is False
 
 
 @pytest.mark.asyncio
