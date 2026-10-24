@@ -165,6 +165,22 @@ same codes):
 - `provider_not_found` (field `provider_id`): a single profile's provider
   names no stored LLMProvider.
 
+**Who may read the profiles.** The `model_profiles` router and the
+`model_profile` system tools are admin-only, because a profile is provider
+configuration. An agent must name a profile and any signed-in user may write
+one, so `GET /v1/model_profiles/choices` (user tier, included before the CRUD
+router so the literal path is not read as a profile id) and the user-tier
+`system::list_model_profile_choices` tool list every profile as a
+`ModelProfileChoice`, `{id, description, kind, context_length}`, sorted by id
+and paged like the other lists (`limit` with `offset` or `cursor`). Both read
+through `primer/model_profile/choices.py`, so they cannot disagree. The
+provider, the model name, the members and the config are never served
+(audit G3-02); `context_length` is the stored one, null for an aggregated
+profile. The console's agent form fills its Model profile dropdown from this
+route for every role. A profile whose id is literally `choices` is not
+reachable through `GET /v1/model_profiles/{id}` (the list, find and the
+tools still reach it).
+
 `AggregatedLLM` (`primer/llm/aggregated.py`) is the adapter an aggregated
 profile resolves to. It resolves each member per `stream` call through the
 `resolve_member` callable (bound by `resolve_llm` to itself, so a member

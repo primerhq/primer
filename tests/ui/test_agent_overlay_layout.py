@@ -19,6 +19,7 @@ import pytest
 from tests.ui._agent_form_harness import (
     FULL,
     MANAGED,
+    PROFILE_CHOICES_KEY,
     agent_form,
     calls,
     click,
@@ -366,18 +367,18 @@ def test_a_deleted_profile_stays_selected_and_says_so(ctx):  # Review Focus 2
 
 def test_the_profile_list_says_when_it_is_loading_empty_or_broken():
     with agent_form() as ctx:
-        set_resource(ctx, "agents:model-profiles", {"data": None, "loading": True, "error": None})
+        set_resource(ctx, PROFILE_CHOICES_KEY, {"data": None, "loading": True, "error": None})
         mount(ctx)
         assert options(ctx, "agent-model-profile") == [{"value": "", "text": "Loading model profiles…"}]
         assert prop(ctx, "agent-form-submit", "disabled") is True
     with agent_form() as ctx:
-        set_resource(ctx, "agents:model-profiles", {"data": {"items": []}, "loading": False, "error": None})
+        set_resource(ctx, PROFILE_CHOICES_KEY, {"data": {"items": []}, "loading": False, "error": None})
         mount(ctx)
         assert options(ctx, "agent-model-profile") == [{"value": "", "text": "No model profiles yet"}]
         assert prop(ctx, "field:Model profile", "data-help") == "No model profiles yet. Register an LLM provider and import its models first."
         assert prop(ctx, "agent-form-submit", "disabled") is True
     with agent_form() as ctx:  # a failed load is said as the error, never as "no longer exists"
-        set_resource(ctx, "agents:model-profiles", {"data": None, "loading": False, "error": {"detail": "upstream down"}})
+        set_resource(ctx, PROFILE_CHOICES_KEY, {"data": None, "loading": False, "error": {"detail": "upstream down"}})
         mount(ctx, existing=FULL)
         assert options(ctx, "agent-model-profile") == [{"value": "slow", "text": "slow"}]
         assert prop(ctx, "field:Model profile", "data-error") == "Could not load the model profiles: upstream down"
@@ -386,7 +387,7 @@ def test_the_profile_list_says_when_it_is_loading_empty_or_broken():
 
 def test_a_failed_profile_load_on_create_is_the_error_and_the_empty_option():
     with agent_form() as ctx:
-        set_resource(ctx, "agents:model-profiles", {"data": None, "loading": False, "error": {"message": "network down"}})
+        set_resource(ctx, PROFILE_CHOICES_KEY, {"data": None, "loading": False, "error": {"message": "network down"}})
         mount(ctx)
         assert options(ctx, "agent-model-profile") == [{"value": "", "text": "No model profiles yet"}]
         assert prop(ctx, "field:Model profile", "data-error") == "Could not load the model profiles: network down"

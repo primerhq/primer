@@ -218,6 +218,7 @@ from primer.toolset._system_tools import (
     ask_user_resume,
     make_read_doc_content_handler,
 )
+from primer.toolset._system_model_profile_choices import model_profile_choices_tools
 from primer.toolset._system_web import web_active_config_tools
 from primer.toolset._system_wiki import (
     _wiki_read_tool,
@@ -1106,6 +1107,9 @@ def build_system_toolset(
     # The deployment's web search and web fetch choice: the tool twins of GET / PUT /v1/web_search_active_config and
     # /v1/web_fetch_active_config. A set runs the PUT route's check and write; it leaves the services' cache to its 5 s TTL.
     registry.update(web_active_config_tools(storage_provider=storage_provider))
+    # The profiles an agent may name, for a caller below admin: the tool twin of GET /v1/model_profiles/choices (audit G3-02). The
+    # generic model_profile CRUD tools above stay admin-only.
+    registry.update(model_profile_choices_tools(storage_provider=storage_provider))
 
     # ---- Dynamic invocation: invoke_agent ----------------------------
     class _InvokeAgentArgs(BaseModel):

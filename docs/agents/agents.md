@@ -352,6 +352,13 @@ and `top_p` when a reasoning effort is sent.
   role for the writes (a profile is provider configuration). A single
   profile whose provider does not exist is refused, and a profile that an
   agent uses cannot be deleted.
+- `system::list_model_profile_choices` - user role: every profile an agent
+  may name in `model.profile_id`, sorted by id, as
+  `{id, description, kind, context_length}` and nothing of its provider,
+  model name, members or config. Paged with `limit` (1-200, default 200)
+  and `offset` or `cursor`. The REST twin is
+  `GET /v1/model_profiles/choices` (any signed-in user). Use it when you are
+  not an admin and write an agent: `list_model_profiles` is admin-only.
 
 Create the profile before the agent that names it:
 
