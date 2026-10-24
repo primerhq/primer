@@ -155,6 +155,80 @@ def test_the_selector_menu_is_an_escape_layer_only_while_open(form) -> None:
     assert js(form, "__layers[__layers.length - 2].active") is True, "the overlay's layer stays registered"
 
 
+# ---- the additions of Plan 08 (lead ruling 1: K-1, K-3, K-4; optional and additive) ------------------------------------------------------------------
+
+SEARCHABLE = ('{ prefix: "From template", value: "python-dev", testid: "tpl", onChange: rec("tpl"), searchable: true,'
+              ' options: [{ value: "python-dev", label: "python-dev" }, { value: "node-dev", label: "Node 20" }, { value: "k-big", label: "Big box" }] }')
+
+
+def _menu_items(form, testid: str) -> list:
+    return js(form, f'ALL("{testid}:menu").filter(function (n) {{ return n.props.role === "menuitemradio"; }}).map(function (n) {{ return n.props["data-testid"]; }})')
+
+
+def test_k3_each_selector_item_carries_a_testid_of_its_value(form) -> None:
+    """K-3 asked for a test id on each item for the journeys. The kit already had one, ``<selector.testid>:<value>``, which the Register overlay's tests and
+    journeys use, so the item keeps that one (an element holds one test id) and the template journeys pick ``ws-template-provider:<id>``."""
+    form.eval(f'MR.mount(PK_FormOverlay, {{ title: "T", onClose: rec("close"), testid: "ov", selector: {SELECTOR}, footer: {{ right: null }} }})')
+    form.eval('MR.click("sel")')
+    assert _menu_items(form, "sel") == ["sel:llm", "sel:embedding"]
+
+
+def test_k1_a_searchable_selector_filters_its_items_by_label_and_value(form) -> None:
+    form.eval(f'MR.mount(PK_FormOverlay, {{ title: "New workspace", onClose: rec("close"), testid: "ov", selector: {SEARCHABLE}, footer: {{ right: null }} }})')
+    assert form.eval('MR.find("tpl:search") === null'), "the box is in the open menu only"
+    form.eval('MR.click("tpl")')
+    search = js(form, 'MR.find("tpl:search").props')
+    assert search["aria-label"] == "Filter the list" and search["value"] == ""
+    assert _menu_items(form, "tpl") == ["tpl:python-dev", "tpl:node-dev", "tpl:k-big"]
+    form.eval('MR.find("tpl:search").props.onChange({ target: { value: "NODE" } }); MR.rerender();')
+    assert _menu_items(form, "tpl") == ["tpl:node-dev"], "the label matches, whatever the case"
+    form.eval('MR.find("tpl:search").props.onChange({ target: { value: "k-b" } }); MR.rerender();')
+    assert _menu_items(form, "tpl") == ["tpl:k-big"], "the value matches too"
+    form.eval('MR.find("tpl:search").props.onChange({ target: { value: "zzz" } }); MR.rerender();')
+    assert _menu_items(form, "tpl") == [] and "No match" in form.eval('textOf(MR.find("tpl:menu"))')
+    form.eval('MR.find("tpl:search").props.onChange({ target: { value: "dev" } }); MR.rerender();')
+    form.eval('MR.click("tpl:node-dev")')
+    assert js(form, "CALLS") == [["tpl", "node-dev"]] and form.eval('MR.find("tpl:menu") === null')
+    form.eval('MR.click("tpl")')
+    assert js(form, 'MR.find("tpl:search").props.value') == "" and len(_menu_items(form, "tpl")) == 3, "a menu opens with no filter"
+
+
+def test_k1_enter_in_the_box_picks_the_first_item_left(form) -> None:
+    form.eval(f'MR.mount(PK_FormOverlay, {{ title: "T", onClose: rec("close"), testid: "ov", selector: {SEARCHABLE}, footer: {{ right: null }} }})')
+    form.eval('MR.click("tpl"); MR.find("tpl:search").props.onChange({ target: { value: "big" } }); MR.rerender();')
+    form.eval('var PREVENTED = 0; MR.find("tpl:search").props.onKeyDown({ key: "Enter", preventDefault: function () { PREVENTED++; }, stopPropagation: function () {} }); MR.rerender();')
+    assert js(form, "CALLS") == [["tpl", "k-big"]] and form.eval("PREVENTED") == 1
+    assert form.eval('MR.find("tpl:menu") === null')
+
+
+def test_k1_a_selector_that_is_not_searchable_has_no_box(form) -> None:
+    form.eval(f'MR.mount(PK_FormOverlay, {{ title: "T", onClose: rec("close"), testid: "ov", selector: {SELECTOR}, footer: {{ right: null }} }})')
+    form.eval('MR.click("sel")')
+    assert form.eval('MR.find("sel:search") === null')
+
+
+def test_k4_a_disabled_segmented_control_shows_its_value_and_reports_no_pick(form) -> None:
+    form.eval('MR.mount(PK_Segmented, { testid: "route", ariaLabel: "Routing", value: "seq", onChange: rec("seg"), disabled: true,'
+              ' options: [{ value: "seq", label: "Sequential fallback" }, { value: "rr", label: "Round robin" }] })')
+    assert form.eval('MR.find("route:seq").props["aria-pressed"]') == "true"
+    assert form.eval('MR.find("route:rr").props.disabled') is True and form.eval('MR.find("route:seq").props.disabled') is True
+    form.eval('MR.click("route:rr")')
+    assert js(form, "CALLS") == []
+    form.eval('MR.mount(PK_Segmented, { testid: "route", value: "seq", onChange: rec("seg"), options: [{ value: "seq", label: "S" }, { value: "rr", label: "R" }] })')
+    assert form.eval('!MR.find("route:rr").props.disabled'), "without the prop the buttons are live, as before"
+
+
+def test_k4_a_read_only_row_table_shows_its_rows_and_offers_no_change(form) -> None:
+    form.eval(f'MR.mount(PK_RowTable, {{ columns: {COLUMNS}, rows: [{{ name: "llama", effect: "NoExecute" }}], onChange: rec("rows"), addLabel: "+ Add",'
+              ' title: "TOLERATIONS", testid: "tbl", readOnly: true })')
+    assert form.eval('MR.find("tbl:add") === null') and form.eval('MR.find("tbl:remove:0") === null')
+    assert form.eval('MR.find("tbl:0:name").props.readOnly') is True and form.eval('MR.find("tbl:0:name").props.value') == "llama"
+    assert form.eval('MR.find("tbl:0:effect").props.disabled') is True, "a select has no read-only state: it is disabled"
+    assert "TOLERATIONS" in js(form, "MR.texts()")
+    form.eval(f'MR.mount(PK_RowTable, {{ columns: {COLUMNS}, rows: [{{ name: "x", effect: "NoExecute" }}], onChange: rec("rows"), addLabel: "+ Add", testid: "tbl" }})')
+    assert form.eval('!!MR.find("tbl:add")') and form.eval('!MR.find("tbl:0:name").props.readOnly'), "without the prop the table edits, as before"
+
+
 def test_on_a_phone_the_overlay_is_a_sheet_with_the_kit_class_and_testid(form) -> None:
     form.eval('MOBILE = true; MR.mount(PK_FormOverlay, { title: "Register provider", onClose: rec("close"), testid: "pc-register", footer: { right: null } })')
     assert form.eval('MR.find("pc-register").props.className').split() == ["sheet", "pk-overlay"]
