@@ -33,7 +33,7 @@ from tests.ui._agent_form_harness import (
 def test_the_form_reads_the_profile_choices_route_for_every_role():
     with agent_form() as ctx:
         mount(ctx)
-        assert resource_request(ctx, PROFILE_CHOICES_KEY) == [{"method": "GET", "path": "/model_profiles/choices?limit=200", "body": None}]
+        assert resource_request(ctx, PROFILE_CHOICES_KEY) == [{"method": "GET", "path": "/model_profiles/choices?limit=200&offset=0", "body": None}]
         assert calls(ctx) == [], "reading the fetcher's request leaves the form's own calls alone"
 
 

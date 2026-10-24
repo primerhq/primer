@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Banner, Modal, CardList, Card, Fab, relativeTime, FormField */
+/* global React, Icon, Btn, Banner, Modal, CardList, Card, Fab, relativeTime, FormField, PR_fetchAllPages, PR_PagedNote */
 // Task 7 (UI reconciliation Phase 2):
 // Wires GraphsPage + GraphDetail to the real API. The detail body is
 // the graph builder (graph-builder/*.jsx); this file keeps the list, the
@@ -28,9 +28,10 @@
 
 function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
   const { apiFetch, useResource, useMutation } = window.primerApi;
+  // The seed agent select offers every agent, every page (PR_fetchAllPages).
   const agents = useResource(
     "new-graph:agents",
-    (s) => apiFetch("GET", "/agents?limit=200", null, { signal: s }),
+    (s) => PR_fetchAllPages("/agents", { signal: s, apiFetch }),
     {},
   );
 
@@ -174,6 +175,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
             </Btn>
           )}
         </div>
+        <PR_PagedNote list={agents.data} noun="agents" testid="gr-new-agents-note" />
         {(agents.data?.items ?? []).length === 0 && !agents.loading && (
           <div className="field-help" style={{ color: "var(--amber)" }}>
             No agents configured.
@@ -218,7 +220,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
 }
 
 // ============================================================================
-// GraphsPage — list, wired to /graphs?limit=200
+// GraphsPage: list, wired to /graphs (server-side offset pages)
 // ============================================================================
 
 function GraphsPage({ onOpen, pushToast, startCreate }) {

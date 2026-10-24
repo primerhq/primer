@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner */
+/* global React, Icon, Btn, Modal, Banner, PR_fetchAllPages, PR_PagedNote */
 
 // Top-level scope is shared with the babel-standalone IIFE; prefix all
 // consts with AP_ to avoid clashes with other components.
@@ -143,9 +143,10 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
   // Provider dropdown source — keyed separately from the page-level
   // approvals:policies cache so the modal can reuse cached data on
   // subsequent opens without colliding with anything else.
+  // Every page of each list (PR_fetchAllPages, ui/foundation/api.js).
   const providers = useResource(
     "approvals-modal:llm",
-    (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/llm_providers", { signal, apiFetch }),
     {},
   );
   const providerItems = providers.data?.items ?? [];
@@ -159,7 +160,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
   // them or it offers values the API will reject.
   const profiles = useResource(
     "approvals-modal:model-profiles",
-    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/model_profiles", { signal, apiFetch }),
     {},
   );
   const modelOptions = React.useMemo(() => {
@@ -456,6 +457,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
                 ))}
               </select>
             )}
+            <PR_PagedNote list={providers.data} noun="LLM providers" testid="approval-policy-providers-note" />
             {fieldErr("body.approval.provider_id")}
           </div>
           <div className="field">
@@ -475,6 +477,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
                 </option>
               ))}
             </select>
+            <PR_PagedNote list={profiles.data} noun="profiles" testid="approval-policy-profiles-note" />
             {fieldErr("body.approval.model")}
           </div>
           <div className="field">

@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, FormField */
+/* global React, Icon, Btn, Modal, Banner, FormField, PR_fetchAllPages, PR_PagedNote */
 // Triggers list + detail (stub) + create wizard.
 // Prefix TR_ to avoid global name collisions.
 
@@ -1956,22 +1956,23 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
   }, []);
 
   // Picker data (always queried so hook count stays fixed; the form
-  // only renders the relevant picker for the selected kind). We use the
-  // standard `?limit=200` pattern adopted by the agents / graphs pages
-  // so the dropdown isn't capped to a default page size.
+  // only renders the relevant picker for the selected kind). Every page of
+  // each list (PR_fetchAllPages, ui/foundation/api.js), so a workspace,
+  // agent or graph past the 200th is in its dropdown; a list cut short
+  // says so under the dropdown (PR_PagedNote).
   const workspaces = useResource(
     "tr-sub-workspaces",
-    (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/workspaces", { signal, apiFetch }),
     { pollMs: null },
   );
   const agents = useResource(
     "tr-sub-agents",
-    (signal) => apiFetch("GET", "/agents?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/agents", { signal, apiFetch }),
     { pollMs: null },
   );
   const graphs = useResource(
     "tr-sub-graphs",
-    (signal) => apiFetch("GET", "/graphs?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/graphs", { signal, apiFetch }),
     { pollMs: null },
   );
 
@@ -2133,6 +2134,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
             {workspaces.loading && (
               <div className="field-help muted text-sm">Loading workspaces…</div>
             )}
+            <PR_PagedNote list={workspaces.data} noun="workspaces" testid="tr-sub-workspaces-note" />
           </div>
         )}
 
@@ -2157,6 +2159,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
             {agents.loading && (
               <div className="field-help muted text-sm">Loading agents…</div>
             )}
+            <PR_PagedNote list={agents.data} noun="agents" testid="tr-sub-agents-note" />
           </div>
         )}
 
@@ -2181,6 +2184,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
             {graphs.loading && (
               <div className="field-help muted text-sm">Loading graphs…</div>
             )}
+            <PR_PagedNote list={graphs.data} noun="graphs" testid="tr-sub-graphs-note" />
             <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
               The rendered payload must be JSON that validates against the
               graph&apos;s Begin <span className="mono">input_schema</span>.

@@ -1,4 +1,4 @@
-/* global React, Icon, Btn */
+/* global React, Icon, Btn, PR_fetchAllPages, PR_PagedNote */
 // JsonSchemaForm — recursive JSON-Schema renderer used by HarnessRegisterDialog
 // (overrides form). Prefix HF_ to avoid global name collisions.
 //
@@ -15,24 +15,28 @@
 function HF_ProviderPicker({ endpoint, value, onChange, label }) {
   const { useResource, apiFetch } = window.primerApi;
   const key = "hf-provider-picker:" + endpoint;
+  // Every provider, every page (PR_fetchAllPages, ui/foundation/api.js); a list cut short says so under the select.
   const res = useResource(
     key,
-    (signal) => apiFetch("GET", endpoint + "?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages(endpoint, { signal, apiFetch }),
     { pollMs: null }
   );
   const items = res.data?.items ?? [];
   return (
-    <select
-      className="select"
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value || null)}
-      style={{ width: "100%" }}
-    >
-      <option value="">— select {label} —</option>
-      {items.map((item) => (
-        <option key={item.id} value={item.id}>{item.id}</option>
-      ))}
-    </select>
+    <>
+      <select
+        className="select"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        style={{ width: "100%" }}
+      >
+        <option value="">{"\u2014 select " + label + " \u2014"}</option>
+        {items.map((item) => (
+          <option key={item.id} value={item.id}>{item.id}</option>
+        ))}
+      </select>
+      <PR_PagedNote list={res.data} noun={label + "s"} testid={"hf-provider-picker-note:" + endpoint} />
+    </>
   );
 }
 
@@ -48,9 +52,10 @@ function HF_ProviderPicker({ endpoint, value, onChange, label }) {
 
 function HF_ModelProfilePicker({ value, onChange, label }) {
   const { useResource, apiFetch } = window.primerApi;
+  // Every profile, every page (PR_fetchAllPages).
   const res = useResource(
     "hf-model-profile-picker:/v1/model_profiles",
-    (signal) => apiFetch("GET", "/v1/model_profiles?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/v1/model_profiles", { signal, apiFetch }),
     { pollMs: null }
   );
   const profiles = res.data?.items ?? [];
@@ -60,20 +65,23 @@ function HF_ModelProfilePicker({ value, onChange, label }) {
   const missing = selected && !profiles.some((pr) => pr.id === selected);
 
   return (
-    <select
-      className="select"
-      style={{ width: "100%" }}
-      value={selected}
-      onChange={(e) => onChange(e.target.value || null)}
-    >
-      <option value="">Select {label}</option>
-      {missing && <option value={selected}>{selected} (missing)</option>}
-      {profiles.map((pr) => (
-        <option key={pr.id} value={pr.id}>
-          {pr.id} · {pr.provider_id}/{pr.model_name}
-        </option>
-      ))}
-    </select>
+    <>
+      <select
+        className="select"
+        style={{ width: "100%" }}
+        value={selected}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">Select {label}</option>
+        {missing && <option value={selected}>{selected} (missing)</option>}
+        {profiles.map((pr) => (
+          <option key={pr.id} value={pr.id}>
+            {pr.id} · {pr.provider_id}/{pr.model_name}
+          </option>
+        ))}
+      </select>
+      <PR_PagedNote list={res.data} noun="profiles" testid="hf-model-profile-picker-note" />
+    </>
   );
 }
 

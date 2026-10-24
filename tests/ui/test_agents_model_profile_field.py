@@ -38,7 +38,7 @@ class TestFormSendsTheProfileShape:
         AG_ProfilePicker buttons, which have no single target for a
         <label for>). tests/ui/test_agent_overlay_layout.py runs it."""
         src = _src()
-        assert '"/model_profiles?limit=200"' in src
+        assert 'PR_fetchAllPages("/model_profiles"' in src, "every page of the profiles (ticket 01a16dfa)"
         assert '<PK_Field label="Model profile"' in src
         assert 'id="na-model-profile"' in src
         assert "function AG_ProfilePicker(" not in src

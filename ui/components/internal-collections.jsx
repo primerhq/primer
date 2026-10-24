@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, relativeTime */
+/* global React, Icon, Btn, Modal, Banner, relativeTime, PR_fetchAllPages, PR_PagedNote */
 
 // Internal Collections subsystem — wired to the real API.
 //
@@ -498,19 +498,20 @@ function DeactivateButton({ onRefresh, pushToast, disabled }) {
 
 function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
   const { apiFetch, useResource, useMutation } = window.primerApi;
+  // The three provider selects offer every provider, every page of each (PR_fetchAllPages, ui/foundation/api.js).
   const embedProviders = useResource(
     IC_CACHE_EMBED,
-    (signal) => apiFetch("GET", "/embedding_providers?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/embedding_providers", { signal, apiFetch }),
     {}
   );
   const rerankers = useResource(
     IC_CACHE_RERANK,
-    (signal) => apiFetch("GET", "/cross_encoder_providers?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/cross_encoder_providers", { signal, apiFetch }),
     {}
   );
   const ssps = useResource(
     IC_CACHE_SSP,
-    (signal) => apiFetch("GET", "/ssp?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/ssp", { signal, apiFetch }),
     {}
   );
 
@@ -637,6 +638,7 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
           <option value="">-- pick a provider --</option>
           {(ssps.data?.items ?? []).map((p) => <option key={p.id} value={p.id}>{p.id}{p.provider ? ` · ${p.provider}` : ""}</option>)}
         </select>
+        <PR_PagedNote list={ssps.data} noun="search providers" testid="ic-ssps-note" />
         {vectorSpaceLocked && <div className="field-help muted">{lockedHint}</div>}
         {fieldErrors["body.search_provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.search_provider_id"]}</div>}
       </div>
@@ -646,6 +648,7 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
           <option value="">-- pick a provider --</option>
           {(embedProviders.data?.items ?? []).map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
         </select>
+        <PR_PagedNote list={embedProviders.data} noun="embedding providers" testid="ic-embed-note" />
         {noEmbed && (
           <div className="field-help" style={{ color: "var(--amber)" }}>
             No embedding providers configured. Create one at <span className="mono">/providers?class=embedding</span> first.
@@ -685,6 +688,7 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
               <option value="">-- pick a reranker --</option>
               {(rerankers.data?.items ?? []).map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
             </select>
+            <PR_PagedNote list={rerankers.data} noun="cross-encoder providers" testid="ic-rerank-note" />
             {(rerankers.data?.items ?? []).length === 0 && !rerankers.loading && (
               <div className="field-help" style={{ color: "var(--amber)" }}>
                 No cross-encoder providers configured. Create one at <span className="mono">/providers?class=cross_encoder</span> first.
