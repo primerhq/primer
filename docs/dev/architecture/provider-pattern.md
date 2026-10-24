@@ -141,12 +141,14 @@ the moment its enum and its `_types` entry land together.
 The classes that serve it are llm, embedding, cross_encoder, stt, tts, web_search, web_fetch, artifact_storage and
 ssp (`ssp/_types`); `channel_providers` and `workspace_providers` have panels of their own and serve none. The
 artifact-storage entry (`primer/api/routers/artifact_storage.py`, `artifact_storage_helpers_router`, mounted before
-the CRUD router) lists `db`, `filesystem` and `s3`, and its labels say what is true: `db` and `filesystem` are built
-(`build_artifact_storage`) and `s3` is not yet, so an `s3` row can be stored and is never used (its label says "not implemented yet: stored, never used").
+the CRUD router) lists `db`, `filesystem` and `s3`, and its labels say what is true: every kind is built (`build_artifact_storage`;
+`s3` needs the `s3` extra, and without it the build is refused naming the extra), so no label says "not implemented". A kind the factory had
+no builder for would have to say "not implemented yet: stored, never used" in its label.
 Which store is used is not the row's choice: every consumer goes through the routing store (`ArtifactStorageRegistry.get_default()`), which writes to the
 ACTIVE provider (the reserved `artifact-storage-default` database until another is selected with `PUT /v1/artifact_storage_active_config`), so a `db` or
 `filesystem` row registered from the menu is not used until it is selected. The `filesystem` label and its `root` help say that the root is one folder that
-every server pod mounts at the same path. `tests/api/test_artifact_storage_types.py` holds the
+every server pod mounts at the same path; the `s3` help says how the prefix is used, when an endpoint is needed, and that the two keys go
+together (both, or neither for the server's own credentials). `tests/api/test_artifact_storage_types.py` holds the
 served fields to the config models in `primer/model/providers/artifact.py`, builds a row of each kind through the
 factory to keep the labels true, and builds a row from what the form is told to ask for.
 
@@ -161,7 +163,16 @@ A cached live instance is built from the row as it was read, so a backend whose 
 `ArtifactStorage.serves(row)` (`primer/int/artifact_storage.py`, default True). The routing store asks it at the re-read after a put writes
 its location record; a store that no longer serves the row (the location moved while the put was in flight) has its bytes and record
 removed and the put answers 409. The filesystem store compares the row's kind and `root` as the `Path` it writes under; the S3 store compares
-its kind, `bucket` and `prefix` (the fields the move check guards), after the same normalisation it applies to the keys it writes.
+its kind, `bucket`, `prefix`, `endpoint_url` and `region` with the values it was built from (the four that say where its objects are; new
+keys or another addressing style reach the same objects).
+
+A backend that holds a client is closed by the registry that cached it. A store the registry returned UNCACHED (built while an eviction
+raced the build) is owned by its caller alone, so the caller hands it back when its call is over (`ArtifactStorageRegistry.release_provider`;
+the routing store does so after every put, get and delete) and the registry closes it there, or at its own `aclose`.
+
+An optional backend imports its SDK only where it opens the client (`primer/artifact/s3.py` imports aiobotocore in `initialize`), its
+builder calls `require_extra` first, and the module joins the import-linter "core layers" forbidden list, so a core install imports the app
+and builds the row's object without the extra.
 
 Serve a draft test where a draft can be tested. A class whose provider can be exercised before it is saved exposes
 `POST /v1/{plural}/_test`, taking the draft row with every key optional and answering HTTP 200 with `{ok: true, ...}` or
