@@ -20,6 +20,8 @@ from primer.model.except_ import NotFoundError
 from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage, Op
 from primer.model.trigger import (
+    PARALLELISM_VALUES,
+    Parallelism,
     Subscription,
     Trigger,
 )
@@ -415,7 +417,7 @@ async def create_subscription(
     trigger_id: str,
     config,
     payload_template: str | None = None,
-    parallelism: str = "skip",
+    parallelism: Parallelism = "skip",
     description: str | None = None,
     enabled: bool = True,
     event_matcher=None,
@@ -483,7 +485,7 @@ async def update_subscription(
     trigger_id: str,
     subscription_id: str,
     payload_template: Any = _UNSET,
-    parallelism: str | None = None,
+    parallelism: Parallelism | None = None,
     enabled: bool | None = None,
     description: Any = _UNSET,
     event_matcher: Any = _UNSET,
@@ -506,6 +508,9 @@ async def update_subscription(
     """
     if event_matcher is not _UNSET and event_matcher is not None:
         validate_text_pattern(event_matcher.text_pattern)
+    # The field is assigned below, which pydantic does not validate: an unchecked value used to be stored as given (ticket 01a16ddb).
+    if parallelism is not None and parallelism not in PARALLELISM_VALUES:
+        raise ValueError(f"parallelism must be one of {', '.join(PARALLELISM_VALUES)}, not {parallelism!r}")
     subs_storage = deps.storage_provider.get_storage(Subscription)
     sub = await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
     sub.owner = owner

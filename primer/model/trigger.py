@@ -5,11 +5,11 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationInfo, field_validator
 
-from primer.model.common import Identifiable
+from primer.model.common import Identifiable, reading_a_stored_row
 from primer.model.event_matcher import EventMatcher
 from primer.model.principal import PrincipalRef
 
@@ -209,6 +209,7 @@ SubscriptionConfig = Annotated[
 
 #: A subscription's ``parallelism``; every way in types its argument with it, on create and on update (ticket 01a16ddb, ruling 5).
 Parallelism = Literal["skip", "queue"]
+PARALLELISM_VALUES: tuple[str, ...] = get_args(Parallelism)
 
 
 class Subscription(Identifiable):
@@ -248,6 +249,19 @@ class Subscription(Identifiable):
             "outside it is refused (target_out_of_reach) and starts no session."
         ),
     )
+
+    @field_validator("parallelism", mode="before")
+    @classmethod
+    def _stored_parallelism_reads(cls, value: Any, info: ValidationInfo) -> Any:
+        """A STORED row whose ``parallelism`` is neither ``skip`` nor ``queue`` reads as ``skip``, the default (ticket 01a16ddb, review of #915).
+
+        ``update_subscription`` stored whatever string it was given until the arguments were typed (ruling 5): the ``Literal`` then refused
+        such a row on every read, so the list, the get and every fire of its trigger failed. Read path tolerant, write path strict
+        (:func:`~primer.model.common.reading_a_stored_row`): a request with such a value is still refused.
+        """
+        if reading_a_stored_row(info) and value not in PARALLELISM_VALUES:
+            return "skip"
+        return value
 
 
 __all__ = [
