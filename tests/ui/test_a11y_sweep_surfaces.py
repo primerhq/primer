@@ -75,7 +75,8 @@ def test_every_platform_view_of_the_shell_is_swept_and_none_that_does_not_exist(
 def test_the_retired_views_are_no_longer_swept() -> None:
     """Workspaces left the Platform view and Setup left the grammar (Platform revamp Plan 01 Task 7): a sweep that visited them by address would land on the studio and the dashboard."""
     assert "workspaces" not in surfaces.PLATFORM_FORMS and "setup" not in surfaces.SYSTEM_VIEWS
-    assert not [name for name in surfaces.FLOORS if name.startswith(("platform-view workspaces", "platform-view templates", "system-view setup"))]
+    # (Workspace templates was pending until Plan 08 shipped its page; it is swept now: test_the_workspace_templates_page_is_swept_through_its_plus_template.)
+    assert not [name for name in surfaces.FLOORS if name.startswith(("platform-view workspaces", "system-view setup"))]
     assert "system-view setup" not in surfaces.NO_FORM
 
 
@@ -138,7 +139,7 @@ def test_the_artifact_storage_page_is_swept_through_its_register_overlay_and_no_
     assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("+ Register", surfaces.MODAL)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / + Register" in surfaces.expected_surfaces(7)
-    assert len(surfaces.expected_surfaces(7)) == 102   # 100, then the Web page and its "+ Fetcher" form (Plan 04)
+    assert len(surfaces.expected_surfaces(7)) == 104   # 100, then the Web page and its "+ Fetcher" form (Plan 04), the Workspace templates page and its "+ Template" form (Plan 08)
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:
@@ -163,7 +164,7 @@ def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> No
 def test_a_shipped_custom_page_is_swept_and_draws_what_the_sweep_waits_for() -> None:
     """Plan 04 shipped the Web page (``window.WEB_SettingsPage``), so ``web`` left ``PENDING_CUSTOM_PAGES``: the sweep opens ``view=platform:web``, waits for the custom page's frame and a
     kit card (the built-in ``local`` fetcher is always listed), and presses "+ Fetcher", the page header's action that opens the Register overlay."""
-    assert surfaces.CUSTOM_PAGES == {"web"} and not surfaces.CUSTOM_PAGES & surfaces.PENDING_CUSTOM_PAGES
+    assert surfaces.CUSTOM_PAGES == {"web", "templates"} and not surfaces.CUSTOM_PAGES & surfaces.PENDING_CUSTOM_PAGES
     assert set(_custom_pages()) == surfaces.CUSTOM_PAGES | surfaces.PENDING_CUSTOM_PAGES, "every custom page of the sidebar is either swept or pending"
     web = (ROOT / "ui" / "components" / "web-settings.jsx").read_text(encoding="utf-8")
     assert "window.WEB_SettingsPage = WEB_SettingsPage;" in web
@@ -172,6 +173,18 @@ def test_a_shipped_custom_page_is_swept_and_draws_what_the_sweep_waits_for() -> 
     assert 'data-testid={"nv-plat-page:" + props.nav}' in PLATFORM_JSX, "the frame a custom page is mounted in"
     assert surfaces.ready_selectors("platform-view", "web") == ['[data-testid="nv-plat-page:web"]', '[data-testid="nv-plat-empty"], [data-testid^="pk-card:"]']
     assert {"platform-view web", "platform-view web / + Fetcher"} <= set(surfaces.FLOORS)
+
+
+def test_the_workspace_templates_page_is_swept_through_its_plus_template() -> None:
+    """Plan 08 shipped the Workspace templates page (``window.WT_TemplatesPage``): the sweep opens ``view=platform:templates``, waits for the frame and a kit card (the built-in
+    ``local-default`` template is always listed) and presses "+ Template", the page header's action that opens the template overlay (a kit Modal)."""
+    assert _custom_pages()["templates"] == "WT_TemplatesPage"
+    templates = (ROOT / "ui" / "components" / "workspaces" / "templates.jsx").read_text(encoding="utf-8")
+    assert "window.WT_TemplatesPage = WT_TemplatesPage;" in templates
+    assert 'label: "+ Template"' in templates and "<PK_PageHeader" in templates and "<PK_Card" in templates
+    assert surfaces.PLATFORM_FORMS["templates"] == [surfaces.Form("+ Template", surfaces.MODAL)]
+    assert surfaces.ready_selectors("platform-view", "templates") == ['[data-testid="nv-plat-page:templates"]', '[data-testid="nv-plat-empty"], [data-testid^="pk-card:"]']
+    assert {"platform-view templates", "platform-view templates / + Template"} <= set(surfaces.FLOORS)
 
 
 def test_the_legacy_routes_are_the_ones_the_shell_helper_opens() -> None:

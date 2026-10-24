@@ -1065,6 +1065,149 @@ function WT_TemplateOverlay(props) {
 window.WT_FilesEditor = WT_FilesEditor;
 window.WT_TemplateOverlay = WT_TemplateOverlay;
 
+// ---- WT_TemplatesPage: Platform › Workspace templates (platform revamp Plan 08, Task 11; tests/ui/test_wt_templates_page.py, test_wt_template_verb.py) ----
+
+// A request to open the create overlay (the palette's template.create verb). The verb moves to the page and asks; the page may not be mounted yet, so the
+// request waits in a flag the page takes when it mounts, and a page that is mounted hears the `wt:create` event and takes it at once. Taken once.
+var WT_CREATE_REQUEST = { pending: false };
+
+function WT_requestCreate() {
+  WT_CREATE_REQUEST.pending = true;
+  if (typeof window.dispatchEvent === "function" && typeof Event === "function") window.dispatchEvent(new Event("wt:create"));
+}
+
+function WT_consumeCreateRequest() {
+  var pending = WT_CREATE_REQUEST.pending;
+  WT_CREATE_REQUEST.pending = false;
+  return pending;
+}
+
+// A card's Delete (design 20 Q1): ask, DELETE, say so and refresh the list; a refusal is said through the one reader. A workspace keeps the copy of its
+// template it was made from (#829), so the prompt promises nothing about existing workspaces failing, and nothing about a 409 the server never sends.
+function WT_deleteTemplate(env, row) {
+  return env.confirmDialog({
+    title: "Delete " + row.id,
+    message: "Permanently delete " + row.id + "? New workspaces can no longer be made from it; existing workspaces keep the copy of the template they were made from.",
+    confirmLabel: "Delete",
+    danger: true,
+  }).then(function (ok) {
+    if (!ok) return false;
+    return env.apiFetch("DELETE", "/workspace_templates/" + encodeURIComponent(row.id)).then(function () {
+      env.toast("Deleted " + row.id);
+      env.refetch();
+      return true;
+    }, function (e) {
+      env.toast("Delete refused: " + window.primerApi.readRefusal(e).message, { kind: "error", requestId: e && e.requestId });
+      return false;
+    });
+  });
+}
+
+var WT_NOUN = ["workspace template", "workspace templates"];
+
+// The custom Platform page of nav `templates` (seam I-2: NV_CustomPlatPage mounts it with no props, inside the frame that carries
+// nv-plat-page:templates, so its own root is wt-templates-page). Every template (WT_fetchAllTemplates), one kit card each, the filter and pager of the
+// kit, and the template overlay as local state: a card opens its template, "+ Template" (and the palette verb) a new one.
+function WT_TemplatesPage() {
+  var con = NV_useConsole();
+  var api = window.primerApi;
+  var apiFetch = api.apiFetch;
+  var isAdmin = con.role === "admin";
+  var list = api.useResource(WT_LIST_KEY, function (signal) { return WT_fetchAllTemplates(apiFetch, signal); }, { pollMs: 15000 });
+  var choicesRes = api.useResource("ws:provider-choices", function (signal) {
+    return apiFetch("GET", "/workspace_providers/_choices", null, { signal: signal });
+  }, { pollMs: 0 });
+  // The overlay: null, { create: true } or { row }.
+  var openState = React.useState(null);
+  var open = openState[0];
+  var setOpen = openState[1];
+
+  React.useEffect(function () {
+    function take() {
+      if (WT_consumeCreateRequest()) setOpen({ create: true });
+    }
+    take();
+    window.addEventListener("wt:create", take);
+    return function () { window.removeEventListener("wt:create", take); };
+  }, []);
+
+  var items = (list.data && list.data.items) || [];
+  var choices = (choicesRes.data && choicesRes.data.items) || [];
+  function choiceFor(t) {
+    return choices.filter(function (c) { return c.id === t.provider_id; })[0] || null;
+  }
+  var paged = PK_usePagedFilter(items, {
+    pageSize: 12,
+    text: function (t) { return [t.id, t.description, t.provider_id, WT_label(t, choiceFor(t)), t.backend && t.backend.image].join(" "); },
+  });
+  function openCreate() {
+    setOpen({ create: true });
+  }
+  function remove(row) {
+    WT_deleteTemplate({ confirmDialog: window.confirmDialog, apiFetch: apiFetch, toast: con.toast, refetch: list.refetch }, row);
+  }
+
+  var body;
+  if (!list.data && list.error) {
+    body = (
+      <div data-testid="wt-list-error">
+        <Banner kind="error" title="Couldn't load workspace templates" detail={api.readRefusal(list.error).message}
+          actions={<Btn size="sm" icon="refresh" data-testid="wt-retry" onClick={list.refetch}>Retry</Btn>} />
+      </div>
+    );
+  } else if (!list.data) {
+    body = <div className="nv-plat-state" role="status" data-testid="wt-loading">Loading workspace templates…</div>;
+  } else if (!paged.visible.length) {
+    var filtered = !!paged.q.trim() && items.length > 0;
+    body = (
+      <div className="nv-plat-empty" data-testid="wt-empty">
+        <div>{window.NV_emptyText(WT_NOUN, paged.q, items.length)}</div>
+        {filtered ? (
+          <button type="button" className="nv-btn-secondary" data-testid="wt-clear-filter" onClick={function () { paged.setQ(""); }}>Clear filter</button>
+        ) : (
+          <Btn kind="primary" data-testid="wt-empty-create" data-verb="template.create" onClick={openCreate}>+ Template</Btn>
+        )}
+      </div>
+    );
+  } else {
+    body = (
+      <PK_CardGrid testid="wt-grid">
+        {paged.visible.map(function (t) {
+          var reserved = WT_isReserved(t);
+          var locked = reserved || (!isAdmin && WT_heldAdminFields(t).length > 0);
+          return (
+            <PK_Card key={t.id} id={t.id} icon={{ path: WT_KIND_ICONS[WT_kindOf(t)] }} badge={reserved ? "built in" : undefined}
+              title={t.id} subtitle={t.description || undefined} facts={WT_cardFacts(t, choiceFor(t))}
+              onOpen={function () { setOpen({ row: t }); }}
+              menu={locked ? undefined : [{ label: "Delete", danger: true, testid: "wt-delete:" + t.id, onClick: function () { remove(t); } }]} />
+          );
+        })}
+      </PK_CardGrid>
+    );
+  }
+
+  return (
+    <div className="col" data-testid="wt-templates-page" style={{ gap: 16 }}>
+      <PK_PageHeader
+        title="Workspace templates"
+        count={window.NV_countText(WT_NOUN, paged.total, items.length)}
+        filter={{ value: paged.q, onChange: paged.setQ, label: "Filter workspace templates", testid: "wt-filter" }}
+        pager={{ page: paged.page, pages: paged.pages, from: paged.from, to: paged.to, total: paged.total, onPage: paged.setPage }}
+        action={{ label: "+ Template", onClick: openCreate, testid: "wt-new" }} />
+      {body}
+      {open ? (
+        <WT_TemplateOverlay key={open.create ? "new" : "row:" + open.row.id} create={!!open.create} row={open.row || null}
+          onClose={function () { setOpen(null); }} />
+      ) : null}
+    </div>
+  );
+}
+
+window.WT_requestCreate = WT_requestCreate;
+window.WT_consumeCreateRequest = WT_consumeCreateRequest;
+window.WT_deleteTemplate = WT_deleteTemplate;
+window.WT_TemplatesPage = WT_TemplatesPage;
+
 // ---- ContainerMountEditor: list of {host, container, readonly} rows.
 // Matches the ContainerMount pydantic model used by ContainerTemplateConfig
 // (host path → container mount point, optional read-only flag).

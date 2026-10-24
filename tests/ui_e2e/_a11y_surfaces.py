@@ -103,13 +103,13 @@ LEGACY_TITLES: dict[str, str] = {
     "ssp": "Providers",
 }
 
-# the custom Platform pages (seam I-2) whose component is not shipped yet: ``templates`` (Plan 08) is an id of the shell's grammar, but its nav row exists only while
-# ``window.WT_TemplatesPage`` is loaded, so the sweep has no page to open for it. The plan that ships a page removes its id from this set and adds its
-# ``PLATFORM_FORMS`` and ``FLOORS`` rows in the same PR (``tests/ui/test_a11y_sweep_surfaces.py`` holds the two together); ``web`` (Plan 04) has shipped.
-PENDING_CUSTOM_PAGES: set[str] = {"templates"}
+# the custom Platform pages (seam I-2) whose component is not shipped yet: an id of the shell's grammar whose nav row exists only while its component is loaded, so the sweep has no
+# page to open for it. The plan that ships a page moves its id from this set to CUSTOM_PAGES and adds its ``PLATFORM_FORMS`` and ``FLOORS`` rows in the same PR
+# (``tests/ui/test_a11y_sweep_surfaces.py`` holds the two together). ``web`` (Plan 04) and ``templates`` (Plan 08) have shipped.
+PENDING_CUSTOM_PAGES: set[str] = set()
 
 # the custom Platform pages that have shipped: a page of their own, not an ``NV_PLAT_PAGES`` entry, and swept like one
-CUSTOM_PAGES: set[str] = {"web"}
+CUSTOM_PAGES: set[str] = {"web", "templates"}
 
 # the Platform VIEW (view=platform:<id>: what every Platform nav row opens), one entry per id of the shell's grammar (ui/foundation/shell-url.js SH_VIEWS.platform) that is not a pending custom page
 PLATFORM_FORMS: dict[str, list[Form]] = {
@@ -120,6 +120,7 @@ PLATFORM_FORMS: dict[str, list[Form]] = {
     "collections": [Form("+ Collection", MODAL)],
     "agents": [Form("+ Agent", MODAL)],
     "graphs": [Form("+ Graph", MODAL)],
+    "templates": [Form("+ Template", MODAL)],           # the Workspace templates custom page (Plan 08): its "+ Template" opens the template overlay
     "triggers": [Form("+ Trigger", MODAL)],
     "channels": [Form("+ Channel", MODAL)],
     "harnesses": [Form("+ Harness", MODAL), Form("Build outbound", MODAL)],
@@ -280,6 +281,8 @@ FLOORS: dict[str, int] = {
     "platform-view agents / + Agent": 14,
     "platform-view graphs": 1,
     "platform-view graphs / + Graph": 2,
+    "platform-view templates": 1,                       # set by estimate, not from a run (Plan 08): the reserved local-default card's Open on a fresh install
+    "platform-view templates / + Template": 3,          # likewise: the first provider's form holds the selector, Id, Description, Files + Add, Environment + Add, commands and Advanced
     "platform-view triggers": 1,
     "platform-view triggers / + Trigger": 1,
     "platform-view channels": 1,
