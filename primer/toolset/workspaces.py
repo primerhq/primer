@@ -205,10 +205,16 @@ def _refuse_outranked(ctx: ToolContext | None, row: WorkspaceSession) -> ToolCal
     tools from a session or not (pause and interrupt: ticket 01a16d3c-a8bc). The message is fixed: it names neither the creator nor the rank. A call with no ToolContext is the MCP endpoint, a live request whose actor
     carries the account's current role, so it may always act on a session its own account or token started (``own_session``, N1); a run may not
     (a trigger-capped run carries an admin's identity at a lower rank).
+
+    A session acting on ITSELF (the calling session is ``row``) is never refused (lead ruling on the review of #904): its run executes at most at
+    the rank recorded on its row, so stopping, pausing, cancelling or resuming its own run drives nothing higher. Without this a session whose
+    creator was demoted (the row records admin, the run is capped to user) could not stop or pause itself.
     """
     from primer.authz import OUTRANKED_MESSAGE, may_drive, rank_label
     from primer.session.peer_messages import REFUSE_RANK
 
+    if ctx is not None and ctx.session_id and ctx.session_id == row.id:
+        return None
     if may_drive(_caller_principal(ctx), row.initiated_by, own_session=ctx is None):
         return None
     if ctx is not None and ctx.session_id:

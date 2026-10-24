@@ -373,8 +373,10 @@ async def test_a_persons_pause_or_stop_over_rest_reaches_a_session_only_at_or_be
     assert moved(await sessions.get("ses-p")), f"{who}'s {verb} did not land"
 
 
-#: who -> (the session's creator, the caller: a request's actor over MCP, or a run's principal from another session; whether it is accepted).
+#: who -> (the session's creator, the caller: a request's actor over MCP, or a run's principal from another session, or, for ``SELF``, from the
+#: target session itself; whether it is accepted).
 ADA_THEN = PrincipalRef(type="user", id="u-ada", display="ada", role="admin", source="local")
+SELF = "a session on itself, its creator demoted since"
 TOOL_CALLERS: dict[str, tuple[PrincipalRef, Principal | PrincipalRef, bool]] = {
     "MCP: a user on an admin's session": (ADMIN, Principal(type="user", id="u-mcp", display="mcp", role="user", source="local"), False),
     "MCP: an admin on a user's session": (USER, Principal(type="user", id="u-root", display="root", role="admin", source="local"), True),
@@ -390,6 +392,8 @@ TOOL_CALLERS: dict[str, tuple[PrincipalRef, Principal | PrincipalRef, bool]] = {
     "an admin's run on a user's session": (USER, ADMIN, True),
     "a user's run on a user's session": (USER, USER, True),
     "a run with its creator's identity at a lower rank (a trigger-capped run)": (ADA_THEN, ADA_THEN.model_copy(update={"role": "user"}), False),
+    # the review of #904: the session's OWN run, its creator demoted since (the row records admin, the run is capped to user), acts on itself
+    SELF: (ADA_THEN, ADA_THEN.model_copy(update={"role": "user"}), True),
 }
 
 
@@ -414,7 +418,7 @@ async def test_the_pause_and_interrupt_tools_reach_a_session_only_at_or_below_th
         finally:
             current_actor.reset(token)
     else:
-        ctx = ToolContext(tool_call_id="call-1", session_id="ses-a", workspace_id="ws-1", initiated_by=caller)
+        ctx = ToolContext(tool_call_id="call-1", session_id="ses-t" if who == SELF else "ses-a", workspace_id="ws-1", initiated_by=caller)
         result = await dispatch_inner_tool(provider=toolset, toolset_id=WORKSPACES_TOOLSET_ID, tool_name=tool, arguments=arguments, ctx=ctx)
     body = json.loads(result.output)
 
