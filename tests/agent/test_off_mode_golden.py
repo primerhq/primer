@@ -18,6 +18,9 @@ History of the fixture (``captured_from`` is the ``primer/`` tree hash it was ca
    ``list_my_sessions`` and ``message_session`` and the session prompt block carries the peer-messaging
    paragraph, so every turn's system prompt grew (+292 chars, +72 fixed-overhead tokens) and the markers'
    figures moved with it (turns 1 to 6; the scenario itself is untouched).
+7. re-captured for PR #859 (audit G6-C, the bounded user regexes): the workspace grep tool's description states the bounded-regex
+   rules (+26 chars), so every call's tool dump moved, the fixed overhead grew by 6 tokens (the markers' figures moved with it) and the
+   boundary turns' padding shrank by 24 chars; turn 1 and call 0 moved only by that tool dump, so their digests below moved too.
    The fixture's ``recaptures`` list says which turns moved and why.
 
 ``tests/_support/off_golden.py`` runs one scripted session through every path the budget work
@@ -53,8 +56,8 @@ from tests._support.off_golden import (
 
 FIXTURE = Path(__file__).parent / "fixtures" / "off_mode_golden.json"
 
-TURN_1_SHA256 = "3f7133e996d4392be8851775ff1e384a6893394fabc7b000eeca4293dbb8da00"
-CALL_0_SHA256 = "ebd12f094f0dbc4803801c92be08847eb05284302cb92a4d232e73950e651e8d"
+TURN_1_SHA256 = "db143a16830dc2fc1bbdbd1ba83965dcf139b18dc2d844ac9d29ffc3a1432a5b"
+CALL_0_SHA256 = "be1020d85336893f96f58cc246aae02ae88368912c76d756fdc01c80b20508d6"
 
 
 @pytest.fixture(scope="module")

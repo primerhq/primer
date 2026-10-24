@@ -149,8 +149,8 @@
     ],
     [
      "workspace__grep",
-     1878,
-     "3c281bca7c21e171"
+     1904,
+     "f754835264dd951b"
     ],
     [
      "workspace__ls",
@@ -460,8 +460,8 @@
     ],
     [
      "workspace__grep",
-     1878,
-     "3c281bca7c21e171"
+     1904,
+     "f754835264dd951b"
     ],
     [
      "workspace__ls",
@@ -708,8 +708,8 @@
     ],
     [
      "workspace__grep",
-     1878,
-     "3c281bca7c21e171"
+     1904,
+     "f754835264dd951b"
     ],
     [
      "workspace__ls",
@@ -999,8 +999,8 @@
     ],
     [
      "workspace__grep",
-     1878,
-     "3c281bca7c21e171"
+     1904,
+     "f754835264dd951b"
     ],
     [
      "workspace__ls",
@@ -1200,8 +1200,8 @@
     ],
     [
      "workspace__grep",
-     1878,
-     "3c281bca7c21e171"
+     1904,
+     "f754835264dd951b"
     ],
     [
      "workspace__ls",
@@ -1312,8 +1312,8 @@
      "parts": [
       [
        "text",
-       46568,
-       "eb568f6fa64ec148"
+       46544,
+       "b36318db09131016"
       ]
      ],
      "role": "user"
@@ -1348,8 +1348,8 @@
     ],
     [
      "workspace__grep",
-     1878,
-     "3c281bca7c21e171"
+     1904,
+     "f754835264dd951b"
     ],
     [
      "workspace__ls",
@@ -1460,8 +1460,8 @@
      "parts": [
       [
        "text",
-       46572,
-       "8415858f3c3ff86e"
+       46548,
+       "8d464fa6da69d397"
       ]
      ],
      "role": "user"
@@ -1496,8 +1496,8 @@
     ],
     [
      "workspace__grep",
-     1878,
-     "3c281bca7c21e171"
+     1904,
+     "f754835264dd951b"
     ],
     [
      "workspace__ls",
@@ -1517,8 +1517,8 @@
    ]
   }
  ],
- "captured_from": "13540abe4d68ec065c9160996c2ef659280a8220",
- "captured_from_subject": "test(e2e): two sessions in one workspace message each other",
+ "captured_from": "b0fa229739f0f32abddd1b05f13049ae003ffa61",
+ "captured_from_subject": "docs: the line scanner's final rule, owner keys and the two executors",
  "recaptures": [
   {
    "changed_turns": [
@@ -1561,6 +1561,19 @@
    "previous_captured_from": "b215bb2ab5f48caa5bef669b78b2ba49a07bf354",
    "previous_fixture_sha256": "4dfbabfa3ad0253fd7a0549de72b2f0cab749380c245268361e46cd5e914a117",
    "reason": "pivot P3 slice C (T7, T8): the workspaces toolset catalog names list_my_sessions and message_session and the session prompt block carries the peer-messaging paragraph, so every turn's system prompt grew (+292 chars, +72 fixed-overhead tokens) and the compaction markers' figures moved with it; the scenario itself is untouched"
+  },
+  {
+   "changed_turns": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "previous_captured_from": "13540abe4d68ec065c9160996c2ef659280a8220",
+   "previous_fixture_sha256": "80cc251e965097e8341222c910f7c3b17ded891b78f27d9a38b82734fc31865d",
+   "reason": "PR #859 (audit G6-C): the workspace grep tool's description now states the bounded-regex rules (+26 chars), so every call's tool dump moved, the fixed overhead grew by 6 tokens (the markers' figures moved with it) and the boundary turns' padding shrank by 24 chars; the scenario is untouched"
   }
  ],
  "turns": [
@@ -1769,7 +1782,7 @@
       "len": 120653,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "533899d040cc3c07"
+      "sha": "2157d947030dcd77"
      },
      {
       "len": 65,
@@ -1781,7 +1794,7 @@
     "markers": [
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3185,
+      "fixed_overhead_tokens": 3191,
       "kept_tail": [
        {
         "len": 76,
@@ -1815,13 +1828,13 @@
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "b6ebe312fb275ed4",
-      "tokens_after": 33254,
-      "tokens_before": 213693,
+      "tokens_after": 33260,
+      "tokens_before": 213699,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "163b4155f1794a35f59ea5b996713fe17db1413c11557fd45495caec41c40c72"
+    "sha256": "94c37d228d4badb68b381f288001df126e8075c1678e6e8972ec1da65b7d73bb"
    },
    "llm_calls": 2,
    "turn": "2-tier2-summary"
@@ -1840,7 +1853,7 @@
       "len": 584,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "ab7c7f298d7927f8"
+      "sha": "43264e22cf53ef9b"
      },
      {
       "len": 2068,
@@ -1936,7 +1949,7 @@
       "len": 6947,
       "record": "compaction_marker",
       "seq": 2,
-      "sha": "a49fde9f4b0c0490"
+      "sha": "e9ea21bb77255dfc"
      },
      {
       "len": 65,
@@ -1948,7 +1961,7 @@
     "markers": [
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3185,
+      "fixed_overhead_tokens": 3191,
       "kept_tail": [
        {
         "len": 80,
@@ -1977,7 +1990,7 @@
      },
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3185,
+      "fixed_overhead_tokens": 3191,
       "kept_tail": [
        {
         "len": 76,
@@ -2035,13 +2048,13 @@
       "seq": 2,
       "summary_len": 51,
       "summary_sha": "8c49090b2ac9e12d",
-      "tokens_after": 4809,
-      "tokens_before": 6935,
+      "tokens_after": 4815,
+      "tokens_before": 6941,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "a51a869b4e1974f9dbf0992e2bbf1b2fb38b1ad0a75362802d81c6f707539136"
+    "sha256": "d9280668967d780e5e87f65ae68b8827fc8481077f942c7f62f13b97df0e638a"
    },
    "llm_calls": 3,
    "turn": "3-overflow-replay"
@@ -2108,7 +2121,7 @@
       "len": 120589,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "05d0bbc4b8534515"
+      "sha": "21a9b4af4eea6663"
      },
      {
       "len": 76,
@@ -2132,7 +2145,7 @@
     "markers": [
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3185,
+      "fixed_overhead_tokens": 3191,
       "kept_tail": [
        {
         "len": 76,
@@ -2160,20 +2173,20 @@
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "eac741dd554ebe61",
-      "tokens_after": 33243,
-      "tokens_before": 123275,
+      "tokens_after": 33249,
+      "tokens_before": 123281,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "b51446a563c80b002ba8a1382e3fb2cc5c7334b7c739ba823ef1464aa65a7032"
+    "sha256": "5cae8fac999ac26d070aad26391549913bec0c046ebfc64941a9906248dc282b"
    },
    "llm_calls": 2,
    "turn": "4-deferred-steers"
   },
   {
    "file": {
-    "bytes": 317410,
+    "bytes": 317386,
     "lines": [
      {
       "len": 56,
@@ -2218,10 +2231,10 @@
       "sha": "5ebd4ca098b68297"
      },
      {
-      "len": 46591,
+      "len": 46567,
       "message": "user",
       "preview": "pppppppppppppppppppppppppppppppppppppppp",
-      "sha": "93b82e37b9d9d65a"
+      "sha": "18db79a8cf290158"
      },
      {
       "len": 67,
@@ -2231,7 +2244,7 @@
      }
     ],
     "markers": [],
-    "sha256": "7e91e4989084b289fad3414f1cc2c3bf3a998d6312f3a7ece315f85786fd4c8e"
+    "sha256": "b26dbc338120b2582774294078e984feefd9a334e83769f6494019ac01a4e68f"
    },
    "llm_calls": 1,
    "target_estimate": 82626,
@@ -2239,7 +2252,7 @@
   },
   {
    "file": {
-    "bytes": 317414,
+    "bytes": 317390,
     "lines": [
      {
       "len": 56,
@@ -2284,10 +2297,10 @@
       "sha": "5ebd4ca098b68297"
      },
      {
-      "len": 46595,
+      "len": 46571,
       "message": "user",
       "preview": "pppppppppppppppppppppppppppppppppppppppp",
-      "sha": "b246bc176a12d4d2"
+      "sha": "50d3bbc9cff00610"
      },
      {
       "len": 67,
@@ -2297,7 +2310,7 @@
      }
     ],
     "markers": [],
-    "sha256": "ab48b7ab8f8d99f3a2b1a05da3bf1f9fcb0966223833ec951bf0c0197764af42"
+    "sha256": "392f61fde9f7940bdfbc583057633978a549a7fd98fd7cb6c8af5f31c2786b79"
    },
    "llm_calls": 1,
    "target_estimate": 82627,
