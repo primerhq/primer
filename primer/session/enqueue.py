@@ -38,8 +38,11 @@ from typing import Any, Literal
 from pydantic_core import to_jsonable_python
 
 from primer.int.claim import ClaimKind
+from primer.model.chat import TextPart
 from primer.model.except_ import ConflictError, NotFoundError, PrimerError
 from primer.model.workspace_session import (
+    CANVAS_DIGEST_PAYLOAD_KEY,
+    CANVAS_EVENT_PAYLOAD_KEY,
     MACHINE_ATTRIBUTION_KEY,
     PEER_PAYLOAD_KEY,
     PeerAttribution,
@@ -76,6 +79,65 @@ def queued_attribution(peer: PeerAttribution | None, *, by_a_person: bool) -> di
     if not by_a_person:
         return {MACHINE_ATTRIBUTION_KEY: True}
     return None
+
+
+def _delivered_canvas_event(extra_payload: dict | None) -> dict | None:
+    """The canvas click a wake delivers (pivot P5): ``extra_payload["canvas_event"]``, the event without what the user entered."""
+    found = extra_payload.get(CANVAS_EVENT_PAYLOAD_KEY) if isinstance(extra_payload, dict) else None
+    return found if isinstance(found, dict) else None
+
+
+def _attribution_to_queue(peer: PeerAttribution | None, *, by_a_person: bool, extra_payload: dict | None) -> dict | None:
+    """What a routed message this wake queues instead of writing carries (:func:`queued_attribution`), plus the canvas click it delivers, so
+    the drain that realizes it later hands the click back (``realize_next_pending``) and marks it read then, not now."""
+    attribution = queued_attribution(peer, by_a_person=by_a_person)
+    delivered = _delivered_canvas_event(extra_payload)
+    if delivered is None:
+        return attribution
+    return {**(attribution or {}), CANVAS_EVENT_PAYLOAD_KEY: delivered}
+
+
+def _queueable(extra_payload: dict | None) -> bool:
+    """Whether a queued message can carry ``extra_payload``: none, or only the canvas click (its attribution holds it)."""
+    return not extra_payload or set(extra_payload) == {CANVAS_EVENT_PAYLOAD_KEY}
+
+
+async def _canvas_digest(deps: "SessionWakeDeps", session_id: str, extra_payload: dict | None) -> Any:
+    """The canvas changes the agent has not read, to ride the instruction this wake writes (pivot P5, plan Decision 9), or ``None``.
+
+    The click this wake delivers is left out (it is the instruction). Session core reaches the canvas lazily, and a canvas never fails a
+    wake: any failure is logged and the wake goes on without a digest.
+    """
+    try:
+        from primer.canvas.delivery import canvas_digest_for
+
+        delivered = _delivered_canvas_event(extra_payload)
+        exclude = delivered.get("id") if delivered is not None else None
+        return await canvas_digest_for(
+            deps.storage_provider, session_id, exclude_event_id=exclude if isinstance(exclude, str) else None,
+        )
+    except Exception:  # noqa: BLE001 -- the canvas is advisory to a wake
+        logger.warning("canvas digest skipped for %s", session_id, exc_info=True)
+        return None
+
+
+async def _mark_canvas_read(deps: "SessionWakeDeps", session_id: str, digest: Any, extra_payload: dict | None) -> None:
+    """Mark read the canvas events this wake handed the agent, and no other (audit G8-07): the digest's lines and the click it delivers
+    (the lead's ruling on #795, so a later ``canvas_get`` or ``canvas_wait`` does not return it again). Best effort: an event left unread
+    is listed again by the next digest, which is the safe way to fail."""
+    seqs = list(digest.seqs) if digest is not None else []
+    delivered = _delivered_canvas_event(extra_payload)
+    seq = delivered.get("seq") if delivered is not None else None
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        seqs.append(seq)
+    if not seqs:
+        return
+    try:
+        from primer.canvas.delivery import mark_delivered
+
+        await mark_delivered(deps.storage_provider, session_id, seqs)
+    except Exception:  # noqa: BLE001 -- the instruction is written; the marks are advisory
+        logger.warning("canvas events %s of session %s stayed unread", seqs, session_id, exc_info=True)
 
 
 @dataclass
@@ -221,6 +283,19 @@ async def wake_session(
     hold below stores one. A wake that lands no instruction leaves the hop
     count alone.
 
+    The canvas (pivot P5): an instruction this wake writes carries the
+    canvas changes the agent has not read as one more text part (the
+    ``<canvas_changes>`` digest, ``primer.canvas.delivery``), and the
+    USER_INPUT record keeps them as ``payload["canvas_digest"]``.
+    ``extra_payload["canvas_event"]`` says the instruction IS a canvas click
+    (its ``<canvas_event>`` block); it is left out of the digest, and a
+    routed wake may still queue it (the queued message's attribution holds
+    it). Once the instruction is written the wake marks read the digest's
+    events and that click, and no other (audit G8-07); a message this wake
+    queues instead keeps the click, to be marked when it is realized.
+    Neither the digest nor the marks ever fail the wake: a canvas that
+    cannot be read or written is logged and skipped.
+
     ``human_intent`` (01a08c08, REQUIRED, no default on purpose): does a
     live human's decision to re-engage stand behind THIS wake? True for
     the console steer endpoint and a channel thread reply. False for a
@@ -295,13 +370,14 @@ async def wake_session(
     sent_by_a_person = human_intent if by_a_person is None else by_a_person
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
     # A plain text instruction from a routed caller can wait in the pending queue, so the open turn is decided for it here (see the docstring).
-    # Calls carrying per-turn tools or attachment parts stay on their existing path: PendingSessionMessage cannot represent those payloads.
+    # Calls carrying per-turn tools or attachment parts stay on their existing path: PendingSessionMessage cannot represent those payloads. A
+    # canvas click (pivot P5) can: its attribution holds the event.
     routed = (
         receipt is not None
         and bool(instruction)
         and external_tools is None
         and not extra_parts
-        and not extra_payload
+        and _queueable(extra_payload)
     )
     # A wake that reopens an ENDED session starts its next invocation with this message, whatever an earlier invocation left queued (the turn
     # boundary after it realizes that): an ended session is always woken (route_steer).
@@ -363,7 +439,7 @@ async def wake_session(
                         if routed:
                             return await _defer_routed(
                                 deps, row=row, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
-                                receipt=receipt, queued_message_id=queued_message_id,
+                                receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload,
                             )
                         continue
                     done = await _reopen_ended_locked(
@@ -461,7 +537,7 @@ async def wake_session(
                     if route_steer(row, queued=queued) == ROUTE_PENDING:
                         return await _defer_routed(
                             deps, row=row, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
-                            receipt=receipt, queued_message_id=queued_message_id,
+                            receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload,
                         )
 
                 if not instruction:
@@ -494,7 +570,7 @@ async def wake_session(
                     )
                 return await _defer_routed(
                     deps, row=fresh, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
-                    receipt=receipt, queued_message_id=queued_message_id,
+                    receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload,
                 )
 
             # 1. Append the user message to the on-disk slot FIFO (the queue) and
@@ -510,6 +586,13 @@ async def wake_session(
             user_input_seq: int | None = None
             if instruction:
                 ws = await deps.workspace_registry.get_workspace(workspace_id)
+                # The canvas changes the agent has not read ride this instruction as one more text part (pivot P5, plan Decision 9), and the
+                # record keeps what they were (without what the user entered). The pause hold above writes no instruction, so a held message
+                # gets its digest when it is realized.
+                digest = await _canvas_digest(deps, session_id, extra_payload)
+                if digest is not None:
+                    extra_parts = [*(extra_parts or []), TextPart(text=digest.text)]
+                    extra_payload = {**(extra_payload or {}), CANVAS_DIGEST_PAYLOAD_KEY: digest.payload}
                 # get_workspace() itself is already defended against a
                 # concurrently-destroyed workspace (WorkspaceRegistry.get_workspace
                 # / the local backend's _reattach both degrade a gone/mid-teardown
@@ -553,6 +636,7 @@ async def wake_session(
                     # the queue) while it is still queued and deliver it a second time (review N4). Were the promotion to fail from here, the
                     # message is in the log and the turn this wake holds is promoted or healed with it (see the ``finally``).
                     await _take_off_the_queue(deps.storage_provider, queued_message_id)
+                await _mark_canvas_read(deps, session_id, digest, extra_payload)
 
             # 2. Re-arm the scheduler-visible row: claimable + clear pause;
             #    CREATED/PAUSED/WAITING advance to RUNNING (like /resume).
@@ -726,9 +810,11 @@ async def _defer_routed(
     open_turn: str,
     receipt: SessionWakeReceipt,
     queued_message_id: str | None,
+    extra_payload: dict | None = None,
 ) -> WorkspaceSession:
     """The routed message waits: the turn is open, or older messages are queued. ``skip`` drops it; a message the drain is realizing stays where
-    it is in the queue; any other is stored at the back of the queue, carrying its sender (``queued_attribution``)."""
+    it is in the queue; any other is stored at the back of the queue, carrying its sender (``queued_attribution``) and the canvas click it is
+    (pivot P5)."""
     if queued_message_id is not None:
         receipt.outcome = "queued"
         return row
@@ -743,7 +829,7 @@ async def _defer_routed(
         text=instruction,
         workspace_registry=deps.workspace_registry,
         event_bus=deps.event_bus,
-        attribution=queued_attribution(peer, by_a_person=by_a_person),
+        attribution=_attribution_to_queue(peer, by_a_person=by_a_person, extra_payload=extra_payload),
     )
     receipt.outcome = "queued"
     return row
