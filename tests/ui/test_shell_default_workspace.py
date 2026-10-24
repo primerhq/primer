@@ -67,9 +67,10 @@ def test_the_pick_is_exported_and_used_by_the_default_effect() -> None:
 # The plan's lead ruling 3 (pivot P2): each user has their own main operator session in the default workspace, made on demand by
 # POST /v1/workspaces/{id}/main_session (created as the caller, so it runs at the caller's rank; the same row on every later call). When the address
 # named no workspace and no document, the shell has picked the default workspace and the tab groups are still empty once the per-user working set is
-# restored, it asks for that session and opens it as a tab. NV_useMainSessionOpen is the hook; it is sliced out of nv-shell.jsx with the helpers it
-# reads and run under the hook runtime of tests/ui/_mini_react.py, mounted by a one-line component, so each test drives it through the states the
-# shell would hand it.
+# restored, it asks for that session, and it opens it as a tab only when the answer says this call CREATED it (`created: true`): the user's genuine
+# first login, never a later load (the S7 follow-up ruling). A refused call opens nothing and says nothing. NV_useMainSessionOpen is the hook; it is
+# sliced out of nv-shell.jsx with the helpers it reads and run under the hook runtime of tests/ui/_mini_react.py, mounted by a one-line component, so
+# each test drives it through the states the shell would hand it.
 
 UI = ROOT / "ui"
 
@@ -82,7 +83,8 @@ var CALLS = [];
 var TOASTS = [];
 var STAMPS = [];
 var PENDING = null;
-var REPLY = { ok: { id: "sess-prime-main-1", name: "main", workspace_id: "prime", binding: { kind: "agent", agent_id: "operator" }, status: "created" } };
+var ROW = { id: "sess-prime-main-1", name: "main", workspace_id: "prime", binding: { kind: "agent", agent_id: "operator" }, status: "created" };
+var REPLY = { ok: Object.assign({ created: true }, ROW) };
 window.primerApi.apiFetch = function (method, path, body) {
   CALLS.push([method, path, body]);
   if (REPLY.pending) return new Promise(function (resolve, reject) { PENDING = { resolve: resolve, reject: reject }; });
@@ -118,6 +120,7 @@ function tabIds() {
 def hook():
     from tests.ui._mini_react import mini_react_context
 
+    # NV_toastPayload rides along although the hook no longer toasts: a toast that crept back must reach TOASTS, not die on a ReferenceError.
     code = "\n".join(_function(n) for n in ("NV_toastPayload", "NV_flaggedWid", "NV_hasNoTab", "NV_useMainSessionOpen"))
     ctx = mini_react_context(code, _HOOK_PRELUDE)
 
@@ -141,12 +144,22 @@ def hook():
         ctx.close()
 
 
-def test_the_first_load_opens_the_callers_main_session(hook) -> None:
+def test_the_first_login_opens_the_main_session_the_call_created(hook) -> None:
     hook.mount()
     assert hook.js("CALLS") == [["POST", "/workspaces/prime/main_session", None]]
     assert hook.js("tabIds()") == ["session:sess-prime-main-1 (preview)"]
     assert hook.js("STAMPS") == [["sess-prime-main-1", {"wid": "prime", "name": "main", "binding": {"kind": "agent", "agent_id": "operator"}}]]
     assert hook.js("TOASTS") == []
+
+
+@pytest.mark.parametrize("answer", ["Object.assign({ created: false }, ROW)", "ROW", "Object.assign({ created: 'yes' }, ROW)"])
+def test_a_main_session_the_call_did_not_create_opens_nothing(hook, answer) -> None:
+    """A later load (the user already has their main session), a server that says nothing, or anything but ``true``: no tab, no toast."""
+    hook.run(f"REPLY = {{ ok: {answer} }}")
+    hook.mount()
+    hook.rerender()
+    assert len(hook.js("CALLS")) == 1
+    assert hook.js("tabIds()") == [] and hook.js("STAMPS") == [] and hook.js("TOASTS") == []
 
 
 def test_it_asks_once_per_page_load(hook) -> None:
@@ -196,7 +209,7 @@ def test_a_navigation_before_the_answer_drops_it(hook) -> None:
     hook.run("REPLY = { pending: true }")
     hook.mount()
     assert len(hook.js("CALLS")) == 1
-    hook.run("NAV.current = true; PENDING.resolve({ id: 'sess-prime-main-1', name: 'main' })")
+    hook.run("NAV.current = true; PENDING.resolve(Object.assign({ created: true }, ROW))")
     hook.rerender()
     assert hook.js("tabIds()") == [] and hook.js("STAMPS") == []
 
@@ -205,7 +218,7 @@ def test_another_workspace_selected_before_the_answer_drops_it(hook) -> None:
     hook.run("REPLY = { pending: true }")
     hook.mount()
     hook.rerender('{ wid: "a" }')
-    hook.run("PENDING.resolve({ id: 'sess-prime-main-1', name: 'main' })")
+    hook.run("PENDING.resolve(Object.assign({ created: true }, ROW))")
     assert hook.js("tabIds()") == []
 
 
@@ -213,23 +226,20 @@ def test_a_tab_opened_before_the_answer_is_kept(hook) -> None:
     hook.run("REPLY = { pending: true }")
     hook.mount()
     hook.run('MODEL = TG_openTab(MODEL, { kind: "file", ref: "notes.md" }, {})')
-    hook.run("PENDING.resolve({ id: 'sess-prime-main-1', name: 'main' })")
+    hook.run("PENDING.resolve(Object.assign({ created: true }, ROW))")
     assert hook.js("tabIds()") == ["file:notes.md (preview)"]
 
 
-def test_a_refusal_is_told_in_the_consoles_words(hook) -> None:
+def test_a_refused_call_opens_nothing_and_says_nothing(hook) -> None:
+    """The open is a landing nicety, not something the person asked for: a refusal leaves the console as it is, with no toast."""
     hook.run(
         "REPLY = { err: { status: 404, detail: \"Agent 'operator' does not exist\", requestId: 'req-main', "
         "envelope: { detail: \"Agent 'operator' does not exist\", extensions: { code: 'not_found' } } } }"
     )
     hook.mount()
-    [toast] = hook.js("TOASTS")
-    assert toast == {
-        "kind": "error",
-        "text": "Couldn't open your main session in prime: Agent 'operator' does not exist",
-        "requestId": "req-main",
-    }
-    assert hook.js("tabIds()") == []
+    hook.rerender()
+    assert len(hook.js("CALLS")) == 1
+    assert hook.js("TOASTS") == [] and hook.js("tabIds()") == [] and hook.js("STAMPS") == []
 
 
 def test_the_shell_wires_the_hook_without_a_history_entry() -> None:

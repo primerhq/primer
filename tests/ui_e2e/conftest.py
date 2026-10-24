@@ -142,6 +142,27 @@ def install_is_set_up(base_url: str) -> None:
         )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def main_session_exists(base_url: str, install_is_set_up: None) -> None:
+    """Make the test user's main operator session before any journey loads the console (pivot P2 Task 14, lead ruling).
+
+    The console opens a user's main session in the default workspace on their first login only: an empty-address load asks
+    ``POST /v1/workspaces/{id}/main_session``, and opens the answer as a tab only when it says ``created: true``. This server runs
+    with auth disabled, so every journey is the same user, and the first journey of a run would otherwise meet that open (a session
+    tab in its studio, a full-screen session on a phone). Asking here first, over REST, makes every console load answer
+    ``created: false``. Once per run on each xdist worker; the route answers the same row every time.
+    ``tests/ui_e2e/test_prime_workspace_journey.py`` plays a first login on purpose.
+    """
+    import httpx as _httpx
+
+    from tests._support.default_workspace import default_workspace_id_sync
+
+    wid = default_workspace_id_sync(base_url)
+    with _httpx.Client(base_url=base_url, timeout=60.0) as c:
+        r = c.post(f"/v1/workspaces/{wid}/main_session")
+    assert r.status_code in (200, 201), f"could not make the test user's main session in {wid}: {r.status_code} {r.text}"
+
+
 # ---------------------------------------------------------------------------
 # LAN-reachable mock LLM (container stacks sit in their own network
 # namespace - a 127.0.0.1-bound mock, like tests/_support/mock_llm_

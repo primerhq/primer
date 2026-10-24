@@ -185,13 +185,14 @@ function NV_hasNoTab(model) {
   return !model || !model.groups || model.groups.every(function (g) { return !g.tabs || !g.tabs.length; });
 }
 
-// The first load lands in the caller's main session (pivot P2 Task 14). Each user has their own main operator session in the default workspace, made on
+// A user's first login lands in their main session (pivot P2 Task 14). Each user has their own main operator session in the default workspace, made on
 // demand by POST /v1/workspaces/{id}/main_session as the caller (the plan's lead ruling 3: it runs at the caller's rank, and every later call answers the
-// same row). This asks for it and opens it as a tab when the address named no workspace and no document, the shell has picked the FLAGGED default workspace
-// (the route makes a session, so it is never asked of the first-listed fallback), and the tab groups are still empty once the per-user working set is
-// restored (env.ready). It asks once per page load, and opens nothing if, by the time the answer comes, the person has navigated (env.navigatedRef: a link,
-// Back, a verb), selected another workspace or opened a tab. The open is landing state, not a navigation: no history entry, so the URL write replaces. A
-// refused call is said in a toast, in the words of window.primerApi.readRefusal. The phone shell shares this state, so it lands there too.
+// same row). This asks for it when the address named no workspace and no document, the shell has picked the FLAGGED default workspace (the route makes a
+// session, so it is never asked of the first-listed fallback), and the tab groups are still empty once the per-user working set is restored (env.ready),
+// and opens it as a tab only when the answer says this call CREATED it (created: true): the user's genuine first login, never a later empty-address load.
+// It asks once per page load, and opens nothing if, by the time the answer comes, the person has navigated (env.navigatedRef: a link, Back, a verb),
+// selected another workspace or opened a tab. The open is landing state, not a navigation: no history entry, so the URL write replaces. A refused call
+// opens nothing and says nothing (nobody asked for it). The phone shell shares this state, so it lands there too.
 function NV_useMainSessionOpen(env) {
   var askedRef = React.useRef(false);
   var liveRef = React.useRef(env);
@@ -206,26 +207,17 @@ function NV_useMainSessionOpen(env) {
     if (!env.ready || !target || !env.wid) return;
     askedRef.current = true;
     if (env.wid !== target || env.navigatedRef.current || !NV_hasNoTab(env.tgModel)) return;
-    var row = (env.wsItems || []).filter(function (w) { return w && w.id === target; })[0];
-    var label = (row && row.name) || target;
-    function untouched() {
-      var live = liveRef.current;
-      return live.wid === target && !live.navigatedRef.current;
-    }
     window.primerApi.apiFetch("POST", "/workspaces/" + encodeURIComponent(target) + "/main_session", null).then(function (session) {
       var sid = session && session.id;
-      if (!sid || !untouched()) return;
+      if (!sid || session.created !== true) return;
       var live = liveRef.current;
+      if (live.wid !== target || live.navigatedRef.current) return;
       live.stampSessionMeta(sid, { wid: target, name: session.name, binding: session.binding });
       live.setTgModel(function (m) {
         return NV_hasNoTab(m) ? window.TG_openTab(m, { kind: "session", ref: sid }, {}) : m;
       });
-    }, function (e) {
-      if (!untouched()) return;
-      window.primerApi.toastPush(NV_toastPayload(
-        "Couldn't open your main session in " + label + ": " + window.primerApi.readRefusal(e).message,
-        { kind: "error", requestId: e && e.requestId }
-      ));
+    }, function () {
+      // Nothing to say: the person did not ask for this, and the console stays as it is.
     });
   }, [env.ready, env.wid, target, env.initialWid, env.initialDoc, env.tgModel]);
 }
