@@ -852,10 +852,11 @@ async def _stamp_saved_probe(providers: Any, row: Any, *, at: datetime, ok: bool
 
     The probe can run for seconds (Ollama asks ``/api/show`` once per model), and the stamp used to write back the whole row
     read BEFORE it: an edit saved meanwhile (a rotated key, a new URL, new limits) was reverted, behind the cached adapter's
-    back. A field-scoped ``patch_if`` leaves every other field as it is now. It is guarded on the provider kind the probe ran
-    against, so a row whose kind was changed meanwhile is not stamped with a probe of the old one; a row deleted meanwhile is
-    not stamped at all. Both routes that probe a saved row reach this: ``GET /llm_providers/{id}/discovered_models`` and the
-    system tool ``fetch_llm_provider_models``.
+    back. A field-scoped ``patch_if`` leaves every other field as it is now. It is guarded on what the probe ran against: the
+    provider kind, and the config's ``url`` where the config has one (ticket 01a16b64 R4), so a row whose kind or URL was
+    changed meanwhile is not stamped with a probe of the old one (the URL is compared as stored, credentials included, and the
+    drift tripwire logs the guarded field names only); a row deleted meanwhile is not stamped at all. Both routes that probe a
+    saved row reach this: ``GET /llm_providers/{id}/discovered_models`` and the system tool ``fetch_llm_provider_models``.
     """
     from primer.model.except_ import NotFoundError
     from primer.storage import raw_generation
@@ -864,13 +865,17 @@ async def _stamp_saved_probe(providers: Any, row: Any, *, at: datetime, ok: bool
     stamp = row.model_copy(update={"last_probe_at": at, "last_probe_ok": ok, "last_error": error}).model_dump(
         mode="json", include=set(_PROBE_STAMP_FIELDS),
     )
+    where: dict[Any, list[Any]] = {"provider": [raw_generation(row, "provider")]}
+    config = raw_generation(row, "config")
+    if isinstance(config, dict) and "url" in config:
+        where[("config", "url")] = [config["url"]]
     try:
-        written = await patch_if_checked(providers, row.id, stamp, where={"provider": [raw_generation(row, "provider")]})
+        written = await patch_if_checked(providers, row.id, stamp, where=where)
     except NotFoundError:
         logger.info("LLMProvider %s was deleted while it was probed; the probe is not stamped", row.id)
         return
     if written is None:
-        logger.info("LLMProvider %s changed kind while it was probed; the probe is not stamped", row.id)
+        logger.info("LLMProvider %s changed kind or URL while it was probed; the probe is not stamped", row.id)
 
 
 def _unwrap_secrets(value: Any) -> Any:

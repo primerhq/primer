@@ -537,7 +537,17 @@ class TestTheProbeStampWritesOnlyItsOwnFields:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("outcome", ["ok", "refused"])
-    async def test_a_put_that_lands_during_the_probe_survives_it(self, tmp_path, monkeypatch, outcome) -> None:
+    @pytest.mark.parametrize("kind, config, rotated", [
+        ("openchat", {"url": "http://same.example/v1", "flavor": "other", "api_key": "sk-OLD-0000"},
+         {"url": "http://same.example/v1", "flavor": "other", "api_key": "sk-NEW-9999"}),
+        # A url with a password is compared as stored (the real password, not the mask a GET serves), so it still matches.
+        ("ollama", {"url": "http://probe:s3cret@same.example:11434", "api_key": "sk-OLD-0000"},
+         {"url": "http://probe:s3cret@same.example:11434", "api_key": "sk-NEW-9999"}),
+        # No url in the config: the guard is on the kind alone.
+        ("anthropic", {"api_key": "sk-ant-OLD-0000"}, {"api_key": "sk-ant-NEW-9999"}),
+    ], ids=["with-url", "with-credentialed-url", "without-url"])
+    async def test_a_put_that_lands_during_the_probe_survives_it(self, tmp_path, monkeypatch, outcome, kind, config, rotated) -> None:
+        """A rotated key and new limits saved while the probe is out are kept, and the probe's outcome is stamped beside them."""
         import asyncio
 
         from primer.api.routers import providers as provider_routes
@@ -556,28 +566,68 @@ class TestTheProbeStampWritesOnlyItsOwnFields:
 
         monkeypatch.setattr(provider_routes, "_dispatch_llm_probe", _held_probe)
         try:
-            body = {
-                "id": "held", "provider": "openchat", "limits": {"max_concurrency": 4},
-                "config": {"url": "http://old.example/v1", "flavor": "other", "api_key": "sk-OLD-0000"},
-            }
+            body = {"id": "held", "provider": kind, "limits": {"max_concurrency": 4}, "config": config}
             assert (await client.post("/v1/llm_providers", json=body)).status_code == 201
             probe = asyncio.create_task(client.get("/v1/llm_providers/held/discovered_models"))
             await asyncio.wait_for(started.wait(), 5)
-            edited = {**body, "limits": {"max_concurrency": 9},
-                      "config": {"url": "http://new.example/v1", "flavor": "other", "api_key": "sk-NEW-9999"}}
-            put = await client.put("/v1/llm_providers/held", json=edited)
+            put = await client.put("/v1/llm_providers/held", json={**body, "limits": {"max_concurrency": 9}, "config": rotated})
             assert put.status_code == 200, put.text
             release.set()
             r = await asyncio.wait_for(probe, 5)
             assert r.status_code == (200 if outcome == "ok" else 400), r.text
 
             row = await sp.get_storage(LLMProvider).get("held")
-            assert row.config.api_key.get_secret_value() == "sk-NEW-9999"
-            assert str(row.config.url) == "http://new.example/v1"
+            assert row.config.api_key.get_secret_value() == rotated["api_key"]
             assert row.limits.max_concurrency == 9
             assert row.last_probe_at is not None
             assert row.last_probe_ok is (outcome == "ok")
             assert (row.last_error is None) if outcome == "ok" else ("upstream said no" in row.last_error)
+        finally:
+            await client.aclose()
+            await sp.aclose()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["ok", "refused"])
+    @pytest.mark.parametrize("kind, flavor", [("openchat", "other"), ("ollama", None)])
+    async def test_a_url_change_during_the_probe_is_not_stamped(self, tmp_path, monkeypatch, outcome, kind, flavor) -> None:
+        """Ticket 01a16b64 R4: the probe ran against the OLD url, so its outcome says nothing about the new one. The stamp is guarded
+        on the config's url as well as the kind: the edit is kept whole and the row keeps the probe state it had (none here)."""
+        import asyncio
+
+        from primer.api.routers import providers as provider_routes
+        from primer.model.except_ import BadRequestError
+        from primer.model.provider import LLMProvider
+
+        sp, client = await self._app_on_sqlite(tmp_path)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def _held_probe(provider: str, config: dict) -> dict:
+            started.set()
+            await release.wait()
+            if outcome == "refused":
+                raise BadRequestError("upstream said no")
+            return {"models": [{"name": "m-1"}]}
+
+        def _config(url: str) -> dict:
+            return {"url": url, **({"flavor": flavor} if flavor else {})}
+
+        monkeypatch.setattr(provider_routes, "_dispatch_llm_probe", _held_probe)
+        try:
+            body = {"id": "moved", "provider": kind, "limits": {"max_concurrency": 4}, "config": _config("http://old.example:8000/v1")}
+            assert (await client.post("/v1/llm_providers", json=body)).status_code == 201
+            probe = asyncio.create_task(client.get("/v1/llm_providers/moved/discovered_models"))
+            await asyncio.wait_for(started.wait(), 5)
+            put = await client.put("/v1/llm_providers/moved", json={**body, "limits": {"max_concurrency": 9},
+                                                                    "config": _config("http://new.example:8000/v1")})
+            assert put.status_code == 200, put.text
+            release.set()
+            r = await asyncio.wait_for(probe, 5)
+            assert r.status_code == (200 if outcome == "ok" else 400), r.text
+
+            row = await sp.get_storage(LLMProvider).get("moved")
+            assert str(row.config.url) == "http://new.example:8000/v1"
+            assert row.limits.max_concurrency == 9
+            assert (row.last_probe_at, row.last_probe_ok, row.last_error) == (None, False, None)
         finally:
             await client.aclose()
             await sp.aclose()
