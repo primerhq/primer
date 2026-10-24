@@ -200,7 +200,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # Batteries-included image: every optional backend (huggingface,
-      # docling, lance, channels, docker, kubernetes). This moves to the
+      # docling, lance, channels, docker, kubernetes, s3). This moves to the
       # -full suffix; the unsuffixed tags now point at slim. The old -fat
       # aliases are kept one release cycle so existing pulls keep working.
       - name: Build + push primer (full)
