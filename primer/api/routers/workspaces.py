@@ -1240,13 +1240,16 @@ async def delete_workspace(
 
     Destroying a workspace ends every open session in it, so the caller must be allowed to act on each of them, by the rank rule of the cancel
     route (:func:`primer.api.routers._session_rank.refuse_outranked`): 403 ``forbidden_rank`` while one of them runs at a higher rank than the
-    caller, and nothing is torn down (review of #870, F3).
+    caller, and nothing is torn down (review of #870, F3). ``destroy`` runs the scan once the workspace is marked as being destroyed, so a session
+    start from then on is refused (review of #874, D1).
     """
-    if workspace_id != await resolve_default_workspace_id(sp):
+
+    async def _rank_scan() -> None:
         async for row in open_sessions_on(sp, workspace_id):
             refuse_outranked(request, row)
+
     try:
-        await registry.destroy(workspace_id)
+        await registry.destroy(workspace_id, before_teardown=_rank_scan)
     except ReservedWorkspaceError as exc:
         # The convention of the reserved-id guards above: a bare HTTPException whose detail mapping becomes the envelope's
         # extensions, so a client reads ``extensions.error`` the same way for every "this is protected" refusal.

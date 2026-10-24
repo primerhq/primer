@@ -314,6 +314,14 @@ def _restore_template_secrets(entity: WorkspaceTemplate, existing: WorkspaceTemp
 _CARRIED_ON: set[asyncio.Task] = set()
 
 
+class _Refused(Exception):
+    """A refusal raised out of a step run inside another call (the rank scan ``destroy`` runs before its teardown), carrying the tool's answer."""
+
+    def __init__(self, result: ToolCallResult) -> None:
+        super().__init__(result.output)
+        self.result = result
+
+
 async def _carry_on(work: Awaitable[Any], *, what: str) -> Any:
     """Await ``work`` as its own task that runs to its end even when the caller is cancelled.
 
@@ -1703,12 +1711,11 @@ def build_workspaces_toolset(
         """``forbidden`` when an open session in ``workspace_id`` ranks above the caller, else ``None`` (review of #870, F3).
 
         Deleting a workspace ends every open session in it (``workspace_lost``), so it acts on each of them as a cancel does, and follows the cancel
-        tool's rank rule for each (:func:`_refuse_outranked`, in its words: a session's refusal from a session, the fixed message with none). The
-        default workspace is left to ``destroy``'s own refusal, which comes first. Asked after the reach check, so an out-of-reach workspace is
-        still answered as an unknown one.
+        tool's rank rule for each (:func:`_refuse_outranked`, in its words: a session's refusal from a session, the fixed message with none). Run by
+        ``destroy`` itself (``before_teardown``, review of #874 D1), after its default-workspace refusal and once the workspace is marked as being
+        destroyed, so a session start from then on is refused. Asked after the reach check, so an out-of-reach workspace is still answered as an
+        unknown one.
         """
-        if workspace_id == await _default_workspace_id():
-            return None
         async for row in open_sessions_on(storage_provider, workspace_id):
             refusal = _refuse_outranked(ctx, row)
             if refusal is not None:
@@ -1724,12 +1731,18 @@ def build_workspaces_toolset(
         refusal = await _out_of_reach(ctx, args.id)
         if refusal is not None:
             return refusal
-        refusal = await _refuse_outranked_in_workspace(ctx, args.id)
-        if refusal is not None:
-            return refusal
+
+        async def _rank_scan() -> None:
+            outranked = await _refuse_outranked_in_workspace(ctx, args.id)
+            if outranked is not None:
+                raise _Refused(outranked)
+
         try:
             # Carried to its end if this call is cancelled: destroy() is the instance, its sessions, then the row.
-            await _carry_on(workspace_registry.destroy(args.id), what=f"delete_workspace {args.id}")
+            await _carry_on(workspace_registry.destroy(args.id, before_teardown=_rank_scan), what=f"delete_workspace {args.id}")
+        except _Refused as exc:
+            # A higher-rank session is open in the workspace: nothing was torn down (review of #870 F3, #874 D1).
+            return exc.result
         except ReservedWorkspaceError as exc:
             # The default workspace (prime) is never deleted; destroy() refuses it before touching anything. Before the generic
             # PrimerError branch below, which would call a refusal a backend failure.
