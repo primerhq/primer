@@ -129,18 +129,30 @@ A `Subscription` row:
   recorded.
 
 From a session outside the default workspace (prime),
-`trigger::create_subscription`, `trigger::update_subscription` and
-`system::create_channel_binding` accept only a config that names your
-own workspace (`agent_fresh_session`, `graph_fresh_session`) or a
-session in it (`session_append`). Any other target, and a target that
-does not exist, answers `type=not-found` in the words of a target that
-does not exist (`Workspace '<id>' does not exist`, or
+`trigger::create_subscription` and `system::create_channel_binding`
+accept only a config that names your own workspace
+(`agent_fresh_session`, `graph_fresh_session`) or a session in it
+(`session_append`). Any other target, and a target that does not
+exist, answers `type=not-found` in the words of a target that does
+not exist (`Workspace '<id>' does not exist`, or
 `Session '<id>' does not exist in this workspace`), and nothing is
-stored. From prime, and with no calling session, every workspace is
-reachable. Every fire checks the recorded `reach` again: a target
-outside it is refused with `error_code` `target_out_of_reach` (a failed
-delivery, shown in the subscription's `last_fire_error` and a
-`trigger.delivery_failed` event), and no session is started or fed.
+stored. `trigger::update_subscription` on a subscription whose target
+is outside your reach answers `type=subscription_not_found`, exactly
+as an unknown subscription id, and changes nothing. From prime, and
+with no calling session, every workspace is reachable. Every fire
+checks the recorded `reach` again: a target outside it is refused with
+`error_code` `target_out_of_reach` (a failed delivery, shown in the
+subscription's `last_fire_error` and a `trigger.delivery_failed`
+event), and no session is started or fed.
+
+A trigger itself is in no workspace, but updating, firing or deleting
+it acts on every subscription of it. From a session outside prime,
+`trigger::update`, `trigger::fire_now` and `trigger::delete` answer
+`type=trigger_not_found`, exactly as an unknown trigger, when any of
+the trigger's subscriptions starts or feeds a session outside your own
+workspace. Listing, reading and deleting single subscriptions
+(`list_subscriptions`, `get_subscription`, `delete_subscription`) are
+not scoped this way.
 
 ### The `channel` trigger kind
 

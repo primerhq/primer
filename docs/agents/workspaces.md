@@ -292,7 +292,8 @@ holder slot.
   higher rank than you (an admin's session, when you are a user), the
   tool answers `type=forbidden` (from a session, in the words of a
   cancel refused from a session) and the REST route 403
-  `forbidden_rank`, and nothing is torn down. The
+  `forbidden_rank`, and nothing is torn down. While a delete runs, a
+  new session in that workspace is refused (`type=not-found`). The
   `list_workspaces` and `get_workspace` rows, like
   `GET /v1/workspaces` and `GET /v1/workspaces/{id}`, carry
   `is_default: true` on that one workspace.
