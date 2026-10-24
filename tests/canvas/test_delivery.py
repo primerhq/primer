@@ -197,6 +197,21 @@ async def test_a_queued_click_never_answers_the_gate_it_waits_behind() -> None:
     assert all("ask_user" not in key for key, _ in w.bus.published)
 
 
+async def test_a_click_never_overtakes_a_queued_message() -> None:
+    """An idle session with an older message still queued (audit G7-03 (b)): the click goes behind it, with its event, and stays unread."""
+    from primer.session.pending_messages import store_pending_steer
+
+    w = await _world("idle")
+    await store_pending_steer(storage_provider=w.sp, session=await w.sessions.get("s1"), text="typed first", workspace_registry=w.registry)
+    ev = await _record(w, "click play")
+
+    assert await _deliver(w, ev) == DELIVERY_QUEUED
+
+    first, click = _pending(w)
+    assert first.parts[0]["text"] == "typed first" and click.attribution == {CANVAS_EVENT_PAYLOAD_KEY: event_attribution(ev)}
+    assert w.records("s1", "user_input") == [] and [e.id for e in (await w.canvas("s1")).unseen_events()] == ["e1"]
+
+
 async def test_a_wait_on_kinds_takes_a_silent_event() -> None:
     w = await _world("idle")
     await w.sessions.update((await w.sessions.get("s1")).model_copy(
