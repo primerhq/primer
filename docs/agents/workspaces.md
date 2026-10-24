@@ -255,7 +255,7 @@ A workspace row's `phase` is one of:
 - `failed` - three missed probes in a row; `failure_reason` says why
   and every open session on it has ended `workspace_lost`. Three good
   probes in a row bring it back to `running`.
-- `terminating` - see the delete below.
+- `terminating` - a delete is running (see below).
 
 The create is synchronous: it builds the workspace and returns the
 stored row (the REST route answers 201). There is no status to poll
@@ -270,7 +270,12 @@ a local provider the workspace root, on Kubernetes the PVC), and every
 open session on it ends `workspace_lost`, which is permanent. A
 workspace on a local provider this deployment refuses loses only its
 row: its files stay on the provider's disk. See "Workspace delete is
-synchronous" under Gotchas.
+synchronous" under Gotchas. While the delete runs the row reads
+`phase="terminating"`. A delete that fails part way leaves the row
+`failed`, with a `failure_reason` that says the delete did not finish,
+and its open sessions ended `workspace_lost`: delete it again. A
+delete that could not reach the backend at all tore nothing down, and
+the row keeps its phase.
 
 ## MCP tools
 

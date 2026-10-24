@@ -19,14 +19,14 @@ def _row(id_: str, phase: str = "running") -> MagicMock:
     row = MagicMock()
     row.id = id_
     row.phase = phase
-    row.model_copy.side_effect = lambda update: MagicMock(id=id_, phase=update.get("phase", phase))
     return row
 
 
 def _task(rows: list[MagicMock], registry: MagicMock) -> tuple[WorkspaceProbeTask, MagicMock]:
     storage = MagicMock()
     storage.list = AsyncMock(return_value=MagicMock(items=rows))
-    storage.update = AsyncMock()
+    # The probe writes its fields with one fenced patch_if (ticket 01a16d72 ruling 3); a non-None answer is "the guard matched".
+    storage.patch_if = AsyncMock(return_value=MagicMock())
     sp = MagicMock()
     sp.get_storage = MagicMock(return_value=storage)
     return WorkspaceProbeTask(storage_provider=sp, registry=registry, interval_seconds=0.01), storage
@@ -43,10 +43,7 @@ async def test_a_refused_workspace_is_never_failed_and_its_sessions_are_never_lo
             await task.tick()
 
     reconcile.assert_not_awaited()
-    for call in row.model_copy.call_args_list:
-        update = call.kwargs.get("update", call.args[0] if call.args else {})
-        assert update.get("phase") != "failed"
-    storage.update.assert_not_awaited()
+    storage.patch_if.assert_not_awaited()
 
 
 async def test_a_refused_workspace_does_not_stop_the_others_being_probed() -> None:
@@ -59,8 +56,7 @@ async def test_a_refused_workspace_does_not_stop_the_others_being_probed() -> No
 
     await task.tick()
 
-    assert storage.update.await_count == 1, "only the healthy workspace's row is written"
-    assert healthy.model_copy.called and not refused.model_copy.called
+    assert [c.args[0] for c in storage.patch_if.await_args_list] == ["ws-docker"], "only the healthy workspace's row is written"
 
 
 async def test_a_refused_workspace_does_not_poison_the_miss_counter_of_a_later_real_failure() -> None:
@@ -70,13 +66,12 @@ async def test_a_refused_workspace_does_not_poison_the_miss_counter_of_a_later_r
     registry.get_workspace = AsyncMock(
         side_effect=[REFUSED, REFUSED, REFUSED, RuntimeError("down"), RuntimeError("down")],
     )
-    task, _ = _task([row], registry)
+    task, storage = _task([row], registry)
 
     with patch("primer.workspace.probe.reconcile_sessions_to_workspace_lost", new=AsyncMock()) as reconcile:
         for _ in range(5):
             await task.tick()
 
     reconcile.assert_not_awaited()
-    for call in row.model_copy.call_args_list:
-        update = call.kwargs.get("update", call.args[0] if call.args else {})
-        assert update.get("phase") != "failed", "three refusals plus two misses must not add up to a failure"
+    for call in storage.patch_if.await_args_list:
+        assert call.args[1].get("phase") != "failed", "three refusals plus two misses must not add up to a failure"
