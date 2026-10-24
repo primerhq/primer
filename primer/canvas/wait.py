@@ -92,6 +92,26 @@ def _event_id_of(attribution: Mapping[str, Any] | None) -> str | None:
     return event_id if isinstance(event_id, str) else None
 
 
+async def _queued_steers(storage_provider: Any, session_id: str) -> list[PendingSessionMessage]:
+    """The session's queued steers, oldest first (at most ``_MAX_PAGES`` pages)."""
+    storage = storage_provider.get_storage(PendingSessionMessage)
+    predicate = Predicate(left=FieldRef(name="session_id"), op=Op.EQ, right=Value(value=session_id))
+    order = [OrderBy(field="enqueued_at", direction="asc"), OrderBy(field="id", direction="asc")]
+    rows: list[PendingSessionMessage] = []
+    for page_no in range(_MAX_PAGES):
+        page = await storage.find(predicate, OffsetPage(offset=page_no * _PAGE, length=_PAGE), order_by=order)
+        rows += page.items
+        if len(page.items) < _PAGE:
+            break
+    return rows
+
+
+async def queued_steer_carries(storage_provider: Any, session_id: str, event_id: str) -> bool:
+    """Whether a queued steer of the session carries the canvas event ``event_id``: a click delivered as ``queued`` and not realized yet,
+    which a retried POST must not queue a second time (the events route, review of #908 round 2)."""
+    return any(_event_id_of(row.attribution) == event_id for row in await _queued_steers(storage_provider, session_id))
+
+
 async def drop_queued_steers(storage_provider: Any, session_id: str, event_ids: Iterable[str]) -> int:
     """Delete the session's queued steers that carry one of the canvas events ``event_ids``; return how many.
 
@@ -103,14 +123,7 @@ async def drop_queued_steers(storage_provider: Any, session_id: str, event_ids: 
     if not wanted:
         return 0
     storage = storage_provider.get_storage(PendingSessionMessage)
-    predicate = Predicate(left=FieldRef(name="session_id"), op=Op.EQ, right=Value(value=session_id))
-    order = [OrderBy(field="enqueued_at", direction="asc"), OrderBy(field="id", direction="asc")]
-    doomed: list[str] = []
-    for page_no in range(_MAX_PAGES):
-        page = await storage.find(predicate, OffsetPage(offset=page_no * _PAGE, length=_PAGE), order_by=order)
-        doomed += [row.id for row in page.items if _event_id_of(row.attribution) in wanted]
-        if len(page.items) < _PAGE:
-            break
+    doomed = [row.id for row in await _queued_steers(storage_provider, session_id) if _event_id_of(row.attribution) in wanted]
     dropped = 0
     for row_id in doomed:
         try:
@@ -150,4 +163,5 @@ __all__ = [
     "canvas_wait_matches",
     "consume_events",
     "drop_queued_steers",
+    "queued_steer_carries",
 ]
