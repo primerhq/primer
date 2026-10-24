@@ -202,6 +202,76 @@ def test_no_note_for_a_whole_list_or_no_list(ctx):
     assert js(ctx, "PR_pagedNote({ items: [1, 2], truncated: true, serverTotal: null, error: null })") == "Showing the first 2 rows; there may be more."
 
 
+# ---- round 2 of #923: never a silent truncation, whatever the server does -------------------------------------------------------------------------------
+
+
+def test_a_server_that_clamps_the_limit_is_read_on_from_where_it_stopped(ctx):
+    """A server answering 100 rows to limit=200 with total 450: a short page is not the end while the total says there is more; the offset
+    advances by the rows answered."""
+    out, urls, _ = _run(ctx, "var n = Math.max(0, Math.min(100, 450 - offset)); var items = [];"
+                             " for (var i = 0; i < n; i++) items.push({ id: 'a-' + (offset + i) }); return Promise.resolve({ items: items, total: 450 });")
+    assert [u.split("offset=")[1] for u in urls] == ["0", "100", "200", "300", "400"]
+    assert len(out["items"]) == 450 and out["truncated"] is False and js(ctx, "PR_pagedNote(OUT, 'agents')") is None
+
+
+def test_a_server_that_ignores_the_offset_and_counts_450_is_said(ctx):
+    out, urls, _ = _run(ctx, "var items = []; for (var i = 0; i < limit; i++) items.push({ id: 'a-' + i }); return Promise.resolve({ items: items, total: 450 });")
+    assert len(urls) == 2 and len(out["items"]) == 200 and out["truncated"] is True
+    assert js(ctx, "PR_pagedNote(OUT, 'agents')") == "Showing the first 200 of 450 agents."
+
+
+def test_a_page_that_repeats_the_one_before_under_churn_is_said(ctx):
+    """Heavy churn: 200 rows created before the offset between two reads, so page 2 repeats page 1 exactly (total 600): the read stops, and says so."""
+    out, urls, _ = _run(ctx, "var base = offset === 200 ? 0 : offset; var items = [];"
+                             " for (var i = base; i < Math.min(600, base + limit); i++) items.push({ id: 'a-' + i });"
+                             " return Promise.resolve({ items: items, total: 600 });")
+    assert len(urls) == 2 and len(out["items"]) == 200 and out["truncated"] is True and out["serverTotal"] == 600
+    assert js(ctx, "PR_pagedNote(OUT, 'agents')") == "Showing the first 200 of 600 agents."
+
+
+def test_rows_without_an_id_from_a_server_that_ignores_the_offset_stop_after_the_repeat(ctx):
+    """With no idKey on the rows every page used to look new, and the read ran to the cap (50 requests, 10000 copies of 200 rows)."""
+    out, urls, _ = _run(ctx, "var items = []; for (var i = 0; i < 200; i++) items.push({ session_id: 's-' + i }); return Promise.resolve({ items: items });")
+    assert len(urls) == 2 and len(out["items"]) == 200
+
+
+def test_a_read_that_ends_short_of_the_total_is_truncated(ctx):
+    """The server counted 450 but answered an empty page at 440 (rows deleted mid-read): fewer rows than the total is never whole."""
+    out, _, _ = _run(ctx, "var n = Math.max(0, Math.min(limit, 440 - offset)); var items = [];"
+                          " for (var i = 0; i < n; i++) items.push({ id: 'a-' + (offset + i) }); return Promise.resolve({ items: items, total: 450 });")
+    assert len(out["items"]) == 440 and out["truncated"] is True
+    assert js(ctx, "PR_pagedNote(OUT, 'agents')") == "Showing the first 440 of 450 agents."
+
+
+def test_the_note_says_one_row_in_the_singular(ctx):
+    assert js(ctx, "PR_pagedNote({ items: [1], truncated: true, serverTotal: null, error: 'x' }, 'channel providers')") == (
+        "Showing the first 1 channel provider; the rest did not load: x")
+    assert js(ctx, "PR_pagedNote({ items: [1], truncated: true, serverTotal: null, error: null }, 'approval policies')") == (
+        "Showing the first 1 approval policy; there may be more.")
+    assert js(ctx, "PR_pagedNote({ items: [1], truncated: true, serverTotal: null, error: null }, ['harness', 'harnesses'])") == (
+        "Showing the first 1 harness; there may be more.")
+    assert js(ctx, "PR_pagedNote({ items: [1], truncated: true, serverTotal: 9, error: null }, ['harness', 'harnesses'])") == (
+        "Showing the first 1 of 9 harnesses.")
+    assert js(ctx, "[PR_nounFor('harnesses', 1), PR_nounFor('workspaces', 1), PR_nounFor('workspaces', 2)]") == ["harness", "workspace", "workspaces"]
+
+
+def test_a_cut_short_answer_carries_its_failure_for_a_refresh(ctx):
+    """PR_partialFailure: the failure that cut a read short (useResource keeps a list it already shows); null for a whole read or the cap."""
+    _run(ctx, "if (offset >= 200) return Promise.reject(new window.primerApi.ApiError({ status: 503, title: 'Service Unavailable', detail: 'blip' }));"
+         + _rows(1000))
+    assert js(ctx, "PR_partialFailure(OUT).status") == 503 and js(ctx, "PR_partialFailure(OUT).detail") == "blip"
+    assert js(ctx, "PR_partialFailure(Object.assign({}, OUT)).message") == "blip", "a copied answer loses the failure, not its words"
+    assert js(ctx, "PR_partialFailure({ items: [], truncated: true, error: null })") is None
+    assert js(ctx, "PR_partialFailure({ items: [], truncated: false, error: null })") is None
+    assert js(ctx, "PR_partialFailure(undefined)") is None
+
+
+@pytest.mark.parametrize("base,pages,want", [(15000, 1, 15000), (15000, 3, 45000), (15000, 5, 60000), (3000, 50, 60000), (5000, 2, 10000),
+                                             (120000, 3, 120000), (0, 3, 0), (None, 3, None)])
+def test_a_lengthened_poll_never_passes_a_minute(ctx, base, pages, want):
+    assert js(ctx, f"PR_pagedPollMs({json.dumps(base)}, {pages})") == want
+
+
 # ---- the note and the poll, on the hook runtime -----------------------------------------------------------------------------------------------------
 
 _HOOK_PRELUDE = r"""
@@ -230,6 +300,8 @@ def test_a_polled_list_of_several_pages_polls_that_many_times_slower(hooks):
     assert js(hooks, "OPTS[OPTS.length - 1]") == ["k", 45000]
     hooks.eval("DATA = { items: [], pages: 1 }; MR.rerender();")
     assert js(hooks, "OPTS[OPTS.length - 1]") == ["k", 15000]
+    hooks.eval("DATA = { items: [], pages: 7 }; MR.rerender();")
+    assert js(hooks, "OPTS[OPTS.length - 1]") == ["k", 60000], "never longer than a minute"
 
 
 @pytest.mark.parametrize("poll", [0, None])

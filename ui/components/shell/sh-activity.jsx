@@ -199,12 +199,21 @@ function SH_EventSubscriptionsTable() {
   var listState = React.useState(null);
   var list = listState[0];
   var setList = listState[1];
+  var listRef = React.useRef(null);
 
   function load() {
     setLoading(true);
     setError(null);
     SH_api.eventSubscriptions().then(function (out) {
       setLoading(false);
+      // A reload cut short by a failure keeps the rows already shown and says the failure (as useResource does; PR_partialFailure); a first
+      // read shows what it got, with its note.
+      var failure = window.PR_partialFailure(out);
+      if (failure && listRef.current) {
+        setError(out.error);
+        return;
+      }
+      listRef.current = out || null;
       setList(out || null);
       setRows((out && out.items) || []);
     }, function (err) {

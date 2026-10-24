@@ -171,6 +171,19 @@
       // may write it, preserving latest-wins for refreshes and polls. An entry
       // evicted on last-subscriber cleanup is never revived by its old request.
       if (!isCurrent && (entry.data !== undefined || cache.get(key) !== entry)) return;
+      // A list read cut short by a failure (PR_fetchAllPages, ui/foundation/api.js: a page after the first failed) never replaces a list already
+      // shown: like a failed refresh, the data is kept and the failure is the error (stale-while-error). Only a first read shows the partial list,
+      // with its note (ticket 01a16dfa, round 2).
+      const partial = entry.data !== undefined && typeof window.PR_partialFailure === "function" ? window.PR_partialFailure(data) : null;
+      if (partial) {
+        entry.error = partial;
+        entry.loading = false;
+        entry.errorCount += 1;
+        entry.abortCtrl = null;
+        emit(entry);
+        schedule(entry, key);
+        return;
+      }
       entry.data = data;
       entry.error = null;
       entry.loading = false;
