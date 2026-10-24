@@ -87,7 +87,9 @@ def fit_openai_reasoning_request(
 
     * Chat Completions: ``max_tokens`` is sent as ``max_completion_tokens`` (the reasoning models refuse ``max_tokens``).
     * Both wires: ``temperature`` and ``top_p`` are dropped, unless the request sets the effort to ``none`` (OpenAI accepts
-      them only then).
+      them only then). A call that sends no effort to gpt-5.1 to 5.x loses them too, on purpose (ticket 01a16b64 R2): those
+      models default to ``none``, but a default the request did not send is the vendor's to change, and a dropped knob costs
+      only determinism where a refused one fails the call. A profile set to OFF sends ``none`` and keeps them.
 
     A model that does not reason (gpt-4o) is sent as shaped. A model the table does not know (a deployment name, a model on a
     compatible server registered with the ``openai`` flavor) keeps the shape it had before the family rule: on Chat Completions

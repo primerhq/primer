@@ -377,8 +377,14 @@ these models reason by default.
 `fit_openai_reasoning_request` in `primer/llm/_openai_common.py` sends the
 Chat Completions `max_tokens` as `max_completion_tokens`, and drops `temperature`
 and `top_p` on both wires unless the effort is `none` (OpenAI accepts them
-only then). This covers compaction's `temperature: 0.0` and 4096-token cap and
-an agent's `temperature` and `max_output_tokens`. Each change is logged once
+only then). A call that sends no effort to gpt-5.1 to 5.x loses them too, on
+purpose (ticket 01a16b64): those models default to `none`, but primer does
+not count on a default it did not send (OpenAI sets it per model and can
+change it), and a dropped knob costs only determinism where a refused one
+fails the call. A profile that wants `temperature` and `top_p` on those
+models sets its reasoning to OFF, which sends `none`. This covers
+compaction's `temperature: 0.0` and 4096-token cap and an agent's
+`temperature` and `max_output_tokens`. Each change is logged once
 per adapter, provider and model at DEBUG. A model that does not reason
 (gpt-4o) is sent as shaped. A model the table does not know (a deployment
 name) keeps the earlier rule: on Chat Completions its `temperature` and
