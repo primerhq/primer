@@ -220,6 +220,26 @@ def _refuse_outranked(ctx: ToolContext | None, row: WorkspaceSession) -> ToolCal
     return _err(OUTRANKED_MESSAGE, error_type="forbidden")
 
 
+class _Refused(Exception):
+    """A tool's refusal raised from inside a shared session helper's ``guard`` (``primer.workspace.session_factory.SessionGuard``) and answered as
+    the tool's result: the helper decides the rank on the row it reads under the lifecycle lock, as the REST route does."""
+
+    def __init__(self, result: ToolCallResult) -> None:
+        super().__init__(result.output)
+        self.result = result
+
+
+def _rank_guard(ctx: ToolContext | None) -> Callable[[WorkspaceSession], None]:
+    """:func:`_refuse_outranked` as a helper's ``guard``: raises :class:`_Refused` with the tool's ``forbidden`` answer."""
+
+    def guard(row: WorkspaceSession) -> None:
+        refusal = _refuse_outranked(ctx, row)
+        if refusal is not None:
+            raise _Refused(refusal)
+
+    return guard
+
+
 def _caller_actor(ctx: ToolContext | None) -> str:
     """The actor an event raised by this tool call is attributed to: the run's initiator, or, on the MCP endpoint (no ToolContext), the
     request's actor; ``system`` when neither is known. The same two sources, with the same split, as :func:`_caller_is_admin`."""
@@ -2275,79 +2295,111 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    def _session_op(op_name: str, *, ranked: bool = False) -> ToolHandler:
-        async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
-            try:
-                args = _WorkspaceSessionArgs.model_validate(arguments)
-            except ValidationError as exc:
-                return _err_from_validation(exc)
-            if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
-                # Out of the calling session's reach (review of #853): exactly as a workspace that does not exist (the registry's own words).
-                return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
-            if ranked:
-                # A resume sets a run going at its creator's rank: the caller must out-rank or equal the creator (review of #853).
-                target = await _session_row_storage().get(args.session_id)
-                if target is not None and target.workspace_id == args.workspace_id:
-                    refusal = _refuse_outranked(ctx, target)
-                    if refusal is not None:
-                        return refusal
-            try:
-                ws = await workspace_registry.get_workspace(args.workspace_id)
-            except NotFoundError as exc:
-                return _err_from_primer(exc, error_type="not-found")
-            session = await ws.get_session(args.session_id)
-            if session is None:
-                return _err(
-                    f"Session {args.session_id!r} does not exist on "
-                    f"workspace {args.workspace_id!r}",
-                    error_type="not-found",
-                )
-            method = getattr(session, op_name)
-            try:
-                await method()
-            except PrimerError as exc:
-                return _err_from_primer(exc, error_type="conflict")
-            return _ok({"ok": True, "session_id": args.session_id})
+    async def _pause_workspace_session(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
+        # The REST route's pause, through its one helper (ticket 01a16d3c-9984): the pause is written on the session ROW, where the worker that
+        # claims the session next reads it, in whatever process; the slot's in-memory flag is never touched.
+        try:
+            args = _WorkspaceSessionArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
+            # Out of the calling session's reach (review of #853): exactly as an unknown session (pause_session's own words).
+            return _err(_session_not_on_workspace(args), error_type="not-found")
+        from primer.workspace.session_factory import pause_session
 
-        return _handler
+        try:
+            session = await pause_session(workspace_id=args.workspace_id, session_id=args.session_id, sessions=_session_row_storage())
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except ConflictError as exc:
+            return _err_from_primer(exc, error_type="conflict")
+        return _ok(session)
+
+    async def _resume_workspace_session(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
+        # The REST route's resume, through its one helper (ticket 01a16d3c-9984): it starts a session never started (``auto_start: false``),
+        # resumes a paused or waiting one, is a no-op on a running one and a conflict on an ended one, and arms the claim the worker takes.
+        if scheduler is None or claim_engine is None:
+            return _err(
+                "session tools unavailable: scheduler/claim_engine not wired",
+                error_type="unavailable",
+            )
+        try:
+            args = _WorkspaceSessionArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
+            # Out of the calling session's reach (review of #853): exactly as an unknown session (resume_session's own words).
+            return _err(_session_not_on_workspace(args), error_type="not-found")
+        from primer.workspace.session_factory import resume_session
+
+        try:
+            session = await resume_session(
+                workspace_id=args.workspace_id, session_id=args.session_id, sessions=_session_row_storage(), scheduler=scheduler,
+                claim_engine=claim_engine,
+                # A resume sets a run going at its creator's rank: the caller must out-rank or equal the creator (review of #853).
+                guard=_rank_guard(ctx),
+            )
+        except _Refused as exc:
+            return exc.result
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except ConflictError as exc:
+            return _err_from_primer(exc, error_type="conflict")
+        return _ok(session)
 
     name, entry = _tool(
         "pause_workspace_session",
-        "Request that a session pause at the next safe point.",
+        "Pause a session: a running one finishes the turn it is in and starts no other until it is resumed; an idle or not yet started one is "
+        "paused at once.",
         (
-            "Use when you want to halt a running session; not to "
-            "resume it (use ``resume_workspace_session``). "
-            "``type=conflict`` when the session is in an incompatible "
-            "lifecycle state (already ended, etc.). " + REACH_NOTE
+            "Use when you want to halt a session without ending it; not to "
+            "resume it (use ``resume_workspace_session``) and not to stop "
+            "the turn it is running (use ``interrupt_workspace_session``). "
+            "The pause is recorded on the session row (the same path as "
+            "``POST /v1/workspaces/{workspace_id}/sessions/{session_id}/pause``), "
+            "so the worker running the session sees it whichever process it "
+            "is in. The answer is the session row: ``status: \"paused\"`` "
+            "when it paused at once, ``pause_requested: true`` when a turn "
+            "is running and the pause lands at its end. ``type=conflict`` "
+            "when the session has ended. " + REACH_NOTE
         ),
         _WorkspaceSessionArgs,
-        _session_op("request_pause"),
+        _pause_workspace_session,
         examples=[
             ToolExample(
                 args={"workspace_id": "ws-1", "session_id": "sess-1"},
-                returns="{ok: true, session_id: ...}",
+                returns="the session, {status:\"paused\"} or {status:\"running\", pause_requested:true}",
             ),
         ],
         required_role="user",
+        # interruptible stays True (tests/toolset/test_interruptible_declarations.py): one fenced row write.
     )
     registry[name] = entry
     name, entry = _tool(
         "resume_workspace_session",
-        "Request that a paused session resume.",
+        "Start or resume a session: a paused, waiting or never started one goes running and is queued for its next turn.",
         (
-            "Use when restarting a paused session; not to pause it "
-            "(use ``pause_workspace_session``). ``type=conflict`` when "
-            "the session is not currently paused. " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
+            "Use when a paused session should go on, or to start one created "
+            "with ``auto_start: false``; not to pause it (use "
+            "``pause_workspace_session``) and not to send it a message "
+            "(use ``steer_workspace_session``). The same path as ``POST "
+            "/v1/workspaces/{workspace_id}/sessions/{session_id}/resume``. "
+            "The answer is the session row; a session already running is "
+            "answered as it is, with nothing changed. ``type=conflict`` "
+            "when the session has ended. " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
         ),
         _WorkspaceSessionArgs,
-        _session_op("request_resume", ranked=True),
+        _resume_workspace_session,
         examples=[
             ToolExample(
                 args={"workspace_id": "ws-1", "session_id": "sess-1"},
-                returns="{ok: true, session_id: ...}",
+                returns="the session, now {status:\"running\"}",
             ),
         ],
         required_role="user",
+        # The row write, then the enqueue and the claim lease, with no transaction: a cancel between leaves a RUNNING session with no lease
+        # (the hazard of the cancel, steer and restart tools above). A Stop waits for the call.
+        interruptible=False,
     )
     registry[name] = entry
 

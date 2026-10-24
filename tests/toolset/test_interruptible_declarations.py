@@ -67,6 +67,12 @@ Added with pivot P3 (plan task 7):
   ``session.steered`` when the target had a turn open), with no transaction across them; a cancel between leaves a delivered message the rate limit
   never counted, or a counted one whose event never fired (a session waiting on ``session.messaged`` is not woken).
 
+Added with ticket 01a16d3c-9984 (the pause and resume tools take the REST routes' path):
+
+* ``workspaces`` resume_workspace_session: the row write (RUNNING), then the enqueue and the claim lease, with no transaction; a cancel between
+  leaves a RUNNING session with no lease, the hazard of the cancel, steer and restart tools. Before, it flipped an in-memory flag and wrote
+  nothing. ``pause_workspace_session`` stays interruptible: one fenced row write.
+
 Added with revamp 09 (Tasks 4-7, active artifact store):
 
 * ``system`` test_artifact_storage_provider and set_active_artifact_store: the probe writes, then deletes, a temporary object
@@ -150,6 +156,8 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     (WORKSPACES_TOOLSET_ID, "cancel_workspace_session"),
     (WORKSPACES_TOOLSET_ID, "steer_workspace_session"),
     (WORKSPACES_TOOLSET_ID, "restart_workspace_session"),
+    # ticket 01a16d3c-9984: the row write, then the enqueue and the claim lease (the REST resume's path), with no transaction
+    (WORKSPACES_TOOLSET_ID, "resume_workspace_session"),
     # pivot P3: the delivery (the pending row, or the USER_INPUT record, the row and the claim), then the ledger row, then two events, with no transaction
     (WORKSPACES_TOOLSET_ID, "message_session"),
     # task 01a10e2f (+ model_profile, task 01a111d1 D5; + artifact_storage_provider, plan 09 Task 3): a row write THEN a registry cache

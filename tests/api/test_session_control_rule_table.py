@@ -109,18 +109,11 @@ TOOLS = {
 
 
 class _Slot(FakeSlot):
-    """The on-disk slot, as the pause, resume and get tools use it."""
+    """The on-disk slot, as the get tool uses it. The pause and resume tools never touch it: they write the session row (ticket 01a16d3c-9984)."""
 
     def __init__(self, session_id: str = "ses-t") -> None:
         super().__init__()
         self.session_id = session_id
-        self.calls: list[str] = []
-
-    async def request_pause(self) -> None:
-        self.calls.append("request_pause")
-
-    async def request_resume(self) -> None:
-        self.calls.append("request_resume")
 
     async def info(self) -> SessionInfo:
         return SessionInfo(
@@ -203,16 +196,16 @@ async def _drive(env: Env, path: str) -> tuple[str, dict]:
 
 
 async def _delivered(env: Env, path: str) -> bool:
+    """Read off the session ROW, where every one of these paths writes (the pause and resume tools too, since ticket 01a16d3c-9984)."""
     row = await env.world.sessions.get("ses-t")
-    slot = env.world.registry.workspace(env.target_workspace).slot("ses-t")
     if path.startswith(("cancel", "REST cancel")):
         return (row.status, row.ended_reason) == (SessionStatus.ENDED, "cancelled")
     if path == "REST resume":
-        return row.status == SessionStatus.RUNNING
+        return row.status == SessionStatus.RUNNING  # the app's own scheduler queued it
     if path.startswith("resume"):
-        return slot.calls == ["request_resume"]
-    if path.startswith("pause"):
-        return slot.calls == ["request_pause"]
+        return row.status == SessionStatus.RUNNING and env.world.scheduler.enqueued == ["ses-t"]
+    if path.startswith(("pause", "REST pause")):
+        return row.status == SessionStatus.PAUSED  # the target waits, so it pauses at once
     return True  # interrupt, get, read: the answer is the delivery
 
 
@@ -226,7 +219,7 @@ async def _check(env: Env, path: str, scenario: str) -> None:
         assert await _delivered(env, path), (path, scenario)
         return
     assert (await env.world.sessions.get("ses-t")).model_dump(mode="json") == before, f"{path} wrote to the target it refused ({scenario})"
-    assert env.world.registry.workspace(env.target_workspace).slot("ses-t").calls == []
+    assert env.world.scheduler.enqueued == [], f"{path} armed the target it refused ({scenario})"
     if outcome == N:
         # The out-of-reach answer is exactly what an unknown workspace and session answer (asked with no calling session, past every reach rule).
         _, unknown = await _tool(env, path, workspace="ws-nope", session="ses-nobody", in_session=False)

@@ -166,16 +166,6 @@ class _LiveSession:
     async def status(self):
         return self._status
 
-    async def request_pause(self):
-        from primer.model.workspace_session import SessionStatus
-
-        self._status = SessionStatus.PAUSED
-
-    async def request_resume(self):
-        from primer.model.workspace_session import SessionStatus
-
-        self._status = SessionStatus.RUNNING
-
     async def append_instruction(self, content, *, extra_parts=None):
         from datetime import datetime, timezone
         from primer.model.workspace_session import Instruction
@@ -667,17 +657,8 @@ class TestSubResourceHandlers:
             arguments={"workspace_id": seeded, "session_id": "sess-1"},
         )
         assert not got.is_error
-
-        pause = await toolset.call(
-            tool_name="pause_workspace_session",
-            arguments={"workspace_id": seeded, "session_id": "sess-1"},
-        )
-        assert not pause.is_error
-        resume = await toolset.call(
-            tool_name="resume_workspace_session",
-            arguments={"workspace_id": seeded, "session_id": "sess-1"},
-        )
-        assert not resume.is_error
+        # pause_workspace_session / resume_workspace_session act on the session ROW (ticket 01a16d3c-9984) and resume needs the
+        # scheduler/claim_engine: covered by TestPauseAndResumeWorkspaceSession below via ``session_toolset``.
         # steer_workspace_session now auto-wakes (needs scheduler/claim_engine
         # + a persisted WorkspaceSession row) — covered by TestSteerWorkspaceSession
         # below via ``session_toolset``.
@@ -1046,7 +1027,7 @@ class TestErrorPaths:
         assert json.loads(result.output)["type"] == "not-found"
 
     @pytest.mark.asyncio
-    async def test_session_ops_unknown_workspace(self, toolset) -> None:
+    async def test_session_ops_unknown_workspace(self, session_toolset) -> None:
         for tool_name in (
             "list_workspace_sessions",
             "get_workspace_session",
@@ -1056,18 +1037,18 @@ class TestErrorPaths:
             args: dict = {"workspace_id": "no-such"}
             if tool_name != "list_workspace_sessions":
                 args["session_id"] = "sess-1"
-            result = await toolset.call(tool_name=tool_name, arguments=args)
+            result = await session_toolset.call(tool_name=tool_name, arguments=args)
             assert result.is_error, tool_name
             assert json.loads(result.output)["type"] == "not-found", tool_name
 
     @pytest.mark.asyncio
-    async def test_session_ops_unknown_session(self, toolset, seeded) -> None:
+    async def test_session_ops_unknown_session(self, session_toolset, seeded) -> None:
         for tool_name in (
             "get_workspace_session",
             "pause_workspace_session",
             "resume_workspace_session",
         ):
-            result = await toolset.call(
+            result = await session_toolset.call(
                 tool_name=tool_name,
                 arguments={"workspace_id": seeded, "session_id": "missing"},
             )
@@ -1186,11 +1167,13 @@ class TestErrorPaths:
         # validation-error branch. ``steer_workspace_session`` is excluded
         # here (like create/cancel) since it now checks scheduler/claim_engine
         # availability before arg validation — see TestSteerWorkspaceSession.
+        # So is ``resume_workspace_session`` (ticket 01a16d3c-9984: it enqueues
+        # and arms the claim, as the REST resume does) - see
+        # TestPauseAndResumeWorkspaceSession.
         for tool_name in (
             "list_workspace_sessions",
             "get_workspace_session",
             "pause_workspace_session",
-            "resume_workspace_session",
             "list_workspace_files",
             "get_workspace_file_info",
             "read_workspace_file",
@@ -1443,6 +1426,58 @@ class TestCancelWorkspaceSession:
             tool_name="cancel_workspace_session",
             arguments={"workspace_id": "ws-stub", "session_id": "x"},
         )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "unavailable"
+
+
+class TestPauseAndResumeWorkspaceSession:
+    """The pause and resume tools take the REST routes' one path (ticket 01a16d3c-9984): they write the session ROW and answer it."""
+
+    @pytest.mark.asyncio
+    async def test_pause_then_resume_writes_the_row_and_arms_the_claim(self, session_toolset, seeded, sp) -> None:
+        from primer.model.workspace_session import SessionStatus, WorkspaceSession
+
+        _seed_session(sp, status=SessionStatus.WAITING)
+        pause = await session_toolset.call(
+            tool_name="pause_workspace_session", arguments={"workspace_id": seeded, "session_id": "sess-c1"},
+        )
+        assert not pause.is_error, pause.output
+        assert json.loads(pause.output)["status"] == "paused"
+        assert (await sp.get_storage(WorkspaceSession).get("sess-c1")).status == SessionStatus.PAUSED
+
+        resume = await session_toolset.call(
+            tool_name="resume_workspace_session", arguments={"workspace_id": seeded, "session_id": "sess-c1"},
+        )
+        assert not resume.is_error, resume.output
+        assert json.loads(resume.output)["status"] == "running"
+        assert (await sp.get_storage(WorkspaceSession).get("sess-c1")).status == SessionStatus.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_pause_of_a_running_session_sets_the_flag_on_the_row(self, session_toolset, seeded, sp) -> None:
+        from primer.model.workspace_session import SessionStatus, WorkspaceSession
+
+        _seed_session(sp, status=SessionStatus.RUNNING)
+        result = await session_toolset.call(
+            tool_name="pause_workspace_session", arguments={"workspace_id": seeded, "session_id": "sess-c1"},
+        )
+        assert not result.is_error, result.output
+        row = await sp.get_storage(WorkspaceSession).get("sess-c1")
+        assert (row.status, row.pause_requested) == (SessionStatus.RUNNING, True)
+        assert json.loads(result.output)["pause_requested"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool", ["pause_workspace_session", "resume_workspace_session"])
+    async def test_an_ended_session_is_a_conflict(self, session_toolset, seeded, sp, tool) -> None:
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(sp, status=SessionStatus.ENDED, ended_reason="completed")
+        result = await session_toolset.call(tool_name=tool, arguments={"workspace_id": seeded, "session_id": "sess-c1"})
+        assert result.is_error
+        assert json.loads(result.output) == {"type": "conflict", "message": "Session 'sess-c1' has ended"}
+
+    @pytest.mark.asyncio
+    async def test_resume_without_scheduler_is_unavailable(self, toolset) -> None:
+        result = await toolset.call(tool_name="resume_workspace_session", arguments={"workspace_id": "ws-stub", "session_id": "x"})
         assert result.is_error
         assert json.loads(result.output)["type"] == "unavailable"
 

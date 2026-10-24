@@ -33,7 +33,6 @@ from primer.api.errors import common_responses
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.timeline import build_turn_timeline
-from primer.storage import raw_generation
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
@@ -222,9 +221,6 @@ async def create_session(
 # ===========================================================================
 
 
-_RESUMABLE = {SessionStatus.CREATED, SessionStatus.PAUSED, SessionStatus.WAITING}
-
-
 @nested_session_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/resume",
     response_model=WorkspaceSession,
@@ -242,83 +238,24 @@ async def resume_session(
     """Idempotent start-or-resume.
 
     * No-op (200) when the session is already RUNNING.
-    * Transitions CREATED / PAUSED / WAITING → RUNNING, stamps
+    * Transitions CREATED (never started) / PAUSED / WAITING to RUNNING, stamps
       ``started_at`` if unset, clears the pause flag, and enqueues with
       the scheduler.
     * 409 when the session is ENDED.
     * 403 ``forbidden_rank`` when the session's creator outranks the caller
-      (review of #853; ``primer.api.routers._session_rank``).
+      (review of #853; ``primer.api.routers._session_rank``), before anything
+      is written.
 
-    The write is ONE field-scoped ``patch_if`` of the fields resume changes
-    (``status``, ``pause_requested``, and ``started_at`` when the row it read
-    has none), fenced on the status it read ALONE. It writes no park field, so
-    a park, the hook's ``parked -> resumable`` flip or a cancel flag committed
-    after the read is never written back over, and a PAUSED row whose park is
-    ``resumable`` still resumes (the hook flips ``parked`` to ``resumable``
-    under a PAUSED row, so a park term in the fence would reject resume in
-    normal use). A rejected write means the status moved: the row is re-read
-    ONCE and the decision taken again (ENDED is 409, RUNNING the no-op, any
-    other resumable status retries the write once; a second rejection is 409).
-    The session is enqueued and its lease upserted only after a write that
-    LANDED.
+    Delegates to :func:`primer.workspace.session_factory.resume_session`, the
+    one path the ``resume_workspace_session`` tool takes too (ticket
+    01a16d3c-9984); its docstring holds the write's fencing.
     """
-    # Serialize against a concurrent cancel/pause on the same session: the
-    # status read-modify-write and the lease upsert must not interleave with
-    # a cancel's ENDED write + delete_lease, or the row can land RUNNING with
-    # no lease - a stuck session no worker can claim (T0432). See
-    # primer.session.mutation_lock.
-    async with session_lifecycle_lock().acquire(session_id):
-        s = await sessions.get(session_id)
-        if s is None or s.workspace_id != workspace_id:
-            raise NotFoundError(
-                f"Session {session_id!r} does not exist on workspace "
-                f"{workspace_id!r}"
-            )
-        refuse_outranked(request, s)
-        for attempt in range(2):
-            if s.status == SessionStatus.ENDED:
-                raise ConflictError(f"Session {session_id!r} has ended")
-            if s.status == SessionStatus.RUNNING:
-                return s  # idempotent no-op: nothing written, nothing armed
-            if s.status not in _RESUMABLE:
-                raise ConflictError(
-                    f"Session {session_id!r} cannot resume from status {s.status.value}"
-                )
-            # workspace_refusal: a session paused because its workspace was refused (ticket 01a1072f) shows why
-            # until it is resumed; the retry is a fresh attempt, so the reason goes now and not at the next turn.
-            patch: dict[str, Any] = {
-                "status": SessionStatus.RUNNING, "pause_requested": False, "workspace_refusal": None,
-            }
-            if s.started_at is None or s.last_turn_error is not None:
-                # a rested failure (C-024) restarts the clock the stuck-session sweeper's age check reads: it is RUNNING with no lease row until
-                # the claim below is armed, and the sweeper may be on another pod (see ``wake_session``)
-                patch["started_at"] = datetime.now(timezone.utc)
-            written = await sessions.patch_if(
-                session_id, to_jsonable_python(patch),
-                where={"status": [raw_generation(s, "status")]},
-            )
-            if written is not None:
-                await scheduler.enqueue(session_id)
-                # Notify the ClaimEngine (forward-compat; no-op when not wired).
-                if engine is not None:
-                    from primer.int.claim import ClaimKind
-                    await engine.upsert(ClaimKind.SESSION, session_id)
-                return written
-            logger.warning(
-                "resume of session %s: its status moved from %s under the write; %s",
-                session_id, s.status.value, "re-reading once" if attempt == 0 else "giving up",
-            )
-            if attempt == 0:
-                fresh = await sessions.get(session_id)
-                if fresh is None:
-                    raise NotFoundError(
-                        f"Session {session_id!r} does not exist on workspace "
-                        f"{workspace_id!r}"
-                    )
-                s = fresh
-        raise ConflictError(
-            f"Session {session_id!r} changed status twice while resuming; try again"
-        )
+    from primer.workspace.session_factory import resume_session as _resume_session_helper
+
+    return await _resume_session_helper(
+        workspace_id=workspace_id, session_id=session_id, sessions=sessions, scheduler=scheduler, claim_engine=engine,
+        guard=lambda row: refuse_outranked(request, row),
+    )
 
 
 @nested_session_router.post(
@@ -336,38 +273,18 @@ async def pause_session(
 
     * For sessions that no worker is holding a lease on (CREATED /
       WAITING) we transition directly to PAUSED.
-    * For RUNNING sessions we set ``pause_requested=True`` and return -
-      the worker will observe the flag at the next turn boundary and
-      transition the row itself.
+    * For RUNNING sessions we set ``pause_requested=True`` on the row and
+      return - the worker will observe the flag at the next turn boundary
+      and transition the row itself.
     * 409 when the session is already ENDED.
+
+    Delegates to :func:`primer.workspace.session_factory.pause_session`, the
+    one path the ``pause_workspace_session`` tool takes too (ticket
+    01a16d3c-9984).
     """
-    # Serialize against a concurrent resume/cancel on the same session so the
-    # PAUSED write is not clobbered (and does not clobber) a racing
-    # transition. See primer.session.mutation_lock / T0432.
-    async with session_lifecycle_lock().acquire(session_id):
-        # ONE field-scoped write fenced on the status it decided from, never a whole row read earlier: the lock is this process's alone, and a
-        # wake on another process may have reserved a seq or armed a turn since the read (audit G7-03, review M5). A refused fence is decided
-        # again on a fresh read.
-        for _attempt in range(2):
-            s = await sessions.get(session_id)
-            if s is None or s.workspace_id != workspace_id:
-                raise NotFoundError(
-                    f"Session {session_id!r} does not exist on workspace "
-                    f"{workspace_id!r}"
-                )
-            if s.status == SessionStatus.ENDED:
-                raise ConflictError(f"Session {session_id!r} has ended")
-            patch = (
-                {"status": SessionStatus.PAUSED}
-                if s.status in {SessionStatus.WAITING, SessionStatus.CREATED}
-                else {"pause_requested": True}
-            )
-            written = await sessions.patch_if(
-                session_id, to_jsonable_python(patch), where={"status": [raw_generation(s, "status")]},
-            )
-            if written is not None:
-                return
-        raise ConflictError(f"Session {session_id!r} changed status twice while pausing; try again")
+    from primer.workspace.session_factory import pause_session as _pause_session_helper
+
+    await _pause_session_helper(workspace_id=workspace_id, session_id=session_id, sessions=sessions)
 
 
 @nested_session_router.post(

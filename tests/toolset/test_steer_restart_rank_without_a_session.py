@@ -157,10 +157,6 @@ async def test_cancel_and_resume_over_mcp_follow_the_same_system_rule(tool, role
     status = SessionStatus.WAITING if tool == "cancel_workspace_session" else SessionStatus.PAUSED
     await seed_session(world, sid="ses-b", status=status, turn_no=1, initiated_by=PrincipalRef.system(), created_at=NOW)
 
-    async def _resumed() -> None:
-        return None
-
-    world.registry.workspace("ws-1").slot("ses-b").request_resume = _resumed  # the on-disk slot the resume tool asks
     toolset = build_workspaces_toolset(
         storage_provider=world.sp, workspace_registry=world.registry, scheduler=world.scheduler, claim_engine=_Engine(), event_bus=world.bus,
     )
