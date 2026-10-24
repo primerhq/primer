@@ -132,6 +132,9 @@ function NV_Palette() {
   // A layer that holds focus above an overlay is a focus trap too: the document listener of foundation/focus-trap.js knows only traps, and a Tab from a palette that was not one went to the overlay's close
   // button behind its scrim, where the next Enter closed the overlay with whatever draft it held (review of #729, round 2). Called before the early return: hooks keep their order.
   var dialogRef = React.useRef(null);
+  // Whether the last press started on the scrim itself: the scrim closes only when the press AND the click both land on it, so a
+  // drag-select that starts inside the palette and ends on the scrim keeps it open (the shared Modal's guard, ticket 01a14f37; audit G1-19).
+  var scrimDownRef = React.useRef(false);
   window.primerApi.useFocusTrap(dialogRef, open);
 
   if (!open) return null;
@@ -437,7 +440,10 @@ function NV_Palette() {
   var flatPos = 0;
   return (
     <div className="nv-scrim" data-testid="nv-palette-scrim"
-      onClick={function () { setOpen(false); }}>
+      onPointerDown={function (ev) { scrimDownRef.current = ev.target === ev.currentTarget; }}
+      onClick={function (ev) {
+        if (ev.target === ev.currentTarget && scrimDownRef.current) setOpen(false);
+      }}>
       <div className="nv-palette" data-testid="nv-palette" ref={dialogRef}
         role="dialog" aria-label="Command palette"
         onClick={function (ev) { ev.stopPropagation(); }}>

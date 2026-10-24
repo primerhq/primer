@@ -1768,9 +1768,15 @@ function NV_TraceSplit(props) {
 // status/duration_ms) - the sidebar's own one-liners never carried
 // either, by design (dogfood round 2).
 function NV_TraceMaximize(props) {
+  // Whether the last press started on the scrim itself: the scrim closes only when the press AND the click both land on it, so a
+  // drag-select that starts inside the trace panel and ends on the scrim keeps it open (the shared Modal's guard, ticket 01a14f37; audit G1-19).
+  var scrimDownRef = React.useRef(false);
   return (
     <div className="nv-scrim" data-testid="nv-trace-maximize-scrim"
-      onClick={props.onClose}>
+      onPointerDown={function (ev) { scrimDownRef.current = ev.target === ev.currentTarget; }}
+      onClick={function (ev) {
+        if (ev.target === ev.currentTarget && scrimDownRef.current) props.onClose();
+      }}>
       <div className="nv-overlay-panel nv-trace-maximize" data-wide="true"
         data-testid="nv-trace-maximize"
         role="dialog" aria-label="Trace detail"
@@ -2433,6 +2439,9 @@ function NV_SessionDoc(props) {
   var terminalRef = React.useRef(false);
   // C-020: set from the session row's own 404 (below the resource, like terminalRef). Every poll of a session that is not there stops.
   var goneRef = React.useRef(false);
+  // Whether the last press started on the graph view's scrim itself: it closes only when the press AND the click both land on the
+  // scrim, so a drag-select that starts inside the graph overlay and ends on the scrim keeps the view open (the shared Modal's guard, audit G1-19).
+  var scrimDownRef = React.useRef(false);
   // Declared BEFORE the resources on purpose: a send into an ENDED
   // session REOPENS it server-side (steer's fourth behaviour), so the
   // ended-session poll stop must lift while a send is in flight - the
@@ -3499,8 +3508,11 @@ function NV_SessionDoc(props) {
         }} />
       {graphView && graphId
         && typeof window.SD_GraphRunView === "function" ? (
-          <div className="nv-scrim"
-            onClick={function () { setGraphView(false); }}>
+          <div className="nv-scrim" data-testid="nv-graph-view-scrim"
+            onPointerDown={function (ev) { scrimDownRef.current = ev.target === ev.currentTarget; }}
+            onClick={function (ev) {
+              if (ev.target === ev.currentTarget && scrimDownRef.current) setGraphView(false);
+            }}>
             <div className="nv-graph-overlay"
               onClick={function (ev) { ev.stopPropagation(); }}>
               <div className="nv-trace-head">
