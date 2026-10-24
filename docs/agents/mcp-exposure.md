@@ -43,10 +43,12 @@ default constructed at first touch is `enabled=False,
 allowed_tools=[]`. That's the safest possible starting state: even if
 something goes wrong with auth, no tool is reachable.
 
-A **scoped tool id** uses double-colon delimiter: `<toolset_id>::<tool_id>`.
-For example, `search::search_ai_docs`, `system::list_agents`,
-`misc::get_datetime`. The double-colon is reserved - toolset ids and
-tool ids can't contain it themselves.
+A **scoped tool id** is `<toolset_id>__<tool_id>`: the name `tools/list`
+publishes and `tools/call` takes, and what `allowed_tools` holds (for
+example `system__wiki_search`, `system__list_agents`,
+`misc__get_datetime`; `primer/mcp/safety.py` `tool_scoped_id`). These
+docs also write a tool as `<toolset_id>::<tool_id>`
+(`system::list_agents`); over MCP it is the double-underscore form.
 
 Three filters run at every `tools/call`:
 
@@ -123,9 +125,9 @@ a token, hand it to Claude Desktop.
 2. The page renders the live tool catalogue with checkboxes. Tools
    that pass `is_exposable()` are checkable; yielding and session-
    bound tools are greyed out with a tooltip explaining why.
-3. Operator checks `search::search_ai_docs`, `search::search_tools`,
-   `system::list_agents`, `system::get_agent`, `system::list_collections`,
-   `system::get_document_content`, `misc::get_datetime`. They click
+3. Operator checks `system__wiki_search`, `system__wiki_read`,
+   `system__list_agents`, `system__get_agent`, `system__list_collections`,
+   `system__get_document_content`, `misc__get_datetime`. They click
    Save.
 4. The PUT validates each scoped id against the catalogue and writes
    the row. Subsequent `tools/list` calls return exactly those seven.
@@ -207,8 +209,8 @@ The agent should:
   scope; required before any MCP call goes through.
 - [tool-approval](tool-approval.md) - approval policies cause tools
   to silently disappear from MCP `tools/list`.
-- [semantic-search](semantic-search.md) - `search::search_ai_docs` is
-  the discovery tool for these very docs and is almost certainly
-  going to be in your allowlist.
+- [semantic-search](semantic-search.md) - `system::wiki_search` and
+  `system::wiki_read` find and read these very docs (in the `system`
+  collection) and are almost certainly going to be in your allowlist.
 - [yielding](yielding.md) - why yielding tools can't be exposed over
   MCP and what the alternative is.

@@ -66,11 +66,11 @@ files a task touches (never `git add -A`).
   - `docs/dev/` - the authoritative developer reference (architecture +
     subsystems). `docs/wiki/` - the platform wiki source: the hand-written
     pages the boot-time build writes into the `system` collection behind the
-    version stamp; it replaces `docs/agents/` (the agent-usage docs served as
-    internal AI docs, ingested into the `_internal_ai_docs` collection; see
-    `docs/agents/_README.md`), which the pivot P4 content slice retires. The
-    operator-facing console docs now live in a separate external repo (the
-    `primerhq.github.io` Pages site), not in this tree.
+    version stamp; it replaces `docs/agents/` (the agent-usage docs, which the
+    same build writes into the `system` collection's `docs/` subtree as its
+    legacy layer; see `docs/agents/_README.md`), which the pivot P4 content
+    slice retires. The operator-facing console docs now live in a separate
+    external repo (the `primerhq.github.io` Pages site), not in this tree.
   - `skills/` - guidance for agents using a primer deployment (not contribution).
 
 ---

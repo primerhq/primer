@@ -3,71 +3,75 @@ slug: cookbook/discover-a-capability
 title: Discover A Capability
 summary: Find the right tool, agent, graph, or doc for a task you do not yet know how to do.
 mcp_tools:
-  - search::search_ai_docs
-  - search::search_tools
-  - search::search_agents
-  - search::search_graphs
+  - system::wiki_search
+  - system::wiki_read
+  - system::describe_tool
 ---
 
 ## Goal
 Go from a vague task ("I want to do X") to a concrete `toolset::tool` id plus the doc that documents it.
 
 ## Prerequisites
-- None. These are read-only discovery calls.
+- None. These are read-only calls on the `system` collection, which every install has. A seeded agent holds `system::wiki_search` and `system::wiki_read` directly; over MCP the operator must allowlist them (`system__wiki_search`, `system__wiki_read`).
 
 ## Steps
-### 1. Search the docs
-`search::search_ai_docs`
+### 1. Search the docs and guides
+`system::wiki_search`
 ```json
-{ "query": "how do I run an agent headlessly", "top_k": 3 }
+{ "query": "how do I run an agent headlessly", "limit": 3 }
 ```
 Response:
 ```json
-{ "items": [ { "document_id": "sessions", "score": 0.81, "text": "..." } ] }
+{ "hits": [ { "path": "docs/sessions", "excerpt": "...", "score": 0.81 } ], "truncated": false, "mode_used": "semantic" }
 ```
-Each hit's `document_id` is a doc slug and its `text` is the matched
-section. Pick the most relevant.
+Each hit is a page of the `system` collection: a guide, a tool's reference page or one of these docs (`docs/<slug>`). `mode_used` is `fulltext` (keyword search) until an admin turns internal search on.
 
-### 2. Pull in more of the matched doc
-`search::search_ai_docs`
+### 2. Read the matched doc
+`system::wiki_read`
 ```json
-{ "query": "run an agent session headless mcp tools create", "top_k": 5 }
+{ "path": "docs/sessions" }
 ```
 Response:
 ```json
-{ "items": [ { "document_id": "sessions", "score": 0.83, "text": "..." } ] }
+{ "path": "docs/sessions", "title": "...", "summary": "...", "kind": "...", "body": "...", "children": [] }
 ```
-Each `search_ai_docs` hit returns a section, not the whole file. Run a tighter follow-up query (still scoped to the same doc by its subject matter) to gather the rest of the sections you need, including the ones listing the relevant `mcp_tools`.
+The whole doc comes back, not a chunk of it.
 
 ### 3. Find the exact tool
-`search::search_tools`
+`system::wiki_search`
 ```json
-{ "query": "start a session inside a workspace", "top_k": 3 }
+{ "query": "start a session inside a workspace", "path_prefix": "reference/tools/", "limit": 3 }
 ```
 Response:
 ```json
-{ "items": [ { "id": "workspaces::create_workspace_session", "score": 0.79 } ] }
+{ "hits": [ { "path": "reference/tools/workspaces/create_workspace_session", "excerpt": "...", "score": 0.79 } ], "truncated": false, "mode_used": "semantic" }
 ```
-This returns ranked tool ids you can call directly.
+A tool's reference page is `reference/tools/<toolset>/<tool>`. Read its exact arguments and the call to make:
+
+`system::describe_tool`
+```json
+{ "toolset_id": "workspaces", "tool_name": "create_workspace_session" }
+```
 
 ### 4. Find an agent or graph to run
-`search::search_agents`
+`system::wiki_search`
 ```json
-{ "query": "review a pull request", "top_k": 3 }
+{ "query": "review a pull request", "path_prefix": "this-install/agents/", "limit": 3 }
 ```
 Response:
 ```json
-{ "items": [ { "id": "code-reviewer", "score": 0.74 } ] }
+{ "hits": [ { "path": "this-install/agents/code-reviewer", "excerpt": "...", "score": 0.74 } ], "truncated": false, "mode_used": "semantic" }
 ```
-Use `search::search_graphs` the same way to find a multi-step graph instead of a single agent.
+Use `"path_prefix": "this-install/graphs/"` the same way to find a multi-step graph instead of a single agent. `system::wiki_search` leaves `this-install/` out unless the prefix names it.
 
 ## Verify
-You hold a concrete `toolset::tool` id (e.g. `workspaces::create_workspace_session`) and the slug of the doc that documents it (e.g. `sessions`).
+You hold a concrete `toolset::tool` id (e.g. `workspaces::create_workspace_session`) and the path of the doc that documents it (e.g. `docs/sessions`).
 
 ## Gotchas
-- If a search returns `is_error` with `type: "subsystem-inactive"` (no embedder configured), the discovery searches are unavailable; the capability index in `skills/using-primer-over-mcp.md` lists the known slugs and tool ids to fall back on.
-- `search::search_ai_docs` returns chunks, not whole docs, and the internal AI-docs bodies are not readable through `system::get_document_content`; run a tighter follow-up `search_ai_docs` query to gather more of a matched doc.
-- `search_agents` / `search_graphs` search definitions, not running instances; to drive one, see `cookbook/create-and-run-a-session`.
+- There is no `search` toolset: notes that name per-entity search tools are stale. Every discovery call reads or searches the `system` collection.
+- Search is by keyword until an admin turns internal search on (System › Internal collections); `mode_used` says which rung answered. Keep `mode: "auto"` (the default): `mode: "semantic"` is refused while the index is off.
+- The `this-install/` pages are definitions, not running instances; to drive one, see `cookbook/create-and-run-a-session`.
+- `collections::search` and `collections::read_document` with `"collection": "system"` reach the same pages, for a caller that holds the collections toolset rather than the wiki tools.
 
 ## Related
 - `semantic-search`, `agents`, `graphs`

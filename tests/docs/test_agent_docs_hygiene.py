@@ -2,18 +2,17 @@
 
 The dev-doc tier (docs/dev/ + AGENTS.md) is guarded by
 ``test_docs_hygiene.py``. The agent-facing tier (docs/agents/) is the
-knowledge base ingested into the reserved ``_internal_ai_docs``
-collection and reached by agents via ``search::search_ai_docs``; it had
+knowledge base the wiki build writes into the reserved ``system``
+collection (its ``docs/`` subtree), where agents read and search it with
+``system::wiki_read`` and ``system::wiki_search``; it had
 no equivalent guard, which let a stale "no mid-graph pause in v1" claim
 drift past the shipped graph human-in-the-loop feature. This module
 mirrors the dev guard for the agent tier so those docs cannot silently
 rot: no em dashes, every relative link resolves, and every doc carries
 the agent-doc frontmatter and required headings.
 
-The ingest contract (``docs/agents/_README.md``): the bootstrap walk
-``rglob("*.md")`` and skips files whose name starts with ``_``. These
-tests apply the same skip rule so the contract and its guard stay in
-lockstep.
+These tests skip files whose name starts with ``_`` (``docs/agents/_README.md``
+describes the directory and is not an agent doc), as the old ingest did.
 """
 
 from __future__ import annotations

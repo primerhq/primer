@@ -14,10 +14,14 @@ concerns:
 - The **retrieval-augmentation pipeline** in `CollectionSearcher`: optional
   cross-encoder reranking (CER) and Maximal Marginal Relevance (MMR)
   diversification layered on top of raw vector search.
-- The **internal collections** (the self-describing capability catalog): a set
-  of reserved system collections that index the platform's own agents, graphs,
-  collections, tools, and AI docs so an agent can semantically discover its own
-  capabilities.
+- **Internal search** (the self-describing capability catalog): the toggle
+  (`InternalCollectionsConfig` plus `POST /v1/internal_collections/bootstrap`)
+  that turns on semantic search for the reserved `system` collection, the
+  platform wiki and live install map that an agent reads and searches to
+  discover its own capabilities (`system::wiki_search` and `system::wiki_read`,
+  or `collections::search` with `"collection": "system"`). Without it that
+  search matches keywords. The per-entity `_internal_*` collections it once
+  built are retired.
 
 Embedders and the `Collection` / `Document` models live in the adjacent
 knowledge subsystem; see [knowledge.md](knowledge.md). This subsystem consumes
@@ -30,9 +34,9 @@ exactly one SSP through a required, immutable `search_provider_id`; the
 collection's embedded chunks live in that SSP's vector store. A search resolves
 the collection, embeds the query with the collection's configured embedder,
 retrieves candidates from the SSP's `VectorStore`, and optionally reranks and
-diversifies them. The internal-collections subsystem reuses the same machinery:
-its reserved collections are ordinary `Collection` rows (with `system=True`)
-bound to an SSP named by `InternalCollectionsConfig.search_provider_id`.
+diversifies them. Internal search reuses the same machinery: it enables search
+on the `system` collection (a `Collection` row with `system=True`) with the
+embedder and the SSP that `InternalCollectionsConfig` names.
 
 ```mermaid
 erDiagram
@@ -129,15 +133,19 @@ The entities:
 - `primer/api/routers/knowledge.py`: `POST /v1/collections/{id}/search`.
 - `primer/catalog/catalog.py`, `primer/catalog/types.py`: the lower-layer
   `SemanticCatalog` (exercised by its own unit tests).
-- `primer/internal_collections.py`: the live `InternalCollectionsSubsystem`
-  (CDC worker, bootstrap state machine, AI-docs ingest, `search` /
-  `search_ai_docs`).
+- `primer/internal_collections.py`: the `InternalCollectionsSubsystem`, which
+  the bootstrap route constructs but never starts; its `search` backs the
+  per-entity search routes, which answer no hits since the per-entity
+  `_internal_*` indexes are no longer built.
 - `primer/model/internal.py`: `InternalCollectionsConfig`,
-  `InternalCollectionsBootstrapStatus`, `INTERNAL_COLLECTION_IDS`,
-  `AI_DOCS_COLLECTION_ID`.
+  `InternalCollectionsBootstrapStatus`, `INTERNAL_COLLECTION_IDS`.
 - `primer/api/routers/internal_collections.py`: the activation / bootstrap /
-  search REST surface.
-- `primer/toolset/search.py`: the agent-facing `search` internal toolset.
+  search REST surface; bootstrap enables search on the `system` collection
+  (`primer/knowledge/lifecycle.py` `enable_search`).
+- `primer/knowledge/system_collection.py`: the `system` collection the toggle
+  indexes; `primer/toolset/_system_wiki.py` (`wiki_search`, `wiki_read`) and
+  `primer/toolset/collections.py` (`search`, `read_document`) are the agent
+  tools that read and search it.
 
 ## 5. Data model
 
@@ -301,12 +309,13 @@ REST:
   `GET /v1/internal_collections/bootstrap/status` plus per-entity search routes
   (`primer/api/routers/internal_collections.py`).
 
-Agent-facing tools: the `_system` toolset exposes seven SSP CRUD tools
+Agent-facing tools: the `system` toolset exposes seven SSP CRUD tools
 (`create_semantic_search_provider` ... `invalidate_semantic_search_provider`,
-`primer/toolset/system.py`); the `search` internal toolset exposes
-`search_agents` / `search_graphs` / `search_collections` / `search_tools`
-(`primer/toolset/search.py`), registered only once the subsystem is activated and
-bootstrapped.
+`primer/toolset/system.py`). Discovery is the `system` collection, read and
+searched with `system::wiki_search` / `system::wiki_read` or the `collections`
+toolset's `search` / `read_document`: by meaning once internal search is on, by
+keyword before. There is no `search` toolset; the per-entity search routes are
+admin-only REST, not agent tools.
 
 Python: `CollectionSearcher` (`primer/search/searcher.py`), the `VectorStore` and
 `CrossEncoder` ABCs, and `SemanticSearchRegistry`.

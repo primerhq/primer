@@ -3,7 +3,7 @@ slug: cookbook/run-a-graph-and-collect-results
 title: Run A Graph And Collect Results
 summary: Execute a multi-step graph over MCP and read its output.
 mcp_tools:
-  - search::search_graphs
+  - system::wiki_search
   - workspaces::create_workspace
   - workspaces::create_workspace_session
   - workspaces::get_workspace_session
@@ -16,20 +16,20 @@ Run a multi-step graph headlessly inside a workspace and collect its result over
 
 ## Prerequisites
 - Run it over MCP or from a session in the default workspace (prime). From a session in any other workspace `workspaces::create_workspace` answers `type=forbidden`, and the workspace tools reach only that session's own workspace.
-- A registered graph; find one with `search::search_graphs`.
+- A registered graph; find one with `system::wiki_search` (step 1).
 - A workspace template; list with `workspaces::list_workspace_templates`.
 
 ## Steps
 ### 1. Find a graph
-`search::search_graphs`
+`system::wiki_search`
 ```json
-{ "query": "triage an incident ticket", "top_k": 3 }
+{ "query": "triage an incident ticket", "path_prefix": "this-install/graphs/", "limit": 3 }
 ```
 Response:
 ```json
-{ "items": [ { "id": "incident-pipeline", "score": 0.77 } ] }
+{ "hits": [ { "path": "this-install/graphs/incident-pipeline", "excerpt": "...", "score": 0.77 } ], "truncated": false, "mode_used": "fulltext" }
 ```
-Thread the chosen `id` into the binding in step 3.
+Each hit is a graph's page in the `system` collection's live map, headed by the graph's id (`# incident-pipeline`; `system::wiki_read` on the hit's `path` shows it). Thread that id into the binding in step 3.
 
 ### 2. Create the workspace
 `workspaces::create_workspace`

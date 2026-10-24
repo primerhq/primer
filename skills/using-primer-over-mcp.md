@@ -12,8 +12,9 @@ Welcome. You're reading this because an MCP client connected you to a
 primer deployment. This document is the **one-page orientation**:
 what primer is, how the MCP contract works, and how to look up
 detail on any capability. The detail docs themselves live inside
-primer's `_internal_ai_docs` collection and are addressable through
-two MCP tools you'll learn about below.
+primer's reserved `system` collection (a read-only wiki of the
+platform) and are addressable through two MCP tools you'll learn
+about below.
 
 ---
 
@@ -38,10 +39,11 @@ abstractions are:
   channel) that dispatches to chats, fresh sessions, or parked
   yielding tools.
 - **Collections and documents** - knowledge containers with
-  embedding-backed semantic search. Plus a parallel
-  **internal-collections** subsystem that auto-indexes primer's own
-  agents, graphs, tools, collections, and these very docs for
-  semantic discovery.
+  embedding-backed semantic search. Plus the reserved **`system`
+  collection**, a read-only wiki primer writes itself: guides, a
+  reference page per tool, these very docs and a live map of this
+  install's agents, graphs and collections. It is searchable by
+  keyword, and by meaning once an admin turns internal search on.
 - **Channels** - Slack/Telegram/Discord bridges that forward
   `ask_user` prompts and tool-approval requests, and source
   channel-driven triggers.
@@ -92,9 +94,10 @@ The tools you can call are exactly the intersection of three sets:
 - **Scope.** Bearer tokens without `mcp` get 401 before they ever
   see `tools/list`.
 
-Tool IDs are scoped: `<toolset_id>::<tool_id>` (e.g.
-`system::list_agents`, `search::search_ai_docs`,
-`workspaces::read_workspace_file`). The double-colon is reserved.
+Tool IDs are scoped: over MCP a tool is named `<toolset_id>__<tool_id>`
+(e.g. `system__list_agents`, `system__wiki_search`,
+`collections__search`); this guide and the docs also write the same
+tool as `<toolset_id>::<tool_id>` (`system::list_agents`).
 
 Error envelopes from `tools/call`:
 
@@ -110,49 +113,50 @@ Common error types: `tool-not-allowed`, `validation-error`,
 
 ## 3. How to learn more - the documentation contract
 
-Primer's full feature documentation lives in the `_internal_ai_docs`
-reserved collection. Each capability has one document; the document
-id is its **slug** (lowercase, kebab-case). Two MCP tools give you
-access:
+Primer's full documentation lives in the reserved `system`
+collection, a read-only wiki of the platform. Its pages are addressed
+by slug path: the table of contents is `index`; the guides sit under
+sections such as `start-here/`; each tool has a reference page,
+`reference/tools/<toolset>/<tool>`; each capability's agent doc is
+`docs/<slug>` (lowercase, kebab-case, e.g. `docs/agents`); and
+`this-install/` is the live map of this install's agents, graphs,
+collections, workspaces and providers. Two MCP tools give you access:
 
-- **`search::search_ai_docs`** - semantic search. Embeds your query
-  and returns ranked chunks (Markdown sections) of matching docs.
-  Each hit carries `document_id` (the slug), `chunk_id` (which
-  section), a similarity `score`, the `text` of the matched chunk,
-  and meta with the doc's title, summary, and full mcp_tools list.
-  Use this when you know what you want to do but not which doc
-  covers it.
+- **`system::wiki_search`** - search. Takes `query` and optionally
+  `mode` (`auto`, `semantic`, `fulltext` or `literal`), `path_prefix`
+  and `limit`; returns `{hits: [{path, excerpt, score}], truncated,
+  mode_used}`. It matches keywords until an admin turns internal
+  search on and searches by meaning after (`mode_used` says which). It
+  leaves `this-install/` out unless `path_prefix` names it. Use this
+  when you know what you want to do but not which page covers it.
 
-- **`system::get_document_content`** - fetch a doc by id. Returns
-  `{id, collection_id, name, content}`. The content is the full
-  Markdown source of the doc. Use this when search has identified
-  the relevant slug and you want the complete doc, not just a
-  matched chunk.
+- **`system::wiki_read`** - read one page by path
+  (`{"path": "docs/agents"}`; an empty path reads the table of
+  contents). Returns `{path, title, summary, kind, body, children}`:
+  the whole page, not a chunk. Use this once search has named the
+  page.
 
 Both tools are read-only and idempotent; calling them never changes
-primer state.
+primer state. `collections::search` and `collections::read_document`
+with `"collection": "system"` reach the same pages.
 
-The loop: call `search::search_ai_docs(query="<goal>")` for ranked doc
-chunks (each carries a `document_id`); fetch the full doc with
-`system::get_document_content(id="<document_id>", collection_id="_internal_ai_docs")`;
-then call the `toolset::tool` it documents. Each doc is structured
-Overview, Mental model, Lifecycle, MCP tools, Workflows (request AND
-response JSON), Gotchas, so skim the section you need.
+The loop: call `system::wiki_search(query="<goal>")` for ranked pages;
+read the best one with `system::wiki_read(path="<path>")`; then call
+the `toolset::tool` it documents. Each doc is structured Overview,
+Mental model, Lifecycle, MCP tools, Workflows (request AND response
+JSON), Gotchas, so skim the section you need.
 
-If `search::search_ai_docs` returns `is_error=true` with
-`subsystem-inactive`, the internal-collections subsystem hasn't
-been bootstrapped on this deployment. In that case, you can still
-read individual docs by their slug via `system::get_document_content`
-(passing `id=<slug>`, e.g. `id="agents"`) - the Document rows exist
-in storage regardless of bootstrap status; only the search index
-is gated.
+Search works on every deployment: with internal search off it matches
+keywords (`mode_used: "fulltext"`) and `mode: "semantic"` is refused
+(`type=conflict`), so keep `mode: "auto"`. Reading a page by path
+never depends on it.
 
 ### Capability index
 
-Every entry below is one document in `_internal_ai_docs`. Fetch the
-full doc with
-`system::get_document_content(id="<slug>")`. Search for a topic with
-`search::search_ai_docs(query="<terms>")`.
+Every entry below is one document under `docs/` in the `system`
+collection. Read the full doc with
+`system::wiki_read(path="docs/<slug>")`. Search for a topic with
+`system::wiki_search(query="<terms>")`.
 
 | Slug | What it covers |
 | --- | --- |
@@ -160,9 +164,8 @@ full doc with
 | `graphs` | Multi-step agent orchestration. Nodes (agent/task/subgraph/http/callable_router), edges (static/json_path/callable_router), supersteps, cycles. |
 | `workspaces` | Execution sandboxes. Workspace lifecycle, providers, templates, `.state/` and `.tmp/` layout, multi-session coordination, MCP file I/O tools. |
 | `sessions` | Long-running headless agent runs. Status enum (RUNNING/WAITING/PAUSED/ENDED), pause/resume/end controls, `waiting.json` contract. |
-| `chats` | Multi-turn conversations. Turn claim mechanics, message kinds, WS protocol, cursor reconnect, drain loop, cancellation, auto-compaction. |
 | `knowledge` | User-defined collections and documents. CRUD, content storage (`meta.content`), ingest pipeline status, `get_document_content`. |
-| `semantic-search` | Internal collections (`_internal_*`), the IC subsystem, the `search::*` toolset, including this doc collection itself. |
+| `semantic-search` | The `system` collection (this wiki, the tool reference, these docs and the live install map), internal search, and how to search and read it. |
 | `triggers-and-subscriptions` | Event scheduling. Trigger kinds (delayed/scheduled/channel), subscription kinds (chat_message/agent_fresh_session/graph_fresh_session/parked_session), fire semantics, catch-up policy. |
 | `yielding` | The park/resume primitive. `Yielded` sentinel, parked state fields, event keys, timeout sweeper, cancellation; why yielding tools are invisible from MCP. |
 | `tool-approval` | Pre-dispatch gates on tool calls. Approval kinds (required/policy/llm), fail-closed semantics, supersession by new user turns, interaction with MCP exposure. |
@@ -173,8 +176,8 @@ full doc with
 
 ### Recipes by goal
 
-End-to-end recipes live under `cookbook/` slugs, fetched the same way
-(`system::get_document_content(id="cookbook/<slug>", collection_id="_internal_ai_docs")`).
+End-to-end recipes live under `cookbook/` slugs, read the same way
+(`system::wiki_read(path="docs/cookbook/<slug>")`).
 
 | Goal | Recipe slug |
 | --- | --- |
@@ -197,14 +200,17 @@ End-to-end recipes live under `cookbook/` slugs, fetched the same way
 ### Quick-pick by goal
 
 - **"I want to find a tool that does X."** Call
-  `search::search_tools(query="<terms>")`. Returns ranked tool ids.
+  `system::wiki_search(query="<terms>", path_prefix="reference/tools/")`.
+  Returns ranked tool reference pages,
+  `reference/tools/<toolset>/<tool>`; `system::describe_tool` gives
+  the exact arguments.
 - **"I want to find an agent that does X."** Call
-  `search::search_agents(query="<terms>")`.
+  `system::wiki_search(query="<terms>", path_prefix="this-install/agents/")`.
 - **"I want to find a graph that does X."** Call
-  `search::search_graphs(query="<terms>")`.
+  `system::wiki_search(query="<terms>", path_prefix="this-install/graphs/")`.
 - **"How does X work?"** Call
-  `search::search_ai_docs(query="<terms>")`, then fetch the matched
-  doc with `system::get_document_content(id="<slug>")`.
+  `system::wiki_search(query="<terms>")`, then read the matched page
+  with `system::wiki_read(path="<path>")`.
 
 ## 4. A minimal first-touch workflow
 
@@ -215,14 +221,14 @@ shortest path to understanding what's available:
    that list - what's in the allowlist, what's missing - tells you
    the operator's intent for your role.
 
-2. **Sanity-check the search subsystem.** Call:
+2. **Read the table of contents.** Call:
    ```json
-   {"tool": "search::search_ai_docs", "arguments": {"query": "overview", "top_k": 3}}
+   {"tool": "system::wiki_read", "arguments": {"path": ""}}
    ```
-   If it returns hits, semantic search is live and you can navigate
-   the docs by topic. If it returns
-   `is_error=true type=subsystem-inactive`, fall back to fetching
-   docs by slug.
+   It lists the wiki's sections, the tool reference, the live install
+   map and the agent docs. Then search by topic with
+   `system::wiki_search`; `mode_used: "fulltext"` in its answer means
+   internal search is off and the search matched keywords only.
 
 3. **Enumerate the catalogue.** Brief picture of what's installed:
    - `system::list_agents` - what agents are defined.
@@ -231,7 +237,7 @@ shortest path to understanding what's available:
    - `system::list_collections` - what knowledge is curated.
 
 4. **Read the docs relevant to the user's goal.** Pick from the
-   capability index. Don't read all 14 - read the 1-3 that match
+   capability index. Don't read them all - read the 1-3 that match
    the work the user has asked for.
 
 ### Run an agent or graph over MCP
