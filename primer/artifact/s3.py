@@ -1,8 +1,8 @@
 """The S3 artifact store: artifacts as objects in an S3 or S3-compatible (MinIO) bucket (plan 09, Task 9; design section 15.2).
 
 Layout. Each artifact is one object at ``<prefix><artifact id>``: the bytes are its body, the MIME type its ``Content-Type``, and the filename its
-``filename`` user metadata, percent-encoded (``quote(filename, safe="")``) because S3 user metadata is ASCII only; a put without a filename writes
-no metadata. Ids are backend ids (:mod:`primer.artifact.ids`); an id in any other format is never turned into a key, so ``get`` answers ``None``
+``filename`` user metadata, percent-encoded (``quote(filename, safe="")``) because S3 user metadata is ASCII only, and cut to fit S3's 2 KB
+metadata limit (:func:`filename_metadata`: the extension and the start of the name are kept); a put without a filename writes no metadata. Ids are backend ids (:mod:`primer.artifact.ids`); an id in any other format is never turned into a key, so ``get`` answers ``None``
 and ``delete`` does nothing for it, without a request.
 
 The extra. aiobotocore (the ``s3`` extra) is imported by :meth:`S3ArtifactStorage.initialize` only, never at module import: a core install imports
@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from typing import Any, ClassVar, Literal
 from urllib.parse import quote, unquote
 
@@ -45,6 +46,11 @@ logger = logging.getLogger(__name__)
 #: The error codes S3 answers for a key that is not there (``NoSuchKey`` for a read, ``404`` / ``NotFound`` for a head).
 _MISSING_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
 _FILENAME_META = "filename"
+#: The longest ``filename`` metadata value a put writes. AWS caps the user metadata of an object at 2 KB, counted as the UTF-8 bytes of every key
+#: and value, and the filename is the only metadata a put writes; the value is ASCII (percent-encoded), so a character is a byte.
+FILENAME_METADATA_MAX = 2048 - len(_FILENAME_META)
+#: An extension longer than this once encoded is not kept when a filename is cut: it would leave next to nothing of the name.
+_KEPT_EXTENSION_MAX = 255
 #: How long ``aclose`` waits for the removals of puts that did not complete before it closes the client anyway.
 _DRAIN_TIMEOUT_S = 30.0
 _CONNECT_TIMEOUT_S = 10
@@ -82,6 +88,33 @@ def s3_client_kwargs(config: S3ArtifactConfig) -> dict[str, Any]:
         kwargs["aws_access_key_id"] = config.access_key.get_secret_value()
         kwargs["aws_secret_access_key"] = config.secret_key.get_secret_value()
     return kwargs
+
+
+def filename_metadata(filename: str) -> str:
+    """The ``filename`` metadata value: the filename percent-encoded (``quote(filename, safe="")``; S3 user metadata is ASCII only), cut to
+    :data:`FILENAME_METADATA_MAX` so a long name never fails the put.
+
+    A name that is too long keeps its extension (unless that alone is longer than :data:`_KEPT_EXTENSION_MAX` encoded) and as much of the
+    start of the name as fits; it is cut between characters, so an escape is never split and the value always decodes. The artifact then reads
+    back with the shortened name.
+    """
+    encoded = quote(filename, safe="")
+    if len(encoded) <= FILENAME_METADATA_MAX:
+        return encoded
+    stem, extension = os.path.splitext(filename)
+    kept_extension = quote(extension, safe="")
+    if len(kept_extension) > _KEPT_EXTENSION_MAX:
+        stem, kept_extension = filename, ""
+    budget = FILENAME_METADATA_MAX - len(kept_extension)
+    pieces: list[str] = []
+    used = 0
+    for character in stem:
+        piece = quote(character, safe="")
+        if used + len(piece) > budget:
+            break
+        pieces.append(piece)
+        used += len(piece)
+    return "".join(pieces) + kept_extension
 
 
 def _error_code(exc: BaseException) -> str:
@@ -196,7 +229,7 @@ class S3ArtifactStorage(ArtifactStorage):
         key = self.key_for(artifact_id)
         request: dict[str, Any] = {"Bucket": self.bucket, "Key": key, "Body": data, "ContentType": mime_type}
         if filename is not None:
-            request["Metadata"] = {_FILENAME_META: quote(filename, safe="")}
+            request["Metadata"] = {_FILENAME_META: filename_metadata(filename)}
         write = asyncio.ensure_future(client.put_object(**request))
         try:
             await asyncio.shield(write)
@@ -283,4 +316,4 @@ class S3ArtifactStorage(ArtifactStorage):
                 await stack.aclose()
 
 
-__all__ = ["DEFAULT_S3_REGION", "S3ArtifactStorage", "s3_addressing_style", "s3_client_kwargs"]
+__all__ = ["DEFAULT_S3_REGION", "FILENAME_METADATA_MAX", "S3ArtifactStorage", "filename_metadata", "s3_addressing_style", "s3_client_kwargs"]

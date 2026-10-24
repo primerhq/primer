@@ -169,6 +169,60 @@ def test_the_s3_module_and_a_build_import_no_aiobotocore() -> None:
     assert result.returncode == 0, result.stderr[-2000:]
 
 
+# ---- the filename metadata fits S3's 2 KB user-metadata limit (review of #899, item 6) ---------------------------------------------------------
+
+
+def _well_formed_escapes(encoded: str) -> bool:
+    """Every ``%`` starts a complete ``%XX`` escape and nothing outside the unreserved set is left unescaped."""
+    import re
+
+    return re.fullmatch(r"(?:%[0-9A-F]{2}|[A-Za-z0-9_.~-])*", encoded) is not None
+
+
+def test_a_short_filename_is_percent_encoded_whole() -> None:
+    from primer.artifact.s3 import filename_metadata
+
+    assert filename_metadata("résumé 1.png") == "r%C3%A9sum%C3%A9%201.png"
+    assert filename_metadata('a/b "c";\n.txt') == "a%2Fb%20%22c%22%3B%0A.txt"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["a" * 5000 + ".pdf", "日本語の長いファイル名" * 200 + ".pdf", "📎" * 600 + ".tar.gz", "x" * 3000],
+    ids=["ascii", "cjk", "emoji", "no extension"],
+)
+def test_a_long_filename_is_cut_to_fit_keeping_its_extension_and_never_splitting_an_escape(filename: str) -> None:
+    from urllib.parse import unquote
+
+    from primer.artifact.s3 import FILENAME_METADATA_MAX, filename_metadata
+
+    encoded = filename_metadata(filename)
+    decoded = unquote(encoded, errors="strict")
+    stem, dot, extension = filename.rpartition(".") if "." in filename else (filename, "", "")
+
+    assert FILENAME_METADATA_MAX == 2048 - len("filename"), "AWS counts the UTF-8 bytes of every key and value against 2 KB"
+    assert len(encoded.encode("utf-8")) <= FILENAME_METADATA_MAX
+    assert len(encoded) > FILENAME_METADATA_MAX - 12, "cut at the last whole character that fits, not far short of the bound"
+    assert _well_formed_escapes(encoded), "no escape is split"
+    assert decoded.endswith(dot + extension), "the extension is kept"
+    assert stem.startswith(decoded.removesuffix(dot + extension)), "what is kept is the start of the name"
+
+
+async def test_a_long_non_ascii_filename_is_stored_cut_and_reads_back_with_its_extension(
+    store: S3ArtifactStorage, s3_admin, s3_prefix: str,
+) -> None:
+    from primer.artifact.s3 import FILENAME_METADATA_MAX
+
+    filename = "報告書" * 300 + ".pdf"
+    aid = await store.put(data=b"%PDF", mime_type="application/pdf", filename=filename)
+
+    stored = s3_admin.head_object(Bucket=S3_BUCKET, Key=s3_prefix + aid)["Metadata"]["filename"]
+    blob = await store.get(aid)
+
+    assert len("filename") + len(stored.encode("utf-8")) <= 2048 and len(stored) <= FILENAME_METADATA_MAX
+    assert blob.data == b"%PDF" and blob.filename.endswith(".pdf") and filename.startswith(blob.filename.removesuffix(".pdf"))
+
+
 # ---- serves: the location a store was built for (ruling 4) --------------------------------------------------------------------------------------
 
 
