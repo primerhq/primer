@@ -330,6 +330,7 @@ setting is used:
 | same, GPT-6 and later (gpt-6-astra has no `none`, gpt-6.1-sol neither `none` nor `minimal`) | from `low` | `low` |
 | same, gpt-5-pro | `high` only | `high` |
 | same, a model that does not reason (gpt-4o, gpt-4.1) | nothing | nothing |
+| same, o1-mini and o1-preview (they reason, but predate the effort parameter) | nothing | nothing |
 | same, a model not in the table (a deployment name, a self-hosted model) | `reasoning_effort` from `minimal` | `minimal` |
 | `openchat` (vllm/lmstudio/other) | `chat_template_kwargs.enable_thinking` (request body) | `false` |
 | `openchat` (ollama) | `reasoning_effort` (`minimal` to `high`; Ollama's `/v1` reads it and ignores `chat_template_kwargs`) | `none` |
@@ -367,10 +368,12 @@ compaction send `auto`). A refusal of a profile setting reaches the
 stream-open guard like any other.
 
 **OpenAI reasoning models: the rest of the request.** On the `openai` flavor
-of `openchat` and `openresponses`, a model whose family reasons (o-series,
-codex, gpt-5 and later, pro; `openai_family` in `primer/llm/_reasoning.py`)
-gets the request OpenAI accepts whether or not the profile sets a reasoning
-level, because these models reason by default.
+of `openchat` and `openresponses`, a model that reasons (o-series, codex,
+gpt-5 and later, pro, and o1-mini and o1-preview, which take no effort but
+reason all the same; `openai_reasons` in `primer/llm/_reasoning.py`, a
+question kept apart from which effort the model takes) gets the request
+OpenAI accepts whether or not the profile sets a reasoning level, because
+these models reason by default.
 `fit_openai_reasoning_request` in `primer/llm/_openai_common.py` sends the
 Chat Completions `max_tokens` as `max_completion_tokens`, and drops `temperature`
 and `top_p` on both wires unless the effort is `none` (OpenAI accepts them

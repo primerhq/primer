@@ -336,7 +336,8 @@ profile, each member's own `config` applies to the calls that member
 serves; the aggregate's own `config` is not applied.
 
 On real OpenAI (the `openai` flavor), a reasoning model (o-series, codex,
-gpt-5 and later) refuses `temperature` and `top_p` unless its effort is
+gpt-5 and later, and o1-mini and o1-preview, which take no reasoning effort
+but reason all the same) refuses `temperature` and `top_p` unless its effort is
 `none`, whether or not the profile sets a reasoning level (these models
 reason by default), and on Chat Completions it takes `max_completion_tokens`
 instead of `max_tokens`. primer shapes every call to such a model that way,
