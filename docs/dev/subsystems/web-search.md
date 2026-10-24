@@ -136,6 +136,10 @@ The entities:
   form's `provider`. The old console body `{id, provider: "tavily",
   config: {api_key}}` was a 422: `provider` is not a model field and the
   config had no `type` (design 13.4).
+- `ui/components/web-settings.jsx`: `WEB_SettingsPage`, the Platform › Web page
+  (`view=platform:web`), where an admin sets the web search and the web fetch
+  active config (mode, and the default or the ordered list) and registers and
+  edits the fetchers; `WEB_ActiveConfigSection` draws one setting.
 
 ## 5. Data model
 
@@ -318,11 +322,18 @@ an admin and fetch the user's URL from the vendor's network, so they are not
 guarded. A client passed in explicitly (`build_web_toolset(http_client=...)`,
 `LocalAdapter(client=...)`) is used as is; only tests do that.
 
-Console: the `web_search` class on the unified provider catalog
+Console: the search provider cards stay on Providers › Web Search, the
+`web_search` class of the unified provider catalog
 (`ui/components/provider-catalog.jsx`, reached at
-`view=platform:providers:web_search`) renders the active-provider card slot
-plus the providers list, with the shared form's Test affordance and the catalog's
-delete action; the page detail lives in the UI-pages docs.
+`view=platform:providers:web_search`), with the shared form's Test affordance
+and the catalog's delete action. The mode and the default or the ordered list,
+for web search and for web fetch, and the fetchers themselves are set on
+Platform › Web (`ui/components/web-settings.jsx`, `view=platform:web`,
+admin only), which reads and writes the two singletons through
+`GET` and `PUT /v1/web_search_active_config` and
+`GET` and `PUT /v1/web_fetch_active_config`. The older active-provider panel
+above the Web Search cards (`PC_ActiveWebSearchPanel`) is still drawn there
+until the Providers page drops it. The page detail lives in the UI-pages docs.
 
 Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
 `primer/web_search/__init__.py`), `WebSearchService`, and `WebSearchRegistry`.
@@ -412,6 +423,13 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
   `type=unavailable` with no singleton.
   `tests/e2e/test_web_active_config_tools_journey.py` has a scripted admin agent
   set an ordered fetch list and reads it back over REST.
+- `tests/ui/test_web_settings_section.py`, `tests/ui/test_web_settings_page.py`
+  and `tests/ui/test_web_settings_verb.py` cover the Platform › Web page in V8
+  (`tests/ui/_web_settings_harness.py`: the real kit and foundation, refusals
+  from the real router): the exact PUT bodies, the missing-id option, the
+  last member that cannot be unticked, one PUT at a time, the fetcher cards,
+  the Register overlay, the admin-only notice and the palette verb.
+  `tests/ui_e2e/test_web_settings_journey.py` drives it in a browser.
 - `tests/toolset/web/test_factory.py` and `tests/toolset/web/test_tools.py` cover
   the toolset: `list_tools` yielding exactly two ids, dispatch through a fake
   `WebSearchService`, the required `web_search_service` kwarg, the
@@ -432,3 +450,4 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
 - **The active-config singleton used a 5-second TTL on the service's read cache.** Why: it is the safety net for multi-process deployments where the PUT route's in-process `invalidate_active_config()` call does not reach every worker. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **The `web__web_search` tool's wire schema (id, description, args schema, result shape) was kept bit-identical through the provider-model migration.** Why: MCP clients already calling the tool keep working without modification while the dispatch internals moved behind the service. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **Two extra adapters (Firecrawl and Exa) shipped beyond the spec's Tavily-only roster, and the `WebSearchRegistry` factory parameter became optional defaulting to `default_web_search_factory`.** Why: the additional keyed backends rounded out the provider roster and the default factory removed boilerplate at every construction site. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
+- **The active-config controls got a page of their own, Platform › Web, and the web fetch choice got its first console controls (platform revamp 2026-10-18).** Why: the user asked for one Web settings page, where an admin chooses which providers answer web searches and page fetches (one provider, or an ordered list tried in turn) and manages the fetchers, instead of a chip on the Providers page that covered web search only. Spec: docs/superpowers/specs/2026-10-18-platform-view-revamp-design.md, section 8.
