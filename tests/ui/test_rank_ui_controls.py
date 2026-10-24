@@ -94,6 +94,36 @@ def test_the_rank_helper_matches_admin_user_own_unknown_and_token_cases(attentio
     assert _js(attention, f"SH_rankDecisionWords({json.dumps(USER_SESSION)})") == "Only a user or admin can decide this."
 
 
+def test_a_session_with_no_recorded_creator_ranks_as_a_user(attention) -> None:
+    """A loaded row carries ``initiated_by: null`` and the server ranks its runs as an ordinary user (``principal_rank(None)``), so a
+    restricted viewer is outranked and a user or admin viewer is not. A row that has not loaded yet (no key at all, or no session) fails
+    open, as unknown data does."""
+    restricted = {
+        "type": "user",
+        "id": "user-restricted",
+        "display": "restricted",
+        "role": "restricted",
+        "source": "local",
+    }
+    admin = {
+        "type": "user",
+        "id": "user-admin-3",
+        "display": "admin",
+        "role": "admin",
+        "source": "local",
+    }
+    cases = [
+        (restricted, {"initiated_by": None}, False),
+        (USER, {"initiated_by": None}, True),
+        (admin, {"initiated_by": None}, True),
+        (restricted, {}, True),
+        (restricted, None, True),
+    ]
+    for viewer, session, expected in cases:
+        got = _js(attention, f"SH_mayDecideFor({json.dumps(viewer)}, {json.dumps(session)})")
+        assert got is expected, (viewer, session, got)
+
+
 _CARD_PRELUDE = r"""
 var window = globalThis;
 var VIEWER = null;

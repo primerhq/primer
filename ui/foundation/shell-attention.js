@@ -134,9 +134,21 @@ var SH_ROLE_RANK = { restricted: 0, user: 1, admin: 2 };
 function SH_mayDecideFor(viewer, session) {
   var v = viewer || null;
   var creator = session && session.initiated_by;
-  if (!v || !session || !creator) return true;
+  if (!v || !session) return true;
   if (v.type === "system" || v.role === "admin") return true;
   if (!v.role || !v.type || !v.id) return true;
+  if (!creator) {
+    if (Object.prototype.hasOwnProperty.call(session, "initiated_by")) {
+      // the row carries `initiated_by: null`: the server ranks a session with no
+      // recorded creator as an ordinary `user` (principal_rank), so the console
+      // ranks it the same. The id is the server's unattributed stand-in
+      // (PrincipalRef.unattributed), which is also what gets the synthetic
+      // creator past the partial-creator check below (an empty id fails open)
+      creator = { type: "user", id: "unattributed", role: "user" };
+    } else {
+      return true;
+    }
+  }
   if (!creator.role || !creator.type || !creator.id) return true;
   if ((v.type === "user" || v.type === "api_token")
       && v.type === creator.type && v.id === creator.id) return true;
