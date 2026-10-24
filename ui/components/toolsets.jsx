@@ -889,11 +889,16 @@ function TS_KvEditor({ label, hint, pairs, onChange, keyPlaceholder, valuePlaceh
 // ============================================================================
 
 // The reason a 404 toolset detail says it is not found. The retired ids
-// search and _search name where search went; every other id says the
-// plain thing.
+// search and _search name where search went; canvas is off, not deleted
+// (the server leaves it out while canvas.agent_tools_enabled is off, the
+// default until the canvas panel ships: audit G3-08); every other id says
+// the plain thing.
 function TS_notFoundReason(id) {
   if (id === "search" || id === "_search") {
     return "There is no search toolset. Agents search this install's agents, graphs, collections and tools with the Collections toolset's search tool, by meaning once internal search is on in System \u203a Internal collections.";
+  }
+  if (id === "canvas") {
+    return "The canvas toolset is off. It stays out of the catalogue, and agents cannot bind its tools, until the canvas panel ships (canvas.agent_tools_enabled).";
   }
   return "There is no toolset named " + id + ". It may have been deleted, or the link is out of date.";
 }
