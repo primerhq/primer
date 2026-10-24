@@ -447,3 +447,68 @@ async def test_good_env_names_still_create_the_workspace(client, backend_calls):
 
     assert r.status_code == 201, r.text
     assert len(backend_calls) == 1
+
+
+# ---- the G5 audit: the template's own disk (backend.pvc_size) and sizes of zero or less, on every door ------------------------
+
+
+@pytest.mark.parametrize("pvc_size", ["10 Gi", "lots", "-5Gi", "1000Pi"])
+async def test_a_template_disk_that_is_no_disk_a_workspace_may_have_is_a_422_on_the_template_write(client, sp, pvc_size):
+    r = await client.post("/v1/workspace_templates", json={
+        "id": "tpl-disk", "description": "d", "provider_id": "k3s",
+        "backend": {"kind": "kubernetes", "image": "rt:1", "pvc_size": pvc_size},
+    })
+
+    assert r.status_code == 422, r.text
+    errors = r.json()["extensions"]["errors"]
+    assert [e["loc"] for e in errors] == [["body", "backend", "kubernetes", "pvc_size"]], errors
+    assert f"pvc_size {pvc_size!r} is " in errors[0]["msg"]
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-disk") is None
+
+    ok = await client.post("/v1/workspace_templates", json={
+        "id": "tpl-disk", "description": "d", "provider_id": "k3s",
+        "backend": {"kind": "kubernetes", "image": "rt:1", "pvc_size": "64Ti"},
+    })
+    assert ok.status_code == 201, ok.text
+
+
+@pytest.mark.parametrize("field", ["cpu_cores", "memory_bytes"])
+async def test_a_template_size_of_zero_or_less_is_a_422_on_the_template_write(client, sp, field):
+    k8s = await client.post("/v1/workspace_templates", json={
+        "id": "tpl-zero", "description": "d", "provider_id": "k3s",
+        "backend": {"kind": "kubernetes", "image": "rt:1"}, "resources": {field: -1},
+    })
+    assert k8s.status_code == 422, k8s.text
+    assert [e["loc"] for e in k8s.json()["extensions"]["errors"]] == [["body", "resources", field]]
+
+    docker = await client.post("/v1/workspace_templates", json={
+        "id": "tpl-zero", "description": "d", "provider_id": "dock", "backend": {"kind": "container", field: 0},
+    })
+    assert docker.status_code == 422, docker.text
+    assert [e["loc"] for e in docker.json()["extensions"]["errors"]] == [["body", "backend", "container", field]]
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-zero") is None
+
+
+async def test_a_stored_template_with_a_disk_no_workspace_may_have_is_a_422_at_create(client, backend_calls, sp):
+    """A row stored before the model refused it (seeded the way the storage reads one back) still loads, and the create refuses
+    its disk naming the template and the field, before any backend is built."""
+    from primer.model.common import STORAGE_LOAD_CONTEXT
+
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate.model_validate({
+        "id": "tpl-old-disk", "provider_id": "k3s", "description": "d",
+        "backend": {"kind": "kubernetes", "image": "rt:1", "pvc_size": "1000Pi"},
+    }, context=STORAGE_LOAD_CONTEXT))
+
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-old-disk"})
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["detail"] == (
+        "template 'tpl-old-disk' sets backend.pvc_size to '1000Pi' (more than the 64 TiB a workspace may have). Edit the template."
+    )
+    assert "errors" not in body["extensions"]      # stored in the template, not sent in this request: no `loc`
+    _assert_nothing_built(backend_calls)
+    assert await _workspace_rows(sp) == []
+
+    ok = await _create(client, "tpl-old-disk", {"disk_bytes": 10 * 2**30})
+    assert ok.status_code == 201, ok.text       # the override replaces the template's disk

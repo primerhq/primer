@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 from uuid import uuid4
 
-from pydantic import AnyUrl, BaseModel, Field, SecretStr, model_validator
+from pydantic import AnyUrl, BaseModel, Field, SecretStr, ValidationInfo, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
 from primer.common.origin import origin_of
@@ -66,6 +66,22 @@ class Describeable(Identifiable):
 # The ``context`` of the dump that writes a row to storage (and of anything that needs the row's IDENTITY): a field type that masks something in the JSON-mode dump
 # (the password of a provider ``url`` or of a template's url file source, :class:`primer.model.masked_url.MaskedUserinfoUrl`) returns the real value when its serializer sees this key.
 STORAGE_DUMP_CONTEXT: dict[str, Any] = {"storage": True}
+
+# The ``context`` the storage backends validate a row they read back with (``SqliteStorage._from_row`` and ``PostgresStorage._from_row``; ``patch_if``
+# decodes the document it wrote through the same method). A validator added after rows were stored, which such a row may fail, asks
+# :func:`reading_a_stored_row` and lets the stored value through: the row was accepted by the write that stored it, and refusing it on read would
+# make the whole row unreadable (a 500 on every list, get and delete of it). The refusal stays on the write path, where a REST body or a tool's
+# arguments are validated with no context, and on the use of the value (the workspace create refuses a template's stored size). Read path
+# tolerant, write path strict. Only a validator that asks is tolerant: every other rule of a model applies to a stored row as before. Because
+# ``patch_if`` decodes through the same method, a field-scoped ``patch_if`` of a row that holds such a value (a workspace whose template snapshot
+# predates the rule) still applies, and a ``patch_if`` is not refused by such a rule either: it writes what platform code chose, not a request.
+STORAGE_LOAD_CONTEXT: dict[str, Any] = {"stored_row": True}
+
+
+def reading_a_stored_row(info: ValidationInfo) -> bool:
+    """Whether this validation is the read-back of a stored row (:data:`STORAGE_LOAD_CONTEXT`), not a write."""
+    context = info.context
+    return isinstance(context, dict) and context.get("stored_row") is True
 
 
 def dump_for_storage(entity: BaseModel) -> dict[str, Any]:
@@ -413,10 +429,13 @@ def _preserve_dict(name: str, new_map: dict[Any, Any], old_map: Any, moved: bool
 __all__ = [
     "REENTER_KEY",
     "REENTER_URL",
+    "STORAGE_DUMP_CONTEXT",
+    "STORAGE_LOAD_CONTEXT",
     "Describeable",
     "Identifiable",
     "dump_for_storage",
     "preserve_masked_secrets",
+    "reading_a_stored_row",
     "refuse_served_masks",
     "restore_served_masked_url",
 ]

@@ -285,3 +285,33 @@ async def test_a_stored_template_with_a_kubernetes_env_name_still_creates_worksp
 
     assert not result.is_error, result.output
     assert len(calls) == 1
+
+
+# ---- the G5 audit: the template's own disk (backend.pvc_size) and sizes of zero or less ----------------------------------------
+
+
+@pytest.mark.parametrize("pvc_size", ["10 Gi", "lots", "-5Gi", "1000Pi"])
+async def test_a_template_disk_no_workspace_may_have_is_a_validation_error_on_the_template_write(toolset, sp, pvc_size):
+    body = {"id": "tpl-disk", "provider_id": "k3s", "description": "d", "backend": {"kind": "kubernetes", "image": "rt:1", "pvc_size": pvc_size}}
+
+    result = await toolset.call(tool_name="create_workspace_template", arguments={"entity": body}, ctx=caller("user"))
+
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+    assert "pvc_size" in json.loads(result.output)["message"]
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-disk") is None
+
+
+async def test_a_stored_template_with_a_disk_no_workspace_may_have_answers_validation_error_at_create(toolset, sp, calls):
+    from primer.model.common import STORAGE_LOAD_CONTEXT
+
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate.model_validate({
+        "id": "tpl-old-disk", "provider_id": "k3s", "description": "d",
+        "backend": {"kind": "kubernetes", "image": "rt:1", "pvc_size": "lots"},
+    }, context=STORAGE_LOAD_CONTEXT))
+
+    result = await toolset.call(tool_name="create_workspace", arguments={"template_id": "tpl-old-disk"}, ctx=caller("user"))
+
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+    message = json.loads(result.output)["message"]
+    assert message.startswith("template 'tpl-old-disk' sets backend.pvc_size to 'lots' (not a Kubernetes quantity"), message
+    _assert_nothing_built(calls)

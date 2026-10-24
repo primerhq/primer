@@ -618,7 +618,8 @@ _TEMPLATE_FIELDS_BY_PROVIDER = (
     'with none the pod starts ``["python", "-m", "primer_runtime.server"]``; an explicit entrypoint wins and ``backend.args`` '
     "is appended. "
     "``resources.cpu_cores`` and ``resources.memory_bytes`` are the pod's requests and limits (the old ``backend.cpu_request``, "
-    "``cpu_limit``, ``memory_request`` and ``memory_limit`` are ignored), ``backend.pvc_size`` is the disk (for example ``10Gi``), "
+    "``cpu_limit``, ``memory_request`` and ``memory_limit`` are ignored), ``backend.pvc_size`` is the disk, a Kubernetes quantity "
+    f"with no space (for example ``10Gi``), more than zero and at most {MAX_WORKSPACE_DISK_BYTES // _TIB} TiB, "
     "and the placement fields are ``node_selector`` (label key to value), ``tolerations`` (``key``, ``operator``, ``value``, "
     "``effect``), ``gpu`` (``{count, resource_name}``), ``service_account_name`` and ``image_pull_policy`` (``Always``, "
     "``IfNotPresent`` or ``Never``). "
@@ -630,6 +631,8 @@ _TEMPLATE_FIELDS_BY_PROVIDER = (
     "``node_selector``, a ``gpu`` count with the default resource name and ``image_pull_policy`` are open to every user. "
     "A GPU resource name under ``kubernetes.io/`` or starting with ``requests.`` is refused for everyone "
     "(``type=validation-error``). "
+    "A template CPU or memory of zero or less, and a ``pvc_size`` that is not such a quantity, are refused when the template is "
+    "written (``type=validation-error``). "
     f"A template whose CPU or memory is above {MAX_WORKSPACE_CPU_CORES} cores or {MAX_WORKSPACE_MEMORY_BYTES // _TIB} TiB is refused "
     "(``type=validation-error``) when a workspace is created from it. A template ``env`` name follows the same rule as "
     "``overrides.env``. " + _ENV_NAME_RULE

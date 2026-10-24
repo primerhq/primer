@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Any, ClassVar, Literal, Union
 
@@ -38,11 +39,14 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    ValidationInfo,
+    ValidatorFunctionWrapHandler,
     field_validator,
     model_validator,
 )
+from pydantic import ValidationError as PydanticValidationError
 
-from primer.model.common import Describeable, Identifiable
+from primer.model.common import Describeable, Identifiable, reading_a_stored_row
 from primer.model.masked_url import MaskedUserinfoUrl
 
 _log = logging.getLogger(__name__)
@@ -122,6 +126,66 @@ def _is_k8s_reserved_resource_name(name: str) -> bool:
     come back as a generic 500 after the create had been rolled back.
     """
     return "kubernetes.io/" in name or name.startswith("requests.")
+
+
+# A Kubernetes quantity (``resource.Quantity``): a signed decimal number and at most one suffix, with no space: a binary SI unit (``Ki`` to
+# ``Ei``), a decimal SI unit (``m``, ``k``, ``M``, ``G``, ``T``, ``P``, ``E``) or a decimal exponent (``e3``, ``E-2``). ASCII digits only
+# (``\d`` would take other scripts' digits, which the API server refuses), and an exponent of at most four digits, so a value such as
+# ``1e999999`` is refused as written instead of being raised to its power.
+_K8S_QUANTITY_RE = re.compile(
+    r"(?P<number>[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(?P<suffix>Ki|Mi|Gi|Ti|Pi|Ei|[eE][+-]?[0-9]{1,4}|[mkMGTPE])?"
+)
+_K8S_QUANTITY_SCALE: dict[str, Decimal] = {
+    "": Decimal(1),
+    "m": Decimal("0.001"),
+    "k": Decimal(10**3), "M": Decimal(10**6), "G": Decimal(10**9), "T": Decimal(10**12), "P": Decimal(10**15), "E": Decimal(10**18),
+    "Ki": Decimal(2**10), "Mi": Decimal(2**20), "Gi": Decimal(2**30), "Ti": Decimal(2**40), "Pi": Decimal(2**50), "Ei": Decimal(2**60),
+}
+
+
+def parse_k8s_quantity(value: str) -> Decimal | None:
+    """The amount a Kubernetes quantity names (``10Gi`` is ``10 * 2**30``), or ``None`` when ``value`` is not one (``10 Gi``, ``lots``)."""
+    match = _K8S_QUANTITY_RE.fullmatch(value)
+    if match is None:
+        return None
+    number = Decimal(match["number"])
+    suffix = match["suffix"] or ""
+    if len(suffix) > 1 and suffix[0] in "eE":
+        return number.scaleb(int(suffix[1:]))
+    return number * _K8S_QUANTITY_SCALE[suffix]
+
+
+def disk_quantity_problem(value: str) -> str | None:
+    """What is wrong with ``value`` as a workspace's disk (a Kubernetes PVC request), or ``None`` when nothing is.
+
+    A disk is a Kubernetes quantity of more than zero bytes and at most :data:`MAX_WORKSPACE_DISK_BYTES` (lead ruling 17). The answer is a
+    phrase that follows "is" (``pvc_size '10 Gi' is not a Kubernetes quantity ...``), so the model and the create-time check
+    (``primer.workspace.size_overrides``) say the same thing.
+    """
+    amount = parse_k8s_quantity(value)
+    if amount is None:
+        return "not a Kubernetes quantity: write a number and an optional unit with no space, for example 10Gi, 500Mi or 1Ti"
+    if amount <= 0:
+        return "not more than zero"
+    if amount > MAX_WORKSPACE_DISK_BYTES:
+        return f"more than the {MAX_WORKSPACE_DISK_BYTES // 2**40} TiB a workspace may have"
+    return None
+
+
+def _positive_unless_stored(value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo) -> Any:
+    """Run a size field's own validation, ``gt=0`` included, and let a STORED row's value that fails only ``gt=0`` through.
+
+    A template size of zero or less was accepted until the G5 audit (the backend then made of it what it did: Docker's unlimited, a pod spec
+    the API server refuses). A request may no longer write one (a 422 naming the field), but a row stored before still loads
+    (:func:`~primer.model.common.reading_a_stored_row`), and the workspace create refuses the size it holds
+    (``primer.workspace.size_overrides.refuse_oversized_template_sizes``). A value that fails for any other reason fails as before.
+    """
+    try:
+        return handler(value)
+    except PydanticValidationError as exc:
+        if reading_a_stored_row(info) and all(error["type"] == "greater_than" for error in exc.errors()):
+            return value
+        raise
 
 
 # ===========================================================================
@@ -243,15 +307,17 @@ class ResourceLimits(BaseModel):
 
     cpu_cores: float | None = Field(
         default=None,
+        gt=0,
         description=(
-            "Maximum CPU cores. None = no limit. Kubernetes requests and limits. "
+            "Maximum CPU cores, more than zero. None = no limit. Kubernetes requests and limits. "
             "Docker reads backend.cpu_cores / backend.memory_bytes; Local ignores it."
         ),
     )
     memory_bytes: int | None = Field(
         default=None,
+        gt=0,
         description=(
-            "Maximum resident memory in bytes. None = no limit. Kubernetes requests and limits. "
+            "Maximum resident memory in bytes, more than zero. None = no limit. Kubernetes requests and limits. "
             "Docker reads backend.cpu_cores / backend.memory_bytes; Local ignores it."
         ),
     )
@@ -270,6 +336,11 @@ class ResourceLimits(BaseModel):
             "Kept so rows written before the 2026-10 revamp load."
         ),
     )
+
+    @field_validator("cpu_cores", "memory_bytes", mode="wrap")
+    @classmethod
+    def _sizes_are_positive(cls, value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo) -> Any:
+        return _positive_unless_stored(value, handler, info)
 
 
 # ===========================================================================
@@ -467,12 +538,17 @@ class ContainerTemplateConfig(BaseModel):
     )
     cpu_cores: float | None = Field(
         default=None,
-        description="docker --cpus value; null = unlimited. overrides.resources.cpu_cores replaces it for one workspace.",
+        gt=0,
+        description=(
+            "docker --cpus value, more than zero; null = unlimited. overrides.resources.cpu_cores replaces it for one workspace."
+        ),
     )
     memory_bytes: int | None = Field(
         default=None,
+        gt=0,
         description=(
-            "docker --memory value in bytes; null = unlimited. overrides.resources.memory_bytes replaces it for one workspace."
+            "docker --memory value in bytes, more than zero; null = unlimited. overrides.resources.memory_bytes replaces it "
+            "for one workspace."
         ),
     )
     extra_mounts: list[ContainerMount] = Field(
@@ -486,6 +562,11 @@ class ContainerTemplateConfig(BaseModel):
             "Kept so rows written before the 2026-10 revamp load."
         ),
     )
+
+    @field_validator("cpu_cores", "memory_bytes", mode="wrap")
+    @classmethod
+    def _sizes_are_positive(cls, value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo) -> Any:
+        return _positive_unless_stored(value, handler, info)
 
 
 class K8sVolume(BaseModel):
@@ -657,7 +738,11 @@ class KubernetesTemplateConfig(BaseModel):
 
     pvc_size: str = Field(
         default="10Gi",
-        description="PVC size declared on the StatefulSet's volumeClaimTemplates.",
+        description=(
+            "The workspace's disk: the PVC size declared on the StatefulSet's volumeClaimTemplates. A Kubernetes quantity "
+            "with no space (10Gi, 500Mi, 1Ti), more than zero and at most 64 TiB. overrides.resources.disk_bytes replaces it "
+            "for one workspace."
+        ),
     )
     pvc_access_modes: list[Literal["ReadWriteOnce", "ReadWriteMany"]] = Field(
         default_factory=lambda: ["ReadWriteOnce"],
@@ -734,6 +819,19 @@ class KubernetesTemplateConfig(BaseModel):
                 f"service account name {value!r} is not valid: use lowercase letters, digits, '-' and '.', "
                 "starting and ending with a letter or digit (at most 253 characters)"
             )
+        return value
+
+    @field_validator("pvc_size")
+    @classmethod
+    def _pvc_size_is_a_disk_quantity(cls, value: str, info: ValidationInfo) -> str:
+        # Free text until the G5 audit: '10 Gi', 'lots', '-5Gi' and '1000Pi' were stored and reached the cluster, which refused them
+        # late (a generic 500 after the rollback) or never bound the claim. A row stored before still loads (read path tolerant); the
+        # workspace create refuses its disk (primer.workspace.size_overrides.refuse_oversized_template_sizes).
+        if reading_a_stored_row(info):
+            return value
+        problem = disk_quantity_problem(value)
+        if problem is not None:
+            raise ValueError(f"pvc_size {value!r} is {problem}")
         return value
 
     @field_validator("node_selector")

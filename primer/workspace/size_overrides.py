@@ -23,6 +23,15 @@ the model (``loc`` ``body.overrides.resources.<field>``, so the console shows it
 the cap. The template's own CPU and memory are older fields, which cannot take a cap on the model without making a stored row
 fail to load, so :func:`refuse_oversized_template_sizes` checks the size the workspace will really get (the override's, else
 the template's) at create time instead.
+
+**The template's own disk, and sizes of zero or less** (the G5 audit). A Kubernetes template's ``backend.pvc_size`` was free text
+that no door checked: ``10 Gi``, ``lots``, ``-5Gi`` and ``1000Pi`` were stored and handed to the cluster. The model now refuses a
+``pvc_size`` that is not a Kubernetes quantity, is not more than zero or is above 64 TiB, and a template CPU or memory of zero or
+less (``gt=0``), on every write. A row stored before those rules still loads (the storage reads rows back with
+``STORAGE_LOAD_CONTEXT``, and these validators let a stored value through: read path tolerant, write path strict), so the create
+checks the same three things on the size the workspace will really get: :func:`refuse_oversized_template_sizes` refuses a
+template disk that is not a valid quantity of at most 64 TiB (unless ``overrides.resources.disk_bytes`` replaces it) and a
+template CPU or memory that is not more than zero, as it refuses one above the cap.
 """
 
 from __future__ import annotations
@@ -38,6 +47,7 @@ from primer.model.workspace import (
     ContainerTemplateConfig,
     KubernetesTemplateConfig,
     WorkspaceResourceOverrides,
+    disk_quantity_problem,
 )
 
 if TYPE_CHECKING:
@@ -126,17 +136,19 @@ _TIB = 2**40
 
 
 class TemplateSizeRefused(ValidationError):
-    """The 422 for a size the TEMPLATE sets above the cap, and that no override replaces.
+    """The 422 for a size the TEMPLATE sets that a workspace may not get (above the cap, not more than zero, or a disk that is not a
+    Kubernetes quantity), and that no override replaces.
 
-    ``fields`` are the template fields at fault (``resources.cpu_cores`` ... on Kubernetes, ``backend.cpu_cores`` ... on Docker).
-    The value is stored in the template, not sent in this request, so there is no ``loc`` to give: the message names the template
-    and the field, and the console shows it in the line above the dialog's footer.
+    ``fields`` are the template fields at fault (``resources.cpu_cores`` ... and ``backend.pvc_size`` on Kubernetes,
+    ``backend.cpu_cores`` ... on Docker). The value is stored in the template, not sent in this request, so there is no ``loc`` to
+    give: the message names the template and the field, and the console shows it in the line above the dialog's footer.
+    ``refused`` holds ``(field, value, why)``, ``why`` a phrase such as ``more than the 1024 CPU cores a workspace may have``.
     """
 
-    def __init__(self, template_id: str, over: list[tuple[str, Any, str]]) -> None:
+    def __init__(self, template_id: str, refused: list[tuple[str, Any, str]]) -> None:
         self.template_id = template_id
-        self.fields = [field for field, _value, _limit in over]
-        sets = " and ".join(f"{field} to {value!r} (more than the {limit} a workspace may have)" for field, value, limit in over)
+        self.fields = [field for field, _value, _why in refused]
+        sets = " and ".join(f"{field} to {value!r} ({why})" for field, value, why in refused)
         super().__init__(f"template {template_id!r} sets {sets}. Edit the template.")
 
     @property
@@ -145,18 +157,22 @@ class TemplateSizeRefused(ValidationError):
 
 
 def refuse_oversized_template_sizes(template: "WorkspaceTemplate", overrides: "WorkspaceTemplateOverrides | None") -> None:
-    """Raise :class:`TemplateSizeRefused` when the CPU or memory this workspace will get from its TEMPLATE is above the cap.
+    """Raise :class:`TemplateSizeRefused` when a size this workspace will get from its TEMPLATE is one no workspace may have.
 
     Only the size that really applies is looked at: a field the per-workspace override sets replaces the template's, so whatever
-    the template says there is not what runs. Kubernetes reads ``resources.cpu_cores`` / ``resources.memory_bytes``, Docker
-    ``backend.cpu_cores`` / ``backend.memory_bytes``; a Local template's size is ignored, so it is not checked. A value that is
-    not a number at all (``nan``) is above any cap. Only the upper bound is the ruling's: zero and negative numbers keep what
-    the backend made of them before.
+    the template says there is not what runs. Kubernetes reads ``resources.cpu_cores`` / ``resources.memory_bytes`` and the disk
+    ``backend.pvc_size``, Docker ``backend.cpu_cores`` / ``backend.memory_bytes``; a Local template's size is ignored, so it is not
+    checked. A CPU or memory is refused above the cap (a value that is not a number at all, ``nan``, is above any cap) and when it
+    is not more than zero; the disk is refused when it is not a Kubernetes quantity, not more than zero or above 64 TiB. A
+    template written since the G5 audit cannot hold any of these (the model refuses them), so what this catches below the caps is
+    a row stored before (the model loads it as it is).
     """
     backend = template.backend
+    disk: tuple[str, str] | None = None
     if isinstance(backend, KubernetesTemplateConfig):
         cpu = ("resources.cpu_cores", template.resources.cpu_cores)
         memory = ("resources.memory_bytes", template.resources.memory_bytes)
+        disk = ("backend.pvc_size", backend.pvc_size)
     elif isinstance(backend, ContainerTemplateConfig):
         cpu = ("backend.cpu_cores", backend.cpu_cores)
         memory = ("backend.memory_bytes", backend.memory_bytes)
@@ -164,7 +180,7 @@ def refuse_oversized_template_sizes(template: "WorkspaceTemplate", overrides: "W
         return
     resources = overrides.resources if overrides is not None else None
     replaced = {field for field in SIZE_FIELDS if resources is not None and getattr(resources, field) is not None}
-    over: list[tuple[str, Any, str]] = []
+    refused: list[tuple[str, Any, str]] = []
     for (name, value), field, cap, limit in (
         (cpu, "cpu_cores", MAX_WORKSPACE_CPU_CORES, f"{MAX_WORKSPACE_CPU_CORES} CPU cores"),
         (memory, "memory_bytes", MAX_WORKSPACE_MEMORY_BYTES, f"{MAX_WORKSPACE_MEMORY_BYTES // _TIB} TiB of memory"),
@@ -172,9 +188,16 @@ def refuse_oversized_template_sizes(template: "WorkspaceTemplate", overrides: "W
         if field in replaced or value is None:
             continue
         if not value <= cap:     # written so that nan, which compares false with everything, is refused
-            over.append((name, value, limit))
-    if over:
-        raise TemplateSizeRefused(template.id, over)
+            refused.append((name, value, f"more than the {limit} a workspace may have"))
+        elif not value > 0:
+            refused.append((name, value, "not more than zero"))
+    if disk is not None and "disk_bytes" not in replaced:
+        name, quantity = disk
+        problem = disk_quantity_problem(quantity)
+        if problem is not None:
+            refused.append((name, quantity, problem))
+    if refused:
+        raise TemplateSizeRefused(template.id, refused)
 
 
 __all__ = [
