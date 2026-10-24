@@ -48,7 +48,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from primer.model.yield_ import gate_id_of
+from primer.model.yield_ import gate_id_of, wake_gate_id_of
 from primer.session.gate_token import gate_token_matches
 from primer.session.yields import _tool_call_id_for
 
@@ -113,6 +113,52 @@ def enumerate_pending_gates(blob: dict[str, Any]) -> list[dict[str, Any]]:
         "event_key": yielded.get("event_key"),
         "resume_metadata": dict(yielded.get("resume_metadata") or {}),
     }]
+
+
+def gate_is_decided(session: Any, gate: dict[str, Any]) -> bool:
+    """Whether ``gate`` (an entry of :func:`enumerate_pending_gates` over ``session.parked_state``) already holds a decision stamped on the row.
+
+    A respond stamps its decision before any worker runs it (:func:`primer.session.yields.durably_mark_session_resumable`):
+    ``parked_status='resumable'`` and the wake under the gate's own event key (the singular ``resume_event_payload`` / ``resume_event_key`` and, on
+    a multi-event park, the key's ``resume_event_payloads`` entry), whose payload names the gate it decides
+    (:func:`~primer.model.yield_.with_wake_gate`). The gate stays in ``parked_state`` until a worker claims the row, so a pending read that does not
+    ask this offers a gate whose respond can only answer 409 ``already_decided`` (or 404 ``gate_not_pending`` once the row is claimed): ticket 01a16ca6.
+
+    * A row that is not ``resumable`` holds no decision.
+    * A single-event park takes ONE wake (the flip advances it from ``parked`` only), so once it is ``resumable`` its gate is decided, timed out or
+      cancelled: nothing more can be decided on it.
+    * On a multi-event park (a graph park with several gates) a gate is decided when a wake held under its event key names it, or names no gate
+      (a timeout marker, a decision from before gates had ids); a gate with no id is judged by the key alone. A held wake that names ANOTHER gate
+      is not this one's decision.
+    """
+    if getattr(session, "parked_status", None) != "resumable":
+        return False
+    if not getattr(session, "parked_event_keys", None):
+        return True
+    event_key = gate.get("event_key")
+    if not event_key:
+        return False
+    gate_id = gate_id_of(gate.get("resume_metadata"))
+    state: dict[str, Any] = getattr(session, "parked_state", None) or {}
+    held = [(state.get("resume_event_key"), state.get("resume_event_payload"))]
+    held += [
+        (entry.get("event_key"), entry.get("payload"))
+        for entry in (state.get("resume_event_payloads") or {}).values()
+        if isinstance(entry, dict)
+    ]
+    for key, payload in held:
+        if key != event_key:
+            continue
+        named = wake_gate_id_of(payload)
+        if named is None or gate_id is None or named == gate_id:
+            return True
+    return False
+
+
+def undecided_pending_gates(session: Any) -> list[dict[str, Any]]:
+    """The pending entries of ``session``'s park that a person can still decide: :func:`enumerate_pending_gates` less every
+    :func:`gate_is_decided` one. What every pending read offers (ticket 01a16ca6)."""
+    return [gate for gate in enumerate_pending_gates(getattr(session, "parked_state", None) or {}) if not gate_is_decided(session, gate)]
 
 
 _KEY_FIELD_BY_LIST = {"pending_toolcalls": "parked_event_key", "pending_agent_yields": "event_key"}
@@ -199,4 +245,12 @@ def resolve_pending_gate(
     return matches[0] if matches else None
 
 
-__all__ = ["enumerate_pending_gates", "fired_key_names_a_pending_entry", "matching_pending_gates", "pending_entries", "resolve_pending_gate"]
+__all__ = [
+    "enumerate_pending_gates",
+    "fired_key_names_a_pending_entry",
+    "gate_is_decided",
+    "matching_pending_gates",
+    "pending_entries",
+    "resolve_pending_gate",
+    "undecided_pending_gates",
+]
