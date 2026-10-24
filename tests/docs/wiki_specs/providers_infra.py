@@ -18,7 +18,7 @@ SPECS = (
              tools=scoped("system", "list_semantic_search_providers get_semantic_search_provider create_semantic_search_provider update_semantic_search_provider delete_semantic_search_provider find_semantic_search_providers invalidate_semantic_search_provider"),
              related=("providers/embedding", "knowledge/search")),
     PageSpec("providers/artifact-storage", "Artifact storage",
-             "Admin: choose where files and large outputs are stored, and probe a store before using it.",
+             "Admin: choose where message media and service files are stored, and probe a store before using it.",
              "feature", 6,
              audience="admin",
              tools=scoped("system", "list_artifact_storage_providers get_artifact_storage_provider create_artifact_storage_provider update_artifact_storage_provider delete_artifact_storage_provider find_artifact_storage_providers"),
