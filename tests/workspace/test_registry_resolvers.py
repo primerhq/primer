@@ -40,10 +40,11 @@ class _ReattachBackend:
 
 
 @pytest.mark.asyncio
-async def test_materialise_passes_resolvers(monkeypatch):
+async def test_materialise_passes_resolvers(fake_storage_provider, monkeypatch):
     backend = _RecordingBackend()
+    # A real storage provider: materialise reads the template's provider row (an unimplemented variant is refused there, ticket 01a16d72).
     reg = WorkspaceRegistry(
-        storage_provider=object(),
+        storage_provider=fake_storage_provider,
         secret_provider=_StubSecretProvider(),
     )
 
@@ -60,9 +61,9 @@ async def test_materialise_passes_resolvers(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_materialise_without_secret_provider_omits_secret_resolver(monkeypatch):
+async def test_materialise_without_secret_provider_omits_secret_resolver(fake_storage_provider, monkeypatch):
     backend = _RecordingBackend()
-    reg = WorkspaceRegistry(storage_provider=object())  # no secret provider
+    reg = WorkspaceRegistry(storage_provider=fake_storage_provider)  # no secret provider
 
     async def _fake_get_backend(provider_id):
         return backend

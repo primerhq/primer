@@ -77,4 +77,28 @@ class ReservedWorkspaceError(PrimerError):
         return {"error": "reserved_workspace", "workspace_id": self.workspace_id}
 
 
-__all__ = ["ReservedWorkspaceError", "WorkspaceRefusedError"]
+#: What a create on a provider variant the platform does not build answers, from REST (501 ``not_implemented``) and the ``create_workspace`` tool
+#: (``type=not-implemented``) alike: the words the REST route has always used.
+AGENT_SANDBOX_NOT_IMPLEMENTED = (
+    "K8s provider variant=agent_sandbox is reserved "
+    "(see redesign spec \u00a79). Implementation lands in a "
+    "follow-up engagement; switch the provider variant to "
+    "'system' to use the StatefulSet+Service path."
+)
+
+
+class WorkspaceNotImplementedError(PrimerError):
+    """A workspace was asked of a provider variant the platform does not build yet: a Kubernetes provider with ``variant: agent_sandbox``.
+
+    The variant is accepted when the provider is created, but no backend materialises it. Raised by
+    :meth:`primer.api.registries.workspace_registry.WorkspaceRegistry.materialise`, the one point every create passes (the REST route, the
+    ``create_workspace`` tool and the bootstrap seed), before any backend is built, so a refused create builds and leaves nothing. The REST route
+    answers 501 ``not_implemented`` and the tool ``type=not-implemented``, both in :data:`AGENT_SANDBOX_NOT_IMPLEMENTED`'s words.
+    """
+
+    def __init__(self, provider_id: str) -> None:
+        super().__init__(AGENT_SANDBOX_NOT_IMPLEMENTED)
+        self.provider_id = provider_id
+
+
+__all__ = ["AGENT_SANDBOX_NOT_IMPLEMENTED", "ReservedWorkspaceError", "WorkspaceNotImplementedError", "WorkspaceRefusedError"]

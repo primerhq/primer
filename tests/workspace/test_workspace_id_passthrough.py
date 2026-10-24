@@ -95,10 +95,11 @@ class _RecordingBackend:
         return "workspace-handle"
 
 
-async def test_registry_materialise_forwards_workspace_id(monkeypatch) -> None:
+async def test_registry_materialise_forwards_workspace_id(fake_storage_provider, monkeypatch) -> None:
     """``WorkspaceRegistry.materialise`` plumbs the pinned id to the backend."""
     rec = _RecordingBackend()
-    reg = WorkspaceRegistry(storage_provider=object())
+    # A real storage provider: materialise reads the template's provider row (an unimplemented variant is refused there, ticket 01a16d72).
+    reg = WorkspaceRegistry(storage_provider=fake_storage_provider)
 
     async def _fake_get_backend(provider_id):
         return rec

@@ -127,7 +127,7 @@ from primer.workspace.diagnostic import (
     parse_diagnostic_command,
 )
 from primer.model.user import User
-from primer.model.workspace_refusal import ReservedWorkspaceError
+from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceNotImplementedError
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
@@ -935,7 +935,6 @@ async def create_workspace(
     engine=Depends(get_claim_engine),
     workspace_storage=Depends(get_workspace_storage),
     template_storage=Depends(get_workspace_template_storage),
-    provider_storage=Depends(get_workspace_provider_storage),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> WorkspaceRow:
     # A secret file source in the overrides reads an operator secret by name: admin only (AUTHZ-05 / SSRF-06).
@@ -952,41 +951,25 @@ async def create_workspace(
                 f"Workspace with id {body.id!r} already exists"
             )
 
-    # Reserve agent_sandbox slot - k8s provider variant=agent_sandbox is
-    # accepted at provider-create time but workspace materialisation is
-    # not implemented in v1 (see redesign spec §9).
-    provider = await provider_storage.get(template.provider_id)
-    if provider is None:
-        raise NotFoundError(
-            f"WorkspaceProvider {template.provider_id!r} does not exist"
-        )
-    if (
-        provider.config.kind == "kubernetes"
-        and getattr(provider.config, "variant", "system") == "agent_sandbox"
-    ):
-        raise HTTPException(
-            status_code=501,
-            detail={
-                "error": "not_implemented",
-                "message": (
-                    "K8s provider variant=agent_sandbox is reserved "
-                    "(see redesign spec §9). Implementation lands in a "
-                    "follow-up engagement; switch the provider variant to "
-                    "'system' to use the StatefulSet+Service path."
-                ),
-            },
-        )
-
     overrides = body.overrides or WorkspaceTemplateOverrides()
     # The overrides are kept on the workspace row and served masked (overrides.env): a body that sends a served mask back (the copy-a-workspace move) is a 422 before anything is materialised,
     # because the workspace would start with the mask as the variable's value (01a1212a, round 3 of #711).
     refuse_served_masks(overrides)
     # Pin the live instance to the caller-supplied id (same id the row is
     # keyed by, below) so re-attach after cache eviction resolves the SAME
-    # backend object instead of 404ing.
-    live = await registry.materialise(
-        template=template, overrides=overrides, workspace_id=body.id
-    )
+    # backend object instead of 404ing. A provider that does not exist is
+    # materialise's 404; a Kubernetes provider with variant=agent_sandbox is
+    # its refusal, answered 501 here in the words the tool answers too
+    # (ticket 01a16d72 ruling 1: the check used to live in this route alone).
+    try:
+        live = await registry.materialise(
+            template=template, overrides=overrides, workspace_id=body.id
+        )
+    except WorkspaceNotImplementedError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail={"error": "not_implemented", "message": exc.message},
+        ) from exc
 
     # materialise() has now created a live container/volume, but the durable
     # WorkspaceRow is written LAST. Any failure in the mount work or the

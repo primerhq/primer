@@ -21,7 +21,7 @@ A workspace provider (`WorkspaceProvider`) is a registered compute backend that 
   - `connection`: `in_cluster`, `kubeconfig` (`path`, optional `context`) or `service_account_token` (`apiserver_url`, `ca_data`, `token`);
   - `namespace`, where the workspaces are created;
   - `reachability`: `in_cluster`, `ingress` (a `url_template`) or `gateway_httproute`;
-  - `variant`: `system` (the default). `agent_sandbox` is reserved and not implemented: leave `variant` at `system`;
+  - `variant`: `system` (the default). `agent_sandbox` is reserved and not implemented: a provider accepts it, but every workspace create on it is refused with `not-implemented` (REST 501) and builds nothing. Leave `variant` at `system`;
   - `image_pull_secrets`, optional.
 - Secrets in a config (`tls_key`, a service account `token`) come back masked on every read.
 - The built-in `local` provider ships with the platform, and the built-in `local-default` template uses it. Nobody can create a provider with its id, and nobody can delete it.

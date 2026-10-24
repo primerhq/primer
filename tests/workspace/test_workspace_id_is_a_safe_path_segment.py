@@ -411,10 +411,11 @@ async def test_the_registry_refuses_an_id_that_fails_the_rule_before_any_backend
 
 
 async def test_the_registry_still_forwards_an_id_that_passes_the_rule(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_storage_provider, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rec = _RecordingBackend()
-    reg = WorkspaceRegistry(storage_provider=object())
+    # A real storage provider: past the id rule, materialise reads the template's provider row (ticket 01a16d72).
+    reg = WorkspaceRegistry(storage_provider=fake_storage_provider)
 
     async def _fake_get_backend(provider_id):
         return rec
