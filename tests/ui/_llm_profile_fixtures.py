@@ -46,7 +46,8 @@ def router_envelopes(storage_provider: Any) -> dict[str, dict[str, Any]]:
     """The problem bodies of three refusals, as the real ``model_profile_router`` answers them.
 
     ``conflict`` (409) is a create on an id that exists; ``member_not_found`` (422, field ``members``) an aggregate naming a profile that does
-    not; ``provider_not_found`` (422, field ``provider_id``) a single profile on a provider that does not exist. The app is the router under ``/v1``
+    not; ``provider_not_found`` (422, field ``provider_id``) a single profile on a provider that does not exist; ``bad_reasoning`` (422, the
+    model's own validation) a ``config.reasoning`` that is not a level. The app is the router under ``/v1``
     with the API's own error handlers, over ``storage_provider`` (the root ``fake_storage_provider`` fixture) seeded with the single profiles
     ``p-a`` and ``p-b``.
     """
@@ -76,6 +77,8 @@ def router_envelopes(storage_provider: Any) -> dict[str, dict[str, Any]]:
         "conflict": (409, {"id": "p-a", "description": "again", "kind": "aggregated", "members": ["p-a", "p-b"]}),
         "member_not_found": (422, {"id": "agg-new", "description": "x", "kind": "aggregated", "members": ["p-a", "p-gone"]}),
         "provider_not_found": (422, {"id": "p-new", "description": "x", "provider_id": "no-such-provider", "model_name": "m", "context_length": 5}),
+        "bad_reasoning": (422, {"id": "p-new", "description": "x", "provider_id": "lp", "model_name": "m", "context_length": 5,
+                                "config": {"reasoning": "extreme", "extended": {}}}),
     }
     out: dict[str, dict[str, Any]] = {}
     for name, (status, body) in attempts.items():

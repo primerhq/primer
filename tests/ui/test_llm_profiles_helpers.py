@@ -72,10 +72,11 @@ def test_the_helper_block_holds_no_hook_and_no_react() -> None:
 def test_every_helper_is_a_global_of_the_bundle(ctx) -> None:
     for name in ("MP_fmtTokens", "MP_isSingle", "MP_isManaged", "MP_memberRows", "MP_toggleMember", "MP_toggleAllMembers", "MP_moveMember",
                  "MP_aggregateWindow", "MP_windowText", "MP_advancedIsSet", "MP_nameError", "MP_aggregateBody", "MP_editBody", "MP_refusalErrors",
-                 "MP_contextError", "MP_providerOptions", "MP_routingLabel", "MP_usageText", "MP_profileCard", "MP_withWindows"):
+                 "MP_contextError", "MP_providerOptions", "MP_routingLabel", "MP_usageText", "MP_profileCard", "MP_withWindows",
+                 "MP_extendedText", "MP_parseExtended"):
         assert ctx.eval(f"typeof {name}") == "function", name
     for name in ("MP_AGGREGATE_DEFAULTS", "MP_ROUTING_OPTIONS", "MP_ROUTING_HELP", "MP_FAILOVER_POINT_OPTIONS", "MP_FAILOVER_POINT_HELP",
-                 "MP_FAILOVER_ON_OPTIONS", "MP_FAILOVER_ON_HELP", "MP_ICON_SINGLE", "MP_ICON_AGGREGATED"):
+                 "MP_FAILOVER_ON_OPTIONS", "MP_FAILOVER_ON_HELP", "MP_ICON_SINGLE", "MP_ICON_AGGREGATED", "MP_REASONING_OPTIONS"):
         assert ctx.eval(f"typeof {name}") != "undefined", name
 
 
@@ -380,3 +381,40 @@ def test_the_card_builder_does_not_change_its_row(ctx) -> None:
     row = {"id": "agg", "kind": "aggregated", "members": ["p-a", "p-b"], "_window": 8192, "harness_id": "h"}
     assert js(ctx, f"(function () {{ var r = {json.dumps(row)}; MP_profileCard(r); return r; }})()") == row
     assert js(ctx, f"(function () {{ var r = {{ items: {R} }}; MP_withWindows(r); return r; }})()") == {"items": ROWS}
+
+
+# ---- a single profile's model settings (Task 7) -----------------------------------------------------------------------------------------------------------
+
+EXTENDED_RULE = 'Enter a JSON object, for example {"top_k": 20}.'
+
+
+def test_reasoning_options_are_the_backend_levels(ctx) -> None:
+    """The levels are the model's (``ReasoningLevel``); the empty value is "Vendor default", which the overlay sends as null (the model's own default)."""
+    from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
+
+    options = js(ctx, "MP_REASONING_OPTIONS")
+    assert {o["value"] for o in options} - {""} == {e.value for e in ReasoningLevel}
+    assert options == [
+        {"value": "", "label": "Vendor default"}, {"value": "off", "label": "Off"}, {"value": "minimal", "label": "Minimal"},
+        {"value": "low", "label": "Low"}, {"value": "medium", "label": "Medium"}, {"value": "high", "label": "High"},
+    ]
+    assert ModelProfileConfig.model_fields["reasoning"].default is None, "Vendor default is the model's default"
+
+
+@pytest.mark.parametrize(
+    ("text", "result"),
+    [("", {"value": {}}), ("  \n ", {"value": {}}), ("{}", {"value": {}}), ('{"top_k": 20}', {"value": {"top_k": 20}}),
+     ('{"a": {"b": [1, 2]}, "c": null}', {"value": {"a": {"b": [1, 2]}, "c": None}}),
+     ("[1]", {"error": EXTENDED_RULE}), ("null", {"error": EXTENDED_RULE}), ("3", {"error": EXTENDED_RULE}), ('"x"', {"error": EXTENDED_RULE}),
+     ("{", {"error": EXTENDED_RULE}), ("{top_k: 20}", {"error": EXTENDED_RULE})],
+)
+def test_parse_extended(ctx, text, result) -> None:
+    """Blank is the empty object (the model's default); anything else must be one JSON object, because ``extended`` is a dict on the model."""
+    assert js(ctx, f"MP_parseExtended({json.dumps(text)})") == result
+
+
+def test_extended_text_round_trips_through_the_parser(ctx) -> None:
+    assert js(ctx, 'MP_extendedText({ top_k: 20 })') == '{\n  "top_k": 20\n}'
+    assert js(ctx, "[MP_extendedText(null), MP_extendedText(undefined), MP_extendedText({})]") == ["{}", "{}", "{}"]
+    nested = {"a": {"b": [1, 2.5, "x"]}, "c": None, "d": True}
+    assert js(ctx, f"MP_parseExtended(MP_extendedText({json.dumps(nested)}))") == {"value": nested}

@@ -7,6 +7,8 @@ drive the real console against the real server:
   shown is the order saved and the defaults the form did not touch are the model's; then edit the routing and read every other field back unchanged;
 * edit a single profile's description and read every other field back unchanged, its ``config`` included (PUT is a full replace, so a form that
   rebuilds the body from what it draws would reset it: master Review Focus 1);
+* set a single profile's reasoning to Off and its extended JSON, and read both back with every other field unchanged (Task 7: model calls apply a
+  profile's ``config``, #756);
 * Cancel leaves the grid and the URL as they were;
 * on a phone, the Platform section reads "LLM Profiles" and an aggregate's row and fact sheet say what the desktop card says.
 
@@ -165,6 +167,29 @@ def test_editing_a_single_profile_keeps_its_settings(page: Page, base_url: str, 
     finally:
         _clean_up(base_url, provider_id, [], [tuned, a, b])
 
+
+def test_setting_reasoning_off_reaches_the_row(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
+    provider_id = f"llm-lpr-{unique_suffix}"
+    a, b = _seed_pair(base_url, provider_id)
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        tuned = seed_profile_with(c, provider_id, "tuned-model", context_length=16384, config={"reasoning": "high", "extended": {"top_k": 20}})
+    seeded = _row(base_url, tuned)
+    try:
+        _open_profiles_page(page, console_url)
+        _open_card(page, tuned)
+        expect(page.get_by_test_id("mp-single-settings")).to_contain_text("MODEL SETTINGS", timeout=10_000)
+        expect(page.get_by_test_id("mp-single-reasoning:high")).to_have_attribute("aria-pressed", "true")
+        expect(page.get_by_test_id("mp-single-extended")).to_have_value('{\n  "top_k": 20\n}')
+        page.get_by_test_id("mp-single-reasoning:off").click()
+        page.get_by_test_id("mp-single-extended").fill('{"top_k": 5}')
+        page.get_by_test_id("mp-single-submit").click()
+        expect(page.get_by_test_id("nv-toasts")).to_contain_text(f"Saved {tuned}", timeout=15_000)
+
+        edited = _row_when(base_url, tuned, lambda row: row["config"].get("reasoning") == "off")
+        assert edited["config"] == {"reasoning": "off", "extended": {"top_k": 5}}, edited
+        assert {k: v for k, v in edited.items() if k != "config"} == {k: v for k, v in seeded.items() if k != "config"}, "every other field is unchanged"
+    finally:
+        _clean_up(base_url, provider_id, [], [tuned, a, b])
 
 def test_cancel_leaves_the_grid_and_the_url(page: Page, console_url: str) -> None:
     _open_profiles_page(page, console_url)

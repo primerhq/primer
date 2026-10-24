@@ -64,13 +64,14 @@ def test_modal_provider_is_a_select_of_the_llm_providers() -> None:
 # (tests/ui/test_llm_profile_overlays.py).
 
 
-def test_the_overlay_offers_no_reasoning_control_until_plan_03_task_7() -> None:
-    """Replaces test_modal_reasoning_is_a_segmented_control_not_a_select. Model calls apply a profile's ``config`` (reasoning, extended) now; the overlay does not draw a control
-    for it yet. The Reasoning control returns in plan 03 Task 7, which flips this pin, and until then ``config`` is kept as stored: the overlay sends it back whole (MP_editBody)."""
+def test_the_overlay_offers_reasoning_now_that_calls_apply_it() -> None:
+    """Flips test_the_overlay_offers_no_reasoning_control_until_plan_03_task_7 (Plan 03 Task 7). Model calls apply a profile's ``config`` (#756), so
+    the single overlay edits ``config.reasoning`` (a PK_Segmented of the model's levels plus "Vendor default") and ``config.extended`` (JSON) again,
+    and still sends the stored row back with the edits laid over it (MP_editBody). The retired modal's segment does not come back."""
     modal = _modal_src()
+    assert 'testid="mp-single-reasoning"' in modal and "MP_REASONING_OPTIONS" in modal
+    assert 'data-testid="mp-single-extended"' in modal and "MP_parseExtended(" in modal
     assert "profile-reasoning-segment" not in modal
-    assert "MP_REASONING_LEVELS.map(" not in modal
-
 
 def test_modal_footnote_is_present() -> None:
     modal = _modal_src()

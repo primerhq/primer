@@ -431,8 +431,9 @@ serves it), and "unknown" when a member is not in that list. There is no single-
 profile comes from the Register provider overlay's import. The page's one action, "+ Aggregate", opens
 `MP_AggregateOverlay`; a card opens `MP_AggregateOverlay` or `MP_SingleProfileOverlay` by the row's kind.
 Both overlays send an edit as the stored row with the form's fields laid over it (`MP_editBody`), because
-the PUT is a full replace: a field the form does not draw comes back as stored. The console detail is in
-`docs/dev/subsystems/ui-pages.md`.
+the PUT is a full replace: a field the form does not draw comes back as stored. The single-profile overlay
+also edits `config.reasoning` (the levels above, or "Vendor default" for null) and `config.extended` (a JSON
+object). The console detail is in `docs/dev/subsystems/ui-pages.md`.
 
 ### Transport retries
 
