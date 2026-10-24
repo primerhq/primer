@@ -300,3 +300,108 @@
   ns.ApiError = ApiError;
   ns.readRefusal = readRefusal;
 })();
+
+// ---- every page of a list (ticket 01a16dfa) ------------------------------------------------------------------------------------------------------------
+// A list route answers ONE page: {kind: "offset", offset, length, total, items}, at most 200 rows (primer/api/pagination.py caps ?limit at 200), and `total`
+// is null when the backend cannot count. About 35 console lists read the first page of 200 and stopped, so a 201st workspace, agent or session was reachable
+// nowhere in the console. PR_fetchAllPages reads every page, modelled on the templates page's own reader (#886):
+//   GET <path>?limit=<pageSize>&offset=<n * pageSize> with the path's own query after it, until
+//   - a page shorter than the page size, or the server's `total` reached (the list has ended),
+//   - a full page that adds no new id (a server that ignores the offset answers every page with the first one), or
+//   - maxPages pages (the cap: the rows read are kept and `truncated` is set).
+// Each id is listed once: a row created between two pages shifts the next page back by one and repeats a row. A page that fails after the first keeps what was
+// read, with `truncated` set and `error` the failure in words; a failure of the first page, or of a read the caller aborted, rejects as the request did.
+// The answer is {items, total: items.length, pages: the requests answered, truncated, limit: maxPages * pageSize, serverTotal: the server's last count or null,
+// error}. Options: signal, pageSize (at most 200), maxPages (default 50), idKey (default "id"; a workspace's sessions are keyed by "session_id") and apiFetch
+// (default window.primerApi.apiFetch, read when called). Pinned by tests/ui/test_fetch_all_pages.py.
+var PR_PAGE_SIZE = 200;
+var PR_MAX_PAGES = 50;
+
+function PR_pageUrl(path, limit, offset) {
+  var at = path.indexOf("?");
+  var base = at < 0 ? path : path.slice(0, at);
+  var query = at < 0 ? "" : path.slice(at + 1);
+  return base + "?limit=" + limit + "&offset=" + offset + (query ? "&" + query : "");
+}
+
+function PR_fetchAllPages(path, opts) {
+  var o = opts || {};
+  var size = o.pageSize > 0 ? Math.min(o.pageSize, PR_PAGE_SIZE) : PR_PAGE_SIZE;
+  var maxPages = o.maxPages > 0 ? o.maxPages : PR_MAX_PAGES;
+  var idKey = o.idKey || "id";
+  var fetchPage = o.apiFetch || window.primerApi.apiFetch;
+  var items = [];
+  var seen = Object.create(null);
+  var serverTotal = null;
+  function answer(pages, truncated, error) {
+    return {
+      items: items, total: items.length, pages: pages, truncated: truncated, limit: maxPages * size, serverTotal: serverTotal, error: error,
+    };
+  }
+  function page(n) {
+    return fetchPage("GET", PR_pageUrl(path, size, n * size), null, { signal: o.signal }).then(function (body) {
+      var rows = body && Array.isArray(body.items) ? body.items : [];
+      if (body && typeof body.total === "number") serverTotal = body.total;
+      var added = 0;
+      rows.forEach(function (row) {
+        var id = row && row[idKey] != null ? String(row[idKey]) : null;
+        if (id !== null && seen[id]) return;
+        if (id !== null) seen[id] = true;
+        items.push(row);
+        added += 1;
+      });
+      var read = n * size + rows.length;
+      if (rows.length < size || added === 0 || (serverTotal !== null && read >= serverTotal)) return answer(n + 1, false, null);
+      if (n + 1 >= maxPages) return answer(n + 1, true, null);
+      return page(n + 1);
+    }, function (err) {
+      var aborted = (o.signal && o.signal.aborted) || (err && err.name === "AbortError");
+      if (n === 0 || aborted) throw err;
+      var said = window.primerApi.readRefusal ? window.primerApi.readRefusal(err).message : (err && err.message) || "Request failed";
+      return answer(n, true, said);
+    });
+  }
+  return page(0);
+}
+
+// What a list cut short says, or null for a whole list: "Showing the first 10000 of 12345 agents.", "Showing the first 10000 agents; there may be more." (the
+// cap with no count from the server), or "Showing the first 400 agents; the rest did not load: <why>". Never a silent truncation (ruling 3).
+function PR_pagedNote(list, noun) {
+  if (!list || !list.truncated) return null;
+  var n = (list.items || []).length;
+  var what = noun || "rows";
+  if (list.error) return "Showing the first " + n + " " + what + "; the rest did not load: " + list.error;
+  if (typeof list.serverTotal === "number" && list.serverTotal > n) return "Showing the first " + n + " of " + list.serverTotal + " " + what + ".";
+  return "Showing the first " + n + " " + what + "; there may be more.";
+}
+
+// The note under a list that was cut short (nothing for a whole one): props {list: what PR_fetchAllPages answered, noun, testid (default pr-paged-note)}.
+function PR_PagedNote(props) {
+  var text = PR_pagedNote(props.list, props.noun);
+  if (!text) return null;
+  return window.React.createElement("div", { className: "pr-paged-note", role: "note", "data-testid": props.testid || "pr-paged-note" }, text);
+}
+
+// useResource for a list read with PR_fetchAllPages, polled at most one page per base tick (ruling 4): the poll is `pollMs` times the pages the last read took,
+// so a list of three pages polled every 15 s is read every 45 s, and a list of one page polls exactly as before. Every page is read on each poll, so a change on
+// any page still shows, only later; a refetch (after a write, on a Refresh, on wake) is not slowed. A pollMs of 0 or null is passed through.
+function PR_usePagedResource(key, fetcher, opts) {
+  var o = opts || {};
+  var pagesState = window.React.useState(1);
+  var pages = pagesState[0];
+  var setPages = pagesState[1];
+  var base = o.pollMs;
+  var res = window.primerApi.useResource(key, fetcher, Object.assign({}, o, { pollMs: base > 0 ? base * pages : base }));
+  var read = res.data && res.data.pages > 1 ? res.data.pages : 1;
+  window.React.useEffect(function () {
+    if (read !== pages) setPages(read);
+  }, [read, pages]);
+  return res;
+}
+
+window.PR_PAGE_SIZE = PR_PAGE_SIZE;
+window.PR_MAX_PAGES = PR_MAX_PAGES;
+window.PR_fetchAllPages = PR_fetchAllPages;
+window.PR_pagedNote = PR_pagedNote;
+window.PR_PagedNote = PR_PagedNote;
+window.PR_usePagedResource = PR_usePagedResource;
