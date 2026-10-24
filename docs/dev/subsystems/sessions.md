@@ -188,35 +188,65 @@ Four rules make that safe:
   turn, in any two processes: a routed wake (`deliver_steer`, the REST steer
   route, the drain's realize; a plain text message) decides the open turn with
   ONE conditional write of the row, `patch_if` of `turn_status` idle ->
-  claimable plus `last_seq` + 1, fenced on the `last_seq`, `status` and
+  `arming` plus `last_seq` + 1, fenced on the `last_seq`, `status` and
   `pause_requested` it read and on no park, BEFORE it writes the USER_INPUT,
   which it writes AT that reserved seq. The other wake's write is refused; it
-  reads the row again, finds the turn armed and queues its message (or reports
+  reads the row again, finds the turn taken and queues its message (or reports
   `skipped_busy` for `if_idle`). The process-local `session_lifecycle_lock` is
-  only an optimisation. A message never overtakes an older queued one:
-  `route_steer` counts a non-empty pending queue as busy (except for an ENDED
-  session, which the message reopens, and a PAUSED one, which a person's
-  message resumes). The drain's realize takes the same path, handing
-  `wake_session` the queued row's id: a turn that is armed again, a pause, or
-  another drain that already delivered the row leave it where it is, at the
-  head of the queue, and the row is deleted only after its wake landed (a
-  crash between the USER_INPUT and the delete delivers it a second time at
-  the next realize; nothing is lost). A wake whose USER_INPUT write fails
-  gives its armed turn back (the reserved seq stays a gap). The wake's closing
-  write is one field-scoped `patch_if` fenced on the status it decided from, so
-  a Cancel or a pause that landed on another process wins. Every exit of a turn
-  flips `turn_status` back to idle only as the LAST write of its terminal
+  only an optimisation. `arming` is busy to every wake (`route_steer`) and
+  nothing claims or re-arms it: the pool's re-arm and boot recovery skip it, and
+  a claim that reaches it (one `/resume` or boot recovery armed) is handed back
+  untouched (`entity_noop`, requeued in a second) instead of running a turn
+  without the message. The wake's closing write promotes it to `claimable`: ONE
+  field-scoped `patch_if` fenced on the status it decided from and on the turn
+  still being `arming`, so a routed wake never writes `claimable` over a turn
+  another writer started, and a Cancel or a pause that landed on another process
+  wins; a wake no person stands behind is also fenced on `pause_requested`, so it
+  never clears a pause requested since its decision (01a08c08). The claim is
+  armed even when the scheduler's pulse fails. A wake that does not promote (its
+  write or its closing write failed, it was cancelled, a pause or a Cancel won)
+  gives the turn back (`arming` -> `idle`; a reserved seq stays a gap). A message
+  never overtakes an older queued one: `route_steer` counts a non-empty pending
+  queue as busy (except for an ENDED session, which the message reopens, and a
+  PAUSED one, which a person's message resumes). The drain's realize takes the
+  same path, handing `wake_session` the queued row's id: a turn that is armed
+  again, a pause, or another drain that already delivered the row leave it where
+  it is, at the head of the queue, and the row is deleted only after its wake
+  landed (a crash between the USER_INPUT and the delete delivers it a second
+  time at the next realize; nothing is lost).
+
+  Reopening an ENDED session is fenced the same way (`_reopen_ended_locked`):
+  ONE `patch_if` decides it and reserves the divider's seq (fenced on the row
+  still ENDED, its `last_seq`, and a turn that is not `running` or `arming`),
+  the divider is written AT that seq, and one closing `patch_if` of the reopen's
+  own fields (the invocation counter as one metadata leaf) lands it. Of two
+  reopens on two processes one lands and the other queues its message. A
+  `running` flag on an ENDED row is a turn still finishing its terminal block
+  (the message is queued and the drain of that turn reopens the session with it)
+  unless the claim engine has no lease row for the session (a flag left behind:
+  the reopen goes ahead; the drain's own realize always may). A failed divider
+  write leaves the session ENDED. Every terminal block (failure, cancelled,
+  clean) writes the turn's `last_seq` BEFORE its status transition, so a wake
+  that reads the row ENDED never reopens it at a seq the turn wrote; and every
+  exit flips `turn_status` back to idle only as the LAST write of its terminal
   block, after its records, `last_seq` and cursor (see the turn flow below), so
   a wake that sees the turn idle never repeats a seq the turn wrote. Pinned by
-  `tests/session/test_one_turn_per_wake.py` (each wake on its own lock, over
-  the suite's storage whose `patch_if` honours its predicate, through the real
-  dispatch). Not covered: a wake that carries per-turn tools or attachment
-  parts (the queue cannot hold them) still writes its USER_INPUT whatever the
-  turn's state, as before, and one that lands WHILE a turn runs reserves its
-  seq from a row the running turn has not yet advanced; and in the rare
-  cross-process order where a concurrent release re-arms the claim between a
-  wake's arm and its USER_INPUT write, that turn runs once without the message
-  and the message is answered by the next turn.
+  `tests/session/test_one_turn_per_wake.py` and
+  `tests/session/test_one_turn_per_wake_review.py` (each wake on its own lock,
+  over the suite's storage whose `patch_if` honours its predicate, through the
+  real dispatch, re-arm, boot recovery and sweep).
+
+  Known and ticketed, not covered here: a wake that carries per-turn tools or
+  attachment parts (the queue cannot hold them), and `restart_session`'s wake
+  (no receipt), still write their USER_INPUT whatever the turn's state, and one
+  that lands WHILE a turn runs reserves its seq from a row the running turn has
+  not yet advanced (the turn's writer reserves nothing per record), so it can
+  repeat a seq of that turn; a deferred message waits for the sweep (up to
+  30 s) when the turn that would drain it already ran its drain; a realize whose
+  slot append landed and whose log write failed appends the message to the slot
+  again at the next realize; the dispatch safety net flips idle without writing
+  `last_seq` first, and a cancellation inside the streaming phase's `finally`
+  can still leave a row `running`.
 - **Queued messages are not stranded (audit G7-14).** A session can come to
   rest with messages still queued and no turn boundary to come: the worker
   died between the turn's terminal write and its drain, or a realize's wake
@@ -232,8 +262,23 @@ Four rules make that safe:
   message per session per tick; the turn it starts drains the rest. A PAUSED
   session keeps its queue on purpose, and an ENDED one is reopened by its next
   message, whose turn boundary then drains it. Queued rows of a session that no
-  longer exists are deleted. Without a claim engine the sweep does nothing.
-  Pinned by `tests/session/test_queued_messages_are_not_stranded.py`.
+  longer exists are deleted. Each tick first heals a turn left armed with no
+  claim (review of the G7-03 fix): a row `claimable` with no SESSION lease row
+  (a promotion whose claim upsert failed) gets its claim, and a row `arming`
+  with no wake behind it (its process died) is decided by the log: a USER_INPUT
+  nobody answered (`has_open_turn` from the drain cursor) makes it `claimable`
+  and claimed, none gives it back to `idle`, an unreadable log counts as one;
+  a stale `arming` on an ENDED row goes back to `idle`. Only a row seen in the
+  same state, at the same `last_seq` and without a lease on two ticks at least
+  `STALE_ARM_GRACE_SECONDS` (120 s, longer than a workspace write may take)
+  apart is healed, with one `patch_if` fenced on what it was judged on; a PAUSED
+  row is left to `/resume`. Without a claim engine the sweep does nothing.
+  Known and ticketed: the sweep skips ENDED sessions (an autonomous or failed
+  one keeps its queue until its next message reopens it, and that message runs
+  first), and it decides "at rest" on a read a Cancel can overtake before the
+  wake (a person's queued message then reopens the cancelled session).
+  Pinned by `tests/session/test_queued_messages_are_not_stranded.py` and the
+  healing tests of `tests/session/test_one_turn_per_wake_review.py`.
 
 The message log stays append-only under all of this. Compaction appends a
 `compaction_marker` carrying its summary, the span it replaced and the tail it kept verbatim (`kept_tail_messages`, read back by `reconstruct_compacted_history` right after the summary) its verdict (`outcome`, `unreducible`, `trigger_tokens`, `fixed_overhead_tokens`) and where the summary sits among the kept messages (`summary_after`, absent or 0 meaning in front); a compaction that could not reduce the prompt, or deliberately skipped, and wrote no marker leaves a `compaction_note` record instead (display and derivation only, never history; a verdict that repeats (skipped or unreducible) is noted once per run, and the reader that tells the executor so, `last_compaction_state`, reports the newest note's outcome and reason since the newest marker, and also the newest marker's `tokens_after`, which the strategy uses to avoid summarising a summary it just wrote); rewind
@@ -326,7 +371,7 @@ The sessions subsystem consumes five cross-cutting architecture surfaces rather 
 
 `ended_reason` (on both `WorkspaceSession` and `SessionInfo`) is one of `completed` / `failed` / `cancelled` / `workspace_lost` / `force_deleted` / `tool_turn_cap`, set when `status == ENDED` (`tool_turn_cap`: an autonomous session whose turn the agent's `max_tool_turns` stopped; it is restartable like `completed`, because a reopen needs a new human or trigger message and starts a fresh round count; the dispatch mirrors it onto the on-disk `AgentSession` slot with the same reason, which is what the MCP workspace tools read, so a reason missing from `_sync_agent_session_ended`'s list would read `completed` over MCP while REST said `tool_turn_cap`). `ended_detail` carries finer graph-only codes (e.g. `begin_input_invalid`, `max_iterations_exceeded`).
 
-The lifecycle status enum is distinct from `turn_status` (`idle` / `claimable` / `running`), which tracks the FIFO-queue and worker-claim state, and from `parked_status` (`parked` / `resumable` / `None`), which tracks the yielding-tool park. These three axes are orthogonal: a `RUNNING` session that parks on a yielding tool keeps its `turn_status` while `parked_status` flips to `parked`.
+The lifecycle status enum is distinct from `turn_status` (`idle` / `arming` / `claimable` / `running`; `arming` is the instant a wake has decided the next turn and is writing its message, see "One turn per wake"), which tracks the FIFO-queue and worker-claim state, and from `parked_status` (`parked` / `resumable` / `None`), which tracks the yielding-tool park. These three axes are orthogonal: a `RUNNING` session that parks on a yielding tool keeps its `turn_status` while `parked_status` flips to `parked`.
 
 **`last_turn_error {code, at}`: the row says its last turn failed (C-024).** A failed turn does not bump `turn_no` (the release bumps on success only) and its release drops the lease, so a row that is not ended has no other mark of it. The EXCEPTION exit of `run_one_session_turn` (`_end_turn_failed`) stamps `last_turn_error` with ONE field-scoped `patch_if` (`_record_last_turn_error`: guarded on the row not being ENDED and on the binding epoch the turn ran under, advisory, before the status transition under the lifecycle lock) whose `code` is the failure's own (`TurnStreamFailure.ended_detail_code`, or the `code` of the classified error an adapter raised, else its class: `server_error`, `rate_limit`, `network_error`, `auth_error`, the timeouts, `bad_request`..., or `llm_stream_error` when the stream gave none) and `turn_failed` for a turn that raised something that is not known to be a model error. The running flip of the next turn clears it in the write that already clears `workspace_refusal` (`_flip_to_running`), and a reopen (`_reopen_ended_locked`) clears it. Only that exit sets it: a failure that never reaches it (a `build_executor` failure, a clean completion that maps to `failed` such as `Done(stop_reason="error")` or `graph_failed`, a resume hook that failed) leaves it empty, so an absent value does not mean the last turn succeeded; the console WILL read it, so it says so. A session that rests after a failed turn (next paragraph) has no `ended_reason`, so this field is how the row says it; it is also what keeps the stuck-session sweeper from reading a first turn that failed (WAITING, `turn_no` 0, no lease) as one that never started: `_never_started` returns false for a row that carries it and is not RUNNING (WAITING, or PAUSED: `pause_session` keeps the stamp), while a stamped row that is still RUNNING is one whose failure exit did not finish and stays reapable, ended `failed` / `failure_exit_unfinished` with a log line naming the stamped code, and the sweeper's write is fenced on the field still being empty when it read it empty, or on `started_at` as it read it for a stamped row it reaps. A wake or a resume of a row that carries the stamp restarts `started_at` (the sweeper's age check reads it), because that row is RUNNING with no lease row in the instant before the claim is armed; the fence is in the data and the sweeper takes no lock, since it is leader-elected and can run on another pod than the API doing the wake. A patch_if site is not a writer of the pinned whole-document set (`tests/session/session_writers.txt`), so that file did not change. Pinned by `tests/session/test_last_turn_error.py`, `tests/session/test_reset.py` and `tests/bus/test_stuck_session_sweeper.py`.
 

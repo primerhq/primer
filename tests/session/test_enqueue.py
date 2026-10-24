@@ -24,16 +24,19 @@ class _FakeStorage:
         return row
 
     async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
-        """The guarded field patch of ``Storage.patch_if`` for the top-level equality guards these tests use (a seq reservation)."""
+        """``Storage.patch_if`` with the reference semantics (the guards, the nested ``set_paths`` leaves, the canonical values): a wake reserves
+        its seq and arms its turn with it, and a reopen writes its fields and the invocation counter leaf with it."""
+        from tests.storage._patch_reference import patch_model
+
         row = await self.get(id)
         if row is None:
             from primer.model.except_ import NotFoundError
 
             raise NotFoundError(f"no entity with id {id!r}")
-        if any(getattr(row, field) not in allowed for field, allowed in where.items()):
-            return None
-        self._row = row.model_copy(update=patch)
-        return self._row
+        updated = patch_model(row, patch, where=where, set_paths=set_paths)
+        if updated is not None:
+            self._row = updated
+        return updated
 
 
 class _FakeSP:

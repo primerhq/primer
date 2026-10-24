@@ -2528,6 +2528,7 @@ def build_workspaces_toolset(
                     storage_provider=storage_provider,
                     workspace_registry=workspace_registry,
                     event_bus=event_bus,
+                    claim_engine=claim_engine,
                 ),
                 wake_deps=SessionWakeDeps(
                     storage_provider=storage_provider,

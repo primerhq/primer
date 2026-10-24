@@ -32,11 +32,11 @@ from tests.storage.test_storage_contract import provider  # noqa: F401
 
 _STATES = ("waiting", "running", "parked", "ended")
 _PARKED = (None, "parked", "resumable")
-_TURN = ("idle", "claimable", "running")
+_TURN = ("idle", "arming", "claimable", "running")   # arming: a wake writing the message of the turn it decided (G7-03)
 # 0 is a session that never completed a turn, 1 is the usual value after ONE turn (the boundary of ``turn_no > 0``), 3 is "several".
 _TURN_NO = (0, 1, 3)
 # Every ``status`` is its own pre-image of the rule, so the matrix below is the
-# full product: 5 x 3 x 3 x 3 = 135 rows.
+# full product: 5 x 3 x 4 x 3 = 180 rows.
 _MATRIX = list(itertools.product(SessionStatus, _PARKED, _TURN, _TURN_NO))
 
 
@@ -72,7 +72,7 @@ def test_the_matrix_reaches_every_state_and_every_branch_of_the_rule() -> None:
     by_state: dict[str, int] = {state: 0 for state in _STATES}
     for session in _matrix_rows():
         by_state[session.session_state] += 1
-    assert len(_MATRIX) == 135
+    assert len(_MATRIX) == 180
     assert all(count >= 6 for count in by_state.values()), by_state
 
 

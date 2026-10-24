@@ -764,11 +764,15 @@ class WorkspaceSession(Identifiable):
             "cursor."
         ),
     )
-    turn_status: Literal["idle", "claimable", "running"] = Field(
+    turn_status: Literal["idle", "arming", "claimable", "running"] = Field(
         default="idle",
         description=(
             "Lifecycle state of the FIFO queue + worker claim. "
-            "``idle`` means no pending work.  ``claimable`` means a "
+            "``idle`` means no pending work.  ``arming`` means a wake has "
+            "decided the next turn (one conditional write, audit G7-03) and "
+            "is writing its message: the session is busy to every other "
+            "wake, and nothing claims or re-arms it until the wake promotes "
+            "it.  ``claimable`` means a "
             "user instruction has landed (or a parked session just became "
             "resumable) and a worker should pick the session up. "
             "``running`` means a worker holds the claim and is actively "

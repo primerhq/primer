@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from pydantic_core import to_jsonable_python
+
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import (
     PeerAttribution,
@@ -27,6 +29,7 @@ from primer.model.workspace_session import (
 )
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.persistence import WorkspaceMessageWriter
+from primer.storage import raw_generation
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,49 @@ class SessionResetDeps:
     storage_provider: Any
     workspace_registry: Any
     event_bus: Any | None = None
+    # Tells a stale ``running`` flag on an ENDED row from a turn still finishing (see ``no_turn_holds``). Without it such a row is not reopened.
+    claim_engine: Any | None = None
+
+
+async def no_turn_holds(claim_engine: Any | None, session_id: str) -> bool:
+    """Whether NO turn holds ``session_id``: the claim engine has no SESSION lease row for it (none running, queued or awaiting reclaim).
+
+    An ENDED row whose ``turn_status`` still reads ``running`` is either a turn finishing its terminal block (it holds its lease until the
+    release) or a flag left behind (the pool ends a session before its release clears the flag, a worker died). Only the second may be reopened
+    over the flag. False when it cannot be told: no engine, an engine without the lookup, or a lookup that fails.
+    """
+    has_lease = getattr(claim_engine, "has_lease", None)
+    if has_lease is None:
+        return False
+    from primer.int.claim import ClaimKind
+
+    try:
+        return not await has_lease(ClaimKind.SESSION, session_id)
+    except Exception:  # noqa: BLE001 - an unreadable lease table authorises nothing
+        logger.warning("could not tell whether a turn holds session %s", session_id, exc_info=True)
+        return False
+
+
+async def refuse_a_reopen_it_may_not_make(
+    row: WorkspaceSession, *, workspace_id: str, session_id: str, workspace_registry: Any, by_a_person: bool,
+) -> None:
+    """Raise when ``row`` (ENDED) may not be reopened by this message, before anything is written: :class:`OnlyAPersonReopens` for a
+    ``cancelled`` session and a message no person wrote, ConflictError for an ``ended_reason`` that is not restartable (a ``workspace_lost``
+    session is, once its workspace reads running again: see :func:`_reopen_ended_locked`)."""
+    _refuse_a_cancelled_reopen(row, session_id=session_id, by_a_person=by_a_person)
+    if row.ended_reason not in _RESTARTABLE:
+        recoverable = False
+        if row.ended_reason == "workspace_lost":
+            try:
+                ws_row = await workspace_registry.get_workspace_row(workspace_id)
+            except NotFoundError:
+                ws_row = None
+            recoverable = ws_row is not None and ws_row.phase == "running"
+        if not recoverable:
+            raise ConflictError(
+                f"Session {session_id!r} ended as {row.ended_reason!r} and "
+                "cannot be re-opened."
+            )
 
 
 async def _reopen_ended_locked(
@@ -72,13 +118,17 @@ async def _reopen_ended_locked(
     workspace_registry: Any,
     by_a_person: bool,
     workspace_write: Callable[[], AbstractAsyncContextManager[None]] | None = None,
-) -> tuple[WorkspaceSession, int]:
-    """Reopen an ENDED session row IN PLACE — lock-free reopen body.
+    keep_arming: bool = False,
+    allow_running: bool = False,
+) -> tuple[WorkspaceSession, int] | None:
+    """Reopen an ENDED session row IN PLACE: lock-free reopen body, fenced in the data.
 
     Shared by :func:`reset_session` and ``wake_session``'s ENDED branch.
     Both callers already hold ``session_lifecycle_lock().acquire(session_id)``
-    (a non-reentrant lock), so this helper must NOT re-acquire it — calling
-    ``reset_session`` from inside ``wake_session``'s lock would deadlock.
+    (a non-reentrant lock), so this helper must NOT re-acquire it; and that
+    lock is this process's alone, so every decision here is ALSO a
+    conditional write (audit G7-03): two reopens on two processes cannot both
+    land, and a reopen never repeats a seq.
 
     Assumes the caller verified ``row.status == SessionStatus.ENDED``.
     Refuses first a ``cancelled`` row when no person wrote the message that
@@ -86,17 +136,32 @@ async def _reopen_ended_locked(
     anything is written), so the wake and the restart share one rule for it.
     Enforces the ``_RESTARTABLE`` ended_reason guard here (raising
     ConflictError for ``force_deleted`` always, and for ``workspace_lost``
-    UNLESS the workspace has since healed - see below), reopens the
-    on-disk slot, writes the ``INVOCATION_DIVIDER`` record, bumps the
-    invocation counter, clears terminal + park bookkeeping (including
-    ``ended_detail`` and the ``agent_phase*`` of the dead turn: the row is
-    the one truth about how a session ended, so a stale detail must not
-    label the NEXT end, and the phase belongs to the turn that is gone),
-    and transitions
-    the scheduler row ENDED -> CREATED (turn_status idle). Returns
-    ``(reopened_row, invocation_number)``; does NOT publish events (the
-    caller owns ticks). The divider is written BEFORE the caller appends any
-    USER_INPUT so the invocation divider precedes the message.
+    UNLESS the workspace has since healed - see below). Then, in order:
+
+    1. DECIDE: ONE ``patch_if`` that reserves the divider's seq
+       (``last_seq + 1``) and sets ``turn_status`` to ``arming``, fenced on
+       the row as read: still ENDED, the same ``last_seq``, and a turn that
+       is not ``running`` (a turn that is still finishing its terminal block
+       holds the session) nor ``arming`` (another reopen or wake owns it).
+       ``allow_running`` admits a ``running`` flag the caller knows is stale
+       (no turn holds the session). A refused fence returns ``None`` and has
+       written nothing: the caller reads the row again and decides again.
+    2. Reopen the on-disk slot and append the ``INVOCATION_DIVIDER`` AT the
+       reserved seq. A failure gives the turn status back, leaves the row
+       ENDED and raises (the reserved seq stays a gap, which readers tolerate).
+    3. ONE closing ``patch_if`` of the reopen's own fields (ENDED -> CREATED,
+       the terminal, park and phase bookkeeping cleared, ``ended_detail`` too:
+       the row is the one truth about how a session ended, so a stale detail
+       must not label the NEXT end; the invocation counter bumped as one
+       metadata leaf), fenced on the row still being ENDED and ``arming``
+       (this reopen's own). ``keep_arming`` leaves the turn ``arming`` for a
+       wake that goes on to write its message and promote it; otherwise it
+       goes ``idle``.
+
+    Returns ``(reopened_row, invocation_number)``, or ``None`` (see 1 and 3);
+    does NOT publish events (the caller owns ticks). The divider is written
+    BEFORE the caller appends any USER_INPUT so the invocation divider
+    precedes the message.
 
     Recovery-aware ``workspace_lost`` (01a0533c, live SEV): a transient
     probe blip during a rollout can force-END every session in a workspace
@@ -120,77 +185,88 @@ async def _reopen_ended_locked(
     ``workspace_write`` (optional) is a factory of the context manager that wraps the writes INTO the workspace and nothing else: the slot reopen
     and the invocation divider. ``wake_session`` passes its guard there, the one that reports a failed write as "the workspace was removed". The
     calls this function makes to the database stay outside it: the ``workspace_lost`` recheck, the workspace lookup (which reads the workspace row
-    and its template) and the closing row update. A refused pool connection is an ``OSError`` too, and under that guard it was reported as a
+    and its template) and the row writes. A refused pool connection is an ``OSError`` too, and under that guard it was reported as a
     removal of a workspace nobody had touched. Without the argument (``reset_session``) nothing wraps anything and every failure surfaces as it is.
     """
-    _refuse_a_cancelled_reopen(row, session_id=session_id, by_a_person=by_a_person)
-    if row.ended_reason not in _RESTARTABLE:
-        recoverable = False
-        if row.ended_reason == "workspace_lost":
-            try:
-                ws_row = await workspace_registry.get_workspace_row(workspace_id)
-            except NotFoundError:
-                ws_row = None
-            recoverable = ws_row is not None and ws_row.phase == "running"
-        if not recoverable:
-            raise ConflictError(
-                f"Session {session_id!r} ended as {row.ended_reason!r} and "
-                "cannot be re-opened."
-            )
+    await refuse_a_reopen_it_may_not_make(
+        row, workspace_id=workspace_id, session_id=session_id, workspace_registry=workspace_registry, by_a_person=by_a_person,
+    )
 
     invocation = int(row.metadata.get("invocation", 1)) + 1
 
-    # Resolving the workspace is a lookup in the database (its row, its template), not a write into the workspace: it stays outside the guard.
-    ws = await workspace_registry.get_workspace(workspace_id)
-    async with workspace_write() if workspace_write is not None else nullcontext():
-        # 1. Reopen the on-disk slot (ENDED -> RUNNING; sanctioned exception).
-        slot = await ws.get_session(session_id)
-        if slot is not None:
-            await slot.reopen()
+    # 1. Decide, and reserve the divider's seq.
+    allowed = ["idle", "claimable", *(["running"] if allow_running else [])]
+    reserved_row = await sessions.patch_if(
+        session_id,
+        {"last_seq": row.last_seq + 1, "turn_status": "arming"},
+        where={"status": [SessionStatus.ENDED.value], "last_seq": [raw_generation(row, "last_seq")], "turn_status": allowed},
+    )
+    if reserved_row is None:
+        return None
+    reserved = reserved_row.last_seq
 
-        # 2. Append the invocation divider to messages.jsonl, seeded past
-        #    existing history so seqs stay monotonic.
-        writer = WorkspaceMessageWriter(
-            workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
-        )
-        new_seq = await writer.append(SessionMessageRecord(
-            seq=1,  # overwritten by the writer's counter
-            kind=SessionMessageKind.INVOCATION_DIVIDER,
-            payload={"invocation": invocation},
-            created_at=datetime.now(timezone.utc),
-        ))
-        await writer.flush()
+    # 2. The writes into the workspace. Resolving the workspace is a lookup in the database (its row, its template), not a write into the
+    #    workspace: it stays outside the guard.
+    try:
+        ws = await workspace_registry.get_workspace(workspace_id)
+        async with workspace_write() if workspace_write is not None else nullcontext():
+            # Reopen the on-disk slot (ENDED -> RUNNING; sanctioned exception).
+            slot = await ws.get_session(session_id)
+            if slot is not None:
+                await slot.reopen()
+            # The invocation divider, at the seq the decision reserved.
+            writer = WorkspaceMessageWriter(
+                workspace_io=ws, session_id=session_id, start_seq=reserved - 1,
+            )
+            await writer.append(SessionMessageRecord(
+                seq=1,  # overwritten by the writer's counter: the reserved seq
+                kind=SessionMessageKind.INVOCATION_DIVIDER,
+                payload={"invocation": invocation},
+                created_at=datetime.now(timezone.utc),
+            ))
+            await writer.flush()
+    except BaseException:
+        # Nothing was reopened: the session stays ENDED, with the turn status it had (a failure must leave the session ended).
+        try:
+            await sessions.patch_if(
+                session_id, {"turn_status": row.turn_status},
+                where={"status": [SessionStatus.ENDED.value], "turn_status": ["arming"]},
+            )
+        except Exception:  # noqa: BLE001 - the failure being reported is the write's
+            logger.warning("reopen of session %s: could not give its turn status back after a failed write", session_id, exc_info=True)
+        raise
 
-    # 3. Re-open the scheduler row: ENDED -> CREATED, clear terminal +
-    #    park bookkeeping; bump the invocation counter + last_seq.
-    md = dict(row.metadata)
-    md["invocation"] = invocation
-    reopened = row.model_copy(update={
-        "status": SessionStatus.CREATED,
-        "ended_reason": None,
-        "ended_at": None,
-        "cancel_requested": False,
-        "cancel_requested_at": None,
-        "pause_requested": False,
-        "pause_requested_at": None,
-        "interrupt_requested": False,
-        "parked_status": None,
-        "parked_event_key": None,
-        "parked_event_keys": None,
-        "parked_until": None,
-        "parked_at": None,
-        "parked_state": None,
-        "turn_status": "idle",
-        "turn_started_at": None,
-        "last_turn_error": None,
-        "ended_detail": None,
-        "agent_phase": None,
-        "agent_phase_turn_no": None,
-        "agent_phase_stamped_at": None,
-        "last_seq": new_seq,
-        "metadata": md,
-    })
-    await sessions.update(reopened)
+    # 3. Reopen the scheduler row: ENDED -> CREATED, clear terminal + park bookkeeping, bump the invocation counter.
+    reopened = await sessions.patch_if(
+        session_id,
+        to_jsonable_python({
+            "status": SessionStatus.CREATED,
+            "ended_reason": None,
+            "ended_at": None,
+            "cancel_requested": False,
+            "cancel_requested_at": None,
+            "pause_requested": False,
+            "pause_requested_at": None,
+            "interrupt_requested": False,
+            "parked_status": None,
+            "parked_event_key": None,
+            "parked_event_keys": None,
+            "parked_until": None,
+            "parked_at": None,
+            "parked_state": None,
+            "turn_status": "arming" if keep_arming else "idle",
+            "turn_started_at": None,
+            "last_turn_error": None,
+            "ended_detail": None,
+            "agent_phase": None,
+            "agent_phase_turn_no": None,
+            "agent_phase_stamped_at": None,
+        }),
+        set_paths={("metadata", "invocation"): invocation},
+        where={"status": [SessionStatus.ENDED.value], "turn_status": ["arming"]},
+    )
+    if reopened is None:
+        return None
     return reopened, invocation
 
 
@@ -224,14 +300,20 @@ async def reset_session(
                 f"{row.status.value}); reset only re-opens ended sessions."
             )
 
-        reopened, invocation = await _reopen_ended_locked(
+        done = await _reopen_ended_locked(
             row=row,
             workspace_id=workspace_id,
             session_id=session_id,
             sessions=sessions,
             workspace_registry=deps.workspace_registry,
             by_a_person=human_intent,
+            allow_running=row.turn_status == "running" and await no_turn_holds(deps.claim_engine, session_id),
         )
+        if done is None:
+            # The fence of the reopen was refused: another process changed the row since it was read (a wake reopened it, a turn is still
+            # finishing on it). Nothing was written.
+            raise ConflictError(f"Session {session_id!r} changed while it was being reopened; nothing was written, retry")
+        reopened, invocation = done
 
         if deps.event_bus is not None:
             try:
@@ -301,6 +383,8 @@ __all__ = [
     "OnlyAPersonReopens",
     "SessionResetDeps",
     "_reopen_ended_locked",
+    "no_turn_holds",
+    "refuse_a_reopen_it_may_not_make",
     "reset_session",
     "restart_session",
 ]

@@ -42,6 +42,7 @@ from primer.int.coordinator import (
 from primer.int.claim import ClaimKind
 from primer.int.event_bus import EventBus
 from primer.int.storage import Storage
+from primer.model.except_ import NotFoundError
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import SessionStatus
 from primer.storage import raw_generation
@@ -520,6 +521,11 @@ def _never_started(session, grace_seconds: float) -> bool:
     return age >= grace_seconds
 
 
+#: How long a row must stay armed with no claim, unchanged, before the sweep heals it: longer than a workspace write may take (the message
+#: writer gives up after 30 s), so a live wake has promoted or given back its turn by then.
+STALE_ARM_GRACE_SECONDS = 120.0
+
+
 class SessionMessagingSweeper(_BackgroundTask):
     """Delivers the queued messages of a session that nothing else will (audit G7-14), and trims the peer-message ledger (audit G7-15).
 
@@ -555,6 +561,7 @@ class SessionMessagingSweeper(_BackgroundTask):
         workspace_registry,
         event_bus: EventBus | None = None,
         poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
+        stale_arm_grace_seconds: float = STALE_ARM_GRACE_SECONDS,
     ) -> None:
         super().__init__(name="session-messaging-sweeper")
         self._sp = storage_provider
@@ -563,6 +570,9 @@ class SessionMessagingSweeper(_BackgroundTask):
         self._workspace_registry = workspace_registry
         self._bus = event_bus
         self._poll = poll_seconds
+        self._stale_arm_grace = stale_arm_grace_seconds
+        # Rows seen armed with no claim: id -> (turn_status, last_seq, first seen on the loop clock).
+        self._unclaimed: dict[str, tuple[str, int, float]] = {}
 
     async def _run(self) -> None:
         while not self._stopping:
@@ -576,11 +586,15 @@ class SessionMessagingSweeper(_BackgroundTask):
                 break
 
     async def _tick(self) -> int:
-        """Trim the peer-message ledger, then realize the queue head of every session at rest that has one. Returns how many sessions were
-        woken."""
+        """Trim the peer-message ledger, heal a turn a wake left armed with no claim, then realize the queue head of every session at rest that
+        has one. Returns how many sessions were woken from their queue."""
         await self._trim_peer_ledger()
         if self._claim_engine is None:
             return 0
+        try:
+            await self._heal_unclaimed_turns()
+        except Exception:  # noqa: BLE001 - the queue sweep runs anyway; the rows are looked at again next tick
+            logger.exception("session-messaging-sweeper: healing armed turns failed")
         woken = 0
         for session_id in await self._sessions_with_queued_messages():
             try:
@@ -603,6 +617,94 @@ class SessionMessagingSweeper(_BackgroundTask):
         if deleted:
             logger.info("session-messaging-sweeper: deleted %d stale peer-message ledger row(s)", deleted)
         return deleted
+
+    async def _heal_unclaimed_turns(self) -> int:
+        """Give a claim to a turn that was left armed with none (audit G7-03, review M3). Returns how many rows were healed.
+
+        A wake promotes the turn it decided (``arming`` -> ``claimable``) and then arms the claim; a process that died in between, or a claim
+        upsert that failed, leaves a row ``claimable`` with no SESSION lease row, or ``arming`` with no wake behind it. Every message then
+        queues behind it and nothing runs. A row seen in the same state, at the same ``last_seq`` and with no lease on two ticks at least
+        ``stale_arm_grace_seconds`` apart (longer than a workspace write may take, so a live wake has finished or given up) is healed:
+
+        * ``claimable``: the claim is armed again (and the scheduler pulsed);
+        * ``arming``: the message log decides (``has_open_turn`` from the drain cursor): a message is waiting, so the turn goes ``claimable``
+          and is claimed; there is none, so it goes ``idle``. A log that cannot be read is treated as holding one: a turn that runs with
+          nothing new costs one model call, a message nobody answers costs the person. An ENDED row's stale ``arming`` (a reopen that died
+          half way) goes back to ``idle``, so the next message reopens it.
+
+        Each heal is one ``patch_if`` fenced on the state and the ``last_seq`` it was judged on. A PAUSED row is left alone (``/resume``
+        arms it).
+        """
+        from primer.model.workspace_session import WorkspaceSession
+
+        storage = self._sp.get_storage(WorkspaceSession)
+        predicate = Predicate(left=FieldRef(name="turn_status"), op=Op.IN, right=Value(value=["arming", "claimable"]))
+        now = asyncio.get_running_loop().time()
+        seen: dict[str, tuple[str, int, float]] = {}
+        healed = 0
+        offset = 0
+        while True:
+            page = await storage.find(predicate, OffsetPage(offset=offset, length=_MAX_PAGE))
+            items = list(page.items)
+            for row in items:
+                if row.status == SessionStatus.PAUSED or (row.status == SessionStatus.ENDED and row.turn_status != "arming"):
+                    continue
+                if row.parked_status is not None or await self._has_lease(row.id):
+                    continue
+                key = (row.turn_status, row.last_seq)
+                earlier = self._unclaimed.get(row.id)
+                first_seen = earlier[2] if earlier is not None and earlier[:2] == key else now
+                seen[row.id] = (*key, first_seen)
+                if now - first_seen < self._stale_arm_grace:
+                    continue
+                if await self._heal(storage, row):
+                    healed += 1
+                    seen.pop(row.id, None)
+            if len(items) < _MAX_PAGE:
+                break
+            offset += _MAX_PAGE
+        self._unclaimed = seen
+        return healed
+
+    async def _heal(self, storage, row) -> bool:
+        where = {"turn_status": [row.turn_status], "last_seq": [row.last_seq]}
+        if row.turn_status == "claimable":
+            target = "claimable"
+        elif row.status == SessionStatus.ENDED:
+            target = "idle"
+        else:
+            target = "claimable" if await self._message_is_waiting(row) else "idle"
+        if target != row.turn_status:
+            try:
+                written = await storage.patch_if(row.id, {"turn_status": target}, where=where)
+            except NotFoundError:
+                return False
+            if written is None:
+                return False
+        if target == "claimable":
+            await self._claim_engine.upsert(ClaimKind.SESSION, row.id)
+            try:
+                await self._scheduler.enqueue(row.id)
+            except Exception:  # noqa: BLE001 - the claim is armed; the scheduler pulse is a hint
+                logger.debug("session-messaging-sweeper: scheduler pulse failed for %s", row.id, exc_info=True)
+        logger.warning(
+            "session-messaging-sweeper: session %s was left %s with no claim; it is now %s%s",
+            row.id, row.turn_status, target, " and claimed" if target == "claimable" else "",
+        )
+        return True
+
+    async def _message_is_waiting(self, row) -> bool:
+        """Whether the session's log holds a USER_INPUT no turn has answered yet (from the drain cursor). True when the log cannot be read."""
+        from primer.session.dispatch import _read_message_lines
+        from primer.session.turns import has_open_turn
+        from primer.worker.io_shim import _WorkspaceIOShim
+
+        io = _WorkspaceIOShim(workspace_registry=self._workspace_registry)
+        io.register_session(row.id, row.workspace_id)
+        lines = await _read_message_lines(io, row)
+        if lines is None:
+            return True
+        return has_open_turn(lines, cursor=row.next_unprocessed_seq)
 
     async def _sessions_with_queued_messages(self) -> list[str]:
         """The ids of the sessions that have a queued message, oldest queue head first. Paged: the queue is capped per session, but a tick

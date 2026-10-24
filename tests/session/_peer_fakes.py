@@ -99,11 +99,17 @@ class FakeScheduler:
 
 
 class FakeEngine:
+    """Notes every upsert. ``leased`` holds the session ids that have a lease row (a turn holds them); none do unless a test says so."""
+
     def __init__(self) -> None:
         self.upserts: list[tuple] = []
+        self.leased: set[str] = set()
 
     async def upsert(self, kind: Any, session_id: str, *, priority: int = 100, next_attempt_at: Any = None) -> None:
         self.upserts.append((kind, session_id))
+
+    async def has_lease(self, kind: Any, session_id: str) -> bool:
+        return session_id in self.leased
 
 
 class FakeBus:

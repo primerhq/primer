@@ -31,6 +31,9 @@ class _PendingStorage:
         self.rows[row.id] = row
         return row
 
+    async def get(self, rid):
+        return self.rows.get(rid)
+
     async def delete(self, rid):
         self.rows.pop(rid, None)
 

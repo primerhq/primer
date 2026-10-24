@@ -673,6 +673,9 @@ async def run_one_session_turn(
             isinstance(session.binding, GraphSessionBinding) or session_is_autonomous(session)
         )
         async with session_lifecycle_lock().acquire(session_id):
+            # Every record of the turn is on the row before its status moves: a wake on another process that sees the row ENDED reopens it at
+            # the next seq, so it must never read a last_seq the turn has already written past (audit G7-03, review H2).
+            await _persist_last_seq(session_storage, session_id, writer.last_seq)
             # BEFORE the status moves: a reader that sees the row after the transition must see why (C-024).
             stamped = await _record_last_turn_error(session_storage, session_id, failure_code, session.binding_epoch)
             # Without its stamp a rested first-turn failure has every mark of a session that never started, so it ends. A Cancel that lands
@@ -701,7 +704,6 @@ async def run_one_session_turn(
                     expected_epoch=session.binding_epoch,
                 )
             await _clear_interrupt_requested(session_storage, session_id)
-            await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
             # Last: a wake that sees the turn idle finds every record of it on the row, and the drain below realizes the queue head into an
             # idle turn, as every other wake does (audit G7-03).
@@ -1440,6 +1442,9 @@ async def run_one_session_turn(
                 # relay), which re-decides and writes inside its own acquisition of this lock below.
                 late_cancel = True
             else:
+                # Every record of the turn is on the row before its status moves: a wake on another process that sees it ENDED reopens it at
+                # the next seq (audit G7-03, review H2).
+                await _persist_last_seq(session_storage, session_id, writer.last_seq)
                 written = await _transition_session_status(
                     session_storage,
                     session,
@@ -1449,7 +1454,6 @@ async def run_one_session_turn(
                     expected_epoch=session.binding_epoch,
                 )
                 await _clear_interrupt_requested(session_storage, session_id)
-                await _persist_last_seq(session_storage, session_id, writer.last_seq)
                 await _advance_drain_cursor(session_storage, session_id)
                 # Only now, with every record of the turn on the row, may a wake see the turn idle (audit G7-03 (c)).
                 await _clear_turn_running(session_storage, session_id)
@@ -2005,6 +2009,9 @@ async def _land_cancelled_turn(
                 new_status, ended_reason = _interrupt_post_status()
             else:
                 new_status, ended_reason = SessionStatus.ENDED, "cancelled"
+            # The CANCELLED record and every other record of the turn are on the row before its status moves: a wake on another process that
+            # sees it ENDED reopens it at the next seq (audit G7-03, review H2: "Cancel, then type straight away").
+            await _persist_last_seq(session_storage, session_id, writer.last_seq)
             written = await _transition_session_status(
                 session_storage,
                 session,
@@ -2018,7 +2025,6 @@ async def _land_cancelled_turn(
             # not take this lock: announce what it says.
             new_status, ended_reason = written.status, written.ended_reason
             await _clear_interrupt_requested(session_storage, session_id)
-            await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
             # Only now, with the CANCELLED record and every other record of the turn on the row, may a wake see the turn idle (audit
             # G7-03 (c)).
@@ -2594,6 +2600,9 @@ async def _release_settled_row(session_storage, row: WorkspaceSession, where: st
 # the write and the re-read); this many refusals in a row give the claim back unrun.
 _RUNNING_FLIP_ATTEMPTS = 3
 
+# How soon a claim that found a wake arming the turn comes round again.
+_ARMING_REQUEUE_AFTER = timedelta(seconds=1)
+
 
 def _failure_code(exc: BaseException) -> str:
     """Why the turn failed, in one code.
@@ -2713,7 +2722,9 @@ async def _flip_to_running(
     for _ in range(_RUNNING_FLIP_ATTEMPTS):
         try:
             written = await session_storage.patch_if(
-                session_id, patch, where={"status": NON_ENDED_STATUSES_NOT_PAUSED()},
+                session_id, patch,
+                # Never over a wake's ``arming``: that wake is writing the message this turn would answer (audit G7-03, review H1).
+                where={"status": NON_ENDED_STATUSES_NOT_PAUSED(), "turn_status": ["idle", "claimable", "running"]},
             )
         except NotFoundError:
             return None, _drop_vanished_row(session_id, "before the running flip")
@@ -2728,6 +2739,15 @@ async def _flip_to_running(
                 session_id, "paused" if now.status == SessionStatus.PAUSED else "ended",
             )
             return None, await _settled_release(session_storage, now)
+        if now.turn_status == "arming":
+            # A claim that reached the session while a wake is writing its message (a lease armed by /resume or by boot recovery): the turn
+            # must not start without that message. The claim is handed back untouched and comes round again in a moment; the wake promotes
+            # the turn to claimable and the turn then runs with it (a stale arm is healed by the session-messaging sweep).
+            logger.info("session %s: a wake is arming its turn; the claim is handed back to come round again", session_id)
+            return None, ReleaseOutcome(
+                success=False, requeue_after=_ARMING_REQUEUE_AFTER, entity_noop=True,
+                last_error="a wake was arming the turn",
+            )
     logger.error(
         "session %s: the running flip was refused %d times while the row read live each time; giving the claim "
         "back unrun",
