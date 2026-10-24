@@ -22,22 +22,15 @@ def _src() -> str:
 
 
 class TestFoldedIn:
-    """The standalone page folded into the catalog; the modal did not.
+    """The standalone page folded away; the modal did not.
 
-    ModelProfile is LLM-only by design, so a profile belongs under its LLM
-    provider rather than on a page of its own. The editor is reused, not
-    reimplemented, so this module still guards the modal.
-
-    01a067c4: an aggregated profile has no provider_id, so it cannot live
-    under any one provider's page the way a single profile does. Its home
-    is MP_AllProfilesPanel, mounted as a provider-catalog "class" chip
-    (form:"panel", same precedent as the ssp/workspace/channel classes) --
-    NOT a resurrection of the banned ModelProfilesPage below. The ban was
-    about a separate PAGE/nav entry breaking the providers one-page IA
-    doctrine; a class chip INSIDE that same page satisfies the doctrine
-    (profiles, single or aggregated, stay reachable only from the
-    providers page) rather than violating it. Do not read the new chip as
-    contradicting this test class.
+    ModelProfile is LLM-only by design. Every profile, single or
+    aggregated, lives on the LLM Profiles page (Platform > LLM Profiles,
+    the `profiles` entry of NV_PLAT_PAGES), whose cards open
+    MP_ProfileModal through NV_ProfileModalHost (Platform revamp Plan 03).
+    That page is a Platform nav entry, not the banned ModelProfilesPage
+    below: the ban is about a second page component with its own address,
+    and this module still guards that it does not come back.
     """
 
     def test_the_page_component_is_gone(self) -> None:
@@ -67,7 +60,7 @@ class TestFoldedIn:
         assert hits == [], f"the page is still mounted by: {hits}"
 
     def test_it_is_still_in_the_bundle_manifest(self) -> None:
-        """The file stays: the catalog mounts MP_ProfileModal from it."""
+        """The file stays: the Platform page's NV_ProfileModalHost mounts MP_ProfileModal from it."""
         assert "components/model-profiles.jsx" in INDEX.read_text(encoding="utf-8")
 
     def test_nothing_still_links_to_the_dead_path(self) -> None:
@@ -76,10 +69,21 @@ class TestFoldedIn:
             assert '"/model-profiles"' not in src, name
 
 
+    def test_the_new_class_key_is_not_the_banned_nav_id(self) -> None:
+        """test_no_address_or_nav_entry_reaches_it greps for the literal
+        `id: "model-profiles"` (hyphenated, a nav-entry id shape). The
+        provider catalog never carries that id (moved here from the
+        retired TestAllProfilesPanel, Plan 03 Task 6)."""
+        catalog = (ROOT / "ui" / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
+        assert 'id: "model-profiles"' not in catalog
+
 class TestAggregatedKindSupport:
-    """01a067c4: MP_ProfileModal/MP_ProfileCard support kind="aggregated"
-    profiles -- an ordered pool of other "single" profiles with a
-    routing/failover policy -- alongside the pre-existing single shape.
+    """01a067c4: the profile overlays support kind="aggregated" profiles
+    -- an ordered pool of other "single" profiles with a routing/failover
+    policy -- alongside the pre-existing single shape. Plan 03 Task 6
+    retired the card source pins (the kind chip, the member count): the
+    LLM Profiles page's card says "aggregated" and "N profiles · ..."
+    (tests/ui/test_llm_profiles_page.py).
 
     Platform revamp Plan 03: the aggregated form is its own overlay,
     MP_AggregateOverlay (a PK_FormOverlay on the platform kit), which the
@@ -101,15 +105,6 @@ class TestAggregatedKindSupport:
         ):
             assert token in src, f"{token} missing"
 
-    def test_card_shows_a_kind_chip_for_aggregated_rows(self) -> None:
-        src = _src()
-        assert "function MP_KindChip(" in src
-
-    def test_card_shows_member_count_not_provider_model_for_aggregated(self) -> None:
-        src = _src()
-        assert "isAggregated" in src
-        assert "members.length" in src
-
     def test_it_transpiles(self) -> None:
         from primer.api._jsx_bundle import JSXBundler
 
@@ -118,34 +113,7 @@ class TestAggregatedKindSupport:
             babel_source=(ROOT / "ui" / "vendor" / "babel.min.js").read_text(),
         )
         code = b._transform(_src(), "components/model-profiles.jsx")
-        assert code and "MP_AllProfilesPanel" in code
-
-
-class TestAllProfilesPanel:
-    """The provider-agnostic browse surface -- an aggregated profile's
-    only home, since it has no provider_id to be scoped under."""
-
-    def test_panel_exists_and_is_exported(self) -> None:
-        src = _src()
-        assert "function MP_AllProfilesPanel(" in src
-        assert "window.MP_AllProfilesPanel = MP_AllProfilesPanel;" in src
-
-    def test_panel_fetches_all_profiles_unscoped(self) -> None:
-        src = _src()
-        assert '"/model_profiles?limit=200"' in src
-
-    def test_panel_passes_allProfiles_to_the_modal(self) -> None:
-        src = _src()
-        assert "allProfiles={allProfiles}" in src
-
-    def test_the_new_class_key_is_not_the_banned_nav_id(self) -> None:
-        """TestFoldedIn's ban greps for the literal `id: "model-profiles"`
-        (hyphenated, a nav-entry id shape). This class uses a distinct
-        `key: "model_profile"` (underscored, singular) -- a
-        provider-catalog class key, not a nav entry -- so it does not
-        trip that check."""
-        catalog = (ROOT / "ui" / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
-        assert 'id: "model-profiles"' not in catalog
+        assert code and "MP_AggregateOverlay" in code
 
 
 class TestAggregatedEditorRemovedFromProviderForm:
