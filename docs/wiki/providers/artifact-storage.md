@@ -11,7 +11,9 @@ An `ArtifactStorageProvider` row is a store for attachment bytes and large outpu
 
 ## Concepts
 - `provider` is `db`, `filesystem` or `s3`, and `config` must match it. `db` has no fields: the bytes live in the deployment's own storage. `filesystem` takes a required `root` directory. `s3` takes a required `bucket` plus optional `prefix`, `endpoint_url`, `region`, `addressing_style` (`auto`, `path` or `virtual`) and `access_key` and `secret_key`, which come back masked on every read.
-- On this release the factory builds the `db` and `filesystem` backends. An `s3` row can be stored, but building it fails with `not implemented` until its backend ships; the console labels that kind "not implemented yet: stored, never used".
+- Every kind builds. An `s3` store needs the server's `s3` extra (aiobotocore; the slim and full images have it): without it, building fails and names the extra to install.
+- An `s3` store keeps each file as one object at `<prefix><file id>`, on AWS S3 or an S3-compatible server such as MinIO (`endpoint_url`; blank for AWS). End the `prefix` with `/` to use a folder. `addressing_style` `auto` is path-style when `endpoint_url` is set, as MinIO needs.
+- The S3 keys go together: set `access_key` and `secret_key` both, or leave both blank to use the server's own credentials (its environment, its AWS config files or its instance or pod role). One without the other is a `validation-error` whose message starts with the blank key (`config.secret_key: ` or `config.access_key: `), and nothing is stored; a half pair is never completed from the server's own credentials. To keep the stored keys on an update, send the masks back unchanged.
 - A `filesystem` `root` is the absolute path of ONE folder that every server pod (the API and every worker) mounts at the same path. Creating the row, or changing its root, creates the folder when missing and writes a `.primer-artifact-root` marker in it; an update that keeps the root only checks that this server sees it with its marker. A root that is relative, is a file, cannot be written, or is an existing folder that already holds files and has no marker is a `validation-error` whose message starts `config.root: `, and nothing is stored. A process that finds no folder, or a folder without the marker, refuses the store with a message that names the root and says to mount the shared volume.
 - The reserved row `artifact-storage-default` is the database store seeded at bootstrap. It is the store every artifact without a location record is read from, so its `provider` must stay `db`: a write that makes it another kind is a `validation-error`, and its delete is a 403.
 - The active store is a deployment-wide setting, read on every write and never cached, so a switch is seen by every process at once. `system__get_active_artifact_store` reads it; `system__set_active_artifact_store` probes a saved provider and selects it for new writes. Existing artifacts stay where they were written.
@@ -113,11 +115,12 @@ Reference: [`system__list_artifact_storage_providers`](reference/tools/system/li
 
 ## Gotchas
 - Every tool on this page needs an admin; a run below the floor is a `forbidden`.
-- `db` and `filesystem` build on this release: an `s3` row stores, but its probe and its selection as the active store fail at the build step with `not implemented` until the backend ships.
+- An `s3` store needs the `s3` extra in every server pod, and its bucket reachable from each. With no keys on the row, each pod signs with its own credentials.
+- An `s3` row with only one of the two keys is refused; a probe of an older row stored that way fails at the build step.
 - A filesystem store works only when every server pod mounts the same volume at its `root`. A pod without it refuses the store, and at boot each pod logs every filesystem store it cannot use. Select a filesystem store only on a deployment whose pods all share that volume.
 - `system__set_active_artifact_store` probes first: an unknown or unusable provider is a `validation-error`, and the current selection is unchanged.
 - Deleting the active store is refused with `cascade_blocked`: select another store first. Deleting a store that still holds artifacts is refused with `artifact_provider_holds_artifacts`: the artifacts are read from it, and the row can go once they are gone.
-- Moving a store that holds artifacts is refused the same way: changing its kind, or its `config.root`, `bucket` or `prefix`, would leave the stored artifacts unreadable. Register a new provider and select it instead.
+- Moving a store that holds artifacts is refused the same way: changing its kind, or its `config.root`, `bucket` or `prefix`, would leave the stored artifacts unreadable. Register a new provider and select it instead. An S3 `endpoint_url` or `region` may still be corrected, as long as it reaches the same bucket.
 - The reserved row `artifact-storage-default` cannot be deleted (403), and its `provider` must stay `db`.
 
 ## Related

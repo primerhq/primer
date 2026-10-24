@@ -1,8 +1,7 @@
 # Artifact Storage
 
 This is a stub, written ahead of plan 09 task 12: it records how artifacts are routed between stores (the location record, the active
-store, the delete and move refusals) and how the filesystem store keeps its files, as the code does it today. The S3 backend (plan 09
-task 9) is not built yet.
+store, the delete and move refusals) and how the filesystem and S3 stores keep their files, as the code does it today.
 
 ## 1. Purpose
 
@@ -25,6 +24,8 @@ where each file is written, finds it again by its id, and keeps a store from bei
 - A **filesystem root** is ONE folder that every server pod (the API and every worker) mounts at the same path. A prepared root holds a
   `.primer-artifact-root` marker; a process that finds no folder, or a folder without the marker, is a pod without the shared volume and
   refuses to use the store.
+- An **S3 store** keeps each artifact as one object in a bucket of AWS S3 or an S3-compatible server (MinIO), under the row's key prefix.
+  It needs the `s3` extra (aiobotocore). Its two keys go together: both, or neither to use the server's own credentials.
 
 ```mermaid
 flowchart LR
@@ -50,19 +51,22 @@ are shared by the routes and the system tools (the D3/D5 shared-validator patter
 - `primer/model/providers/artifact.py`: the provider row, its three config classes, the active-store row and the two reserved ids.
 - `primer/model/artifact.py`: `Artifact` (the database rows) and `ArtifactLocation`.
 - `primer/int/artifact_storage.py`: the `ArtifactStorage` ABC (`put`, `get`, `delete`, `needs_location_record`).
-- `primer/artifact/db.py`, `primer/artifact/factory.py` (`BUILDABLE_KINDS`: `db` and `filesystem`), `primer/artifact/probe.py` (the live
+- `primer/artifact/db.py`, `primer/artifact/factory.py` (`BUILDABLE_KINDS`: every kind, `db`, `filesystem` and `s3`), `primer/artifact/probe.py` (the live
   round trip), `primer/artifact/routing.py` (`RoutingArtifactStorage`, `count_artifacts_held`), `primer/artifact/active.py` (read and
   select the active store), `primer/artifact/checks.py` (the write, delete and move checks, and `prepare_artifact_provider`).
 - `primer/artifact/filesystem.py` (`FilesystemArtifactStorage`, `prepare_root`, `check_root`, `ROOT_MARKER`) and `primer/artifact/ids.py`
   (`BACKEND_ARTIFACT_ID_RE`, `new_backend_artifact_id`: the `artifact-<32 hex>` ids a non-database backend mints; database ids stay
   `artifact-<12 hex>`).
+- `primer/artifact/s3.py` (`S3ArtifactStorage`, `s3_addressing_style`, `s3_client_kwargs`). It imports aiobotocore inside `initialize`
+  only, and the import-linter "core layers" contract forbids the core packages to import it.
 - `check_filesystem_artifact_stores` in `primer/api/_app_lifespan_phases.py`, the boot check.
 - `primer/api/registries/artifact_storage_registry.py`, `primer/api/routers/artifact_storage.py`, `primer/toolset/_system_artifact.py`.
 
 ## 5. Data model
 
 `ArtifactStorageProvider` carries `provider` and `config` (`DbArtifactConfig`, `FilesystemArtifactConfig` with `root`,
-`S3ArtifactConfig` with `bucket`, `prefix`, `endpoint_url` and keys). `ActiveArtifactStorageConfig` carries `provider_id`.
+`S3ArtifactConfig` with `bucket`, `prefix`, `endpoint_url`, `region`, `addressing_style` and the `access_key` and `secret_key`
+secrets). `ActiveArtifactStorageConfig` carries `provider_id`.
 `ArtifactLocation` carries `provider_id`, and both storage backends index that hot field (the SQLite and Postgres hot-field lists), so
 counting what a provider holds is an index read.
 
@@ -70,6 +74,10 @@ counting what a provider holds is an index read.
 of the id: the bytes at `<id>` and a UTF-8 JSON sidecar at `<id>.json` holding `{"mime_type", "filename", "size"}` (the filename kept
 as written, any characters). The root also holds the `.primer-artifact-root` marker. Shard folders are created on demand and left in
 place when they empty.
+
+**In a bucket** (the S3 store), each artifact is one object at `<prefix><id>`: the bytes as its body, the MIME type as its `Content-Type`
+and the filename, percent-encoded (`quote(filename, safe="")`, because S3 user metadata is ASCII only), as its `filename` metadata. A put
+without a filename writes no metadata. A prefix that should act as a folder ends with `/`.
 
 ## 6. Lifecycle
 
@@ -93,6 +101,21 @@ missing or of the wrong type) or when the bytes are not as long as the sidecar's
 operation runs in a worker thread (`asyncio.to_thread`), so a slow or hung volume never blocks the event loop. A put cancelled while its
 thread is writing (a client that went away) cannot stop the thread and never hands out its id, so the write is shielded and, once the thread
 finishes, a cleanup task removes both files (the module holds the task until it is done).
+
+**S3 put, get and delete.** The client is opened by `initialize` (once, also under concurrent calls) with the addressing style
+(`auto` is path-style when `endpoint_url` is set, as MinIO needs, and botocore's own choice on AWS), a 10 s connect and 60 s read timeout
+and standard retries (three retries). A get answers `None` only for a missing key (`NoSuchKey`, `404`, `NotFound`); any other error, a
+missing bucket or a refused read, is raised, because it is an outage, not an absent file. An id that is not a backend id is never turned
+into a key: a get answers `None` and a delete does nothing, without a request. A put that does not complete (cancelled while its request
+is in flight, or failed in a way that may have come after the server stored the object, such as a read timeout) never hands out its id,
+and the object it may have left is removed in the background once the request settles; a put the server refused leaves nothing to
+remove. `aclose` waits for those removals (at most 30 s) before it closes the client, and a closed store refuses every later call rather
+than open a client that nothing would close.
+
+**A store built during an eviction race.** The registry returns uncached a store it built while an eviction or a flush raced the build,
+so the request completes on it. The routing store hands back every store the registry resolved once its call is over
+(`ArtifactStorageRegistry.release_provider`), also after a failure or a cancel, and the registry closes an uncached store there; one never
+handed back is closed with the registry. A cached store stays open until an eviction closes it.
 
 **Preparing a filesystem root** (`prepare_artifact_provider`, run LAST by the REST create and update hooks and the system tool pre-create
 and pre-update, and by the draft `_test` as its `prepare` step). Only a NEW root is prepared (`filesystem_root_is_new`: a create, or an
@@ -147,6 +170,15 @@ memory by the registry and rebuilt from the rows. The reserved default row is se
 ## 9. Internal contracts
 
 - The reserved default stays `db` (`check_artifact_provider_write`): every artifact without a record is read from the database.
+- **S3 keys: both or neither** (`check_artifact_provider_write`, on the REST route and in the system tools, after the served masks are
+  restored): one key without the other is a 422 (`validation-error` from a tool) `artifact_s3_keys_incomplete` naming the blank key, and
+  nothing is stored. A half pair is never completed from the server's ambient credentials: a row stored before the rule fails at build
+  (`ConfigError`), so its probe stops at `build`. With neither key, botocore's ambient chain is used (environment, shared config files,
+  the instance or pod role). The keys are masked in every answer, restored on an update that sends the masks, and never logged by primer;
+  probe errors pass through `probe_failure_text`. botocore's own DEBUG log of a signed request names the access key id (SigV4's
+  `Credential=`), never the secret key.
+- **Where a store writes** (`ArtifactStorage.serves`): a filesystem store compares the row's kind and `root`; an S3 store compares the
+  row's kind, `bucket`, `prefix`, `endpoint_url` and `region`. New keys or another addressing style reach the same objects.
 - **Delete refusal** (`check_artifact_provider_delete`): the active store cannot be deleted (409 `cascade_blocked`), nor can a store
   that still holds records (409 `artifact_provider_holds_artifacts`, with the count).
 - **Move refusal** (`check_artifact_provider_update`): changing `provider`, a filesystem `root`, or an S3 `bucket` or `prefix` of a
@@ -158,7 +190,8 @@ memory by the registry and rebuilt from the rows. The reserved default row is se
   unlinks a link itself, never what it points at. The root itself may be a link (a mount reached through one).
 - **Deployment.** On Kubernetes a filesystem store needs one shared volume (ReadWriteMany) mounted at `root` in the API pod and every
   worker pod. Do not select a filesystem store on a deployment that lacks it: the selection probe runs in one pod only, and every other
-  pod would refuse the store (the boot check names them).
+  pod would refuse the store (the boot check names them). An S3 store needs the `s3` extra in every pod (the slim image has it) and the
+  same bucket reachable from each; with no keys on the row, each pod uses its own ambient credentials.
 
 ## 10. Testing patterns
 
@@ -166,7 +199,10 @@ memory by the registry and rebuilt from the rows. The reserved default row is se
 record (`tests/artifact/_stores.py`); the race tests hold a put inside the store, or run the concurrent delete inside an injected probe.
 `tests/artifact/test_filesystem_store.py` pins the filesystem store (the marker, the traversal ids and planted links, the thread rule),
 and `tests/artifact/test_backend_contract.py` runs one contract (bytes, MIME type and any filename round-trip) against every backend that
-builds. `tests/api/test_artifact_storage_*.py` cover the routes and the registry, `tests/api/test_artifact_store_switch.py` the switch to
+builds, the S3 store on moto's threaded S3 server in the test process (`tests/artifact/conftest.py`: 127.0.0.1 only, no AWS endpoint, with
+the machine's own AWS credentials, profile and region hidden by `isolated_aws_env`). `tests/artifact/test_s3_store.py` pins the S3 store
+(the key layout, both keys or neither, the serves rule, the client settings, the removal of an incomplete put, the secret in no log record
+at DEBUG, and that a core install imports no aiobotocore). `tests/api/test_artifact_storage_*.py` cover the routes and the registry, `tests/api/test_artifact_store_switch.py` the switch to
 a filesystem store and the boot check, and `tests/toolset/test_system_artifact_tools.py` the tools. Every filesystem test works inside its
 own `tmp_path`. `tests/e2e/test_artifact_store_switch_journey.py` runs the switch against a live server.
 
