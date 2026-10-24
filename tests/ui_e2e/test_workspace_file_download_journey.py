@@ -15,7 +15,8 @@ Pages traversed:
 
 Multi-feature exercise in one test:
 
-  1. Workspaces list page render + row click navigation
+  1. The workspace's rail row (the Workspaces list page is gone,
+     platform revamp 08 Task 14) + row click navigation
   2. Workspace detail page + default Files tab
   3. File tree polling/rendering after API-side PUT
   4. File content editor pane (pre + CodeHighlight) showing the
@@ -45,7 +46,7 @@ from tests.ui_e2e._studio_helpers import files_list, open_studio
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import default_wid
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -123,7 +124,7 @@ def test_u0106_workspace_file_inspect_and_download_journey(
       2. PUT a known-content text file into the workspace via API.
          Skip-soft on 5xx (U0072-class: container can't reach
          host bind-mount path).
-      3. Navigate /workspaces list — assert seeded row visible.
+      3. Open the studio and assert the seeded workspace's rail row is visible.
       4. Click row → /workspaces/{wid} (the Studio).
       5. Wait for the rail's ``nv-file:<path>`` entry for the seeded file.
       6. Click it → the center ``panel-file`` opens with the file's
@@ -161,24 +162,19 @@ def test_u0106_workspace_file_inspect_and_download_journey(
                 )
             assert r.status_code in (200, 201, 204), r.text
 
-        # ----- 1. /workspaces list ----------------------------------
-        open_legacy_route(page, console_url, "workspaces")
-        expect(page.locator("h1.page-title")).to_have_text(
-            "Workspaces", timeout=20_000,
-        )
-        # RETARGET (platform wave P1b item 7): the table/tr list was
-        # replaced by a .pc-card-grid of cards; unlike the old row, the
-        # card itself carries no click-to-enter handler (only its Open
-        # button does), so target that testid directly.
-        ws_open_btn = page.get_by_test_id(f"workspace-card-open-{wid}")
-        expect(ws_open_btn).to_be_visible(timeout=20_000)
+        # ----- 1. The workspace's row in the rail --------------------
+        # RETARGET (platform revamp 08, Task 14): the Workspaces page and its cards are gone; the studio rail lists the workspaces, and its row
+        # is how a person enters one. The rail polls its list every 15 s and the workspace was seeded after the console loaded, so it is loaded again.
+        open_studio(page, console_url, default_wid(console_url))
+        page.reload()
+        expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
+        ws_row = page.get_by_test_id(f"nv-rail-ws:{wid}")
+        expect(ws_row).to_be_visible(timeout=20_000)
 
-        # ----- 2. Click Open: enter that workspace -------------------
+        # ----- 2. Click the row: enter that workspace -----------------
         # This ENTERS the workspace rather than addressing its record,
-        # which is what the shell spells "#/w/<wid>". The overlay-url
-        # helper is for a surface hung off a workspace, which this is
-        # not.
-        ws_open_btn.click()
+        # which is what the shell spells "#/w/<wid>".
+        ws_row.click()
         expect(page).to_have_url(re.compile(rf"#/w/{re.escape(wid)}\b"))
         open_studio(page, console_url, wid)
 

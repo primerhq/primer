@@ -2,19 +2,18 @@
 
 Walks the full chain from a clean state through the UI:
   1. Create a local Workspace Provider via the modal.
-  2. Create a Workspace Template referencing it via the modal; the modal closes back onto the list.
-  3. Open the Workspaces page; click New Workspace; the new template
-     appears in the template row picker; submit; workspace materialises.
+  2. Open the new-workspace dialog; its "Create a template" action opens
+     the template overlay over it; create a Workspace Template on the new
+     provider; the overlay closes and hands the template back, selected.
+  3. Create; the workspace materialises from the template handed back.
   4. The workspace detail page renders.
 
 Pinned invariants:
   * Sequencing works without page refresh: navigating between the
     three pages refetches the next page's resources cleanly.
-  * The provider dropdown on the Template modal includes the
-    just-created provider within the polling cadence (5s).
-  * The template row picker on the New Workspace modal (platform wave
-    P1b item 6 - rows replaced the old <select>) includes the
-    just-created template.
+  * The template overlay's "Runs on" includes the just-created provider.
+  * The new-workspace dialog gets the template it made back, selected
+    (platform revamp 08; the lead's ruling on #911), without leaving it.
   * The workspace detail page renders for the new id.
 """
 
@@ -28,7 +27,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
+from tests.ui_e2e._shell_helpers import default_wid, open_overlay, wait_for_overlay_url
 from tests.ui_e2e._studio_helpers import open_provider_catalog
 pytestmark = smk("SMK-UI-06", status="partial")
 
@@ -73,58 +72,35 @@ def test_workspace_chain_create_journey(
         expect(overlay).not_to_be_visible(timeout=10_000)
         wait_for_overlay_url(page, f"workspaces/providers/{provider_id}")
 
-        # ---- 2. Create the template via the UI ---------------------------
-        page.wait_for_function(
-            "() => typeof window.WorkspaceTemplatesPage === 'function'",
-            timeout=20_000,
-        )
-        open_legacy_route(page, console_url, "workspaces/templates")
-        page.get_by_role(
-            "button", name="New workspace template",
-        ).or_(
-            page.get_by_role("button", name="New template")
-        ).first.click()
-
-        modal = page.locator(".modal").first
-        expect(modal).to_be_visible(timeout=5_000)
-        # Provider picker must list the just-created provider.
-        provider_select = modal.locator("[data-testid='ws-template-provider']")
-        expect(provider_select).to_be_visible(timeout=10_000)
-        provider_select.select_option(provider_id)
-
-        modal.locator("input.input.mono").first.fill(template_id)
-        modal.locator("[data-testid='ws-template-description']").fill("chain test template")
-        modal.get_by_role("button", name="Create").first.click()
-        expect(modal).not_to_be_visible(timeout=10_000)
-        # The create returns to the list it was made from (platform revamp 08: a create closes and returns to its caller). It used to navigate to
-        # workspaces:templates:<id>, the old detail page; that address is the template overlay in edit mode now, which is not what a create ends in.
-        expect(page.get_by_test_id("wt-overlay")).to_have_count(0)
-        expect(page).to_have_url(re.compile(r"overlay=workspaces(:|%3A)templates(&|$)"), timeout=5_000)
+        # ---- 2. Create the template from the new-workspace dialog ----------
+        # RETARGET (platform revamp 08; the lead's ruling on #911): the template is made where it is needed. The new-workspace dialog's
+        # "Create a template" (a small action beside its template dropdown, always offered) opens the template overlay over the dialog; the
+        # template it makes comes back selected, so the person never leaves the workspace they are making. The old template list and its
+        # modal (this step's previous route) go with Task 15.
+        open_overlay(page, console_url, default_wid(console_url), "new-workspace")
+        modal = page.get_by_test_id("nv-overlay:new-workspace")
+        picker = modal.get_by_test_id("nv-nw-template")
+        expect(picker).to_be_visible(timeout=15_000)
+        modal.get_by_test_id("nv-nw-new-template").click()
+        overlay = page.get_by_test_id("wt-overlay")
+        expect(overlay).to_be_visible(timeout=10_000)
+        # "Runs on" must offer the just-created provider.
+        overlay.get_by_test_id("ws-template-provider").click()
+        overlay.get_by_test_id(f"ws-template-provider:{provider_id}").click()
+        expect(overlay.get_by_test_id("wt-local")).to_be_visible()
+        overlay.get_by_test_id("ws-template-id").fill(template_id)
+        overlay.get_by_test_id("ws-template-description").fill("chain test template")
+        overlay.get_by_test_id("wt-save").click()
+        expect(overlay).not_to_be_visible(timeout=10_000)
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             assert c.get(f"/v1/workspace_templates/{template_id}").status_code == 200
 
-        # ---- 3. Create the workspace via the existing modal --------------
-        page.wait_for_function(
-            "() => typeof window.WorkspacesPage === 'function'",
-            timeout=20_000,
-        )
-        open_legacy_route(page, console_url, "workspaces")
-        page.get_by_role(
-            "button", name="New workspace",
-        ).first.click()
-
-        modal = page.locator(".modal").first
-        expect(modal).to_be_visible(timeout=5_000)
-        # RETARGET (platform wave P1b item 6): the Template <select> was
-        # replaced by a row picker (one .pc-register-row per template).
-        # Poll for the new template's row to appear within ~5s, same
-        # intent as the old dropdown-options poll.
-        template_row = modal.locator(
-            f"[data-testid='workspace-template-row-{template_id}']"
-        )
-        expect(template_row).to_be_visible(timeout=15_000)
-        template_row.click()
-        modal.get_by_role("button", name="Create").first.click()
+        # ---- 3. Create the workspace from the template handed back ---------
+        # The dialog stayed open with the new template selected (the hand-back), so Create makes the workspace from it.
+        expect(modal).to_be_visible()
+        expect(picker).to_contain_text(template_id, timeout=10_000)
+        expect(modal.get_by_test_id("nv-nw-summary")).to_contain_text("chain test template")
+        modal.get_by_test_id("nv-nw-create").click()
 
         # Modal closes and the shell ENTERS the workspace just created,
         # which is what the pre-S8 route did too and what the shell

@@ -49,7 +49,8 @@ def _register() -> Form:
     return Form("+ Register", MODAL)
 
 
-# the Platform pages that are overlays, opened by their legacy route
+# the Platform pages that are overlays, opened by their legacy route (the Workspaces page left in platform revamp 08, Task 14: its bare address is a moved
+# notice now, and its create form is the new-workspace overlay, swept under OVERLAYS)
 LEGACY_FORMS: dict[str, list[Form]] = {
     "agents": [Form("New agent", MODAL)],
     "graphs": [Form("New graph", MODAL)],
@@ -58,7 +59,6 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "approvals": [],
     "harnesses": [Form("Register harness", MODAL)],
     "services": [Form("New service", MODAL)],
-    "workspaces": [Form("New workspace", MODAL)],
     "workspaces/templates": [Form("New template", MODAL)],
     "workspaces/providers": [_register()],
     "channels": [Form("New channel", MODAL)],          # enabled only while a channel provider exists: the sweep seeds one
@@ -85,7 +85,6 @@ LEGACY_TITLES: dict[str, str] = {
     "approvals": "Approvals",
     "harnesses": "Harnesses",
     "services": "Services",
-    "workspaces": "Workspaces",
     "workspaces/templates": "Workspace templates",
     "workspaces/providers": "Providers",
     "channels": "Channels",
@@ -150,6 +149,15 @@ NO_FORM: dict[str, str] = {
 
 PHONE_TABS = ["Inbox", "Spaces", "Files", "More"]
 OVERLAYS = ["new-session", "new-workspace", "activity"]
+
+
+def overlay_ready(name: str) -> list[str]:
+    """What a studio overlay shows once it has drawn: a panel overlay's body; the new-workspace dialog (a kit form overlay since Plan 08 Task 13, with no
+    panel body) its template dropdown, or the empty state of an install with no template."""
+    root = f'[data-testid="nv-overlay:{name}"]'
+    if name == "new-workspace":
+        return [f'{root} [data-testid="nv-nw-template"], {root} [data-testid="nv-nw-empty"]']
+    return [f'{root} [data-testid="nv-overlay-body"]']
 
 
 def form_surface(kind: str, page: str, button: str) -> str:
@@ -236,8 +244,6 @@ FLOORS: dict[str, int] = {
     "overlay-page harnesses / Register harness": 3,
     "overlay-page services": 1,
     "overlay-page services / New service": 1,
-    "overlay-page workspaces": 6,
-    "overlay-page workspaces / New workspace": 2,
     "overlay-page workspaces/templates": 1,
     "overlay-page workspaces/templates / New template": 4,
     "overlay-page workspaces/providers": 2,

@@ -1,60 +1,63 @@
-"""studio-ux fix 5 — the "New workspace" modal's Create button
-(`WS_NewWorkspaceModal` in ui/components/workspaces.jsx) gave no feedback
-while the POST + (slow, k8s) provisioning ran: it was already disabled
-in-flight (`disabled={!templateId || create.loading}`), but with no visual
-loading affordance an operator could easily read the button as inert/broken
-and click again or bail out. It now shows an inline spinner + "Creating…"
-label while `create.loading` (the existing useMutation() state) is true.
+"""studio-ux fix 5, retargeted to the one new-workspace dialog (platform revamp 08, Task 13; design 14.3).
+
+The Create button of the old Workspaces page's modal (``WS_NewWorkspaceModal``) gave no feedback while the POST and the (slow, Kubernetes) provisioning
+ran; fix 5 gave it a spinner and "Creating…", and it was natively ``disabled`` for the length of the request. That modal is gone: the console's
+``NV_CreateWorkspaceOverlay`` (``ui/components/console/nv-overlays.jsx``) is the one dialog, and its Create says it is busy the kit's way: ``Btn busy``
+(``aria-busy`` and ``aria-disabled``, the click refused, the focus kept; ``docs/dev/subsystems/ui-foundation.md``), never ``disabled`` for a request
+(``tests/ui/test_busy_buttons_ratchet.py``). ``disabled`` is kept for "cannot be sent as typed" (no template, or an error in the form). The behaviour is
+pinned by ``tests/ui/test_new_workspace_dialog.py::test_create_is_busy_not_disabled_while_the_request_is_out``.
 
 Static-source checks only (the tests/ui suite convention).
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
-WORKSPACES = UI / "components" / "workspaces.jsx"
+OVERLAYS = UI / "components" / "console" / "nv-overlays.jsx"
 STYLES = UI / "styles.css"
 
 
-def _fn_block(src: str, start_marker: str, end_marker: str) -> str:
-    start = src.index(start_marker)
-    end = src.index(end_marker, start)
-    return src[start:end]
+def _dialog_src() -> str:
+    src = OVERLAYS.read_text(encoding="utf-8")
+    start = src.index("function NV_CreateWorkspaceOverlay(")
+    return src[start:src.index("// The management-surface mount table", start)]
 
 
-def _modal_src() -> str:
-    src = WORKSPACES.read_text(encoding="utf-8")
-    return _fn_block(src, "function WS_NewWorkspaceModal(", "function WorkspaceDetail(")
+def _create_button() -> str:
+    dialog = _dialog_src()
+    at = dialog.index('data-testid="nv-nw-create"')
+    return dialog[dialog.rindex("<Btn", 0, at):dialog.index("</Btn>", at)]
 
 
-def test_create_button_stays_disabled_while_the_mutation_is_in_flight() -> None:
-    modal = _modal_src()
-    assert "disabled={!templateId || create.loading}" in modal
+def test_create_is_busy_while_the_request_is_out_and_says_creating() -> None:
+    button = _create_button()
+    assert "busy={busy}" in button
+    assert '{busy ? "Creating…" : "Create"}' in button
 
 
-def test_create_button_shows_a_spinner_and_creating_label_while_loading() -> None:
-    modal = _modal_src()
-    assert 'data-testid="workspace-create-submit"' in modal
-    assert '{create.loading ? (<><span className="spinner" /><span>Creating…</span></>) : "Create"}' in modal
+def test_create_is_never_disabled_by_the_request() -> None:
+    button = _create_button()
+    disabled = re.search(r"disabled=\{([^}]*)\}", button)
+    assert disabled and disabled.group(1) == "!ready", button
+    assert "var ready = !!template && Object.keys(errs).length === 0;" in _dialog_src(), "ready says what can be sent, not whether a request is out"
 
 
-def test_create_button_swaps_its_icon_out_for_the_spinner_while_loading() -> None:
-    # The Btn shell always renders `icon` as a leading <Icon>; passing
-    # icon={undefined} while loading avoids a duplicate plus-icon sitting
-    # next to the spinner.
-    modal = _modal_src()
-    assert 'icon={create.loading ? undefined : "plus"}' in modal
+def test_busy_is_the_mutations_own_loading_state() -> None:
+    """No bespoke "submitting" flag for the button: it reads useMutation()'s .loading (a ref only stops a second click before that has rendered)."""
+    dialog = _dialog_src()
+    assert "var mutation = api.useMutation(" in dialog
+    assert "var busy = !!mutation.loading;" in dialog
 
 
-def test_create_uses_the_existing_use_mutation_loading_state() -> None:
-    # No new bespoke "submitting" state — reuses useMutation()'s own
-    # .loading, exactly as instructed.
-    modal = _modal_src()
-    assert "const create = useMutation(" in modal
-    assert "create.loading" in modal
+def test_cancel_is_held_off_not_disabled_while_create_is_out() -> None:
+    dialog = _dialog_src()
+    at = dialog.index('data-testid="nv-nw-cancel"')
+    cancel = dialog[dialog.rindex("<Btn", 0, at):dialog.index("</Btn>", at)]
+    assert "blocked={busy}" in cancel and "disabled=" not in cancel
 
 
 def test_spinner_css_is_shared_beyond_the_auth_submit_button() -> None:
@@ -62,11 +65,11 @@ def test_spinner_css_is_shared_beyond_the_auth_submit_button() -> None:
     assert ".auth-submit .spinner,\n.btn .spinner {" in css
 
 
-def test_bundle_transpiles_with_workspace_create_loading_state() -> None:
+def test_bundle_transpiles_with_the_new_workspace_dialog() -> None:
     from primer.api._jsx_bundle import build_jsx_bundle
 
     build_jsx_bundle.cache_clear()
     etag, body = build_jsx_bundle(UI)
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
-    assert "/* === components/workspaces.jsx === */" in text
+    assert "/* === components/console/nv-overlays.jsx === */" in text

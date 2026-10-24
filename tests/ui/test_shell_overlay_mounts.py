@@ -38,7 +38,9 @@ DESIGNATIONS = {
     "harnesses": ("harnesses.jsx", "HarnessesPage"),
     "services": ("services.jsx", "SV_ServicesPage"),
     "channels": ("channels.jsx", "ChannelsPage"),
-    "workspaces": ("workspaces.jsx", "WorkspacesPage"),
+    # The Workspaces page is gone (platform revamp 08, Task 14): a workspace's Settings is the component this name mounts; the bare address shows
+    # NV_WorkspacesMoved (tests/ui/test_workspaces_page_removed.py).
+    "workspaces": ("workspaces.jsx", "WorkspaceDetail"),
 }
 
 

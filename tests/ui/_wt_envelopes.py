@@ -5,7 +5,8 @@ builds the real app (``create_test_app``) over the in-memory storage provider of
 the JSON body. The test turns that body into an error with the real ``ApiError`` of ``ui/foundation/api.js``.
 
 The app holds three workspace providers, ``loc`` (Local), ``dock`` (Docker) and ``k3s`` (Kubernetes), and one template on each (``tpl-loc``, ``tpl-dock``,
-``tpl-k3s``). ``role="admin"`` sends as the first account (the admin); any other role sends as a second account with that role. The workspace registry's
+``tpl-k3s``). ``workspaces=("ws-a", ...)`` also stores a running workspace of ``tpl-loc`` under each id (a taken id, a row to rename), for that request only.
+``role="admin"`` sends as the first account (the admin); any other role sends as a second account with that role. The workspace registry's
 backend factory records the provider it was asked for and builds nothing (``FACTORY_CALLS``): a refusal is answered before any backend is made, so a test can
 also check that none was. Each distinct request is answered once and remembered for the session.
 """
@@ -52,15 +53,15 @@ TEMPLATES: tuple[dict[str, Any], ...] = (
 FACTORY_CALLS: list[str] = []
 
 
-def envelope(method: str, path: str, body: Any = None, *, role: str = "admin") -> tuple[int, dict]:
-    """The status and JSON body the real route answers ``method path`` with ``body``, sent as ``role``."""
-    status, answer = _answer(method.upper(), path, json.dumps(body, sort_keys=True), role)
+def envelope(method: str, path: str, body: Any = None, *, role: str = "admin", workspaces: tuple[str, ...] = ()) -> tuple[int, dict]:
+    """The status and JSON body the real route answers ``method path`` with ``body``, sent as ``role``, with ``workspaces`` stored first."""
+    status, answer = _answer(method.upper(), path, json.dumps(body, sort_keys=True), role, tuple(workspaces))
     return status, copy.deepcopy(answer)
 
 
 @cache
-def _answer(method: str, path: str, body_json: str, role: str) -> tuple[int, dict]:
-    return asyncio.run(_send(method, path, json.loads(body_json), role))
+def _answer(method: str, path: str, body_json: str, role: str, workspaces: tuple[str, ...] = ()) -> tuple[int, dict]:
+    return asyncio.run(_send(method, path, json.loads(body_json), role, workspaces))
 
 
 def _factory(provider):
@@ -68,7 +69,7 @@ def _factory(provider):
     raise RuntimeError("the envelope harness builds no workspace backend")
 
 
-async def _send(method: str, path: str, body: Any, role: str) -> tuple[int, dict]:
+async def _send(method: str, path: str, body: Any, role: str, workspaces: tuple[str, ...] = ()) -> tuple[int, dict]:
     import httpx
     from httpx import ASGITransport
 
@@ -76,7 +77,7 @@ async def _send(method: str, path: str, body: Any, role: str) -> tuple[int, dict
     from primer.api.registries import ProviderRegistry, WorkspaceRegistry
     from primer.auth.passwords import hash_password
     from primer.model.user import User
-    from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
+    from primer.model.workspace import Workspace, WorkspaceProvider, WorkspaceTemplate
     from tests.conftest import _FakeStorageProvider
 
     sp = _FakeStorageProvider()
@@ -93,6 +94,11 @@ async def _send(method: str, path: str, body: Any, role: str) -> tuple[int, dict
         await sp.get_storage(WorkspaceProvider).create(WorkspaceProvider.model_validate(row))
     for row in TEMPLATES:
         await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate.model_validate(row))
+    for wid in workspaces:
+        await sp.get_storage(Workspace).create(Workspace(
+            id=wid, template_id="tpl-loc", template_snapshot=WorkspaceTemplate.model_validate(TEMPLATES[0]), provider_id="loc",
+            created_at=datetime.now(timezone.utc), phase="running", runtime_meta={"url": "http://127.0.0.1:1", "token": "t"},
+        ))
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post("/v1/auth/register", json={"username": "wtadmin", "password": "wtadminpass1"})
         assert r.status_code == 200, r.text

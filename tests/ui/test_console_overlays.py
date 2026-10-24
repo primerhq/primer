@@ -64,10 +64,14 @@ def test_session_body_keeps_the_shared_form_contract():
 
 
 def test_workspace_body_maps_the_designer_overrides():
-    assert '"/workspaces"' in OVERLAYS
-    assert "template_id" in OVERLAYS
-    assert "overrides.env" in OVERLAYS or "body.overrides.env" in OVERLAYS
-    assert "init_commands" in OVERLAYS
+    """The body is NV_nwBody's (platform revamp 08, Tasks 12 and 13): WorkspaceCreateBody's template_id, name and id, and overrides with the env,
+    files, start-up commands and the size the person changed (tests/ui/test_nv_new_workspace_helpers.py runs it against the server's model)."""
+    assert 'apiFetch("POST", "/workspaces", body)' in OVERLAYS
+    assert "var body = NV_nwBody(state);" in OVERLAYS and "mutation.mutate(body)" in OVERLAYS
+    helpers = OVERLAYS[OVERLAYS.index("function NV_nwBody("):OVERLAYS.index("function NV_nwErrors(")]
+    for piece in ("template_id: state.templateId", "overrides.env = env", "overrides.files = files", "overrides.init_commands = init",
+                  "overrides.resources = resources"):
+        assert piece in helpers, piece
 
 
 def test_legacy_pages_keep_router_and_role_contracts():

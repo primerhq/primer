@@ -1,8 +1,8 @@
 """The console's click-drawn controls are real, focusable, named controls (console review C-003, the keyboard pass).
 
-The Approvals page drew its only create affordance, "Add or edit one", as an ``<a>`` with an ``onClick`` and no ``href``: a link that is not a link, and no keyboard path to it either. Every Platform card carried its open action on the whole div: an ``onClick`` with no role or tabindex, so a keyboard user could not open a card (only its Delete button was reachable). The Platform and System nav rows, and the new-workspace overlay's template pick rows, are the same shape: click-only divs.
+The Approvals page drew its only create affordance, "Add or edit one", as an ``<a>`` with an ``onClick`` and no ``href``: a link that is not a link, and no keyboard path to it either. Every Platform card carried its open action on the whole div: an ``onClick`` with no role or tabindex, so a keyboard user could not open a card (only its Delete button was reachable). The Platform and System nav rows, and the new-workspace overlay's template pick rows, were the same shape: click-only divs (the pick rows have since given way to the platform kit's template selector, Platform revamp 08 Task 13).
 
-Each is a ``<button type="button">`` now: the approvals affordance (``approvals-config-link``), the Platform nav rows (``nv-plat-row``, ``aria-current="page"`` on the active one) and the System nav rows one file over (``nv-sys-row``, the same class), the template pick rows (``nv-pick-row``), and the card's open action, which moved from the card div to the ``Open`` button inside it (``pk-card-open:<id>``, named ``Open <title>``); a click anywhere on the card still opens it, because the button is stretched over the whole card (``.pk-card`` is ``position: relative`` and ``.pk-card-open::after`` is ``position: absolute; inset: 0``), with the card's "⋯" menu button and an actionable status above it (``z-index: 1``), and the Open label is fully opaque at rest (no opacity rule at all). The card is the platform kit's ``PK_Card`` since Platform revamp Plan 01 Task 10; its Delete moved from a link in the card into the "⋯" menu.
+Each is a ``<button type="button">`` now: the approvals affordance (``approvals-config-link``), the Platform nav rows (``nv-plat-row``, ``aria-current="page"`` on the active one) and the System nav rows one file over (``nv-sys-row``, the same class), the template choice (the kit selector ``nv-nw-template`` since Platform revamp 08 Task 13; it was the pick rows ``nv-pick-row``), and the card's open action, which moved from the card div to the ``Open`` button inside it (``pk-card-open:<id>``, named ``Open <title>``); a click anywhere on the card still opens it, because the button is stretched over the whole card (``.pk-card`` is ``position: relative`` and ``.pk-card-open::after`` is ``position: absolute; inset: 0``), with the card's "⋯" menu button and an actionable status above it (``z-index: 1``), and the Open label is fully opaque at rest (no opacity rule at all). The card is the platform kit's ``PK_Card`` since Platform revamp Plan 01 Task 10; its Delete moved from a link in the card into the "⋯" menu.
 
 Static pins on each site, in the slicing style of the rest of ``tests/ui``: a native button, ``type="button"``, no ``tabIndex`` (a button with ``tabIndex={-1}`` is unreachable by Tab, which is how a keyboard regression would land), the Open button's ``onClick`` and its name, the stretched CSS rules, the phone's content-sized System chips, and no ``opacity`` in the Open's rule. The browser half is ``tests/ui_e2e/test_platform_overlay_close_refetch_journey.py`` (opens a card from a click on its name) and ``tests/ui_e2e/test_platform_filters_and_inputs_named_journey.py`` (sweeps the Platform view for unnamed controls).
 """
@@ -180,13 +180,16 @@ def test_the_system_nav_rows_are_focusable_buttons() -> None:
     assert 'aria-current={id === nav ? "page" : undefined}' in tag, f"the active nav row is not marked for assistive tech:\n{tag}"
 
 
-def test_the_template_pick_rows_are_focusable_buttons() -> None:
+def test_the_template_choice_is_the_kit_selector() -> None:
+    """The pick rows are gone (Platform revamp 08, Task 13; design 14.3): the dialog's template is the platform kit's selector, a native button that opens a
+    menu of native buttons, whose keyboard behaviour (focus into the menu, the arrows, Escape) the kit's own tests pin (tests/ui/test_platform_kit_form.py)."""
     src = _src("console/nv-overlays.jsx")
-    start, tag = _tag(src, 'data-testid={"nv-nw-tpl:" + t.id}')
-    assert tag.startswith("<button"), f"the template pick row is not a native button:\n{tag}"
-    assert 'type="button"' in tag, tag
-    assert "tabIndex" not in tag, f"the pick row is out of the tab order:\n{tag}"
-    assert "aria-pressed={t.id === tplId}" in tag, tag
+    dialog = src[src.index("function NV_CreateWorkspaceOverlay("):src.index("// The management-surface mount table")]
+    assert "nv-nw-tpl:" not in src and "nv-pick-row" not in dialog
+    assert 'testid: "nv-nw-template"' in dialog and "selector={selector}" in dialog
+    kit = _src("shared/platform-kit.jsx")
+    start, tag = _tag(kit, "data-testid={sel.testid}")
+    assert tag.startswith("<button") and 'type="button"' in tag and "tabIndex" not in tag, tag
 
 
 def test_the_nav_rows_keep_their_borderless_button_reset() -> None:

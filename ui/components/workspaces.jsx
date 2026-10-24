@@ -1,34 +1,17 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, Fab, MobileTabs, relativeTime, fmtDate */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, MobileTabs, relativeTime, fmtDate */
 
-// Workspaces page + detail wired to the real API. The Designer's mock-data
-// scaffold was replaced in Phase 2 — every fetch goes through
-// window.primerApi.{apiFetch, useResource, useMutation}. Cache-key convention
-// follows other components: "workspaces:list", "workspace-detail:${wid}",
-// "workspace-files:${wid}:${path}", "workspace-sessions:${wid}",
-// "workspace-log:${wid}:${limit}", "workspace-channels:${wid}".
+// A workspace's Settings overlay (WorkspaceDetail, overlay=workspaces:<tab>:<wid>) and its tabs, wired to the real API: every fetch goes through
+// window.primerApi.{apiFetch, useResource, useMutation}. Cache keys: "workspace-detail:${wid}", "workspace-files:${wid}:${path}",
+// "workspace-sessions:${wid}", "workspace-log:${wid}:${limit}", "workspace-channels:${wid}".
+//
+// The Workspaces list page and its create dialog are gone (platform revamp 08, Task 14; design 14.1): the studio rail lists the workspaces, the console's
+// new-workspace dialog (NV_CreateWorkspaceOverlay) makes them, and rename, which only the list's cards offered, is on the Config tab here.
 //
 // Babel-standalone shares the global scope across <script> tags so every
 // top-level binding in this file is prefixed with WS_ to avoid name clashes
 // with channels.jsx (ProviderBadge, Toggle) and others.
 
 const WS_TERMINAL = new Set(["ended", "completed", "failed", "cancelled"]);
-
-function WS_PhasePill({ phase }) {
-  // Follows the inline-styled pill convention used in toolsets.jsx and
-  // channels.jsx — pairs the .pill / .dot classes from app.css with a phase-
-  // specific tint so the colour palette stays in sync with the rest of the UI.
-  const color =
-    phase === "running" ? "var(--green)" :
-    phase === "pending" ? "var(--amber)" :
-    phase === "failed" ? "var(--red)" :
-    phase === "terminating" ? "var(--text-3)" : "var(--text-3)";
-  return (
-    <span className="pill" style={{ color, borderColor: "var(--border)", background: "var(--bg-2)" }}>
-      <span className="dot" style={{ background: color }}></span>
-      {phase || "unknown"}
-    </span>
-  );
-}
 
 function _wsAgeSec(iso) {
   if (!iso) return null;
@@ -48,234 +31,8 @@ function _wsToastErr(pushToast, fallbackTitle) {
   };
 }
 
-// ============================================================================
-// Workspaces list page
-// ============================================================================
-
-function WorkspacesPage({ onOpen, pushToast, onManageTemplates }) {
-  const { useRouter, useViewport, usePagedList, Pager } = window.primerApi;
-  const { navigate } = useRouter();
-  const { isMobile } = useViewport();
-
-  const [createOpen, setCreateOpen] = React.useState(false);
-  const [renaming, setRenaming] = React.useState(null);
-  const [textQuery, setTextQuery] = React.useState("");
-  const [templateFilter, setTemplateFilter] = React.useState("");
-  const [providerFilter, setProviderFilter] = React.useState("");
-  const filterFocused = React.useRef(false);
-
-  // Server-side offset pagination (bug #19); the text/template/provider
-  // filters narrow the current page and reset to page 0 via resetKey.
-  const list = usePagedList({
-    key: "workspaces:list",
-    path: "/workspaces",
-    pageSize: 50,
-    pollMs: 5000,
-    pauseWhile: () => filterFocused.current,
-    resetKey: textQuery + "|" + templateFilter + "|" + providerFilter,
-  });
-
-  const items = list.items;
-
-  const filtered = React.useMemo(() => {
-    let arr = items;
-    if (textQuery) {
-      const q = textQuery.toLowerCase();
-      arr = arr.filter((w) =>
-        (w.name || "").toLowerCase().includes(q) ||
-        (w.id || "").toLowerCase().includes(q) ||
-        (w.template_id || "").toLowerCase().includes(q) ||
-        (w.provider_id || "").toLowerCase().includes(q)
-      );
-    }
-    if (templateFilter) arr = arr.filter((w) => w.template_id === templateFilter);
-    if (providerFilter) arr = arr.filter((w) => w.provider_id === providerFilter);
-    return arr;
-  }, [items, textQuery, templateFilter, providerFilter]);
-
-  const templates = React.useMemo(() => {
-    const set = new Set();
-    for (const w of items) if (w.template_id) set.add(w.template_id);
-    return [...set].sort();
-  }, [items]);
-  const providers = React.useMemo(() => {
-    const set = new Set();
-    for (const w of items) if (w.provider_id) set.add(w.provider_id);
-    return [...set].sort();
-  }, [items]);
-
-  const openRow = (wid) => {
-    if (typeof onOpen === "function") onOpen(wid);
-    else navigate("/workspaces/" + wid);
-  };
-
-  return (
-    <div className="col" style={{ gap: 14 }}>
-      <div className="filter-bar">
-        <div className="input-icon">
-          <Icon name="search" size={13} className="icon" />
-          <input
-            className="input"
-            aria-label="Filter workspaces"
-            placeholder="Filter workspaces…"
-            value={textQuery}
-            onChange={(e) => setTextQuery(e.target.value)}
-            onFocus={() => { filterFocused.current = true; }}
-            onBlur={() => { filterFocused.current = false; }}
-          />
-        </div>
-        <div className="sep-v" />
-        <select
-          className="ws-filter-select"
-          aria-label="Filter by template"
-          value={templateFilter}
-          onChange={(e) => setTemplateFilter(e.target.value)}
-          data-testid="workspaces-template-filter"
-        >
-          <option value="">all templates</option>
-          {templates.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <select
-          className="ws-filter-select"
-          aria-label="Filter by provider"
-          value={providerFilter}
-          onChange={(e) => setProviderFilter(e.target.value)}
-          data-testid="workspaces-provider-filter"
-        >
-          <option value="">all providers</option>
-          {providers.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
-          {typeof onManageTemplates === "function" && (
-            <Btn
-              size="sm"
-              kind="ghost"
-              icon="settings"
-              data-testid="workspaces-manage-templates"
-              onClick={onManageTemplates}
-            >
-              Manage templates
-            </Btn>
-          )}
-          <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New workspace</Btn>
-        </div>
-      </div>
-
-      {list.error && items.length === 0 ? (
-        <Banner
-          kind="error"
-          title={list.error.title || "Couldn't load workspaces"}
-          detail={list.error.detail || list.error.message}
-          actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
-        />
-      ) : items.length === 0 && !list.loading ? (
-        <div className="panel">
-          <div className="empty">
-            <div className="ico-wrap"><Icon name="box" size={22} /></div>
-            <div className="head">No workspaces yet</div>
-            <div className="sub">A workspace is a materialised template — the per-session filesystem + state repo that agents read and write. Create one to get started.</div>
-            <div className="actions">
-              <Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New workspace</Btn>
-            </div>
-          </div>
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
-          No workspaces match the current filter{textQuery ? ` "${textQuery}"` : ""}.
-          {" · "}<a
-            onClick={() => { setTextQuery(""); setTemplateFilter(""); setProviderFilter(""); }}
-            style={{ cursor: "pointer", color: "var(--accent)" }}
-          >Clear filters</a>
-        </div>
-      ) : (
-        // Platform wave P1b item 7: card grid replaces the isMobile ?
-        // CardList : table split - one .pc-card-grid (P1a's own class,
-        // reused for consistency) that reflows its own column count, no
-        // JS viewport branch needed (same mechanism, same test pattern,
-        // as provider-catalog.jsx's grid).
-        <div className="pc-card-grid" data-testid="workspaces-grid">
-          {filtered.map((w) => (
-            <div key={w.id} className="pc-card" data-testid={`workspace-card-${w.id}`}>
-              <div className="pc-card-head">
-                <span className="pc-card-title">
-                  {w.name
-                    ? w.name
-                    : <span className="muted" style={{ fontStyle: "italic" }}>{w.id}</span>}
-                </span>
-                <span style={{ flex: 1 }} />
-                <WS_PhasePill phase={w.phase} />
-              </div>
-              <div className="pc-card-subtitle mono">
-                {w.name ? `${w.id} · ` : ""}
-                {w.template_id
-                  ? <span title="template-backed">{w.template_id}</span>
-                  : "—"} · {w.provider_id || "—"}
-              </div>
-              <div className="pc-card-facts">
-                <div className="pc-card-fact">
-                  <span className="muted">created</span>
-                  <span>{w.created_at ? relativeTime(_wsAgeSec(w.created_at)) : "—"}</span>
-                </div>
-                {/* Served field (GET /workspaces confirmed: terminal_user_
-                    access) - the reference's "terminal: user access on"
-                    fact, not a P2 guess. */}
-                <div className="pc-card-fact">
-                  <span className="muted">terminal</span>
-                  <span>{w.terminal_user_access ? "user access on" : "user access off"}</span>
-                </div>
-              </div>
-              <div className="pc-card-footer">
-                <Btn kind="primary" size="sm" data-testid={`workspace-card-open-${w.id}`}
-                  onClick={() => openRow(w.id)}>
-                  Open
-                </Btn>
-                <span style={{ flex: 1 }} />
-                {/* Item 7 judgment call: Rename, not Delete, on the card -
-                    workspace destruction already lives behind
-                    WS_DestroyTab's own dedicated, more heavily-guarded
-                    confirmation flow inside the detail view; a card-level
-                    quick-delete would bypass that guard rather than
-                    reuse it, so this keeps the existing action instead
-                    of duplicating destroy with a second, less-guarded
-                    entry point. */}
-                <Btn kind="ghost" size="sm" icon="edit"
-                  data-testid={`workspace-card-rename-${w.id}`}
-                  title="Rename workspace"
-                  onClick={(e) => { e.stopPropagation(); setRenaming(w); }}>
-                  Rename
-                </Btn>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <Pager pager={list} label="workspaces" />
-
-      {isMobile && (
-        <Fab icon="plus" label="New workspace" onClick={() => setCreateOpen(true)} />
-      )}
-
-      {createOpen && (
-        <WS_NewWorkspaceModal
-          onClose={() => setCreateOpen(false)}
-          pushToast={pushToast}
-          onCreated={onOpen}
-        />
-      )}
-      {renaming && (
-        <WS_RenameWorkspaceModal
-          workspace={renaming}
-          onClose={() => setRenaming(null)}
-          onRenamed={() => { setRenaming(null); list.refetch(); }}
-          pushToast={pushToast}
-        />
-      )}
-    </div>
-  );
-}
-
+// Rename a workspace (PATCH /v1/workspaces/{id} {name}), from its Settings > Config tab (WS_ConfigTab). A save refreshes the row and the rail's workspace list,
+// so the new name shows where the workspace is picked; Save is busy (never disabled) while the request is out, and a refusal is said in words.
 function WS_RenameWorkspaceModal({ workspace, onClose, onRenamed, pushToast }) {
   const { useMutation, apiFetch } = window.primerApi;
   const [name, setName] = React.useState(workspace.name || "");
@@ -283,16 +40,20 @@ function WS_RenameWorkspaceModal({ workspace, onClose, onRenamed, pushToast }) {
   const rename = useMutation(
     (body) => apiFetch("PATCH", "/workspaces/" + encodeURIComponent(workspace.id), body),
     {
-      invalidates: ["workspaces:list", "workspace-detail:" + workspace.id],
+      invalidates: ["nv-workspaces", "workspace-detail:" + workspace.id],
       onSuccess: () => {
         if (typeof pushToast === "function") {
           pushToast({ kind: "success", title: "Workspace renamed", detail: workspace.id });
         }
         onRenamed();
       },
-      onError: _wsToastErr(pushToast, "Rename failed"),
+      onError: (err) => {
+        if (typeof pushToast !== "function") return;
+        pushToast({ kind: "error", title: "Rename failed", detail: window.primerApi.readRefusal(err).message, requestId: err?.requestId });
+      },
     }
   );
+  const save = () => { if (!rename.loading) rename.mutate({ name }); };
 
   return (
     <Modal
@@ -300,8 +61,8 @@ function WS_RenameWorkspaceModal({ workspace, onClose, onRenamed, pushToast }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={rename.loading}>Cancel</Btn>
-          <Btn kind="primary" icon="check" disabled={rename.loading} onClick={() => rename.mutate({ name })}>
+          <Btn kind="ghost" data-testid="ws-rename-cancel" onClick={onClose} blocked={rename.loading}>Cancel</Btn>
+          <Btn kind="primary" icon="check" data-testid="ws-rename-save" busy={rename.loading} onClick={save}>
             {rename.loading ? "Saving…" : "Save"}
           </Btn>
         </>
@@ -318,219 +79,11 @@ function WS_RenameWorkspaceModal({ workspace, onClose, onRenamed, pushToast }) {
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. Investing research"
+          data-testid="ws-rename-name"
           autoFocus
-          onKeyDown={(e) => { if (e.key === "Enter" && !rename.loading) rename.mutate({ name }); }}
+          onKeyDown={(e) => { if (e.key === "Enter") save(); }}
         />
       </div>
-    </Modal>
-  );
-}
-
-function WS_NewWorkspaceModal({ onClose, pushToast, onCreated }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
-  const { navigate } = useRouter();
-
-  const templates = useResource(
-    "workspaces:templates",
-    (signal) => apiFetch("GET", "/workspace_templates?limit=200", null, { signal }),
-    {}
-  );
-  const tplItems = templates.data?.items ?? [];
-
-  
-  const [templateId, setTemplateId] = React.useState("");
-  const [name, setName] = React.useState("");
-  const [templateCreateOpen, setTemplateCreateOpen] = React.useState(false);
-  // Platform wave P1b item 6: per-instantiation env overrides -
-  // WorkspaceTemplateOverrides.env (workspace.py:600) and WorkspaceCreate.
-  // overrides (routers/workspaces.py:121, wired through to POST
-  // /workspaces at line 660/686) are BOTH real and already wired
-  // end-to-end server-side - confirmed by reading the model and the
-  // create route, not assumed. This is a real field getting its first
-  // UI, not a P2 gap (see this task's report for the correction to the
-  // brief's own "#33 report-first" assumption).
-  const [overrideRows, setOverrideRows] = React.useState([]);
-
-  // Auto-pick the first template once it lands so a happy-path submission
-  // doesn't need a manual selection if the server only has one template.
-  React.useEffect(() => {
-    if (!templateId && tplItems.length > 0) {
-      setTemplateId(tplItems[0].id);
-    }
-  }, [tplItems, templateId]);
-
-  const create = useMutation(
-    (body) => apiFetch("POST", "/workspaces", body),
-    {
-      invalidates: ["workspaces:list"],
-      onSuccess: (row) => {
-        onClose();
-        if (typeof pushToast === "function") {
-          pushToast({ kind: "success", title: "Workspace created", detail: row.id });
-        }
-        // Land the operator in the workspace they just made. onCreated is
-        // the host's own "open this workspace" -- in the shell that is a
-        // workspace switch. navigate() is the fallback for a host that
-        // supplies none, and it addresses the record rather than
-        // entering it, which is what that route means everywhere else.
-        if (typeof onCreated === "function") onCreated(row.id);
-        else navigate("/workspaces/" + row.id);
-      },
-      onError: _wsToastErr(pushToast, "Create failed"),
-    }
-  );
-
-  const onCreate = () => {
-    if (!templateId) return;
-    const body = { template_id: templateId };
-    if (name.trim()) body.name = name.trim();
-    const env = {};
-    overrideRows.forEach((row) => {
-      if (row.key.trim()) env[row.key.trim()] = row.value;
-    });
-    if (Object.keys(env).length > 0) body.overrides = { env };
-    create.mutate(body);
-  };
-
-  return (
-    <Modal
-      title="Create workspace"
-      onClose={onClose}
-      footer={
-        <>
-          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn
-            kind="primary"
-            icon={create.loading ? undefined : "plus"}
-            disabled={!templateId || create.loading}
-            onClick={onCreate}
-            data-testid="workspace-create-submit"
-          >
-            {create.loading ? (<><span className="spinner" /><span>Creating…</span></>) : "Create"}
-          </Btn>
-        </>
-      }
-    >
-      <div className="field">
-        <label className="field-label">Template</label>
-        {templates.loading && tplItems.length === 0 ? (
-          <div className="muted text-sm">Loading templates…</div>
-        ) : tplItems.length === 0 ? (
-          <div className="col" style={{ gap: 10 }}>
-            <div className="banner banner-warning" style={{ margin: 0, fontSize: 11.5 }}>
-              <Icon name="alert" size={12} className="ico" />
-              <div>No workspace_templates registered. Create one to continue.</div>
-            </div>
-            <Btn size="sm" kind="primary" icon="plus" onClick={() => setTemplateCreateOpen(true)}>Create a template now</Btn>
-          </div>
-        ) : (
-          // Item 6: rows with descriptions, composed from fields
-          // WorkspaceTemplate actually serializes (confirmed via a live
-          // GET /workspace_templates - backend.kind, files.length,
-          // Object.keys(env).length, strict_write_locking,
-          // resources.network all present on every row) - no invented
-          // descriptors, and no "docker"-style runtime-engine detail
-          // (not a served field; backend.kind is local/container/
-          // kubernetes only).
-          <div className="pc-register-panel" data-testid="workspace-template-picker"
-            style={{ position: "static", boxShadow: "none", width: "100%" }}>
-            {tplItems.map((t) => {
-              const parts = [
-                t.backend && t.backend.kind,
-                t.resources && t.resources.network
-                  ? `network ${t.resources.network}`
-                  : null,
-                Array.isArray(t.files)
-                  ? `${t.files.length} file mount${t.files.length === 1 ? "" : "s"}`
-                  : null,
-                t.env && Object.keys(t.env).length > 0 ? "env(secret)" : null,
-                t.strict_write_locking != null
-                  ? (t.strict_write_locking ? "strict writes" : "workdir-scoped")
-                  : null,
-              ].filter(Boolean);
-              return (
-                <button type="button" key={t.id} className="pc-register-row"
-                  data-testid={`workspace-template-row-${t.id}`}
-                  data-selected={t.id === templateId ? "true" : "false"}
-                  style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}
-                  onClick={() => setTemplateId(t.id)}>
-                  <span className="mono">{t.id}</span>
-                  <span className="muted text-sm">{parts.join(" · ")}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-      <div className="field">
-        {/* Item 6: "Label" copy verbatim, replacing "Name" - same field
-            (name), just the reference's own wording. */}
-        <label className="field-label">Label <span className="hint">optional — shows in the selector</span></label>
-        <input
-          className="input"
-          aria-label="Workspace name"
-          style={{ width: "100%" }}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="e.g. Investing research"
-        />
-      </div>
-      <div className="field">
-        {/* Item 6: Overrides - env additions ONLY (files/init_commands
-            also exist on WorkspaceTemplateOverrides but the reference's
-            own anatomy for this modal shows env vars specifically; not
-            built here to avoid scope creep beyond what screenshot 10
-            actually asks for). */}
-        <label className="field-label">
-          Overrides <span className="hint">this instantiation only</span>
-        </label>
-        {overrideRows.map((row, i) => (
-          <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-            <input className="input mono" style={{ flex: 1 }}
-              data-testid={`workspace-override-key-${i}`}
-              value={row.key} placeholder="STRIPE_KEY"
-              onChange={(e) => {
-                const next = overrideRows.slice();
-                next[i] = { ...next[i], key: e.target.value };
-                setOverrideRows(next);
-              }} />
-            <input className="input mono" type="password" style={{ flex: 1 }}
-              data-testid={`workspace-override-value-${i}`}
-              value={row.value} placeholder="secret"
-              onChange={(e) => {
-                const next = overrideRows.slice();
-                next[i] = { ...next[i], value: e.target.value };
-                setOverrideRows(next);
-              }} />
-            <Btn kind="ghost" size="sm" icon="x"
-              data-testid={`workspace-override-remove-${i}`}
-              onClick={() => setOverrideRows(overrideRows.filter((_, j) => j !== i))} />
-          </div>
-        ))}
-        <Btn kind="ghost" size="sm" icon="plus" data-testid="workspace-override-add"
-          onClick={() => setOverrideRows(overrideRows.concat([{ key: "", value: "" }]))}>
-          + env var
-        </Btn>
-        <div className="field-help" data-testid="workspace-overrides-footnote">
-          Env values are secret-typed; the template's own mounts, network
-          policy and init commands still apply first.
-        </div>
-      </div>
-      <div className="banner banner-info" style={{ margin: 0, fontSize: 11.5 }}>
-        <Icon name="info" size={12} className="ico" />
-        <div>ID is generated by the backend — any <span className="mono">id</span> field in this body is silently ignored (spec §12).</div>
-      </div>
-      {templateCreateOpen && (
-        <window.WorkspaceTemplateCreateModal
-          onClose={() => {
-            setTemplateCreateOpen(false);
-            templates.refetch();
-          }}
-          // The chain hands the new template back: it is the one selected, not the first row of the refreshed list.
-          onCreated={(row) => { if (row && row.id) setTemplateId(row.id); }}
-          pushToast={pushToast}
-        />
-      )}
     </Modal>
   );
 }
@@ -614,7 +167,7 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
   const eventsPanel = <window.WorkspaceTap wid={wid} />;
   const logPanel = <WS_LogTab wid={wid} />;
   const channelsPanel = <WS_ChannelsTab wid={wid} ws={ws} pushToast={pushToast} />;
-  const configPanel = <WS_ConfigTab wid={wid} ws={ws} />;
+  const configPanel = <WS_ConfigTab wid={wid} ws={ws} pushToast={pushToast} />;
   const destroyPanel = isDefault ? (
     <div style={{ padding: 14 }} data-testid="ws-destroy-reserved">
       <Banner kind="info" title="This is the default workspace" detail={`${wsRow.name || wid} cannot be deleted.`} />
@@ -1904,7 +1457,9 @@ function WS_TerminalAccessToggle({ wid, ws }) {
   );
 }
 
-function WS_ConfigTab({ wid, ws }) {
+function WS_ConfigTab({ wid, ws, pushToast }) {
+  // Rename lives here since the Workspaces page left (platform revamp 08, Task 14): it was only on that page's cards.
+  const [renaming, setRenaming] = React.useState(false);
   if (ws.loading && !ws.data) {
     return <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>Loading workspace…</div>;
   }
@@ -1927,12 +1482,25 @@ function WS_ConfigTab({ wid, ws }) {
         Row materialised from <span className="mono">/v1/workspaces/{wid}</span>.
       </div>
       <dl className="kv" style={{ gridTemplateColumns: "160px 1fr" }}>
+        <dt>name</dt>
+        <dd data-testid="ws-config-name" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {data.name ? <span>{data.name}</span> : <span className="muted">No name</span>}
+          <Btn size="sm" kind="ghost" icon="edit" data-testid="ws-config-rename" onClick={() => setRenaming(true)}>Rename</Btn>
+        </dd>
         <dt>id</dt><dd className="mono">{data.id || wid}</dd>
         <dt>template_id</dt><dd className="mono">{data.template_id || "—"}</dd>
         <dt>provider_id</dt><dd className="mono">{data.provider_id || "—"}</dd>
         <dt>created_at</dt><dd className="mono">{data.created_at ? fmtDate(new Date(data.created_at)) : "—"}</dd>
       </dl>
       <WS_TerminalAccessToggle wid={wid} ws={ws} />
+      {renaming && (
+        <WS_RenameWorkspaceModal
+          workspace={{ id: data.id || wid, name: data.name || "" }}
+          onClose={() => setRenaming(false)}
+          onRenamed={() => { setRenaming(false); ws.refetch(); }}
+          pushToast={pushToast || window.primerApi.toastPush}
+        />
+      )}
       {data.overrides && (
         <div className="mt-4">
           <div className="field-label" style={{ marginBottom: 6 }}>Overrides</div>
@@ -1961,7 +1529,8 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
   const destroy = useMutation(
     () => apiFetch("DELETE", `/workspaces/${encodeURIComponent(wid)}`),
     {
-      invalidates: ["workspaces:list"],
+      // The rail's list (the Workspaces page and its workspaces:list are gone, platform revamp 08 Task 14).
+      invalidates: ["nv-workspaces"],
       onSuccess: () => {
         if (typeof pushToast === "function") {
           pushToast({ kind: "warning", title: "Workspace destroyed", detail: wid });
@@ -2151,7 +1720,6 @@ function WS_DiagnosticModal({ workspaceId, onClose }) {
   );
 }
 
-window.WorkspacesPage = WorkspacesPage;
 window.WorkspaceDetail = WorkspaceDetail;
 // Reusable detail panels — surfaced to window.* so the Studio's Workspace
 // Settings overlay (studio-settings.jsx) can render the SAME components for
