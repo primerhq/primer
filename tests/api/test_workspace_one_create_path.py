@@ -201,3 +201,34 @@ async def test_the_first_good_probe_makes_a_new_workspace_running(client, toolse
     await WorkspaceProbeTask(storage_provider=sp, registry=wsr, interval_seconds=0.01, start_delay_seconds=0).tick()
 
     assert {w.id: w.phase for w in await _rows(sp)} == {"ws-rest": "running", "ws-tool": "running"}
+
+
+@pytest.mark.asyncio
+async def test_a_new_workspace_that_never_answers_is_failed_and_its_sessions_end(client, sp, wsr) -> None:  # noqa: F811
+    """Lead ruling (round 2 of #917): ``pending`` counts probe misses like ``running`` (three misses: failed, its open sessions ended
+    ``workspace_lost``); a ``pending`` workspace whose runtime died before its first good probe no longer stays ``pending`` for ever."""
+    from datetime import datetime, timezone
+
+    from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+    from primer.workspace.probe import WorkspaceProbeTask
+
+    await _local_template(sp)
+    assert (await client.post("/v1/workspaces", json={"id": "ws-dead", "template_id": "tpl-1"})).status_code == 201
+    await sp.get_storage(WorkspaceSession).create(
+        WorkspaceSession(
+            id="sess-1", workspace_id="ws-dead", binding=AgentSessionBinding(agent_id="ag-1"), status=SessionStatus.RUNNING,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    (await wsr.get_workspace("ws-dead")).ping = AsyncMock(return_value=False)
+    probe = WorkspaceProbeTask(storage_provider=sp, registry=wsr, interval_seconds=0.01, start_delay_seconds=0)
+
+    for _ in range(2):
+        await probe.tick()
+    assert (await sp.get_storage(Workspace).get("ws-dead")).phase == "pending"
+    await probe.tick()
+
+    row = await sp.get_storage(Workspace).get("ws-dead")
+    assert row.phase == "failed" and row.failure_reason
+    session = await sp.get_storage(WorkspaceSession).get("sess-1")
+    assert (session.status, session.ended_reason) == (SessionStatus.ENDED, "workspace_lost")

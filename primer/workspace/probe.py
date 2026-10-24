@@ -1,10 +1,14 @@
 """Workspace health-probe task.
 
-Lives in the API process, ticks every ~30s, pings each ``running`` /
-``failed`` workspace's runtime, and flips ``phase`` on three-strike
-misses (``running`` -> ``failed``) or three-strike hits while failed
-(``failed`` -> ``running``). Writes results back to the persisted
-:class:`primer.model.workspace.Workspace` row via the storage provider.
+Lives in the API process, ticks every ~30s, pings each ``pending`` /
+``running`` / ``failed`` workspace's runtime (a ``terminating`` one is
+being deleted and is skipped), and moves ``phase``: the first good ping
+promotes a new workspace (``pending`` -> ``running``; every create door
+writes ``pending``), three misses in a row fail a ``pending`` or a
+``running`` one (-> ``failed``, its open sessions ended
+``workspace_lost``), and three hits in a row bring a ``failed`` one back
+(-> ``running``). Writes its own fields back to the persisted
+:class:`primer.model.workspace.Workspace` row in one field-scoped write.
 Waits one interval before its first tick (see ``start_delay_seconds``) so a
 freshly-started process doesn't count its own boot-time settling as misses.
 
@@ -185,9 +189,15 @@ class WorkspaceProbeTask:
         now = datetime.now(timezone.utc)
         updates: dict[str, Any] = {"last_probe_at": now, "last_probe_ok": ok}
 
-        if ws.phase == "running":
+        if ws.phase in ("pending", "running"):
+            # A pending workspace counts misses as a running one does (lead ruling, round 2 of #917): one whose runtime died before its
+            # first good probe is failed after three misses, its sessions ended, instead of staying pending for ever. One good ping is
+            # enough to promote it: the workspace is already materialised, the probe just had not seen it answer.
             if ok:
                 self._miss_counts.pop(ws.id, None)
+                if ws.phase == "pending":
+                    updates["phase"] = "running"
+                    updates["failure_reason"] = None
             else:
                 self._miss_counts[ws.id] += 1
                 if self._miss_counts[ws.id] >= _FAILS_BEFORE_FAILED:
@@ -196,15 +206,6 @@ class WorkspaceProbeTask:
                         fail_reason or "runtime unreachable"
                     )
                     self._miss_counts.pop(ws.id, None)
-        elif ws.phase == "pending":
-            # A freshly-created workspace that the create handler didn't
-            # mark "running" (e.g. an upgrade from an older row, or a
-            # row created via a path that bypassed the handler). One
-            # successful ping is enough to promote — the workspace is
-            # already materialised, we just hadn't observed that fact.
-            if ok:
-                updates["phase"] = "running"
-                updates["failure_reason"] = None
         elif ws.phase == "failed":
             if ok:
                 self._hit_counts[ws.id] += 1
