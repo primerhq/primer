@@ -75,6 +75,14 @@ _URL_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"(/v1/webhooks/)[A-Za-z0-9_-]*([A-Za-z0-9_-]{4})\b"),
         r"\1***\2",
     ),
+    # The capability token of a canvas file URL (/canvas/sessions/<sid>/files/<token>, pivot P5): an itsdangerous token, so its class
+    # holds the "." between its parts, and it may end in "-", so the end is "no more token characters", not a word boundary. The last 4
+    # chars are kept for correlation, as for a webhook. uvicorn's access line logs the path of every request, and this route takes no
+    # cookie: the URL alone serves the file while it lives.
+    (
+        re.compile(r"(/canvas/sessions/[^/\s'\"<>\\?#]{1,256}/files/)[A-Za-z0-9_.-]*([A-Za-z0-9_-]{4})(?![A-Za-z0-9_.-])"),
+        r"\1***\2",
+    ),
 )
 
 # Userinfo of a URL: https://user:password@host/... httpx prints a Base URL whole, credentials included, in an error ("Server error '500 ...' for url
@@ -102,8 +110,8 @@ def _mask_oauth_callback(match: re.Match[str]) -> str:
 
 def redact_url_secrets(text: str) -> str:
     """Mask URL-borne credentials (userinfo, query keys, Telegram bot
-    tokens, webhook capability tokens, the code and state of an MCP OAuth
-    callback) in ``text``."""
+    tokens, webhook and canvas file capability tokens, the code and state
+    of an MCP OAuth callback) in ``text``."""
     # Userinfo needs both "://" and "@": a substring test is far cheaper than the regex on the text of every record.
     if "@" in text and "://" in text:
         text = _USERINFO.sub(r"\1[REDACTED]@", text)
