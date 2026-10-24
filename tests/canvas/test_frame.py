@@ -6,6 +6,11 @@ every Html element must be a ``srcdoc`` frame of the shell: an ``about:srcdoc`` 
 made it (HTML Standard, "creating a new browsing context"), so the header governs each Html frame too. A frame made from a ``data:`` URL or a
 ``blob:`` URL, or one given ``allow-same-origin``, would not be bound the same way, and the scan below refuses every file of the frame that
 names one. The browser pin (a script from a host that is not allowed raises a CSP violation inside an Html frame) is Task 26's journey.
+
+S7 (Task 17, Decision 10) adds the one policy the design allows besides the header: the renderer writes a ``<meta>`` media policy into each
+Html element's srcdoc, before any agent content, and it can only narrow (a second policy is enforced alongside the header's, never instead
+of it; ``tests/ui/test_canvas_static_guards.py`` pins that every source it names is one the header already allows). So the renderer may
+name exactly that one policy, inside its own code; the shell's markup still carries none.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ def _shell_dir(tmp_path: Path, renderer: str = "window.CV = {version: 1, boot: f
     (ui / "canvas" / "frame.html").write_text((CANVAS_UI / "frame.html").read_text(encoding="utf-8"), encoding="utf-8")
     (ui / "canvas" / "frame.css").write_text("body { margin: 0; }\n", encoding="utf-8")
     (ui / "canvas" / "renderer.js").write_text(renderer, encoding="utf-8")
+    (ui / "canvas" / "html-bootstrap.js").write_text("window.PB_canAct = function () { return false; };\n", encoding="utf-8")
     return ui
 
 
@@ -45,7 +51,8 @@ def test_the_shell_inlines_its_assets_and_versions_them(tmp_path):
     shell = build_frame_shell(ui)
     body = shell.body.decode("utf-8")
     assert "body { margin: 0; }" in body and "window.CV = {version: 1" in body
-    assert "/*__CANVAS_CSS__*/" not in body and "/*__CANVAS_RENDERER__*/" not in body
+    assert 'window.CV_BOOTSTRAP = "window.PB_canAct = function () { return false; };\\n";' in body, "the bootstrap, as a string"
+    assert "/*__CANVAS_CSS__*/" not in body and "/*__CANVAS_RENDERER__*/" not in body and "/*__CANVAS_HTML_BOOTSTRAP__*/" not in body
     assert re.fullmatch(r"[0-9a-f]{16}", shell.version)
     assert build_frame_shell(ui) == shell, "the same files give the same shell"
 
@@ -54,11 +61,24 @@ def test_the_shell_inlines_its_assets_and_versions_them(tmp_path):
     assert changed.version != shell.version and b"version: 2" in changed.body, "a changed renderer.js gives another version"
     assert frame_url(ui) == f"/canvas/frame?v={changed.version}"
 
+    (ui / "canvas" / "html-bootstrap.js").write_text("window.PB_canAct = null;\n", encoding="utf-8")
+    assert build_frame_shell(ui).version != changed.version, "a changed bootstrap gives another version"
+
+
+def test_what_a_file_inlines_is_never_read_for_another_placeholder(tmp_path):
+    ui = _shell_dir(tmp_path, renderer="var a = '/*__CANVAS_CSS__*/ /*__CANVAS_HTML_BOOTSTRAP__*/';\n")
+    body = build_frame_shell(ui).body.decode("utf-8")
+    assert "var a = '/*__CANVAS_CSS__*/ /*__CANVAS_HTML_BOOTSTRAP__*/';" in body
+    assert body.count("window.CV_BOOTSTRAP = ") == 1
+
 
 def test_a_template_without_its_placeholders_is_refused(tmp_path):
     ui = _shell_dir(tmp_path)
     (ui / "canvas" / "frame.html").write_text("<!doctype html><title>x</title>", encoding="utf-8")
     with pytest.raises(ValueError, match="__CANVAS_CSS__"):
+        build_frame_shell(ui)
+    (ui / "canvas" / "frame.html").write_text("<style>/*__CANVAS_CSS__*/</style><script>/*__CANVAS_RENDERER__*/</script>", encoding="utf-8")
+    with pytest.raises(ValueError, match="__CANVAS_HTML_BOOTSTRAP__"):
         build_frame_shell(ui)
 
 
@@ -69,13 +89,19 @@ def test_the_repo_shell_builds():
 
 def test_the_header_is_the_shells_only_script_control():
     """Ruling 5 on S6, the template half: nothing in the shell adds, loosens or replaces the header's policy, and nothing loads from
-    elsewhere into it (every script and style is inline)."""
+    elsewhere into it (every script and style is inline). The shell's MARKUP (its scripts' code aside) carries no policy at all; its code
+    names one, the Html frame's narrowing media policy of S7 (Decision 10), and nothing else of ``_ESCAPES``."""
     body = build_frame_shell(_UI_DIR).body.decode("utf-8")
-    assert not re.search(r"<meta[^>]+http-equiv", body, re.IGNORECASE), "a <meta> policy would be a second control"
-    assert not re.search(r"<script[^>]*\bsrc\s*=", body, re.IGNORECASE), "the shell loads no script from elsewhere"
-    assert not re.search(r"<link\b", body, re.IGNORECASE), "the shell loads no stylesheet from elsewhere"
-    assert not re.search(r"<base\b", body, re.IGNORECASE)
+    markup = re.sub(r"(<script>).*?(</script>)", r"\1\2", body, flags=re.DOTALL)
+    assert markup.count("<script></script>") == 3, "the bootstrap string, the renderer and the boot call"
+    assert not re.search(r"<meta[^>]+http-equiv", markup, re.IGNORECASE), "a <meta> policy would be a second control"
+    assert not re.search(r"<script[^>]*\bsrc\s*=", markup, re.IGNORECASE), "the shell loads no script from elsewhere"
+    assert not re.search(r"<link\b", markup, re.IGNORECASE), "the shell loads no stylesheet from elsewhere"
+    assert not re.search(r"<base\b", markup, re.IGNORECASE)
     for name, pattern in _ESCAPES.items():
+        if name == "a second policy":
+            assert len(pattern.findall(body)) == 1, "only the Html frame's narrowing media policy, in the renderer's code"
+            continue
         assert not pattern.search(body), f"the shell carries {name}"
 
 
@@ -89,6 +115,10 @@ def test_no_file_of_the_frame_makes_a_frame_the_header_does_not_bind(name):
         pytest.skip(f"{name} is added by a later task")
     text = path.read_text(encoding="utf-8")
     for what, pattern in _ESCAPES.items():
+        if what == "a second policy" and name == "renderer.js":
+            # S7: the Html frame's narrowing media policy (CV.htmlSrcdoc), the only one; it only narrows (tests/ui/test_canvas_static_guards.py).
+            assert len(pattern.findall(text)) == 1, f"{name} names a policy besides the Html frame's narrowing one"
+            continue
         assert not pattern.search(text), f"{name} names {what}"
 
 

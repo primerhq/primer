@@ -2,23 +2,26 @@
 
 The console never puts canvas content into its own DOM: it mounts ``<iframe src="/canvas/frame?v=<version>" sandbox="allow-scripts
 allow-forms">``, a static page served outside ``/v1`` with its own policy. The page is ``ui/canvas/frame.html`` with the frame's CSS and
-the trusted renderer inlined into it (and, from Task 17, the Html bootstrap), so the shell loads nothing from anywhere, and its version
-is the first 16 hex characters of the page's sha256: a console that names the current version gets a page cached for a year, any other
-``v`` gets one that is never cached.
+the trusted renderer inlined into it, and the Html bootstrap as a JavaScript string (``window.CV_BOOTSTRAP``, Task 17: the renderer
+writes it into each Html element's srcdoc, it never runs in the shell), so the shell loads nothing from anywhere, and its version is the
+first 16 hex characters of the page's sha256: a console that names the current version gets a page cached for a year, any other ``v``
+gets one that is never cached.
 
 **The CSP header is the canvas's only script control (audit G8-06; the lead's ruling 5 on S6).** The Html script check
 (``primer.canvas.html_check``) is an early warning for the agent, never a gate. The header sandboxes the frame without its origin
 (``sandbox allow-scripts allow-forms``: an opaque origin, no cookies, no storage of the console's), allows scripts only inline and from
 the four CDNs of :data:`~primer.canvas.html_check.SCRIPT_HOSTS`, and connects nowhere. Every Html element is a ``srcdoc`` frame of this
 page, and an ``about:srcdoc`` document inherits the policy container of the document that made it, so the header binds every Html frame
-too (each frame may only add its own, stricter media policy, Decision 10). The shell therefore carries no second policy, nonce or hash,
-and no file of the frame makes a frame from a ``data:`` or ``blob:`` URL (``tests/canvas/test_frame.py`` scans every file of
-:data:`FRAME_ASSETS`).
+too. Each Html frame may only add its own, stricter media policy (Decision 10): the renderer's ``CV.metaCsp`` names only ``img-src``,
+``media-src`` and ``font-src``, each a subset of the header's, and a second policy is enforced alongside the first, never instead of it
+(``tests/ui/test_canvas_static_guards.py`` pins the subset). The shell itself carries no second policy, nonce or hash, and no file of the
+frame makes a frame from a ``data:`` or ``blob:`` URL (``tests/canvas/test_frame.py`` scans every file of :data:`FRAME_ASSETS`).
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,8 +34,8 @@ FRAME_ASSETS: tuple[str, ...] = ("frame.html", "frame.css", "renderer.js", "html
 
 #: ``placeholder in frame.html -> the file inlined there``. A placeholder the template must carry.
 _REQUIRED = (("/*__CANVAS_CSS__*/", "frame.css"), ("/*__CANVAS_RENDERER__*/", "renderer.js"))
-#: Inlined when the template carries the placeholder (Task 17 adds it with the file).
-_OPTIONAL = (("/*__CANVAS_HTML_BOOTSTRAP__*/", "html-bootstrap.js"),)
+#: ``placeholder -> the file inlined there as a JavaScript string`` (the statement ``window.CV_BOOTSTRAP = "...";``), never as code.
+_AS_STRING = (("/*__CANVAS_HTML_BOOTSTRAP__*/", "html-bootstrap.js", "CV_BOOTSTRAP"),)
 
 _SCRIPT_SOURCES = " ".join(f"https://{host}" for host in SCRIPT_HOSTS)
 
@@ -66,6 +69,12 @@ def _stamp(canvas_dir: Path) -> tuple[tuple[str, int, int], ...]:
     return tuple(stamps)
 
 
+def js_string(source: str) -> str:
+    """``source`` as a JavaScript string literal that is safe inside a ``<script>`` element: JSON (every character outside ASCII escaped,
+    U+2028 and U+2029 included) with each ``<`` written ``\\u003c``, so the literal can never close its element or open a comment."""
+    return json.dumps(source, ensure_ascii=True).replace("<", "\\u003c")
+
+
 def build_frame_shell(ui_dir: Path) -> FrameShell:
     """The frame shell of ``ui_dir`` (the console's ``ui/``), built once per set of files and cached per path.
 
@@ -77,14 +86,18 @@ def build_frame_shell(ui_dir: Path) -> FrameShell:
     cached = _cache.get(key)
     if cached is not None and cached[0] == stamp:
         return cached[1]
-    page = (canvas_dir / "frame.html").read_text(encoding="utf-8")
+    template = (canvas_dir / "frame.html").read_text(encoding="utf-8")
+    inlined: dict[str, str] = {}
     for placeholder, name in _REQUIRED:
-        if placeholder not in page:
+        if placeholder not in template:
             raise ValueError(f"ui/canvas/frame.html has no {placeholder} placeholder for {name}")
-        page = page.replace(placeholder, (canvas_dir / name).read_text(encoding="utf-8"))
-    for placeholder, name in _OPTIONAL:
-        if placeholder in page:
-            page = page.replace(placeholder, (canvas_dir / name).read_text(encoding="utf-8"))
+        inlined[placeholder] = (canvas_dir / name).read_text(encoding="utf-8")
+    for placeholder, name, variable in _AS_STRING:
+        if placeholder not in template:
+            raise ValueError(f"ui/canvas/frame.html has no {placeholder} placeholder for {name}")
+        inlined[placeholder] = f"window.{variable} = {js_string((canvas_dir / name).read_text(encoding='utf-8'))};"
+    # One pass over the template only: what a file inlines is never read for another placeholder.
+    page = re.sub("|".join(re.escape(p) for p in inlined), lambda m: inlined[m.group(0)], template)
     body = page.encode("utf-8")
     shell = FrameShell(body=body, version=hashlib.sha256(body).hexdigest()[:16])
     _cache[key] = (stamp, shell)
@@ -136,5 +149,6 @@ __all__ = [
     "frame_csp",
     "frame_headers",
     "frame_url",
+    "js_string",
     "own_origin_of",
 ]

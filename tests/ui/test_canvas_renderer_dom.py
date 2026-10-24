@@ -1,12 +1,18 @@
-"""The canvas renderer's DOM side, ``CV.boot`` (pivot P5, Task 16), on the fake DOM of ``tests/ui/_canvas_dom.py`` in MiniRacer.
+"""The canvas renderer's DOM side, ``CV.boot`` (pivot P5, Tasks 16 and 17), on the fake DOM of ``tests/ui/_canvas_dom.py`` in MiniRacer.
 
 What the lead's rulings on S7 pin here, through the real wiring rather than the pure helpers:
 
+1. (G8-05) an Html emit, copy or open_link passes only while the RENDERER's ``navigator.userActivation.isActive`` holds, the element's
+   frame is the renderer's ``activeElement`` and the page is visible, at most 3 per activation (a stubbed ``userActivation``);
 3. media is keyed on ``file:<path>``: a re-minted URL never restarts a playing Audio (nor reloads an Image);
-4. every message handler checks who sent it and its shape: the console's handshake only from ``window.parent``, the first wins, and
-   every other window message is dropped;
+4. every message handler checks who sent it and its shape: the console's handshake only from ``window.parent``, the first wins, every
+   other window message (an Html frame's ``parent.postMessage``) is dropped, and an Html element is heard only on the port it was given;
+5. an Html element renders inert with a Run button unless the state message's ``run_html`` is true (and strict mode is off);
 6. everything the renderer puts in the DOM is a text node, a tag and an attribute from short lists, or a theme value the validators
    passed.
+
+The browser journeys (Task 26: a looping element cannot emit after the activation expires; CSP inheritance into an Html frame) are
+lead-scheduled.
 """
 
 from __future__ import annotations
@@ -94,6 +100,7 @@ EVERYTHING = els(
     song={"type": "Audio", "props": {"src": "file:a.mp3", "title": HOSTILE}},
     docs={"type": "Link", "props": {"label": HOSTILE, "href": "https://docs.example/a"}},
     code={"type": "Text", "props": {"text": HOSTILE, "style": "code"}},
+    widget={"type": "Html", "props": {"html": "<b>agent</b>"}},
 )
 
 
@@ -102,7 +109,7 @@ def test_a_state_draws_every_element_with_text_nodes_and_known_tags_only(ctx):
     state(ctx, EVERYTHING, file_urls={"file:a.mp3": "/canvas/sessions/s/files/T1"}, theme={"--cv-fg": "#123", "--cv-bg": "url(x)"})
     tags = set(js(ctx, "FD.root.all().map(function (n) { return n.tagName; })"))
     assert tags <= ALLOWED_TAGS, sorted(tags - ALLOWED_TAGS)
-    assert {"H2", "STRONG", "EM", "CODE", "BR", "SECTION", "BUTTON", "SELECT", "INPUT", "HR", "IMG", "AUDIO", "PRE"} <= tags
+    assert {"H2", "STRONG", "EM", "CODE", "BR", "SECTION", "BUTTON", "SELECT", "INPUT", "HR", "IMG", "AUDIO", "IFRAME", "PRE"} <= tags
     attributes = set(js(ctx, "[].concat.apply([], FD.root.all().map(function (n) { return Object.keys(n.attrs); }))"))
     assert attributes <= ALLOWED_ATTRIBUTES, sorted(attributes - ALLOWED_ATTRIBUTES)
     texts = js(ctx, "(function () { var out = []; (function walk(n) { n.childNodes.forEach(function (c) { "
@@ -115,6 +122,8 @@ def test_a_state_draws_every_element_with_text_nodes_and_known_tags_only(ctx):
     assert js(ctx, "FD.find('pick', 'select').selectedIndex") == 2, "the value b, after the placeholder"
     assert js(ctx, "FD.byId('row').style.props") == {"gap": "4px", "align-items": "flex-end", "flex-wrap": "nowrap"}
     assert js(ctx, "FD.document.documentElement.style.props") == {"--cv-fg": "#123"}, "the theme went through themeCss's rules"
+    srcdoc = js(ctx, "FD.find('widget', 'iframe').srcdoc")
+    assert "--cv-fg:#123;" in srcdoc and "url(x)" not in srcdoc
 
 
 def test_a_new_state_moves_removes_and_keeps_nodes(ctx):
@@ -237,12 +246,170 @@ def test_links_open_through_the_console_with_their_host_shown(ctx):
     assert events(ctx) == [{"type": "open_link", "element": "ok", "url": "https://docs.example/a?b=1"}]
 
 
+# --- ruling 5: inert Html and Run ---------------------------------------------------------------------------------------------------
+
+
+def test_html_is_inert_until_run_unless_the_console_says_this_viewer_may_run_it(ctx):
+    """The lead's ruling 5 on S7: ``run_html`` (S8 sets it for the session's creator only) decides; absent is inert."""
+    ctx.eval("FD.connect();")
+    widget = els(w={"type": "Html", "props": {"html": "<button>hi</button>"}})
+    state(ctx, widget, run_html=None)
+    assert js(ctx, "FD.find('w', 'iframe')") is None
+    assert js(ctx, "FD.byId('w').textContent") == "This element runs code the agent wrote.Run"
+    ctx.eval("var run = FD.byId('w').query(function (n) { return n.attrs['data-cv'] === 'html-run'; })[0];")
+    assert js(ctx, "run.tagName") == "BUTTON"
+    ctx.eval("run.click({isTrusted: false});")
+    assert js(ctx, "FD.find('w', 'iframe')") is None, "a script cannot press Run"
+    ctx.eval("run.click();")
+    assert js(ctx, "FD.find('w', 'iframe').attrs.sandbox") == "allow-scripts allow-forms"
+    state(ctx, widget, rev=2, run_html=False)
+    assert js(ctx, "FD.find('w', 'iframe').writes.srcdoc") == 1, "the click holds for that body for the page load"
+    state(ctx, els(w={"type": "Html", "props": {"html": "<form>log in</form>"}}), rev=3, run_html=False)
+    assert js(ctx, "FD.find('w', 'iframe')") is None, "a changed body asks again"
+
+
+def test_html_runs_at_once_for_the_creator_and_strict_mode_holds_it_for_everyone(ctx):
+    ctx.eval("FD.connect();")
+    widget = els(w={"type": "Html", "props": {"html": "<p>x</p>"}})
+    state(ctx, widget, run_html=True)
+    assert js(ctx, "FD.find('w', 'iframe') !== null") is True
+    state(ctx, widget, rev=2, run_html=True, settings={"media_policy": "any-https", "media_allowlist": [], "strict_mode": True})
+    assert js(ctx, "FD.find('w', 'iframe')") is None and "Run" in js(ctx, "FD.byId('w').textContent")
+
+
+def test_html_frames_are_keyed_on_their_content_not_the_rev(ctx):
+    ctx.eval("FD.connect();")
+    state(ctx, els(w={"type": "Html", "props": {"html": "<p>x</p>"}}, t={"type": "Text", "props": {"text": "a"}}))
+    ctx.eval("var frame = FD.find('w', 'iframe');")
+    state(ctx, els(w={"type": "Html", "props": {"html": "<p>x</p>"}}, t={"type": "Text", "props": {"text": "b"}}), rev=2)
+    assert js(ctx, "[FD.find('w', 'iframe') === frame, frame.writes.srcdoc]") == [True, 1]
+    state(ctx, els(w={"type": "Html", "props": {"html": "<p>y</p>"}}), rev=3)
+    assert js(ctx, "FD.find('w', 'iframe') === frame") is False
+
+
+# --- ruling 1: the click gate lives in the renderer ----------------------------------------------------------------------------------
+
+
+def _html_ready(ctx, *ids: str):
+    ctx.eval("FD.connect();")
+    state(ctx, els(**{i: {"type": "Html", "props": {"html": "<button>x</button>"}} for i in ids}), values={ids[0]: {"n": 1}})
+    for i in ids:
+        ctx.eval(f"var port_{i} = FD.load('{i}'); var frame_{i} = FD.find('{i}', 'iframe');")
+
+
+def test_each_load_offers_the_frame_its_own_port(ctx):
+    _html_ready(ctx, "w")
+    offer = js(ctx, "(function (p) { return {data: p.data, origin: p.origin, ports: p.transfer.length}; })(frame_w.contentWindow.posted[0])")
+    assert offer == {"data": {"type": "primer.html.connect", "element": "w"}, "origin": "*", "ports": 1}
+    assert js(ctx, "port_w.other.sent") == [{"type": "value", "value": {"n": 1}}], "the element's value follows the offer"
+
+
+def test_html_emits_pass_only_on_the_renderers_activation(ctx):
+    _html_ready(ctx, "w")
+    emit = "port_w.postMessage({type: 'emit', name: 'clicked', data: {n: 1}});"
+    ctx.eval(emit)
+    assert events(ctx) == [], "no activation"
+    ctx.eval("FD.window.navigator.userActivation.isActive = true;" + emit)
+    assert events(ctx) == [], "activation, but the frame is not the focused element"
+    ctx.eval("frame_w.focus();" + emit * 5)
+    assert events(ctx) == [{"type": "event", "element": "w", "kind": "emit", "name": "clicked", "data": {"n": 1}}] * 3, "3 per activation"
+    ctx.eval("FD.advance(1000);" + emit)
+    assert len(events(ctx)) == 3, "the same activation, still spent"
+    ctx.eval("FD.window.navigator.userActivation.isActive = false; FD.advance(150);"
+             "FD.window.navigator.userActivation.isActive = true;" + emit * 4)
+    assert len(events(ctx)) == 6, "a new activation, a new budget"
+    ctx.eval("FD.window.navigator.userActivation.isActive = false; FD.advance(150); FD.window.navigator.userActivation.isActive = true;"
+             "FD.document.visibilityState = 'hidden';" + emit)
+    assert len(events(ctx)) == 6, "not while the page is hidden"
+
+
+def test_a_looping_element_cannot_emit_after_its_activation_expires(ctx):
+    _html_ready(ctx, "w")
+    ctx.eval("frame_w.focus(); FD.window.navigator.userActivation.isActive = true;")
+    for _ in range(20):
+        ctx.eval("port_w.postMessage({type: 'emit', name: 'loop'}); FD.advance(500);")
+        if js(ctx, "FD.clock.t") > 1000000 + 5000:
+            ctx.eval("FD.window.navigator.userActivation.isActive = false;")
+    assert len(events(ctx)) == 3, "one click, at most three emits, however long the loop runs"
+    assert js(ctx, "FD.activeTimers()") == 0, "the activation poll stops once the activation is over"
+
+
+def test_copy_and_open_link_share_the_gate_and_carry_no_other_element(ctx):
+    _html_ready(ctx, "w")
+    ctx.eval("port_w.postMessage({type: 'copy', text: 'secret'}); port_w.postMessage({type: 'open_link', url: 'https://a.example/'});")
+    assert events(ctx) == []
+    ctx.eval("frame_w.focus(); FD.window.navigator.userActivation.isActive = true;"
+             "port_w.postMessage({type: 'copy', text: 'hello'}); port_w.postMessage({type: 'open_link', url: 'https://a.example/'});"
+             "port_w.postMessage({type: 'open_link', url: 'javascript:alert(1)'});")
+    assert events(ctx) == [{"type": "copy", "element": "w", "text": "hello"}, {"type": "open_link", "url": "https://a.example/"}]
+
+
+def test_an_element_speaks_only_for_itself(ctx):
+    _html_ready(ctx, "a", "b")
+    ctx.eval("frame_a.focus(); FD.window.navigator.userActivation.isActive = true;")
+    ctx.eval("port_b.postMessage({type: 'emit', name: 'from_b'});")
+    ctx.eval("port_a.postMessage({type: 'emit', name: 'as_b', element: 'b'});")
+    ctx.eval("port_a.postMessage({type: 'event', element: 'b', kind: 'emit', name: 'x'});")
+    assert events(ctx) == [], "b is not focused; a cannot name b, nor send a console message"
+    ctx.eval("port_a.postMessage({type: 'emit', name: 'mine'});")
+    assert events(ctx) == [{"type": "event", "element": "a", "kind": "emit", "name": "mine", "data": None}]
+
+
+def test_a_reloaded_frame_gets_a_new_port_and_the_old_one_is_not_heard(ctx):
+    _html_ready(ctx, "w")
+    ctx.eval("var old = port_w; var fresh = FD.load('w'); frame_w.focus(); FD.window.navigator.userActivation.isActive = true;"
+             "old.postMessage({type: 'emit', name: 'stale'}); fresh.postMessage({type: 'emit', name: 'current'});")
+    assert [e["name"] for e in events(ctx)] == ["current"]
+    assert js(ctx, "old.other.closed") is True
+
+
+def test_set_value_needs_no_click_and_goes_out_once_a_second(ctx):
+    _html_ready(ctx, "w")
+    ctx.eval("for (var i = 0; i < 30; i++) port_w.postMessage({type: 'set_value', value: i}); FD.advance(0);")
+    assert events(ctx) == [{"type": "event", "element": "w", "kind": "set_value", "value": 29}], "a burst goes out once, its latest value"
+    ctx.eval("port_w.postMessage({type: 'set_value', value: 30}); port_w.postMessage({type: 'set_value', value: 31}); FD.advance(999);")
+    assert len(events(ctx)) == 1, "not twice within a second"
+    ctx.eval("FD.advance(1);")
+    assert events(ctx)[-1] == {"type": "event", "element": "w", "kind": "set_value", "value": 31}
+    ctx.eval("FD.advance(5000); port_w.postMessage({type: 'set_value', value: 31}); FD.advance(5000);")
+    assert len(events(ctx)) == 2, "a value the canvas already holds is not sent again"
+
+
+def test_the_frame_is_sized_within_bounds(ctx):
+    _html_ready(ctx, "w")
+    assert js(ctx, "frame_w.style.props.height") == "150px"
+    ctx.eval("port_w.postMessage({type: 'size', height: 5000});")
+    assert js(ctx, "frame_w.style.props.height") == "1200px"
+    ctx.eval("port_w.postMessage({type: 'size', height: 3});")
+    assert js(ctx, "frame_w.style.props.height") == "40px"
+
+
+def test_a_disabled_or_hidden_html_element_is_not_heard(ctx):
+    ctx.eval("FD.connect();")
+    state(ctx, els(w={"type": "Html", "props": {"html": "<p>x</p>", "disabled": True}}))
+    ctx.eval("var p = FD.load('w'); FD.find('w', 'iframe').focus(); FD.window.navigator.userActivation.isActive = true;"
+             "p.postMessage({type: 'emit', name: 'x'}); p.postMessage({type: 'set_value', value: 1}); FD.advance(2000);")
+    assert events(ctx) == [] and js(ctx, "FD.byId('w').attrs.inert") == ""
+
+
+def test_the_value_and_theme_reach_the_html_frame(ctx):
+    _html_ready(ctx, "w")
+    ctx.eval("port_w.received = []; var mine = port_w;")
+    state(ctx, els(w={"type": "Html", "props": {"html": "<button>x</button>"}}), rev=2, values={"w": {"n": 2}})
+    state(ctx, els(w={"type": "Html", "props": {"html": "<button>x</button>"}}), rev=3, values={"w": {"n": 2}})
+    ctx.eval("FD.post({type: 'theme', theme: {'--cv-fg': '#222', '--cv-bg': 'url(x)'}});")
+    assert js(ctx, "mine.other.sent.slice(1)") == [
+        {"type": "value", "value": {"n": 2}},
+        {"type": "theme", "theme": {"--cv-fg": "#222"}},
+    ]
+
+
 def test_removed_elements_are_torn_down(ctx):
     ctx.eval("FD.connect();")
-    state(ctx, els(s={"type": "Audio", "props": {"src": "https://a.example/a.mp3"}}))
-    ctx.eval("var audio = FD.find('s', 'audio');")
+    state(ctx, els(w={"type": "Html", "props": {"html": "<p>x</p>"}}, s={"type": "Audio", "props": {"src": "https://a.example/a.mp3"}}))
+    ctx.eval("var p = FD.load('w'); var audio = FD.find('s', 'audio');")
     state(ctx, els(), rev=2)
-    assert js(ctx, "[audio.pauses, FD.root.textContent]") == [1, ""]
+    assert js(ctx, "[p.other.closed, audio.pauses, FD.root.textContent]") == [True, 1, ""]
 
 
 def test_outgoing_messages_are_capped_at_twenty_a_second(ctx):
@@ -253,4 +420,14 @@ def test_outgoing_messages_are_capped_at_twenty_a_second(ctx):
     assert len(events(ctx)) == 19, "20 a second, the ready message among them"
     ctx.eval("FD.advance(1000); FD.post({type: 'busy', element: 'b29', on: false}); FD.byId('b29').click();")
     assert len(events(ctx)) == 20
+
+
+def test_an_element_that_throws_in_a_loop_cannot_crowd_out_a_click(ctx):
+    _html_ready(ctx, "w")
+    state(ctx, els(w={"type": "Html", "props": {"html": "<button>x</button>"}}, go={"type": "Button", "props": {"label": "Go"}}))
+    ctx.eval("for (var i = 0; i < 100; i++) port_w.postMessage({type: 'error', message: 'boom ' + i});")
+    errors = [m for m in js(ctx, "FD.sent()") if m["type"] == "error"]
+    assert errors == [{"type": "error", "message": f"w: boom {i}"} for i in range(3)]
+    ctx.eval("FD.byId('go').click();")
+    assert events(ctx)[-1] == {"type": "event", "element": "go", "kind": "click"}
 
