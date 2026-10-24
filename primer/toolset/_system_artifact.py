@@ -122,6 +122,8 @@ def artifact_store_tools(
         when=(
             "Use when switching where new artifact bytes are written, after testing or registering the provider. "
             "An unknown or unusable provider returns ``type=validation-error`` and the current selection is unchanged. "
+            "A provider deleted while it was being checked, or a selection someone else made meanwhile, returns ``type=conflict`` "
+            "and the current selection is unchanged. "
             "Existing artifacts remain where they were written."
         ),
         args_schema=_SetActiveArtifactStoreArgs.model_json_schema(),

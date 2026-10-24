@@ -73,3 +73,72 @@ async def test_set_refuses_an_unknown_provider(world) -> None:
         await set_active_artifact_store(sp, "missing", probe=_passes)
     assert caught.value.code == "unknown_provider_id"
     assert caught.value.field == "provider_id"
+
+
+# ---- the G5 audit, G5-06: the probe takes time, and the world can change during it ------------------------------------------------------------
+
+
+async def test_a_provider_deleted_during_the_probe_is_not_selected(world) -> None:
+    """The probe can take seconds (an S3 round trip). A delete that runs during it passes its own check, because the provider is not active
+    yet; the selection used to be written anyway, naming a provider that no longer existed, and every upload failed until an admin re-selected.
+    The provider row is read again after the probe: a 409 (conflict), and the selection is unchanged."""
+    from primer.artifact.checks import check_artifact_provider_delete
+
+    sp, mem, routing = world
+
+    async def probe_while_deleted(row, *, storage_provider):
+        await check_artifact_provider_delete(storage_provider, row.id)      # the concurrent delete passes: not active yet
+        await storage_provider.get_storage(ArtifactStorageProvider).delete(row.id)
+        return ArtifactProbeResult(ok=True)
+
+    with pytest.raises(EntityCheckError) as caught:
+        await set_active_artifact_store(sp, "mem-1", probe=probe_while_deleted)
+
+    assert (caught.value.kind, caught.value.code, caught.value.field) == ("conflict", "artifact_store_deleted", "provider_id")
+    assert (await read_active_artifact_store(sp)).provider_id == DEFAULT_ARTIFACT_PROVIDER_ID
+    artifact_id = await routing.put(data=b"chat image", mime_type="image/png")    # uploads keep working
+    assert await sp.get_storage(Artifact).get(artifact_id) is not None and mem.blobs == {}
+
+
+async def test_a_selection_written_by_someone_else_during_the_probe_wins(world) -> None:
+    """The selection is a compare-and-set against what was read before the probe: a selection someone else wrote meanwhile is not
+    overwritten from a stale read, and this one answers a 409."""
+    sp, _, _ = world
+    for provider_id in ("db-3", "db-5"):
+        await sp.get_storage(ArtifactStorageProvider).create(ArtifactStorageProvider(id=provider_id, provider="db"))
+    await set_active_artifact_store(sp, "db-3", probe=_passes)
+
+    async def probe_while_another_is_selected(row, *, storage_provider):
+        await set_active_artifact_store(storage_provider, "db-5", probe=_passes)
+        return ArtifactProbeResult(ok=True)
+
+    with pytest.raises(EntityCheckError) as caught:
+        await set_active_artifact_store(sp, "mem-1", probe=probe_while_another_is_selected)
+
+    assert (caught.value.kind, caught.value.code) == ("conflict", "active_artifact_store_changed")
+    assert (await read_active_artifact_store(sp)).provider_id == "db-5"
+
+
+async def test_a_first_selection_raced_by_another_first_selection_is_a_conflict(world) -> None:
+    """No row yet on both sides: the second create finds the first one's row, and answers a 409 instead of a 500."""
+    sp, _, _ = world
+
+    async def probe_while_another_is_selected(row, *, storage_provider):
+        await storage_provider.get_storage(ArtifactStorageProvider).create(ArtifactStorageProvider(id="db-4", provider="db"))
+        await set_active_artifact_store(storage_provider, "db-4", probe=_passes)
+        return ArtifactProbeResult(ok=True)
+
+    with pytest.raises(EntityCheckError) as caught:
+        await set_active_artifact_store(sp, "mem-1", probe=probe_while_another_is_selected)
+
+    assert caught.value.code == "active_artifact_store_changed"
+    assert (await read_active_artifact_store(sp)).provider_id == "db-4"
+
+
+async def test_selecting_the_store_already_active_again_succeeds(world) -> None:
+    sp, _, _ = world
+    await sp.get_storage(ArtifactStorageProvider).create(ArtifactStorageProvider(id="db-3", provider="db"))
+    await set_active_artifact_store(sp, "mem-1", probe=_passes)
+    assert (await set_active_artifact_store(sp, "mem-1", probe=_passes)).provider_id == "mem-1"
+    assert (await set_active_artifact_store(sp, "db-3", probe=_passes)).provider_id == "db-3"
+    assert (await read_active_artifact_store(sp)).provider_id == "db-3"

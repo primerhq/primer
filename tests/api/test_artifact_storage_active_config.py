@@ -76,3 +76,22 @@ async def test_a_non_admin_can_neither_read_nor_set_it(raw_client, app, role: st
     await _login(raw_client, role)
     assert (await raw_client.get(ACTIVE)).status_code == 403
     assert (await raw_client.put(ACTIVE, json={"provider_id": "db-2"})).status_code == 403
+
+
+async def test_a_store_deleted_while_it_is_checked_is_a_409_and_is_not_selected(client, app, monkeypatch) -> None:
+    """The G5 audit, G5-06: the selection is written only if the provider still exists after the probe."""
+    from primer.model.provider import ArtifactStorageProvider
+
+    await _create_db(client)
+
+    async def deleted_meanwhile(row, *, storage_provider):
+        await storage_provider.get_storage(ArtifactStorageProvider).delete(row.id)
+        return ArtifactProbeResult(ok=True)
+
+    monkeypatch.setattr("primer.artifact.active.probe_artifact_provider", deleted_meanwhile)
+    response = await client.put(ACTIVE, json={"provider_id": "db-2"})
+
+    assert response.status_code == 409, response.text
+    extensions = response.json()["extensions"]
+    assert (extensions["error"], extensions["field"]) == ("artifact_store_deleted", "provider_id")
+    assert (await client.get(ACTIVE)).json()["provider_id"] == "artifact-storage-default"

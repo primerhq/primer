@@ -113,3 +113,23 @@ async def test_a_tool_cannot_delete_or_move_a_store_that_holds_artifacts(world, 
     assert "1 artifact(s)" in delete_answer["message"]
     assert update_error and update_answer["type"] == "conflict"
     assert update_answer["message"].startswith("config.root: ")
+
+
+async def test_a_store_deleted_while_the_tool_checks_it_is_a_conflict(world, monkeypatch) -> None:
+    """The G5 audit, G5-06, through the tool: ``type=conflict`` naming the field, and the selection is unchanged."""
+    from primer.artifact.probe import ArtifactProbeResult
+
+    sp, toolset, _ = world
+    await sp.get_storage(ArtifactStorageProvider).create(ArtifactStorageProvider(id="db-2", provider="db", config={}))
+
+    async def deleted_meanwhile(row, *, storage_provider):
+        await storage_provider.get_storage(ArtifactStorageProvider).delete(row.id)
+        return ArtifactProbeResult(ok=True)
+
+    monkeypatch.setattr("primer.artifact.active.probe_artifact_provider", deleted_meanwhile)
+    is_error, answer = await _call(toolset, "set_active_artifact_store", provider_id="db-2")
+
+    assert is_error and answer["type"] == "conflict"
+    assert answer["message"].startswith("provider_id: artifact store 'db-2' was deleted while it was being checked")
+    _, current = await _call(toolset, "get_active_artifact_store")
+    assert current["provider_id"] == "artifact-storage-default"
