@@ -12,11 +12,11 @@ A channel is one room on a [channel provider](channels/providers): a Slack chann
 - **Fields.** `id` (optional on create: the server assigns `channel-<hex>`), `provider_id` (the provider row), `provider` (`slack`, `telegram` or `discord`: it must be that provider's platform), `external_id` (the platform's room id), `label` (optional, at most 200 characters) and `config`.
 - **`external_id` is the platform's id, not the room's name.** A Slack channel id looks like `C012ABCDEF`. A Telegram room id is a number (a group's is negative). A Discord channel id is a long number. Put the name in `label`.
 - **One room, one channel.** The pair `provider_id` and `external_id` belongs to one channel only.
-- **`config.chats`** has two keys and no others: `enabled` (default `false`) and `relay_mode` (`final` or `all`, default `final`).
+- **`config.chats`** has one key and no others: `enabled` (default `false`).
 - **`chats.enabled: true` lets a message in the room start a session.** With `false`, the [bindings](channels/bindings) that start a session (`agent_fresh_session`, `graph_fresh_session`) do not fire for the room. A `session_append` binding still feeds its session, a session waiting on a channel event still wakes, and a thread mapped to a session still feeds it.
 - **Listening.** The bot hears a room only while the room's listener runs. It shares one connection per provider, but it drops a message from a room with no listener. A room with `chats.enabled: true` gets its listener when primer starts, and when a person saves the channel in the console. Any room also gets one the first time a session posts to it. So after a restart, a room with `chats.enabled: false` is not heard at all until a session posts there.
 - **The channel does not pick the agent.** A message starts the agent or graph that a [binding](channels/bindings) on a `channel` trigger names, so one room can route to different agents by rule.
-- **`relay_mode` is stored, but the server does not read it today.** How much a conversation hears back is set by the `interactive` flag of the channel trigger ([inbound bindings](channels/bindings)).
+- **How much a conversation hears back** is set by the `interactive` flag of the channel trigger ([inbound bindings](channels/bindings)). The room has no setting for it.
 - **A DM is a room too.** A direct message with the bot needs its own channel, with the DM's id as `external_id` (for Telegram, the person's user id).
 - **One channel serves many workspaces.** Inbound bindings and the [reply bindings](channels/reply-binding) of any number of workspaces can share it.
 - **The running bot.** The listeners run in the API process, and a tool may run in another one. So a new channel, a changed one, or `chats.enabled` turned on is heard after a restart, or after a person saves the channel in the console.
@@ -35,7 +35,7 @@ A channel is one room on a [channel provider](channels/providers): a Slack chann
 `system__create_channel` stores the room. Here a Slack channel whose messages may start sessions.
 
 ```json
-{"toolset_id": "system", "tool_name": "create_channel", "arguments": {"entity": {"id": "ch-slack-oncall", "provider_id": "cp-slack", "provider": "slack", "external_id": "C012ABCDEF", "label": "#oncall", "config": {"chats": {"enabled": true, "relay_mode": "final"}}}}}
+{"toolset_id": "system", "tool_name": "create_channel", "arguments": {"entity": {"id": "ch-slack-oncall", "provider_id": "cp-slack", "provider": "slack", "external_id": "C012ABCDEF", "label": "#oncall", "config": {"chats": {"enabled": true}}}}}
 ```
 
 Reference: [`system__create_channel`](reference/tools/system/create_channel)
@@ -78,7 +78,7 @@ Reference: [`system__find_channels`](reference/tools/system/find_channels)
 `system__update_channel` replaces the whole row: read it, change it, send it all back.
 
 ```json
-{"toolset_id": "system", "tool_name": "update_channel", "arguments": {"id": "ch-slack-oncall", "entity": {"id": "ch-slack-oncall", "provider_id": "cp-slack", "provider": "slack", "external_id": "C012ABCDEF", "label": "#oncall-primary", "config": {"chats": {"enabled": true, "relay_mode": "final"}}}}}
+{"toolset_id": "system", "tool_name": "update_channel", "arguments": {"id": "ch-slack-oncall", "entity": {"id": "ch-slack-oncall", "provider_id": "cp-slack", "provider": "slack", "external_id": "C012ABCDEF", "label": "#oncall-primary", "config": {"chats": {"enabled": true}}}}}
 ```
 
 Reference: [`system__update_channel`](reference/tools/system/update_channel)
@@ -96,7 +96,7 @@ Reference: [`system__delete_channel`](reference/tools/system/delete_channel)
 - A room with no channel is never heard, even when a binding names its provider.
 - A `provider` that is not the provider's platform is a `validation-error` naming both platforms. So is a `provider_id` that names no provider.
 - A pair that another channel holds is a `conflict` naming that channel.
-- An unknown key in `config.chats`, such as the retired `default_agent` or `allowed_agents`, is a `validation-error`.
+- An unknown key in `config.chats`, such as the retired `default_agent`, `allowed_agents` or `relay_mode`, is a `validation-error`. Stored rooms lost `relay_mode` when primer upgraded.
 - An update replaces the whole row. Leave out `config` and `chats.enabled` falls back to `false`: after the next restart the bot no longer listens there until a session posts to the room.
 - `chats.enabled: false` stops new sessions only. A room that a session posts to is heard again, and its threads, `session_append` bindings and channel-event waits work. To stop those too, disable the `channel` trigger or delete the binding.
 - The tools do not reach the running listener. A deleted channel's room can still be heard until a restart.

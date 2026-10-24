@@ -493,3 +493,23 @@ async def test_a_room_with_no_listener_is_not_heard_on_the_providers_shared_conn
     await world.app.events["message"](event, SimpleNamespace(chat_postEphemeral=AsyncMock()))
 
     assert await world.sessions() == []
+
+
+# ---------------------------------------------------------------- item 7: relay_mode is gone; the trigger decides
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+async def test_how_much_a_conversation_hears_is_the_triggers_interactive_flag_and_relay_mode_is_gone(monkeypatch, sp, interactive) -> None:
+    """The measurement found relay_mode stored and never read: ``interactive`` alone decided, in all four mixes. The knob is removed."""
+    from pydantic import ValidationError
+
+    from primer.model.envelope import RELAY_EVERY_TURN_KEY
+
+    with pytest.raises(ValidationError, match="relay_mode"):
+        SlackChannelConfig.model_validate({"chats": {"enabled": True, "relay_mode": "all"}})
+    world = _World(monkeypatch, sp)
+    await world.seed(interactive=interactive)
+    session = await _started_by(world, "deploy please")
+
+    assert bool(session.metadata.get(RELAY_EVERY_TURN_KEY)) is interactive
+    assert session.metadata[SESSION_REPLY_BINDING_KEY]["quiet"] is (not interactive)

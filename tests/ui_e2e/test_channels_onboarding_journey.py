@@ -243,10 +243,11 @@ def test_u0108_channels_operator_onboarding_journey(
         )
 
         # ----- Chats fieldset: enable inbound on this room.
-        # "Chats enabled" is a switch-style toggle button; clicking it
-        # reveals the relay-mode control. Per-channel agent selection is
-        # gone: a thread IS a session, so the channel trigger's
-        # subscription names the agent (S6 section 7).
+        # "Chats enabled" is a switch-style toggle button. It reveals no
+        # other control (relay mode was removed, ticket 01a16e37-b98e
+        # item 7). Per-channel agent selection is gone: a thread IS a
+        # session, so the channel trigger's subscription names the agent
+        # (S6 section 7).
         chats_enabled = modal.get_by_test_id("channel-chats-enabled")
         chats_enabled.click()
         expect(chats_enabled).to_have_attribute("aria-checked", "true")
@@ -266,6 +267,7 @@ def test_u0108_channels_operator_onboarding_journey(
             assert r.status_code == 200, r.text
             chats = r.json().get("config", {}).get("chats", {})
             assert chats.get("enabled") is True, r.json()
+            assert "relay_mode" not in chats, r.json()
 
         # ----- 3. Studio → Settings modal → Channels → Link channel -----
         # Re-pointed: the old ``?tab=channels`` workspace-detail tab moved

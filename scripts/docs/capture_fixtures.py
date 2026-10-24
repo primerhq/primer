@@ -238,8 +238,8 @@ def capture_channels(c):
 
     # NOTE: seeding a real channel provider requires live Slack/Telegram/Discord
     # credentials. Captured with empty-but-valid envelopes.
-    # Channel.config.chats carries chat enablement (enabled, default_agent,
-    # allowed_agents, relay_mode). Workspace.channel_association carries the
+    # Channel.config.chats carries one key, enabled (whether a message in the
+    # room may start a session). Workspace.channel_association carries the
     # single channel a workspace's session gates forward to (set/clear via
     # PUT/DELETE /v1/workspaces/{id}/channel_association).
     save("channels", {

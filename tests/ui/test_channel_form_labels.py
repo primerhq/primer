@@ -18,11 +18,13 @@ def test_no_bare_field_label_is_left() -> None:
     assert '<label className="field-label">' not in SRC
 
 
-def test_both_forms_draw_eight_rows_as_form_fields() -> None:
-    """The provider form: id, platform, and one row per config field (a map); the channel form: id, provider, external id, label, relay mode."""
-    assert SRC.count("<FormField ") == 8
-    for label in ('label="id"', 'label="platform"', 'label="provider"', 'label="external id"', 'label="label"', 'label="relay mode"', "label={f.label}"):
+def test_both_forms_draw_seven_rows_as_form_fields() -> None:
+    """The provider form: id, platform, and one row per config field (a map); the channel form: id, provider, external id, label.
+    The channel form's relay mode row is gone with the field (ticket 01a16e37-b98e item 7)."""
+    assert SRC.count("<FormField ") == 7
+    for label in ('label="id"', 'label="platform"', 'label="provider"', 'label="external id"', 'label="label"', "label={f.label}"):
         assert label in SRC, label
+    assert 'label="relay mode"' not in SRC and "relay_mode" not in SRC
 
 
 def test_the_server_errors_are_each_rows_err_and_not_a_loose_div() -> None:

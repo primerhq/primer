@@ -74,6 +74,7 @@ from primer.storage.migrations.m017_orphan_mcp_oauth_rows import (
 from primer.storage.migrations.m018_ungate_list_python_tools import (
     M018UngateListPythonTools,
 )
+from primer.storage.migrations.m019_drop_chat_relay_mode import M019DropChatRelayMode
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M016AdminRunGates(),
     M017OrphanMcpOAuthRows(),
     M018UngateListPythonTools(),
+    M019DropChatRelayMode(),
 )
 
 #: Highest version this build knows how to apply.
