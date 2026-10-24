@@ -39,8 +39,9 @@ authoring plane.
 - **Exposure lives on the row, not in the bundle.** A publish must never
   silently flip a service public, so `viewer_auth` is service state that
   an operator sets, not manifest content an agent writes.
-- **Content addressing all the way down.** Every bundle file is an
-  artifact keyed by content, so `ETag` is the artifact id and
+- **Immutable files all the way down.** Every bundle file is an
+  artifact whose bytes never change under its id (a publish writes new
+  artifacts; it never rewrites one), so `ETag` is the artifact id and
   `Cache-Control: immutable` is honest rather than optimistic.
 - **The serving plane can be split off.** `PRIMER_SERVE_ONLY=1` mounts
   `/svc` plus observability and runs no worker, so service traffic can be
@@ -91,16 +92,21 @@ console surface is `ui/components/services.jsx`.
   context), and any `@resumes` companion fails the publish because the
   gateway is synchronous.
 
-`primer/service/publish.py` then persists: one `Artifact` row per file,
-the version row, the active pointer (unless `?activate=false`), and
-retention pruning (newest 20 kept, the active version always kept).
+`primer/service/publish.py` then persists: one artifact per file, put
+through the routing store into the ACTIVE artifact store
+([artifact-storage](artifact-storage.md)), the version row, the active
+pointer (unless `?activate=false`), and retention pruning (newest 20
+kept, the active version always kept).
 `POST /v1/services/{id}/_activate` repoints (rollback = pointing back).
 Deleting a service cascades versions and artifacts.
 
 ## 7. Persistence
 
 Versions, their manifests and their function specs are storage rows;
-bundle files are `Artifact` rows keyed by content. Retention keeps the
+bundle files are artifacts in the store that was active when the
+version was published (an `Artifact` row for the database store, files
+or objects with a location record for a filesystem or S3 store), each
+under a fresh id the store mints. Retention keeps the
 newest 20 versions plus the active one, whatever its age, so a rollback
 target is never pruned out from under an operator. Nothing service-side
 is cached durably: the name resolver's cache is a bounded 5s per-process TTL and
@@ -123,7 +129,7 @@ Mounted WITHOUT the `/v1` prefix. `GET /svc/{name}/{path}`:
 - path pick: exact file, else extension-less misses fall back to the
   manifest entry (SPA client routing), misses with an extension 404;
 - blobs stream through a 64 MiB LRU with `ETag` = artifact id and an
-  immutable `Cache-Control` (bundle files are content-addressed):
+  immutable `Cache-Control` (a bundle file's id never names new bytes):
   `private, max-age=31536000, immutable` for `viewer_auth=console`, so a
   shared cache never stores a gated bundle and replays it to anonymous
   clients, and `public, ...` only for `viewer_auth=none`. If-None-Match
