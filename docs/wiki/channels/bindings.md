@@ -96,7 +96,7 @@ Reference: [`system__delete_channel_binding`](reference/tools/system/delete_chan
 - The trigger's `channel_id` is the channel's id (`ch-...`). `room_external_ids` holds the platform's ids.
 - A template that reads a missing value fails the delivery (`payload_template_failed`): a plain message has no `event.command`. Match `command.invoked` before you read `command`.
 - A matcher on `mentions_bot: true` or on `sender_roles_any` never matches today.
-- On Slack and Discord today, a reply in a mapped thread is taken as the answer to a question even when none is open: it reaches no session, and the thread loses its mapping, so the next message there starts a new session. Telegram DMs keep theirs.
+- In a Slack or Discord thread with an open question, the next reply is its answer, whatever it says. The replies after it go to the session as new messages, and the thread keeps its session. A reply while an approval waits is a new message too, not a decision: use the buttons.
 - `parallelism` must be `skip` or `queue`. The tool accepts any string, and another value fails the call.
 
 ## Related
