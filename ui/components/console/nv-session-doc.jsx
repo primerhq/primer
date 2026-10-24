@@ -1129,8 +1129,9 @@ function NV_DecisionCard(props) {
               SH_api.approve(item.sessionId, item.toolCallId, item.gateId).then(
                 props.onResolved,
                 function (err) {
-                  // A gate replaced since this card was drawn (C-033: 409 "replaced"), or one that has moved on (404 "moved on": the first gate of a node that re-parked, a gate decided elsewhere): say so and reload; nothing was decided.
-                  if (SH_isMovedOnGate(err)) { con.toast(SH_movedOnGateWords(err, "approval")); props.onResolved(); return; }
+                  // A gate replaced since this card was drawn (C-033: 409 "replaced"), or one that has moved on (404 gate_not_pending, "moved on": the first gate of a node that re-parked, a gate decided
+                  // elsewhere): say so as a warning, the same words and kind as the banner and the mobile Inbox, and reload; nothing was decided. Any other 404 is the error it is.
+                  if (SH_isMovedOnGate(err)) { con.toast(SH_movedOnGateWords(err, "approval"), { kind: "warning" }); props.onResolved(); return; }
                   con.toast("Approve failed: " + (err.detail || err.message));
                 }
               );
@@ -1148,7 +1149,7 @@ function NV_DecisionCard(props) {
               SH_api.reject(item.sessionId, item.toolCallId, reason, item.gateId).then(
                 props.onResolved,
                 function (err) {
-                  if (SH_isMovedOnGate(err)) { con.toast(SH_movedOnGateWords(err, "approval")); props.onResolved(); return; }
+                  if (SH_isMovedOnGate(err)) { con.toast(SH_movedOnGateWords(err, "approval"), { kind: "warning" }); props.onResolved(); return; }
                   con.toast("Reject failed: " + (err.detail || err.message));
                 }
               );
@@ -1443,9 +1444,10 @@ function NV_AskCard(props) {
       // INLINE, never a toast: the operator sees the failure exactly
       // where the submission happened, and the card stays to retry.
       function (e) {
-        // A question replaced since this card was drawn (C-033): say so inline and reload; the answer went nowhere.
-        if (SH_isStaleGate(e)) {
-          setErr(SH_staleGateWords("question"));
+        // A question replaced since this card was drawn (C-033: 409 "replaced"), or one that has moved on (404 gate_not_pending: answered elsewhere, the
+        // graph asked again under a fresh id): say so inline in the shared words and reload; the answer went nowhere. Any other 404 is the error it is.
+        if (SH_isMovedOnGate(e)) {
+          setErr(SH_movedOnGateWords(e, "question"));
           props.onResolved();
           return;
         }

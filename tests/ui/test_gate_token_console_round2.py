@@ -16,7 +16,20 @@ import re
 import pytest
 
 from tests.ui._mini_react import mini_react_context, transpile
-from tests.ui.test_gate_token_console import _PRELUDE, ATTENTION, DOC, FAILED_500, MOVED_ON_WORDS, ROOT, STALE, _js, not_pending_404
+from tests.ui.test_gate_token_console import (
+    _PRELUDE,
+    ATTENTION,
+    DOC,
+    FAILED_500,
+    MOVED_ON_WORDS,
+    QUESTION_MOVED_ON_WORDS,
+    ROOT,
+    STALE,
+    _js,
+    missing_session_404,
+    not_pending_404,
+    question_not_pending_404,
+)
 
 SESSION_DETAIL = (ROOT / "ui" / "components" / "session-detail.jsx").read_text(encoding="utf-8")
 APPROVALS = (ROOT / "ui" / "components" / "approvals.jsx").read_text(encoding="utf-8")
@@ -266,6 +279,20 @@ def test_a_banner_for_a_gate_that_is_pending_nowhere_says_it_moved_on_and_is_not
         ctx.close()
 
 
+def test_the_banner_tells_a_gate_that_moved_on_from_any_other_404() -> None:
+    """Ticket 01a125ec-68d6: the banner said "moved on" for ANY 404. Only the respond route's ``gate_not_pending`` is a gate that moved on (a warning in the shared words); a deleted session is an error."""
+    ctx = _banner(_BANNER)
+    try:
+        ctx.eval("NEXT.fail = " + json.dumps(not_pending_404()) + "; MR.click('approval-banner-approve');")
+        ctx.eval("MR.rerender();")
+        ctx.eval("NEXT.fail = " + json.dumps(missing_session_404()) + "; MR.click('approval-banner-approve');")
+        ctx.eval("MR.rerender();")
+        toasts = _js(ctx, "TOASTS")
+        assert toasts == [{"kind": "warning", "title": MOVED_ON_WORDS}, {"kind": "error", "title": "Not Found", "detail": "'s-1' does not exist"}]
+    finally:
+        ctx.close()
+
+
 def test_a_server_failure_is_still_an_error_toast_on_the_banner() -> None:
     ctx = _banner(_BANNER)
     try:
@@ -361,6 +388,24 @@ def test_a_stale_panel_says_so_inline_and_reloads(act) -> None:
         ctx.eval("MR.rerender();")
         assert _js(ctx, "MR.find('ask-user-error').props.children") == "This question was replaced; the list is reloaded."
         assert _js(ctx, "REFETCH") == [1]
+    finally:
+        ctx.close()
+
+
+def test_a_panel_answer_for_a_question_that_moved_on_says_so_inline_and_reloads_and_any_other_404_is_the_error() -> None:
+    """Ticket 01a125ec-68d6: the panel showed the raw "No pending ask_user prompt ..." inline and did not reload. A 404 ``gate_not_pending`` reads like the 409 (the shared words, the prompt reloads); a
+    deleted session is the error it is (its own words, no reload)."""
+    ctx = _panel(_PENDING)
+    try:
+        ctx.eval("NEXT.fail = " + json.dumps(question_not_pending_404()) + ";")
+        _answer(ctx)
+        ctx.eval("MR.rerender();")
+        assert _js(ctx, "MR.find('ask-user-error').props.children") == QUESTION_MOVED_ON_WORDS
+        assert _js(ctx, "REFETCH") == [1]
+        ctx.eval("NEXT.fail = " + json.dumps(missing_session_404()) + "; MR.click('ask-user-submit');")
+        ctx.eval("MR.rerender();")
+        assert _js(ctx, "MR.find('ask-user-error').props.children") == "'s-1' does not exist"
+        assert _js(ctx, "REFETCH") == [1], "a 404 without the code does not reload"
     finally:
         ctx.close()
 

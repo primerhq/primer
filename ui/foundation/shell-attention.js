@@ -282,29 +282,41 @@ function SH_applyTriage(items, triage, nowMs) {
 // A decision that names a gate which has since been replaced is refused 409 with the code "approval_stale" (primer/api/gate_fence.py) and moved
 // nothing. The card says so in words and reloads the list; it is not a failure to retry.
 var SH_STALE_GATE_CODE = "approval_stale";
+// A decision for a gate that is no longer pending at all, while its session is there and its park reads, is a 404 with the code "gate_not_pending"
+// (primer/api/gate_fence.py GateNotPendingError). Any other 404 (a deleted session, a park that cannot be read, an unknown route) has no code.
+var SH_GATE_NOT_PENDING_CODE = "gate_not_pending";
 
-function SH_isStaleGate(err) {
+// The problem's code, through the one reader of a failed request (window.primerApi.readRefusal, ui/foundation/api.js, which the console loads
+// first). Without it (a test that loads this file alone) the envelope's extensions.code, which is where that reader looks first.
+function SH_problemCode(err) {
+  var api = window.primerApi;
+  if (api && typeof api.readRefusal === "function") return api.readRefusal(err).code;
   var ext = err && err.envelope && err.envelope.extensions;
-  return !!(err && err.status === 409 && ext && ext.code === SH_STALE_GATE_CODE);
+  return (ext && ext.code) || null;
 }
 
-// A decision for a gate that has MOVED ON: 409 approval_stale (the id is pending under another gate) or 404 (the id is pending under no approval gate: the first gate of a graph ToolCall node that re-parked on a
-// second one, a gate decided elsewhere, the node re-parked on the tool's own yield, a deleted session; board task 01a124e2-4550). The desktop approval cards and the banner reload for both. SH_isStaleGate stays the
-// 409 alone, which the question cards, the session detail and the mobile Inbox's approval cards (nv-mobile-shell.jsx:146, which words a 404 itself) read.
+function SH_isStaleGate(err) {
+  return !!(err && err.status === 409 && SH_problemCode(err) === SH_STALE_GATE_CODE);
+}
+
+// A decision for a gate that has MOVED ON: 409 approval_stale (the id is pending under another gate) or 404 gate_not_pending (the id is pending under no
+// gate of its kind: the first gate of a graph ToolCall node that re-parked on a second one, a gate decided elsewhere, the node re-parked on the tool's own
+// yield; ticket 01a125ec-68d6). Every card that decides a gate reads it: the desktop approval card, the banner and the mobile Inbox reload and toast
+// SH_movedOnGateWords as a 'warning'; the question cards (NV_AskCard, AskUserPanel) reload and say the same words inline. Any other 404 is an error.
 function SH_isMovedOnGate(err) {
-  return SH_isStaleGate(err) || !!(err && err.status === 404);
+  return SH_isStaleGate(err) || !!(err && err.status === 404 && SH_problemCode(err) === SH_GATE_NOT_PENDING_CODE);
 }
 
 function SH_staleGateWords(kind) {
   return "This " + (kind === "question" ? "question" : "approval") + " was replaced; the list is reloaded.";
 }
 
-// A 404 is NOT always a replacement (decided elsewhere, the tool's own yield, a deleted session), so its words claim no more than that the gate is gone from the list; "replaced" is the 409's alone.
+// A 404 gate_not_pending is NOT a replacement (decided elsewhere, the tool's own yield), so its words claim no more than that the gate is gone from the list; "replaced" is the 409's alone.
 function SH_movedOnWords(kind) {
   return "This " + (kind === "question" ? "question" : "approval") + " has moved on; the list is reloaded.";
 }
 
-// The words for a decision SH_isMovedOnGate accepted: "replaced" for the 409, "moved on" for the 404.
+// The words for a decision SH_isMovedOnGate accepted: "replaced" for the 409, "moved on" for the 404 gate_not_pending.
 function SH_movedOnGateWords(err, kind) {
   return SH_isStaleGate(err) ? SH_staleGateWords(kind) : SH_movedOnWords(kind);
 }

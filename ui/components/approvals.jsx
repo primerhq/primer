@@ -550,8 +550,8 @@ function ApprovalBanner({ data, scope, id, pushToast }) {
         "approvals:parked-sessions",
       ].filter(Boolean),
       onSuccess: () => pushToast && pushToast({ kind: "success", title: "Decision sent" }),
-      // A gate replaced since this banner was drawn is refused 409 approval_stale (C-033, "replaced"), and one that has moved on (the first gate of a graph node that re-parked, a gate decided elsewhere) 404 ("moved on"): say so in words for both. The
-      // mutation has already refetched the pending banner above (it refetches its keys on a failure too), so the list is reloaded.
+      // A gate replaced since this banner was drawn is refused 409 approval_stale (C-033, "replaced"), and one that has moved on (the first gate of a graph node that re-parked, a gate decided elsewhere) 404 gate_not_pending ("moved on"): say so in words
+      // for both, as a warning like the desktop card and the mobile Inbox; any other 404 is the error it is. The mutation has already refetched the pending banner above (it refetches its keys on a failure too), so the list is reloaded.
       onError: (err) => {
         if (window.SH_isMovedOnGate && window.SH_isMovedOnGate(err)) {
           if (pushToast) pushToast({ kind: "warning", title: window.SH_movedOnGateWords(err, "approval") });

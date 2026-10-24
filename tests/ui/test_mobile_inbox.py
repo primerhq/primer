@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.ui.test_gate_token_console import not_pending_404
+
 ROOT = Path(__file__).resolve().parents[2]
 SHELL = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").read_text(encoding="utf-8")
 ATTENTION = (ROOT / "ui" / "foundation" / "shell-attention.js").read_text(encoding="utf-8")
@@ -45,7 +47,7 @@ def inbox():
 
     ctx = MiniRacer()
     ctx.eval(_STUBS)
-    ctx.eval(ATTENTION)  # SH_isStaleGate / SH_staleGateWords, which the console loads before this file
+    ctx.eval(ATTENTION)  # SH_isMovedOnGate / SH_movedOnGateWords, which the console loads before this file
     for name in ("NV_mobileMayDecide", "NV_mobileInboxView", "NV_mobileInboxHeading", "NV_inboxDecide", "NV_inboxFullCall"):
         start = SHELL.index("function " + name)
         end = SHELL.index("\n}\n", start) + len("\n}\n")
@@ -174,21 +176,26 @@ def test_deny_is_one_request_with_no_reason(inbox) -> None:
 
 
 def test_deciding_a_call_that_has_moved_on_says_so_and_refreshes_instead_of_deciding_something_else(inbox) -> None:
-    inbox.set(fail={"status": 404, "detail": "No pending tool_approval with tool_call_id 'tc-1' on 'sess-1'"})
+    """The respond route answers 404 ``gate_not_pending`` for a gate that is no longer pending (ticket 01a125ec-68d6): the desktop card's words and kind, and the card is refreshed away."""
+    inbox.set(fail=not_pending_404())
     got = inbox.run("NV_inboxDecide('approve', " + json.dumps(_item("approval", approval=_WRITE)) + ", toast, onResolved)")
     assert got["result"] == {"stale": True}
-    assert len(got["toasts"]) == 1 and "moved on" in got["toasts"][0][0] and "review" in got["toasts"][0][0].lower()
+    assert got["toasts"] == [["This approval has moved on; the list is reloaded.", {"kind": "warning", "requestId": None}]]
     assert got["resolved"] == 1, "the stale card is refreshed away"
     assert [c[0] for c in got["calls"]] == ["approve"], "and no other call is approved in its place"
 
 
-def test_a_409_is_treated_as_a_card_that_moved_on_too(inbox) -> None:
-    """The respond route answers 404 for a gate that is no longer pending; a 409 (the session changed state under the call) means the
-    same to the person holding the card, so it gets the same words and the same refresh."""
-    inbox.set(fail={"status": 409, "detail": "Session 'sess-1' changed state"})
+@pytest.mark.parametrize("fail", [
+    {"status": 404, "detail": "'sess-1' does not exist"},
+    {"status": 409, "detail": "this approval was already decided; reload the pending list", "envelope": {"extensions": {"code": "already_decided"}}},
+])
+def test_a_404_or_409_that_is_not_a_gate_that_moved_on_is_the_error_it_is(inbox, fail) -> None:
+    """Only the respond route's ``gate_not_pending`` 404 and ``approval_stale`` 409 are a gate that moved on (``SH_isMovedOnGate``, as on the desktop card and the banner). A deleted session, or a gate
+    that already holds another decision, is an error toast with the server's own words, as the desktop card shows it; the Inbox used to say "moved on" for every 404 and 409."""
+    inbox.set(fail=fail)
     got = inbox.run("NV_inboxDecide('deny', " + json.dumps(_item("approval", approval=_WRITE)) + ", toast, onResolved)")
-    assert got["result"] == {"stale": True} and got["resolved"] == 1
-    assert "moved on" in got["toasts"][0][0]
+    assert got["result"] == {"failed": True} and got["resolved"] == 0
+    assert got["toasts"] == [["Deny failed: " + fail["detail"], {"kind": "error", "requestId": None}]]
 
 
 def test_any_other_failure_is_an_error_toast_with_the_reason_and_the_request_id(inbox) -> None:
