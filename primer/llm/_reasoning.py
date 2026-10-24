@@ -118,6 +118,19 @@ def openai_reasons(model: str | None) -> bool | None:
     return family != "no-reasoning"
 
 
+def openai_has_none(model: str | None) -> bool:
+    """Whether ``model`` has a true ``none`` effort, the one effort at which an
+    OpenAI reasoning model takes ``temperature`` and ``top_p``: only gpt-5.1
+    to 5.x do, the one family of :data:`_OPENAI_EFFORT_BY_FAMILY` whose
+    efforts include it. Every other family starts at ``minimal`` or ``low``
+    (or takes only ``high``), so a ``none`` that reaches it from a profile's
+    ``extended`` is not an effort it has. False for a model the table does
+    not know.
+    """
+    efforts = _OPENAI_EFFORT_BY_FAMILY.get(openai_family(model) or "")
+    return efforts is not None and "none" in efforts.values()
+
+
 def _openai_effort(config: ModelProfileConfig, model: str | None) -> dict[str, Any]:
     """``reasoning_effort`` for an OpenAI model, with the value the model takes.
 
@@ -800,6 +813,7 @@ __all__ = [
     "gemini_extended",
     "ollama_extended",
     "openai_family",
+    "openai_has_none",
     "openai_reasons",
     "openchat_extended",
     "openresponses_extended",
