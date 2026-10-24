@@ -74,7 +74,7 @@ from primer.events.registry import kind_for_model
 from primer.int.event_store import EventStore
 from primer.int.storage import Storage
 from primer.int.storage_provider import StorageProvider
-from primer.model.common import STORAGE_LOAD_CONTEXT, Identifiable, dump_for_storage
+from primer.model.common import Identifiable, dump_for_storage, stored_row_context
 from primer.model.event import Event
 from primer.model.system_state import SystemState
 from primer.model.except_ import (
@@ -749,8 +749,8 @@ class PostgresStorage(Storage[ModelT]):
             data = json.loads(data)
         data["id"] = row["id"]
         # Validated as a STORED row: a rule added after the row was written lets its stored value through (read path tolerant, write path
-        # strict; STORAGE_LOAD_CONTEXT in primer.model.common).
-        return self._model.model_validate(data, context=STORAGE_LOAD_CONTEXT)
+        # strict; STORAGE_LOAD_CONTEXT in primer.model.common), a fresh read-only one per row.
+        return self._model.model_validate(data, context=stored_row_context())
 
     def _decode_row(self, row: asyncpg.Record) -> ModelT:
         """``_from_row`` under the read-path contract: a row the model no longer decodes (drifted

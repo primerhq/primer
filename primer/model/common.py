@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -75,13 +77,20 @@ STORAGE_DUMP_CONTEXT: dict[str, Any] = {"storage": True}
 # tolerant, write path strict. Only a validator that asks is tolerant: every other rule of a model applies to a stored row as before. Because
 # ``patch_if`` decodes through the same method, a field-scoped ``patch_if`` of a row that holds such a value (a workspace whose template snapshot
 # predates the rule) still applies, and a ``patch_if`` is not refused by such a rule either: it writes what platform code chose, not a request.
-STORAGE_LOAD_CONTEXT: dict[str, Any] = {"stored_row": True}
+# Read-only: every validator of the row sees the context object, and one that wrote to a shared dict would change what the next row
+# reads (the review of #869, F10). The backends pass a fresh one per row (:func:`stored_row_context`).
+STORAGE_LOAD_CONTEXT: Mapping[str, Any] = MappingProxyType({"stored_row": True})
+
+
+def stored_row_context() -> Mapping[str, Any]:
+    """A fresh, read-only :data:`STORAGE_LOAD_CONTEXT` for one row's validation."""
+    return MappingProxyType({"stored_row": True})
 
 
 def reading_a_stored_row(info: ValidationInfo) -> bool:
     """Whether this validation is the read-back of a stored row (:data:`STORAGE_LOAD_CONTEXT`), not a write."""
     context = info.context
-    return isinstance(context, dict) and context.get("stored_row") is True
+    return isinstance(context, Mapping) and context.get("stored_row") is True
 
 
 def dump_for_storage(entity: BaseModel) -> dict[str, Any]:
@@ -436,6 +445,7 @@ __all__ = [
     "dump_for_storage",
     "preserve_masked_secrets",
     "reading_a_stored_row",
+    "stored_row_context",
     "refuse_served_masks",
     "restore_served_masked_url",
 ]
