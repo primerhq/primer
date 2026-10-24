@@ -700,10 +700,16 @@ _RestoreSecrets = Callable[[Any, Any, "ToolContext | None"], None] | None
 
 #: ``(page or row) -> payload``: what a list or get tool serves instead of the stored page or row (a response-only field added to each row).
 _Served = Callable[[Any], Awaitable[Any]] | None
+#: ``ctx -> predicate or None``: the rows a caller's listing is confined to, ``None`` for every row (the reach of a calling session).
+_ListScope = Callable[["ToolContext | None"], Awaitable[Predicate | None]] | None
+#: ``(ctx, id) -> bool``: whether the caller may see the row ``id``; a row it may not is answered exactly as a row that does not exist.
+_GetScope = Callable[["ToolContext | None", str], Awaitable[bool]] | None
 
 
-def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type, *, served: _Served = None) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+def _make_list_handler(
+    storage_factory: Callable[[], Any], model_cls: type, *, served: _Served = None, scope: _ListScope = None,
+) -> ToolHandler:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _PaginationArgs.model_validate(arguments)
             page = _parse_page(args)
@@ -717,7 +723,12 @@ def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type, *, s
         except PrimerValidationError as exc:
             return _err(exc.message, error_type="validation-error")
         try:
-            listed = await storage_factory().list(page, order_by=order_by)
+            confined = await scope(ctx) if scope is not None else None
+            storage = storage_factory()
+            if confined is None:
+                listed = await storage.list(page, order_by=order_by)
+            else:
+                listed = await storage.find(confined, page, order_by=order_by)
             return _ok(await served(listed) if served is not None else listed)
         except BadRequestError as exc:
             # A bad cursor (forged, or not this request's) is a client error,
@@ -732,14 +743,15 @@ def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type, *, s
 
 
 def _make_get_handler(
-    storage_factory: Callable[[], Any], cls_name: str, *, served: _Served = None,
+    storage_factory: Callable[[], Any], cls_name: str, *, served: _Served = None, scope: _GetScope = None,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _IdArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        row = await storage_factory().get(args.id)
+        visible = scope is None or await scope(ctx, args.id)
+        row = await storage_factory().get(args.id) if visible else None
         if row is None:
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
@@ -1530,9 +1542,18 @@ def build_workspaces_toolset(
         file or a log is never confirmed. Every tool that names a workspace asks this at the point where it would look the workspace up, after its
         own argument checks, so an out-of-reach id and an unknown one answer alike whatever else the call says.
         """
-        if in_reach(await _caller_reach(ctx), workspace_id):
+        if await _workspace_in_reach(ctx, workspace_id):
             return None
         return _err_from_primer(_unknown_workspace(workspace_id), error_type="not-found")
+
+    async def _workspace_in_reach(ctx: ToolContext | None, workspace_id: str) -> bool:
+        """Whether the caller may reach ``workspace_id``; ``get_workspace`` answers a row it may not exactly as a missing one."""
+        return in_reach(await _caller_reach(ctx), workspace_id)
+
+    async def _workspaces_in_reach(ctx: ToolContext | None) -> Predicate | None:
+        """``list_workspaces`` confined to the caller's reach: only its own workspace from a session outside prime, every one otherwise."""
+        reach = await _caller_reach(ctx)
+        return None if reach is None else Predicate(left=FieldRef(name="id"), op=Op.EQ, right=Value(value=reach))
 
     name, entry = _tool(
         "list_workspaces",
@@ -1544,10 +1565,11 @@ def build_workspaces_toolset(
             "Use when enumerating materialised workspaces, or to find the "
             "default workspace (the row with ``is_default: true``; never by "
             "its name, which any workspace may carry); not for fetching one "
-            "by id (use ``get_workspace``)."
+            "by id (use ``get_workspace``). From a session outside the "
+            "default workspace (prime) it lists only your own workspace."
         ),
         _PaginationArgs,
-        _make_list_handler(_workspace_storage, WorkspaceRow, served=_workspace_page_served),
+        _make_list_handler(_workspace_storage, WorkspaceRow, served=_workspace_page_served, scope=_workspaces_in_reach),
         examples=[
             ToolExample(args={}, returns="page of Workspace rows"),
             ToolExample(args={"limit": 20}),
@@ -1564,10 +1586,10 @@ def build_workspaces_toolset(
         (
             "Use when you have a workspace id and want its persisted "
             "record; not for listing all of them (use "
-            "``list_workspaces``). ``type=not-found`` if missing."
+            "``list_workspaces``). ``type=not-found`` if missing. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _IdArgs,
-        _make_get_handler(_workspace_storage, "Workspace", served=_workspace_row_served),
+        _make_get_handler(_workspace_storage, "Workspace", served=_workspace_row_served, scope=_workspace_in_reach),
         examples=[
             ToolExample(args={"id": "ws-1"}, returns="the Workspace row"),
         ],
