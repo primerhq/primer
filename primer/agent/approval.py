@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.rego import RegoCompileError, RegoEvaluator
-from primer.common.preview_allowlist import lead_digests
+from primer.common.preview_allowlist import lead_changes, lead_digests
 from primer.common.preview_paths import closed_set_names
 from primer.common.toolset_ids import canonical_toolset_id, toolset_id_spellings
 from primer.int.storage import Storage
@@ -129,6 +129,10 @@ def effective_approvers(
     return ApproverSpec(kind="users", users=[user for user in row.users if user in routed.users])
 
 
+# The update tools whose approval card compares its lead values with the row the call replaces (``ApprovalResolver.card_baseline``), with the
+# argument that names that row. The resolver reads its own table only, so these are the approval policy updates.
+_CARD_BASELINES: dict[tuple[str, str], str] = {("system", "update_tool_approval_policy"): "id"}
+
 # How many enabled candidates for one (toolset_id, tool_name) the resolver reads. One is the rule; more than one is a leftover
 # duplicate, and a handful is already pathological, so this is a bound on the read and not a limit anyone should meet.
 _CANDIDATES = 50
@@ -193,7 +197,7 @@ def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_
 _RESUME_METADATA_KEYS = frozenset({"policy_id", "approval_type", "gate_reason", "approvers", "original_call", "preview", GATE_ID_KEY})
 
 
-def resolve_preview(*, policy: ToolApprovalPolicy, tool: "Tool | None", arguments: Any = None) -> dict[str, Any]:
+def resolve_preview(*, policy: ToolApprovalPolicy, tool: "Tool | None", arguments: Any = None, baseline: Any = None) -> dict[str, Any]:
     """Which arguments of a gated call its approval card may show, as the stamp ``approval_resume_metadata`` carries
     (``{"paths": [...], "source": "policy" | "tool" | "default"}``; design note 01a11cd3-66b0, rulings D1 and D2).
 
@@ -203,8 +207,9 @@ def resolve_preview(*, policy: ToolApprovalPolicy, tool: "Tool | None", argument
     be seen cannot be proven closed.
 
     A tool that declares ``preview_lead`` (the code a person approves: a stdio command, a Rego policy, a python source) adds ``lead``, the
-    paths the card draws first, and ``digests``, the fingerprint of each that holds text in ``arguments`` (the call being parked), computed
-    here so the card never reads a withheld value (review of #860, R860-4 and R860-5).
+    paths the card draws first, and ``digests``, the fingerprint of each that holds text, a list or an object in ``arguments`` (the call
+    being parked), computed here so the card never reads a withheld value (review of #860, R860-4, R860-5, R2-2). For an update whose stored
+    row is ``baseline`` (:meth:`ApprovalResolver.card_baseline`), ``changes`` says per lead path whether the call changes it (R2-1).
     """
     if policy.preview_args is not None:
         stamp: dict[str, Any] = {"paths": list(policy.preview_args), "source": "policy"}
@@ -217,6 +222,10 @@ def resolve_preview(*, policy: ToolApprovalPolicy, tool: "Tool | None", argument
         digests = lead_digests(stamp["lead"], arguments)
         if digests:
             stamp["digests"] = digests
+        if baseline is not None:
+            changes = lead_changes(stamp["lead"], arguments, baseline)
+            if changes:
+                stamp["changes"] = changes
     return stamp
 
 
@@ -349,6 +358,26 @@ class ApprovalResolver:
     def invalidate(self) -> None:
         """Drop the in-process cache; next lookup hits storage."""
         self._cache.clear()
+
+    async def card_baseline(self, *, toolset_id: str, tool_name: str, arguments: Any) -> dict[str, Any] | None:
+        """The stored row an update's approval card compares its lead values with, in the shape of the call's arguments, or ``None``
+        (review of #860, R2-1).
+
+        For an update of an approval policy it is the policy the call replaces, read from this resolver's own table, so the card can say
+        whether the Rego, the gate's type and its ``enabled`` flag change: a call that disables or neutralises a gate never reads like a
+        no-op. Any other call has none. A row that cannot be read gives none: the card then draws the values without a comparison.
+        """
+        if (canonical_toolset_id(toolset_id), tool_name) not in _CARD_BASELINES or not isinstance(arguments, dict):
+            return None
+        row_id = arguments.get(_CARD_BASELINES[(canonical_toolset_id(toolset_id), tool_name)])
+        if not isinstance(row_id, str) or not row_id:
+            return None
+        try:
+            row = await self._storage.get(row_id)
+        except Exception:  # noqa: BLE001 - the comparison is advisory; the gate itself is already decided
+            logger.warning("tool approval: could not read policy %r to compare an update's card with", row_id, exc_info=True)
+            return None
+        return None if row is None else {"entity": row.model_dump(mode="json")}
 
 
 async def _dispatch_llm_judge(
@@ -484,11 +513,18 @@ async def evaluate_approval_gate(
     )
 
 
+async def card_baseline_of(resolver: Any, *, toolset_id: str, tool_name: str, arguments: Any) -> dict[str, Any] | None:
+    """:meth:`ApprovalResolver.card_baseline` of ``resolver``, or ``None`` for a resolver that has none (a stand-in that only finds policies)."""
+    lookup = getattr(resolver, "card_baseline", None)
+    return None if lookup is None else await lookup(toolset_id=toolset_id, tool_name=tool_name, arguments=arguments)
+
+
 __all__ = [
     "ApprovalContext",
     "ApprovalResolver",
     "ApprovalVerdict",
     "approval_resume_metadata",
+    "card_baseline_of",
     "effective_approvers",
     "evaluate_approval_gate",
 ]

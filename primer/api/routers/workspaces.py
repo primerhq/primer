@@ -3554,28 +3554,53 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
 _NO_ALLOWLIST = object()           # the scrubber alone: what the unit tests of the scrubber call; the API always passes a stamp or None
 
 
-def _lead_parts(args: dict, preview: dict, budget: list[int]) -> list[str]:
+# A lead value up to this many characters is drawn whole; a longer one as its head and its tail with its fingerprint (review of #860, R2-2).
+_LEAD_WHOLE_CHARS = 1200
+_LEAD_END_CHARS = 400
+# What a lead value draws where the scrubber hid a part of it by its name or shape: the person must open the whole call to see it.
+_LEAD_REDACTED = "redacted, see Show all"
+
+
+def _lead_parts(args: dict, preview: dict, budget: list[int]) -> tuple[list[str], bool]:
     """The ``path=value`` parts an approval card draws FIRST, for the paths the tool leads with (``Tool.preview_lead``: the code a person
-    approves), before the one-line cut can drop them (review of #860, R860-4 and R860-5).
+    approves), and whether any of them is partial (review of #860, R860-4, R860-5, R2-1, R2-2).
 
     ``args`` is the call's arguments AFTER the allowlist (withheld values are ``<hidden>``). A lead path the allowlist shows is drawn as its
-    scrubbed value, cut like any other, followed by the fingerprint the park stamped for text (``sha256 ..., N lines``); a withheld one is drawn
-    as that fingerprint alone, which the park computed, so the card never reads it; one with neither is not drawn.
+    scrubbed value, never cut by the card's line limits: whole up to ``_LEAD_WHOLE_CHARS``, else its head and tail; an object with its keys
+    sorted; a part the scrubber hid by its name or shape as ``redacted, see Show all``. It is followed by the fingerprint the park stamped
+    (text, lists and objects) and, on an update, whether it changes the stored row (``[unchanged]`` / ``[changed from ...]``). A withheld lead
+    path is drawn as that fingerprint alone, which the park computed, so the card never reads it. A path with nothing to draw is skipped.
     """
     digests = preview.get("digests") or {}
+    changes = preview.get("changes") or {}
     parts: list[str] = []
+    partial = False
     for path in preview.get("lead") or []:
         found, value = value_at(args, path)
-        digest = digests.get(path)
+        digest, change = digests.get(path), changes.get(path)
         if found and value is not _HIDDEN:
-            shown, _hidden = _redact(value, 0, budget)
-            text = _one_line(shown if isinstance(shown, str) else json.dumps(shown, ensure_ascii=False, default=str))
-            if len(text) > _ATTENTION_ARG_CHARS:
-                text = _cut(text, _ATTENTION_ARG_CHARS)
-            parts.append(f"{path}={text}" + (f" ({digest})" if digest else ""))
+            if isinstance(value, str) and len(value) > _LEAD_WHOLE_CHARS:
+                # Long text: its head and its tail, each scrubbed on its own (the scrubber reads a bounded prefix of a string, so scrubbing the
+                # whole and cutting after would lose the tail).
+                head, head_hidden = _redact(value[:_LEAD_END_CHARS], 0, budget)
+                tail, tail_hidden = _redact(value[-_LEAD_END_CHARS:], 0, budget)
+                text, hidden = _one_line(f"{head} … {tail}"), True
+            else:
+                shown, hidden = _redact(value, 0, budget)
+                text = _one_line(shown if isinstance(shown, str) else json.dumps(shown, ensure_ascii=False, sort_keys=True, default=str))
+                if len(text) > _LEAD_WHOLE_CHARS:
+                    text, hidden = f"{text[:_LEAD_END_CHARS]} … {text[-_LEAD_END_CHARS:]}", True
+            if _REDACTED in text:
+                text = text.replace(_REDACTED, _LEAD_REDACTED)
+                hidden = True
+            partial = partial or hidden
+            part = f"{path}={text}" + (f" ({digest})" if digest else "")
         elif digest:
-            parts.append(f"{path}=<{digest}>")
-    return parts
+            part = f"{path}=<{digest}>"
+        else:
+            continue
+        parts.append(part + (f" [{change}]" if change else ""))
+    return parts, partial
 
 
 def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[str, Any] | None:
@@ -3596,6 +3621,9 @@ def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[
     result also carries ``hidden_keys`` (what was withheld, as dotted paths, at most 12) and ``preview`` (who decided: ``policy``, ``tool``,
     ``default``, or ``unstamped``), and ``truncated`` is true when anything was withheld. The default argument is the scrubber alone, for the tests of
     the scrubber: the API never uses it (a static test checks every caller).
+
+    A stamp with ``lead`` paths (``Tool.preview_lead``) draws them FIRST and whole (:func:`_lead_parts`), outside the line limit; a top-level lead
+    argument is not drawn a second time.
     """
     if not isinstance(original_call, dict) or not original_call.get("name"):
         return None
@@ -3606,6 +3634,7 @@ def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[
             args = document
     budget = [_REDACT_BUDGET]          # one budget for the whole preview, however many arguments there are
     truncated = False
+    lead_line = ""                     # the lead paths' parts: drawn first and never cut by the line limit (Tool.preview_lead)
     withheld: list[str] = []
     if preview is not _NO_ALLOWLIST:
         args, withheld = scrub_args_for_display(args, preview)
@@ -3619,9 +3648,17 @@ def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[
         bulky = sorted(k for k in args if k in _BULKY_ARG_KEYS)
         keys = [_display_name(k) for k in (lead + rest + bulky)[:_ATTENTION_KEY_COUNT]]
         pair_names_a_secret = _pair_names_a_secret(args)       # the arguments may themselves be one name/value pair
-        parts = _lead_parts(args, preview, budget) if isinstance(preview, dict) else []
-        size = sum(len(part) + 2 for part in parts)
+        if isinstance(preview, dict):
+            lead_parts, lead_partial = _lead_parts(args, preview, budget)
+            lead_line, truncated = ", ".join(lead_parts), truncated or lead_partial
+            led = {path for path in preview.get("lead") or [] if "." not in path}       # a top-level lead argument is drawn once, first
+        else:
+            led = set()
+        parts: list[str] = []
+        size = 0
         for key in lead + rest:
+            if key in led:
+                continue
             if size > _ATTENTION_TEXT_CHARS:
                 truncated = True
                 break
@@ -3640,6 +3677,8 @@ def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[
                 parts.append(f"{shown}={text}")
             size += len(parts[-1]) + 2
         for key in bulky:
+            if key in led:
+                continue
             if args[key] is _HIDDEN:
                 parts.append(f"{_display_name(key)}={_HIDDEN}")        # a withheld value is not measured either
             else:
@@ -3656,6 +3695,8 @@ def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[
         line = _one_line(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))
     if len(line) > _ATTENTION_TEXT_CHARS:
         line, truncated = _cut(line, _ATTENTION_TEXT_CHARS), True
+    if lead_line:
+        line = f"{lead_line}, {line}" if line else lead_line
     result = {"tool_name": str(original_call["name"]), "arguments": line, "truncated": truncated, "argument_keys": keys}
     if preview is not _NO_ALLOWLIST:
         result["hidden_keys"] = [_display_name(path) for path in withheld[:_ATTENTION_KEY_COUNT]]

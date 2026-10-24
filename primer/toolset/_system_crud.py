@@ -26,6 +26,7 @@ from primer.agent.approval import (
     ApprovalContext,
     ApprovalResolver,
     approval_resume_metadata,
+    card_baseline_of,
     resolve_preview,
     evaluate_approval_gate,
 )
@@ -1235,7 +1236,12 @@ def _call_tool_tool(
                                 },
                                 # The card filters the INNER call's arguments by the INNER tool's allowlist (design 01a11cd3-66b0), read off the
                                 # descriptor the lookup above listed.
-                                preview=resolve_preview(policy=policy, tool=listed, arguments=args.arguments),
+                                preview=resolve_preview(
+                                    policy=policy, tool=listed, arguments=args.arguments,
+                                    baseline=await card_baseline_of(
+                                        approval_resolver, toolset_id=toolset_id, tool_name=tool_name, arguments=args.arguments,
+                                    ),
+                                ),
                             ),
                         ),
                         tool_call_id=ctx.tool_call_id,

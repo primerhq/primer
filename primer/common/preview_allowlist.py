@@ -48,15 +48,38 @@ _BIG_DOCUMENT_CHARS = 1_000_000    # a JSON string bigger than this is text, not
 _DEFAULT_TEXT_CHARS = 40
 
 
-# The fingerprint of a lead path's text (a stdio command's string, a Rego policy, a python source): computed by the PARK, which holds the call
-# anyway, and stamped as ``preview["digests"][path]``; a card draws it and never reads the text to make one.
-_DIGEST_TEXT = re.compile(r"sha256 [0-9a-f]{12}, [0-9]{1,9} lines?")
+# The fingerprint of a lead path's value (a Rego policy, a python source, a stdio command, a harness's overrides): computed by the PARK, which
+# holds the call anyway, and stamped as ``preview["digests"][path]``; a card draws it and never reads a withheld value to make one. Text is
+# fingerprinted with its line count, a list or an object as its canonical JSON with its length; a boolean, a number, null or a short one-line
+# string (an enum such as an approval type) is drawn whole and is its own fingerprint (review of #860, R2-2).
+_DIGEST_TEXT = re.compile(r"sha256 [0-9a-f]{12}, [0-9]{1,9} (?:lines?|chars of JSON)")
+# Whether an update changes a lead value, against the row it replaces (``preview["changes"][path]``; review of #860, R2-1).
+_CHANGE_TEXT = re.compile(r"unchanged|changed from [^\r\n\u2028\u2029]{1,80}")
+_SCALAR_CHARS = 40
 
 
 def text_digest(text: str) -> str:
     """The fingerprint a card draws for ``text``: the first 12 hex digits of its SHA-256 and its line count (``sha256 1a2b3c4d5e6f, 42 lines``)."""
     lines = text.count("\n") + (0 if text.endswith("\n") or not text else 1)
     return f"sha256 {hashlib.sha256(text.encode('utf-8')).hexdigest()[:12]}, {lines} line{'' if lines == 1 else 's'}"
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
+def fingerprint(value: Any) -> str | None:
+    """The fingerprint of a lead value: :func:`text_digest` for text, the SHA-256 and length of the canonical JSON of a list or an object
+    (``sha256 1a2b3c4d5e6f, 57 chars of JSON``), ``None`` for a boolean, a number, null or a one-line string of at most ``_SCALAR_CHARS``
+    characters (drawn whole, it is its own)."""
+    if isinstance(value, str):
+        if len(value) <= _SCALAR_CHARS and "\n" not in value and "\r" not in value:
+            return None
+        return text_digest(value)
+    if isinstance(value, (dict, list, tuple)):
+        text = _canonical(value)
+        return f"sha256 {hashlib.sha256(text.encode('utf-8')).hexdigest()[:12]}, {len(text)} chars of JSON"
+    return None
 
 
 def value_at(args: Any, path: str) -> tuple[bool, Any]:
@@ -70,13 +93,31 @@ def value_at(args: Any, path: str) -> tuple[bool, Any]:
 
 
 def lead_digests(lead: "list[str]", arguments: Any) -> dict[str, str]:
-    """The fingerprints a park stamps for the ``lead`` paths of ``arguments`` that hold text."""
+    """The fingerprints a park stamps for the ``lead`` paths of ``arguments`` (text, lists and objects; see :func:`fingerprint`)."""
     digests: dict[str, str] = {}
     for path in lead:
         found, value = value_at(arguments, path)
-        if found and isinstance(value, str):
-            digests[path] = text_digest(value)
+        digest = fingerprint(value) if found else None
+        if digest is not None:
+            digests[path] = digest
     return digests
+
+
+def lead_changes(lead: "list[str]", arguments: Any, baseline: Any) -> dict[str, str]:
+    """For an update, whether each ``lead`` path changes the stored row ``baseline`` (the same shape as the arguments): ``unchanged``, or
+    ``changed from <the stored value's fingerprint>`` (a boolean, number or null: the stored value itself). A path either side lacks is not
+    compared."""
+    changes: dict[str, str] = {}
+    for path in lead:
+        found, value = value_at(arguments, path)
+        had, stored = value_at(baseline, path)
+        if not (found and had):
+            continue
+        if _canonical(value) == _canonical(stored):
+            changes[path] = "unchanged"
+        else:
+            changes[path] = f"changed from {fingerprint(stored) or _canonical(stored)[:_SCALAR_CHARS]}"
+    return changes
 
 
 def _parse_container(text: str) -> "dict | list | None":
@@ -110,6 +151,12 @@ def _preview_stamp(metadata: Any) -> dict[str, Any] | None:
             out["digests"] = {
                 path: digest for path, digest in digests.items()
                 if path in lead and isinstance(digest, str) and _DIGEST_TEXT.fullmatch(digest)
+            }
+        changes = stamp.get("changes")
+        if isinstance(changes, dict):
+            out["changes"] = {
+                path: change for path, change in changes.items()
+                if path in lead and isinstance(change, str) and _CHANGE_TEXT.fullmatch(change)
             }
     return out
 
@@ -261,6 +308,8 @@ __all__ = [
     "_allow_only",
     "_value_rule",
     "_of_the_default_kind",
+    "fingerprint",
+    "lead_changes",
     "lead_digests",
     "scrub_args_for_display",
     "text_digest",

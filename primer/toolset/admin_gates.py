@@ -126,10 +126,12 @@ PREVIEW_ARGS: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType({
     (_HARNESS, "harness__uninstall"): ("id",),
 })
 
-# What each card draws FIRST (``Tool.preview_lead``), before its one-line preview cuts a long entity: the code itself. The Rego source and the
-# stdio command are drawn (cut at the card's width) with a fingerprint of the text; the python source, which the allowlist withholds, is drawn as
-# its fingerprint alone (``sha256 <12 hex>, <N> lines``), computed when the call parks.
-_POLICY_LEAD = ("entity.approval.policy",)
+# What each card draws FIRST (``Tool.preview_lead``), before its one-line preview cuts a long entity, and never cut itself: what the person
+# decides on. A policy write leads with whether the gate is on, its type and its Rego (and, on an update, whether each changes the stored policy:
+# a call that disables or neutralises a gate never reads like a no-op; review of #860, R2-1); a toolset write with its stdio command and the
+# fingerprint of its python source, which the allowlist withholds (``sha256 <12 hex>, <N> lines``, computed when the call parks); a harness
+# install or sync with its overrides, keys sorted. Every text, list or object value carries its fingerprint.
+_POLICY_LEAD = ("entity.enabled", "entity.approval.type", "entity.approval.policy")
 _TOOLSET_LEAD = ("entity.config.config.command", "entity.config.source")
 PREVIEW_LEAD: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType({
     (_SYSTEM, "create_tool_approval_policy"): _POLICY_LEAD,
