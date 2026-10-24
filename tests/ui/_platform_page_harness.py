@@ -1,5 +1,7 @@
 """One MiniRacer harness for the Platform page: the REAL platform kit and ``ui/components/console/nv-platform.jsx``, transpiled the way the server
-bundles them, on the hook runtime of ``tests/ui/_mini_react.py`` (Platform revamp Plan 01; Task 3 builds it, later tasks reuse it).
+bundles them, on the hook runtime of ``tests/ui/_mini_react.py`` (Platform revamp Plan 01; Task 3 builds it, later tasks reuse it). The plain-JS
+helper block of ``ui/components/model-profiles.jsx`` loads first, as ``ui/index.html`` loads that file before the page: the ``profiles`` entry hands
+its card and its list to those helpers (``MP_profileCard``, ``MP_withWindows``; Platform revamp Plan 03, Task 4).
 
 ``platform_page_context(prelude_extra="")`` returns a fresh context (the caller closes it) holding these stand-ins, set up before the code loads and
 free to change afterwards:
@@ -28,6 +30,9 @@ from tests.ui._mini_react import mini_react_context, transpile
 ROOT = Path(__file__).resolve().parents[2]
 KIT = ROOT / "ui" / "components" / "shared" / "platform-kit.jsx"
 PLATFORM = ROOT / "ui" / "components" / "console" / "nv-platform.jsx"
+MODEL_PROFILES = ROOT / "ui" / "components" / "model-profiles.jsx"
+MP_START = "// ---- MP helpers: plain JS, no JSX (tests/ui/test_llm_profiles_helpers.py evaluates this block) ----"
+MP_END = "// ---- end MP helpers ----"
 
 PRELUDE = r"""
 var CALLS = [];
@@ -74,10 +79,17 @@ var SAMPLE_ROW = {
 """
 
 
+def _profile_helpers() -> str:
+    """The helper block of ``model-profiles.jsx`` as written: no JSX, ``function`` declarations and ``var`` constants."""
+    src = MODEL_PROFILES.read_text(encoding="utf-8")
+    start = src.index(MP_START) + len(MP_START)
+    return src[start : src.index(MP_END, start)]
+
+
 @cache
 def _code() -> str:
-    """The kit then the page, in the order of ``ui/index.html`` (the kit loads first)."""
-    return transpile(KIT) + "\n" + transpile(PLATFORM)
+    """The profile helpers, the kit, then the page, in the order of ``ui/index.html`` (the kit and ``model-profiles.jsx`` load before the page)."""
+    return _profile_helpers() + "\n" + transpile(KIT) + "\n" + transpile(PLATFORM)
 
 
 def platform_page_context(prelude_extra: str = ""):
