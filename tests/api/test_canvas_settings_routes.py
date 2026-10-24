@@ -72,3 +72,13 @@ async def test_the_canvas_read_carries_the_effective_settings(client, fake_stora
     await client.put("/v1/canvas_settings", json={"media_policy": "none", "strict_mode": True})
     body = (await client.get("/v1/workspaces/ws-1/sessions/s1/canvas")).json()
     assert body["settings"] == {"media_policy": "none", "media_allowlist": [], "strict_mode": True}
+
+
+@pytest.mark.parametrize("body", [{"strict_mod": True}, {"strict_mode": True, "max_event": 50}])
+async def test_a_misspelt_field_is_422_not_a_silent_reset(client, fake_storage_provider, body):
+    """Review of #908, round 2: a PUT replaces the row, so an unknown field ignored would reset the setting it meant to its default."""
+    await client.put("/v1/canvas_settings", json={"strict_mode": True, "max_events": 50})
+    r = await client.put("/v1/canvas_settings", json=body)
+    assert r.status_code == 422, r.text
+    stored = await fake_storage_provider.get_storage(CanvasSettings).get(CANVAS_SETTINGS_ID)
+    assert (stored.strict_mode, stored.max_events) == (True, 50), "nothing was replaced"

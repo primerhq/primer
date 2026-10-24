@@ -330,6 +330,18 @@ async def test_another_workspaces_session_is_404(client, fake_storage_provider, 
     assert r.status_code == 404
 
 
+async def test_the_read_does_not_fail_on_an_install_without_the_frame(client, fake_storage_provider, ws, tmp_path, monkeypatch):
+    """Review of #908, round 2: no ``ui/`` gives ``frame_url: null``, never a 500; the canvas reads as it is."""
+    from primer.api import _app_middleware
+
+    await _seed(fake_storage_provider)
+    await _draw(client)
+    monkeypatch.setattr(_app_middleware, "_UI_DIR", tmp_path / "no-ui")
+    r = await client.get(_url())
+    assert r.status_code == 200, r.text
+    assert r.json()["frame_url"] is None and r.json()["element_count"] == 8
+
+
 async def test_file_urls_are_minted_for_referenced_files(client, fake_storage_provider, ws, raw_client):
     await _seed(fake_storage_provider)
     await _draw(client)

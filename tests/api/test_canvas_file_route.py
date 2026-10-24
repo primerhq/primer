@@ -1,6 +1,6 @@
 """``GET /canvas/sessions/{session_id}/files/{token}``: a workspace file the canvas shows, by capability URL (pivot P5, Task 14; Decision 12).
 
-The frame is a sandboxed, cross-origin document, so it sends no cookies: the URL is the credential. The lead's ruling 6 on S6: the URL is
+The frame is sandboxed into an opaque origin, so the requests it makes carry no cookie: the URL is the credential. The lead's ruling 6 on S6: the URL is
 unguessable (signed), scoped to ONE session's workspace file (the session in the path is the token's, and the file is one an Image or Audio
 element of that session's canvas references), expires (900 s), and never serves a path outside the workspace or inside its reserved trees.
 Every refusal is the same 404, so a refusal tells a caller nothing about which check failed. The workspace here is a real
