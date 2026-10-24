@@ -52,6 +52,8 @@ from primer.channel.reply_binding import ReplyTarget
 from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
+    SLUG_PATTERN,
+    Parallelism,
     Subscription,
     SubscriptionConfig,
     Trigger,
@@ -91,7 +93,7 @@ triggers_router = APIRouter(prefix="/v1/triggers", tags=["triggers"])
 
 
 class TriggerCreateBody(BaseModel):
-    slug: str = Field(..., min_length=2, max_length=64)
+    slug: str = Field(..., min_length=2, max_length=64, pattern=SLUG_PATTERN)
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
     config: TriggerConfig
@@ -108,7 +110,7 @@ class TriggerUpdateBody(BaseModel):
 class SubscriptionCreateBody(BaseModel):
     config: SubscriptionConfig
     payload_template: str | None = None
-    parallelism: str = "skip"
+    parallelism: Parallelism = "skip"
     description: str | None = Field(default=None, max_length=2000)
     enabled: bool = True
     event_matcher: EventMatcher | None = None
@@ -121,7 +123,7 @@ class SubscriptionUpdateBody(BaseModel):
     # default below). For nullable optionals we distinguish "absent"
     # from "explicit null" by checking ``model_fields_set``.
     payload_template: str | None = None
-    parallelism: str | None = None
+    parallelism: Parallelism | None = None
     enabled: bool | None = None
     description: str | None = None
     event_matcher: EventMatcher | None = None

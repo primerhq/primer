@@ -48,6 +48,8 @@ from primer.model.event_matcher import (
     validate_text_pattern,
 )
 from primer.model.trigger import (
+    SLUG_PATTERN,
+    Parallelism,
     ParkedSessionSubConfig,
     Subscription,
     SubscriptionConfig,
@@ -128,7 +130,13 @@ class _IdArgs(BaseModel):
 
 
 class _CreateArgs(BaseModel):
-    slug: str = Field(..., min_length=2, max_length=64)
+    slug: str = Field(
+        ...,
+        min_length=2,
+        max_length=64,
+        pattern=SLUG_PATTERN,
+        description="Unique: a lowercase letter, then lowercase letters, digits or '-' (2 to 64 characters).",
+    )
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
     config: TriggerConfig
@@ -156,7 +164,7 @@ class _SubCreateArgs(BaseModel):
     trigger_id: str = Field(..., min_length=1)
     config: SubscriptionConfig
     payload_template: str | None = None
-    parallelism: str = "skip"
+    parallelism: Parallelism = "skip"
     description: str | None = Field(default=None, max_length=2000)
     enabled: bool = True
 
@@ -172,7 +180,7 @@ class _SubUpdateArgs(BaseModel):
     trigger_id: str = Field(..., min_length=1)
     subscription_id: str = Field(..., min_length=1)
     payload_template: str | None = None
-    parallelism: str | None = None
+    parallelism: Parallelism | None = None
     enabled: bool | None = None
     description: str | None = None
 
