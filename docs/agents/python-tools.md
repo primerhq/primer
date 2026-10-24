@@ -30,11 +30,16 @@ started by a lower role parks too, and the approved call is then refused `type=f
 `/v1/mcp`, where nothing can park, the call answers `approval_required` while the gate is on and
 `type=forbidden` once it is disabled (the caller's role is not known to the tool there). Creating a toolset with a reserved id (`external`, `workspace`,
 `workspace_ext`) returns `type=conflict`, and so does editing the source of a
-harness-managed toolset. An update bumps `source_version` and drops the running
-toolset from the registry's cache, so the very next call resolves the new
-source; a session parked in one of the old tools still resumes against the
-version that parked it. Source that fails registration, and an unknown id, are
-answered as `{"ok": false, "error": ...}` and change nothing.
+harness-managed toolset. An update that changes the source bumps `source_version`
+and drops the running toolset from the registry's cache, so the very next call
+resolves the new source. A call parked in one of the toolset's tools does not
+survive that: when it is answered, it ends with an error that names both
+versions, and the answer is not applied. The same source keeps the version, so
+a parked call still resumes. Source that fails registration, and an unknown id,
+are answered as `{"ok": false, "error": ...}` and change nothing; the id of a
+toolset that is not a python toolset is refused with `type=validation-error`.
+Each tool in a `tools` answer is `{id, yields, timeout_seconds, args}`, where
+`args` is the list of its argument names, not a schema.
 
 A new toolset starts empty. In the console, **Add function** inserts a
 scaffold with the contract spelled out in `#` comments -- one for a plain

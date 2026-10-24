@@ -238,9 +238,11 @@ class PythonConfig(BaseModel):
         ...,
         ge=1,
         description=(
-            "Bumped on every source edit. Stamped into a park's resume "
-            "metadata so a resume runs the version that parked, not whatever "
-            "the source says now."
+            "Set by the server: bumped when an edit changes the source, kept "
+            "when it does not. Stamped into a park's resume metadata: a call "
+            "parked on another version is refused when it is answered (it "
+            "ends with an error naming both versions, and the answer is not "
+            "applied), so a parked call never runs code it did not park in."
         ),
     )
     default_timeout_seconds: float = Field(

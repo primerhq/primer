@@ -157,7 +157,11 @@ class PythonToolsetProvider(ToolsetProvider):
         payload: Any,
         resume_metadata: dict[str, Any],
     ) -> ToolCallResult:
-        """Second half of a yielding tool. Runs the version that parked."""
+        """Second half of a yielding tool, run only on the source version that parked.
+
+        A park made on another version (the source was edited since) is refused: the call ends with an error naming both versions and the
+        answer is not applied. The old code is not kept, so it cannot run either.
+        """
         reg = self._registered.get(tool_id)
         if reg is None or reg.resume_fn_name is None:
             return ToolCallResult(

@@ -73,8 +73,9 @@ def to_yielded(
         event_key=event_key,
         timeout=timeout,
         resume_metadata={
-            # Pinned so the resume runs the code that parked, not whatever the
-            # toolset record says by the time the answer arrives.
+            # Pinned so the resume can tell whether the source changed while the
+            # call was parked: a resume on another version is refused
+            # (PythonToolsetProvider.resume_tool), never run on the new code.
             "source_version": source_version,
             "tool_meta": yield_request.get("meta") or {},
             "params": params,
