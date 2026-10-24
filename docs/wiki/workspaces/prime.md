@@ -20,7 +20,7 @@ Prime is the default workspace: the one every user shares and the one the operat
   - It writes `agents.md` only. An `AGENTS.md` beside it stays, and is not read while `agents.md` exists: `shadows` is `"AGENTS.md"` then, else null.
   - A symlinked `agents.md` is written where the link points.
   - It runs from a session in prime or with no calling session. From a session outside prime it answers `forbidden` and writes nothing.
-  - With no default workspace yet it answers `not-found`. When prime does not answer within 10 seconds (to reach it, then to write) it answers `unavailable`, and a write given up on may still land, with the same shipped text.
+  - With no default workspace yet it answers `not-found`. When the deployment refuses prime (a local workspace where the deployment forbids one) it answers `conflict`, and when a directory called `agents.md` is in the way, `bad-request`. When prime does not answer within 10 seconds (to reach it, then to write) it answers `unavailable`, and a write given up on may still land, with the same shipped text.
   - The REST twin is `POST /v1/setup/reset_prime_instructions`.
 
 ## How to

@@ -484,7 +484,14 @@ class _ListMySessionsArgs(BaseModel):
 
 
 class _MessageSessionArgs(BaseModel):
-    session_id: str = Field(..., min_length=1, description="The session to message: an id from list_my_sessions.")
+    session_id: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "The session to message: an id from list_my_sessions (your own workspace) or, from a session in the default workspace "
+            "(prime), from find_sessions (any workspace)."
+        ),
+    )
     text: str = Field(
         ...,
         min_length=1,
@@ -670,7 +677,8 @@ _TEMPLATE_FIELDS_BY_PROVIDER = (
     "The admin-only fields (a non-admin who sets or changes one gets ``type=forbidden``, and cannot update or delete a template that "
     "holds one) are ``tolerations``, ``service_account_name``, "
     f"a ``gpu.resource_name`` other than ``{DEFAULT_GPU_RESOURCE_NAME}``, container ``backend.extra_mounts``, Kubernetes "
-    "``extra_volumes``, ``extra_volume_mounts`` and ``pod_overrides``, and a file whose source ``kind`` is ``secret``. "
+    "``extra_volumes``, ``extra_volume_mounts``, ``pod_overrides`` and ``container_security_context_overrides``, and a file whose "
+    "source ``kind`` is ``secret``. "
     "``node_selector``, a ``gpu`` count with the default resource name and ``image_pull_policy`` are open to every user. "
     "A GPU resource name under ``kubernetes.io/`` or starting with ``requests.`` is refused for everyone "
     "(``type=validation-error``). "
@@ -2197,7 +2205,11 @@ def build_workspaces_toolset(
         ),
         (
             "Use when inspecting one session on a workspace; not for "
-            "listing all of them (use ``list_workspace_sessions``). " + REACH_NOTE
+            "listing all of them (use ``list_workspace_sessions``). The "
+            "answer has no ``session_state`` and no ``parked_event_key``: read "
+            "them from ``find_sessions`` (the full session row, any workspace "
+            "you reach) or, for your own workspace, ``list_my_sessions`` "
+            "(``state`` and ``parked_on``). " + REACH_NOTE
         ),
         _WorkspaceSessionArgs,
         _get_session,
@@ -2633,9 +2645,13 @@ def build_workspaces_toolset(
         "restart_workspace_session",
         (
             "Re-open an ended session and re-invoke it on the same "
-            "workspace. Works for completed, failed, or cancelled sessions "
-            "(ended_reason set); appends an 'invocation N' divider to the "
-            "same stream and returns the re-armed session. A session whose "
+            "workspace. Works for completed and failed sessions "
+            "(ended_reason set); a cancelled one is refused by the tools "
+            "(type=conflict), from a session and with no calling session "
+            "alike: only a person's Restart over REST (POST "
+            "/v1/workspaces/{workspace_id}/sessions/{session_id}/restart) or "
+            "a person's message reopens it. Appends an 'invocation N' divider "
+            "to the same stream and returns the re-armed session. A session whose "
             "last model call failed on a transport error is NOT ended: it "
             "rests (status waiting, last_turn_error set) and is continued "
             "with a new instruction, not restarted."
@@ -2644,9 +2660,7 @@ def build_workspaces_toolset(
             "Use when you want to run an ended session again (optionally "
             "with new input) without creating a new one; not to steer a "
             "live session or to continue one that rested after a failed "
-            "model call (use ``steer_workspace_session``). A session that "
-            "ended cancelled is refused (type=conflict): only a person "
-            "reopens it. From inside a workspace session the restart is a "
+            "model call (use ``steer_workspace_session``). From inside a workspace session the restart is a "
             "message from that session: input is required, the target sees "
             "a user message that starts with [from session <your session "
             "id> (agent <your agent id>)], and the limits of message_session "
@@ -2746,8 +2760,9 @@ def build_workspaces_toolset(
             "The target sees a user message that starts with [from session <your session id> (agent <your agent id>)]. "
             "A graph session gets the raw text and restarts its graph: the message is recorded in its transcript, but the graph never reads it "
             "(a run takes its input only from the session's stored graph_input). "
-            "Refusals: bad-request (yourself), not-found (no such session in your workspace), forbidden (it runs at a higher rank "
-            "than you), hop-limit (a chain of 8 messages), rate-limited (20 messages per 10 minutes), "
+            "Refusals: bad-request (yourself), not-found (no such session in your reach: your own workspace, or any workspace from a "
+            "session in the default workspace (prime); a session out of reach answers exactly as an unknown id), forbidden (it runs at a "
+            "higher rank than you), hop-limit (a chain of 8 messages), rate-limited (20 messages per 10 minutes), "
             "conflict (mode if_idle and the session is busy, or an ended session that cannot reopen)."
         ),
         _MessageSessionArgs,
