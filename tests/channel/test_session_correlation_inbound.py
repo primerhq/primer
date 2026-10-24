@@ -5,7 +5,9 @@ Each platform test verifies:
      the expected anchor.
   2. The factory _on_message/_on_message handler resolves the correlation from
      the store and calls inbox.handle_response with the correct envelope.
-  3. The store record is cleared after the response is routed.
+  3. After the response is routed, Slack and Discord clear only the gate (the
+     thread stays mapped to its session); Telegram deletes the record of the
+     prompt message the reply answered.
   4. Attribution fields (workspace_name / session_label) are present in
      the outbound gate post.
 
@@ -85,7 +87,7 @@ class _SlackClient:
 async def test_slack_ask_user_writes_store_and_clears_on_reply(
     tmp_path: Path, async_closers,
 ) -> None:
-    """post_prompt(ask_user) -> store write; factory reply handler -> inbox call + clear."""
+    """post_prompt(ask_user) -> store write; factory reply handler -> inbox call + clear_gate."""
     from primer.channel.slack.adapter import SlackChannelAdapter
     from primer.channel.slack.connection import SLACK_CONNECTIONS
 
@@ -143,7 +145,7 @@ async def test_slack_ask_user_writes_store_and_clears_on_reply(
             tool_call_id=rec2.tool_call_id,
             text="my answer", user_id="U99",
         )
-        await CorrelationStore(sp).clear(adapter._channel.id, root_ts)
+        await CorrelationStore(sp).clear_gate(adapter._channel.id, root_ts)
 
         assert len(inbox.received) == 1
         resp = inbox.received[0]
@@ -153,8 +155,9 @@ async def test_slack_ask_user_writes_store_and_clears_on_reply(
         assert resp.tool_call_id == "tc-1"
         assert resp.response == "my answer"
 
-        # Store should be cleared after the reply.
-        assert await CorrelationStore(sp).lookup("ch-sl", root_ts) is None
+        # The gate is cleared after the reply; the thread stays mapped to its session.
+        kept = await CorrelationStore(sp).lookup("ch-sl", root_ts)
+        assert kept is not None and kept.session_id == "s-1" and kept.tool_call_id is None
     finally:
         _sla._get_web_client = orig_gwc
 
@@ -278,7 +281,7 @@ async def test_discord_ask_user_writes_store_and_reply_resolves(
             text="blue",
             user_id=7,
         )
-        await CorrelationStore(sp).clear(adapter._channel.id, str(thread_id))
+        await CorrelationStore(sp).clear_gate(adapter._channel.id, str(thread_id))
 
         assert len(inbox.received) == 1
         resp = inbox.received[0]
@@ -287,8 +290,9 @@ async def test_discord_ask_user_writes_store_and_reply_resolves(
         assert resp.session_id == "s-dc"
         assert resp.tool_call_id == "tc-dc"
 
-        # Store cleared.
-        assert await CorrelationStore(sp).lookup("ch-dc", str(thread_id)) is None
+        # The gate is cleared; the thread stays mapped to its session.
+        kept = await CorrelationStore(sp).lookup("ch-dc", str(thread_id))
+        assert kept is not None and kept.session_id == "s-dc" and kept.tool_call_id is None
     finally:
         DISCORD_CONNECTIONS.acquire = orig_acquire
         DISCORD_CONNECTIONS.release = orig_release

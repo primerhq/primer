@@ -230,10 +230,10 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         adapter = entry.adapters_by_channel_id.get(channel_id) if entry else None
         if adapter is None:
             return
-        # Session-prompt reply: a reply in a session thread carries
-        # thread_ts = the thread root ts that an ask_user is parked on. The
-        # store is the authoritative source; the path takes precedence over
-        # chat-surface dispatch so existing session gates keep working.
+        # A reply to an OPEN question: the thread's row names the ask_user gate (tool_call_id set) that the prompt posted into this thread
+        # parked on. The store is the authoritative source. A row with no gate is just the thread's mapping to its session: such a reply is
+        # the next message of that session and goes to the router below, which steers it (ticket 01a16e37-a555: it used to be taken for an
+        # answer, published to a key nothing waits on, and the mapping deleted, so the next message started a new session).
         if thread_ts is not None:
             sp = getattr(adapter, "_sp", None)
             if sp is not None:
@@ -244,7 +244,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                     )
                 except Exception:
                     rec = None
-                if rec is not None and rec.kind == "session":
+                if rec is not None and rec.kind == "session" and rec.tool_call_id:
                     relayed = await adapter._handle_text_reply(
                         workspace_id=rec.workspace_id, session_id=rec.session_id,
                         tool_call_id=rec.tool_call_id,
@@ -255,12 +255,14 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                     if not relayed:
                         # The question was replaced since this thread's prompt: the reply answered nothing. Tell the person (best effort).
                         await _tell_the_approval_is_routed_elsewhere(client, channel_id, event.get("user"), refusal_notice(relayed))
+                    # One reply answers one question (or finds it replaced): only the gate is cleared, so the thread stays mapped to its
+                    # session and the next reply steers it.
                     try:
-                        await CorrelationStore(sp).clear(
+                        await CorrelationStore(sp).clear_gate(
                             adapter._channel.id, thread_ts,
                         )
                     except Exception:
-                        pass
+                        logger.warning("slack: clearing the answered question of thread %s failed", thread_ts, exc_info=True)
                     return
         # Every inbound message is a routed event (S6 section 5): the
         # thread IS the session, so there is no chat dispatch to fall back
