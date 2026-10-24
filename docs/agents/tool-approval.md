@@ -440,7 +440,7 @@ but require human review for any other host.
   a decision is a person's input into a run at that rank: `POST .../tool_approval/respond` and `POST .../yields/{tool_call_id}/cancel`
   (of any yield) answer `403` with `extensions.error = "forbidden_rank"` and one fixed message (it names neither the creator nor its
   rank) when the session's creator outranks the caller and the session is not the caller's own, before anything is decided. The rule
-  is the one the steer, restart, resume and cancel routes follow, and `POST .../ask_user/respond` follows it too. It holds whatever
+  is the one the steer, restart, resume, cancel, pause and interrupt routes follow, and `POST .../ask_user/respond` follows it too. It holds whatever
   the spec says: a gate with no approvers ("anyone"), or one that names the caller, is still not decided by a person the session
   outranks. The spec is checked as well. Admins are never outranked, and an API token ranks as its owner's current role. **A channel
   reply is not ranked, by design**: the members of a channel act through a reply binding a person deliberately set up, so a reply

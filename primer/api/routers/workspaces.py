@@ -2361,9 +2361,10 @@ async def restart_session_route(
     "/workspaces/{workspace_id}/sessions/{session_id}/interrupt",
     response_model=WorkspaceSession,
     summary="Stop the in-flight turn but keep the session alive",
-    responses=common_responses(404, 409, 500),
+    responses=common_responses(403, 404, 409, 500),
 )
 async def interrupt_session(
+    request: Request,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     storage_provider=Depends(get_storage_provider),
@@ -2381,7 +2382,10 @@ async def interrupt_session(
     approval, an answer or a timer): 409, and nothing is recorded, because no turn is running
     and a flag left on the row would kill the continuation after a later decision. RESUMABLE
     (the event fired and a worker is resuming the parked turn): 409 as well, with its own
-    text, because a graph or subagent resume runs model calls inline.
+    text, because a graph or subagent resume runs model calls inline. 403
+    ``forbidden_rank`` when the session's creator outranks the caller (ticket
+    01a16d3c-a8bc; ``primer.api.routers._session_rank``), before anything is
+    recorded or published: a Stop acts on a run at the creator's rank.
     """
     from primer.workspace.session_factory import (
         SessionInterruptDeps,
@@ -2392,6 +2396,7 @@ async def interrupt_session(
         workspace_id=workspace_id,
         session_id=session_id,
         deps=SessionInterruptDeps(storage_provider=storage_provider, event_bus=event_bus),
+        guard=lambda row: refuse_outranked(request, row),
     )
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -307,7 +308,8 @@ async def test_the_pause_route_pauses_an_idle_session_without_the_flag_and_a_mac
 
     world = make_world()
     await seed_session(world, sid="ses-b", turn_no=1)
-    await pause_session(workspace_id="ws-1", session_id="ses-b", sessions=world.sessions)
+    # The route takes the request for its rank rule (ticket 01a16d3c-a8bc); the session names no creator, so any caller may pause it.
+    await pause_session(SimpleNamespace(state=SimpleNamespace(actor=None)), workspace_id="ws-1", session_id="ses-b", sessions=world.sessions)
     paused = await world.sessions.get("ses-b")
     assert (paused.status, paused.pause_requested) == (SessionStatus.PAUSED, False)
 

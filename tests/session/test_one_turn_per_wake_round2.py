@@ -133,7 +133,7 @@ async def test_a_reopen_that_a_pause_overtakes_gives_the_turn_back_and_a_person_
                            last_seq=4, next_unprocessed_seq=5)
 
         async def pause_on_another_process() -> None:
-            await pause_session(workspace_id="ws-1", session_id="ses-b", sessions=world.sessions)   # CREATED -> PAUSED
+            await pause_session(REQ, workspace_id="ws-1", session_id="ses-b", sessions=world.sessions)   # CREATED -> PAUSED
 
         # the reopen publishes its divider tick between its closing write and the wake's arm
         world.bus.hooks["session:ses-b:tick"] = pause_on_another_process
@@ -355,7 +355,7 @@ async def test_a_pause_that_wins_over_a_machine_wake_on_a_running_row_pauses_it_
         await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="idle", turn_no=1, last_seq=4, next_unprocessed_seq=5)
 
         async def pause_on_another_process() -> None:
-            await pause_session(workspace_id="ws-1", session_id="ses-b", sessions=world.sessions)   # RUNNING: pause_requested = True
+            await pause_session(REQ, workspace_id="ws-1", session_id="ses-b", sessions=world.sessions)   # RUNNING: pause_requested = True
 
         _at_user_input_write(world, pause_on_another_process)
         await deliver_steer(session_id="ses-b", text="from a trigger", parallelism="queue", human_intent=False, **world.deliver_kwargs())

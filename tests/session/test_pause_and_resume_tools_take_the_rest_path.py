@@ -168,7 +168,7 @@ async def _rest(process: _Process, verb: str, row: WorkspaceSession) -> tuple[st
                 engine=process.engine,
             )
         else:
-            out = await routes.pause_session(workspace_id=row.workspace_id, session_id=row.id, sessions=process.sessions)
+            out = await routes.pause_session(REQ, workspace_id=row.workspace_id, session_id=row.id, sessions=process.sessions)
     except ConflictError as exc:  # the app answers 409
         return "conflict", exc.message
     except NotFoundError as exc:  # the app answers 404
