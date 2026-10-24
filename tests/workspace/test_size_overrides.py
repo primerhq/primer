@@ -406,3 +406,48 @@ def test_both_storage_backends_decode_a_row_as_a_stored_row():
     lite = SqliteStorage.__new__(SqliteStorage)
     lite._model = WorkspaceTemplate                                                           # noqa: SLF001
     assert lite._from_row("old", json.dumps(document)).backend.pvc_size == "lots"            # noqa: SLF001
+
+
+async def test_each_stored_row_is_read_with_a_fresh_read_only_context(tmp_path):
+    """Every validator of a row sees the context object: a shared, writable dict would let one row's validator change what the next row
+    reads (the review of #869, F10). The backends pass a fresh read-only mapping per row."""
+    from collections.abc import Mapping
+
+    from pydantic import ValidationInfo, field_validator
+
+    from primer.model.common import Identifiable, stored_row_context
+    from primer.model.provider import SqliteConfig
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    seen: list = []
+
+    class G5ContextProbe(Identifiable):
+        value: int = 0
+
+        @field_validator("value")
+        @classmethod
+        def _record(cls, value: int, info: ValidationInfo) -> int:
+            seen.append(info.context)
+            return value
+
+    with pytest.raises(TypeError):
+        STORAGE_LOAD_CONTEXT["stored_row"] = False  # type: ignore[index]
+    assert stored_row_context() is not stored_row_context()
+
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "ctx.sqlite"))
+    await sp.initialize()
+    try:
+        rows = sp.get_storage(G5ContextProbe)
+        await rows.create(G5ContextProbe(id="a", value=1))
+        await rows.create(G5ContextProbe(id="b", value=2))
+        seen.clear()
+        await rows.get("a")
+        await rows.get("b")
+    finally:
+        await sp.aclose()
+
+    assert len(seen) == 2 and seen[0] is not seen[1]
+    for context in seen:
+        assert isinstance(context, Mapping) and dict(context) == {"stored_row": True}
+        with pytest.raises(TypeError):
+            context["stored_row"] = False
