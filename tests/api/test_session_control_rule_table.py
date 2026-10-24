@@ -369,6 +369,13 @@ class _LiveWorkspace:
     async def write_file(self, path: str, content: bytes) -> None:
         self.files[path] = content
 
+    async def start_session(self, binding, *, id: str, instructions=None, parent_session_id=None, name=None) -> None:  # noqa: A002
+        self.files[f".state/sessions/{id}/messages.jsonl"] = b""
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        path = f".state/sessions/{session_id}/messages.jsonl"
+        self.files[path] = self.files.get(path, b"") + line
+
     async def delete_file(self, path: str, *, recursive: bool = False) -> None:
         del self.files[self._entry(path).path]
 
@@ -1182,3 +1189,41 @@ async def test_update_from_outside_prime_cannot_re_enable_a_trigger_that_starts_
     await asyncio.wait_for(run_engine_trigger(pool, SimpleNamespace(entity_id="tr-off")), 30)  # type: ignore[arg-type]
     assert world.registry.workspace("ws-prime").started == [] and world.registry.workspace("ws-2").started == []
     assert (await world.sessions.get("ses-t")).model_dump(mode="json") == before
+
+
+# -- the rank scan of a delete is fenced against a session started meanwhile (review of #874, D1) ---------------------------------------------
+
+
+async def test_a_session_started_while_a_delete_runs_its_rank_scan_is_refused(monkeypatch):
+    """Probe D of the #874 review: the rank scan ran before the destroy, so an admin's session started between the two was ended by the delete
+    without a rank check. The scan now runs inside ``destroy`` after it marks the workspace as being destroyed, and a session start refuses such a
+    workspace: an admin's start that lands after the scan is refused (as a workspace that does not exist), so the delete ends no session it did not
+    rank."""
+    import primer.toolset.workspaces as wsmod
+    from primer.workspace.session_factory import SessionFactoryDeps, start_workspace_session
+
+    world = await _ws_world()
+    await world.sp.get_storage(Agent).create(Agent(id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]))
+    real_scan = wsmod.open_sessions_on
+    admin_start: dict = {}
+
+    async def _scan_then_an_admin_starts_a_session(sp, workspace_id):
+        async for row in real_scan(sp, workspace_id):
+            yield row
+        try:
+            admin_start["session"] = await start_workspace_session(
+                workspace_id=workspace_id, binding=AgentSessionBinding(agent_id="planner"), initial_instructions="hi", graph_input=None,
+                auto_start=False, metadata=None, parent_session_id=None, initiated_by=ADMIN,
+                deps=SessionFactoryDeps(storage_provider=sp, claim_engine=FakeEngine(), scheduler=FakeScheduler(), workspace_registry=world.workspaces),
+            )
+        except NotFoundError as exc:
+            admin_start["refused"] = exc.message
+
+    monkeypatch.setattr(wsmod, "open_sessions_on", _scan_then_an_admin_starts_a_session)
+
+    outcome, body = await asyncio.wait_for(_ws_call(world, "delete_workspace", "ws-2", own="ws-2", door="tool manager"), 30)
+
+    assert admin_start == {"refused": "Workspace 'ws-2' does not exist"}, admin_start
+    assert outcome == D and await world.sp.get_storage(Workspace).get("ws-2") is None, body
+    sessions = (await world.sp.get_storage(WorkspaceSession).list(OffsetPage(offset=0, length=100))).items
+    assert [s.id for s in sessions if s.initiated_by == ADMIN] == [], "the delete ended an admin's session it never ranked"

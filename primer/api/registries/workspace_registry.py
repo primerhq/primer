@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from primer.bootstrap.prime import resolve_default_workspace_id
@@ -337,7 +337,7 @@ class WorkspaceRegistry:
             resolvers=resolvers,
         )
 
-    async def destroy(self, workspace_id: str) -> None:
+    async def destroy(self, workspace_id: str, *, before_teardown: Callable[[], Awaitable[None]] | None = None) -> None:
         """Destroy the live workspace AND drop the persisted row.
 
         Refuses the default workspace (prime) with :class:`ReservedWorkspaceError`, as the FIRST thing it does: before the row is
@@ -365,7 +365,13 @@ class WorkspaceRegistry:
         reconcile: failed to query sessions") and the destroy goes on.
 
         From the first step to the row delete :meth:`is_being_destroyed` is true for the id, so a caller whose write to the workspace failed under
-        a racing destroy can tell that from a fault (the session wake does).
+        a racing destroy can tell that from a fault (the session wake does), and a session start refuses the workspace
+        (:func:`primer.workspace.session_factory.start_workspace_session`).
+
+        ``before_teardown`` (review of #874, D1) runs once the workspace is marked as being destroyed and before anything is torn down: the
+        rank scan of a delete (every open session in the workspace must be one the caller may act on) runs here, so a session started from now on
+        is refused instead of being ended unranked. If it raises, nothing is torn down and the error propagates. The fence is process-local
+        (like :meth:`is_being_destroyed`), and a start already past its check when the mark is set can still write its row after the scan.
         """
         if workspace_id == await resolve_default_workspace_id(self._sp):
             raise ReservedWorkspaceError(workspace_id)
@@ -373,6 +379,8 @@ class WorkspaceRegistry:
         # From here to the row delete the runtime may be gone while the row still says the workspace exists: see is_being_destroyed.
         self._destroying[workspace_id] = self._destroying.get(workspace_id, 0) + 1
         try:
+            if before_teardown is not None:
+                await before_teardown()
             try:
                 backend = await self.get_backend(row.provider_id)
             except WorkspaceRefusedError:
