@@ -1210,8 +1210,13 @@ function WT_TemplatesPage() {
   function openCreate() {
     setOpen({ create: true });
   }
+  // The templates whose Delete is out (its prompt or its request): a second Delete of one of them does nothing until the first has ended.
+  var deletingRef = React.useRef({});
   function remove(row) {
-    WT_deleteTemplate({ confirmDialog: window.confirmDialog, apiFetch: apiFetch, toast: con.toast, refetch: list.refetch }, row);
+    if (deletingRef.current[row.id]) return;
+    deletingRef.current[row.id] = true;
+    function done() { delete deletingRef.current[row.id]; }
+    WT_deleteTemplate({ confirmDialog: window.confirmDialog, apiFetch: apiFetch, toast: con.toast, refetch: list.refetch }, row).then(done, done);
   }
 
   var body;
