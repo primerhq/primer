@@ -608,9 +608,10 @@ class CancelYieldedToolBody(BaseModel):
     "/sessions/{session_id}/yields/{tool_call_id}/cancel",
     status_code=202,
     summary="Cancel one in-flight yield (tool-agnostic)",
-    responses=common_responses(404, 409, 422, 500),
+    responses=common_responses(403, 404, 409, 422, 500),
 )
 async def post_cancel_yielded_tool(
+    request: Request,
     session_id: str = Path(...),
     tool_call_id: str = Path(...),
     body: Annotated[
@@ -625,11 +626,12 @@ async def post_cancel_yielded_tool(
 
     An ``_approval`` gate is the exception to "tool-agnostic": its cancel payload is classified as a REJECTION, so cancelling it IS
     deciding it. It is therefore judged by the same approver check as the respond route (403 ``approver_mismatch`` for a user the gate's
-    stamped spec does not admit), before anything is published. The spec is read from the pending entry resolved by ``tool_call_id`` (the one
-    that carries the stamp), NOT from the top-level ``yielded`` projection, which for a graph park whose primary is a ToolCall node's
-    approval holds ``original_call`` only. A graph park's top-level ``tool_name`` is ``"_approval"`` whatever its primary is, so only an
-    entry whose own kind is ``_approval`` is judged (an agent's ``ask_user`` yield or an external wait is cancelled by its owner as
-    before). A park that claims to be an approval but resolves to no entry is admin-only.
+    stamped spec does not admit), over the rank floor of every approval decision (403 ``forbidden_rank`` when the session's creator outranks the
+    caller and the session is not the caller's own, whatever the spec admits), before anything is published. The spec is read from the pending
+    entry resolved by ``tool_call_id`` (the one that carries the stamp), NOT from the top-level ``yielded`` projection, which for a graph park
+    whose primary is a ToolCall node's approval holds ``original_call`` only. A graph park's top-level ``tool_name`` is ``"_approval"``
+    whatever its primary is, so only an entry whose own kind is ``_approval`` is judged (an agent's ``ask_user`` yield or an external wait
+    is cancelled by its owner as before). A park that claims to be an approval but resolves to no entry is admin-only.
 
     Distinct from cancel-session (§9.2 of the spec): the tool's
     resume hook IS called with a :class:`YieldCancelled` payload and
@@ -683,11 +685,11 @@ async def post_cancel_yielded_tool(
             )
         ),
     )
-    if yielded.get("tool_name") == "_approval":
-        if gate is None:
-            enforce_approvers(ADMIN_ONLY_METADATA, user)
-        elif gate["kind"] == "_approval":
-            enforce_approvers(gate["resume_metadata"], user)
+    if yielded.get("tool_name") == "_approval" and (gate is None or gate["kind"] == "_approval"):
+        # Cancelling an approval decides it, so the rank floor of every approval decision applies (ticket 01a16a35, lead ruling 2), and the
+        # gate's approver spec on top of it (admin-only when the gate cannot be resolved).
+        refuse_outranked(request, sess)
+        enforce_approvers(ADMIN_ONLY_METADATA if gate is None else gate["resume_metadata"], user)
     _count_cancel(session_id=session_id, gate_id=body.gate_id, tool_name=resolved_tool)
     # A cancel of a human gate names it too: it is a decision (an approval cancel is classified as a rejection), delivered by key alone and at least once.
     payload = with_wake_gate(

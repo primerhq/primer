@@ -35,6 +35,7 @@ from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.api.approver_guard import enforce_approvers
+from primer.api.routers._session_rank import refuse_outranked
 from primer.api.gate_fence import GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
 from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
@@ -448,7 +449,10 @@ def make_tool_approval_ops_router() -> APIRouter:
     Deciding a gated call is ordinary operator work, so this router
     mounts at the user tier; who may decide a SPECIFIC call is the
     approver spec's business, enforced per park by
-    :func:`~primer.api.approver_guard.enforce_approvers`. Policy CRUD (the factory above) stays
+    :func:`~primer.api.approver_guard.enforce_approvers`, over a floor: the
+    decider may not be outranked by the session's creator (the rank rule,
+    :func:`~primer.api.routers._session_rank.refuse_outranked`), whatever the
+    spec admits. Policy CRUD (the factory above) stays
     admin - configuring the gates is system policy.
     """
     router = APIRouter(tags=[_TAG])
@@ -473,7 +477,7 @@ def make_tool_approval_ops_router() -> APIRouter:
     @router.post(
         "/sessions/{session_id}/tool_approval/respond",
         status_code=202,
-        responses=common_responses(404, 409, 422, 500),
+        responses=common_responses(403, 404, 409, 422, 500),
     )
     async def post_session_tool_approval_respond(
         session_id: Annotated[str, Path()],
@@ -485,6 +489,11 @@ def make_tool_approval_ops_router() -> APIRouter:
         user=Depends(require_user),
     ) -> dict[str, str]:
         sess = await session_storage.get(session_id)
+        if sess is not None:
+            # The rank floor (ticket 01a16a35, lead ruling 2): a decision is a person's input into a run at the session's creator's rank, so the
+            # decider must rank at least as high or the session must be their own (403 ``forbidden_rank``), whatever the gate's approver spec
+            # admits, before the park is read and before anything moves. The spec is checked below as well. Admins are never outranked.
+            refuse_outranked(request, sess)
         blob = _approval_blob_or_404(sess, session_id, not_pending=GateNotPendingError)
         # Resolve the SPECIFIC gate body.tool_call_id names -- a graph park
         # can have several pending approval gates open at once, and only
