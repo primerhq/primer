@@ -10,7 +10,8 @@ this module (the factory builds the store object, which does no IO) and must not
 the core packages from importing this module at all.
 
 Credentials. Both keys or neither. With both, the client signs with them; with neither, botocore's ambient chain is used (environment, shared
-config files, the instance or pod role). A half pair is refused when the store is built (:func:`s3_client_kwargs`), never completed from the
+config files, the instance or pod role). Only the credentials: the endpoint and the region always come from the row (a blank region is
+``us-east-1``), never from ``AWS_ENDPOINT_URL_S3``, ``AWS_REGION`` or a profile. A half pair is refused when the store is built (:func:`s3_client_kwargs`), never completed from the
 ambient chain, and the REST route and the system tools refuse to store one (``primer/artifact/checks.py``). The keys are ``SecretStr`` on the row
 and reach botocore only through :func:`s3_client_kwargs`; this module never logs them.
 
@@ -49,6 +50,9 @@ _DRAIN_TIMEOUT_S = 30.0
 _CONNECT_TIMEOUT_S = 10
 _READ_TIMEOUT_S = 60
 _RETRIES = {"max_attempts": 3, "mode": "standard"}
+#: The region of a row whose ``region`` is blank: S3's default region (AWS redirects a request for a bucket in another region). Never one from
+#: the environment or a profile.
+DEFAULT_S3_REGION = "us-east-1"
 
 
 def s3_addressing_style(config: S3ArtifactConfig) -> Literal["auto", "path", "virtual"]:
@@ -60,15 +64,18 @@ def s3_addressing_style(config: S3ArtifactConfig) -> Literal["auto", "path", "vi
 
 
 def s3_client_kwargs(config: S3ArtifactConfig) -> dict[str, Any]:
-    """The arguments of ``create_client("s3", ...)``: ``region_name``, ``endpoint_url`` only when set, and the two keys only when BOTH are set.
+    """The arguments of ``create_client("s3", ...)``: ``region_name`` (the row's, or :data:`DEFAULT_S3_REGION` when blank), ``endpoint_url``
+    only when set, and the two keys only when BOTH are set.
 
-    With neither key botocore uses its ambient chain. A half pair raises :class:`ConfigError` (the text names the blank key, never a value): with
-    one key dropped, botocore would sign with whatever ambient credentials the server has.
+    The row is the only source of where the client connects: the region never comes from the environment or a profile, and the client is
+    built with ``ignore_configured_endpoint_urls`` so ``AWS_ENDPOINT_URL_S3`` or a profile's ``endpoint_url`` never redirect a row that names
+    no endpoint. Only the CREDENTIALS of a row with neither key come from botocore's ambient chain. A half pair raises :class:`ConfigError`
+    (the text names the blank key, never a value): with one key dropped, botocore would sign with whatever ambient credentials the server has.
     """
     missing = config.missing_key()
     if missing is not None:
         raise ConfigError(f"S3 artifact store on bucket {config.bucket!r}: {S3_KEYS_INCOMPLETE_MESSAGE}; {missing} is blank")
-    kwargs: dict[str, Any] = {"region_name": config.region}
+    kwargs: dict[str, Any] = {"region_name": config.region or DEFAULT_S3_REGION}
     if config.endpoint_url:
         kwargs["endpoint_url"] = config.endpoint_url
     if config.access_key is not None and config.secret_key is not None:
@@ -162,6 +169,8 @@ class S3ArtifactStorage(ArtifactStorage):
                 connect_timeout=_CONNECT_TIMEOUT_S,
                 read_timeout=_READ_TIMEOUT_S,
                 retries=dict(_RETRIES),
+                # The row is the only source of the endpoint: AWS_ENDPOINT_URL_S3 / AWS_ENDPOINT_URL and a profile's endpoint_url are ignored.
+                ignore_configured_endpoint_urls=True,
             )
             stack = contextlib.AsyncExitStack()
             try:
@@ -274,4 +283,4 @@ class S3ArtifactStorage(ArtifactStorage):
                 await stack.aclose()
 
 
-__all__ = ["S3ArtifactStorage", "s3_addressing_style", "s3_client_kwargs"]
+__all__ = ["DEFAULT_S3_REGION", "S3ArtifactStorage", "s3_addressing_style", "s3_client_kwargs"]
