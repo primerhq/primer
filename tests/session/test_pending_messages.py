@@ -505,20 +505,24 @@ async def test_when_the_wake_refuses_every_queued_peer_row_nothing_is_realized_a
     assert [d["text"] for d in _dropped(ws)] == [_peer_text("p1"), _peer_text("p2")]
 
 
-async def test_a_peer_row_the_pause_hold_cannot_requeue_because_the_queue_filled_up_is_dropped_with_a_record(monkeypatch):
-    """The drain replays a queued message as a non-human wake, and a pause that landed since holds it by storing it again. If other senders filled the
-    queue in that instant the store is refused (a peer message never evicts a person's steer): the message is dropped on the record, not lost."""
-    from primer.session.pending_messages import PendingQueueFull
+async def test_a_peer_row_behind_a_pause_stays_in_its_place_even_when_the_queue_is_full():
+    """The drain replays a queued message as a non-human wake, and a pause that landed since holds it. The hold used to store it AGAIN, which a full
+    queue refused, so the message was dropped on the record. Now it stays where it is (it is already queued, and its place is its order: audit
+    G7-03 (b)): nothing is stored again, so nothing is refused, dropped or written, and the queue is unchanged."""
+    from primer.session.enqueue import SessionWakeDeps
+    from primer.session.pending_messages import _MAX_PENDING_PER_SESSION
 
     sp, ws = _SP(), _FakeWorkspace()
-    await _session_with(sp, [(_peer_text("p1"), _peer())])
+    session = await _session_with(sp, [(_peer_text(f"p{i}"), _peer()) for i in range(_MAX_PENDING_PER_SESSION)])
+    await sp.sessions.update(session.model_copy(update={"status": SessionStatus.PAUSED}))
+    before = sorted(sp.pending.rows)
 
-    async def _wake(**kw):
-        raise PendingQueueFull("the queue is full")
+    did = await realize_next_pending(
+        storage_provider=sp, workspace_id="ws-1", session_id="s",
+        wake_deps=SessionWakeDeps(storage_provider=sp, scheduler=None, claim_engine=None, workspace_registry=_FakeRegistry(ws)),
+    )
 
-    monkeypatch.setattr("primer.session.pending_messages.wake_session", _wake)
-    did = await realize_next_pending(storage_provider=sp, workspace_id="ws-1", session_id="s", wake_deps=_wake_deps(ws))
-
-    assert did is False and sp.pending.rows == {}
-    [dropped] = _dropped(ws)
-    assert dropped["text"] == _peer_text("p1") and "full" in dropped["reason"]
+    assert did is False
+    assert sorted(sp.pending.rows) == before
+    assert _decode_records(ws) == []
+    assert (await sp.sessions.get("s")).status == SessionStatus.PAUSED

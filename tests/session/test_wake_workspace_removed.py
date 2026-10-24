@@ -54,7 +54,9 @@ def _fail_the_slot_write(world, failure, *, how: str) -> None:
 
 async def _assert_nothing_was_armed(world) -> None:
     row = await world.sessions.get("ses-b")
-    assert row.turn_status == "idle" and row.last_seq == 0
+    # The wake reserves its USER_INPUT's seq before the write (audit G7-03 (c)); a write that failed leaves that seq a gap (a write that timed out
+    # may still land at it, so it is never handed out again), which readers tolerate. Nothing else moved: no turn armed, no record, no pulse.
+    assert row.turn_status == "idle" and row.last_seq in (0, 1)
     assert world.scheduler.enqueued == [] and world.engine.upserts == []
     assert records(world, "ses-b") == []
 

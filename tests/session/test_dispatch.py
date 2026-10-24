@@ -2151,12 +2151,21 @@ class _RaceOnFirstGetStorage:
     """Wraps a real Storage[WorkspaceSession]; the FIRST call to get()
     also writes `race_update` to the underlying store as a side effect,
     simulating a concurrent writer landing in the exact gap between the
-    wrapped function's own read and its later update_unless call."""
+    wrapped function's own read and its later update_unless call. A
+    function that does not read first (``_clear_turn_running`` is one
+    guarded patch_if now, audit G7-03) meets the race right before its
+    write instead: the first patch_if lands it first."""
 
     def __init__(self, inner, race_update: dict) -> None:
         self._inner = inner
         self._race_update = race_update
         self._fired = False
+
+    async def _race(self, session_id) -> None:
+        row = await self._inner.get(session_id)
+        if not self._fired and row is not None:
+            self._fired = True
+            await self._inner.update(row.model_copy(update=self._race_update))
 
     async def get(self, *args, **kwargs):
         row = await self._inner.get(*args, **kwargs)
@@ -2164,6 +2173,10 @@ class _RaceOnFirstGetStorage:
             self._fired = True
             await self._inner.update(row.model_copy(update=self._race_update))
         return row
+
+    async def patch_if(self, id, patch=None, **kwargs):
+        await self._race(id)
+        return await self._inner.patch_if(id, patch, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -2203,8 +2216,8 @@ async def test_clear_turn_running_does_not_revert_a_raced_in_claimable(
     fake_storage_provider,
 ):
     """Same race, for _clear_turn_running: a wake_session() steer landing
-    between its read and its update_unless write must survive - the
-    turn's own cleanup must not stomp a fresh claim back to idle."""
+    just before its guarded write must survive - the turn's own cleanup
+    must not stomp a fresh claim back to idle."""
     from primer.session.dispatch import _clear_turn_running
 
     sess = await _seed_session(fake_storage_provider)  # turn_status="running"
