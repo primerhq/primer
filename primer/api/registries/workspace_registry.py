@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.model.common import dump_for_storage
 from primer.model.except_ import NotFoundError, ValidationError
-from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceRefusedError
+from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceNotImplementedError, WorkspaceRefusedError
 from primer.model.workspace import WORKSPACE_ID_PATTERN, Workspace as WorkspaceRow
 from primer.model.workspace import (
     WorkspaceProvider,
@@ -300,6 +300,13 @@ class WorkspaceRegistry:
         template disk (``backend.pvc_size``) that is not a quantity of at
         most 64 TiB (a row stored before the model refused these still
         loads, so this is where it is caught).
+
+        A Kubernetes provider with ``variant: agent_sandbox`` is refused here too
+        (:class:`~primer.model.workspace_refusal.WorkspaceNotImplementedError`,
+        ticket 01a16d72 ruling 1): the variant is accepted when the provider is
+        created, but no backend builds it, and the Kubernetes backend would
+        otherwise build the ``system`` StatefulSet on it. It used to be refused
+        by the REST route alone, so the ``create_workspace`` tool built one.
         """
         if workspace_id is not None and re.fullmatch(
             WORKSPACE_ID_PATTERN, workspace_id
@@ -310,17 +317,18 @@ class WorkspaceRegistry:
                 f"'-', at most 63 characters) matching {WORKSPACE_ID_PATTERN} "
                 "(it names a directory under the workspace root)"
             )
+        # The provider's own refusal first, before any input of the request is judged: nothing on this provider is built, whatever the request.
+        # A provider that does not exist is get_backend's 404, not these checks'.
+        provider = await self._sp.get_storage(WorkspaceProvider).get(template.provider_id)
+        if provider is not None and provider.config.kind == "kubernetes" and getattr(provider.config, "variant", "system") == "agent_sandbox":
+            raise WorkspaceNotImplementedError(provider.id)
         # The request's own inputs, all before any backend runs (lead ruling 17): an environment variable name the cluster would
         # refuse or the platform sets itself, and a size from the template above the sane maxima. The override sizes carry their
         # maxima in the model.
         refuse_bad_env_names(template, overrides)
         refuse_oversized_template_sizes(template, overrides)
-        if asks_for_a_size(overrides):
-            # Read only when a size is asked for: the common create pays no extra lookup. A provider that does not exist
-            # is get_backend's 404, not this check's.
-            provider = await self._sp.get_storage(WorkspaceProvider).get(template.provider_id)
-            if provider is not None:
-                refuse_unsupported_resource_overrides(provider.config.kind, overrides)
+        if provider is not None and asks_for_a_size(overrides):
+            refuse_unsupported_resource_overrides(provider.config.kind, overrides)
         backend = await self.get_backend(template.provider_id)
         resolvers = FileResolvers(
             document_resolver=make_document_resolver(self._sp),
