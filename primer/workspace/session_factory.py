@@ -124,10 +124,13 @@ async def start_workspace_session(
     workspace = await workspaces.get(workspace_id)
     if workspace is None:
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
-    # A workspace this process is destroying takes no new session (review of #874, D1): its delete has ranked the open sessions it will end, and a
+    # A workspace being destroyed takes no new session (review of #874, D1): its delete has ranked the open sessions it will end, and a
     # session started after that scan would be ended unranked. Answered as a workspace that no longer exists, which it is about to be.
+    # ``is_being_destroyed`` sees a destroy in this process from its first step; the row's ``terminating`` phase, which the destroy writes once
+    # its rank scan has passed, sees one in any process (round 2 of #917, item 10). A start already past this check when the mark lands can
+    # still write its row, as before.
     being_destroyed = getattr(deps.workspace_registry, "is_being_destroyed", None)
-    if callable(being_destroyed) and being_destroyed(workspace_id):
+    if workspace.phase == "terminating" or (callable(being_destroyed) and being_destroyed(workspace_id)):
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
 
     resolved_agent = None

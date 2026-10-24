@@ -516,7 +516,7 @@ def _full_deps(
     )
 
 
-async def _seed_workspace(sp, workspace_id="ws-1") -> None:
+async def _seed_workspace(sp, workspace_id="ws-1", phase="pending") -> None:
     from pydantic import SecretStr
 
     from primer.model.workspace import WorkspaceRuntimeMeta
@@ -527,6 +527,7 @@ async def _seed_workspace(sp, workspace_id="ws-1") -> None:
             template_id="tpl-1",
             provider_id="local-1",
             created_at=datetime.now(timezone.utc),
+            phase=phase,
             runtime_meta=WorkspaceRuntimeMeta(
                 url="ws://127.0.0.1:5959/",
                 token=SecretStr("t"),
@@ -706,6 +707,47 @@ async def test_start_workspace_session_missing_workspace_raises_not_found(
             deps=deps,
         )
     assert live.started == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["pending", "running", "failed"])
+async def test_a_session_starts_in_a_workspace_that_is_not_terminating(fake_storage_provider, fake_scheduler, fake_claim_engine, phase):
+    """A new workspace (``pending``) is usable at once (ticket 01a16d72 ruling 2): only ``terminating`` refuses a start."""
+    await _seed_workspace(fake_storage_provider, phase=phase)
+    await _seed_agent(fake_storage_provider)
+    live = _FakeLiveWorkspace()
+    deps = _full_deps(fake_storage_provider, fake_scheduler, fake_claim_engine, live)
+
+    await start_workspace_session(
+        workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"), initial_instructions=None, graph_input=None,
+        auto_start=False, metadata={}, parent_session_id=None, deps=deps,
+    )
+
+    assert len(live.started) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_session_start_in_a_workspace_another_process_is_deleting_is_refused(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    """Round 2 of #917, item 10: the #874 D1 fence (no session starts in a workspace whose delete has ranked its open sessions) was
+    process-local (``is_being_destroyed``); a delete running in another process marks the row ``terminating``, and the start reads that too.
+    Answered as a workspace that no longer exists, which it is about to be, before anything is written."""
+    await _seed_workspace(fake_storage_provider, phase="terminating")
+    await _seed_agent(fake_storage_provider)
+    live = _FakeLiveWorkspace()
+    deps = _full_deps(fake_storage_provider, fake_scheduler, fake_claim_engine, live)
+    assert not hasattr(deps.workspace_registry, "is_being_destroyed"), "this process is not the one destroying it"
+
+    with pytest.raises(NotFoundError):
+        await start_workspace_session(
+            workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"), initial_instructions=None, graph_input=None,
+            auto_start=False, metadata={}, parent_session_id=None, deps=deps,
+        )
+
+    assert live.started == []
+    page = await fake_storage_provider.get_storage(WorkspaceSession).list(OffsetPage(offset=0, length=10))
+    assert page.items == []
 
 
 async def _seed_graph(sp, graph: Graph) -> None:
