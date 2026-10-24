@@ -32,7 +32,6 @@ from primer.session import peer_messages, steer_delivery
 from primer.session.peer_messages import (
     MAX_PEER_HOPS,
     NOTE_GRAPH,
-    NOTE_GRAPH_STORED_INPUT,
     NOTE_QUEUED_BUSY,
     NOTE_QUEUED_EVENT,
     NOTE_QUEUED_GATE,
@@ -147,10 +146,12 @@ def test_the_copy_is_the_plans_character_for_character():
         "Queued: the session is waiting for an event. If it waits for session.messaged, that wait ends now; it reads your message when its turn ends."
     )
     assert peer_messages.NOTE_QUEUED_PAUSED == "Queued: the session is paused; it reads your message after it is resumed."
-    assert peer_messages.NOTE_GRAPH == " This restarts the graph: your message is the input of its next run."
-    assert peer_messages.NOTE_GRAPH_STORED_INPUT == (
-        " This graph session runs on its stored graph_input, so its next run uses that input and your message is only recorded."
+    # A graph never reads a message (lead ruling 1 of ticket 01a16d48): a run's input is the stored graph_input alone (executor.invoke([])).
+    assert peer_messages.NOTE_GRAPH == (
+        " This restarts the graph: your message is recorded in its transcript, but the graph never reads it."
+        " A run takes its input only from the session's stored graph_input (an empty list when it has none)."
     )
+    assert not hasattr(peer_messages, "NOTE_GRAPH_STORED_INPUT"), "one graph note for every graph session: the input is the stored one either way"
     assert peer_messages.PEER_PREFIX_AGENT == "[from session {session_id} (agent {agent_id})]"
     assert peer_messages.PEER_PREFIX_GRAPH == "[from session {session_id} (graph {graph_id})]"
 
@@ -375,20 +376,21 @@ async def test_a_graph_session_gets_the_raw_text_and_the_result_says_it_restarts
     world = await _world()
     await seed_session(world, sid="ses-g", binding=GraphSessionBinding(graph_id="triage"), turn_no=1)
     result = await _send(world, "ses-g")
-    assert slot(world, "ses-g").appended == ["ping"], "the prefix would become part of the graph's input"
+    assert slot(world, "ses-g").appended == ["ping"], "a graph target gets the raw text: the record names the sender"
     user_input = [r for r in records(world, "ses-g") if r["kind"] == "user_input"][-1]
     assert user_input["payload"]["text"] == "ping" and user_input["payload"]["peer"]["from_session_id"] == "ses-a"
     assert (result.restarts_graph, result.delivery) == (True, "woken")
     assert result.note == NOTE_WOKEN + NOTE_GRAPH
 
 
-async def test_a_graph_session_started_with_a_stored_input_says_the_message_is_only_recorded():
+async def test_a_graph_session_started_with_a_stored_input_gets_the_same_note():
+    """The note says the run's input is the stored graph_input whether or not the session has one, so a stored input adds nothing to it."""
     world = await _world()
     await seed_session(
         world, sid="ses-g", binding=GraphSessionBinding(graph_id="triage"), turn_no=1, metadata={"graph_input": {"ticket": "INC-1"}},
     )
     result = await _send(world, "ses-g")
-    assert result.note == NOTE_WOKEN + NOTE_GRAPH + NOTE_GRAPH_STORED_INPUT
+    assert result.note == NOTE_WOKEN + NOTE_GRAPH
     assert result.restarts_graph is True
 
 

@@ -421,6 +421,8 @@ async def test_the_messaging_tools_say_what_the_plan_says():
         "Use when another session's agent should act on something or learn a result; not for large outputs (write a file and send its path) "
         "and not to answer a session's ask_user (a message is never an answer). "
         "The target sees a user message that starts with [from session <your session id> (agent <your agent id>)]. "
+        "A graph session gets the raw text and restarts its graph: the message is recorded in its transcript, but the graph never reads it "
+        "(a run takes its input only from the session's stored graph_input). "
         "Refusals: bad-request (yourself), not-found (no such session in your workspace), forbidden (it runs at a higher rank than you), "
         "hop-limit (a chain of 8 messages), rate-limited (20 messages per 10 minutes), "
         "conflict (mode if_idle and the session is busy, or an ended session that cannot reopen)."
