@@ -161,6 +161,10 @@ async def recover_sessions(claim_engine, scheduler, storage_provider) -> None:
             for _sess in _items:
                 if _sess.status == _SessionStatus.ENDED:
                     continue
+                if _sess.turn_status == "arming":
+                    # A wake (on another process that did not restart) is writing the message of the turn it decided: it arms the claim
+                    # itself when it promotes the turn. A stale arm is healed by the session-messaging sweep (audit G7-03).
+                    continue
                 try:
                     await claim_engine.upsert(_ClaimKind.SESSION, _sess.id)
                     if _sess.status == _SessionStatus.RUNNING:

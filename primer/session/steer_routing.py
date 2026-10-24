@@ -21,8 +21,9 @@ def route_steer(
 ) -> str:
     """Return ROUTE_PENDING when a turn is open or older messages wait, else ROUTE_WAKE.
 
-    turn_status is the authoritative per-turn flag: claimable means a
-    turn is armed, running means one is executing, idle means neither.
+    turn_status is the authoritative per-turn flag: arming means a wake is
+    writing the message of the turn it decided, claimable means a turn is
+    armed, running means one is executing, idle means none of them.
     A parked session counts as busy too, since it waits on a human
     rather than being finished.
 
@@ -69,7 +70,7 @@ def route_steer(
     """
     if row.status == SessionStatus.ENDED:
         return ROUTE_WAKE
-    if row.turn_status in ("claimable", "running"):
+    if row.turn_status in ("arming", "claimable", "running"):
         return ROUTE_PENDING
     if row.parked_status is not None:
         return ROUTE_PENDING

@@ -24,6 +24,18 @@ class _Storage:
         self._row = row
         return row
 
+    async def patch_if(self, sid, patch=None, *, where, set_paths=None, conn=None):
+        # The reopen decides and writes with guarded field patches (audit G7-03, review H2); the reference semantics.
+        from primer.model.except_ import NotFoundError
+        from tests.storage._patch_reference import patch_model
+
+        if self._row is None or self._row.id != sid:
+            raise NotFoundError(f"no entity with id {sid!r}")
+        updated = patch_model(self._row, patch, where=where, set_paths=set_paths)
+        if updated is not None:
+            self._row = updated
+        return updated
+
 
 class _SP:
     async def get_system_state(self):

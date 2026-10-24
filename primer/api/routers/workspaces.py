@@ -2309,6 +2309,7 @@ async def restart_session_route(
             storage_provider=storage_provider,
             workspace_registry=registry,
             event_bus=event_bus,
+            claim_engine=engine,
         ),
         wake_deps=SessionWakeDeps(
             storage_provider=storage_provider,

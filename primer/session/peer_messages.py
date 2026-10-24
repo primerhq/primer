@@ -490,7 +490,7 @@ async def _deliver_restart(
             human_intent=False,
             peer=peer,
             reset_deps=SessionResetDeps(
-                storage_provider=storage_provider, workspace_registry=workspace_registry, event_bus=event_bus,
+                storage_provider=storage_provider, workspace_registry=workspace_registry, event_bus=event_bus, claim_engine=claim_engine,
             ),
             wake_deps=SessionWakeDeps(
                 storage_provider=storage_provider,

@@ -52,11 +52,12 @@ def _fail_the_slot_write(world, failure, *, how: str) -> None:
     slot(world, "ses-b").append_instruction = append_instruction
 
 
-async def _assert_nothing_was_armed(world) -> None:
+async def _assert_nothing_was_armed(world, *, last_seq: int) -> None:
+    """``last_seq`` is the exact value the failure leaves: the wake reserves its USER_INPUT's seq before the write (audit G7-03 (c)), so a write
+    that failed after the reservation leaves that seq a gap (a write that timed out may still land at it, so it is never handed out again), which
+    readers tolerate. Nothing else moved: the turn the wake took is given back, no record, no pulse."""
     row = await world.sessions.get("ses-b")
-    # The wake reserves its USER_INPUT's seq before the write (audit G7-03 (c)); a write that failed leaves that seq a gap (a write that timed out
-    # may still land at it, so it is never handed out again), which readers tolerate. Nothing else moved: no turn armed, no record, no pulse.
-    assert row.turn_status == "idle" and row.last_seq in (0, 1)
+    assert (row.turn_status, row.last_seq) == ("idle", last_seq)
     assert world.scheduler.enqueued == [] and world.engine.upserts == []
     assert records(world, "ses-b") == []
 
@@ -70,7 +71,7 @@ async def test_a_git_failure_while_the_workspace_is_being_removed_is_not_found(h
         await _wake(world)
     assert str(info.value) == REMOVED
     assert isinstance(info.value.__cause__, _GitCommandError), "the original failure must stay on the chain for the log"
-    await _assert_nothing_was_armed(world)
+    await _assert_nothing_was_armed(world, last_seq=1)   # the seq reserved for the USER_INPUT that was never written
 
 
 @pytest.mark.parametrize("how", ["row gone", "destroying"])
@@ -108,7 +109,7 @@ async def test_a_failure_to_reopen_a_stale_ended_slot_while_the_workspace_is_bei
     the_slot.status, the_slot.reopen = status, reopen
     with pytest.raises(NotFoundError, match="was removed while writing"):
         await _wake(world)
-    await _assert_nothing_was_armed(world)
+    await _assert_nothing_was_armed(world, last_seq=1)   # the seq reserved for the USER_INPUT that was never written
 
 
 async def test_a_failure_that_is_not_the_workspace_going_away_is_not_masked():
@@ -122,7 +123,7 @@ async def test_a_failure_that_is_not_the_workspace_going_away_is_not_masked():
     slot(world, "ses-b").append_instruction = append_instruction
     with pytest.raises(_GitCommandError):
         await _wake(world)
-    await _assert_nothing_was_armed(world)
+    await _assert_nothing_was_armed(world, last_seq=1)   # the seq reserved for the USER_INPUT that was never written
 
 
 async def test_a_failure_of_the_check_itself_is_not_evidence_of_a_removal():
@@ -215,13 +216,14 @@ async def _assert_still_ended(world) -> None:
 
 
 async def test_a_refused_database_connection_on_the_session_row_update_is_not_a_removal():
+    """The reopen's row writes are guarded field patches now (audit G7-03): the first of them meets the refused pool connection."""
     world = make_world()
     await _seed_ended(world)
 
-    async def refused(entity, *, conn=None):
+    async def refused(id, patch=None, **kwargs):
         raise _refused()
 
-    world.sessions.update = refused
+    world.sessions.patch_if = refused
     with pytest.raises(ConnectionRefusedError):
         await _wake(world)
     await _assert_still_ended(world)
