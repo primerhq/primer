@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, StatusPill, CardList, Card, Fab, JsonSchemaForm, validateSchema, PR_fetchAllPages, PR_PagedNote */
+/* global React, Icon, Btn, Modal, Banner, StatusPill, CardList, Card, Fab, JsonSchemaForm, validateSchema, PR_fetchAllFind, PR_PagedNote */
 // Harnesses list + detail + registration wizard.
 // Prefix HR_ to avoid global name collisions.
 
@@ -851,23 +851,36 @@ function HR_DependenciesPanel({ harness }) {
     ? harness.dependencies_resolved
     : [];
 
-  // Optional: count managed entities sourced from each dep using the same
-  // five entity endpoints the managed-objects panel queries. We do the
-  // same cross-query but only use it for an informational count badge.
+  // Optional: count managed entities sourced from each dep using the server's filter queries
+  // (ticket 01a16eaa): one POST /<plural>/find with harness_id = <id> per endpoint, not the
+  // whole table, so the informational count badge pays one request per page of the answer.
   // Hooks must run unconditionally before any early return, so we always
   // call them regardless of whether deps is empty.
-  // Every page of each endpoint (PR_fetchAllPages, ui/foundation/api.js); a list cut short is said under the tree, so a count is never short in silence.
+  // Every page of each answer (PR_fetchAllFind, ui/foundation/api.js); a list cut short is said under the tree, so a count is never short in silence.
   const entityCounts = {};
   const countLists = [];
   HR_MANAGED_ENDPOINTS.forEach(({ label, path }) => {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const res = useResource(
       `harness-managed-depcount:${harness?.id || "none"}:${path}`,
-      (signal) => PR_fetchAllPages(path, { signal, apiFetch }),
+      (signal) =>
+        harness?.id
+          ? PR_fetchAllFind(
+              path + "/find",
+              {
+                kind: "predicate",
+                left: { kind: "field", name: "harness_id" },
+                op: "=",
+                right: { kind: "value", value: harness.id },
+              },
+              { signal, apiFetch }
+            )
+          : Promise.resolve({ items: [], total: 0, pages: 0, truncated: false, limit: 0, serverTotal: 0, error: null }),
       { pollMs: null, deps: [harness?.id] }
     );
     countLists.push({ label, path, list: res.data });
-    const rows = (res.data?.items ?? []).filter((row) => row.harness_id === harness?.id);
+    // The server answered only this harness's rows; no client-side filter.
+    const rows = res.data?.items ?? [];
     rows.forEach((row) => {
       const src = row.source_dependency;
       if (!src) return;
@@ -951,7 +964,7 @@ function HR_DependenciesPanel({ harness }) {
 }
 
 // ============================================================================
-// HR_ManagedObjects — cross-query the 5 entity endpoints for this harness_id
+// HR_ManagedObjects - the server's filter query selects this harness's rows (01a16eaa)
 // ============================================================================
 
 function HR_ManagedObjects({ harnessId, slug }) {
@@ -961,13 +974,28 @@ function HR_ManagedObjects({ harnessId, slug }) {
     // Rules of Hooks require a fixed number of hooks per render, so we
     // call useResource for each endpoint unconditionally.
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    // Every page (PR_fetchAllPages): an entity past the 200th of its kind is still listed.
+    // The server's filter query (POST <path>/find with harness_id = <id>, ticket 01a16eaa):
+    // one request per page of the answer, not of the whole table. A list cut short is
+    // said under the section (PR_PagedNote), so a count is never short in silence.
     const res = useResource(
       `harness-managed:${harnessId}:${path}`,
-      (signal) => PR_fetchAllPages(path, { signal, apiFetch }),
+      (signal) =>
+        harnessId
+          ? PR_fetchAllFind(
+              path + "/find",
+              {
+                kind: "predicate",
+                left: { kind: "field", name: "harness_id" },
+                op: "=",
+                right: { kind: "value", value: harnessId },
+              },
+              { signal, apiFetch }
+            )
+          : Promise.resolve({ items: [], total: 0, pages: 0, truncated: false, limit: 0, serverTotal: 0, error: null }),
       { pollMs: null, deps: [harnessId] }
     );
-    const filtered = (res.data?.items ?? []).filter((row) => row.harness_id === harnessId);
+    // The server answered only this harness's rows; no client-side filter.
+    const filtered = res.data?.items ?? [];
     return { label, path, res, filtered };
   });
 
