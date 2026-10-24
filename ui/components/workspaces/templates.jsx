@@ -453,13 +453,19 @@ function WT_twice(rows) {
 }
 
 // The form's own errors, by form key (an empty object when it may be sent). Sizes are checked against what a workspace may have, so the form never
-// stores a template no workspace can be made from.
+// stores a template no workspace can be made from. opts.initial is the form as it was opened (an edit): a size, a count, a grace period or a file mode is
+// checked only when the person changed it, because a stored value the server took (a 1Mi disk shown as 0 GiB, 1e-7 cores, a size over the cap of an older
+// row, a mode written another way) must not make a save of another field impossible; it goes back as stored. A create (no initial) checks everything.
 function WT_validateForm(form, opts) {
   var isAdmin = !!(opts && opts.isAdmin);
+  var initial = (opts && opts.initial) || null;
   var errs = {};
   var kind = form.kind;
+  function changed(key) {
+    return !initial || JSON.stringify(form[key]) !== JSON.stringify(initial[key]);
+  }
   function size(key, max, tooMuch, bytes) {
-    if (!WT_trim(form[key])) return;
+    if (!changed(key) || !WT_trim(form[key])) return;
     var problem = bytes && WT_giBToBytes(form[key]) == null ? "Enter a positive number" : WT_sizeError(form[key], max, tooMuch);
     if (problem) errs[key] = problem;
   }
@@ -471,7 +477,7 @@ function WT_validateForm(form, opts) {
   }
   if (kind === "kubernetes") {
     size("diskGiB", WT_MAX_GIB, "At most 65536 GiB (64 TiB)", true);
-    if (WT_trim(form.gpuCount)) {
+    if ((changed("gpuCount") || changed("gpuResource")) && WT_trim(form.gpuCount)) {
       var gpus = /^[0-9]+$/.test(WT_trim(form.gpuCount)) ? Number(WT_trim(form.gpuCount)) : 0;
       if (gpus < 1) errs.gpuCount = "Enter a whole number of at least 1";
       else if (gpus > WT_MAX_GPUS) errs.gpuCount = "At most 64 GPUs";
@@ -481,10 +487,14 @@ function WT_validateForm(form, opts) {
     }
     if (WT_jsonList(form.extraVolumesJson) === null) errs.extraVolumesJson = "Enter a JSON list";
     if (WT_jsonList(form.extraVolumeMountsJson) === null) errs.extraVolumeMountsJson = "Enter a JSON list";
-    if (WT_trim(form.podGrace) && !/^[0-9]+$/.test(WT_trim(form.podGrace))) errs.podGrace = "Enter a whole number of seconds";
+    if (changed("podGrace") && WT_trim(form.podGrace) && !/^[0-9]+$/.test(WT_trim(form.podGrace))) errs.podGrace = "Enter a whole number of seconds";
     if (WT_twice(form.nodeSelectorRows)) errs.nodeSelectorRows = "Each name once";
   }
-  if ((form.files || []).some(function (f) { return f && WT_trim(f.mode) && !/^[0-7]{3,4}$/.test(WT_trim(f.mode)); })) {
+  // A file's mode is checked when the person wrote it: a row whose path and mode the opened form already had is the stored one.
+  var openedModes = initial ? (initial.files || []).map(function (f) { return f ? f.path + "\u0000" + f.mode : ""; }) : [];
+  if ((form.files || []).some(function (f) {
+    return f && WT_trim(f.mode) && openedModes.indexOf(f.path + "\u0000" + f.mode) < 0 && !/^[0-7]{3,4}$/.test(WT_trim(f.mode));
+  })) {
     errs.files = "Use an octal mode such as 0644";
   }
   if (WT_twice(form.envRows)) errs.envRows = "Each name once";
@@ -754,7 +764,7 @@ function WT_TemplateOverlay(props) {
   var held = row ? WT_heldAdminFields(row) : [];
   var mode = creating ? "create" : row && (WT_isReserved(row) || (!isAdmin && held.length)) ? "view" : "edit";
   var view = mode === "view";
-  var live = attemptedState[0] && form && !view ? WT_validateForm(form, { isAdmin: isAdmin }) : {};
+  var live = attemptedState[0] && form && !view ? WT_validateForm(form, { isAdmin: isAdmin, initial: st.initial }) : {};
 
   function fieldError(key) {
     return server.fields[key] || live[key] || null;
@@ -820,7 +830,7 @@ function WT_TemplateOverlay(props) {
 
   function save() {
     if (!st || view) return;
-    var errs = WT_validateForm(st.form, { isAdmin: isAdmin });
+    var errs = WT_validateForm(st.form, { isAdmin: isAdmin, initial: st.initial });
     attemptedState[1](true);
     setServer({ fields: {}, general: null });
     if (Object.keys(errs).length) {

@@ -172,6 +172,17 @@ def test_a_template_deleted_meanwhile_is_a_refusal_not_a_write(ctx):
     assert ctx.eval("textOf(MR.find('wt-error'))") == js(ctx, "window.primerApi.readRefusal(new window.primerApi.ApiError(GONE)).message")
 
 
+def test_an_odd_stored_size_does_not_block_the_save_of_another_field(ctx):
+    """Round 2 of #886, item 5: a 1Mi disk the server took shows as 0 GiB; the overlay checks only what the person changed, and the 1Mi goes back as stored."""
+    row = {**FULL_K8S, "backend": {**FULL_K8S["backend"], "pvc_size": "1Mi"}, "resources": {**FULL_K8S["resources"], "cpu_cores": 1e-7}}
+    _stored(ctx, row)
+    _mount(ctx, "{ row: " + json.dumps(row) + " }")
+    assert js(ctx, "MR.find('wt-disk').props.value") == "0"
+    ctx.eval("setValue('ws-template-description', 'changed'); press('wt-save');")
+    settle(ctx)
+    assert _calls(ctx, "PUT")[0]["body"] == {**row, "description": "changed"}
+
+
 def test_the_edit_says_existing_workspaces_keep_their_copy(ctx):
     """Template snapshots (#829): a workspace keeps the template it was made from, so an edit changes only the workspaces made after it."""
     _mount(ctx, "{ row: " + json.dumps(FULL_K8S) + " }")
