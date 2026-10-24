@@ -8,8 +8,12 @@ provider cannot honour is refused with a 422 that names the field, never silentl
 
 from __future__ import annotations
 
+import json
+
+import pydantic
 import pytest
 
+from primer.model.common import STORAGE_LOAD_CONTEXT
 from primer.model.except_ import ValidationError
 from primer.model.workspace import (
     ContainerTemplateConfig,
@@ -153,8 +157,12 @@ def test_a_template_within_the_caps_is_never_refused():
 
 @pytest.mark.parametrize("cpu", [1024.5, 1e308, float("inf"), float("nan")])
 def test_a_kubernetes_template_with_an_absurd_cpu_is_refused_naming_the_field(cpu):
+    # nan fails the model's gt=0 since the G5 audit, so a template can only hold it as a row stored before.
+    template = _k8s(cpu=cpu) if cpu == cpu else WorkspaceTemplate.model_validate(
+        {**_k8s().model_dump(), "resources": {"cpu_cores": cpu}}, context=STORAGE_LOAD_CONTEXT,
+    )
     with pytest.raises(TemplateSizeRefused) as exc:
-        refuse_oversized_template_sizes(_k8s(cpu=cpu), None)
+        refuse_oversized_template_sizes(template, None)
     assert isinstance(exc.value, ValidationError)
     assert exc.value.fields == ["resources.cpu_cores"] and exc.value.template_id == "big"
     assert "template 'big'" in exc.value.message and "resources.cpu_cores" in exc.value.message
@@ -193,7 +201,169 @@ def test_a_local_template_is_not_checked_because_local_ignores_its_size():
     refuse_oversized_template_sizes(local, None)
 
 
-def test_a_template_size_the_caps_leave_alone_but_the_backend_may_not_like_is_not_this_checks_business():
-    """Only the upper bound is the ruling's; zero and negative numbers keep whatever the backend made of them before."""
-    refuse_oversized_template_sizes(_k8s(cpu=-1, memory=0), None)
-    refuse_oversized_template_sizes(_docker(cpu=0), None)
+# ---- the G5 audit: the template's own disk, and sizes of zero or less ---------------------------------------------------------
+#
+# ``backend.pvc_size`` was free text that no door checked, and a template CPU or memory of zero or less was accepted (the backend
+# made of it what it did: a pod spec the API server refuses late, as a generic 500 after the rollback). The model now refuses them
+# on every write; a row stored before still loads (the storage reads with STORAGE_LOAD_CONTEXT: read path tolerant, write path
+# strict), so the create checks the size the workspace will really get, the same way it checks the caps.
+
+
+def _stored(**template) -> WorkspaceTemplate:
+    """A template as the storage reads one back: the rules added by the G5 audit let a stored value through."""
+    return WorkspaceTemplate.model_validate(
+        {"id": "old", "provider_id": "k3s", "description": "stored before the G5 audit", **template}, context=STORAGE_LOAD_CONTEXT,
+    )
+
+
+def _errors(exc: pydantic.ValidationError) -> list[tuple[tuple, str]]:
+    return [(tuple(e["loc"]), e["msg"]) for e in exc.errors()]
+
+
+@pytest.mark.parametrize("pvc_size", ["10 Gi", "lots", "", "10gi", "1e", " 10Gi", "\u0661Gi"])
+def test_a_pvc_size_that_is_not_a_kubernetes_quantity_is_refused_by_the_model(pvc_size):
+    with pytest.raises(pydantic.ValidationError) as exc:
+        KubernetesTemplateConfig(image="rt:1", pvc_size=pvc_size)
+    assert _errors(exc.value) == [(("pvc_size",), f"Value error, pvc_size {pvc_size!r} is not a Kubernetes quantity: write a number "
+                                   "and an optional unit with no space, for example 10Gi, 500Mi or 1Ti")]
+
+
+@pytest.mark.parametrize(("pvc_size", "why"), [
+    ("-5Gi", "not more than zero"),
+    ("0", "not more than zero"),
+    ("1000Pi", "more than the 64 TiB a workspace may have"),
+    ("64.5Ti", "more than the 64 TiB a workspace may have"),
+    ("1E", "more than the 64 TiB a workspace may have"),          # E alone is the decimal exa unit, not an exponent
+])
+def test_a_pvc_size_that_is_not_a_disk_a_workspace_may_have_is_refused_by_the_model(pvc_size, why):
+    with pytest.raises(pydantic.ValidationError) as exc:
+        KubernetesTemplateConfig(image="rt:1", pvc_size=pvc_size)
+    assert _errors(exc.value) == [(("pvc_size",), f"Value error, pvc_size {pvc_size!r} is {why}")]
+
+
+@pytest.mark.parametrize("pvc_size", ["10Gi", "500Mi", "1Ti", "64Ti", "1.5Gi", ".5Gi", "1e9", "2E3", "100G", "+1Gi", "1048576"])
+def test_a_kubernetes_quantity_of_at_most_64_tib_is_a_disk(pvc_size):
+    assert KubernetesTemplateConfig(image="rt:1", pvc_size=pvc_size).pvc_size == pvc_size
+
+
+def test_the_pvc_size_refusal_names_the_field_through_the_template():
+    with pytest.raises(pydantic.ValidationError) as exc:
+        WorkspaceTemplate.model_validate({
+            "id": "t", "provider_id": "k3s", "description": "d", "backend": {"kind": "kubernetes", "image": "rt:1", "pvc_size": "lots"},
+        })
+    assert [tuple(e["loc"]) for e in exc.value.errors()] == [("backend", "kubernetes", "pvc_size")]
+
+
+@pytest.mark.parametrize("model", [ResourceLimits, ContainerTemplateConfig])
+@pytest.mark.parametrize(("field", "value"), [("cpu_cores", 0), ("cpu_cores", -1), ("memory_bytes", 0), ("memory_bytes", -2**30)])
+def test_a_template_size_of_zero_or_less_is_refused_by_the_model(model, field, value):
+    with pytest.raises(pydantic.ValidationError) as exc:
+        model(**{field: value})
+    assert [(tuple(e["loc"]), e["type"]) for e in exc.value.errors()] == [((field,), "greater_than")]
+    assert model(**{field: None}) is not None          # null is still "no limit"
+
+
+def test_a_stored_row_with_the_old_sizes_still_loads():
+    """Read path tolerant: the row was accepted by the write that stored it, and refusing it on read would make it unreadable."""
+    old = _stored(backend={"kind": "kubernetes", "image": "rt:1", "pvc_size": "lots"}, resources={"cpu_cores": -1, "memory_bytes": 0})
+    assert (old.backend.pvc_size, old.resources.cpu_cores, old.resources.memory_bytes) == ("lots", -1, 0)
+    docker = _stored(provider_id="dock", backend={"kind": "container", "cpu_cores": 0, "memory_bytes": -5})
+    assert (docker.backend.cpu_cores, docker.backend.memory_bytes) == (0, -5)
+
+
+def test_only_the_new_rules_are_tolerant_on_a_stored_row():
+    """A stored value that fails for any other reason fails as before: the tolerance is the new rules', not a blanket one."""
+    with pytest.raises(pydantic.ValidationError):
+        _stored(backend={"kind": "kubernetes", "image": "rt:1"}, resources={"cpu_cores": "many"})
+    with pytest.raises(pydantic.ValidationError):
+        _stored(backend={"kind": "kubernetes", "image": "rt:1", "pvc_size": 10})
+
+
+@pytest.mark.parametrize(("pvc_size", "why"), [
+    ("lots", "not a Kubernetes quantity"),
+    ("10 Gi", "not a Kubernetes quantity"),
+    ("-5Gi", "not more than zero"),
+    ("1000Pi", "more than the 64 TiB a workspace may have"),
+])
+def test_a_stored_template_disk_no_workspace_may_have_is_refused_at_create(pvc_size, why):
+    old = _stored(backend={"kind": "kubernetes", "image": "rt:1", "pvc_size": pvc_size})
+    with pytest.raises(TemplateSizeRefused) as exc:
+        refuse_oversized_template_sizes(old, None)
+    assert exc.value.fields == ["backend.pvc_size"]
+    assert f"template 'old' sets backend.pvc_size to {pvc_size!r} ({why}" in exc.value.message
+    assert exc.value.message.endswith("Edit the template.")
+
+
+def test_a_disk_override_replaces_the_stored_template_disk():
+    """The workspace gets the override's disk, so what the template says there is not what runs."""
+    old = _stored(backend={"kind": "kubernetes", "image": "rt:1", "pvc_size": "lots"})
+    refuse_oversized_template_sizes(old, _o(disk_bytes=10 * 2**30))
+    with pytest.raises(TemplateSizeRefused):
+        refuse_oversized_template_sizes(old, _o(cpu_cores=2))          # a CPU override leaves the disk the template's
+
+
+def test_a_stored_template_size_of_zero_or_less_is_refused_at_create():
+    k8s = _stored(backend={"kind": "kubernetes", "image": "rt:1"}, resources={"cpu_cores": -1, "memory_bytes": 0})
+    with pytest.raises(TemplateSizeRefused) as exc:
+        refuse_oversized_template_sizes(k8s, None)
+    assert exc.value.fields == ["resources.cpu_cores", "resources.memory_bytes"]
+    assert "resources.cpu_cores to -1 (not more than zero) and resources.memory_bytes to 0 (not more than zero)" in exc.value.message
+
+    docker = _stored(provider_id="dock", backend={"kind": "container", "cpu_cores": 0})
+    with pytest.raises(TemplateSizeRefused) as exc:
+        refuse_oversized_template_sizes(docker, None)
+    assert exc.value.fields == ["backend.cpu_cores"]
+    refuse_oversized_template_sizes(docker, _o(cpu_cores=1))           # replaced by the override: not what runs
+
+
+def test_a_local_template_is_still_not_checked():
+    local = _stored(provider_id="loc", resources={"cpu_cores": -1})
+    refuse_oversized_template_sizes(local, None)
+
+
+async def test_the_storage_reads_a_stored_row_back_tolerantly_and_patch_if_still_applies(tmp_path):
+    """The tolerance on a real SQLite storage: get and list read a template stored before the rules, a workspace whose snapshot
+    holds one loads, and a field-scoped patch_if of that workspace (a status write, a backfill) still applies."""
+    from datetime import UTC, datetime
+
+    from primer.model.provider import SqliteConfig
+    from primer.model.storage import OffsetPage
+    from pydantic import SecretStr
+
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
+    await sp.initialize()
+    try:
+        old = _stored(backend={"kind": "kubernetes", "image": "rt:1", "pvc_size": "lots"}, resources={"cpu_cores": -1})
+        templates = sp.get_storage(WorkspaceTemplate)
+        await templates.create(old)
+        assert (await templates.get("old")).backend.pvc_size == "lots"
+        assert [t.id for t in (await templates.list(OffsetPage(offset=0, length=10))).items] == ["old"]
+
+        workspaces = sp.get_storage(Workspace)
+        await workspaces.create(Workspace(
+            id="w1", template_id="old", template_snapshot=old, provider_id="k3s", created_at=datetime.now(UTC),
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://runtime.test:5959/", token=SecretStr("token")),
+        ))
+        assert (await workspaces.get("w1")).template_snapshot.resources.cpu_cores == -1
+        patched = await workspaces.patch_if("w1", {"name": "renamed"}, where={"name": [None]})
+        assert patched is not None and patched.name == "renamed"
+    finally:
+        await sp.aclose()
+
+
+def test_both_storage_backends_decode_a_row_as_a_stored_row():
+    """The Postgres backend cannot run here; its decode is called directly (it reads only ``row["id"]`` and ``row["data"]``)."""
+    from types import SimpleNamespace
+
+    from primer.storage.postgres import PostgresStorage
+    from primer.storage.sqlite import SqliteStorage
+
+    document = {"provider_id": "k3s", "description": "d", "backend": {"kind": "kubernetes", "image": "rt:1", "pvc_size": "lots"}}
+    pg = PostgresStorage(SimpleNamespace(schema="s"), WorkspaceTemplate)
+    assert pg._from_row({"id": "old", "data": dict(document)}).backend.pvc_size == "lots"   # noqa: SLF001
+    lite = SqliteStorage.__new__(SqliteStorage)
+    lite._model = WorkspaceTemplate                                                           # noqa: SLF001
+    assert lite._from_row("old", json.dumps(document)).backend.pvc_size == "lots"            # noqa: SLF001

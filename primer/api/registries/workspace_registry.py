@@ -252,8 +252,11 @@ class WorkspaceRegistry:
         ``^[-._a-zA-Z][-._a-zA-Z0-9]*$`` pattern, ``.``, ``..`` or a name
         starting with ``..``, or over 256 characters; so ``my-var`` and
         ``a.b`` pass) or that is one the platform sets itself
-        (:mod:`primer.workspace.env_names`), and a template CPU or memory
-        above the sane maxima.
+        (:mod:`primer.workspace.env_names`), a template CPU or memory
+        above the sane maxima or not more than zero, and a Kubernetes
+        template disk (``backend.pvc_size``) that is not a quantity of at
+        most 64 TiB (a row stored before the model refused these still
+        loads, so this is where it is caught).
         """
         if workspace_id is not None and re.fullmatch(
             WORKSPACE_ID_PATTERN, workspace_id
