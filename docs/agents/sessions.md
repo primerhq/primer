@@ -467,7 +467,12 @@ document, which is never fetched, is a `422` naming the ref). Send the `gate_id`
 `tool_call_id` across rounds, so an answer meant for an earlier question could
 otherwise answer a later one under the same id. A `gate_id` that is no longer the
 pending prompt's is a `409` with `extensions.code = "approval_stale"` and nothing is
-resumed; a malformed one is a `422`; one left out is still accepted (counted in
+resumed. An answer for a prompt that is pending nowhere any more while the session is
+there (answered elsewhere and the session moved on, the graph asked again under a fresh
+id, the session parked on another tool) is a `404` with
+`extensions.code = "gate_not_pending"`: reload the pending prompt, as for the `409`. A
+`404` without that code (the session does not exist, its park cannot be read) is an
+error. A malformed `gate_id` is a `422`; one left out is still accepted (counted in
 `gate_respond_total{kind="ask_user",gate_token="absent"}`). The cancel route takes the
 same optional `gate_id` in its body, and an optional `expected_tool_name` (the kind of yield
 the client drew the cancel for: `sleep`, `watch_files`, `ask_user`, `_approval`, `_external`;
