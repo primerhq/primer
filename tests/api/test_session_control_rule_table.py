@@ -9,8 +9,8 @@ over MCP and on their REST routes: they stop or start a run at the creator's ran
 The tool rows go through :func:`primer.agent.inner_dispatch.dispatch_inner_tool`, as ``system__call_tool`` reaches a tool (with the request's actor
 on ``current_actor`` and no context for the MCP rows); the REST rows go over HTTP through the auth middleware as a user-role account.
 
-The last section holds the rows of the tools that name a WORKSPACE rather than a session (ticket 01a16ad1): delete a workspace, its tap, its log
-and its files. They follow the same reach rule and are driven through the real tool manager (by name and through ``system__call_tool``).
+The last section holds the rows of the tools that name a WORKSPACE rather than a session (ticket 01a16ad1): delete, get and list a workspace, its
+tap, its log and its files. They follow the same reach rule and are driven through the real tool manager (by name and through ``system__call_tool``).
 """
 
 from __future__ import annotations
@@ -284,7 +284,7 @@ async def test_cancel_and_resume_from_a_session_are_refused_in_the_words_of_a_me
 
 # ---- The workspace tools (ticket 01a16ad1) ----------------------------------------------------------------------------------------------
 #
-# The tools that name a WORKSPACE: deleting it, draining its tap, reading its log and its files, writing and deleting a file. Before
+# The tools that name a WORKSPACE: deleting it, reading its row, draining its tap, reading its log and its files, writing and deleting a file. Before
 # this they took no context, so a session in any workspace reached every workspace through them (``system__call_tool`` is open to every agent).
 # A session outside the default workspace now reaches only its own workspace with each of them; from prime, and with no calling session (MCP), every
 # workspace is reachable. Every in-session row goes through the real tool manager twice: the tool by its own scoped name (an agent that lists the
@@ -295,6 +295,7 @@ W = "<target>"
 #: tool -> its arguments, the target workspace written as ``W``.
 WS_TOOLS: dict[str, dict] = {
     "delete_workspace": {"id": W},
+    "get_workspace": {"id": W},
     "workspace_tap": {"workspace_id": W},
     "get_workspace_log": {"workspace_id": W},
     "list_workspace_files": {"workspace_id": W},
@@ -415,7 +416,7 @@ async def _ws_world() -> WsWorld:
 
 
 def _args(tool: str, target: str) -> dict:
-    return {k: (target if v == W else v) for k, v in WS_TOOLS[tool].items()}
+    return {k: (target if v == W else v) for k, v in WS_TOOLS.get(tool, {}).items()}
 
 
 async def _ws_call(world: WsWorld, tool: str, target: str, *, own: str | None, door: str) -> tuple[str, dict]:
@@ -457,6 +458,7 @@ async def _ws_delivered(world: WsWorld, tool: str, body: dict) -> bool:
     if tool == "delete_workspace_file":
         return "notes.txt" not in live.files
     return {
+        "get_workspace": lambda: body.get("id") == "ws-2",
         "workspace_tap": lambda: [e["session_id"] for e in body["events"]] == ["ses-t"],
         "get_workspace_log": lambda: [c["workspace_id"] for c in body["commits"]] == ["ws-2"],
         "list_workspace_files": lambda: [i["path"] for i in body["items"]] == ["notes.txt"],
@@ -499,3 +501,21 @@ async def test_delete_workspace_from_outside_prime_naming_prime_answers_as_an_un
 
     assert (outcome, body) == (N, {"type": N, "message": "Workspace 'ws-prime' does not exist"})
     assert await world.snapshot() == before
+
+
+@pytest.mark.parametrize(("own", "door", "listed"), [
+    pytest.param("ws-1", "tool manager", ["ws-1"], id="a session outside prime, by name"),
+    pytest.param("ws-1", "system__call_tool", ["ws-1"], id="a session outside prime, through call_tool"),
+    pytest.param("ws-prime", "system__call_tool", ["ws-1", "ws-2", "ws-prime"], id="a session in prime"),
+    pytest.param(None, "MCP", ["ws-1", "ws-2", "ws-prime"], id="no calling session (MCP)"),
+])
+async def test_list_workspaces_lists_only_what_the_caller_reaches(own, door, listed):
+    """The finder of workspaces follows the rule of ``find_sessions``: a session outside prime lists only its own workspace, so a workspace id it
+    cannot reach is never shown to it (``get_workspace`` answers such an id as unknown)."""
+    world = await _ws_world()
+
+    outcome, body = await _ws_call(world, "list_workspaces", "", own=own, door=door)
+
+    assert outcome == D, body
+    assert sorted(item["id"] for item in body["items"]) == listed
+    assert body["total"] == len(listed)
