@@ -5,6 +5,8 @@
   dual-render guard looks) and the page's empty state.
 * ``platform.open.templates`` ("Open Workspace Templates"): the custom page's own verb, registered after the shell's Platform loop as the custom-page rule
   says (``nv-shell.jsx``); the sidebar row is its affordance.
+* Both exist only while the page's component is loaded (``NV_platNavAvailable("templates")``, main's rule for Web too): without the page, a link to it
+  opens Providers, and a verb named for it would land there.
 * ``overlay=workspaces:templates:<id>`` draws ``WT_TemplateOverlay`` for that template, with the overlay's own chrome (the shell's wrapper is bypassed, so
   there is one title bar, not two).
 * The router shim: a bare ``/workspaces/templates`` closes to ``view=platform:templates`` once ``window.WT_TemplatesPage`` is loaded, and opens the
@@ -68,14 +70,21 @@ def test_the_custom_page_registers_its_own_open_verb_after_the_platform_loop():
     reg = _registration("platform.open.templates")
     assert set(re.findall(r'"([\w-]+)"', reg["surfaces"])) == {"palette", "platform-nav"}
     assert 'label: "Open Workspace Templates"' in _reg_source("platform.open.templates")
-    assert SHELL.index("window.NV_platVerbSpecs().forEach(") < SHELL.index('id: "platform.open.templates"') < SHELL.index("}, [registry]);",
-                                                                                                               SHELL.index("window.NV_platVerbSpecs().forEach("))
+    loop = SHELL.index("window.NV_platVerbSpecs().forEach(")
+    gate = SHELL.index('if (window.NV_platNavAvailable("templates")) {')
+    end = SHELL.index("}, [registry]);", loop)
+    assert loop < gate < SHELL.index('id: "platform.open.templates"') < SHELL.index('id: "template.create"') < end
+    block = SHELL[gate:SHELL.index("\n    }\n", gate)]
+    assert 'id: "platform.open.templates"' in block and 'id: "template.create"' in block, "both verbs are inside the page's gate"
+    assert SHELL.count('id: "template.create"') == 1
 
 
-@pytest.fixture
-def shell():
+TEMPLATES_PAGE_STAND_IN = "window.WT_TemplatesPage = function () { return null; };"
+
+
+def _shell(page_loaded: bool = True):
     """The shell's core verb effect, as nv-shell.jsx writes it, against the real registry; goView and the page's request are recorded."""
-    ctx = platform_page_context(prelude_extra=SHELL_URL + SHELL_VERBS)
+    ctx = platform_page_context(prelude_extra=SHELL_URL + SHELL_VERBS + (TEMPLATES_PAGE_STAND_IN if page_loaded else ""))
     _OPEN.append(ctx)
     start = SHELL.index("// --- Core verbs (chrome-level; view bodies add their own)")
     body = SHELL.index("React.useEffect(function () {", start) + len("React.useEffect(function () {")
@@ -87,11 +96,24 @@ def shell():
     return ctx
 
 
+@pytest.fixture
+def shell():
+    return _shell()
+
+
+def test_without_the_page_neither_verb_registers():
+    ctx = _shell(page_loaded=False)
+    ids = js(ctx, "registry.ids()")
+    assert "platform.open.templates" not in ids and "template.create" not in ids
+    assert "workspace.create" in ids and "platform.open.providers" in ids, "every other verb still registers"
+
+
 def test_the_verbs_register_in_the_real_registry_and_open_the_page(shell):
     assert js(shell, "SH_lintVerbLabel('Create Workspace Template')") is None
     assert js(shell, "SH_lintVerbLabel('Open Workspace Templates')") is None
     ids = js(shell, "registry.ids()")
-    assert "template.create" in ids and ids[-1] == "platform.open.templates"
+    assert ids[-2:] == ["platform.open.templates", "template.create"], "after the Platform loop, so the core verbs keep the empty query"
+    assert not {"platform.open.templates", "template.create"} & set(js(shell, "SH_rankVerbs(registry, '', {}).slice(0, 8).map(function (v) { return v.id; })"))
     shell.eval("registry.get('template.create').run();")
     assert js(shell, "[VIEWS, REQUESTS]") == [[["platform", "templates", None]], 1]
     shell.eval("registry.get('platform.open.templates').run();")

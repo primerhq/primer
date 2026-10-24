@@ -588,16 +588,6 @@ function NV_Shell() {
         setOverlay({ name: "new-workspace", section: null, id: null });
       },
     });
-    // Platform revamp 08 (Task 11): a new workspace template is made on the Workspace templates page, in its overlay. The verb opens the page and asks it
-    // to open the create overlay; a page that is not mounted yet takes the request when it mounts (WT_requestCreate, workspaces/templates.jsx). Its
-    // pointer affordances are the new-workspace dialog's "Create a template" (nv-overlays.jsx) and the page's own empty state.
-    reg({
-      id: "template.create", label: "Create Workspace Template", surfaces: ["palette", "overlay-button"],
-      run: function () {
-        goView("platform", "templates");
-        if (window.WT_requestCreate) window.WT_requestCreate();
-      },
-    });
     reg({
       id: "provider.register", label: "Register Provider", surfaces: ["palette", "platform-nav"],
       run: function () {
@@ -651,11 +641,24 @@ function NV_Shell() {
         run: function () { goView("platform", "web"); },
       });
     }
-    // The Workspace templates custom page (Platform revamp 08) registers its own verb here, as the rule above says; its sidebar row is the pointer affordance.
-    reg({
-      id: "platform.open.templates", label: "Open Workspace Templates", surfaces: ["palette", "platform-nav"],
-      run: function () { goView("platform", "templates"); },
-    });
+    // Platform › Workspace templates (platform revamp 08): the custom page of the workspace templates. Like Web's, its two verbs exist only while the page's
+    // component is loaded (NV_platNavAvailable), so no verb lands on Providers. Open Workspace Templates has the sidebar row as its pointer affordance. Create
+    // Workspace Template opens the page and asks it to open its create overlay; a page that is not mounted yet takes the request when it mounts
+    // (WT_requestCreate, workspaces/templates.jsx). Its pointer affordances are the new-workspace dialog's "Create a template" (nv-overlays.jsx) and the
+    // page's own empty state.
+    if (window.NV_platNavAvailable("templates")) {
+      reg({
+        id: "platform.open.templates", label: "Open Workspace Templates", surfaces: ["palette", "platform-nav"],
+        run: function () { goView("platform", "templates"); },
+      });
+      reg({
+        id: "template.create", label: "Create Workspace Template", surfaces: ["palette", "overlay-button"],
+        run: function () {
+          goView("platform", "templates");
+          if (window.WT_requestCreate) window.WT_requestCreate();
+        },
+      });
+    }
   }, [registry]);
 
   var ctx = React.useMemo(function () {
