@@ -112,3 +112,17 @@ def test_the_cookbook_and_graphs_docs_point_to_the_row_for_the_park() -> None:
     assert "it reads `status: \"running\"` with `parked_status` set" in _flat(DEPLOY)
     assert "it reads `status: \"running\"` with `parked_status` set" in _flat(DISCORD)
     assert "it keeps `status=\"running\"` with `parked_status` set" in _flat(GRAPHS)
+
+
+def test_the_graph_wiki_pages_say_a_parked_graph_session_reads_running() -> None:
+    """Ticket 01a16f1d item 8 (from #934): two wiki pages said a graph session waiting on a question or an approval reads ``status: waiting``. A park
+    leaves ``status`` alone (the first test above), so it reads ``running``; the pages now say how to see the park, as the monitor recipe does."""
+
+    from tests.docs._wiki import repo_wiki
+
+    pages = repo_wiki().pages
+    for path in ("graphs/run-a-graph", "cookbook/run-a-graph-and-collect-results"):
+        flat = " ".join(pages[path].body.split())
+        assert "The session shows `status` `waiting`" not in flat, path
+        assert "While it is `waiting`, a person has a question or an approval to settle" not in flat, path
+        assert "reads `running`" in flat and "`yielded`" in flat, path
