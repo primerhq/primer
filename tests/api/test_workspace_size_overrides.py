@@ -512,3 +512,33 @@ async def test_a_stored_template_with_a_disk_no_workspace_may_have_is_a_422_at_c
 
     ok = await _create(client, "tpl-old-disk", {"disk_bytes": 10 * 2**30})
     assert ok.status_code == 201, ok.text       # the override replaces the template's disk
+
+
+@pytest.mark.parametrize(("pvc_size", "status"), [("1Ei", 422), ("0.00001Ei", 201)])
+async def test_ei_is_a_unit_on_the_template_write(client, sp, pvc_size, status):
+    """``Ei`` was read as an exponent and raised ValueError inside the validator (the review of #869, F2)."""
+    r = await client.post("/v1/workspace_templates", json={
+        "id": "tpl-ei", "description": "d", "provider_id": "k3s",
+        "backend": {"kind": "kubernetes", "image": "rt:1", "pvc_size": pvc_size},
+    })
+    assert r.status_code == status, r.text
+    if status == 422:
+        assert r.json()["extensions"]["errors"][0]["msg"] == "Value error, pvc_size '1Ei' is more than the 64 TiB a workspace may have"
+
+
+async def test_a_stored_2ei_template_is_the_named_422_at_create(client, backend_calls, sp):
+    """It used to raise ValueError out of refuse_oversized_template_sizes: a 500 at create (the review of #869, F2)."""
+    from primer.model.common import STORAGE_LOAD_CONTEXT
+
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate.model_validate({
+        "id": "tpl-old-ei", "provider_id": "k3s", "description": "d",
+        "backend": {"kind": "kubernetes", "image": "rt:1", "pvc_size": "2Ei"},
+    }, context=STORAGE_LOAD_CONTEXT))
+
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-old-ei"})
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == (
+        "template 'tpl-old-ei' sets backend.pvc_size to '2Ei' (more than the 64 TiB a workspace may have). Edit the template."
+    )
+    _assert_nothing_built(backend_calls)
