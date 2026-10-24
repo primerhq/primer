@@ -13,6 +13,7 @@ the wake lands as it would without a canvas.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -285,6 +286,66 @@ async def test_failing_read_marks_never_block_a_wake(caplog, monkeypatch) -> Non
     assert _slot_texts(w)[0][1].startswith("<canvas_changes ") and row.turn_status == "claimable"
     assert await _unread(w) == ["e1"], "the events stay unread: the next digest lists them again"
     assert "stayed unread" in caplog.text
+
+
+class _Hanging:
+    """A canvas storage whose ``method`` never answers (a database that took the connection and went quiet); the rest is the real one."""
+
+    def __init__(self, inner: Any, method: str) -> None:
+        self._inner, self._method = inner, method
+
+    def __getattr__(self, name: str) -> Any:
+        if name == self._method:
+            async def hang(*_: Any, **__: Any) -> Any:
+                await asyncio.Event().wait()
+            return hang
+        return getattr(self._inner, name)
+
+
+def test_the_canvas_reads_of_a_wake_are_bounded_at_two_seconds() -> None:
+    from primer.session import enqueue
+
+    assert enqueue._CANVAS_TIMEOUT_S == 2.0
+
+
+async def test_a_hanging_canvas_read_does_not_hold_the_wake(caplog, monkeypatch) -> None:
+    """The lead's ruling 6 on #892 round 2: the digest's read is bounded (2 s, shortened here); a timeout is logged once and skipped."""
+    from primer.session import enqueue
+
+    monkeypatch.setattr(enqueue, "_CANVAS_TIMEOUT_S", 0.2)
+    w = await _world()
+    await _change(w)
+    w.sp._stores[SessionCanvas] = _Hanging(w.sp.get_storage(SessionCanvas), "get")
+
+    with caplog.at_level(logging.WARNING, logger="primer.session.enqueue"):
+        async with asyncio.timeout(5):
+            row = await _wake(w)
+
+    assert _slot_texts(w) == [["go on"]] and row.turn_status == "claimable"
+    assert [r.getMessage() for r in caplog.records if "canvas" in r.getMessage()] == [
+        "canvas digest skipped for s1: the canvas did not answer within 0.2 s",
+    ]
+
+
+async def test_hanging_read_marks_do_not_hold_the_wake(caplog, monkeypatch) -> None:
+    from primer.session import enqueue
+
+    monkeypatch.setattr(enqueue, "_CANVAS_TIMEOUT_S", 0.2)
+    w = await _world()
+    await _change(w)
+    store = w.sp.get_storage(SessionCanvas)
+    w.sp._stores[SessionCanvas] = _Hanging(store, "patch_if")
+
+    with caplog.at_level(logging.WARNING, logger="primer.session.enqueue"):
+        async with asyncio.timeout(5):
+            row = await _wake(w)
+
+    assert _slot_texts(w)[0][1].startswith("<canvas_changes ") and row.turn_status == "claimable"
+    assert [r.getMessage() for r in caplog.records if "canvas" in r.getMessage()] == [
+        "canvas events [1] of session s1 stayed unread: the canvas did not answer within 0.2 s",
+    ]
+    w.sp._stores[SessionCanvas] = store
+    assert await _unread(w) == ["e1"]
 
 
 # ---- a click that is queued after all keeps its event ----------------------------------------------------------------------------------
