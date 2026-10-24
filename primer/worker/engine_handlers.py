@@ -121,6 +121,25 @@ def _clock_ticks(trigger, *, now: datetime) -> list[datetime | None]:
         return [trigger.next_fire_at]
 
 
+def _not_fired_yet(trigger, ticks: list[datetime | None]) -> list[datetime | None]:
+    """``ticks`` without the ones a delivery of this claim already fired (ticket 01a16ddb, review of #915).
+
+    A claim whose release was lost (a worker that died after its fires) is delivered again with ``next_fire_at`` unchanged, so it plans the
+    same ticks. ``fire_trigger`` records the ``fire_id`` of the last tick it fired (``last_fired_id``), and the ticks are fired oldest first:
+    when that id is one of these ticks', the tick and every tick before it already fired, and only the ticks after it are left. Read once,
+    from the row the claim read.
+    """
+    from primer.trigger.fire_id import make_fire_id
+
+    last = getattr(trigger, "last_fired_id", None)
+    if last is None:
+        return ticks
+    ids = [make_fire_id(trigger.id, tick) if tick is not None else None for tick in ticks]
+    if last not in ids:
+        return ticks
+    return ticks[ids.index(last) + 1:]
+
+
 async def _lease_after_the_fire(pool: "WorkerPool", trigger_id: str) -> tuple[bool, timedelta | None]:
     """How a claim that fired gives its lease back: ``(drop_lease, requeue_after)`` (ticket 01a16ddb, review of #915).
 
@@ -160,8 +179,9 @@ async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
 
     Every fire carries the tick it is for as ``scheduled_for`` (:func:`_clock_ticks`). A ``scheduled`` trigger fires the missed ticks its
     ``catchup`` keeps (``none`` none, ``one`` the most recent, ``all`` each, at most 64, the oldest first), then the due tick once; a missed tick
-    is one from the trigger's ``next_fire_at`` up to the due tick (ticket 01a16ddb, rulings 3 and 4). A catch-up fire that raises is logged
-    and the next one runs; the due tick's own errors reach the outer except.
+    is one from the trigger's ``next_fire_at`` up to the due tick (ticket 01a16ddb, rulings 3 and 4). A claim delivered again after a lost
+    release skips the ticks it already fired (:func:`_not_fired_yet`). A catch-up fire that raises is logged and the next one runs; the due
+    tick's own errors reach the outer except.
 
     An early claim (its tick more than ``CLOCK_SKEW`` ahead of the worker's clock) fires nothing and hands the lease back untouched
     (``entity_noop``: the release must not advance or disable a trigger that did not fire), requeued to its tick.
@@ -204,6 +224,7 @@ async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
                 engine_lease.entity_id, early_until.isoformat(),
             )
             return
+        ticks = _not_fired_yet(trigger, ticks)
         for position, tick in enumerate(ticks):
             if position < len(ticks) - 1:
                 try:
