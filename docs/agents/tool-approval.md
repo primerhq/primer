@@ -190,12 +190,17 @@ without anyone asking, so it draws only what is declared safe to draw:
   format, a graph's and a node's description and templates, a trigger's description, a webhook trigger's token and HMAC secret, a Python toolset's source, a stdio
   toolset's command and env, a toolset's URL and headers, a policy's Rego source and judge prompt. No description is ever listed: a person pastes a key into a
   description as easily as into a prompt.
-- **The code leads.** A tool may also declare `preview_lead` (in memory only): the paths the card draws FIRST, before the one-line preview
-  cuts a long entity, because they are what a person approves. A lead path the allowlist shows is drawn as its value followed by a fingerprint
-  of its text (`sha256 <12 hex>, <N> lines`); one the allowlist withholds is drawn as the fingerprint alone. The PARK computes the fingerprint
-  (it holds the call) and stamps it into `preview` as `lead` and `digests`, so the card never reads a withheld value. The admin-tier gates use
-  it: a policy write leads with its Rego, a toolset write with its stdio command and its python source's fingerprint, a harness install or
-  sync with its overrides.
+- **What is decided leads.** A tool may also declare `preview_lead` (in memory only): the paths the card draws FIRST, because they are what
+  a person decides on. A lead value is never cut by the card's line limits: it is drawn whole (an object with its keys sorted, a top-level
+  argument once), and only a value over 1200 characters is drawn as its head and its tail. Text, lists and objects are followed by a
+  fingerprint (`sha256 <12 hex>, <N> lines` for text, `sha256 <12 hex>, <N> chars of JSON` for a list or an object); a boolean, a number or a
+  short one-line string is its own. A part the scrubber hides by its name or shape (an override called `auth_cmd`) reads `redacted, see Show
+  all`, and the card is then partial. A lead path the allowlist withholds is drawn as its fingerprint alone. On an update of an approval
+  policy each lead value also says whether it changes the stored policy: `[unchanged]` or `[changed from <the stored fingerprint or value>]`.
+  The PARK computes the fingerprints and the comparison (it holds the call, and reads the stored policy) and stamps them into `preview` as
+  `lead`, `digests` and `changes`, so the card never reads a withheld value. The admin-tier gates use it: a policy write leads with
+  `enabled`, the approval type and the Rego (so disabling or neutralising a gate never reads like a no-op), a toolset write with its stdio
+  command and its python source's fingerprint, a harness install or sync with its overrides.
 - **The operator can override it.** `ToolApprovalPolicy.preview_args` (a list of the same paths) wins over the tool's declaration, and `[]` shows no value. This is the
   only way to cover an MCP tool or a Python tool, whose author declared nothing. Each path must name an argument of the gated tool: the console and the system
   `create_` / `update_tool_approval_policy` tools refuse a path that does not (a typo would hide more than meant, silently), and refuse paths for a tool that is not in

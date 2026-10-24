@@ -46,6 +46,7 @@ from primer.agent.approval import (
     ApprovalContext,
     ApprovalResolver,
     evaluate_approval_gate,
+    card_baseline_of,
     resolve_preview,
 )
 from primer.authz import _role_allows
@@ -903,7 +904,12 @@ class ToolExecutionManager:
                                 },
                                 # Which arguments the Inbox card may show, resolved here where the descriptor and the policy
                                 # are both in hand: the route that draws the card reads only this blob.
-                                preview=self._preview_for(policy, call, toolset_id=gate_toolset_id, bare_name=bare_name),
+                                preview=self._preview_for(
+                                    policy, call, toolset_id=gate_toolset_id, bare_name=bare_name,
+                                    baseline=await card_baseline_of(
+                                        self._approval_resolver, toolset_id=gate_toolset_id, tool_name=bare_name, arguments=call.arguments,
+                                    ),
+                                ),
                             ),
                         ),
                         tool_call_id=call.id,
@@ -919,11 +925,11 @@ class ToolExecutionManager:
             principal=principal,
         )
 
-    def _preview_for(self, policy: Any, call: ToolCallPart, *, toolset_id: str, bare_name: str) -> dict[str, Any]:
+    def _preview_for(self, policy: Any, call: ToolCallPart, *, toolset_id: str, bare_name: str, baseline: Any = None) -> dict[str, Any]:
         """The allowlist stamp of this call's approval card (:func:`primer.agent.approval.resolve_preview`). A gate on ``system::call_tool`` is a gate on the tool it runs: unless
         the operator's own list decides, the inner tool's paths (its declaration, else its closed set) join the card as ``arguments.<path>`` when this manager holds the inner
         descriptor; an inner tool it does not hold has its arguments withheld."""
-        preview = resolve_preview(policy=policy, tool=self._descriptors.get(call.name), arguments=call.arguments)
+        preview = resolve_preview(policy=policy, tool=self._descriptors.get(call.name), arguments=call.arguments, baseline=baseline)
         if (toolset_id, bare_name) == _CALL_TOOL and preview["source"] != "policy":
             arguments = call.arguments if isinstance(call.arguments, dict) else {}
             inner = self._descriptors.get(f"{arguments.get('toolset_id')}{_SCOPE_SEPARATOR}{arguments.get('tool_name')}")
