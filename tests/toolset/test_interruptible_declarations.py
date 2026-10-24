@@ -73,6 +73,10 @@ Added with revamp 09 (Tasks 4-7, active artifact store):
   on the provider's store, with no transaction, so a cancel inside the put can leave a stray object; and set_active runs that
   probe and then writes the setting row.
 
+Added with pivot P2 (plan task 10): ``system`` reset_prime_instructions writes prime's ``agents.md`` with ``Workspace.write_file``, which a
+local workspace runs in a thread under its scope lock, the hazard of ``workspaces`` write_workspace_file above: one write, but a cancel would
+release the lock while the write still runs.
+
 Examined and left interruptible (pivot P3, plan task 7): ``workspaces`` list_my_sessions is ONE read (a filtered page of session rows) and writes
 nothing, so a cancel loses nothing. Examined and left interruptible (revamp 09, Tasks 4-7): ``system`` get_active_artifact_store is ONE read
 of the setting row.
@@ -173,6 +177,9 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     # writes the setting row
     (SYSTEM_TOOLSET_ID, "test_artifact_storage_provider"),
     (SYSTEM_TOOLSET_ID, "set_active_artifact_store"),
+    # pivot P2 task 10: Workspace.write_file of prime's agents.md, which a local workspace runs in a thread under its scope lock (the
+    # hazard of write_workspace_file above)
+    (SYSTEM_TOOLSET_ID, "reset_prime_instructions"),
 }
 
 EXAMINED_AND_INTERRUPTIBLE = {

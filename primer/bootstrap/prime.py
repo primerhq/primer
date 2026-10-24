@@ -344,6 +344,29 @@ async def ensure_prime_agents_md(storage_provider: Any, *, workspace_registry: A
     return True
 
 
+async def reset_prime_agents_md(storage_provider: Any, *, workspace_registry: Any) -> dict[str, object]:
+    """Overwrite ``agents.md`` in the default workspace with the shipped instructions: the one path that rewrites an existing file.
+
+    Behind ``POST /v1/setup/reset_prime_instructions`` and the admin tool ``system__reset_prime_instructions``; who may call it is
+    their concern (both are admin-only, and the tool refuses a session outside the default workspace). The bytes are always
+    :func:`shipped_prime_agents_md`, never a caller's, and only ``agents.md`` is written: an ``AGENTS.md`` beside it stays where it is
+    (the loader reads it only while ``agents.md`` is absent).
+
+    Returns ``{"workspace_id", "path", "bytes"}``. Raises :class:`NotFoundError` ``"no default workspace is recorded"`` when there is
+    no default workspace, and whatever the registry or the backend raises otherwise (``NotFoundError`` for a missing row or a backend
+    that cannot re-attach it, ``BadRequestError`` for a directory called ``agents.md``, ``WorkspaceRefusedError`` for a workspace the
+    deployment refuses, ``WorkspaceUnreachableError`` for a runtime that does not answer).
+    """
+    workspace_id = await resolve_default_workspace_id(storage_provider)
+    if workspace_id is None:
+        raise NotFoundError("no default workspace is recorded")
+    workspace = await workspace_registry.get_workspace(workspace_id)
+    shipped = shipped_prime_agents_md()
+    await workspace.write_file(PRIME_AGENTS_MD, shipped)
+    logger.info("prime: reset agents.md to the shipped version", extra={"workspace_id": workspace_id})
+    return {"workspace_id": workspace_id, "path": PRIME_AGENTS_MD, "bytes": len(shipped)}
+
+
 __all__ = [
     "MAIN_SESSION_NAME",
     "PRIME_AGENTS_MD",
@@ -353,6 +376,7 @@ __all__ = [
     "ensure_prime_agents_md",
     "main_session_id",
     "record_default_workspace_id",
+    "reset_prime_agents_md",
     "resolve_default_workspace_id",
     "shipped_prime_agents_md",
 ]
