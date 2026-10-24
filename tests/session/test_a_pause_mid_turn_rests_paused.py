@@ -280,3 +280,29 @@ async def test_the_workspace_session_tools_serve_a_session_paused_mid_turn_as_pa
             assert [(s["session_id"], s["status"]) for s in json.loads(listed.output)["items"] if s["session_id"] == row.id] == [(row.id, "paused")]
         finally:
             await _close(closers)
+
+
+QUESTION = [TextDelta(text="Which file should I edit?", index=0), Done(stop_reason="stop", raw_reason="stop")]
+
+
+@PROCESSES
+async def test_a_session_paused_mid_turn_whose_answer_asks_a_question_is_served_as_paused(two_processes, tmp_path, fake_event_bus):
+    """An answer that ends in a question leaves the SLOT WAITING (the executor's own wait) while the pause rests the ROW PAUSED: the session tools
+    serve the row's PAUSED over the slot's WAITING too (review of #916, probe E: they served ``waiting``)."""
+    async with asyncio.timeout(BOUND_S):
+        api, worker, row, closers = await _world(tmp_path, two_processes=two_processes, turn_no=1)
+        try:
+            answers: list = []
+            llm = _ActingLLM(_pauser(api, row, "tool", fake_event_bus, answers), scripts=[QUESTION])
+            await run_one_session_turn(_make_lease(row.id), worker.dispatch_deps(llm, fake_event_bus))
+
+            assert (await worker.sessions.get(row.id)).status == SessionStatus.PAUSED
+            # the slot the turn left (the worker's handle; another process's handle may still hold its own copy, which says RUNNING)
+            slot = await worker.workspace.get_session(row.id)
+            assert await slot.status() == SessionStatus.WAITING, "the answer did not leave the slot waiting: this test needs a question"
+            kind, got = await _tool(api, "get_workspace_session", row, fake_event_bus)
+            assert (kind, got["status"]) == ("ok", "paused"), got
+            listed = await api.toolset(fake_event_bus).call(tool_name="list_workspace_sessions", arguments={"workspace_id": row.workspace_id})
+            assert [(s["session_id"], s["status"]) for s in json.loads(listed.output)["items"] if s["session_id"] == row.id] == [(row.id, "paused")]
+        finally:
+            await _close(closers)
