@@ -54,8 +54,26 @@ async def test_the_park_stamps_the_policys_approvers(system_toolset, sp) -> None
 
 
 @pytest.mark.asyncio
-async def test_the_per_call_routing_of_a_conditional_verdict_wins_over_the_policys_own(system_toolset, sp) -> None:
+async def test_the_per_call_routing_of_a_conditional_verdict_routes_a_policy_with_no_approvers(system_toolset, sp) -> None:
+    meta = await _park(system_toolset, sp, _policy(approval=PolicyApprovalConfig(policy=ROUTES_TO_CAROL)))
+
+    assert meta["approvers"] == ApproverSpec(kind="users", users=["carol"]).model_dump()
+
+
+@pytest.mark.asyncio
+async def test_a_verdict_narrows_the_policys_approvers_and_never_replaces_them(system_toolset, sp) -> None:
+    """The effective spec is the STRICTER of the row's and the verdict's (lead ruling R2-4 on #860): the decider must satisfy both.
+
+    A verdict naming someone the row does not admit cannot hand the gate to them; with nobody left, only an admin decides."""
     meta = await _park(system_toolset, sp, _policy(approval=PolicyApprovalConfig(policy=ROUTES_TO_CAROL), approvers=ALICE))
+
+    assert meta["approvers"] == ApproverSpec(kind="users", users=[]).model_dump()
+
+
+@pytest.mark.asyncio
+async def test_a_verdict_picks_the_approvers_the_policy_also_admits(system_toolset, sp) -> None:
+    both = ApproverSpec(kind="users", users=["alice", "carol"])
+    meta = await _park(system_toolset, sp, _policy(approval=PolicyApprovalConfig(policy=ROUTES_TO_CAROL), approvers=both))
 
     assert meta["approvers"] == ApproverSpec(kind="users", users=["carol"]).model_dump()
 
