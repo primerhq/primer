@@ -17,6 +17,7 @@ from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
 from tests.ui_e2e._a11y import unnamed_controls
+from tests.ui_e2e._a11y_surfaces import overlay_ready
 from tests.ui_e2e._shell_helpers import open_legacy_route, open_overlay, open_view
 
 pytestmark = smk("SMK-UI-06", status="partial")
@@ -69,6 +70,10 @@ def test_the_platform_list_filters_and_plain_create_inputs_have_names(base_url: 
     wid = _first_workspace(base_url)
     for name in ("new-workspace", "activity"):
         open_overlay(page, console_url, wid, name)
+        # what the overlay draws once it has loaded (the new-workspace dialog's template dropdown, or its empty state), so the sweep reads its controls,
+        # not its loading line (the review of #911)
+        for marker in overlay_ready(name):
+            expect(page.locator(marker).first).to_be_visible(timeout=15_000)
         check(f"overlay {name}", f'[data-testid="nv-overlay:{name}"]')
 
     # The Platform view: its nav rows and the card grid's buttons are swept for names too. One
