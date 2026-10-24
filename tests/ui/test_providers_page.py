@@ -437,6 +437,28 @@ def test_the_extras_slot_renders_above_that_types_cards(ctx) -> None:
     assert ctx.eval("MR.find('stub-tts-extras') === null")
 
 
+def test_the_providers_page_has_no_web_search_chip(ctx) -> None:
+    """Plan 02 Task 22: the web search mode and default live on the Web page (web-settings.jsx), so Providers > Web Search draws its cards and nothing above
+    them: no extras slot, no old active-provider panel, and no read of /web_search_active_config. The file names neither the panel nor the route."""
+    src = CATALOG_FILE.read_text(encoding="utf-8")
+    assert "/web_search_active_config" not in src
+    assert "PC_ActiveWebSearchPanel" not in src
+    ctx.eval("""
+    PROVIDER_FIXTURES["/web_search_providers"] = { items: [{ id: "DuckDuckGo", provider_type: "duckduckgo" }, { id: "tavily-1", provider_type: "tavily" }] };
+    MR.mount(window.ProviderCatalog, {
+      initialClass: "web_search",
+      onNavigate: onNavigate
+    });
+    """)
+    settle(ctx)
+    assert ctx.eval("MR.find('pk-card:web_search:DuckDuckGo') !== null")
+    assert ctx.eval("MR.find('pk-card:web_search:tavily-1') !== null")
+    assert ctx.eval("MR.find('pc-extras:web_search') === null"), "nothing is drawn above the Web Search cards"
+    assert ctx.eval("MR.find('active-web-search-config') === null")
+    paths = [c["path"] for c in js(ctx, "CALLS")]
+    assert not [p for p in paths if "web_search_active_config" in p], paths
+
+
 def test_a_failed_class_shows_its_error_and_the_others_still_load(ctx) -> None:
     envelope = {"type": "/errors/internal", "title": "Internal Error", "status": 500, "detail": "db failed"}
     ctx.eval(f"""
