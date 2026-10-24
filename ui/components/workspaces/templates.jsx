@@ -838,6 +838,13 @@ function WT_TemplateOverlay(props) {
 
   // The server's PUT replaces the whole row, so an edit reads the template again and writes only what this form changed onto what the server holds now:
   // another person's change to a field this form left alone survives (round 2 of #886). A template deleted meanwhile is the GET's 404, and nothing is written.
+  // A save is out (from the click, before the busy state has rendered), and whether the overlay is still on screen.
+  var outRef = React.useRef(false);
+  var aliveRef = React.useRef(true);
+  React.useEffect(function () {
+    aliveRef.current = true;
+    return function () { aliveRef.current = false; };
+  }, []);
   var mutation = api.useMutation(function (form) {
     if (creating) return apiFetch("POST", "/workspace_templates", WT_templateBody(null, form, null));
     var path = "/workspace_templates/" + encodeURIComponent(st.base.id);
@@ -847,9 +854,12 @@ function WT_TemplateOverlay(props) {
     });
   }, {
     invalidates: WT_TEMPLATE_KEYS.concat(id ? ["ws:template:" + id] : []),
+    // The template is saved either way, so the toast says so. The hand-back and the close belong to the overlay: when it has left while the save was out
+    // (its host moved on), whatever is open now is left alone (the review of #911).
     onSuccess: function (saved) {
       var savedId = (saved && saved.id) || id;
       con.toast((creating ? "Template created: " : "Template saved: ") + savedId);
+      if (!aliveRef.current) return;
       if (props.onSaved) props.onSaved(saved);
       props.onClose();
     },
@@ -862,7 +872,7 @@ function WT_TemplateOverlay(props) {
   var saving = !!mutation.loading;
 
   function save() {
-    if (!st || view) return;
+    if (!st || view || outRef.current) return;
     var errs = WT_validateForm(st.form, { isAdmin: isAdmin, initial: st.initial });
     attemptedState[1](true);
     setServer({ fields: {}, general: null });
@@ -870,7 +880,14 @@ function WT_TemplateOverlay(props) {
       openFoldsFor(Object.keys(errs));
       return;
     }
-    mutation.mutate(st.form).catch(function () { /* onError shows it */ });
+    outRef.current = true;
+    function done() { outRef.current = false; }
+    mutation.mutate(st.form).then(done, done); // a refusal: onError shows it
+  }
+  // X, Escape, the scrim and Cancel: nothing while a save is out, as Cancel's blocked says.
+  function closeUnlessSaving() {
+    if (outRef.current || saving) return;
+    props.onClose();
   }
 
   var title = creating ? "New workspace template" : mode === "edit" && st ? "Edit workspace template" : "Workspace template";
@@ -921,7 +938,7 @@ function WT_TemplateOverlay(props) {
     },
   };
   var footer = view ? { right: close } : {
-    left: <Btn kind="ghost" data-testid="wt-cancel" blocked={saving} onClick={props.onClose}>Cancel</Btn>,
+    left: <Btn kind="ghost" data-testid="wt-cancel" blocked={saving} onClick={closeUnlessSaving}>Cancel</Btn>,
     right: (
       <Btn kind="primary" data-testid="wt-save" busy={saving} onClick={save}>
         {saving ? (creating ? "Creating…" : "Saving…") : (creating ? "Create" : "Save")}
@@ -1084,7 +1101,7 @@ function WT_TemplateOverlay(props) {
   }
 
   return (
-    <PK_FormOverlay title={title} testid="wt-overlay" onClose={props.onClose} selector={selector} footer={footer}>
+    <PK_FormOverlay title={title} testid="wt-overlay" onClose={closeUnlessSaving} selector={selector} footer={footer}>
       {note ? <div className="field-help" data-testid="wt-readonly-note" style={WT_NOTE_STYLE}>{note}</div> : null}
       {mode === "edit" ? (
         <div className="field-help" data-testid="wt-snapshot-note">

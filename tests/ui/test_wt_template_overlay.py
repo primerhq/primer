@@ -396,6 +396,36 @@ def test_the_overlay_buttons_are_never_disabled_for_a_request(ctx):
     assert cancel.get("aria-disabled") == "true" and not cancel.get("disabled")
 
 
+def test_the_overlay_cannot_be_closed_while_a_save_is_out(ctx):
+    """X, Escape and the scrim all call the overlay's onClose: like Cancel, they do nothing while the save is out (the review of #911), and close again
+    once it is answered."""
+    _stored(ctx, FULL_K8S)
+    _mount(ctx, "{ row: " + json.dumps(FULL_K8S) + " }")
+    ctx.eval("var RESOLVE; HANDLER = function (m) { return m === 'PUT' ? new Promise(function (r) { RESOLVE = r; }) : Promise.resolve(JSON.parse(JSON.stringify(ROWS['/workspace_templates/k8s-full']))); };"
+             " setValue('ws-template-description', 'x'); press('wt-save');")
+    settle(ctx)
+    ctx.eval("overlayProps().onClose(); press('wt-cancel');")
+    assert js(ctx, "CLOSED") == 0
+    ctx.eval("RESOLVE(Object.assign({}, ROWS['/workspace_templates/k8s-full'], { description: 'x' }));")
+    settle(ctx)
+    assert js(ctx, "CLOSED") == 1 and js(ctx, "SAVED")[0]["description"] == "x"
+
+
+def test_a_save_answered_after_the_overlay_has_gone_closes_nothing(ctx):
+    """If the overlay left (its host moved on) while the save was out, the answer must not close whatever is open now, nor hand a template to a dialog
+    that has gone; the toast still says the template was saved."""
+    _stored(ctx, FULL_K8S)
+    ctx.eval("ROLE = 'admin'; function Host(p) { return p.show ? React.createElement(window.WT_TemplateOverlay, { row: " + json.dumps(FULL_K8S)
+             + ", onClose: onClose, onSaved: onSaved }) : null; } MR.mount(Host, { show: true });")
+    ctx.eval("var RESOLVE; HANDLER = function (m) { return m === 'PUT' ? new Promise(function (r) { RESOLVE = r; }) : Promise.resolve(JSON.parse(JSON.stringify(ROWS['/workspace_templates/k8s-full']))); };"
+             " setValue('ws-template-description', 'x'); press('wt-save');")
+    settle(ctx)
+    ctx.eval("MR.rerender({ show: false }); RESOLVE(Object.assign({}, ROWS['/workspace_templates/k8s-full'], { description: 'x' }));")
+    settle(ctx)
+    assert js(ctx, "CLOSED") == 0 and js(ctx, "SAVED") == []
+    assert js(ctx, "TOASTS") == [["Template saved: k8s-full", None]]
+
+
 # ---- states -------------------------------------------------------------------------------------------------------------------------------------------
 
 
