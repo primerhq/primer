@@ -135,7 +135,8 @@ def _system_flag_refusal(exc: EntityCheckError) -> HTTPException:
 
 
 async def _collection_on_pre_create(entity: Collection, request: Request) -> None:
-    """Validate the collection id and refuse a create that sets the ``system`` flag (403)."""
+    """Validate the collection id (422 ``collection_id_invalid`` / ``collection_id_reserved`` at ``body.id``) and refuse a create that sets
+    the ``system`` flag (403)."""
     try:
         check_collection_id(entity)
         check_collection_system_flag(entity)

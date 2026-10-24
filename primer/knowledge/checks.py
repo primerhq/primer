@@ -8,6 +8,13 @@ ordinary body field a client cleared it with a PUT and then deleted the collecti
 The rule: a create may not set the flag, and an update may not change it (a body that omits it counts as clearing it, because the model
 default is false). An update that leaves the flag as it was is fine, so a client that reads a row and writes it back keeps working. The
 REST hooks answer 403 and the tools ``type=forbidden``, as for the other platform-owned rules.
+
+The platform's own ids are reserved the same way (ticket 01a16cad): a new collection may not take an id that starts with ``_internal_``
+(the internal collections, :data:`primer.model.internal.INTERNAL_COLLECTION_IDS`) or the platform wiki's id
+(:data:`primer.knowledge.system_collection.SYSTEM_COLLECTION_ID`), because the boot writes those rows itself and would otherwise meet a
+client's row under its id. :func:`check_collection_id` refuses it on create (REST 422 ``collection_id_reserved`` at ``body.id``, tool
+``type=validation-error``). Ids are immutable, so an update cannot plant one, and a row an older install already stores under a reserved
+id is left alone.
 """
 
 from __future__ import annotations
@@ -15,11 +22,15 @@ from __future__ import annotations
 import re
 
 from primer.common.entity_checks import EntityCheckError
+from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
 from primer.model.collection import Collection
 from primer.model.graph import Graph
 
 SYSTEM_FLAG_PROTECTED = "system_flag_protected"
 COLLECTION_ID_INVALID = "collection_id_invalid"
+COLLECTION_ID_RESERVED = "collection_id_reserved"
+# The internal collections' prefix; the platform wiki's id is the other reserved collection id.
+RESERVED_COLLECTION_ID_PREFIX = "_internal_"
 GRAPH_ID_INVALID = "graph_id_invalid"
 _SLUG_RE = re.compile(r"[a-z0-9._-]+")
 
@@ -28,14 +39,31 @@ def _is_valid_slug_id(value: str) -> bool:
     return bool(_SLUG_RE.fullmatch(value)) and value not in (".", "..")
 
 
+def is_reserved_collection_id(cid: str) -> bool:
+    """Whether ``cid`` is an id the platform keeps for its own collections (an ``_internal_`` prefix, or the platform wiki's id)."""
+    return cid.startswith(RESERVED_COLLECTION_ID_PREFIX) or cid == SYSTEM_COLLECTION_ID
+
+
 def check_collection_id(entity: Collection) -> None:
-    """Refuse a new collection whose id is not a valid slug ([a-z0-9._-]+, not '.' or '..')."""
+    """Refuse a new collection whose id is not a valid slug ([a-z0-9._-]+, not '.' or '..') or is reserved for the platform.
+
+    Runs on create only, in the client doors (the REST create hook and the system ``create_collection`` tool). The platform's own
+    collections are written straight to storage and never pass through it.
+    """
     cid = entity.id or ""
     if not _is_valid_slug_id(cid):
         raise EntityCheckError(
             "validation",
             f"{cid!r} is not a valid collection id: it must match [a-z0-9._-]+ and not be '.' or '..'",
             code=COLLECTION_ID_INVALID,
+            field="id",
+        )
+    if is_reserved_collection_id(cid):
+        raise EntityCheckError(
+            "validation",
+            f"{cid!r} is reserved for the platform: a collection id may not start with {RESERVED_COLLECTION_ID_PREFIX!r} (the internal "
+            f"collections) or be {SYSTEM_COLLECTION_ID!r} (the platform wiki); choose another id",
+            code=COLLECTION_ID_RESERVED,
             field="id",
         )
 
@@ -74,9 +102,12 @@ def check_collection_system_flag(entity: Collection, existing: Collection | None
 
 __all__ = [
     "COLLECTION_ID_INVALID",
+    "COLLECTION_ID_RESERVED",
     "GRAPH_ID_INVALID",
+    "RESERVED_COLLECTION_ID_PREFIX",
     "SYSTEM_FLAG_PROTECTED",
     "check_collection_id",
     "check_collection_system_flag",
     "check_graph_id",
+    "is_reserved_collection_id",
 ]

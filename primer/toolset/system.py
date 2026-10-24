@@ -155,10 +155,12 @@ from primer.artifact.checks import (
 from primer.channel.checks import check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.knowledge.checks import (
+    RESERVED_COLLECTION_ID_PREFIX,
     check_collection_id,
     check_collection_system_flag,
     check_graph_id,
 )
+from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
 from primer.knowledge.lifecycle import purge_collection
 from primer.toolset.toolset_checks import (
     check_toolset_on_create,
@@ -624,7 +626,9 @@ def build_system_toolset(
         "artifact_storage_provider": ARTIFACT_DEFAULT_WRITE_NOTE,
         "collection": (
             "The ``system`` flag belongs to the platform: a create that sets it and an update that changes it return ``type=forbidden`` "
-            "and nothing is stored. When you replace a row, send back the stored value; leaving the field out counts as ``false``."
+            "and nothing is stored. When you replace a row, send back the stored value; leaving the field out counts as ``false``. "
+            f"A new collection's ``id`` may not start with ``{RESERVED_COLLECTION_ID_PREFIX}`` or be ``{SYSTEM_COLLECTION_ID}``: those ids are "
+            "reserved for the platform, and the create returns ``type=validation-error`` naming ``id`` and stores nothing."
         ),
     }
 
