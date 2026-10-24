@@ -9,15 +9,15 @@ the full event, as before. ``canvas.updated`` carries no input and is the same f
 
 The app runs on the real SQLite storage and the events are the real ones: ``CanvasService.record_event`` validates each interaction,
 writes it to the canvas and appends the ``canvas.event`` to the SQLite event log, as production does. Every query shape the console uses
-is read: the workspace feed, an exact type, a glob, and the log polled one event at a time (each ``after_id`` is the last id read, the
-way a tail follows the log; there is no SSE stream of the event log).
+is read: the workspace feed, an exact type, a glob, a ``since`` window, and the log polled one event at a time (each ``after_id`` is the
+last id read, the way a tail follows the log; there is no SSE stream of the event log).
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -59,11 +59,13 @@ ENTERED = {
 #: The payload keys a non-admin never reads.
 INPUT = ("value", "data")
 
-#: The query shapes of the feed (the console's Activity panel and the events sidebar). ``{base}`` is the log head before the events.
+#: The query shapes of the feed (the console's Activity panel and the events sidebar). ``{base}`` is the log head before the events and
+#: ``{since}`` a moment before them.
 QUERIES = {
     "workspace feed": "/v1/events?after_id={base}&workspace_id=" + WORKSPACE,
     "exact type": "/v1/events?after_id={base}&workspace_id=" + WORKSPACE + "&event_type=canvas.event",
     "glob": "/v1/events?after_id={base}&workspace_id=" + WORKSPACE + "&event_type=canvas.*",
+    "since": "/v1/events?since={since}&workspace_id=" + WORKSPACE,
     "polled one at a time": "/v1/events?after_id={base}&workspace_id=" + WORKSPACE + "&limit=1",
 }
 POLLED = "polled one at a time"
@@ -109,13 +111,14 @@ async def clients(sp: SqliteStorageProvider) -> AsyncIterator[tuple[httpx.AsyncC
         yield admin, user
 
 
-async def _seed(sp: SqliteStorageProvider) -> int:
-    """Two sessions of the shared workspace, a canvas on each, and on each a Select change and an Html emit. Returns the log head before them.
+async def _seed(sp: SqliteStorageProvider) -> dict[str, Any]:
+    """Two sessions of the shared workspace, a canvas on each, and on each a Select change and an Html emit. Returns the marks the query
+    shapes read after: ``base``, the log head before them, and ``since``, a moment before them (UTC, as a query value).
 
     An ``agent.created`` row is appended too: it is the proof that the user client is read as a non-admin (the feed hides entity CRUD
     from a non-admin only)."""
     store = sp.get_event_store()
-    base = await store.max_id()
+    marks = {"base": await store.max_id(), "since": (datetime.now(UTC) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
     sessions = sp.get_storage(WorkspaceSession)
     for sid, creator in ((ADMIN_SESSION, ADMIN_REF), (USER_SESSION, USER_REF)):
         await sessions.create(WorkspaceSession(
@@ -137,20 +140,20 @@ async def _seed(sp: SqliteStorageProvider) -> int:
             by=creator.display,
         )
     await store.append(event_type="agent.created", entity_kind="agent", entity_id="a-1", workspace_id=WORKSPACE, payload={"id": "a-1"})
-    return base
+    return marks
 
 
-async def _read(client: httpx.AsyncClient, query: str, base: int) -> list[dict[str, Any]]:
-    """The items of ``query`` after ``base``. The polled shape follows the log one page of one event at a time, each ``after_id`` the last
-    id read, until a page comes back empty (the non-admin's last page is the ``agent.created`` row it is not shown)."""
+async def _read(client: httpx.AsyncClient, query: str, marks: dict[str, Any]) -> list[dict[str, Any]]:
+    """The items of ``query`` after the ``marks`` of :func:`_seed`. The polled shape follows the log one page of one event at a time, each
+    ``after_id`` the last id read, until a page comes back empty (the non-admin's last page is the ``agent.created`` row it is not shown)."""
     if query != POLLED:
-        resp = await client.get(QUERIES[query].format(base=base))
+        resp = await client.get(QUERIES[query].format(**marks))
         assert resp.status_code == 200, resp.text
         return resp.json()["items"]
     items: list[dict[str, Any]] = []
-    cursor = base
+    cursor = marks["base"]
     while True:
-        resp = await client.get(QUERIES[query].format(base=cursor))
+        resp = await client.get(QUERIES[query].format(**{**marks, "base": cursor}))
         assert resp.status_code == 200, resp.text
         page = resp.json()["items"]
         if not page:
@@ -174,12 +177,12 @@ async def test_a_non_admin_reads_a_canvas_event_without_its_input(sp, clients, s
     """Another user's session and the reader's own: one rule, no ownership check. The rest of the event is the admin's, key for key."""
     async with asyncio.timeout(BODY_TIMEOUT_S):
         admin, user = clients
-        base = await _seed(sp)
+        marks = await _seed(sp)
 
-        user_items = await _read(user, query, base)
-        admin_items = await _read(admin, query, base)
+        user_items = await _read(user, query, marks)
+        admin_items = await _read(admin, query, marks)
 
-        if query == "workspace feed":
+        if query in ("workspace feed", "since"):
             assert "agent.created" in [e["event_type"] for e in admin_items]
             assert "agent.created" not in [e["event_type"] for e in user_items], "the user client must be read as a non-admin"
         seen = _canvas_events(user_items, session_id)
@@ -199,9 +202,9 @@ async def test_a_non_admin_reads_a_canvas_event_without_its_input(sp, clients, s
 async def test_an_admin_reads_the_value_and_the_data(sp, clients, session_id: str) -> None:
     async with asyncio.timeout(BODY_TIMEOUT_S):
         admin, _user = clients
-        base = await _seed(sp)
+        marks = await _seed(sp)
 
-        change, emit = _canvas_events(await _read(admin, "workspace feed", base), session_id)
+        change, emit = _canvas_events(await _read(admin, "workspace feed", marks), session_id)
 
         assert change["payload"]["value"] == ENTERED[session_id]["value"]
         assert emit["payload"]["data"]["note"] == ENTERED[session_id]["data"]["note"]
@@ -212,10 +215,10 @@ async def test_canvas_updated_reads_the_same_for_both(sp, clients) -> None:
     """``canvas.updated`` says which element ids changed and who changed them: no input, nothing to drop."""
     async with asyncio.timeout(BODY_TIMEOUT_S):
         admin, user = clients
-        base = await _seed(sp)
+        marks = await _seed(sp)
         query = "/v1/events?after_id={base}&workspace_id=" + WORKSPACE + "&event_type=canvas.updated"
 
-        seen = (await user.get(query.format(base=base))).json()["items"]
+        seen = (await user.get(query.format(**marks))).json()["items"]
 
-        assert len(seen) == 2 and seen == (await admin.get(query.format(base=base))).json()["items"]
+        assert len(seen) == 2 and seen == (await admin.get(query.format(**marks))).json()["items"]
         assert seen[0]["payload"]["changed"]["added"]
