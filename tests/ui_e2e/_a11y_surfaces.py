@@ -261,7 +261,7 @@ FLOORS: dict[str, int] = {
     "overlay-page providers/stt / + Register": 5,
     "overlay-page providers/tts": 2,
     "overlay-page providers/tts / + Register": 5,
-    "overlay-page providers/web_search": 3,
+    "overlay-page providers/web_search": 1,            # the built-in DuckDuckGo card's Open: the two selects of the old active-provider panel left with plan 02 Task 22 (the Web page sets the mode)
     "overlay-page providers/web_search / + Register": 2,
     "overlay-page providers/artifact_storage": 1,
     "overlay-page providers/artifact_storage / + Register": 2,

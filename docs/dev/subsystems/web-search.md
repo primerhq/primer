@@ -126,8 +126,8 @@ The entities:
 - `primer/api/app.py`: `_bootstrap_web_search` plus the lifespan wiring that
   constructs the registry, service, and toolset.
 - `ui/components/provider-catalog.jsx`: the `web_search` class on the unified
-  provider catalog page (`view=platform:providers:web_search`), with the active-provider
-  card slot rendered above the provider card grid. The
+  provider catalog page (`view=platform:providers:web_search`): the provider
+  cards and nothing above them (the active config is set on Platform › Web). The
   console create and edit work against this model because the catalog's
   `save()` names the body through `PC_wireBody` (`provider-form.jsx`): the
   form's `provider` becomes `provider_type` and the config gains the
@@ -331,9 +331,10 @@ for web search and for web fetch, and the fetchers themselves are set on
 Platform › Web (`ui/components/web-settings.jsx`, `view=platform:web`,
 admin only), which reads and writes the two singletons through
 `GET` and `PUT /v1/web_search_active_config` and
-`GET` and `PUT /v1/web_fetch_active_config`. The older active-provider panel
-above the Web Search cards (`PC_ActiveWebSearchPanel`) is still drawn there
-until the Providers page drops it. The page detail lives in the UI-pages docs.
+`GET` and `PUT /v1/web_fetch_active_config`. Providers › Web Search draws no
+active-config control of its own (plan 02 Task 22 removed the old
+active-provider panel, `PC_ActiveWebSearchPanel`, that sat above the cards).
+The page detail lives in the UI-pages docs.
 
 Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
 `primer/web_search/__init__.py`), `WebSearchService`, and `WebSearchRegistry`.
