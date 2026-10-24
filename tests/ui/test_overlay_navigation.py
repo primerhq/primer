@@ -427,7 +427,7 @@ function __stub(name) {
     return React.createElement("div", { "data-testid": "stub:" + name });
   };
 }
-["AgentDetail", "GraphDetail", "ToolsetDetail", "TR_TriggersPage", "HarnessesPage", "SV_ServicesPage", "ProviderCatalog", "WorkspaceTemplateDetail", "WorkspaceProviderDetail", "WorkspaceDetail", "ApprovalsPage", "CollectionsPage"].forEach(function (n) {
+["AgentDetail", "GraphDetail", "ToolsetDetail", "TR_TriggersPage", "HarnessesPage", "SV_ServicesPage", "ProviderCatalog", "WorkspaceTemplateDetail", "WT_TemplateOverlay", "WorkspaceProviderDetail", "WorkspaceDetail", "ApprovalsPage", "CollectionsPage"].forEach(function (n) {
   window[n] = __stub(n);
 });
 window.AP_PolicyDetail = function (props) { window.__apProps = props; return React.createElement("div", { "data-testid": "stub:policy" }); };
@@ -510,8 +510,10 @@ def test_the_crumb_of_a_section_overlay_goes_to_that_sections_page(host, overlay
     assert host.log()["closeTo"] == [target]
 
 
+# The crumb of the bare templates overlay (workspaces:templates, the legacy list until Plan 08 Task 15). A template (workspaces:templates:<id>) is the
+# template overlay since Plan 08 Task 11, a kit Modal with its own chrome and no crumb (the next test), so the crumb's two shim branches are pinned here.
 def test_the_template_crumb_returns_to_the_legacy_list_until_the_platform_page_exists(host):
-    host.mount({"name": "workspaces", "section": "templates", "id": "t1"})
+    host.mount({"name": "workspaces", "section": "templates", "id": None})
     host.click("nv-overlay-crumb")
     assert host.log()["open"] == [["workspaces", "templates", None]]
     assert host.log()["closeTo"] == []
@@ -519,9 +521,21 @@ def test_the_template_crumb_returns_to_the_legacy_list_until_the_platform_page_e
 
 def test_the_template_crumb_closes_to_platform_after_its_component_loads(host):
     host.eval("(function () { window.WT_TemplatesPage = function () {}; return 1; })()")
-    host.mount({"name": "workspaces", "section": "templates", "id": "t1"})
+    host.mount({"name": "workspaces", "section": "templates", "id": None})
     host.click("nv-overlay-crumb")
     assert host.log()["closeTo"] == [TEMPLATES_PAGE]
+
+
+def test_a_template_address_is_the_template_overlay_with_its_own_chrome(host):
+    """Plan 08 Task 11: overlay=workspaces:templates:<id> draws WT_TemplateOverlay for that template inside the bare wrappers (one title bar, not two);
+    its Close closes the overlay. The workspace provider detail page links here."""
+    host.mount({"name": "workspaces", "section": "templates", "id": "t1"})
+    assert host.eval("!!MR.find('stub:WT_TemplateOverlay') && MR.find('stub:WorkspaceTemplateDetail') === null")
+    assert host.eval("MR.find('nv-overlay-crumb') === null && MR.find('nv-overlay-title') === null")
+    assert host.eval("MR.find('nv-overlay-body').props.style.position") == "fixed"
+    assert host.eval("window.__props.WT_TemplateOverlay.templateId") == "t1"
+    host.eval("(function () { window.__props.WT_TemplateOverlay.onClose(); return 1; })()")
+    assert host.log()["closed"] == 1 and host.log()["closeTo"] == [] and host.log()["open"] == []
 
 
 def test_a_crumb_with_no_platform_page_keeps_opening_the_overlay_root(host):
@@ -576,8 +590,9 @@ def _css_z_indexes(selector: str) -> set[int]:
 
 @pytest.mark.parametrize(
     "overlay",
-    [{"name": "agents", "section": None, "id": "a1"}, {"name": "collections", "section": None, "id": "c1"}],
-    ids=["agent", "collection"],
+    [{"name": "agents", "section": None, "id": "a1"}, {"name": "collections", "section": None, "id": "c1"},
+     {"name": "workspaces", "section": "templates", "id": "t1"}],
+    ids=["agent", "collection", "workspace-template"],
 )
 def test_the_bypass_wrappers_are_on_the_overlay_layer_above_the_topbar(host, overlay):
     """The agent editor and the collection browser draw their own Modal, inside two bare ``position: fixed`` wrappers. A fixed element is its own stacking context, so with

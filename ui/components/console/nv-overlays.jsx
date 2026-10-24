@@ -508,13 +508,15 @@ function NV_CreateWorkspaceOverlay() {
           <div className="nv-bind-empty">Loading templates…</div>
         ) : !tplItems.length ? (
           <div className="nv-form-error">
-            No workspace templates registered. Create one under
-            Workspaces → Templates first.
+            No workspace templates yet.
+            {/* The template.create verb (Platform revamp 08): it leaves this dialog for the Workspace templates page and opens its create overlay. */}
             <button type="button" className="nv-btn-secondary"
-              style={{ marginTop: 8 }}
+              style={{ marginTop: 8 }} data-testid="nv-nw-create-template" data-verb="template.create"
               onClick={function () {
-                con.openOverlay("workspaces", "templates", null);
-              }}>Open templates</button>
+                con.closeOverlay();
+                var verb = con.registry.get("template.create");
+                if (verb) verb.run();
+              }}>Create a template</button>
           </div>
         ) : (
           <div className="nv-pick-list">
@@ -785,13 +787,10 @@ var NV_OVERLAY_MOUNTS = {
       // under either names ONE record. Otherwise an id names ONE
       // workspace, with the section slot doubling as its tab.
       if (state.section === "templates") {
+        // A template is the template overlay (Platform revamp 08, Task 11): it draws its own Modal chrome, so NV_LegacyOverlay bypasses its wrapper for
+        // this address (bypassChrome below). The workspace provider detail page links here. Close closes the overlay.
         if (state.id) {
-          return (
-            <window.WorkspaceTemplateDetail
-              templateId={state.id}
-              pushToast={window.primerApi.toastPush}
-            />
-          );
+          return <window.WT_TemplateOverlay templateId={state.id} onClose={shell.closeOverlay} />;
         }
         return (
           <window.WorkspaceTemplatesPage
@@ -967,7 +966,11 @@ function NV_LegacyOverlay(props) {
   // shared Modals a page opens from inside (`.modal-overlay`, 85, the
   // ConfirmHost's dialogs) and the toasts (100).
   // tests/ui/test_overlay_navigation.py pins the number against styles.css.
-  var bypassChrome = (name === "agents" || name === "collections") && !!overlay.id;
+  //
+  // The workspace template overlay (workspaces:templates:<id>, Platform revamp 08) is a kit PK_FormOverlay, a Modal of its own, so it is bypassed the
+  // same way.
+  var bypassChrome = ((name === "agents" || name === "collections") && !!overlay.id)
+    || (name === "workspaces" && overlay.section === "templates" && !!overlay.id);
   if (bypassChrome) {
     var bypassStyle = { position: "fixed", inset: 0, zIndex: 80 };
     return (
