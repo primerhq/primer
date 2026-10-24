@@ -36,6 +36,7 @@ from primer.api.registries import ProviderRegistry, WorkspaceRegistry
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.int.claim import ClaimKind, ParkRequest, ReleaseOutcome
 from primer.model.provider import SqliteConfig
+from primer.model.storage import OffsetPage
 from primer.model.workspace import LocalWorkspaceConfig, Workspace, WorkspaceProvider, WorkspaceProviderType
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import Yielded
@@ -528,3 +529,35 @@ async def test_delete_refuses_a_running_session(client, sp, monkeypatch, case: s
         assert r.status_code == 409, r.text
         assert writes.attempts == []
         assert await _stored(sp) == before
+
+
+# ---------------------------------------------------------------------------
+# POST steer with a per-turn response_format
+# ---------------------------------------------------------------------------
+
+
+async def test_a_steer_s_response_format_stamp_does_not_put_back_a_turn_armed_after_its_read(
+    client, sp, monkeypatch,
+) -> None:
+    """Review of the G7-03 fix (M5). The steer route reads an idle row, then stamps the per-turn schema on it before it wakes the session. A wake
+    on another process armed the turn in between (RUNNING, claimable, its records up to seq 9). The stamp used to write the idle row it read back
+    over that: the armed turn was erased and ``last_seq`` regressed, so this steer's own USER_INPUT repeated a seq. The stamp is one metadata
+    leaf now: the armed turn and its seq survive, and the steer is queued behind that turn."""
+    from primer.model.workspace_session import PendingSessionMessage
+    from primer.session.response_format import EPHEMERAL_KEY
+
+    await _seed(sp)
+    _wrap(monkeypatch, sp, _set(status=SessionStatus.RUNNING, turn_status="claimable", last_seq=9))
+
+    r = await client.post(
+        f"/v1/workspaces/{WID}/sessions/{SID}/steer", json={"instruction": "answer in json", "response_format": SCHEMA},
+    )
+
+    assert r.status_code == 200, r.text
+    row = await _stored(sp)
+    assert (row.status, row.turn_status, row.last_seq) == (SessionStatus.RUNNING, "claimable", 9), (
+        "the stamp wrote its idle snapshot back over the turn armed after its read"
+    )
+    assert row.metadata[EPHEMERAL_KEY] == SCHEMA
+    queued = (await sp.get_storage(PendingSessionMessage).list(OffsetPage(offset=0, length=10))).items
+    assert [q.parts[0]["text"] for q in queued] == ["answer in json"]

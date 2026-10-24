@@ -2393,14 +2393,25 @@ async def _advance_drain_cursor(session_storage, session_id: str) -> None:
     mark. Re-reads fresh and never downgrades, so a concurrent steer
     that pushed the cursor further is not clobbered.
     """
-    fresh = await session_storage.get(session_id)
-    if fresh is None:
-        return
-    target = fresh.last_seq + 1
-    if target > fresh.next_unprocessed_seq:
-        await session_storage.update(
-            fresh.model_copy(update={"next_unprocessed_seq": target})
-        )
+    for _ in range(5):
+        fresh = await session_storage.get(session_id)
+        if fresh is None:
+            return
+        target = fresh.last_seq + 1
+        if target <= fresh.next_unprocessed_seq:
+            return
+        # ONE field-scoped write fenced on the two values it was computed from (audit G7-03, review M5): a whole row read moments ago, written
+        # back, put back whatever a wake on another process reserved or armed in between.
+        try:
+            written = await session_storage.patch_if(
+                session_id, {"next_unprocessed_seq": target},
+                where={"next_unprocessed_seq": [fresh.next_unprocessed_seq], "last_seq": [fresh.last_seq]},
+            )
+        except NotFoundError:
+            return
+        if written is not None:
+            return
+    logger.warning("session %s: the drain cursor was not advanced (the row kept moving)", session_id)
 
 
 def _ended_by_another_path(written: "_TerminalWrite", status: SessionStatus, ended_reason: str | None) -> bool:

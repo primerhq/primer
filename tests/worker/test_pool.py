@@ -1074,8 +1074,9 @@ async def test_run_engine_session_survives_a_raised_terminal_write_failure(
 
 async def test_end_session_genuine_write_failure_already_propagates():
     """01a08bf0 Site B — unlike the vanished-row branch, _end_session's
-    storage.update() call has no try/except today: a real write failure
-    (row exists, write itself errors) already propagates uncaught. This
+    write of the end (one field-scoped storage.patch_if since the review of the
+    G7-03 fix; a whole-row storage.update() before) catches only a row that is
+    gone: a real write failure (row exists, write itself errors) propagates uncaught. This
     was true before this task and needed no code change, but was
     UNTESTED -- pinning it now since the whole "propagate is safe" design
     for Site B rests on this being what actually happens, not an
@@ -1097,10 +1098,10 @@ async def test_end_session_genuine_write_failure_already_propagates():
     )
     await session_storage.create(fake_session)
 
-    async def _failing_update(entity, *, conn=None):
+    async def _failing_patch_if(id, patch=None, **kwargs):
         raise RuntimeError("simulated storage failure")
 
-    session_storage.update = _failing_update
+    session_storage.patch_if = _failing_patch_if
 
     pool = WorkerPool(
         config=WorkerConfig(concurrency=1),

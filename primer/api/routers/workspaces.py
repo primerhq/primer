@@ -2178,10 +2178,15 @@ async def steer_session(
         if body.response_format is not None and row is not None:
             from primer.session.response_format import EPHEMERAL_KEY
 
-            meta = dict(row.metadata or {})
-            meta[EPHEMERAL_KEY] = body.response_format
-            row = row.model_copy(update={"metadata": meta})
-            await sessions.update(row)
+            # One metadata leaf, never the whole row read earlier: a wake on another process may have reserved a seq or armed a turn since
+            # (audit G7-03, review M5).
+            stamped = await sessions.patch_if(
+                session_id, None,
+                set_paths={("metadata", EPHEMERAL_KEY): body.response_format},
+                where={"workspace_id": [row.workspace_id]},
+            )
+            if stamped is not None:
+                row = stamped
 
         # Resolve attachments to artifact-backed Parts through the SAME
         # pipeline ask_user/inform_user already use for outbound files

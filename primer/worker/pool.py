@@ -26,16 +26,17 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
+from pydantic_core import to_jsonable_python
 
 from primer.int.claim import ClaimKind, ReleaseOutcome
 from primer.int.claim import Lease as ClaimLease
 from primer.int.scheduler import (
     Scheduler,
 )
-from primer.model.except_ import ListenConnectionLost
+from primer.model.except_ import ListenConnectionLost, NotFoundError
 from primer.model.scheduler import WorkerConfig
 from primer.model.workspace_refusal import WorkspaceRefusedError
-from primer.model.workspace_session import WorkspaceSession, SessionStatus
+from primer.model.workspace_session import NON_ENDED_STATUSES, WorkspaceSession, SessionStatus
 from primer.model.yield_ import CANCEL_REASON_PREEMPTED
 from primer.worker.turn import _CancelScope
 from primer.worker.drivers import _GraphTurnDriver, _TurnDriver  # noqa: F401  re-export
@@ -1346,12 +1347,20 @@ class WorkerPool:
         storage = self._storage.get_storage(WorkspaceSession)
         fresh = await storage.get(session.id)
         if fresh is not None:
-            ended = fresh.model_copy(update={
-                "status": SessionStatus.ENDED,
-                "ended_reason": reason,
-                "ended_at": datetime.now(timezone.utc),
-            })
-            await storage.update(ended)
+            # ONE field-scoped write of the end, fenced on the row not being ENDED already (the first terminal reason wins), never the whole
+            # row read above: a wake on another process may have reserved a seq or armed a turn since (audit G7-03, review M5).
+            try:
+                await storage.patch_if(
+                    session.id,
+                    to_jsonable_python({
+                        "status": SessionStatus.ENDED,
+                        "ended_reason": reason,
+                        "ended_at": datetime.now(timezone.utc),
+                    }),
+                    where={"status": NON_ENDED_STATUSES()},
+                )
+            except NotFoundError:
+                pass
             # Every terminal exit of the turn applies a switch queued on the session (dispatch.py's drain
             # checkpoint); this one has no turn behind it, so it applies the switch itself. Without it a
             # switch queued on a parked session survives a failed resume on the ENDED row, and after a reopen
@@ -1410,8 +1419,13 @@ class WorkerPool:
         storage = self._storage.get_storage(WorkspaceSession)
         fresh = await storage.get(session.id)
         if fresh is not None:
-            paused = fresh.model_copy(update={"status": SessionStatus.PAUSED})
-            await storage.update(paused)
+            # ONE field-scoped write, fenced on the row not having ENDED meanwhile (audit G7-03, review M5).
+            try:
+                await storage.patch_if(
+                    session.id, to_jsonable_python({"status": SessionStatus.PAUSED}), where={"status": NON_ENDED_STATUSES()},
+                )
+            except NotFoundError:
+                pass
         else:
             # 01a08bf0: same reasoning as _end_session's vanished-row branch
             # above -- success=True is left as-is; the re-fetch at the top of
