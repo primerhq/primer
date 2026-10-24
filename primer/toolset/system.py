@@ -126,6 +126,7 @@ from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.channel.reply_binding import ReplyTarget
 from primer.model.trigger import SubscriptionConfig
+from primer.trigger.owner import view_for
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE
 from primer.trigger.service import (
     ServiceDeps,
@@ -170,6 +171,7 @@ from primer.toolset.toolset_checks import (
     toolset_admin_reason,
 )
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
+from primer.toolset.trigger import _caller
 from primer.workspace.instructions import load_workspace_instructions
 
 # Re-exported helpers / argument models / parsers (shared surface).
@@ -1029,7 +1031,9 @@ def build_system_toolset(
             return _err(str(exc), error_type="trigger_not_found")
         # From a session outside prime, a binding whose action targets another workspace is left out (ticket 01a16c22).
         items = await list_subscriptions(trigger_id=args.trigger_id, reach=await caller_reach(storage_provider, ctx), deps=deps)
-        return _ok(items)
+        # A non-manager sees only the owner's display and role (A-20), as trigger__list_subscriptions does.
+        caller = _caller(ctx)
+        return _ok([await view_for(s, caller, storage_provider) for s in items])
 
     registry["list_channel_bindings"] = (
         make_tool(

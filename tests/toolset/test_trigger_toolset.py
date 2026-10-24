@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.model.principal import PrincipalRef
+from primer.model.yield_ import ToolContext
 from primer.toolset.trigger import (
     TRIGGER_TOOLSET_ID,
     build_trigger_toolset_provider,
@@ -278,6 +280,50 @@ class TestSubscriptions:
         items = json.loads(listed.output)
         assert len(items) == 1
         assert items[0]["id"] == sub_body["id"]
+
+    @pytest.mark.asyncio
+    async def test_list_subscriptions_hides_owner_details_from_a_non_manager(
+        self, toolset
+    ):
+        """A-20 pin: a caller who does not manage a subscription sees only
+        the owner's display and role, never the owner's type or id."""
+        created = await toolset.call(
+            tool_name="create",
+            arguments=_delayed_args(slug="owner-hide", name="Owner Hide"),
+        )
+        trigger_id = _result_body(created)["id"]
+        owner = PrincipalRef(
+            type="user", id="u-owner", display="u-owner",
+            role="user", source="local",
+        )  # type: ignore[arg-type]
+        await toolset.call(
+            tool_name="create_subscription",
+            arguments={
+                "trigger_id": trigger_id,
+                "config": {"kind": "session_append", "session_id": "sess-1"},
+            },
+            ctx=ToolContext(
+                tool_call_id="tc-1", session_id=None, workspace_id=None,
+                initiated_by=owner,
+            ),
+        )
+
+        other = PrincipalRef(
+            type="user", id="u-other", display="u-other",
+            role="user", source="local",
+        )  # type: ignore[arg-type]
+        listed = await toolset.call(
+            tool_name="list_subscriptions",
+            arguments={"trigger_id": trigger_id},
+            ctx=ToolContext(
+                tool_call_id="tc-2", session_id=None, workspace_id=None,
+                initiated_by=other,
+            ),
+        )
+        assert not listed.is_error, listed.output
+        items = json.loads(listed.output)
+        assert len(items) == 1
+        assert items[0]["owner"] == {"display": "u-owner", "role": "user"}
 
     @pytest.mark.asyncio
     async def test_parked_session_create_rejected(self, toolset):

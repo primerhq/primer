@@ -18,6 +18,7 @@ from pydantic import SecretStr
 from primer.api.registries import ProviderRegistry
 from primer.model.channel import Channel
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.storage import CursorPageResponse, OffsetPageResponse
 from primer.model.trigger import (
     ChannelTriggerConfig,
@@ -29,6 +30,7 @@ from primer.model.workspace import (
     WorkspaceChannelLink,
     WorkspaceRuntimeMeta,
 )
+from primer.model.yield_ import ToolContext
 from primer.toolset.system import build_system_toolset
 
 
@@ -298,6 +300,90 @@ async def test_list_channel_bindings_unknown_trigger_404(sp: _SP, system_toolset
     assert result.is_error
     payload = json.loads(result.output)
     assert payload["type"] == "trigger_not_found"
+
+
+def _principal(uid: str, role: str = "user") -> PrincipalRef:
+    return PrincipalRef(
+        type="user", id=uid, display=uid, role=role, source="local"
+    )  # type: ignore[arg-type]
+
+
+def _ctx(initiated_by: PrincipalRef) -> ToolContext:
+    return ToolContext(
+        tool_call_id="tc-owner-view",
+        session_id=None,
+        workspace_id=None,
+        initiated_by=initiated_by,
+    )
+
+
+def _create_binding(system_toolset, owner: PrincipalRef):
+    return system_toolset.call(
+        tool_name="create_channel_binding",
+        arguments={
+            "trigger_id": "trg-ch-1",
+            "config": {"kind": "session_append", "session_id": "sess-1"},
+        },
+        ctx=_ctx(owner),
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_channel_bindings_hides_owner_details_from_a_non_manager(
+    sp: _SP, system_toolset
+):
+    """A-20: a caller who does not manage the binding sees only the
+    owner's display name and role, like trigger__list_subscriptions."""
+    await _seed_channel_trigger(sp)
+    await _create_binding(system_toolset, _principal("u-owner"))
+
+    result = await system_toolset.call(
+        tool_name="list_channel_bindings",
+        arguments={"trigger_id": "trg-ch-1"},
+        ctx=_ctx(_principal("u-other")),
+    )
+    assert not result.is_error, result.output
+    rows = json.loads(result.output)
+    assert len(rows) == 1
+    assert rows[0]["owner"] == {"display": "u-owner", "role": "user"}
+    assert "id" not in rows[0]["owner"]
+    assert "type" not in rows[0]["owner"]
+
+
+@pytest.mark.asyncio
+async def test_list_channel_bindings_owner_sees_the_full_owner(
+    sp: _SP, system_toolset
+):
+    await _seed_channel_trigger(sp)
+    owner = _principal("u-owner")
+    await _create_binding(system_toolset, owner)
+
+    result = await system_toolset.call(
+        tool_name="list_channel_bindings",
+        arguments={"trigger_id": "trg-ch-1"},
+        ctx=_ctx(owner),
+    )
+    assert not result.is_error, result.output
+    rows = json.loads(result.output)
+    assert rows[0]["owner"]["id"] == "u-owner"
+    assert rows[0]["owner"]["type"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_list_channel_bindings_admin_sees_the_full_owner(
+    sp: _SP, system_toolset
+):
+    await _seed_channel_trigger(sp)
+    await _create_binding(system_toolset, _principal("u-owner"))
+
+    result = await system_toolset.call(
+        tool_name="list_channel_bindings",
+        arguments={"trigger_id": "trg-ch-1"},
+        ctx=_ctx(_principal("u-admin", role="admin")),
+    )
+    assert not result.is_error, result.output
+    rows = json.loads(result.output)
+    assert rows[0]["owner"]["id"] == "u-owner"
 
 
 # ===========================================================================
