@@ -419,7 +419,9 @@ but require human review for any other host.
   tool, so a leftover duplicate would make which one applies depend on
   storage order.
 - **Who may decide a gate is part of the gate.** A policy can name approvers (`approvers`: specific users, or roles; admins can
-  always decide), and a Rego or judge verdict can route one call to others. The effective spec is recorded when the call parks,
+  always decide), and a Rego or judge verdict can narrow who decides one call, never widen it: the effective spec is the stricter of the
+  two (either side absent or `anyone` gives the other; the same kind gives the names or roles both admit; roles on one side and users on
+  the other give admin-only), so a verdict answering `anyone` cannot open an admin-only gate. The effective spec is recorded when the call parks,
   for every park (the agent loop and `call_tool` alike), and EVERY way of deciding it is checked against it: `POST
   .../tool_approval/respond`, `POST .../yields/{tool_call_id}/cancel` on an approval gate (a cancel is a rejection) and a reply
   from a channel. A user the spec does not admit gets `403 approver_mismatch`. The spec checked is the stamp of the specific gate the `tool_call_id` names, also on a graph park (where the session's first gate is not necessarily the one named); a cancel of a parked approval whose gate cannot be found is admin-only. Only an approval is judged: cancelling an `ask_user` question or an external-tool wait (also on a graph park, whose top-level yield always reads as an approval) is open to whoever could cancel it before. **A session owner who is not an approver can therefore no longer cancel their own approval yield** (cancelling the whole session still works for them). **A channel reply is refused on a gate restricted

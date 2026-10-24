@@ -168,8 +168,9 @@ class ToolApprovalPolicy(Identifiable):
         default=None,
         description=(
             "Who may decide calls this policy gates. None means anyone. "
-            "A policy/llm evaluation may override this per call by "
-            "returning an 'approvers' object in its verdict."
+            "A policy/llm evaluation may narrow this per call by "
+            "returning an 'approvers' object in its verdict, never "
+            "widen it: the decider must satisfy both."
         ),
     )
     preview_args: list[str] | None = Field(

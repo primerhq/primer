@@ -37,16 +37,20 @@ def test_the_metadata_carries_the_gate_the_call_and_who_may_decide():
     assert re.fullmatch(r"[0-9a-f]{32}", gate_id)
 
 
-def test_the_verdicts_per_call_routing_wins_over_the_policys_and_none_is_stamped_explicitly():
+def test_the_stamp_is_the_stricter_of_the_policys_and_the_verdicts_routing_and_none_is_stamped_explicitly():
+    """A verdict narrows who decides, never widens it (review of #860, R2-4): a row open to anyone takes the verdict's routing to carol; a row
+    routed to alice and a verdict routed to carol leave nobody both admit, so only an admin decides."""
     carol = ApproverSpec(kind="users", users=["carol"])
 
-    routed = approval_resume_metadata(
+    narrowed = approval_resume_metadata(policy=_policy(), verdict=ApprovalVerdict(required=True, approvers=carol), original_call=CALL)
+    disjoint = approval_resume_metadata(
         policy=_policy(approvers=ApproverSpec(kind="users", users=["alice"])), verdict=ApprovalVerdict(required=True, approvers=carol),
         original_call=CALL,
     )
     open_ = approval_resume_metadata(policy=_policy(), verdict=ApprovalVerdict(required=True), original_call=CALL)
 
-    assert routed["approvers"] == carol.model_dump()
+    assert narrowed["approvers"] == carol.model_dump()
+    assert disjoint["approvers"] == ApproverSpec(kind="users", users=[]).model_dump()
     assert "approvers" in open_ and open_["approvers"] is None
 
 

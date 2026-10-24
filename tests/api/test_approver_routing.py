@@ -1,7 +1,7 @@
 """Approver routing on tool approvals (wiring plan P6 T13).
 
-The park stamps a resolved ApproverSpec (policy row default, or the
-Rego/LLM verdict's per-call override); respond enforces it with 403
+The park stamps a resolved ApproverSpec (the stricter of the policy row's
+and the Rego/LLM verdict's per-call routing); respond enforces it with 403
 ``approver_mismatch``; the decision payload carries ``decided_by`` into
 the durable record; pending/respond/records are user-tier while policy
 CRUD stays admin.
@@ -46,20 +46,67 @@ def test_approver_spec_allows() -> None:
     assert users.allows(username="root", role="admin")
 
 
-def test_effective_approvers_prefers_the_verdict() -> None:
-    policy = ToolApprovalPolicy(
-        toolset_id="_system", tool_name="x",
-        approval=RequiredApprovalConfig(),
-        approvers=ApproverSpec(kind="roles", roles=["user"]),
-        created_at=datetime.now(timezone.utc),
+_ADMIN_ONLY = ApproverSpec(kind="roles", roles=[])
+
+
+def _row(approvers: ApproverSpec | None) -> ToolApprovalPolicy:
+    return ToolApprovalPolicy(
+        toolset_id="system", tool_name="x", approval=RequiredApprovalConfig(), approvers=approvers, created_at=datetime.now(timezone.utc),
     )
-    per_call = ApproverSpec(kind="users", users=["alice"])
-    assert effective_approvers(
-        policy, ApprovalVerdict(required=True, approvers=per_call)
-    ) is per_call
-    assert effective_approvers(
-        policy, ApprovalVerdict(required=True)
-    ) is policy.approvers
+
+
+@pytest.mark.parametrize("row, routed, effective", [
+    (None, ApproverSpec(kind="users", users=["alice"]), ApproverSpec(kind="users", users=["alice"])),
+    (ApproverSpec(kind="roles", roles=["user"]), None, ApproverSpec(kind="roles", roles=["user"])),
+    (ApproverSpec(kind="roles", roles=["user"]), ApproverSpec(), ApproverSpec(kind="roles", roles=["user"])),
+    (_ADMIN_ONLY, ApproverSpec(), _ADMIN_ONLY),
+    (_ADMIN_ONLY, ApproverSpec(kind="users", users=["alice"]), _ADMIN_ONLY),
+    (ApproverSpec(kind="roles", roles=["ops", "dev"]), ApproverSpec(kind="roles", roles=["ops"]), ApproverSpec(kind="roles", roles=["ops"])),
+    (ApproverSpec(kind="users", users=["alice", "bob"]), ApproverSpec(kind="users", users=["bob", "carol"]), ApproverSpec(kind="users", users=["bob"])),
+    (ApproverSpec(kind="roles", roles=["ops"]), ApproverSpec(kind="roles", roles=["dev"]), _ADMIN_ONLY),
+    (ApproverSpec(kind="roles", roles=["user"]), ApproverSpec(kind="users", users=["alice"]), _ADMIN_ONLY),
+], ids=[
+    "no-row-takes-the-routing", "no-routing-keeps-the-row", "anyone-cannot-widen-a-row", "anyone-cannot-open-admin-only",
+    "routing-cannot-open-admin-only", "roles-narrow", "users-narrow", "disjoint-roles-is-admin-only", "mixed-kinds-is-admin-only",
+])
+def test_effective_approvers_is_the_stricter_of_the_row_and_the_verdict(row, routed, effective) -> None:
+    """The lead's ruling on #860 (R2-4): a verdict may narrow who decides a call, never widen it. It used to replace the row's spec, so a
+    Rego policy or an LLM judge answering ``anyone`` opened a gate the operator had restricted."""
+    assert effective_approvers(_row(row), ApprovalVerdict(required=True, approvers=routed)) == effective
+
+
+@pytest.mark.asyncio
+async def test_an_llm_judge_routing_anyone_on_an_admin_only_gate_still_needs_an_admin() -> None:
+    """End to end through the judge path: the shipped admin-tier gates are admin-only, and a judge policy an operator writes in their place
+    keeps that restriction whatever its verdict routes to."""
+    from primer.agent.approval import ApprovalContext, approval_resume_metadata, evaluate_approval_gate
+    from primer.model.tool_approval import LlmApprovalConfig
+    from primer.session.approvers import ADMIN_ONLY_SPEC, may_decide
+
+    class _Judge:
+        async def judge_structured(self, **kwargs):
+            return {"required": True, "reason": "looks fine", "approvers": {"kind": "anyone"}}
+
+    class _Registry:
+        async def get_llm(self, provider_id):
+            return _Judge()
+
+    policy = ToolApprovalPolicy(
+        toolset_id="system", tool_name="delete_tool_approval_policy", created_at=datetime.now(timezone.utc),
+        approval=LlmApprovalConfig(provider_id="llm-1", model="judge", prompt="Is this safe?"), approvers=ApproverSpec.model_validate(ADMIN_ONLY_SPEC),
+    )
+    context = ApprovalContext(
+        tool_name="delete_tool_approval_policy", toolset_id="system", arguments={"id": "p"}, agent_id=None, session_id="s", chat_id=None,
+        requested_at=datetime.now(timezone.utc),
+    )
+
+    verdict = await evaluate_approval_gate(policy=policy, context=context, provider_registry=_Registry())
+    meta = approval_resume_metadata(policy=policy, verdict=verdict, original_call={"id": "c", "name": "x", "arguments": {}})
+
+    assert verdict.required and verdict.approvers == ApproverSpec(kind="anyone")
+    assert meta["approvers"] == ADMIN_ONLY_SPEC
+    assert not may_decide(meta, username="bob", role="user") and not may_decide(meta, username=None, role=None)
+    assert may_decide(meta, username="root", role="admin")
 
 
 def test_record_carries_decided_by() -> None:
