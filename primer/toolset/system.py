@@ -314,8 +314,10 @@ def _make_reset_prime_instructions_handler(
             return _err_from_primer(exc, error_type="bad-request")
         except ConflictError as exc:  # WorkspaceRefusedError: a workspace this deployment refuses
             return _err_from_primer(exc, error_type="conflict")
-        except PrimerError as exc:  # WorkspaceUnreachableError and other backend failures
+        except PrimerError as exc:  # WorkspaceUnreachableError (the reset's own timeout) and any other platform error
             return _err_from_primer(exc, error_type="unavailable")
+        except Exception as exc:  # noqa: BLE001 - nothing escapes the handler: a backend's runtime error (a symlink loop)
+            return _err(redact_credentials(str(exc) or type(exc).__name__), error_type="unavailable")
         return _ok(result)
 
     return _handler
@@ -1648,7 +1650,8 @@ def build_system_toolset(
                     "exists); a symlinked ``agents.md`` is written where it points. From a session outside the default workspace (prime) it returns ``type=forbidden`` and "
                     "writes nothing; with no default workspace yet, ``type=not-found``; when the workspace does not "
                     "answer within 10 seconds (to reach it, then to write), ``type=unavailable`` (a write given up on "
-                    "may still land, with the same shipped text)."
+                    "may still land, with the same shipped text); any other failure of the write, ``type=unavailable`` "
+                    "in its own words."
                 ),
                 args_schema=_ResetPrimeInstructionsArgs.model_json_schema(),
                 examples=[

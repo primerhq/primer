@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 
 import pytest
@@ -31,7 +32,7 @@ from primer.model.workspace_session import AgentSessionBinding, SessionStatus, W
 from primer.model.yield_ import ToolContext
 from primer.toolset.system import build_system_toolset
 
-from tests.bootstrap.test_prime_agents_md import _Registry, _Ws, _row
+from tests.bootstrap.test_prime_agents_md import _Registry, _Ws, _row, local_prime  # noqa: F401 - local_prime is a fixture
 
 TOOL = "reset_prime_instructions"
 
@@ -259,6 +260,28 @@ async def test_a_write_that_hangs_is_unavailable(provider, ws, monkeypatch):
     body = json.loads(result.output)
     assert result.is_error and body["type"] == "unavailable"
     assert "may still" in body["message"]
+
+
+async def test_any_other_failure_of_the_write_is_unavailable_in_its_own_words(provider, ws):
+    """Nothing escapes the handler: a runtime error from the backend (a symlink loop is a ``RuntimeError`` on a local workspace)."""
+
+    async def _loop(path, content):
+        raise RuntimeError("Symlink loop from '/ws/prime/agents.md'")
+
+    ws.write_file = _loop
+    result = await _call(provider)
+    assert result.is_error
+    assert json.loads(result.output) == {"type": "unavailable", "message": "Symlink loop from '/ws/prime/agents.md'"}
+
+
+async def test_a_symlink_loop_on_a_real_workspace_is_unavailable(local_prime):
+    sp, real_registry = local_prime
+    provider = build_system_toolset(storage_provider=sp, provider_registry=_provider_registry(sp), workspace_registry=real_registry)
+    live = await real_registry.get_workspace("prime")
+    os.symlink("agents.md", f"{live._root.resolve()}/agents.md")  # noqa: SLF001 - a link the platform has no API for
+    result = await _call(provider)
+    body = json.loads(result.output)
+    assert result.is_error and body["type"] == "unavailable" and "loop" in body["message"].lower()
 
 
 async def test_an_argument_is_refused(provider, ws):

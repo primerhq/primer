@@ -335,6 +335,26 @@ async def test_reset_prime_instructions_that_times_out_is_a_503(client, app, mon
     assert "within" in r.json()["detail"]
 
 
+async def test_reset_prime_instructions_answers_500_for_any_other_failure(client, app):
+    """503 is only for a missing workspace registry and the reset's own timeout; a runtime error (a symlink loop) is a 500, through the
+    app's catch-all handler (the transport is told not to re-raise it, as a real server would not)."""
+    import httpx
+    from httpx import ASGITransport
+
+    registry = await _recorded_prime(app)
+
+    async def _loop(path, content):
+        raise RuntimeError("Symlink loop from '/ws/prime/agents.md'")
+
+    registry.live["prime"].write_file = _loop
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test", cookies=client.cookies,
+    ) as served:
+        r = await served.post("/v1/setup/reset_prime_instructions")
+    assert r.status_code == 500, r.text
+    assert r.headers["content-type"].startswith("application/problem+json")
+
+
 async def test_reset_prime_instructions_is_in_the_schema_with_its_errors(client, app):
     op = app.openapi()["paths"]["/v1/setup/reset_prime_instructions"]["post"]
     assert op["summary"] == "Rewrite prime's agents.md with the shipped version"

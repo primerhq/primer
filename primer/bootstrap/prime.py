@@ -377,9 +377,10 @@ async def reset_prime_agents_md(storage_provider: Any, *, workspace_registry: An
     :class:`WorkspaceUnreachableError` (503), and a write given up on may still land afterwards with the same shipped bytes.
 
     Returns ``{"workspace_id", "path", "bytes"}``. Raises :class:`NotFoundError` ``"no default workspace is recorded"`` when there is
-    no default workspace, and whatever the registry or the backend raises otherwise (``NotFoundError`` for a missing row or a backend
-    that cannot re-attach it, ``BadRequestError`` for a directory called ``agents.md``, ``WorkspaceRefusedError`` for a workspace the
-    deployment refuses, ``WorkspaceUnreachableError`` for a runtime that does not answer).
+    no default workspace, :class:`WorkspaceUnreachableError` on its own timeouts (above), and otherwise whatever the registry or the
+    backend raises: ``NotFoundError`` for a missing row or a backend that cannot re-attach it, ``BadRequestError`` for a directory
+    called ``agents.md``, ``WorkspaceRefusedError`` for a workspace the deployment refuses, and any other exception as it comes (a
+    local workspace raises ``RuntimeError`` for a symlink loop at ``agents.md``), which REST answers 500.
     """
     workspace_id = await resolve_default_workspace_id(storage_provider)
     if workspace_id is None:
