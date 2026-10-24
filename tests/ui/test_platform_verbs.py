@@ -10,8 +10,8 @@ not know or a ``goView`` call with the wrong arguments fails here and not as an 
 Custom pages (``web``, ``templates``) have a row and a ``data-verb`` but NO verb in ``NV_platVerbSpecs``: a custom page registers its own, right after the loop, in the plan that ships
 the page (Plans 04 and 08). ``tests/ui/test_shell_dual_render_guard.py`` holds the other half: the nav-row verbs count as rendered there.
 
-The palette ranks a verb's whole label first (lead ruling): the shell's own core verb effect runs against the real registry and the real ``SH_rankVerbs``, so the core verbs, the 22
-Platform verbs of the loop and the custom pages' own (Plan 08's Open Workspace Templates) are the population, and every label (exact and in lower case), the four that used to lose to an earlier verb, a prefix and the empty query are pinned.
+The palette ranks a verb's whole label first (lead ruling): the shell's own core verb effect runs against the real registry and the real ``SH_rankVerbs``, so the 12 core verbs and the 22
+Platform verbs are the population, and every label (exact and in lower case), the four that used to lose to an earlier verb, a prefix and the empty query are pinned.
 """
 
 from __future__ import annotations
@@ -45,8 +45,6 @@ CORE = (
     "view.studio", "view.platform", "view.system", "view.profile", "theme.light", "theme.dark", "theme.system", "workspace.switch", "session.create", "workspace.create",
     "palette.open", "terminal.toggle",
 )
-# The custom pages whose plan has shipped register their own verb right after the loop (Plan 08: Open Workspace Templates), so they follow it.
-CUSTOM_VERBS = ["platform.open.templates"]
 STAND_INS = "window.WEB_SettingsPage = function () { return null; }; window.WT_TemplatesPage = function () { return null; };"
 
 
@@ -230,7 +228,7 @@ def test_a_title_the_registry_refuses_costs_its_own_verb_and_nothing_else(ctx) -
     assert js(ctx, 'SH_lintVerbLabel("Open 2FA Agents")') is not None, "the precondition: this label is one the registry refuses"
     _run_shell_effect(ctx)
     ids = js(ctx, "registry.ids()")
-    assert [i for i in ids if i.startswith("platform.open.")] == [i for i in IDS if i != "platform.open.agents"] + CUSTOM_VERBS
+    assert [i for i in ids if i.startswith("platform.open.")] == [i for i in IDS if i != "platform.open.agents"]
     assert set(CORE) <= set(ids), "the core verbs registered before the loop are untouched"
     warns = js(ctx, "WARNS")
     assert len(warns) == 1 and "platform.open.agents" in warns[0] and "Open 2FA Agents" in warns[0], warns
@@ -249,9 +247,8 @@ def _ranked(ctx, query: str) -> list[str]:
 
 def test_the_palette_is_the_core_verbs_then_the_platform_verbs(palette) -> None:
     ids = js(palette, "registry.ids()")
-    platform = IDS + CUSTOM_VERBS
-    assert ids[len(ids) - len(platform):] == platform, "the loop's verbs, then the custom pages' own"
-    assert set(CORE) <= set(ids[:len(ids) - len(platform)])
+    assert ids[len(ids) - len(IDS):] == IDS
+    assert set(CORE) <= set(ids[:len(ids) - len(IDS)])
 
 
 def test_a_verbs_full_label_ranks_that_verb_first_exact_and_in_lower_case(palette) -> None:
