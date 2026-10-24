@@ -54,13 +54,14 @@ def test_workspace_row_session_count_spells_out_the_unit():
     attention count read as unlabeled - the reference spells out
     "N sessions" (singular "session" for exactly one)."""
     m = re.search(
-        r'<span className="nv-rail-session-count">([\s\S]{0,120}?)</span>',
+        r'<span className="nv-rail-session-count"[^>]*>([\s\S]{0,120}?)</span>',
         RAIL,
     )
     assert m
     body = m.group(1)
     assert '"session"' in body and '"sessions"' in body
-    assert 'wsSessions.length === 1' in body
+    # The count is the workspace row's own session_count (#923, round 2; tests/ui/test_shell_lists_page_past_200.py runs it).
+    assert 'sessionCount === 1' in body
 
 
 def test_files_tree_manages_and_uploads():
