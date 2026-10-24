@@ -351,6 +351,10 @@ async def test_a_store_that_does_not_answer_is_reported_after_the_timeout(caplog
             reached.append(provider_id)
             if provider_id == "fs-hang":
                 await asyncio.Event().wait()
+            return provider_id
+
+        async def release_provider(self, store) -> None:   # the check returns the lease of a store it got (slice D round 2)
+            return None
 
     rows = [
         ArtifactStorageProvider(id="fs-hang", provider="filesystem", config={"root": "/nonexistent/hang"}),

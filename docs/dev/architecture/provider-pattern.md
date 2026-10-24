@@ -166,9 +166,13 @@ removed and the put answers 409. The filesystem store compares the row's kind an
 its kind, `bucket`, `prefix`, `endpoint_url` and `region` with the values it was built from (the four that say where its objects are; new
 keys or another addressing style reach the same objects).
 
-A backend that holds a client is closed by the registry that cached it. A store the registry returned UNCACHED (built while an eviction
-raced the build) is owned by its caller alone, so the caller hands it back when its call is over (`ArtifactStorageRegistry.release_provider`;
-the routing store does so after every put, get and delete) and the registry closes it there, or at its own `aclose`.
+A backend that holds a client is closed by the registry that cached it, and never under a call in flight. The artifact-storage registry
+counts LEASES: every `ArtifactStorageRegistry.get_provider` takes one on the store it returns, and the caller returns it with
+`release_provider` when its call is over (the routing store holds it for the whole put, get or delete, the clean-up after a failed put
+included; the boot check returns it after the check). An eviction (an edit of the row) or a flush (a bus reconnect) closes an idle store at
+once and RETIRES a leased one, which is closed when its last lease returns; a store built while an eviction raced its build is retired from
+birth. The registry's `aclose` closes every cached and retired store. So an edit never fails a read or a write in flight, and a put whose row
+moved meanwhile can still remove its object.
 
 An optional backend imports its SDK only where it opens the client (`primer/artifact/s3.py` imports aiobotocore in `initialize`), its
 builder calls `require_extra` first, and the module joins the import-linter "core layers" forbidden list, so a core install imports the app

@@ -64,12 +64,14 @@ async def test_caches_instance_per_id():
 
 @pytest.mark.asyncio
 async def test_invalidate_closes_instance():
+    """Re-pinned in slice D round 2: an eviction closes a store at once only when no call holds a lease on it, so the store is released first
+    (a leased store is retired and closed when its last lease returns: the lease tests below)."""
     rows = {"asp-a": object()}
     instances = []
     reg = ArtifactStorageRegistry(
         storage=_FakeStore(rows), storage_provider=None,
         factory=_factory_returning(instances))
-    await reg.get_provider("asp-a")
+    await reg.release_provider(await reg.get_provider("asp-a"))
     await reg.invalidate("asp-a")
     assert instances[0].closed is True
 
@@ -228,6 +230,8 @@ async def test_an_invalidation_reaches_every_registry_on_the_bus():
     await api.bind_invalidation_bus(bus)
     await worker.bind_invalidation_bus(bus)
     a, w = await api.get_provider("asp-a"), await worker.get_provider("asp-a")
+    await api.release_provider(a)
+    await worker.release_provider(w)                       # idle in both processes, so the eviction closes both at once
 
     await api.invalidate("asp-a")
 
@@ -240,6 +244,7 @@ async def test_a_failed_subscribe_leaves_the_registry_unbound() -> None:
     """The #784 review pin: a bind that cannot subscribe must not strand later invalidations on a bus this registry never hears."""
     reg = _registry()
     cached = await reg.get_provider("asp-a")
+    await reg.release_provider(cached)
 
     with pytest.raises(RuntimeError, match="subscribe failed"):
         await reg.bind_invalidation_bus(_FailingSubscribeBus())
@@ -257,6 +262,7 @@ async def test_an_invalidation_from_either_side_reaches_the_other():
     await api.bind_invalidation_bus(bus)
     await worker.bind_invalidation_bus(bus)
     a = await api.get_provider("asp-a")
+    await api.release_provider(a)
 
     await worker.invalidate("asp-a")                       # a tool edit in a worker process
 
@@ -280,6 +286,8 @@ async def test_an_invalidation_for_another_provider_leaves_the_cache_alone():
     reg = _registry({"asp-a": object(), "asp-b": object()})
     await reg.bind_invalidation_bus(bus)
     a, b = await reg.get_provider("asp-a"), await reg.get_provider("asp-b")
+    await reg.release_provider(a)
+    await reg.release_provider(b)
 
     await reg.invalidate("asp-a")
 
@@ -517,6 +525,95 @@ async def test_the_routing_store_closes_a_raced_store_after_the_put_that_used_it
         await sp.aclose()
 
 
+# ---- leases: a store is never closed under a call in flight (slice D round 2, the lead's ruling on #899) -----------------------------------------
+#
+# The review of #899 found an edit closing a cached S3 store under an in-flight put (whose object then could not be removed) or get, and a
+# reconnect flush dropping every cached store without ever closing it. Every ``get_provider`` now takes a lease and ``release_provider``
+# returns it; an eviction or a flush retires a leased store, and it is closed when its last lease returns.
+
+
+@pytest.mark.asyncio
+async def test_an_eviction_retires_a_leased_store_and_its_last_release_closes_it():
+    reg = _registry()
+    first, second = await reg.get_provider("asp-a"), await reg.get_provider("asp-a")
+    assert first is second
+
+    await reg.invalidate("asp-a")
+    assert not first.closed, "two calls hold it"
+    fresh = await reg.get_provider("asp-a")
+    assert fresh is not first, "the next get builds a fresh store from the current row"
+
+    await reg.release_provider(first)
+    assert not first.closed, "one call still holds it"
+    await reg.release_provider(second)
+    assert first.closed
+    assert not fresh.closed
+
+
+@pytest.mark.asyncio
+async def test_a_flush_closes_an_idle_store_and_retires_a_leased_one():
+    reg = _registry({"asp-a": object(), "asp-b": object()})
+    idle = await reg.get_provider("asp-a")
+    await reg.release_provider(idle)
+    busy = await reg.get_provider("asp-b")
+
+    reg._flush_local()
+    async with asyncio.timeout(5):
+        while not idle.closed:
+            await asyncio.sleep(0)
+
+    assert not busy.closed
+    await reg.release_provider(busy)
+    assert busy.closed
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_cached_retired_and_flushed_stores():
+    reg = _registry({"asp-a": object(), "asp-b": object(), "asp-c": object()})
+    leased_and_flushed = await reg.get_provider("asp-a")
+    evicted_while_leased = await reg.get_provider("asp-b")
+    await reg.invalidate("asp-b")
+    reg._flush_local()
+    cached = await reg.get_provider("asp-c")
+
+    await reg.aclose()
+
+    assert leased_and_flushed.closed and evicted_while_leased.closed and cached.closed
+
+
+@pytest.mark.asyncio
+async def test_a_second_release_of_a_retired_store_closes_it_once():
+    reg = _registry()
+    closes = []
+    store = await reg.get_provider("asp-a")
+    real = store.aclose
+
+    async def counting():
+        closes.append(1)
+        await real()
+
+    store.aclose = counting
+    await reg.invalidate("asp-a")
+
+    await reg.release_provider(store)
+    await reg.release_provider(store)
+    await reg.aclose()
+
+    assert closes == [1]
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_flush_drops_every_instance_and_never_closes_a_leased_one():
+    """The flush test above, with both stores leased: neither is closed, and the next get builds fresh ones."""
+    reg = _registry({"asp-a": object(), "asp-b": object()})
+    a, b = await reg.get_provider("asp-a"), await reg.get_provider("asp-b")
+
+    reg._flush_local()
+
+    assert not a.closed and not b.closed
+    assert await reg.get_provider("asp-a") is not a
+
+
 @pytest.mark.asyncio
 async def test_binding_twice_subscribes_once():
     bus = _CountingBus()
@@ -524,7 +621,7 @@ async def test_binding_twice_subscribes_once():
     reg = _registry(instances=instances)
     await reg.bind_invalidation_bus(bus)
     await reg.bind_invalidation_bus(bus)
-    await reg.get_provider("asp-a")
+    await reg.release_provider(await reg.get_provider("asp-a"))
 
     await reg.invalidate("asp-a")
 
@@ -554,6 +651,7 @@ async def test_a_closed_registry_invalidates_locally_again():
     await reg.bind_invalidation_bus(InMemoryInvalidationBus())
     await reg.aclose()
     inst = await reg.get_provider("asp-a")
+    await reg.release_provider(inst)
 
     await reg.invalidate("asp-a")
 
