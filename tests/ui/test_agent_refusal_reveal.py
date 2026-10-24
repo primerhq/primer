@@ -15,7 +15,20 @@ from __future__ import annotations
 
 import pytest
 
-from tests.ui._agent_form_harness import FULL, agent_form, calls, click, mount, prop, recorded, reject_next, reveals, type_into
+from tests.ui._agent_form_harness import (
+    FULL,
+    agent_form,
+    calls,
+    click,
+    mount,
+    prop,
+    real_refusal,
+    recorded,
+    reject_next,
+    reject_with,
+    reveals,
+    type_into,
+)
 
 CENTRED = {"block": "center"}
 NO_SCROLL = {"preventScroll": True}
@@ -110,52 +123,64 @@ def test_a_number_the_browser_cannot_read_is_scrolled_to_when_save_is_pressed(ct
 # ---- the server's 422 --------------------------------------------------------------------------------------------------------------------------------------
 
 
+# The refusals below are envelopes the REAL agent router answered (tests/_support/agent_form_server.py), thrown as the real ApiError: the
+# create route locates a field at ["body", "<field>"], the edit route at ["<field>"], and a refused tool binding is {error, field, message}
+# (audit G3-03). Each is drawn under its field and brought into view from there.
+
+
 def test_a_422_on_a_shown_field_is_scrolled_to_and_its_field_takes_the_focus(ctx):
-    reject_next(ctx, {"status": 422, "fieldErrors": [{"loc": ["body", "max_tool_turns"], "msg": "Input should be greater than or equal to 1"}]})
+    reject_with(ctx, real_refusal({"max_tool_turns": 0}, create=True))
     mount(ctx)
     fill_required(ctx)
     click(ctx, "agent-form-submit")
     assert len(calls(ctx)) == 1, "the request went out and was refused"
     assert focused(ctx) == ["na-max-tool-turns"]
-    assert scrolled_to(ctx) == ["Input should be greater than or equal to 1"]
+    assert scrolled_to(ctx) == ["Input should be greater than 0"]
+
+
+def test_an_edit_refused_by_the_server_is_scrolled_to_under_its_field(ctx):
+    """The edit route's location has no body prefix: the message is still the field's, and that field takes the focus."""
+    reject_with(ctx, real_refusal({"temperature": -0.5}))
+    mount(ctx, existing=FULL)
+    click(ctx, "agent-form-submit")
+    assert focused(ctx) == ["na-temperature"]
+    assert scrolled_to(ctx) == ["Input should be greater than or equal to 0"]
 
 
 def test_with_several_refusals_from_the_server_the_first_in_the_overlay_is_scrolled_to(ctx):
-    reject_next(ctx, {"status": 422, "fieldErrors": [
-        {"loc": ["body", "max_output_tokens"], "msg": "too small"}, {"loc": ["body", "temperature"], "msg": "too large"}]})
-    mount(ctx)
-    fill_required(ctx)
+    envelope = real_refusal({"max_output_tokens": 0, "temperature": -0.5})
+    assert len(envelope["extensions"]["errors"]) == 2
+    reject_with(ctx, envelope)
+    mount(ctx, existing=FULL)
     click(ctx, "agent-form-submit")
     assert focused(ctx) == ["na-temperature"], "Temperature comes before Max output tokens in the overlay, whatever order the server listed them in"
-    assert scrolled_to(ctx) == ["too large"]
+    assert scrolled_to(ctx) == ["Input should be greater than or equal to 0"]
 
 
 def test_a_422_on_a_field_of_several_controls_is_scrolled_to_and_nothing_takes_the_focus(ctx):
-    """The tools are a picker, not one control: its message is scrolled to, and no control is named by it."""
-    reject_next(ctx, {"status": 422, "fieldErrors": [{"loc": ["body", "tools"], "msg": "Unknown toolset nope"}]})
+    """The tools are a picker, not one control: the refused binding's message is scrolled to, and no control is named by it."""
+    reject_with(ctx, real_refusal({"tools": ["web__search", "ghost__x"]}, create=True))
     mount(ctx)
     fill_required(ctx)
     click(ctx, "agent-form-submit")
-    assert scrolled_to(ctx) == ["Unknown toolset nope"]
+    assert scrolled_to(ctx) == ["tools name toolsets that do not exist: 'ghost'; create them first or remove those tools"]
     assert focused(ctx) == []
 
 
 def test_a_422_on_a_field_the_overlay_does_not_show_is_scrolled_to_above_the_footer(ctx):
-    reject_next(ctx, {"status": 422, "fieldErrors": [{"loc": ["body", "harness_id"], "msg": "Extra inputs are not permitted"}]})
-    mount(ctx)
-    fill_required(ctx)
+    reject_with(ctx, real_refusal({"allow_external_tools": "maybe"}))
+    mount(ctx, existing=FULL)
     click(ctx, "agent-form-submit")
-    assert scrolled_to(ctx) == ["harness_id: Extra inputs are not permitted"]
+    assert scrolled_to(ctx) == ["allow_external_tools: Input should be a valid boolean, unable to interpret input"]
     assert focused(ctx) == [], "the line above the footer describes no control"
 
 
 def test_a_422_inside_a_fold_is_scrolled_to_once_the_fold_has_opened(ctx):
-    reject_next(ctx, {"status": 422, "fieldErrors": [{"loc": ["body", "response_format"], "msg": "not a JSON Schema"}]})
-    mount(ctx)
-    fill_required(ctx)
+    reject_with(ctx, real_refusal({"response_format": "nope"}))
+    mount(ctx, existing=FULL)
     click(ctx, "agent-form-submit")
     assert prop(ctx, "agent-advanced-fold", "data-open") == "true"
-    assert focused(ctx) == ["na-response-format"] and scrolled_to(ctx) == ["not a JSON Schema"]
+    assert focused(ctx) == ["na-response-format"] and scrolled_to(ctx) == ["Input should be a valid dictionary"]
 
 
 # ---- what does not bring anything into view ----------------------------------------------------------------------------------------------------------------

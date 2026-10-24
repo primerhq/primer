@@ -18,8 +18,10 @@ import pytest
 
 from tests.ui._agent_form_harness import (
     FULL,
+    FULL_SENT,
     MANAGED,
     PROFILE_CHOICES_KEY,
+    PROFILE_ROWS,
     agent_form,
     calls,
     click,
@@ -27,9 +29,13 @@ from tests.ui._agent_form_harness import (
     options,
     press_escape,
     prop,
+    real_answer,
+    real_refusal,
     recorded,
     reject_next,
+    reject_with,
     set_api,
+    set_picker_selection,
     set_resource,
     testids_under,
     text_of,
@@ -259,63 +265,162 @@ def test_a_bad_response_format_reopens_advanced_and_sends_nothing(ctx):  # Revie
     assert prop(ctx, "field:Response format", "data-error").startswith("JSON parse:")
 
 
-def test_a_422_on_a_shown_field_sits_under_it_and_one_on_a_hidden_field_above_the_footer(ctx):  # Review Focus 5
-    reject_next(ctx, {"status": 422, "fieldErrors": [
-        {"loc": ["body", "tools"], "msg": "Unknown toolset nope"},
-        {"loc": ["body", "harness_id"], "msg": "Extra inputs are not permitted"}]})
+# Every refusal below is an envelope the REAL agent router answered (tests/_support/agent_form_server.py), thrown as the real ApiError
+# (reject_with). The server says a field in two shapes (audit G3-03): request validation lists the field in extensions.errors, at
+# ["body", "<field>"] on the create route and at ["<field>"] on the edit route (it validates the body itself); a refused tool binding or
+# profile is {error, field, message} with no list. Both are drawn under the field. The stand-in shapes these tests used to write by hand
+# ({"loc": ["body", "tools"]}, a harness_id the Agent model never refuses) hid that the real ones landed above the footer or in a toast.
+
+# A change of FULL the edit route refuses, for each field the overlay shows: the envelope is the router's answer to that body. The form cannot
+# send some of them (a prompt part that is a number), so they stand for any refusal of the field; the tests after this one send what the
+# form really sends.
+SHOWN_FIELD_REFUSALS = {
+    "Description": {"description": "  "},
+    "Model profile": {"model": {"profile_id": "gone"}},
+    "System prompt": {"system_prompt": ["You triage refunds.", 1]},
+    "Compaction prompt": {"compaction_prompt": [1]},
+    "Temperature": {"temperature": -0.5},
+    "Max tool turns": {"max_tool_turns": 0},
+    "Max output tokens": {"max_output_tokens": 0},
+    "Tools": {"tools": ["ghost__x"]},
+    "Text-to-speech voice": {"tts_voice": 5},
+    "Response format": {"response_format": "nope"},
+}
+
+
+def server_words(envelope: dict) -> str:
+    """The words the router said for its one refused field: the request-validation entry's ``msg``, or a pre-write check's ``message``."""
+    ext = envelope["extensions"]
+    if "errors" in ext:
+        [entry] = ext["errors"]
+        return entry["msg"]
+    return ext["message"]
+
+
+@pytest.mark.parametrize("label", sorted(SHOWN_FIELD_REFUSALS))
+def test_every_shown_field_shows_the_edit_routes_refusal_under_it(ctx, label):  # Review Focus 5, audit G3-03
+    envelope = real_refusal(SHOWN_FIELD_REFUSALS[label])
+    reject_with(ctx, envelope)
+    mount(ctx, existing=FULL)
+    click(ctx, "agent-form-submit")
+    assert prop(ctx, "field:" + label, "data-error") == server_words(envelope)
+    assert "agent-form-error" not in testids_under(ctx, "agent-form"), "the field has it, not the line above the footer"
+    assert recorded(ctx)["toasts"] == []
+
+
+def test_the_create_routes_refusal_of_the_id_sits_under_the_id(ctx):
+    envelope = real_refusal({"id": "Bad Name!"}, create=True)
+    reject_with(ctx, envelope)
     mount(ctx)
     fill_required(ctx)
     click(ctx, "agent-form-submit")
-    assert prop(ctx, "field:Tools", "data-error") == "Unknown toolset nope"
-    assert text_of(ctx, "agent-form-error") == "harness_id: Extra inputs are not permitted"
+    assert prop(ctx, "field:Id", "data-error") == server_words(envelope)
+
+
+def test_an_edit_refused_for_its_temperature_says_so_under_temperature(ctx):  # audit G3-03 (a)
+    sent, envelope = real_answer(lambda c: type_into(c, "agent-temperature", "-0.5"), existing=FULL)
+    assert sent == {**FULL_SENT, "temperature": -0.5}
+    assert [e["loc"] for e in envelope["extensions"]["errors"]] == [["temperature"]], "the edit route's location has no body prefix"
+    reject_with(ctx, envelope)
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-temperature", "-0.5")
+    click(ctx, "agent-form-submit")
+    assert prop(ctx, "field:Temperature", "data-error") == "Input should be greater than or equal to 0"
+    assert "agent-form-error" not in testids_under(ctx, "agent-form")
+
+
+def test_a_create_refused_for_its_temperature_says_so_under_temperature_too(ctx):
+    def drive(c):
+        type_into(c, "agent-id", "refund-desk")  # the store holds refund-triage already
+        type_into(c, "agent-description", "Answers refund questions")
+        type_into(c, "agent-temperature", "-0.5")
+
+    _sent, envelope = real_answer(drive)
+    assert [e["loc"] for e in envelope["extensions"]["errors"]] == [["body", "temperature"]]
+    reject_with(ctx, envelope)
+    mount(ctx)
+    drive(ctx)
+    click(ctx, "agent-form-submit")
+    assert prop(ctx, "field:Temperature", "data-error") == "Input should be greater than or equal to 0"
+
+
+def test_an_edit_refused_for_its_response_format_reopens_advanced_and_says_so_there(ctx):  # audit G3-03 (a)
+    sent, envelope = real_answer(lambda c: type_into(c, "agent-response-format", '"not a schema"'), existing=FULL)
+    assert sent["response_format"] == "not a schema", "it parses, so the form sends it"
+    reject_with(ctx, envelope)
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-response-format", '"not a schema"')
+    assert prop(ctx, "agent-advanced-fold", "data-open") == "false"
+    click(ctx, "agent-form-submit")
+    assert prop(ctx, "agent-advanced-fold", "data-open") == "true"
+    assert prop(ctx, "field:Response format", "data-error") == "Input should be a valid dictionary"
+
+
+def test_a_tool_binding_the_server_refuses_sits_under_tools_not_in_a_toast(ctx):  # audit G3-03 (b)
+    def drive(c):
+        type_into(c, "agent-id", "refund-desk")  # the store holds refund-triage already
+        type_into(c, "agent-description", "Answers refund questions")
+        set_picker_selection(c, ["web__search", "ghost__x"])  # a toolset deleted after the picker loaded
+        click(c, "tool-picker-stub")
+
+    _sent, envelope = real_answer(drive)
+    assert envelope["extensions"]["error"] == "toolset_not_found" and "errors" not in envelope["extensions"]
+    reject_with(ctx, envelope)
+    mount(ctx)
+    drive(ctx)
+    click(ctx, "agent-form-submit")
+    assert prop(ctx, "field:Tools", "data-error") == "tools name toolsets that do not exist: 'ghost'; create them first or remove those tools"
+    assert recorded(ctx)["toasts"] == []
+    assert "agent-form-error" not in testids_under(ctx, "agent-form")
+
+
+def test_an_edit_that_binds_a_tool_the_server_refuses_says_so_under_tools(ctx):
+    def drive(c):
+        set_picker_selection(c, ["system__list_files", "web__search", "ghost__x"])
+        click(c, "tool-picker-stub")
+
+    _sent, envelope = real_answer(drive, existing=FULL)
+    reject_with(ctx, envelope)
+    mount(ctx, existing=FULL)
+    drive(ctx)
+    click(ctx, "agent-form-submit")
+    assert prop(ctx, "field:Tools", "data-error").startswith("tools name toolsets that do not exist: 'ghost'")
+    assert recorded(ctx)["toasts"] == []
+
+
+def test_a_refusal_of_a_field_the_overlay_has_no_place_for_is_one_line_above_the_footer(ctx):  # Review Focus 5
+    """The switches have no message slot: a refusal of one (the router's answer to a body the form cannot send) is said above the footer."""
+    envelope = real_refusal({"allow_external_tools": "maybe"})
+    reject_with(ctx, envelope)
+    mount(ctx, existing=FULL)
+    click(ctx, "agent-form-submit")
+    assert text_of(ctx, "agent-form-error") == "allow_external_tools: Input should be a valid boolean, unable to interpret input"
     assert prop(ctx, "agent-form-error", "role") == "alert"
     assert recorded(ctx)["toasts"] == []
 
 
-def test_every_shown_field_shows_its_own_422_under_it(ctx):
-    reject_next(ctx, {"status": 422, "fieldErrors": [
-        {"loc": ["body", "id"], "msg": "taken"}, {"loc": ["body", "description"], "msg": "too long"},
-        {"loc": ["body", "model", "profile_id"], "msg": "no such profile"}, {"loc": ["body", "system_prompt", 1], "msg": "too many characters"},
-        {"loc": ["body", "compaction_prompt", 0], "msg": "too many characters too"}, {"loc": ["body", "temperature"], "msg": "must be 0 or more"},
-        {"loc": ["body", "max_tool_turns"], "msg": "must be positive"}, {"loc": ["body", "max_output_tokens"], "msg": "must be positive too"},
-        {"loc": ["body", "tts_voice"], "msg": "unknown voice"}, {"loc": ["body", "response_format"], "msg": "not a JSON Schema"}]})
-    mount(ctx)
-    fill_required(ctx)
-    click(ctx, "agent-form-submit")
-    assert {label: prop(ctx, "field:" + label, "data-error") for label in (
-        "Id", "Description", "Model profile", "System prompt", "Compaction prompt", "Temperature", "Max tool turns", "Max output tokens",
-        "Text-to-speech voice", "Response format")} == {
-        "Id": "taken", "Description": "too long", "Model profile": "no such profile", "System prompt": "too many characters",
-        "Compaction prompt": "too many characters too", "Temperature": "must be 0 or more", "Max tool turns": "must be positive",
-        "Max output tokens": "must be positive too", "Text-to-speech voice": "unknown voice", "Response format": "not a JSON Schema"}
-    assert "agent-form-error" not in testids_under(ctx, "agent-form"), "every one of them has its field"
-
-
 def test_a_422_on_a_field_inside_a_fold_opens_the_fold(ctx):
-    reject_next(ctx, {"status": 422, "fieldErrors": [{"loc": ["body", "response_format"], "msg": "not a JSON Schema"}]})
-    mount(ctx)
-    fill_required(ctx)
+    reject_with(ctx, real_refusal({"response_format": "nope"}))
+    mount(ctx, existing=FULL)
     assert prop(ctx, "agent-advanced-fold", "data-open") == "false"
     click(ctx, "agent-form-submit")
     assert prop(ctx, "agent-advanced-fold", "data-open") == "true"
-    assert prop(ctx, "field:Response format", "data-error") == "not a JSON Schema"
+    assert prop(ctx, "field:Response format", "data-error") == "Input should be a valid dictionary"
 
 
 def test_a_422_on_the_voice_opens_the_voice_fold_and_without_text_to_speech_it_is_a_line_above_the_footer():
-    refusal = {"status": 422, "fieldErrors": [{"loc": ["body", "tts_voice"], "msg": "unknown voice"}]}
+    refusal = real_refusal({"tts_voice": 5})
     with agent_form(tts_configured=True) as ctx:
-        reject_next(ctx, refusal)
-        mount(ctx)
-        fill_required(ctx)
+        reject_with(ctx, refusal)
+        mount(ctx, existing=FULL)
         click(ctx, "agent-form-submit")
         assert prop(ctx, "agent-voice-fold", "data-open") == "true"
-        assert prop(ctx, "field:Text-to-speech voice", "data-error") == "unknown voice"
+        assert prop(ctx, "field:Text-to-speech voice", "data-error") == "Input should be a valid string"
     with agent_form(tts_configured=False) as ctx:
-        reject_next(ctx, refusal)
-        mount(ctx)
-        fill_required(ctx)
+        reject_with(ctx, refusal)
+        mount(ctx, existing=FULL)
         click(ctx, "agent-form-submit")
-        assert text_of(ctx, "agent-form-error") == "tts_voice: unknown voice"
+        assert text_of(ctx, "agent-form-error") == "tts_voice: Input should be a valid string"
 
 
 def test_a_failure_that_is_not_a_422_is_a_toast_and_no_line(ctx):
@@ -394,11 +499,26 @@ def test_a_failed_profile_load_on_create_is_the_error_and_the_empty_option():
         assert prop(ctx, "field:Model profile", "data-help") == "The default; a run can override it"
 
 
-def test_a_profile_the_server_refuses_is_said_under_the_dropdown_ahead_of_the_missing_note(ctx):
-    reject_next(ctx, {"status": 422, "fieldErrors": [{"loc": ["body", "model", "profile_id"], "msg": "no such profile"}]})
-    mount(ctx, existing={**FULL, "model": {"profile_id": "gone"}})
+def test_a_profile_the_server_refuses_is_said_under_the_dropdown(ctx):  # audit G3-03 (b)
+    """The operator picks a profile the dropdown offers that was deleted on the server after the list loaded."""
+    slow_only = [row for row in PROFILE_ROWS if row["id"] == "slow"]
+    sent, envelope = real_answer(lambda c: type_into(c, "agent-model-profile", "fast"), existing=FULL, profiles=slow_only)
+    assert sent["model"] == {"profile_id": "fast"}
+    assert envelope["extensions"]["error"] == "model_profile_not_found" and "errors" not in envelope["extensions"]
+    reject_with(ctx, envelope)
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-model-profile", "fast")
     click(ctx, "agent-form-submit")
-    assert prop(ctx, "field:Model profile", "data-error") == "no such profile"
+    assert prop(ctx, "field:Model profile", "data-error") == "ModelProfile 'fast' does not exist; create the profile first or name an existing one"
+    assert recorded(ctx)["toasts"] == []
+
+
+def test_the_servers_refusal_of_the_profile_comes_ahead_of_the_missing_note(ctx):
+    reject_with(ctx, real_refusal({"model": {"profile_id": "gone-too"}}))
+    mount(ctx, existing={**FULL, "model": {"profile_id": "gone"}})
+    assert prop(ctx, "field:Model profile", "data-error") == "This profile no longer exists. Pick another one."
+    click(ctx, "agent-form-submit")
+    assert prop(ctx, "field:Model profile", "data-error").startswith("ModelProfile 'gone-too' does not exist")
 
 
 # ---- edit mode and the footer ------------------------------------------------------------------------------------------------------------------------

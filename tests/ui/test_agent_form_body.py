@@ -205,9 +205,10 @@ def test_a_new_agent_with_every_field_set_through_the_new_controls_posts_this_bo
 
 # ---- a typed 0 or negative turn cap (lead notes on #755, review item a) ------------------------------------------------------------------------------
 # An EMPTY field is no limit. A number that is not positive cannot be a cap: it falls back to the server default, 50, and never to null (no limit).
+# Nor can a number that rounds down to under 1 (audit G3-03 c): "0.5" was floored to 0 and sent, a body the server refuses (PositiveInt).
 
 
-@pytest.mark.parametrize("typed", ["0", "-1", "-25"])
+@pytest.mark.parametrize("typed", ["0", "-1", "-25", "0.5", "0.99", "-0.3"])
 def test_a_typed_zero_or_negative_turn_cap_saves_the_default_not_no_limit(ctx, typed):
     mount(ctx, existing=FULL)
     type_into(ctx, "agent-max-tool-turns", typed)
@@ -265,6 +266,13 @@ def test_the_input_event_hears_text_typed_into_an_empty_number_field(ctx, testid
     assert prop(ctx, f"field:{label}", "data-error") == ""
     click(ctx, "agent-form-submit")
     assert len(calls(ctx)) == 1
+
+
+def test_a_fraction_above_one_turn_cap_rounds_down(ctx):
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-max-tool-turns", "1.9")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["max_tool_turns"] == 1
 
 
 def test_a_cleared_number_field_is_still_no_limit_not_an_error(ctx):
