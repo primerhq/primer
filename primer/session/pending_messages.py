@@ -411,6 +411,26 @@ async def _realize_oldest(
     return True
 
 
+async def drop_queue_of_missing_session(storage_provider: Any, session_id: str) -> int:
+    """Delete every queued message of ``session_id``, a session that no longer exists: nothing can deliver them. Returns how many went.
+
+    For the session-messaging sweep (``primer.bus.scheduler_tasks.SessionMessagingSweeper``), which finds sessions through their queued rows.
+    The caller has read the session row as gone; a row already deleted by someone else is skipped.
+    """
+    storage = storage_provider.get_storage(PendingSessionMessage)
+    dropped = 0
+    while True:
+        page = await storage.find(_queued_for(session_id), OffsetPage(offset=0, length=200), order_by=_OLDEST_FIRST)
+        rows = list(page.items)
+        if not rows:
+            return dropped
+        for row in rows:
+            await _delete_queued(storage, row.id)
+            dropped += 1
+        if len(rows) < 200:
+            return dropped
+
+
 async def _delete_queued(storage: Any, pending_id: str) -> None:
     """Delete one queued row; one that is already gone (another drain delivered it, a session delete took it) is not an error."""
     try:
@@ -419,4 +439,4 @@ async def _delete_queued(storage: Any, pending_id: str) -> None:
         logger.debug("pending_messages: queued row %s was already gone", pending_id)
 
 
-__all__ = ["PendingQueueFull", "has_queued_messages", "realize_next_pending", "store_pending_steer"]
+__all__ = ["PendingQueueFull", "drop_queue_of_missing_session", "has_queued_messages", "realize_next_pending", "store_pending_steer"]

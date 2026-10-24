@@ -460,6 +460,7 @@ def _make_lifespan(config: AppConfig):
         event_retention_pruner = None
         workspace_event_bridge = None
         stuck_session_sweeper = None
+        session_messaging_sweeper = None
         harness_sweeper = None
         watcher_manager = None
         mcp_task_bridge = None
@@ -568,6 +569,19 @@ def _make_lifespan(config: AppConfig):
                 claim_engine=claim_engine,
             )
             stuck_session_sweeper.start(coordinator.leader_elector)
+
+            # Delivers the queued messages of a session at rest that no turn boundary will come to (audit G7-14): a worker that died
+            # between a turn's terminal write and its drain, a realize whose wake failed. Leader-elected, so one process sweeps; its
+            # first tick runs when it takes the role (at boot on the first process to win it), then every poll.
+            from primer.bus.scheduler_tasks import SessionMessagingSweeper
+            session_messaging_sweeper = SessionMessagingSweeper(
+                storage_provider=storage_provider,
+                scheduler=scheduler,
+                claim_engine=claim_engine,
+                workspace_registry=workspace_registry,
+                event_bus=event_bus,
+            )
+            session_messaging_sweeper.start(coordinator.leader_elector)
 
             from primer.bus.scheduler_tasks import HarnessSweeper
 
@@ -1068,6 +1082,7 @@ def _make_lifespan(config: AppConfig):
                 (event_dispatcher, "event_dispatcher"),
                 (timeout_sweeper, "timeout_sweeper"),
                 (stuck_session_sweeper, "stuck_session_sweeper"),
+                (session_messaging_sweeper, "session_messaging_sweeper"),
                 (timer_scheduler, "timer_scheduler"),
                 (yield_listener, "yield_listener"),
             ):
