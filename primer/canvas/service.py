@@ -1,9 +1,22 @@
 """The canvas service: apply a batch, record a user's interaction, keep the row fenced (pivot P5, Tasks 6 and 7; design 8.5).
 
-Every write to a ``SessionCanvas`` goes through this class and is ONE field-scoped ``patch_if`` fenced on the ``rev`` AND the
-``event_seq`` that were read (the first write of a session is a ``create``). A writer that lost the race reads the fresh row and
-decides again, up to five times, then raises ``ConflictError``. So an API pod recording a click and a worker applying an agent's
-batch both land, ``rev`` and ``event_seq`` only ever increase, and no value is lost; nothing here ever writes the whole row.
+Every write to a ``SessionCanvas`` goes through this class and is ONE field-scoped ``patch_if`` fenced on the counters that were read
+(the first write of a session is a ``create``): an event on ``rev`` and ``event_seq``, a batch on ``rev`` and ``value_seq``. A writer
+that lost the race reads the fresh row and decides again, up to five times, then raises ``ConflictError``. So an API pod recording a
+click and a worker applying an agent's batch both land, ``rev`` and ``event_seq`` only ever increase, and no value is lost; nothing
+here ever writes the whole row.
+
+**A batch is fenced on ``rev`` and ``value_seq``, not on ``event_seq`` (the S6 decision on audit G8-04).** A batch writes ``rev``,
+``elements``, ``values``, ``value_set_by`` and ``updated_at``; an event writes the ring and its counters, and ``values`` only when it
+sets a value, which moves ``value_seq`` (and ``rev`` too, unless it is an audio event's play state). So an event that sets no value (a
+click, an emit, a link open, a value set to what it already is) can land between a batch's read and its write without failing it:
+a user, or an Html element calling ``setValue(1)`` in a loop, can no longer starve an agent's batch through its five attempts. An
+event that did set a value moved ``rev`` or ``value_seq``, so the batch reads again and keeps it. Events between themselves stay
+fenced on ``event_seq``, which numbers them.
+
+**Events that do not wake the agent are capped** at :data:`~primer.model.canvas.MAX_SILENT_EVENTS_PER_MINUTE` a session (the lead's
+ruling 3 on S6), as waking ones are at ``CanvasSettings.max_waking_events_per_minute``; past either the event is refused and nothing
+is written.
 
 After the write, and best effort (a canvas that has been written never fails because its announcement could not be made):
 
@@ -52,7 +65,14 @@ from primer.canvas.state import (
     json_equal,
 )
 from primer.events.recorder import recorder_for
-from primer.model.canvas import MAX_EMIT_DATA_BYTES, MAX_EVENT_VALUE_CHARS, CanvasEvent, CanvasSettings, SessionCanvas
+from primer.model.canvas import (
+    MAX_EMIT_DATA_BYTES,
+    MAX_EVENT_VALUE_CHARS,
+    MAX_SILENT_EVENTS_PER_MINUTE,
+    CanvasEvent,
+    CanvasSettings,
+    SessionCanvas,
+)
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import SessionMessageKind
 from primer.storage.cas import patch_if_checked
@@ -116,7 +136,9 @@ class CanvasEventRefused(Exception):
 
     def __init__(
         self,
-        code: Literal["unknown_element", "kind_not_allowed", "invalid_value", "element_disabled", "rate_limited"],
+        code: Literal[
+            "unknown_element", "kind_not_allowed", "invalid_value", "element_disabled", "rate_limited", "silent_rate_limited",
+        ],
         message: str,
     ) -> None:
         self.code = code
@@ -242,13 +264,18 @@ def _check_event(
         kept_position = float(position)
     wake = bool(props["wake"]) if "wake" in props else allowed[kind]
     if wake:
-        recent = [t for t in row.wake_times if (t if t.tzinfo else t.replace(tzinfo=UTC)) > now - _WAKE_WINDOW]
-        if len(recent) >= settings.max_waking_events_per_minute:
+        if _in_the_last_minute(row.wake_times, now) >= settings.max_waking_events_per_minute:
             raise CanvasEventRefused(
                 "rate_limited",
                 f"The agent takes at most {settings.max_waking_events_per_minute} canvas wakes a minute. "
                 "Wait a moment, then try again.",
             )
+    elif _in_the_last_minute(row.silent_times, now) >= MAX_SILENT_EVENTS_PER_MINUTE:
+        raise CanvasEventRefused(
+            "silent_rate_limited",
+            f"This canvas takes at most {MAX_SILENT_EVENTS_PER_MINUTE} events a minute that do not wake the agent. "
+            "Wait a moment, then try again.",
+        )
     label_prop = _LABEL_PROP.get(etype)
     return _Accepted(
         etype=etype,
@@ -260,6 +287,11 @@ def _check_event(
         data=kept_data,
         position=kept_position,
     )
+
+
+def _in_the_last_minute(times: Sequence[datetime], now: datetime) -> int:
+    """How many of ``times`` (a rate ring) fall within the minute before ``now``."""
+    return sum(1 for t in times if (t if t.tzinfo else t.replace(tzinfo=UTC)) > now - _WAKE_WINDOW)
 
 
 def _settle(row: SessionCanvas, pointer: int, read: set[int]) -> tuple[int, list[int]]:
@@ -515,9 +547,11 @@ class CanvasService:
     async def _write_batch(
         self, store: Any, row: SessionCanvas | None, after: CanvasState, *, session_id: str, workspace_id: str,
     ) -> SessionCanvas | None:
-        """The one write of a batch: ``create`` for a session's first, else a patch fenced on ``rev`` and ``event_seq``.
+        """The one write of a batch: ``create`` for a session's first, else a patch fenced on ``rev`` and ``value_seq``.
 
-        ``None`` means the fence rejected it (or another writer created the row first, or the row was deleted): read again.
+        Not on ``event_seq``: an event that wrote no value since the read touched nothing this patch writes, so it does not fail the
+        batch (the module docstring). ``None`` means the fence rejected it (or another writer created the row first, or the row was
+        deleted): read again.
         """
         now = self._now()
         if row is None:
@@ -537,7 +571,7 @@ class CanvasService:
             "updated_at": _json_time(now),
         }
         try:
-            return await patch_if_checked(store, session_id, patch, where={"rev": [row.rev], "event_seq": [row.event_seq]})
+            return await patch_if_checked(store, session_id, patch, where={"rev": [row.rev], "value_seq": [row.value_seq]})
         except NotFoundError:
             return None
 
@@ -611,13 +645,36 @@ class CanvasService:
         """Validate a user's interaction, write it to the canvas and announce it.
 
         The server decides everything that matters: the element must exist and be available, the kind must be one it sends, the
-        value must fit, a waking event must be within the per-minute limit, and the label comes from the element, never from the
-        caller. Raises ``CanvasEventRefused`` (nothing is written) or ``ConflictError`` (other writers kept getting in first). A
+        value must fit, a waking event must be within the per-minute limit and any other event within
+        :data:`~primer.model.canvas.MAX_SILENT_EVENTS_PER_MINUTE`, and the label comes from the element, never from the caller.
+        Raises ``CanvasEventRefused`` (nothing is written) or ``ConflictError`` (other writers kept getting in first). A
         ``client_event_id`` already in the ring returns that event unchanged: a retried POST records once.
 
         A ``change`` or ``set_value`` that sets a different value moves ``rev``; a click, an emit, an audio event or a link open
         moves only ``event_seq``. The fields a kind does not use (a ``value`` sent with a click) are dropped, not stored.
         """
+        event, _ = await self.record_event_or_repeat(
+            session_id=session_id, workspace_id=workspace_id, element=element, kind=kind, by=by, value=value, name=name, data=data,
+            position=position, client_event_id=client_event_id,
+        )
+        return event
+
+    async def record_event_or_repeat(
+        self,
+        *,
+        session_id: str,
+        workspace_id: str,
+        element: str,
+        kind: str,
+        by: str,
+        value: Any = None,
+        name: str | None = None,
+        data: Any = None,
+        position: float | None = None,
+        client_event_id: str | None = None,
+    ) -> tuple[CanvasEvent, bool]:
+        """:meth:`record_event`, and whether THIS call recorded the event: ``False`` when ``client_event_id`` was already in the ring
+        (a retried POST), whose event was delivered by the call that recorded it and must not be delivered again."""
         store = self._store()
         for _ in range(_ATTEMPTS):
             row = await store.get(session_id)
@@ -626,7 +683,7 @@ class CanvasService:
             if client_event_id is not None:
                 repeat = next((event for event in row.events if event.client_event_id == client_event_id), None)
                 if repeat is not None:
-                    return repeat
+                    return repeat, False
             settings = await read_canvas_settings(self._sp)
             now = self._now()
             accepted = _check_event(
@@ -646,11 +703,14 @@ class CanvasService:
                 "updated_at": _json_time(now),
             }
             if values is not row.values:
-                patch["values"], patch["value_set_by"] = values, set_by
+                # A value written moves value_seq: a batch that read the row before it is fenced on it, so it reads again and keeps it.
+                patch["values"], patch["value_set_by"], patch["value_seq"] = values, set_by, row.value_seq + 1
             if bumped:
                 patch["rev"] = rev
             if accepted.wake:
                 patch["wake_times"] = to_jsonable_python([*row.wake_times, now][-settings.max_waking_events_per_minute:])
+            else:
+                patch["silent_times"] = to_jsonable_python([*row.silent_times, now][-MAX_SILENT_EVENTS_PER_MINUTE:])
             try:
                 written = await patch_if_checked(store, session_id, patch, where={"rev": [row.rev], "event_seq": [row.event_seq]})
             except NotFoundError:
@@ -658,7 +718,7 @@ class CanvasService:
             if written is None:
                 continue                     # another writer got in first: read the fresh row and judge the event again
             await self._announce_event(written, event, session_id=session_id, workspace_id=written.workspace_id)
-            return event
+            return event, True
         raise ConflictError(_CONFLICT)
 
     @staticmethod
