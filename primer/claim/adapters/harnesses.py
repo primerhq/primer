@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, UTC
 
-from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
+from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome, read_for_eligibility
 from primer.int.storage import Storage
 from primer.model.harness import HarnessStatus
 
@@ -26,7 +26,7 @@ class HarnessClaimAdapter(ClaimAdapter):
         """
         if self._storage is None:
             return True
-        harness = await self._storage.get(entity_id)
+        harness = await read_for_eligibility(self._storage, entity_id)
         return harness is not None and harness.pending_operation is not None
 
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:

@@ -4,8 +4,11 @@ in-memory engine) (ticket 01a16e79).
 One table of entities covers every column each clause reads, with the boundary rows: ``parked_status`` null, ``resumable`` and
 ``parked`` (a parked session stays RUNNING), ``pending_operation`` set and cleared (a finished operation, a failed one), a trigger's
 ``next_fire_at`` null, before, EQUAL TO and one microsecond after ``now``, disabled, and an event kind; a tool-call task in each state
-(``failed`` is what a rejected retry release leaves). The table is built from ``now`` so the SQL half can use the transaction's own
-``now()``, which Postgres holds fixed for the whole transaction.
+(``failed`` is what a rejected retry release leaves). Three rows are edited in the stored document after they are written, the way a
+hand edit or an older build leaves them (review of #928, round 2): a trigger without ``enabled`` and a task without ``state`` (the SQL
+reads NULL, so not eligible, where the model would default them to True and ``queued``), and a trigger whose ``next_fire_at`` has no
+zone (read as UTC on both sides; the SQL half pins the session to UTC, as on the default Postgres image). The table is built from
+``now`` so the SQL half can use the transaction's own ``now()``, which Postgres holds fixed for the whole transaction.
 
 * The Python half runs everywhere: ``is_eligible`` over the rows stored in SQLite must give the expected column.
 * The SQL half runs in the CI Postgres lane only (``tests/pg_gate.py``): the rows are written through the Postgres storage inside one
@@ -48,6 +51,8 @@ class _Row:
     kind: ClaimKind
     entity: BaseModel
     eligible: bool
+    drop_key: str | None = None                         # a top-level key the stored document is written without
+    naive_key: tuple[str, datetime] | None = None       # a top-level time the stored document holds without a zone
 
 
 def _rows(now: datetime, prefix: str) -> list[_Row]:
@@ -75,6 +80,7 @@ def _rows(now: datetime, prefix: str) -> list[_Row]:
 
     daily = ScheduledTriggerConfig(cron="0 9 * * *", timezone="UTC")
     tick = timedelta(microseconds=1)
+    utc_wall = now.astimezone(timezone.utc).replace(tzinfo=None)
     return [
         _Row("session never parked", ClaimKind.SESSION, session("s-free", status=SessionStatus.RUNNING), True),
         _Row("session resumable", ClaimKind.SESSION, session("s-resumable", status=SessionStatus.RUNNING, parked_status="resumable",
@@ -104,6 +110,16 @@ def _rows(now: datetime, prefix: str) -> list[_Row]:
         _Row("tool call gated", ClaimKind.TOOL_CALL, task("c-gated", ToolCallTaskState.GATED), False),
         _Row("tool call done", ClaimKind.TOOL_CALL, task("c-done", ToolCallTaskState.DONE), False),
         _Row("tool call failed (a rejected retry release)", ClaimKind.TOOL_CALL, task("c-failed", ToolCallTaskState.FAILED), False),
+        _Row("scheduled, due a second ago, stored without enabled", ClaimKind.TRIGGER,
+             trigger("t-no-enabled", daily, next_fire_at=now - timedelta(seconds=1)), False, drop_key="enabled"),
+        _Row("tool call stored without state", ClaimKind.TOOL_CALL, task("c-no-state", ToolCallTaskState.QUEUED), False,
+             drop_key="state"),
+        _Row("scheduled, stored naive, a second ago in UTC", ClaimKind.TRIGGER,
+             trigger("t-naive-past", daily, next_fire_at=now - timedelta(seconds=1)), True,
+             naive_key=("next_fire_at", utc_wall - timedelta(seconds=1))),
+        _Row("scheduled, stored naive, a second after now in UTC", ClaimKind.TRIGGER,
+             trigger("t-naive-next", daily, next_fire_at=now + timedelta(seconds=1)), False,
+             naive_key=("next_fire_at", utc_wall + timedelta(seconds=1))),
     ]
 
 
@@ -131,10 +147,27 @@ async def sqlite_provider(tmp_path) -> AsyncIterator[SqliteStorageProvider]:
         await provider.aclose()
 
 
+async def _edit_sqlite(provider: SqliteStorageProvider, row: _Row) -> None:
+    from primer.storage.sqlite import _table_name_for
+
+    table = _table_name_for(_MODELS[row.kind])
+    if row.drop_key is not None:
+        await provider.connection.execute(
+            f'UPDATE "{table}" SET data = json_remove(data, ?) WHERE id = ?', (f"$.{row.drop_key}", row.entity.id),
+        )
+    if row.naive_key is not None:
+        key, value = row.naive_key
+        await provider.connection.execute(
+            f'UPDATE "{table}" SET data = json_set(data, ?, ?) WHERE id = ?', (f"$.{key}", value.isoformat(), row.entity.id),
+        )
+    await provider.connection.commit()
+
+
 async def _python_answers(provider, rows: list[_Row], now: datetime) -> dict[str, bool]:
-    """``is_eligible`` for every row, read back from ``provider`` after storing them there."""
+    """``is_eligible`` for every row, read back from ``provider`` after storing them there (and editing the stored document)."""
     for row in rows:
         await provider.get_storage(_MODELS[row.kind]).create(row.entity)
+        await _edit_sqlite(provider, row)
     adapters = _adapters(provider)
     return {row.label: await adapters[row.kind].is_eligible(row.entity.id, now) for row in rows}
 
@@ -186,10 +219,21 @@ async def test_sql_half_eligibility_sql_agrees_with_is_eligible_row_by_row(sqlit
             transaction = conn.transaction()
             await transaction.start()
             try:
+                # A time without a zone is cast in the session's zone: pin it to UTC, the zone the ruling reads it in.
+                await conn.execute("SET LOCAL TimeZone = 'UTC'")
                 now = await conn.fetchval("SELECT now()")
                 rows = _rows(now, f"parity-{uuid.uuid4().hex[:12]}")
                 for row in rows:
                     await pg.get_storage(_MODELS[row.kind]).create(row.entity, conn=conn)
+                    table = f'"{pg.schema}"."{_table_name_for(_MODELS[row.kind])}"'
+                    if row.drop_key is not None:
+                        await conn.execute(f"UPDATE {table} SET data = data - $1::text WHERE id = $2", row.drop_key, row.entity.id)
+                    if row.naive_key is not None:
+                        key, value = row.naive_key
+                        await conn.execute(
+                            f"UPDATE {table} SET data = jsonb_set(data, ARRAY[$1::text], to_jsonb($2::text)) WHERE id = $3",
+                            key, value.isoformat(), row.entity.id,
+                        )
                 sql: dict[str, bool] = {}
                 for kind, adapter in _adapters(pg).items():
                     mine = [row for row in rows if row.kind == kind]

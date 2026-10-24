@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic_core import to_jsonable_python
 
-from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
+from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome, read_for_eligibility
 from primer.int.storage import Storage
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_refusal import WorkspaceRefusedError
@@ -69,7 +69,7 @@ class SessionClaimAdapter(ClaimAdapter):
         """
         if self._storage is None:
             return True
-        session = await self._storage.get(entity_id)
+        session = await read_for_eligibility(self._storage, entity_id)
         if session is None:
             return False
         return session.parked_status is None or session.parked_status == "resumable"

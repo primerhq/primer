@@ -110,6 +110,14 @@ claim_active_count = Gauge(
     registry=registry,
 )
 
+claim_eligibility_read_errors_total = Counter(
+    "claim_eligibility_read_errors_total",
+    "Eligibility reads of a lease's entity that failed on the in-memory claim engine (the storage read or the "
+    "decode of the row), by kind. Each one skips that lease for one claim; the row is logged once per error type.",
+    ["kind"],
+    registry=registry,
+)
+
 # ---------------------------------------------------------------------------
 # Channel-event metrics
 # ---------------------------------------------------------------------------
@@ -422,7 +430,7 @@ def reset_for_test() -> None:
     global llm_retry_total  # noqa: PLW0603
     global tool_calls_total, tool_duration_seconds  # noqa: PLW0603
     global claim_enqueue_latency_seconds, claim_queue_depth  # noqa: PLW0603
-    global claim_active_count  # noqa: PLW0603
+    global claim_active_count, claim_eligibility_read_errors_total  # noqa: PLW0603
     global channel_events_normalized_total, channel_events_matched_total  # noqa: PLW0603
     global channel_events_dispatched_total, reply_binding_resolutions_total  # noqa: PLW0603
     global gate_respond_total  # noqa: PLW0603
@@ -496,6 +504,13 @@ def reset_for_test() -> None:
     claim_active_count = Gauge(
         "claim_active_count",
         "Current number of leases held by a live worker (claimed, lease not yet expired), by kind.",
+        ["kind"],
+        registry=registry,
+    )
+    claim_eligibility_read_errors_total = Counter(
+        "claim_eligibility_read_errors_total",
+        "Eligibility reads of a lease's entity that failed on the in-memory claim engine (the storage read or the "
+        "decode of the row), by kind. Each one skips that lease for one claim; the row is logged once per error type.",
         ["kind"],
         registry=registry,
     )
@@ -705,6 +720,7 @@ __all__ = [
     "claim_enqueue_latency_seconds",
     "claim_queue_depth",
     "claim_active_count",
+    "claim_eligibility_read_errors_total",
     # Channel events
     "channel_events_normalized_total",
     "channel_events_matched_total",

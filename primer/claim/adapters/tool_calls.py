@@ -29,7 +29,7 @@ from typing import Any
 from pydantic import ValidationError
 from pydantic_core import PydanticSerializationError, to_jsonable_python
 
-from primer.int.claim import ClaimAdapter, ClaimKind, PostReleaseWake, ReleaseOutcome
+from primer.int.claim import ClaimAdapter, ClaimKind, PostReleaseWake, ReleaseOutcome, read_for_eligibility
 from primer.int.storage import Storage
 from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
@@ -92,12 +92,18 @@ class ToolCallClaimAdapter(ClaimAdapter):
     async def is_eligible(self, entity_id: str, now: datetime) -> bool:
         """Mirrors :meth:`eligibility_sql`, ``e.data->>'state' IN ('queued', 'running')``.
 
-        A missing row is not eligible (the claim query's inner join); with no storage the lease stays claimable.
+        A missing row is not eligible (the claim query's inner join); with no storage the lease stays claimable. ``state`` is
+        read as stored: a document without the key is NULL to the SQL, so not eligible, while the model would default it to
+        ``queued``; the row as read from storage carries exactly its stored keys (``model_fields_set``).
         """
         if self._storage is None:
             return True
-        task = await self._storage.get(entity_id)
-        return task is not None and task.state in (ToolCallTaskState.QUEUED, ToolCallTaskState.RUNNING)
+        task = await read_for_eligibility(self._storage, entity_id)
+        return (
+            task is not None
+            and "state" in task.model_fields_set
+            and task.state in (ToolCallTaskState.QUEUED, ToolCallTaskState.RUNNING)
+        )
 
     def entity_indexes(self, qualified_table: str) -> list[str]:
         # Backs the eligibility filter above (runs every claim cycle) and

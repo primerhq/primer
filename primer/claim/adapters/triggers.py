@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
+from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome, read_for_eligibility
 from primer.int.storage import Storage
 from primer.model.trigger import Trigger
 from primer.trigger.cron import next_fire_at as _cron_next
@@ -54,18 +54,26 @@ class TriggerClaimAdapter(ClaimAdapter):
         AND e.data->'config'->>'kind' IN ('delayed', 'scheduled') AND (e.data->>'next_fire_at')::timestamptz <= now()``, with
         ``now`` (the engine's clock) for ``now()``.
 
-        A missing row is not eligible (the claim query's inner join); with no storage the lease stays claimable.
+        A missing row is not eligible (the claim query's inner join); with no storage the lease stays claimable. ``enabled`` is
+        read as stored: a document without the key is NULL to the SQL, so not eligible, while the model would default it to
+        True; the row as read from storage carries exactly its stored keys (``model_fields_set``), so a missing key is not
+        eligible here either. A ``next_fire_at`` without a zone is read as UTC, as the SQL cast reads it under a UTC session
+        (the model normalises it on read too; this holds even for a model that did not).
         """
         if self._storage is None:
             return True
-        trigger = await self._storage.get(entity_id)
+        trigger = await read_for_eligibility(self._storage, entity_id)
         if trigger is None:
             return False
+        next_fire_at = trigger.next_fire_at
+        if next_fire_at is not None and next_fire_at.tzinfo is None:
+            next_fire_at = next_fire_at.replace(tzinfo=timezone.utc)
         return (
-            trigger.enabled
-            and trigger.next_fire_at is not None
+            "enabled" in trigger.model_fields_set
+            and trigger.enabled
+            and next_fire_at is not None
             and trigger.config.kind in ("delayed", "scheduled")
-            and trigger.next_fire_at <= now
+            and next_fire_at <= now
         )
 
     async def on_release(
