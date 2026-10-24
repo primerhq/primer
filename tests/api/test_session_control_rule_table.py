@@ -1275,3 +1275,56 @@ async def test_a_delete_whose_rank_scan_cannot_see_every_session_tears_nothing_d
 
     assert outcome == "backend-error" and "repeated" in body["message"], body
     assert await world.snapshot() == before
+
+
+# -- one scope for every identity a holder-less manager builds (review of #874, G1) ----------------------------------------------------------
+
+
+async def test_a_holder_less_graph_manager_names_its_session_on_events_approvals_and_its_scope(monkeypatch, tmp_path):
+    """Probe G of the #874 review: the run_scope of a graph session with no holder slot reached ``context_for`` only; the ``tool.called`` and
+    ``llm.called`` events and the approval gate's park still named no session (an approval parked under ``tool_approval:unknown:...``). One scope
+    now feeds them all. Built through the worker's own ``WorkerPool._build_executor``."""
+    import primer.worker.executor_builders as builders
+    from primer.agent.approval import ApprovalResolver
+    from primer.model.tool_approval import RequiredApprovalConfig, ToolApprovalPolicy
+    from primer.model.yield_ import YieldToWorker
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        async def emit(self, event_type: str, **kwargs) -> None:
+            self.events.append((event_type, kwargs))
+
+    recorder = _Recorder()
+    monkeypatch.setattr(builders, "_pool_event_recorder", lambda pool: recorder)
+    world = await _ws_world()
+    policies = world.sp.get_storage(ToolApprovalPolicy)
+    await policies.create(ToolApprovalPolicy(id="gate-get", toolset_id="workspaces", tool_name="get_workspace", approval=RequiredApprovalConfig()))
+    graph = _runnable_graph()
+    row = WorkspaceSession(
+        id="ses-g", workspace_id="ws-1", binding=GraphSessionBinding(graph_id=graph.id, graph_snapshot=graph), status=SessionStatus.RUNNING,
+        created_at=NOW, initiated_by=USER,
+    )
+    await world.sp.get_storage(WorkspaceSession).create(row)
+    await world.sp.get_storage(User).create(User(id="u-user", username="user", created_at=NOW, role="user"))
+    repo = LocalStateRepo(tmp_path / "state", workspace_id="ws-1")
+    await repo.initialize()
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1), scheduler=None, storage=world.sp, workspace_registry=world.workspaces,  # type: ignore[arg-type]
+        provider_registry=world.registry, engine=InMemoryClaimEngine(adapters={}), approval_resolver=ApprovalResolver(policies),  # type: ignore[arg-type]
+    )
+    driver = await pool._build_executor(row, _HolderlessHost("ws-1", repo))  # noqa: SLF001 -- the worker's own build seam
+    agent = Agent(
+        id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=["workspaces__list_workspaces", "workspaces__get_workspace"],
+        system_prompt=[],
+    )
+    manager = await driver._executor._tool_manager_resolver(agent)  # noqa: SLF001
+
+    assert manager.workspace_session_scope == ("ses-g", "ws-1"), "llm.called reads its session and workspace here"
+    await asyncio.wait_for(manager.execute(ToolCallPart(id="call-1", name="workspaces__list_workspaces", arguments={})), 30)
+    assert [(t, kw.get("session_id"), kw.get("workspace_id")) for t, kw in recorder.events if t == "tool.called"] == [("tool.called", "ses-g", "ws-1")]
+    with pytest.raises(YieldToWorker) as parked:
+        await asyncio.wait_for(manager.execute(ToolCallPart(id="call-2", name="workspaces__get_workspace", arguments={"id": "ws-1"})), 30)
+    assert parked.value.yielded.event_key == "tool_approval:ses-g:call-2"
+    assert [kw.get("session_id") for t, kw in recorder.events if t == "approval.requested"] == ["ses-g"]
