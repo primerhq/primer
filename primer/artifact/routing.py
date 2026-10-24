@@ -20,7 +20,9 @@ backend does the work:
 * An id with no record is a database artifact and goes to ``fallback``, a DIRECT ``DbArtifactStorage``. It is never a registry lookup: the reserved
   provider row must not be able to break the reading of every old artifact.
 
-The store owns no resources: the provider instances are cached, and closed, by the registry.
+The store owns no resources: the provider instances are cached, and closed, by the registry. Every store ``resolve`` hands it is handed back
+through ``release`` once the call that used it is over (also when the call failed or was cancelled): the registry closes there a store it
+returned uncached, one built while an eviction raced its build (slice D ruling 6).
 """
 
 from __future__ import annotations
@@ -53,8 +55,10 @@ class RoutingArtifactStorage(ArtifactStorage):
     """Route puts to the active provider and reads and deletes to the provider recorded for the artifact.
 
     ``resolve`` turns a provider id into its live backend (``ArtifactStorageRegistry.get_provider``); it raises ``NotFoundError`` for an id with no
-    provider row. ``fallback`` is the database backend, used for the reserved default id and for every artifact with no record. ``providers`` is
-    the provider rows' storage, read after a record is written to confirm the provider still exists (``resolve`` may answer from a cache).
+    provider row. ``release`` (``ArtifactStorageRegistry.release_provider``) takes back each store ``resolve`` returned, once per call, when the
+    call is over; ``None`` releases nothing. ``fallback`` is the database backend, used for the reserved default id and for every artifact with no
+    record, and is never released. ``providers`` is the provider rows' storage, read after a record is written to confirm the provider still
+    exists (``resolve`` may answer from a cache).
     """
 
     # The router writes the records itself. A router wrapped in another router would find its ids by itself, so it never asks for one.
@@ -69,8 +73,10 @@ class RoutingArtifactStorage(ArtifactStorage):
         active_config: "Storage[ActiveArtifactStorageConfig]",
         providers: "Storage[ArtifactStorageProvider]",
         default_provider_id: str = DEFAULT_ARTIFACT_PROVIDER_ID,
+        release: Callable[[ArtifactStorage], Awaitable[None]] | None = None,
     ) -> None:
         self._resolve = resolve
+        self._release = release
         self._fallback = fallback
         self._locations = locations
         self._providers = providers
@@ -90,8 +96,16 @@ class RoutingArtifactStorage(ArtifactStorage):
 
     async def put(self, *, data: bytes, mime_type: str, filename: str | None = None) -> str:
         provider_id = await self.active_provider_id()
+        if provider_id == self._default_provider_id:
+            return await self._put_to(self._fallback, provider_id, data=data, mime_type=mime_type, filename=filename)
         # An active provider that cannot be resolved fails the write. Falling back to the database would put the file somewhere the operator did not pick.
-        store = self._fallback if provider_id == self._default_provider_id else await self._resolve(provider_id)
+        store = await self._resolve(provider_id)
+        try:
+            return await self._put_to(store, provider_id, data=data, mime_type=mime_type, filename=filename)
+        finally:
+            await self._hand_back(store)
+
+    async def _put_to(self, store: ArtifactStorage, provider_id: str, *, data: bytes, mime_type: str, filename: str | None) -> str:
         artifact_id = await store.put(data=data, mime_type=mime_type, filename=filename)
         if store.needs_location_record:
             try:
@@ -123,7 +137,10 @@ class RoutingArtifactStorage(ArtifactStorage):
         store = await self._recorded_store(artifact_id, record)
         if store is None:
             return None
-        return await store.get(artifact_id)
+        try:
+            return await store.get(artifact_id)
+        finally:
+            await self._hand_back(store)
 
     async def delete(self, artifact_id: str) -> None:
         record = await self._locations.get(artifact_id)
@@ -133,10 +150,22 @@ class RoutingArtifactStorage(ArtifactStorage):
         store = await self._recorded_store(artifact_id, record)
         if store is None:
             return
-        # The bytes first, then the record: a delete that fails in the store keeps the record, so the artifact is still found and the delete can be retried.
-        await store.delete(artifact_id)
+        try:
+            # The bytes first, then the record: a delete that fails in the store keeps the record, so the artifact is still found and the delete can be retried.
+            await store.delete(artifact_id)
+        finally:
+            await self._hand_back(store)
         with contextlib.suppress(NotFoundError):
             await self._locations.delete(artifact_id)
+
+    async def _hand_back(self, store: ArtifactStorage) -> None:
+        """Give a resolved store back to its owner (``release``). A failure is logged, never raised: the call it served is decided."""
+        if self._release is None:
+            return
+        try:
+            await self._release(store)
+        except Exception as exc:  # noqa: BLE001 - best effort: the outcome of the call is already decided
+            logger.warning("handing back an artifact store after use failed: %s", exc)
 
     async def _recorded_store(self, artifact_id: str, record: ArtifactLocation) -> ArtifactStorage | None:
         """The backend that holds a recorded artifact, or ``None`` (logged) when its provider row no longer exists."""

@@ -70,9 +70,16 @@ class ArtifactStorageRegistry:
         self._generation = 0
         self._invalidation_bus: "InvalidationBus | None" = None
         self._invalidation_subs: list["InvalidationSubscription"] = []
+        # Stores handed out uncached (built while an eviction or a flush raced the build). Each went to exactly one caller and nothing else holds
+        # it, so it is closed when that caller releases it (``release_provider``), or at ``aclose`` if it never does: an S3 store holds a client.
+        self._uncached: set["ArtifactStorage"] = set()
 
     async def get_provider(self, provider_id: str) -> "ArtifactStorage":
-        """Resolve a row to its live ArtifactStorage instance (cached per id)."""
+        """Resolve a row to its live ArtifactStorage instance (cached per id).
+
+        A caller hands the store back with :meth:`release_provider` once its call is over: a store built while an eviction raced the build is
+        returned uncached, and that is where it is closed.
+        """
         async with self._lock:
             cached = self._instances.get(provider_id)
         if cached is not None:
@@ -97,9 +104,11 @@ class ArtifactStorageRegistry:
             else:
                 close_loser = None
                 # An eviction or a flush landed while this instance was being built. The caller still gets it (its request completes), but the next get
-                # builds a fresh one from the current row. It is not closed here: the caller is about to use it.
+                # builds a fresh one from the current row. It is not closed here, the caller is about to use it: ``release_provider`` closes it after.
                 if self._generation == generation:
                     self._instances[provider_id] = provider
+                else:
+                    self._uncached.add(provider)
         if close_loser is not None:
             try:
                 await close_loser.aclose()
@@ -109,6 +118,22 @@ class ArtifactStorageRegistry:
                     provider_id,
                 )
         return provider
+
+    async def release_provider(self, store: "ArtifactStorage") -> None:
+        """Hand back a store got from :meth:`get_provider` once the call that used it is over.
+
+        A cached store stays open: the cache owns it, and an eviction closes it. A store that was returned uncached (built while an eviction or a
+        flush raced its build) is owned by nothing else, so it is closed here, once (slice D ruling 6, the #784 review: an S3 store left open
+        would leak its client). A close that fails is logged, never raised: the call it served is over.
+        """
+        async with self._lock:
+            if store not in self._uncached:
+                return
+            self._uncached.discard(store)
+        try:
+            await store.aclose()
+        except Exception as exc:  # noqa: BLE001 - best effort: the caller's call is already over
+            logger.warning("ArtifactStorageRegistry: aclose() on a store built during an eviction race failed: %s", exc)
 
     async def get_default(self) -> RoutingArtifactStorage:
         """The store every artifact consumer uses: one routing store, built on first use and then returned every time.
@@ -124,6 +149,7 @@ class ArtifactStorageRegistry:
 
             self._routing = RoutingArtifactStorage(
                 resolve=self.get_provider,
+                release=self.release_provider,
                 fallback=DbArtifactStorage(self._storage_provider),
                 locations=self._storage_provider.get_storage(ArtifactLocation),
                 active_config=self._storage_provider.get_storage(ActiveArtifactStorageConfig),
@@ -197,8 +223,10 @@ class ArtifactStorageRegistry:
         self._invalidation_bus = None
         async with self._lock:
             self._generation += 1
-            instances = list(self._instances.values())
+            # Uncached stores never released by their callers are closed with the registry, so none outlives it.
+            instances = list(self._instances.values()) + list(self._uncached)
             self._instances.clear()
+            self._uncached.clear()
         for inst in instances:
             try:
                 await inst.aclose()
