@@ -77,7 +77,10 @@ place when they empty.
 
 **In a bucket** (the S3 store), each artifact is one object at `<prefix><id>`: the bytes as its body, the MIME type as its `Content-Type`
 and the filename, percent-encoded (`quote(filename, safe="")`, because S3 user metadata is ASCII only), as its `filename` metadata. A put
-without a filename writes no metadata. A prefix that should act as a folder ends with `/`.
+without a filename writes no metadata. AWS caps an object's user metadata at 2 KB (the UTF-8 bytes of every key and value), so a filename
+whose encoding is longer than 2040 characters is cut (`filename_metadata`): its extension and the start of the name are kept, the cut falls
+between characters so no escape is split, and the artifact reads back with the shortened name. A prefix that should act as a folder ends
+with `/`.
 
 ## 6. Lifecycle
 
