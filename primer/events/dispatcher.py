@@ -29,6 +29,7 @@ from primer.bus.scheduler_tasks import _BackgroundTask
 from primer.events.filters import matches_async
 from primer.events.recorder import EVENTS_APPENDED_KEY
 from primer.events.redaction import redact_event
+from primer.events.visibility import KEEP_INPUT_KEY, without_input
 from primer.int.coordinator import ROLE_EVENT_DISPATCHER, ROLE_EVENT_RETENTION
 from primer.model.event import (
     Event,
@@ -263,7 +264,7 @@ class EventDispatcher(_BackgroundTask):
     async def _deliver_session_wake(
         self, sub: EventSubscription, sink: SessionWakeSink, event: Event,
     ) -> bool:
-        park, parked_at = await self._park_state(sink, sub.id)
+        park, parked_at, keep_input = await self._park_state(sink, sub.id)
         if park == "gone":
             # The session ended or vanished: the wait can never be
             # answered. Consume the event and GC the subscription.
@@ -294,19 +295,30 @@ class EventDispatcher(_BackgroundTask):
         # mask stored secrets exactly as GET /v1/events does (SEC-04).
         # The envelope names the park the sink just read: a copy delivered after the session re-parked under the same key (another subscription's
         # wait) is refused by the flip instead of becoming the new wait's result (ticket 01a1208d, #702 review B2).
+        delivered = redact_event(event)
+        if not keep_input:
+            # What a user entered (a canvas.event's value and data) is dropped HERE, before the publish, unless the park asked for it (an admin's
+            # wait_for_event, a canvas_wait on its own canvas): the flip stamps this envelope on the waiting row, which any user may read, and the
+            # resume makes it the run's tool result (audit G8-08, the lead's ruling D).
+            delivered = without_input(delivered)
         await self._bus.publish(
-            sink.event_key, with_wake_entry(with_wake_park(redact_event(event).model_dump(mode="json"), parked_at), sub.id),
+            sink.event_key, with_wake_entry(with_wake_park(delivered.model_dump(mode="json"), parked_at), sub.id),
         )
         if sink.one_shot:
             await self._complete_one_shot(sub)
         return True
 
-    async def _park_state(self, sink: SessionWakeSink, subscription_id: str | None = None) -> tuple[str, datetime | None]:
-        """``(state, parked_at)``: state is 'parked' (deliver), 'pending' (retry later), 'gone' (GC) or 'orphan' (GC: the wait under this key was created by
-        another subscription); ``parked_at`` is the park the row had when it was read (``None`` unless 'parked').
+    async def _park_state(self, sink: SessionWakeSink, subscription_id: str | None = None) -> tuple[str, datetime | None, bool]:
+        """``(state, parked_at, keep_input)``: state is 'parked' (deliver), 'pending' (retry later), 'gone' (GC) or 'orphan' (GC: the wait under this key was
+        created by another subscription); ``parked_at`` is the park the row had when it was read (``None`` unless 'parked').
 
         'orphan' needs both ends to carry an identity: the park's entry for the key names the subscription the tool created (``resume_metadata.subscription_id``)
         and ``subscription_id`` is the one delivering. A park that names none (a wait from an older build) is delivered into by the key alone, as before.
+
+        ``keep_input`` is True only when the park's entries for the key all set ``resume_metadata.keep_input`` (``primer.events.visibility.KEEP_INPUT_KEY``):
+        the tool decided at park time, from the run's principal, that the run may read what a user entered. Any other park, one with no entry for the key
+        included, gets the event without it (fail closed). The decision rides the park, not the subscription row, so a ``SessionWakeSink`` keeps the shape
+        every build decodes.
         """
         from primer.model.workspace_session import (
             SessionStatus,
@@ -322,29 +334,30 @@ class EventDispatcher(_BackgroundTask):
                 "event-dispatcher: session %s read failed", sink.session_id,
                 exc_info=True,
             )
-            return "pending", None
+            return "pending", None, False
         if row is None or row.status == SessionStatus.ENDED:
-            return "gone", None
+            return "gone", None, False
         keys = set(row.parked_event_keys or [])
         if row.parked_event_key:
             keys.add(row.parked_event_key)
         if row.parked_status in ("parked", "resumable") and (
             sink.event_key in keys
         ):
-            if subscription_id:
-                from primer.model.yield_ import entry_id_of
-                from primer.session.pending_gates import enumerate_pending_gates
+            from primer.model.yield_ import entry_id_of
+            from primer.session.pending_gates import enumerate_pending_gates
 
-                owners = [
-                    entry_id_of(entry.get("resume_metadata"))
-                    for entry in enumerate_pending_gates(row.parked_state or {})
-                    if entry.get("event_key") == sink.event_key
-                ]
-                owners = [owner for owner in owners if owner]
+            entries = [
+                entry.get("resume_metadata") or {}
+                for entry in enumerate_pending_gates(row.parked_state or {})
+                if entry.get("event_key") == sink.event_key
+            ]
+            if subscription_id:
+                owners = [owner for owner in (entry_id_of(meta) for meta in entries) if owner]
                 if owners and subscription_id not in owners:
-                    return "orphan", None
-            return "parked", row.parked_at
-        return "pending", None
+                    return "orphan", None, False
+            keep_input = bool(entries) and all(meta.get(KEEP_INPUT_KEY) is True for meta in entries)
+            return "parked", row.parked_at, keep_input
+        return "pending", None, False
 
     async def _complete_one_shot(self, sub: EventSubscription) -> None:
         store = self._sp.get_event_store()
