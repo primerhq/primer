@@ -719,8 +719,8 @@ async def test_a_validation_error_with_no_handler_values_is_a_corrupt_row_and_st
 @pytest.mark.asyncio
 async def test_the_engine_drops_the_lease_of_a_terminal_rejection_and_requeues_a_retry_rejections_which_prune_removes() -> None:
     """Engine level, not just the adapter: a rejected TERMINAL release drops the lease with the task FAILED; a rejected RETRY
-    release requeues a lease whose task is FAILED (the in-memory engine applies no eligibility, so it is claimable again
-    there; the handler's state guard is what stops it re-running), and ``prune_dead_leases`` removes it."""
+    release requeues a lease whose task is FAILED (neither engine claims it again: ``is_eligible`` excludes a failed task on
+    the in-memory engine, as the eligibility SQL does on Postgres), and ``prune_dead_leases`` removes it."""
     from primer.claim.in_memory import InMemoryClaimEngine
 
     storage = FakeStorage(_make_task("term"), _make_task("retry"))

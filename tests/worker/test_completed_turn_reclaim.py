@@ -763,9 +763,12 @@ async def test_an_arming_patch_refused_on_a_row_another_process_paused_or_ended_
     the same lock and does not run the turn, which would undo the pause or answer on an ended session: PAUSED takes
     the no-op with the pause exit's park-preserving release, so the input waits for /resume; ENDED drops the lease as
     the ENDED exit does, park cleared. Both heal a stale ``running`` as those exits do, both releases apply the lost
-    bump once, and both count as a no-op (the guard found the completed turn and released it without the model)."""
-    await _open_input_over_a_stale_revert(world, **_PARK)
-    competing: dict = {"status": status, "turn_status": turn_status}
+    bump once, and both count as a no-op (the guard found the completed turn and released it without the model).
+
+    The park arrives with the competing write, not before the claim: a parked row's lease is not claimable (on either
+    engine since ticket 01a16e79), so the claim is made on the unparked row and the write it races carries the park."""
+    await _open_input_over_a_stale_revert(world)
+    competing: dict = {"status": status, "turn_status": turn_status, **_PARK}
     if status == SessionStatus.ENDED:
         competing |= {"ended_reason": "cancelled", "ended_at": datetime.now(UTC)}
     refusals = _commit_before_the_arming_patch(world, competing)
@@ -910,9 +913,12 @@ async def test_a_row_paused_or_ended_at_the_guards_first_read_runs_no_turn(world
     (``claimable``: the claimable branch) or an open input (``idle``, or a stale ``running``: the has_open_turn branch).
     The guard applies the rule of a refused arming patch: PAUSED takes the no-op with the pause exit's park-preserving
     release (the input waits for /resume), ENDED drops the lease as the ENDED exit does (park cleared). Both heal a
-    stale ``running``, both releases apply the lost bump once, and both count as a no-op."""
-    await _open_input_over_a_stale_revert(world, **_PARK)
-    competing: dict = {"status": status, "turn_status": turn_status}
+    stale ``running``, both releases apply the lost bump once, and both count as a no-op.
+
+    The park arrives with the competing write, not before the claim: a parked row's lease is not claimable (on either
+    engine since ticket 01a16e79), so the claim is made on the unparked row and the write it races carries the park."""
+    await _open_input_over_a_stale_revert(world)
+    competing: dict = {"status": status, "turn_status": turn_status, **_PARK}
     if status == SessionStatus.ENDED:
         competing |= {"ended_reason": "cancelled", "ended_at": datetime.now(UTC)}
     fired = _commit_before_the_guards_first_read(world, competing)

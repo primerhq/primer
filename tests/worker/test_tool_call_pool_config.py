@@ -19,6 +19,7 @@ from primer.int.claim import (
     CLAIM_PRIORITY_FRESH,
     CLAIM_PRIORITY_OPERATOR,
     CLAIM_PRIORITY_RESUME,
+    ClaimAdapter,
     ClaimKind,
     ReleaseOutcome,
 )
@@ -28,7 +29,7 @@ from primer.worker.pool import WorkerPool
 from primer.worker.turn import _CancelScope
 
 
-class _SpyAdapter:
+class _SpyAdapter(ClaimAdapter):
     entity_table = "spy"
 
     def __init__(self, kind: ClaimKind) -> None:

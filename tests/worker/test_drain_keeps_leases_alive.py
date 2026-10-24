@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 import pytest
 
 from primer.claim.in_memory import InMemoryClaimEngine
-from primer.int.claim import ClaimKind
+from primer.int.claim import ClaimAdapter, ClaimKind
 from primer.model.scheduler import WorkerConfig
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.worker.pool import WorkerPool
@@ -24,7 +24,7 @@ from primer.worker.pool import WorkerPool
 KIND = ClaimKind.HARNESS
 
 
-class _Adapter:
+class _Adapter(ClaimAdapter):
     entity_table = "spy"
     kind = KIND
 

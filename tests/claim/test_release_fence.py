@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from primer.int.claim import ClaimKind, PostReleaseWake, ReleaseOutcome
+from primer.int.claim import ClaimAdapter, ClaimKind, PostReleaseWake, ReleaseOutcome
 
 
 def _now() -> datetime:
@@ -93,7 +93,7 @@ async def test_in_memory_release_is_fenced_on_ownership():
 
     calls = []
 
-    class _Adapter:
+    class _Adapter(ClaimAdapter):
         kind = ClaimKind.HARNESS
         entity_table = "chat"
 
@@ -121,7 +121,7 @@ async def test_in_memory_release_runs_when_still_owned():
 
     calls = []
 
-    class _Adapter:
+    class _Adapter(ClaimAdapter):
         kind = ClaimKind.HARNESS
         entity_table = "chat"
 
@@ -154,7 +154,7 @@ async def test_in_memory_release_with_a_stale_claimed_at_still_runs_on_release()
 
     calls = []
 
-    class _Adapter:
+    class _Adapter(ClaimAdapter):
         kind = ClaimKind.HARNESS
         entity_table = "chat"
 
@@ -189,7 +189,7 @@ async def test_in_memory_release_fires_post_release_hook_after_mutation():
     drop, the lease would still be present when it fires."""
     from primer.claim.in_memory import InMemoryClaimEngine
 
-    class _Adapter:
+    class _Adapter(ClaimAdapter):
         kind = ClaimKind.TOOL_CALL
         entity_table = "toolcalltask"
 
@@ -231,7 +231,7 @@ async def test_in_memory_release_skips_hook_when_signal_is_none():
     the hook must never fire for those."""
     from primer.claim.in_memory import InMemoryClaimEngine
 
-    class _Adapter:
+    class _Adapter(ClaimAdapter):
         kind = ClaimKind.TOOL_CALL
         entity_table = "toolcalltask"
 
@@ -326,7 +326,7 @@ async def test_postgres_release_fires_post_release_hook_after_transaction_exits(
     in_transaction_at: dict[str, bool] = {}
     conn = _SpyTxnConn(events)
 
-    class _Adapter:
+    class _Adapter(ClaimAdapter):
         kind = ClaimKind.TOOL_CALL
         entity_table = "toolcalltask"
 
@@ -375,7 +375,7 @@ async def test_postgres_release_skips_hook_when_signal_is_none():
     events: list[str] = []
     conn = _SpyTxnConn(events)
 
-    class _Adapter:
+    class _Adapter(ClaimAdapter):
         kind = ClaimKind.TOOL_CALL
         entity_table = "toolcalltask"
 
@@ -433,7 +433,7 @@ async def test_in_memory_entity_noop_release_skips_on_release_and_only_moves_the
 
     calls = []
 
-    class _Adapter:
+    class _Adapter(ClaimAdapter):
         kind = ClaimKind.HARNESS
         entity_table = "chat"
 
@@ -468,7 +468,7 @@ async def test_in_memory_entity_noop_requeue_leaves_attempt_count_and_last_error
 
     from primer.claim.in_memory import InMemoryClaimEngine
 
-    class _Adapter:
+    class _Adapter(ClaimAdapter):
         kind = ClaimKind.HARNESS
         entity_table = "chat"
 
