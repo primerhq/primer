@@ -25,8 +25,10 @@
   //   session-detail   -> SessionsList (page-level); SessionDetail requires a
   //                       specific sid prop; the sessions-list page naturally
   //                       shows the session from the fixture.
-  //   workspace-template-form -> WorkspaceTemplatesPage (the template sub-page
-  //                       that includes the create form).
+  //   workspace-template-form -> WT_TemplatesPage (Platform's Workspace
+  //                       templates page, whose "+ Template" opens the
+  //                       template form; the old list left with platform
+  //                       revamp 08, Task 15).
   //   trigger-create   -> TR_TriggersPage (page-level list; TR_CreateTriggerDialog
   //                       is a modal that requires onClose/onCreated and cannot
   //                       render standalone without a parent).
@@ -115,11 +117,12 @@
       },
     },
     "workspace-template-form": {
-      // WorkspaceTemplatesPage is the sub-page component that includes the
-      // template create modal.
-      component: "WorkspaceTemplatesPage",
+      // WT_TemplatesPage is the Workspace templates page (platform revamp 08):
+      // one card per template, and "+ Template" opens the template overlay.
+      // It takes no props.
+      component: "WT_TemplatesPage",
       fixtures: "workspace-template-form",
-      props: { pushToast: function () {} },
+      props: {},
     },
     "trigger-create": {
       component: "TR_TriggersPage",

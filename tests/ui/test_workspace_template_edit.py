@@ -1,38 +1,30 @@
-"""The legacy workspace-template editor must round-trip the complete served row."""
+"""A workspace template edit must round-trip the complete served row, and show the server's refusals where the person can see them.
+
+These pins were written for the old form (``WorkspaceTemplateCreateModal``, the review of #869), which Plan 08 Task 15 removed; they hold the template
+overlay that replaced it (``WT_TemplateOverlay``) to the same contract, on the overlay's own harness (``tests/ui/test_wt_template_overlay.py``). The row is
+one the real model serves (``WorkspaceTemplate.model_validate(...).model_dump(mode="json")``), the body a save sends must validate against the same model,
+and every refusal is the real router's (``tests/ui/_wt_envelopes.py``).
+"""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from primer.model.workspace import WorkspaceTemplate
-from tests.ui._register_harness import COMPONENTS, base_code, context, js, settle, transpiled
+from tests.ui._register_harness import base_code, context, js, settle, transpiled
+from tests.ui._wt_envelopes import envelope
+from tests.ui.test_wt_helpers import CHOICES
+from tests.ui.test_wt_template_overlay import SHARED_FILE, STUBS, TEMPLATES_FILE
 
-TEMPLATES_FILE = COMPONENTS / "workspaces" / "templates.jsx"
-SHARED_FILE = COMPONENTS / "workspaces" / "shared.jsx"
-
-STUBS = r"""
-window.primerApi.useRouter = function () { return { navigate: function () {}, params: {} }; };
-window.primerApi.useMutation = function (fn, opts) {
-  var state = React.useState(false);
-  return {
-    mutate: function (arg) {
-      state[1](true);
-      return fn(arg).then(function (answer) {
-        state[1](false);
-        if (opts && opts.onSuccess) opts.onSuccess(answer);
-        return answer;
-      }, function (err) {
-        state[1](false);
-        if (opts && opts.onError) opts.onError(err);
-        throw err;
-      });
-    },
-    loading: state[0]
-  };
-};
+ERRORS = r"""
+function errorUnder(testid) {
+  var row = fieldRow("wt-overlay", testid);
+  if (!row) return null;
+  var hit = row.filter(function (c) { return c.role === "alert"; })[0];
+  return hit ? hit.text : null;
+}
 """
 
 
@@ -45,6 +37,8 @@ def code() -> str:
 def ctx(code: str):
     c = context(code)
     c.eval(STUBS)
+    c.eval(ERRORS)
+    c.eval("serve('ws:provider-choices', { items: " + json.dumps([CHOICES["k3s"]]) + " });")
     try:
         yield c
     finally:
@@ -55,7 +49,7 @@ def _served_template() -> dict:
     return WorkspaceTemplate.model_validate({
         "id": "k8s-complete",
         "description": "before",
-        "provider_id": "k8s-provider",
+        "provider_id": "k3s",
         "backend": {
             "kind": "kubernetes",
             "image": "registry.example/runtime:1",
@@ -72,25 +66,17 @@ def _served_template() -> dict:
 
 
 def _mount(ctx, row: dict) -> None:
-    ctx.eval("var SERVED_TEMPLATE = " + json.dumps(row) + ";")
-    ctx.eval("""
-    CALLS = [];
-    serve("ws:templates:providers-picker", { items: [{ id: "k8s-provider", provider: "kubernetes" }] });
-    MR.mount(window.WorkspaceTemplateCreateModal, {
-      existing: SERVED_TEMPLATE,
-      onClose: function () {}
-    });
-    """)
+    """The overlay opened on ``row``, which the server also holds (a save reads it again before it writes)."""
+    ctx.eval(f"ROWS[{json.dumps('/workspace_templates/' + row['id'])}] = {json.dumps(row)};")
+    ctx.eval("ROLE = 'admin'; MR.mount(window.WT_TemplateOverlay, { row: " + json.dumps(row) + ", onClose: onClose, onSaved: onSaved });")
 
 
 def _save(ctx) -> dict:
-    ctx.eval("""
-    ALL("ws-template-modal").filter(function (n) { return n.type === "button" && textOf(n) === "Save"; })[0].props.onClick();
-    """)
+    ctx.eval("press('wt-save');")
     settle(ctx)
-    calls = [c for c in js(ctx, "CALLS") if c["method"] == "PUT"]
-    assert len(calls) == 1
-    return calls[0]["body"]
+    puts = [c for c in js(ctx, "CALLS") if c["method"] == "PUT"]
+    assert len(puts) == 1
+    return puts[0]["body"]
 
 
 def test_description_edit_keeps_every_unshown_kubernetes_field(ctx) -> None:
@@ -100,78 +86,21 @@ def test_description_edit_keeps_every_unshown_kubernetes_field(ctx) -> None:
     body = _save(ctx)
 
     assert WorkspaceTemplate.model_validate(body)
-    assert body["description"] == "after"
-    assert body["resources"] == row["resources"]
+    assert body == {**row, "description": "after"}
     for field in ("node_selector", "tolerations", "gpu", "service_account_name", "image_pull_policy"):
         assert body["backend"][field] == row["backend"][field]
 
 
 def test_kubernetes_size_fields_edit_the_live_resources(ctx) -> None:
+    """A Kubernetes template's size is ``resources.cpu_cores`` and ``resources.memory_bytes`` (requests = limits); the overlay takes memory in GiB."""
     _mount(ctx, _served_template())
-    ctx.eval("setValue('ws-template-cpu-cores', '6'); setValue('ws-template-memory-bytes', '10737418240');")
+    ctx.eval("setValue('wt-cpu', '6'); setValue('wt-memory', '10');")
     body = _save(ctx)
 
     assert body["resources"]["cpu_cores"] == 6
     assert body["resources"]["memory_bytes"] == 10 * 2**30
+    assert body["resources"]["network"] == "full", "the size fields write their two keys and keep the rest"
     assert WorkspaceTemplate.model_validate(body)
-
-
-# ---- the review of #869, F4: the form shows the size rules' 422s -------------------------------------------------------------------------------
-
-ROW_ERROR = r"""
-function rowError(testid) {
-  var hit = null;
-  ALL("ws-template-modal").forEach(function (n) {
-    if (hit !== null || n.type !== "div" || n.props.className !== "field") return;
-    var kids = __flat(n.children);
-    if (!kids.some(function (c) { return c.props && c.props["data-testid"] === testid; })) return;
-    var alert = kids.filter(function (c) { return c.props && c.props.role === "alert"; })[0];
-    hit = alert ? textOf(alert) : "";
-  });
-  return hit;
-}
-"""
-
-
-def _real_422(body: dict) -> dict:
-    """The 422 envelope the real router answers for this template body (a PUT validates the body before anything is read)."""
-    import asyncio
-
-    import httpx
-    from httpx import ASGITransport
-
-    from primer.api.app import create_test_app
-    from primer.api.registries import ProviderRegistry, WorkspaceRegistry
-    from tests.api.test_workspaces import _SP
-
-    async def run() -> dict:
-        sp = _SP()
-        app = create_test_app(
-            storage_provider=sp,  # type: ignore[arg-type]
-            provider_registry=ProviderRegistry(
-                sp,  # type: ignore[arg-type]
-                llm_factory=lambda p: object(), embedder_factory=lambda p: object(),
-                cross_encoder_factory=lambda p: object(), toolset_factory=lambda t: object(),
-            ),
-            workspace_registry=WorkspaceRegistry(sp),  # type: ignore[arg-type]
-        )
-        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            r = await client.post("/v1/auth/register", json={"username": "formadmin", "password": "formadminpass1"})
-            assert r.status_code == 200, r.text
-            r = await client.put(f"/v1/workspace_templates/{body['id']}", json=body)
-        assert r.status_code == 422, r.text
-        return r.json()
-
-    return asyncio.run(run())
-
-
-def _save_refused(ctx, envelope: dict) -> None:
-    ctx.eval(ROW_ERROR)
-    ctx.eval("var ENVELOPE = " + json.dumps(envelope) + "; HANDLER = function () { return refuse(ENVELOPE); };")
-    ctx.eval("""
-    ALL("ws-template-modal").filter(function (n) { return n.type === "button" && textOf(n) === "Save"; })[0].props.onClick();
-    """)
-    settle(ctx)
 
 
 def _refused_body(**changes) -> dict:
@@ -181,35 +110,52 @@ def _refused_body(**changes) -> dict:
     return row
 
 
-@pytest.mark.parametrize(("change", "testid", "control"), [
-    ({"backend": {"pvc_size": "10 Gi"}}, "ws-template-pvc-size", "10 Gi"),
-    ({"resources": {"cpu_cores": 0}}, "ws-template-cpu-cores", "0"),
-    ({"resources": {"memory_bytes": -1}}, "ws-template-memory-bytes", "-1"),
+def _save_refused(ctx, refusal: tuple[int, dict]) -> None:
+    assert refusal[0] == 422, refusal
+    ctx.eval("var ENVELOPE = " + json.dumps(refusal[1]) + "; HANDLER = function (m) { return m === 'PUT' ? refuse(ENVELOPE) : Promise.resolve(JSON.parse(JSON.stringify(ROWS['/workspace_templates/k8s-complete']))); };")
+    ctx.eval("press('wt-save');")
+    settle(ctx)
+
+
+@pytest.mark.parametrize(("change", "testid", "typed"), [
+    ({"backend": {"pvc_size": "10 Gi"}}, "wt-disk", "12"),
+    ({"resources": {"cpu_cores": 0}}, "wt-cpu", "3"),
+    ({"resources": {"memory_bytes": -1}}, "wt-memory", "6"),
 ])
-def test_a_size_the_server_refuses_is_shown_under_its_field(ctx, change, testid, control) -> None:
-    envelope = _real_422(_refused_body(**change))
-    message = envelope["extensions"]["errors"][0]["msg"]
+def test_a_size_the_server_refuses_is_shown_under_its_field(ctx, change, testid, typed) -> None:
+    """The overlay checks a size before it sends it (the next test), so the server's refusal is the one for the stored row it writes onto: the real
+    router's envelope for that size lands under the size's own field, and the overlay stays open."""
+    status, answer = envelope("PUT", "/v1/workspace_templates/k8s-complete", _refused_body(**change))
+    message = answer["extensions"]["errors"][0]["msg"].removeprefix("Value error, ")
     _mount(ctx, _served_template())
-    ctx.eval(f"setValue({json.dumps(testid)}, {json.dumps(control)});")
+    ctx.eval(f"setValue({json.dumps(testid)}, {json.dumps(typed)});")
 
-    _save_refused(ctx, envelope)
+    _save_refused(ctx, (status, answer))
 
-    assert message in js(ctx, f"rowError({json.dumps(testid)})")
-    assert js(ctx, "MR.find('ws-template-form-errors')") is None, "a refusal its row shows is not listed again"
+    assert js(ctx, f"errorUnder({json.dumps(testid)})") == message
+    assert ctx.eval("MR.find('wt-error') === null"), "a refusal its field shows is not said again in the line"
+    assert js(ctx, "CLOSED") == 0
 
 
-def test_a_field_error_no_row_shows_is_listed_above_the_fields(ctx) -> None:
-    envelope = _real_422(_refused_body(backend={"node_selector": {"not a key!": "x"}}))
-    message = envelope["extensions"]["errors"][0]["msg"]
+def test_a_field_error_no_field_shows_is_the_line_above_the_footer(ctx) -> None:
+    """``resources.network`` is kept on the model and never shown (plan 08 decision 3): its refusal is the one line, with its field."""
+    status, answer = envelope("PUT", "/v1/workspace_templates/k8s-complete", _refused_body(resources={"network": "bogus"}))
+    message = answer["extensions"]["errors"][0]["msg"].removeprefix("Value error, ")
     _mount(ctx, _served_template())
+    ctx.eval("setValue('ws-template-description', 'after');")
 
-    _save_refused(ctx, envelope)
+    _save_refused(ctx, (status, answer))
 
-    text = js(ctx, "textOf(MR.find('ws-template-form-errors'))")
-    assert "backend.node_selector" in text and message in text
+    line = ctx.eval("textOf(MR.find('wt-error'))")
+    assert line == "resources.network: " + message
+    assert js(ctx, "MR.find('wt-error').props.role") == "alert"
 
 
-def test_the_size_inputs_ask_for_more_than_zero(ctx) -> None:
+@pytest.mark.parametrize(("testid", "typed"), [("wt-cpu", "0"), ("wt-memory", "-1"), ("wt-disk", "0")])
+def test_the_size_fields_ask_for_more_than_zero(ctx, testid, typed) -> None:
+    """The old form's inputs carried ``min``; the overlay checks a changed size before it sends anything and says so under the field."""
     _mount(ctx, _served_template())
-    assert js(ctx, "MR.find('ws-template-cpu-cores').props.min") == "0.1"
-    assert js(ctx, "MR.find('ws-template-memory-bytes').props.min") == "1"
+    ctx.eval(f"setValue({json.dumps(testid)}, {json.dumps(typed)}); press('wt-save');")
+    settle(ctx)
+    assert [c for c in js(ctx, "CALLS") if c["method"] in ("PUT", "GET")] == []
+    assert js(ctx, f"errorUnder({json.dumps(testid)})") == "Enter a positive number"

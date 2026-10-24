@@ -47,18 +47,37 @@ MOBILE_AWARE_PAGES = [
 # checkable alternate signals, not a silent gap.
 _TOUCH_TARGET_ONLY_PAGES = {"auth.jsx", "provider-catalog.jsx"}
 
+# Pages built on the platform kit (Platform revamp Plan 01): their cards are a PK_CardGrid (.pk-grid, an auto-fill grid that drops to one column on a
+# phone) and their forms open in PK_FormOverlay (the shared Modal, a bottom sheet on a phone), so the kit reflows them and the page needs no isMobile
+# branch of its own. The signal is the kit's card grid. workspaces/templates.jsx joined when Plan 08 Task 15 removed its old CardList/Fab list.
+_KIT_REFLOW_PAGES = {"workspaces/templates.jsx"}
+
 
 def test_every_page_consumes_use_viewport() -> None:
     missing = []
     for rel in MOBILE_AWARE_PAGES:
         p = ROOT / rel
         assert p.exists(), f"file missing: {p}"
-        if "useViewport" not in p.read_text(encoding="utf-8"):
+        src = p.read_text(encoding="utf-8")
+        if rel in _KIT_REFLOW_PAGES:
+            if "<PK_CardGrid" in src:
+                continue
+            missing.append(rel)
+            continue
+        if "useViewport" not in src:
             if rel in _TOUCH_TARGET_ONLY_PAGES:
-                if "touch-target" in p.read_text(encoding="utf-8"):
+                if "touch-target" in src:
                     continue
             missing.append(rel)
-    assert missing == [], f"pages without useViewport: {missing}"
+    assert missing == [], f"pages without useViewport (or, on a kit page, without PK_CardGrid): {missing}"
+
+
+def test_a_kit_page_has_no_phone_branch_of_its_own() -> None:
+    """A kit page that also branched on useViewport would draw a second phone layout next to the kit's."""
+    for rel in _KIT_REFLOW_PAGES:
+        assert rel in MOBILE_AWARE_PAGES, rel
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        assert "useViewport" not in src and "CardList" not in src, rel
 
 
 def test_shared_modal_uses_use_viewport() -> None:

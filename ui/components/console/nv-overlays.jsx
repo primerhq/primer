@@ -809,8 +809,8 @@ function NV_CreateWorkspaceOverlay() {
 
 // ---------------------------------------------------------------------------
 // What a bare address of a list that left its overlay says instead (platform revamp 08, Tasks 14 and 15; design 14.1): overlay=workspaces (the Workspaces
-// page is gone: the rail lists the workspaces) and, once the old template list goes, overlay=workspaces:templates (a page of its own). One press closes
-// the overlay, onto the templates page for the second.
+// page is gone: the rail lists the workspaces) and overlay=workspaces:templates (the old template list is gone: the templates have a page of their own,
+// Platform › Workspace templates). One press closes the overlay, onto the templates page for the second.
 var NV_WS_MOVED = {
   workspaces: { text: "Workspaces are listed in the studio: pick one from the workspace menu in the rail.", button: "Close", testid: "nv-ws-moved-close" },
   templates: { text: "Workspace templates have their own page now.", button: "Open Workspace templates", testid: "nv-ws-moved-open" },
@@ -1021,11 +1021,8 @@ var NV_OVERLAY_MOUNTS = {
         if (state.id) {
           return <window.WT_TemplateOverlay templateId={state.id} onClose={shell.closeOverlay} />;
         }
-        return (
-          <window.WorkspaceTemplatesPage
-            pushToast={window.primerApi.toastPush}
-          />
-        );
+        // The bare address: the old template list is gone (Task 15), so it says where the templates are.
+        return <NV_WorkspacesMoved which="templates" />;
       }
       if (state.section === "providers") {
         if (state.id) {
