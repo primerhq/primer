@@ -6,7 +6,9 @@ the reading thread in ``open()`` (a FIFO with no writer blocks there), and the p
 of them exhaust the pool (ticket ce24). The runtime now opens with ``O_NONBLOCK`` and ``fstat``s the descriptor.
 
 Every read here is bounded, and a reader the code under test left blocked in ``open()`` is released by opening the FIFO for writing, so
-a regression fails these tests instead of hanging the lane.
+a regression fails these tests instead of hanging the lane. The op and its error are looked up on the module at call time and the error
+is matched by name and code: ``tests/workspace/test_subprocess_timeout.py`` reloads ``primer_runtime.ops``, and CI can import the
+package twice (see ``test_pty_op.py``), so a class imported here at collection need not be the one raised.
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ from pathlib import Path
 import pytest
 
 import primer_runtime.ops as ops
-from primer_runtime.ops import OpError, read_file
 from primer_runtime.protocol import ErrorCode
 
 pytestmark = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX FIFOs")
@@ -37,20 +38,27 @@ def _release_a_blocked_reader(path: Path) -> None:
 
 async def _read(path: Path, root: Path) -> dict:
     try:
-        return await asyncio.wait_for(read_file({"path": str(path)}, str(root)), timeout=2)
+        return await asyncio.wait_for(ops.read_file({"path": str(path)}, str(root)), timeout=2)
     finally:
         _release_a_blocked_reader(path)
+
+
+async def _refused(path: Path, root: Path) -> Exception:
+    """The op error the read raised (matched by name, see the module docstring)."""
+    with pytest.raises(Exception) as caught:
+        await _read(path, root)
+    assert type(caught.value).__name__ == "OpError", repr(caught.value)
+    return caught.value
 
 
 async def test_a_fifo_is_refused_without_blocking(tmp_path: Path) -> None:
     fifo = tmp_path / "agents.md"
     os.mkfifo(fifo)
 
-    with pytest.raises(OpError) as caught:
-        await _read(fifo, tmp_path)
+    refused = await _refused(fifo, tmp_path)
 
-    assert caught.value.code == ErrorCode.EUNSUPPORTED
-    assert "Not a regular file" in caught.value.message and "agents.md" in caught.value.message
+    assert refused.code == ErrorCode.EUNSUPPORTED
+    assert "Not a regular file" in refused.message and "agents.md" in refused.message
 
 
 async def test_a_socket_is_refused(tmp_path: Path) -> None:
@@ -58,11 +66,10 @@ async def test_a_socket_is_refused(tmp_path: Path) -> None:
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         server.bind(str(path))
-        with pytest.raises(OpError) as caught:
-            await _read(path, tmp_path)
+        refused = await _refused(path, tmp_path)
     finally:
         server.close()
-    assert caught.value.code == ErrorCode.EUNSUPPORTED
+    assert refused.code == ErrorCode.EUNSUPPORTED
 
 
 class _SwapsInAFifoAfterTheStat:
@@ -88,10 +95,9 @@ async def test_a_fifo_swapped_in_after_the_stat_is_refused_on_the_descriptor(tmp
     target.write_text("# instructions\n")
     monkeypatch.setattr(ops, "os", _SwapsInAFifoAfterTheStat(target))
 
-    with pytest.raises(OpError) as caught:
-        await _read(target, tmp_path)
+    refused = await _refused(target, tmp_path)
 
-    assert caught.value.code == ErrorCode.EUNSUPPORTED
+    assert refused.code == ErrorCode.EUNSUPPORTED
     assert target.is_fifo(), "the swap happened, so the refusal came from the descriptor"
 
 
@@ -108,9 +114,7 @@ async def test_a_directory_swapped_in_after_the_stat_is_still_eisdir(tmp_path: P
             return answer
 
     monkeypatch.setattr(ops, "os", _SwapsInADirectory(target))
-    with pytest.raises(OpError) as caught:
-        await _read(target, tmp_path)
-    assert caught.value.code == ErrorCode.EISDIR
+    assert (await _refused(target, tmp_path)).code == ErrorCode.EISDIR
 
 
 async def test_a_regular_file_larger_than_one_read_is_read_whole(tmp_path: Path) -> None:
