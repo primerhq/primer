@@ -292,20 +292,23 @@ session.
   `type=forbidden`. Sessions and their transcripts are a shared read in
   this install by design: any user may open any session. So the event
   log does not hide another session's canvas events from you; it hides
-  what a user ENTERED. A `canvas.event` reaches such a run, and every
-  non-admin reader of `GET /v1/events`, without its `value` (a Select's
-  or an Html element's value) and its `data` (an Html emit's data):
-  the two keys are absent, not masked. Everything else is there: the
-  element, its type, the kind, the emit `name`, who did it (`by`), the
-  ids, `seq`, `rev` and the times. This is one rule with no ownership
-  check, so it holds for your own session's events too: read what your
-  user entered on your own canvas with `canvas_get` or `canvas_wait`.
-  For the same reason such a run's `fields` matchers may not read the
-  input of a `canvas.event`: a matcher on `payload.value`,
-  `payload.data`, a key under them, `value` or `data` (the payload
-  fallback), or the whole `payload` is refused with `type=forbidden`.
-  `canvas.updated` carries no input and is unchanged. An admin's run,
-  and an admin reading the feed, get the full event.
+  what a user ENTERED, which never leaves the session it belongs to. A
+  `canvas.event` wakes every `wait_for_event`, an admin's included,
+  and reaches every non-admin reader of `GET /v1/events`, without its
+  `value` (a Select's or an Html element's value) and its `data` (an
+  Html emit's data): the two keys are absent, not masked. Everything
+  else is there: the element, its type, the kind, the emit `name`, who
+  did it (`by`), the ids, `seq`, `rev` and the times. This holds for
+  your own session's events too: read what your user entered on your
+  own canvas with `canvas_get` or `canvas_wait`, which return it (an
+  event the canvas has already dropped from its event list comes back
+  without it; the current `values` are still there). A run that is not
+  an admin's also may not match on that input: a `fields` matcher on
+  `payload.value`, `payload.data`, a key under them, `value` or `data`
+  (the payload fallback), or the whole `payload` of a `canvas.event`
+  wait is refused with `type=forbidden`. `canvas.updated` carries no
+  input and is unchanged. Only an admin reading `GET /v1/events` gets
+  the full event.
   An admin's run may wait on any kind, with a data-only `expr` and
   `regex`. No principal may reference the host `opa` package from an
   `expr`, including `opa.runtime()`: the platform refuses it before
