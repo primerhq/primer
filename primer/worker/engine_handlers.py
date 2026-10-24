@@ -84,11 +84,12 @@ def _now() -> datetime:
 
 
 def _clock_ticks(trigger, *, now: datetime) -> list[datetime | None]:
-    """What one claim of ``trigger`` fires, in order: the ``scheduled_for`` of each fire; the last is the due tick (ticket 01a16ddb, ruling 3).
+    """What one claim of ``trigger`` fires, in order: the ``scheduled_for`` of each fire; the last is the due tick (ticket 01a16ddb, rulings 3, 4).
 
     * ``scheduled``: the missed ticks its ``catchup`` keeps, then the due tick, each once
       (:func:`primer.trigger.cron.scheduled_ticks_to_fire`). A row whose cron or timezone cannot be read (both are validated when saved) fires
       once, for its ``next_fire_at``: a malformed row never blocks the fire.
+    * ``delayed``: its ``fire_at``.
     * a row that is gone or disabled (``fire_trigger`` answers it skipped), or any other kind: one fire with no tick.
     """
     from primer.trigger.cron import scheduled_ticks_to_fire
@@ -96,6 +97,8 @@ def _clock_ticks(trigger, *, now: datetime) -> list[datetime | None]:
     if trigger is None or not trigger.enabled:
         return [None]
     kind = trigger.config.kind
+    if kind == "delayed":
+        return [trigger.config.fire_at]
     if kind != "scheduled":
         return [None]
     try:
