@@ -17,7 +17,7 @@ import re
 import httpx
 from playwright.sync_api import expect
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import default_wid, open_legacy_route, open_overlay
 
 
 # ---------------------------------------------------------------------------
@@ -73,10 +73,9 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    """U0023 — Open the Workspaces list, click "New workspace", pick
-    the seeded template from the dropdown, submit. The modal must
-    close, a success toast must appear, and the URL must navigate to
-    ``#/workspaces/<new-id>``.
+    """U0023: Open the new-workspace dialog, pick the seeded template
+    from its dropdown, submit. The dialog must close, a success toast
+    must appear, and the URL must navigate to ``#/w/<new-id>``.
 
     Re-pointed: ``#/workspaces/<id>`` now renders the console shell (not
     the old workspace-detail page), so the post-create assertion pins the
@@ -108,31 +107,20 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
         assert r.status_code == 201, f"seed template failed: {r.text}"
 
     try:
-        open_legacy_route(page, console_url, "workspaces")
-        page.locator("h1.page-title").get_by_text(
-            "Workspaces", exact=False,
-        ).first.wait_for(state="visible", timeout=10_000)
+        # RETARGET (platform revamp 08, Task 14): the Workspaces page and its modal are gone; the console's one new-workspace dialog
+        # (overlay=new-workspace, the workspace.create verb) makes a workspace. Its "From template" dropdown is the kit's searchable
+        # selector over every template: pick the seeded one by its item test id so the test does not depend on ordering.
+        open_overlay(page, console_url, default_wid(console_url), "new-workspace")
+        modal = page.get_by_test_id("nv-overlay:new-workspace")
+        picker = modal.get_by_test_id("nv-nw-template")
+        picker.wait_for(state="visible", timeout=15_000)
+        picker.click()
+        modal.get_by_test_id("nv-nw-template:search").fill(tpl_id)
+        modal.get_by_test_id(f"nv-nw-template:{tpl_id}").click()
+        expect(picker).to_contain_text(tpl_id)
 
-        # Open the modal — button label "New workspace" per
-        # ui/components/workspaces.jsx:88.
-        page.get_by_role("button", name="New workspace").first.click()
-        modal = page.locator(".modal").first
-        modal.wait_for(state="visible", timeout=5_000)
-
-        # RETARGET (platform wave P1b item 6): the Template <select> was
-        # replaced by a row picker (one .pc-register-row per template,
-        # reusing P1a's register-panel anatomy) so a live GET
-        # /{id}/discovered_models-style probe isn't needed here, but more
-        # importantly so each row can show its own backend/network/mount
-        # descriptor. The list page's own auto-select useEffect still
-        # picks the first template; click the seeded one explicitly by
-        # testid so we don't depend on ordering.
-        modal.get_by_test_id(f"workspace-template-row-{tpl_id}").click()
-
-        # Submit. By testid, not by role name: "Create" is a substring
-        # match, so it also catches the modal's own "Create a template
-        # now" escape hatch.
-        modal.get_by_test_id("workspace-create-submit").click()
+        # Submit by test id: "Create" is a substring of other button names.
+        modal.get_by_test_id("nv-nw-create").click()
 
         # Creating a workspace ENTERS it, which is what the pre-S8 route
         # did too; the shell spells that "#/w/<wid>". The id is
@@ -155,7 +143,7 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
             '[data-selected="true"]'
         ).wait_for(state="visible", timeout=10_000)
 
-        # Success toast: "Workspace created" (workspaces.jsx:155).
+        # Success toast: "Workspace created: <id>" (NV_CreateWorkspaceOverlay).
         page.get_by_text("Workspace created", exact=False).first.wait_for(
             state="visible", timeout=5_000,
         )

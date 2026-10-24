@@ -139,7 +139,9 @@ def test_the_artifact_storage_page_is_swept_through_its_register_overlay_and_no_
     assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("+ Register", surfaces.MODAL)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / + Register" in surfaces.expected_surfaces(7)
-    assert len(surfaces.expected_surfaces(7)) == 104   # 100, then the Web page and its "+ Fetcher" form (Plan 04), the Workspace templates page and its "+ Template" form (Plan 08)
+    # 100, then the Web page and its "+ Fetcher" form (Plan 04), the Workspace templates page and its "+ Template" form (Plan 08), less the Workspaces
+    # page and its "New workspace" form, which Plan 08 Task 14 removed (the dialog is swept as the new-workspace overlay)
+    assert len(surfaces.expected_surfaces(7)) == 102
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:

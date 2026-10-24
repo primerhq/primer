@@ -67,7 +67,7 @@ BASELINE: dict[str, int] = {
     "toolsets/python-editor.jsx": 1,
     "triggers.jsx": 18,
     "workers.jsx": 3,
-    "workspaces.jsx": 9,
+    "workspaces.jsx": 6,
 }
 
 

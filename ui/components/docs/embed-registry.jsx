@@ -114,14 +114,9 @@
         ],
       },
     },
-    "workspaces": {
-      component: "WorkspacesPage",
-      fixtures: "workspaces",
-      props: { onOpen: function () {}, pushToast: function () {} },
-    },
     "workspace-template-form": {
       // WorkspaceTemplatesPage is the sub-page component that includes the
-      // template create modal; WorkspacesPage embeds it as a tab.
+      // template create modal.
       component: "WorkspaceTemplatesPage",
       fixtures: "workspace-template-form",
       props: { pushToast: function () {} },
@@ -208,7 +203,7 @@
     },
     "workspace-provider-create": {
       // The workspace providers list/create lives in WorkspaceProvidersPage
-      // (ui/components/workspaces/providers.jsx); WorkspacesPage embeds it.
+      // (ui/components/workspaces/providers.jsx).
       component: "WorkspaceProvidersPage",
       fixtures: "workspace-provider-create",
       props: { pushToast: function () {} },

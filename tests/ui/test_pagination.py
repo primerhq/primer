@@ -125,8 +125,8 @@ REPRESENTATIVE = [
     "harnesses.jsx",
     "semantic-search.jsx",
     "knowledge.jsx",
-    "workspaces.jsx",
 ]
+# workspaces.jsx left this list with its list page (platform revamp 08, Task 14): what is left in it is a workspace's Settings, which pages no list.
 
 
 def test_representative_pages_use_hook_and_component() -> None:

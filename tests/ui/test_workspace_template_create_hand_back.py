@@ -3,10 +3,11 @@
 The old form (``WorkspaceTemplateCreateModal``, until Plan 08 Task 15 removes it) navigated to ``/workspaces/templates/<id>`` after a create, to the old
 detail page. Since Task 11 that address is the template overlay in edit mode, so a create ended in an edit form of the template just made, over the list it
 was made from (tests/ui_e2e/test_workspace_chain_create_journey.py saw a second ``.modal``). The template overlay's own rule (Task 10) is the one that
-holds: a create closes and returns to its caller. So the old form navigates nowhere, and a caller that wants the new row takes it through ``onCreated``:
-the old new-workspace dialog's "Create a template now" chain gets its new template back, selected.
+holds: a create closes and returns to its caller. So the old form navigates nowhere, and a caller that wants the new row takes it through ``onCreated``.
+Its one such caller, the Workspaces page's create dialog, is gone (Task 14); the console's new-workspace dialog makes its template with the template
+overlay and gets it back, selected (``tests/ui/test_new_workspace_dialog.py::test_create_a_template_hands_the_new_one_back_selected``).
 
-The real ``workspaces/shared.jsx``, ``templates.jsx`` and ``workspaces.jsx`` run here on the overlay tests' harness (``tests/ui/_register_harness.py``),
+The real ``workspaces/shared.jsx`` and ``templates.jsx`` run here on the overlay tests' harness (``tests/ui/_register_harness.py``),
 with the router's ``navigate`` recorded.
 """
 
@@ -18,8 +19,6 @@ import pytest
 
 from tests.ui._register_harness import COMPONENTS, base_code, context, js, settle, transpiled
 from tests.ui.test_wt_template_overlay import SHARED_FILE, STUBS, TEMPLATES_FILE
-
-WORKSPACES_FILE = COMPONENTS / "workspaces.jsx"
 
 HAND_BACK_STUBS = r"""
 var NAVS = [], CREATED = [];
@@ -40,7 +39,7 @@ LOCAL_PROVIDER = {"id": "loc", "provider": "local"}
 
 @pytest.fixture(scope="module")
 def code() -> str:
-    return base_code() + "\n" + transpiled(SHARED_FILE, TEMPLATES_FILE, WORKSPACES_FILE)
+    return base_code() + "\n" + transpiled(SHARED_FILE, TEMPLATES_FILE)
 
 
 @pytest.fixture
@@ -59,25 +58,6 @@ def _create_in_the_old_form(ctx) -> None:
     ctx.eval("setValue('ws-template-description', 'made in the chain');")
     ctx.eval("click(buttonWithText('ws-template-modal', 'Create'));")
     settle(ctx)
-
-
-def test_the_new_workspace_chain_gets_its_new_template_back_selected(ctx):
-    """New workspace, no template yet, "Create a template now": the template is made, the form closes, nothing navigates, and the dialog is back with
-    the NEW template selected (not the first row of the refreshed list, which may be someone else's)."""
-    ctx.eval("serve('workspaces:templates', { items: [] });")
-    ctx.eval("MR.mount(WS_NewWorkspaceModal, { onClose: function () { CLOSED += 1; }, pushToast: function () {}, onCreated: function (id) { CREATED.push(id); } });")
-    ctx.eval("click(MR.findProp('children', 'Create a template now'));")
-    assert ctx.eval("!!MR.find('ws-template-modal')")
-    _create_in_the_old_form(ctx)
-    assert [c["method"] + " " + c["path"] for c in js(ctx, "CALLS")] == ["POST /workspace_templates"]
-    assert js(ctx, "NAVS") == [], "no navigation: the template's address is the template overlay in edit mode now"
-    assert ctx.eval("MR.find('ws-template-modal') === null"), "the form closed"
-    assert js(ctx, "RES['workspaces:templates'].refetched") >= 1, "the dialog asks for the templates again"
-    ctx.eval("serve('workspaces:templates', { items: [{ id: 'a-made-meanwhile', backend: { kind: 'local' } }, { id: 'tpl-new', backend: { kind: 'local' } }] });"
-             " MR.rerender();")
-    assert js(ctx, "MR.find('workspace-template-row-tpl-new').props['data-selected']") == "true"
-    assert js(ctx, "MR.find('workspace-template-row-a-made-meanwhile').props['data-selected']") == "false"
-    assert js(ctx, "CLOSED") == 0, "the new-workspace dialog itself stays open"
 
 
 def test_a_create_from_the_old_list_closes_and_navigates_nowhere(ctx):

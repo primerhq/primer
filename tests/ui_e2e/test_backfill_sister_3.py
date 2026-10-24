@@ -8,17 +8,18 @@ Covers backlog items:
   ``<button className="close" onClick={onClose}>`` against the
   modal-stays-open invariant when other buttons are clicked.
 
-* U0101 — Workspaces list filter input narrows the card grid to
+* U0101: a list page's filter input narrows the card grid to
   matching ids (sister of U0037 Agents filter + U0046 Sessions filter
-  for the third list-page filter input). Pins workspaces.jsx's text
-  filter on id + template_id, client-side.
+  for the third list-page filter input). It pinned the Workspaces
+  page's filter; that page is gone (platform revamp 08, Task 14), and
+  it pins Platform › Workspace templates' filter (``wt-filter``) now.
 """
 
 from __future__ import annotations
 
 import httpx
 from playwright.sync_api import expect
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import default_wid, open_view
 
 
 # ---------------------------------------------------------------------------
@@ -36,101 +37,58 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 
 
 # ===========================================================================
-# U0101 — Workspaces list filter input narrows table
+# U0101: the list filter narrows the cards (the Workspace templates page)
 # ===========================================================================
 
 
-def test_u0101_workspaces_list_filter_narrows_grid(
+def test_u0101_workspace_templates_filter_narrows_grid(
     page, base_url, console_url, unique_suffix,
 ) -> None:
-    """U0101 — Seed 2 workspaces with discriminating id suffixes
-    ("alpha" / "beta"); navigate to /workspaces; type "alpha" into
-    the filter input → only the alpha card remains visible (beta
-    drops). Clear filter → both cards visible again.
+    """U0101: the third list-page filter (sister of U0037 Agents and U0046 Sessions).
 
-    Pins workspaces.jsx's textFilter (client-side substring match on
-    id + template_id). Sister of U0037 (Agents filter) + U0046
-    (Sessions filter) — the third list-page filter pinned.
+    RETARGET (platform revamp 08, Task 14): the Workspaces list page and its filter are gone (the studio rail lists the workspaces), so the
+    contract moves to the list that replaced the workspace-shaped list pages, Platform › Workspace templates: two templates with
+    discriminating ids ("alpha" / "beta"); typing alpha's id into ``wt-filter`` keeps ``pk-card:<alpha>`` and drops ``pk-card:<beta>``, and
+    widening the filter again shows both. The filter is widened to the two templates' shared prefix rather than emptied, so a shared server's
+    other templates cannot push either card to another page of the grid.
     """
     wp_id = f"wp-u101-{unique_suffix}"
     tpl_id = f"tpl-u101-{unique_suffix}"
-    container_path = f"/tmp/u101-{unique_suffix}"
-    # Seed two workspaces — embed "alpha" / "beta" in unique template
-    # ids so the filter has discriminating substrings to match. The
-    # workspace ids themselves are backend-allocated and not under
-    # our control. workspaces.jsx:63 matches on `id` + `template_id`,
-    # so unique template ids are the reliable discriminator.
     tpl_alpha = f"{tpl_id}-alpha"
     tpl_beta = f"{tpl_id}-beta"
-    wp_a = f"{wp_id}-alpha"
-    wp_b = f"{wp_id}-beta"
     cleanup_urls: list[str] = []
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        # Two providers (each template is bound to one provider).
-        for wpid in (wp_a, wp_b):
-            r = c.post("/v1/workspace_providers", json={
-                "id": wpid, "provider": "local",
-                "config": {"kind": "local", "root_path": container_path},
-            })
-            assert r.status_code == 201, r.text
-            cleanup_urls.append(f"/v1/workspace_providers/{wpid}")
-        for tid, wpid in ((tpl_alpha, wp_a), (tpl_beta, wp_b)):
+        r = c.post("/v1/workspace_providers", json={
+            "id": wp_id, "provider": "local",
+            "config": {"kind": "local", "root_path": f"/tmp/u101-{unique_suffix}"},
+        })
+        assert r.status_code == 201, r.text
+        cleanup_urls.append(f"/v1/workspace_providers/{wp_id}")
+        for tid in (tpl_alpha, tpl_beta):
             r = c.post("/v1/workspace_templates", json={
                 "id": tid, "description": f"u101 {tid}",
-                "provider_id": wpid, "backend": {"kind": "local"},
+                "provider_id": wp_id, "backend": {"kind": "local"},
             })
             assert r.status_code == 201, r.text
-            cleanup_urls.append(f"/v1/workspace_templates/{tid}")
-        # Create workspaces from those templates.
-        wsids: list[str] = []
-        for tid in (tpl_alpha, tpl_beta):
-            r = c.post("/v1/workspaces", json={"template_id": tid})
-            assert r.status_code == 201, r.text
-            wsids.append(r.json()["id"])
-        for wsid in wsids:
-            cleanup_urls.insert(0, f"/v1/workspaces/{wsid}")
+            cleanup_urls.insert(0, f"/v1/workspace_templates/{tid}")
 
     try:
-        open_legacy_route(page, console_url, "workspaces")
+        open_view(page, console_url, default_wid(console_url), "platform:templates")
+        expect(page.get_by_test_id("wt-templates-page")).to_be_visible(timeout=20_000)
+        filter_input = page.get_by_test_id("wt-filter")
 
-        # RETARGET (platform wave P1b item 7): the table/tbody/tr list
-        # was replaced by a .pc-card-grid of cards (data-testid
-        # "workspaces-grid" / "workspace-card-<id>"). Scope to the grid
-        # so we don't match the templateFilter dropdown's hidden
-        # <option> elements that also contain the template id text.
-        grid = page.get_by_test_id("workspaces-grid")
+        filter_input.fill(tpl_id)
         for tid in (tpl_alpha, tpl_beta):
-            grid.locator(f"[data-testid^='workspace-card-']:has-text('{tid}')").first.wait_for(
-                state="visible", timeout=15_000,
-            )
+            expect(page.get_by_test_id(f"pk-card:{tid}")).to_be_visible(timeout=15_000)
 
-        # Type "alpha" into the filter input.
-        filter_input = page.get_by_placeholder(
-            "Filter workspaces…", exact=False,
-        ).first
-        filter_input.wait_for(state="visible", timeout=5_000)
-        filter_input.fill("alpha")
+        # alpha's card stays, beta's drops.
+        filter_input.fill(tpl_alpha)
+        expect(page.get_by_test_id(f"pk-card:{tpl_alpha}")).to_be_visible(timeout=5_000)
+        expect(page.get_by_test_id(f"pk-card:{tpl_beta}")).to_have_count(0, timeout=5_000)
 
-        # alpha card stays, beta card drops. Allow a brief settle.
-        page.wait_for_timeout(300)
-        assert grid.locator(
-            f"[data-testid^='workspace-card-']:has-text('{tpl_alpha}')"
-        ).count() >= 1, (
-            f"alpha card {tpl_alpha!r} disappeared after filtering on 'alpha'"
-        )
-        assert grid.locator(
-            f"[data-testid^='workspace-card-']:has-text('{tpl_beta}')"
-        ).count() == 0, (
-            f"beta card {tpl_beta!r} still visible after filtering on 'alpha' "
-            "— textFilter contract broken"
-        )
-
-        # Clear the filter — both cards visible again.
-        filter_input.fill("")
-        page.wait_for_timeout(300)
+        # Widened again: both cards are back.
+        filter_input.fill(tpl_id)
         for tid in (tpl_alpha, tpl_beta):
-            expect(
-                grid.locator(f"[data-testid^='workspace-card-']:has-text('{tid}')").first
-            ).to_be_visible(timeout=5_000)
+            expect(page.get_by_test_id(f"pk-card:{tid}")).to_be_visible(timeout=5_000)
     finally:
         _cleanup(base_url, cleanup_urls)
