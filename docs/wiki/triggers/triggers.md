@@ -129,8 +129,8 @@ Reference: [`crud__update_trigger`](reference/tools/crud/update_trigger)
 - An update that sends `config` replaces all of it. An omitted `timezone` falls back to `UTC` and `catchup` to `one`. An omitted `hmac_secret` clears the secret: send the `**********` a read shows to keep it. The webhook `token` is kept unless you send a new one.
 - A delete also removes a session's wait on the trigger. That session stays parked until its wait times out.
 - A `delayed` trigger fires once. Enabling it again does not fire it again: create a new one.
-- A taken slug answers `trigger_slug_conflict`. A bad cron or timezone answers `cron_invalid` or `timezone_invalid`.
-- `catchup: all` replays each missed tick (at most 64), each with its own `scheduled_for`, then fires once more for now. Today the tick that is due counts as missed too, so an `all` trigger fires twice per tick even with no downtime. `one` and `none` act the same today: one fire for now. Use `one` unless every tick must run.
+- A taken slug answers `trigger_slug_conflict`, and a slug outside the pattern `validation-error`. A bad cron or timezone answers `cron_invalid` or `timezone_invalid`.
+- `catchup` decides what happens to the ticks a trigger missed (the server was down, or the fire came late): `none` skips them, `one` fires the most recent one, `all` fires each (at most 64, oldest first). Then the tick that is due fires once, in every policy. Each fire carries its own tick as `scheduled_for`. A trigger enabled again catches up nothing for the time it was disabled. Use `one` unless every tick must run.
 - A fire is at least once. A worker that dies in the middle of a fire may deliver it again. A trigger is claimed like other work, so a busy deployment fires late.
 - Saving a trigger makes you its owner, so an edit moves its runs to your rank. When an admin saves a webhook trigger someone else owns, the server mints a new token and the old URL stops working.
 
