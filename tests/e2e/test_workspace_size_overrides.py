@@ -326,8 +326,7 @@ async def test_a_docker_workspace_gets_its_cpu_and_memory(authed_client, unique_
         assert rw.status_code in (200, 201), rw.text
         wid = rw.json()["id"]
         info = _docker_inspect(f"workspace-{wid}")
-        if info is None:
-            pytest.skip("docker is not reachable from the test runner, so the container's limits cannot be read")
+        assert info is not None, "workspace:container is enabled, but docker inspect could not read the workspace container"
         assert info["HostConfig"]["NanoCpus"] == 500000000, info["HostConfig"]
         assert info["HostConfig"]["Memory"] == 268435456, info["HostConfig"]
         assert info["Config"]["Image"] == "primer/workspace-runtime:1.1", info["Config"]["Image"]
