@@ -631,6 +631,12 @@ def build_system_toolset(
     # Rules about what a write may set, for the create and update descriptors (the agent reads them before it writes).
     write_notes_by_label: dict[str, str] = {
         "agent": AGENT_WRITE_NOTE,
+        # The router probes an http / sse MCP endpoint on create only (``_toolset_on_pre_create``, skipped under ``?allow_unreachable``); a PUT
+        # does not, and a tool never does: it runs inside an agent turn (ticket 01a16f1d item 9; pinned in tests/toolset/test_system_validators.py).
+        "toolset": (
+            "Unlike the REST create route (``POST /v1/toolsets``), this tool does not check that an http or sse MCP server is reachable "
+            "before saving: a toolset whose server does not answer is stored, and the failure shows when its tools are listed or called."
+        ),
         "artifact_storage_provider": ARTIFACT_DEFAULT_WRITE_NOTE,
         "collection": (
             "The ``system`` flag belongs to the platform: a create that sets it and an update that changes it return ``type=forbidden`` "

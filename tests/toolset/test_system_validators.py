@@ -334,6 +334,18 @@ class TestToolset:
         assert not is_error
         assert await sp.get_storage(Toolset).get("mcp-dead") is not None
 
+    @pytest.mark.asyncio
+    async def test_the_toolset_write_descriptors_say_the_tool_does_not_check_reachability(self, world) -> None:
+        """Ticket 01a16f1d item 9: ``toolset_checks``'s docstring said the tool descriptions state the difference the test above pins; they did not.
+        Only the REST create route probes (``POST /v1/toolsets``; a ``PUT`` does not), so both descriptors name that route."""
+        _sp, toolset, _ = world
+        tools = {tool.id: tool async for tool in toolset.list_tools()}
+
+        for name in ("create_toolset", "update_toolset"):
+            flat = " ".join(tools[name].description.split())
+            assert "does not check that an http or sse MCP server is reachable before saving" in flat, name
+            assert "Unlike the REST create route (``POST /v1/toolsets``)" in flat, name
+
 
 def _aggregate(profile_id: str, members: list[str]) -> ModelProfile:
     return ModelProfile(id=profile_id, description="a pool", kind="aggregated", members=members)
