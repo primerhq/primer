@@ -94,7 +94,9 @@ level** (there is no `config` wrapper).
   `NodeOutput.parsed` is populated - a node with `response_format` is a
   data-shaping turn and is offered **no tools**, so it cannot call tools
   and emit structured output in the same turn), optional `input_schema`
-  (soft warn-only validation of the rendered input).
+  (soft warn-only validation of the rendered input), optional
+  `profile_id` (run this node on another model profile than its agent's
+  default; it wins over the session binding's `profile_id`).
 - **`tool_call`** - invokes a tool directly, no LLM. Fields: `tool_id`
   (scoped `toolset_id__bare_name` - workspace tools use the `workspace`
   scope, e.g. `workspace__write` / `workspace__exec`; internal toolsets
@@ -330,7 +332,9 @@ reachable from `begin`.
 To run a graph, create a session whose subject is the graph: call
 `workspaces::create_workspace_session` with a graph binding
 (`binding: {"kind": "graph", "graph_id": ...}`) and pass input via
-`graph_input`.
+`graph_input`. A `profile_id` on the binding is the run's model profile
+for every agent node that names no `profile_id` of its own (sub-graph
+nodes included); a node's own `profile_id` still wins.
 
 ## Workflows
 
