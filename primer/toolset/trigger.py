@@ -1085,7 +1085,8 @@ def subscribe_resume(
     * a cancel: ``{cancelled: true, cancel_reason}``.
 
     Storage-free, as ``wait_for_event_resume`` is: a fire deletes its one-shot ``parked_session`` subscription, and one a timeout or a cancel
-    left behind is skipped and deleted as an orphan by the next fire of its trigger (or deleted with the trigger). A wake that reaches the park's
+    left behind is skipped and deleted as an orphan by the next fire that reaches it (the trigger's next fire; for a channel subscription, the
+    next event its matcher matches); a disabled trigger keeps it until the trigger is deleted. A wake that reaches the park's
     key from the event log carries an event envelope, not a fire: it is masked as ``wait_for_event_resume`` masks one (stored secrets masked, a
     ``canvas.event``'s ``value`` and ``data`` removed: the input never leaves its session, #872).
     """
