@@ -50,6 +50,7 @@ flowchart TD
         knowledge[Knowledge]
         workspaces[Workspaces]
         mcpoauth[MCP OAuth]
+        artifacts[Artifact Storage]
     end
 
     subgraph UI["UI subsystems"]
@@ -110,6 +111,9 @@ flowchart TD
     mcpoauth --> provider
     mcpoauth --> storage
     mcpoauth --> rest
+
+    artifacts --> provider
+    artifacts --> storage
 
     uifound --> rest
     uipages --> rest
@@ -172,6 +176,9 @@ flowchart TD
 - [web-search](subsystems/web-search.md) - live web retrieval for agents: the search
   provider entity and registry, the active-config singleton with its fallback chain,
   and the `web` MCP toolset agents call.
+- [artifact-storage](subsystems/artifact-storage.md) - where message media and service bundle
+  files are kept: the database, filesystem and S3 backends, the active store new files go
+  to, and the per-artifact record that keeps older files readable after a switch.
 - [triggers](subsystems/triggers.md) - "do something later, or on a schedule" as a
   first-class primitive: a fire source plus delivery subscriptions, riding the claim
   engine for timing and the park machinery for `subscribe_to_trigger`.
@@ -187,9 +194,6 @@ flowchart TD
 - [services](subsystems/services.md) - agent-published web apps: immutable versioned
   bundles served at /svc/{name}/ by any API replica, with bundle python executing
   per-request in the python-runner sandbox.
-- [artifact-storage](subsystems/artifact-storage.md) - where artifact files go and how
-  they are found again: the active store for new files, a location record per file, the
-  database fallback, and the refusal to delete or move a store that holds files (a stub).
 - [external-tools](subsystems/external-tools.md) - invoker-supplied tool calls: an
   API caller attaches tool definitions to an invocation, the model calls them, the
   turn parks, and the caller resumes it with the result through the same
