@@ -141,12 +141,20 @@ the moment its enum and its `_types` entry land together.
 The classes that serve it are llm, embedding, cross_encoder, stt, tts, web_search, web_fetch, artifact_storage and
 ssp (`ssp/_types`); `channel_providers` and `workspace_providers` have panels of their own and serve none. The
 artifact-storage entry (`primer/api/routers/artifact_storage.py`, `artifact_storage_helpers_router`, mounted before
-the CRUD router) lists `db`, `filesystem` and `s3`, and its labels say what is true: only `db` is built
-(`build_artifact_storage`), and every consumer goes through the routing store (`ArtifactStorageRegistry.get_default()`), which writes to the active provider (the reserved `artifact-storage-default`
-database until another is selected), so a `filesystem` or `s3` row can be stored and is never used (the label says "not implemented yet: stored, never used")
-and a `db` row registered from the menu is not the default. `tests/api/test_artifact_storage_types.py` holds the
+the CRUD router) lists `db`, `filesystem` and `s3`, and its labels say what is true: `db` and `filesystem` are built
+(`build_artifact_storage`) and `s3` is not yet, so an `s3` row can be stored and is never used (its label says "not implemented yet: stored, never used").
+Which store is used is not the row's choice: every consumer goes through the routing store (`ArtifactStorageRegistry.get_default()`), which writes to the
+ACTIVE provider (the reserved `artifact-storage-default` database until another is selected with `PUT /v1/artifact_storage_active_config`), so a `db` or
+`filesystem` row registered from the menu is not used until it is selected. The `filesystem` label and its `root` help say that the root is one folder that
+every server pod mounts at the same path. `tests/api/test_artifact_storage_types.py` holds the
 served fields to the config models in `primer/model/providers/artifact.py`, builds a row of each kind through the
 factory to keep the labels true, and builds a row from what the form is told to ask for.
+
+A provider whose backend needs its location made ready before it is used prepares it in the shared pre-write check, LAST, so a write another
+check refuses prepares nothing. The `filesystem` artifact store is the one case: `prepare_artifact_provider` (`primer/artifact/checks.py`)
+creates the root and writes its `.primer-artifact-root` marker on a create and an edit, through the REST route and the system tools alike, and
+answers 422 `artifact_root_unusable` naming `config.root` when it cannot. Building a backend does no IO: `initialize` checks the location in
+the process that uses it (see [artifact-storage](../subsystems/artifact-storage.md)).
 
 Serve a draft test where a draft can be tested. A class whose provider can be exercised before it is saved exposes
 `POST /v1/{plural}/_test`, taking the draft row with every key optional and answering HTTP 200 with `{ok: true, ...}` or
@@ -155,7 +163,9 @@ upstream failure). Mount it with the `_types` router, BEFORE the CRUD router, or
 answers 405. The classes that serve one are embedding and cross_encoder (`primer/api/routers/providers.py`: the models an
 openai or gemini server lists, or the Hub check of a Hugging Face one; see `docs/dev/subsystems/model-providers.md`), stt and
 tts (`speech.py`), web_search and web_fetch, and ssp (`ssp/_test`). The LLM class has no `_test`: its draft is probed by
-`POST /v1/llm_providers/_discover_models`. artifact_storage, `channel_providers` and `workspace_providers` serve none. The
+`POST /v1/llm_providers/_discover_models`. artifact_storage serves one too (`POST /v1/artifact_storage_providers/_test`, a live
+round trip that first prepares a filesystem root, as a create would), but the console does not offer its Test button yet;
+`channel_providers` and `workspace_providers` serve none. The
 console offers a Test button only on a class that serves one, so a Test that answers 405 is never on screen.
 
 ## 5. Existing implementations

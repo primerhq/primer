@@ -1,7 +1,8 @@
 # Artifact Storage
 
 This is a stub, written ahead of plan 09 task 12: it records how artifacts are routed between stores (the location record, the active
-store, the delete and move refusals) as the code does it today. The filesystem and S3 backends (plan 09 tasks 8 and 9) are not built yet.
+store, the delete and move refusals) and how the filesystem store keeps its files, as the code does it today. The S3 backend (plan 09
+task 9) is not built yet.
 
 ## 1. Purpose
 
@@ -21,6 +22,9 @@ where each file is written, finds it again by its id, and keeps a store from bei
   same `Artifact` table, so a `db` provider writes no record and always counts zero artifacts.
 - The **database fallback**: an artifact id with no record is a database artifact, read and deleted through a direct
   `DbArtifactStorage`, never through a registry lookup, so a broken provider row cannot make the old artifacts unreadable.
+- A **filesystem root** is ONE folder that every server pod (the API and every worker) mounts at the same path. A prepared root holds a
+  `.primer-artifact-root` marker; a process that finds no folder, or a folder without the marker, is a pod without the shared volume and
+  refuses to use the store.
 
 ```mermaid
 flowchart LR
@@ -46,9 +50,13 @@ are shared by the routes and the system tools (the D3/D5 shared-validator patter
 - `primer/model/providers/artifact.py`: the provider row, its three config classes, the active-store row and the two reserved ids.
 - `primer/model/artifact.py`: `Artifact` (the database rows) and `ArtifactLocation`.
 - `primer/int/artifact_storage.py`: the `ArtifactStorage` ABC (`put`, `get`, `delete`, `needs_location_record`).
-- `primer/artifact/db.py`, `primer/artifact/factory.py` (`BUILDABLE_KINDS`: only `db` today), `primer/artifact/probe.py` (the live
+- `primer/artifact/db.py`, `primer/artifact/factory.py` (`BUILDABLE_KINDS`: `db` and `filesystem`), `primer/artifact/probe.py` (the live
   round trip), `primer/artifact/routing.py` (`RoutingArtifactStorage`, `count_artifacts_held`), `primer/artifact/active.py` (read and
-  select the active store), `primer/artifact/checks.py` (the write, delete and move checks).
+  select the active store), `primer/artifact/checks.py` (the write, delete and move checks, and `prepare_artifact_provider`).
+- `primer/artifact/filesystem.py` (`FilesystemArtifactStorage`, `prepare_root`, `check_root`, `ROOT_MARKER`) and `primer/artifact/ids.py`
+  (`BACKEND_ARTIFACT_ID_RE`, `new_backend_artifact_id`: the `artifact-<32 hex>` ids a non-database backend mints; database ids stay
+  `artifact-<12 hex>`).
+- `check_filesystem_artifact_stores` in `primer/api/_app_lifespan_phases.py`, the boot check.
 - `primer/api/registries/artifact_storage_registry.py`, `primer/api/routers/artifact_storage.py`, `primer/toolset/_system_artifact.py`.
 
 ## 5. Data model
@@ -57,6 +65,11 @@ are shared by the routes and the system tools (the D3/D5 shared-validator patter
 `S3ArtifactConfig` with `bucket`, `prefix`, `endpoint_url` and keys). `ActiveArtifactStorageConfig` carries `provider_id`.
 `ArtifactLocation` carries `provider_id`, and both storage backends index that hot field (the SQLite and Postgres hot-field lists), so
 counting what a provider holds is an index read.
+
+**On disk** (the filesystem store), each artifact is two files under `<root>/<hex[0:2]>/<hex[2:4]>/`, where `hex` is the 32 hex digits
+of the id: the bytes at `<id>` and a UTF-8 JSON sidecar at `<id>.json` holding `{"mime_type", "filename", "size"}` (the filename kept
+as written, any characters). The root also holds the `.primer-artifact-root` marker. Shard folders are created on demand and left in
+place when they empty.
 
 ## 6. Lifecycle
 
@@ -67,6 +80,27 @@ flight) removes the record and the bytes and fails with a 409; retried, the put 
 
 **Get and delete** follow the record, even when the recorded provider is not the active one. A delete removes the bytes first and the
 record second, so a delete that fails in the store keeps the record and can be retried.
+
+**Filesystem put, get and delete.** A put writes the bytes, then the sidecar, each to a temporary file that is synced and renamed into
+place; a sidecar that fails removes the bytes again, so a sidecar is never seen without its bytes. A get reads the sidecar, then the
+bytes, and answers `None` when either is missing. A delete removes the sidecar, then the bytes; missing files are fine. Every file
+operation runs in a worker thread (`asyncio.to_thread`), so a slow or hung volume never blocks the event loop.
+
+**Preparing a filesystem root** (`prepare_artifact_provider`, run LAST by the REST create and update hooks and the system tool pre-create
+and pre-update, and by the draft `_test` as its `prepare` step): create the folder when missing, check that it takes a write, and write
+the marker when it has none. A root that is not absolute, is a file, or cannot be written is a 422 (`validation-error` from a tool)
+`artifact_root_unusable` naming `config.root`, and nothing is stored. The saved-row `_test` and the active-store selection do not prepare:
+they check what every process will find.
+
+**Using a filesystem root** (`initialize`, through `check_root`, in every process that resolves the store): the root must be absolute,
+exist, be a folder, hold the marker and take a write. It creates nothing. A missing root or a missing marker is refused with a message that
+names the root and says to mount the shared artifact volume in every server pod. A failed `initialize` is not cached by the registry, so
+every later use checks again.
+
+**Boot check.** `check_filesystem_artifact_stores` resolves every filesystem provider row (up to 200) through the registry and logs, at
+ERROR, `artifact store <id> (filesystem, root <root>) is not usable in this process: <reason>` for each one that fails, giving each 30
+seconds. It never raises. The lifespan starts it as a background task after the invalidation bus is bound (a store it caches is evicted by
+a later edit in any process) and cancels it at shutdown, so it never holds the boot.
 
 **Select** (`set_active_artifact_store`): read the provider, probe it, read it again, and write the selection with a compare-and-set
 against the selection read before the probe (`patch_if_checked`; a create for the first selection). A provider deleted during the probe,
@@ -98,12 +132,23 @@ memory by the registry and rebuilt from the rows. The reserved default row is se
 - **Move refusal** (`check_artifact_provider_update`): changing `provider`, a filesystem `root`, or an S3 `bucket` or `prefix` of a
   store that holds records is a 409 naming the field: the records would point at a location that no longer has the files.
 - Consumers call `ArtifactStorageRegistry.get_default()` and nothing else; `primer.artifact` must not import `primer.api`.
+- **Filesystem paths never leave the root.** An id must match `BACKEND_ARTIFACT_ID_RE` (anchored with `\A` and `\Z`: `$` would accept a
+  trailing newline) before it becomes a path; a get or a delete of any other id logs a warning and does nothing. Below the root each shard
+  folder must be a real folder, never a link, and resolve inside the resolved root, and the files are opened with `O_NOFOLLOW`; a delete
+  unlinks a link itself, never what it points at. The root itself may be a link (a mount reached through one).
+- **Deployment.** On Kubernetes a filesystem store needs one shared volume (ReadWriteMany) mounted at `root` in the API pod and every
+  worker pod. Do not select a filesystem store on a deployment that lacks it: the selection probe runs in one pod only, and every other
+  pod would refuse the store (the boot check names them).
 
 ## 10. Testing patterns
 
 `tests/artifact/` runs the routing store, the active store and the checks on a real SQLite storage with an in-memory store that needs a
 record (`tests/artifact/_stores.py`); the race tests hold a put inside the store, or run the concurrent delete inside an injected probe.
-`tests/api/test_artifact_storage_*.py` cover the routes and the registry, and `tests/toolset/test_system_artifact_tools.py` the tools.
+`tests/artifact/test_filesystem_store.py` pins the filesystem store (the marker, the traversal ids and planted links, the thread rule),
+and `tests/artifact/test_backend_contract.py` runs one contract (bytes, MIME type and any filename round-trip) against every backend that
+builds. `tests/api/test_artifact_storage_*.py` cover the routes and the registry, `tests/api/test_artifact_store_switch.py` the switch to
+a filesystem store and the boot check, and `tests/toolset/test_system_artifact_tools.py` the tools. Every filesystem test works inside its
+own `tmp_path`. `tests/e2e/test_artifact_store_switch_journey.py` runs the switch against a live server.
 
 ## 11. Historical decisions
 
