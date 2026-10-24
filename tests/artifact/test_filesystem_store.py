@@ -104,6 +104,17 @@ def test_prepare_is_idempotent_and_keeps_the_marker(tmp_path: Path) -> None:
     check_root(str(root))
 
 
+def test_a_root_with_a_nul_character_is_refused_by_name(tmp_path: Path) -> None:
+    """``os.mkdir`` raises a bare ``ValueError`` for a NUL in a path, which reached the REST route as a 500 (review of #890, item 1)."""
+    bad = str(tmp_path / "x\x00y")
+
+    for check in (prepare_root, check_root):
+        with pytest.raises(ConfigError, match="must not contain a NUL character") as info:
+            check(bad)
+        assert repr(bad) in str(info.value)
+    assert list(tmp_path.iterdir()) == []
+
+
 @pytest.mark.parametrize("bad", ["relative/dir", "", "./artifacts"])
 def test_prepare_refuses_a_root_that_is_not_absolute(bad: str) -> None:
     with pytest.raises(ConfigError, match="must be an absolute path"):

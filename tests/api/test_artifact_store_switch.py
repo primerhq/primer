@@ -94,6 +94,24 @@ async def test_creating_a_filesystem_provider_on_an_unusable_root_is_a_422(clien
     assert await app.state.storage_provider.get_storage(ArtifactStorageProvider).get("fs-bad") is None, "nothing is stored"
 
 
+async def test_a_root_with_a_nul_character_is_a_named_422_on_create_and_edit(client, app, tmp_path: Path) -> None:
+    """Review of #890, item 1: the NUL reached ``os.mkdir``, whose bare ``ValueError`` was a 500."""
+    bad = str(tmp_path / "x\x00y")
+
+    created = await client.post(PROVIDERS, json={"id": "fs-nul", "provider": "filesystem", "config": {"root": bad}})
+    assert created.status_code == 422, created.text
+    assert (created.json()["extensions"]["error"], created.json()["extensions"]["field"]) == ("artifact_root_unusable", "config.root")
+    assert "must not contain a NUL character" in created.json()["extensions"]["message"]
+
+    r = await client.post(PROVIDERS, json={"id": "fs-ok", "provider": "filesystem", "config": {"root": str(tmp_path / "ok")}})
+    assert r.status_code == 201, r.text
+    edited = await client.put(f"{PROVIDERS}/fs-ok", json={"id": "fs-ok", "provider": "filesystem", "config": {"root": bad}})
+    assert edited.status_code == 422 and edited.json()["extensions"]["error"] == "artifact_root_unusable", edited.text
+
+    draft = await client.post(f"{PROVIDERS}/_test", json={"provider": "filesystem", "config": {"root": bad}})
+    assert (draft.json()["ok"], draft.json()["step"]) == (False, "prepare") and "NUL character" in draft.json()["error"], draft.text
+
+
 async def test_an_edit_to_an_unusable_root_is_a_422_and_keeps_the_row(client, app, tmp_path: Path) -> None:
     r = await client.post(PROVIDERS, json={"id": "fs-edit", "provider": "filesystem", "config": {"root": str(tmp_path / "a")}})
     assert r.status_code == 201, r.text

@@ -153,6 +153,21 @@ async def test_a_tool_create_on_an_unusable_root_names_config_root(world, tmp_pa
     assert await sp.get_storage(ArtifactStorageProvider).get("fs-bad") is None, "nothing is stored"
 
 
+async def test_a_tool_create_on_a_root_with_a_nul_character_names_config_root(world, tmp_path) -> None:
+    """Review of #890, item 1: the NUL reached ``os.mkdir`` and the tool raised a bare ``ValueError``."""
+    sp, toolset, _ = world
+
+    is_error, answer = await _call(
+        toolset,
+        "create_artifact_storage_provider",
+        entity={"id": "fs-nul", "provider": "filesystem", "config": {"root": str(tmp_path / "x\x00y")}},
+    )
+
+    assert is_error and answer["type"] == "validation-error", answer
+    assert answer["message"].startswith("config.root: ") and "must not contain a NUL character" in answer["message"], answer
+    assert await sp.get_storage(ArtifactStorageProvider).get("fs-nul") is None
+
+
 async def test_a_tool_create_and_update_prepare_the_root(world, tmp_path) -> None:
     from primer.artifact.filesystem import ROOT_MARKER
 

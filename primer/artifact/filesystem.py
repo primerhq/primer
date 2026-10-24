@@ -62,6 +62,9 @@ def _reason(exc: OSError) -> str:
 def _require_absolute(root: str) -> None:
     if not isinstance(root, str) or not root or not os.path.isabs(root):
         raise ConfigError(f"artifact root {root!r} must be an absolute path")
+    # A NUL makes every os call raise a bare ValueError (a 500 through the REST route), so it is refused here, by name.
+    if "\x00" in root:
+        raise ConfigError(f"artifact root {root!r} must not contain a NUL character")
 
 
 def _not_writable(root: str, exc: OSError) -> ConfigError:
