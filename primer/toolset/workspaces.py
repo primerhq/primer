@@ -2378,8 +2378,13 @@ def build_workspaces_toolset(
             "``POST /v1/workspaces/{workspace_id}/sessions/{session_id}/pause``), "
             "so the worker running the session sees it whichever process it "
             "is in. The answer is the session row: ``status: \"paused\"`` "
-            "when it paused at once, ``pause_requested: true`` when a turn "
-            "is running and the pause lands at its end. ``type=conflict`` "
+            "when it paused at once (an idle or not yet started session); "
+            "``pause_requested: true`` on a running one, which then never "
+            "runs a turn that has not started (it goes ``paused``) and lets "
+            "a turn in flight finish, after which it rests ``waiting`` with "
+            "``pause_requested: true`` (not ``paused``), its messages from "
+            "triggers, agents and other sessions held until it is resumed or "
+            "a person messages it. ``type=conflict`` "
             "when the session has ended. " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
         ),
         _WorkspaceSessionArgs,

@@ -121,9 +121,14 @@ create sessions in batches and start them on demand.
   `workspaces::pause_workspace_session` (one implementation behind
   both). It is recorded on the session row, so whichever worker runs
   the session sees it: an idle or not yet started session pauses at
-  once; a running one finishes the turn it is in and starts no other.
-  The session stays paused until `POST .../resume` or
-  `workspaces::resume_workspace_session` lifts it.
+  once; a running one whose turn has not started yet goes `PAUSED`
+  when a worker picks it up, without running the turn. A pause that
+  lands while a turn is in flight lets that turn finish, and the row
+  then rests `WAITING` with `pause_requested: true`, NOT `PAUSED`, and
+  starts no other turn. Either way a message from a trigger, an agent
+  or another session is held (queued) until `POST .../resume` or
+  `workspaces::resume_workspace_session` lifts the pause, or a person
+  sends the session a message (which resumes it).
 - `ENDED` - terminal. Either the agent stopped, the operator ended
   it, or an unrecoverable error occurred. No further work runs.
   A transient failure of the model call (a provider 5xx, a rate limit,
@@ -142,8 +147,9 @@ create sessions in batches and start them on demand.
 
 Transitions:
 - `RUNNING ↔ WAITING` - yield enters; resume exits.
-- `RUNNING → PAUSED` - operator action; takes effect at next turn
-  boundary.
+- `RUNNING → PAUSED` - operator action; takes effect at the next turn
+  boundary (a turn in flight finishes first, and the row then rests
+  `WAITING` with `pause_requested: true`).
 - `PAUSED → RUNNING` - operator action.
 - any → `ENDED` - terminal; not reversible.
 
@@ -222,9 +228,11 @@ can run an agent or graph headlessly end to end.
   workspace it finds only your own workspace's sessions.
 - `workspaces::pause_workspace_session` - pause a session, the same
   operation as `POST .../pause`: an idle or not yet started session is
-  paused at once (`status: "paused"`); a running one finishes the turn
-  it is in and starts no other (`pause_requested: true` on the row
-  until then). Returns the session row; `type=conflict` when the
+  paused at once (`status: "paused"`); on a running one it sets
+  `pause_requested: true`: a turn not yet started never runs (the
+  session goes `paused`), and a turn in flight finishes, after which the
+  row rests `waiting` with `pause_requested: true` and starts no other
+  turn until it is resumed or a person messages it. Returns the session row; `type=conflict` when the
   session has ended; `type=forbidden` when the session runs at a higher
   rank than you (or your run).
 - `workspaces::resume_workspace_session` - start or resume a session,
