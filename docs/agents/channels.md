@@ -118,6 +118,8 @@ Workspace:
 
 ChannelEvent (normalized inbound envelope):
 - `type` - `message.posted` or `command.invoked` (v1 core).
+  `command.invoked` comes from Telegram only (a message that starts with
+  `/name`); Slack and Discord slash commands are not received.
 - `surface` - `dm | channel | thread`.
 - `mentions_bot`, `command` (`{name, args}`), `sender`
   (`{external_id, roles, is_bot}`), `text`, `room_external_id`.
@@ -184,9 +186,11 @@ The dispatch flow for an `ask_user`:
 1. Tool returns `Yielded(tool_name="ask_user", ...)`.
 2. Worker parks the session.
 3. The dispatcher resolves the reply binding (session-scoped first,
-   then the workspace `reply_binding`) and posts the prompt there. The
-   message carries a `Workspace: <name> / Session: <label>` attribution
-   header so the human knows which workflow is asking.
+   then the workspace `reply_binding`) and posts the prompt there. A
+   question or an approval request starts with a
+   `Workspace: <name> · Session: <label>` line so the human knows which
+   workflow is asking; an `inform` update and a final result carry no
+   such line.
 4. The adapter writes a `ChannelCorrelation(kind="session")` row for
    the reply anchor.
 
@@ -311,10 +315,12 @@ as a workspace that does not exist, whatever `channel_id` you pass
 no calling session (MCP), reach every workspace.
 
 After setting a reply binding, all `ask_user`, `tool_approval`, and
-`inform` gates plus the start ack and final result from sessions in
-that workspace forward to the bound channel. No per-gate flags; the
-binding implies all of it forwards (a per-binding quiet mode can
-suppress the acks while still forwarding gates).
+`inform` gates plus the final result of each turn from sessions in
+that workspace forward to the bound channel. There is no start
+acknowledgement: a session that never asks or answers posts nothing.
+No per-gate flags; the binding implies all of it forwards (a
+per-binding quiet mode can suppress the final results while still
+forwarding gates).
 
 ### Inbound channel bindings
 
@@ -400,9 +406,9 @@ Slack channel #ops-pager.
    ```
 
 4. Next time a session in `ws-incidents` yields with `ask_user`, a
-   Slack message appears in #ops-pager (with a `Workspace: incidents
-   / Session: <label>` header) with the question. A reply resumes
-   the session.
+   Slack message appears in #ops-pager (starting with a
+   `Workspace: incidents · Session: <label>` line) with the question.
+   A reply resumes the session.
 
 ### Workflow 2 - let a Telegram room start sessions
 
@@ -466,10 +472,16 @@ Returns the workspace row; `reply_binding` is either
 }
 ```
 
-### Workflow 4 - map a slash command to a fresh session
+### Workflow 4 - map a Telegram command to a fresh session
 
-**Goal.** When someone runs `/deploy` in a Slack channel, run the
-`deployer` agent and reply in the originating thread.
+**Goal.** When someone sends `/deploy` in a Telegram group, run the
+`deployer` agent and answer in that group.
+
+`command.invoked` comes from Telegram only: a message that starts with
+`/name` (`command.name` is `name`, `command.args` the rest). Slack and
+Discord slash commands are not received, so this workflow does not work
+on those platforms; match a `message.posted` with a `text_pattern`
+there instead.
 
 1. Create the `channel`-kind trigger (the event-source anchor):
 
@@ -477,11 +489,11 @@ Returns the workspace row; `reply_binding` is either
 {
   "tool": "trigger::create",
   "arguments": {
-    "slug": "slack-deploy-anchor",
-    "name": "Slack deploy command",
+    "slug": "telegram-deploy-anchor",
+    "name": "Telegram deploy command",
     "config": {
       "kind": "channel",
-      "provider_id": "cp-slack",
+      "provider_id": "cp-telegram",
       "channel_id": "ch-deploys"
     },
     "enabled": true
@@ -535,9 +547,12 @@ Response (the created Subscription):
 }
 ```
 
-Now every `/deploy` in `ch-deploys` runs the `deployer` agent. The
-`source_thread` reply target makes that session's start ack, gates,
-and final result land back in the same thread.
+Now every `/deploy` in `ch-deploys` (a Telegram group whose channel
+has `chats.enabled: true`) runs the `deployer` agent. Telegram has no
+threads, so the `source_thread` reply target answers in the group: the
+session's questions, approval requests, updates and final result are
+posted there. There is no start acknowledgement: a session that never
+asks or answers posts nothing.
 
 ### Workflow 5 - park a workflow on a channel event
 
@@ -568,8 +583,8 @@ the trigger.
 - **A reply binding implies all gates forward.** There are no per-gate
   flags. If a workspace has a `reply_binding`, all `ask_user`,
   `tool_approval`, and `inform` gates from its sessions forward to
-  that channel (plus the start ack and final result, unless the
-  binding is quiet).
+  that channel (plus the final result of each turn, unless the
+  binding is quiet). There is no start acknowledgement.
 - **Session-scoped reply binding wins over the workspace one.** A
   session a channel binding starts or feeds gets a per-session binding
   (the originating thread by default, else what the binding's
@@ -581,8 +596,9 @@ the trigger.
   only fresh events are matched against bindings.
 - **One channel, many workspaces.** A single channel can serve
   multiple workspaces simultaneously. Each workspace's session gates
-  open a separate thread or message on the channel, attributed with
-  a `Workspace: <name> / Session: <label>` header.
+  open a separate thread or message on the channel. Their questions and
+  approval requests start with a `Workspace: <name> · Session: <label>`
+  line; `inform` updates and final results do not.
 - **Inbound messages and session gates coexist on the same channel.** A
   channel handles both fresh incoming messages and gate replies from
   reply bindings; `config.chats.enabled=true` lets its fresh messages
