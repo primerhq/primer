@@ -142,6 +142,8 @@ async def test_a_template_cpu_docker_refuses_is_a_422_naming_the_template(client
 
 
 async def test_the_create_workspace_tool_answers_validation_error(sp, registry, daemon):
+    # The caller's run (``caller``) is in the default workspace (prime): a session outside it may not create a workspace (review of #870, F4).
+    await sp.set_default_workspace_id(caller().workspace_id)
     toolset = build_workspaces_toolset(storage_provider=sp, workspace_registry=registry)
 
     result = await toolset.call(
