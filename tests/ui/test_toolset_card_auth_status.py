@@ -46,23 +46,29 @@ def test_card_auth_status(auth, state: str | None, expected: dict | None) -> Non
     assert got == expected
 
 
-def test_the_platform_card_prefers_the_sign_in_state() -> None:
+def _toolsets_entry() -> str:
     source = PLATFORM.read_text(encoding="utf-8")
     start = source.index("  toolsets: {")
     end = source.index("\n  tools: {", start)
-    block = source[start:end]
+    return source[start:end]
+
+
+def test_the_platform_card_prefers_the_sign_in_state() -> None:
+    # Since revamp 06 Task 6 the fallback is toolsets.jsx's TS_toolsetCardStatus (available, unavailable or the Collections card's internal-search chip),
+    # not an inline available/unavailable pair; the sign-in state still comes first. tests/ui/test_platform_toolsets_cards.py runs the composition.
+    block = _toolsets_entry()
     assert "window.TS_cardAuthStatus" in block
-    assert "row.available === false" in block
-    assert block.index("window.TS_cardAuthStatus") < block.index("row.available === false")
+    assert "window.TS_toolsetCardStatus(row, con)" in block
+    assert block.index("window.TS_cardAuthStatus") < block.index("window.TS_toolsetCardStatus(row, con)")
 
 
 def test_a_toolset_without_oauth_keeps_its_available_status() -> None:
-    source = PLATFORM.read_text(encoding="utf-8")
-    start = source.index("  toolsets: {")
-    end = source.index("\n  tools: {", start)
-    block = source[start:end]
-    assert '{ label: "available", tone: "ok" }' in block
-    assert '{ label: "unavailable", tone: "error" }' in block
+    # The available/unavailable pair moved from the Platform entry into TS_toolsetCardStatus (revamp 06 Task 5), which the entry calls.
+    source = TOOLSETS.read_text(encoding="utf-8")
+    helper = source[source.index("function TS_toolsetCardStatus("):source.index("const TS_TABS")]
+    assert '{ label: "available", tone: "ok" }' in helper
+    assert '{ label: "unavailable", tone: "error" }' in helper
+    assert "window.TS_toolsetCardStatus(row, con)" in _toolsets_entry()
 
 
 # ---- G4-12: a toolset whose server does not answer never looks healthy ---------------------------------------------------------------------------------------
