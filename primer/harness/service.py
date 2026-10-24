@@ -552,6 +552,21 @@ async def _forget_toolset_sign_in(storage_provider: Any, toolset_id: str) -> Non
     await forget_sign_in(storage_provider, toolset_id)
 
 
+async def _forget_sign_in_on_oauth_change(storage_provider: Any, storage: Any, entity: Any) -> None:
+    """Forget a toolset's shared OAuth sign-in when a sync changes its URL or its OAuth settings (ticket 01a16a36, L4 of the #852 review).
+
+    The REST update and the system ``update_toolset`` tool forget it when :func:`primer.toolset.toolset_checks.oauth_settings_changed` says so; a
+    sync writes the row straight to storage, so it applies the same predicate here, against the stored row, BEFORE the write as they do. A forget
+    that fails raises, so the row keeps its old settings and the sync reports the toolset (the snapshot does not advance and the next sync tries
+    again): the new settings are never stored beside the old sign-in.
+    """
+    from primer.toolset.toolset_checks import oauth_settings_changed  # noqa: PLC0415 - the toolset package pulls in the MCP SDK
+
+    existing = await storage.get(entity.id)
+    if existing is not None and oauth_settings_changed(entity, existing):
+        await _forget_toolset_sign_in(storage_provider, entity.id)
+
+
 async def _index_installed_document(
     *,
     storage_provider: Any,
@@ -886,6 +901,8 @@ async def apply_sync(
         )
         storage = _storage_for_kind(storage_provider, new_entry.kind)
         try:
+            if new_entry.kind == "toolset":
+                await _forget_sign_in_on_oauth_change(storage_provider, storage, entity)
             # Entity row + (document) content row in ONE transaction so a
             # failure in either rolls both back - no torn write.
             await _write_entity_with_body(
