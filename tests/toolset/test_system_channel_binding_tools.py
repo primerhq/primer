@@ -342,6 +342,31 @@ async def test_create_channel_binding_refuses_a_parked_session_config(
     assert not sp.get_storage(Subscription)._data
 
 
+@pytest.mark.asyncio
+async def test_create_channel_binding_refuses_a_bad_parallelism(
+    sp: _SP, system_toolset
+):
+    """#915 types every create path's parallelism argument as the skip/queue
+    literal; this pins the refusal on this tool: a bad value answers
+    validation-error and nothing is stored."""
+    await _seed_channel_trigger(sp)
+
+    result = await system_toolset.call(
+        tool_name="create_channel_binding",
+        arguments={
+            "trigger_id": "trg-ch-1",
+            "config": {"kind": "session_append", "session_id": "sess-1"},
+            "parallelism": "bogus",
+        },
+    )
+
+    assert result.is_error
+    payload = json.loads(result.output)
+    assert payload["type"] == "validation-error"
+    assert "parallelism" in payload["message"]
+    assert not sp.get_storage(Subscription)._data
+
+
 # ===========================================================================
 # list_channel_bindings
 # ===========================================================================
