@@ -34,7 +34,7 @@ You write a graph as one JSON body (nodes, edges and caps) and store it with a g
 7. To change it, get it, edit the body and update it whole.
 
 ## Tool calls
-### Create a two-step graph
+### Create an extract-then-summarise graph
 `crud__create_graph` stores an extract-then-summarise graph. The first agent answers JSON, the second reads it, and a `tool_call` node saves the summary to the run's folder; `force` passes through as a boolean.
 
 ```json
