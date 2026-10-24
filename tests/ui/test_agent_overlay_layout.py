@@ -23,6 +23,7 @@ from tests.ui._agent_form_harness import (
     PROFILE_CHOICES_KEY,
     PROFILE_ROWS,
     agent_form,
+    body,
     calls,
     click,
     mount,
@@ -198,6 +199,37 @@ def test_the_voice_keeps_its_default_option_and_its_pairing_note():
         mount(ctx)
         assert prop(ctx, "agent-tts-voice", "value") == ""
         assert "agent-voice-pairing-note" not in testids_under(ctx, "agent-form")
+
+
+def test_a_voice_the_provider_does_not_offer_stays_selected_and_says_so():  # audit G3-07
+    """Voices belong to the text-to-speech provider: an agent may keep one the current provider does not list. It is the selection, marked, and it is
+    saved unchanged (it used to have no option, so the select showed "(use the global default)" while the save kept the voice)."""
+    with agent_form() as ctx:
+        mount(ctx, existing={**FULL, "tts_voice": "shimmer"})
+        assert options(ctx, "agent-tts-voice") == [
+            {"value": "shimmer", "text": "shimmer (not offered)"}, {"value": "", "text": "(use the global default)"},
+            {"value": "alloy", "text": "alloy"}, {"value": "nova", "text": "nova"}]
+        assert prop(ctx, "agent-tts-voice", "value") == "shimmer"
+        click(ctx, "agent-form-submit")
+        assert body(ctx)["tts_voice"] == "shimmer"
+
+
+def test_a_voice_is_not_called_not_offered_while_the_list_loads_or_when_it_failed():
+    for state in ({"data": None, "loading": True, "error": None}, {"data": None, "loading": False, "error": {"detail": "speech down"}}):
+        with agent_form() as ctx:
+            set_resource(ctx, "agents:voices", state)
+            mount(ctx, existing={**FULL, "tts_voice": "shimmer"})
+            assert options(ctx, "agent-tts-voice")[0] == {"value": "shimmer", "text": "shimmer"}
+            assert prop(ctx, "agent-tts-voice", "value") == "shimmer"
+
+
+def test_picking_a_listed_voice_drops_the_not_offered_one():
+    with agent_form() as ctx:
+        mount(ctx, existing={**FULL, "tts_voice": "shimmer"})
+        type_into(ctx, "agent-tts-voice", "nova")
+        assert [o["value"] for o in options(ctx, "agent-tts-voice")] == ["", "alloy", "nova"]
+        click(ctx, "agent-form-submit")
+        assert body(ctx)["tts_voice"] == "nova"
 
 
 def test_advanced_is_folded_and_holds_the_three_advanced_controls(ctx):

@@ -931,6 +931,13 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     ? "No model profiles yet. Register an LLM provider and import its models first."
     : "The default; a run can override it";
 
+  // The voice select. Voices belong to the text-to-speech provider, so an agent may keep a voice the current one does not list. That voice stays the
+  // selection, as the first option (a native select would otherwise show "(use the global default)" while the save keeps the voice; audit G3-07),
+  // marked "(not offered)" once the list has loaded, plain while it loads or when it failed, and it is saved unchanged.
+  const voiceOptions = (voices.data && voices.data.voices) || [];
+  const voicesListed = !!(voices.data && Array.isArray(voices.data.voices)) && !voices.error;
+  const voiceNotOffered = !!ttsVoice && voiceOptions.indexOf(ttsVoice) < 0;
+
   // Refusals that no field of the overlay owns are said in one line above the footer. A voice control that is not drawn (text to speech is not set up) owns none.
   const voiceShown = !!(caps.data && caps.data.speech && caps.data.speech.tts_configured);
   const shownPaths = voiceShown ? AG_FIELD_PATHS : AG_FIELD_PATHS.filter((path) => path !== "body.tts_voice");
@@ -1111,8 +1118,9 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
               value={ttsVoice || ""}
               onChange={(e) => setTtsVoice(e.target.value || null)}
             >
+              {voiceNotOffered && <option value={ttsVoice}>{voicesListed ? ttsVoice + " (not offered)" : ttsVoice}</option>}
               <option value="">(use the global default)</option>
-              {((voices.data && voices.data.voices) || []).map((name) => (
+              {voiceOptions.map((name) => (
                 <option key={name} value={name}>{name}</option>
               ))}
             </select>
