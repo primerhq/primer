@@ -229,7 +229,11 @@ a one-line reason; it may not simply be omitted.
 ## 5. Where to find things
 
 - `tests/conftest.py` - the in-memory `_FakeStorageProvider` and `_InMemoryStorage`
-  helpers (plus `fake_storage_provider` and `fake_llm` fixtures).
+  helpers (plus `fake_storage_provider` and `fake_llm` fixtures), and the
+  collection hook that keeps a subdirectory conftest's fixtures visible whatever
+  the order of the file arguments (a pytest 9.1.x bug dropped them for a file
+  listed after a root-level module; `tests/tooling/test_collection_order.py` pins
+  it).
 - `tests/api/conftest.py` - the FastAPI test client fixture (`app`, `client`, and
   `raw_client`).
 - `tests/session/test_dispatch_turn_log.py` - the capturing-writer test pattern for
