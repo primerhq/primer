@@ -17,18 +17,10 @@ from tests._support.reconcile_guard import reconcile_query_must_not_fail  # noqa
 
 
 def _ws(phase: str, id_: str = "ws-1") -> MagicMock:
-    """Build a minimal mock workspace row with phase + model_copy + id."""
+    """Build a minimal mock workspace row: an id and a phase."""
     ws = MagicMock()
     ws.id = id_
     ws.phase = phase
-
-    def _copy(update: dict) -> MagicMock:
-        new = MagicMock()
-        new.id = id_
-        new.phase = update.get("phase", phase)
-        return new
-
-    ws.model_copy.side_effect = _copy
     return ws
 
 
@@ -38,18 +30,24 @@ def _storage_provider(items: list) -> MagicMock:
     storage.list = AsyncMock(return_value=MagicMock(items=items))
     # The same mock serves every model, WorkspaceSession included: the session reconcile awaits find() and reads next_cursor off its page.
     storage.find = AsyncMock(return_value=MagicMock(items=[], next_cursor=None))
+    # The probe writes its fields with ONE fenced patch_if (ticket 01a16d72 ruling 3), never a whole-document update: a non-None answer is
+    # "the guard matched".
+    storage.patch_if = AsyncMock(return_value=MagicMock())
     storage.update = AsyncMock()
     sp = MagicMock()
     sp.get_storage = MagicMock(return_value=storage)
     return sp, storage
 
 
-def _last_update_kwargs(ws_row: MagicMock) -> dict:
-    """Return the most recent ``model_copy(update=...)`` keyword dict."""
-    call = ws_row.model_copy.call_args
-    if call.kwargs.get("update") is not None:
-        return call.kwargs["update"]
-    return call.args[0] if call.args else {}
+def _patches(storage: MagicMock) -> list[dict]:
+    """The field patches the probe wrote, oldest first."""
+    return [c.args[1] for c in storage.patch_if.await_args_list]
+
+
+def _last_update_kwargs(storage: MagicMock) -> dict:
+    """Return the most recent patch the probe wrote."""
+    patches = _patches(storage)
+    return patches[-1] if patches else {}
 
 
 @pytest.mark.asyncio
@@ -69,10 +67,15 @@ async def test_running_to_failed_after_three_misses() -> None:
     for _ in range(3):
         await task.tick()
 
-    last_update = _last_update_kwargs(ws_row)
+    last_update = _last_update_kwargs(storage)
     assert last_update.get("phase") == "failed"
     assert last_update.get("failure_reason") is not None
-    assert storage.update.await_count == 3
+    assert storage.patch_if.await_count == 3
+    storage.update.assert_not_called()
+    # Each write is fenced on the phase the verdict was made from: a destroy's terminating mark landing meanwhile is not put back.
+    assert {tuple(sorted((k, tuple(v)) for k, v in c.kwargs["where"].items())) for c in storage.patch_if.await_args_list} == {
+        (("phase", ("running",)),)
+    }
 
 
 @pytest.mark.asyncio
@@ -92,7 +95,7 @@ async def test_failed_to_running_after_three_hits() -> None:
     for _ in range(3):
         await task.tick()
 
-    last_update = _last_update_kwargs(ws_row)
+    last_update = _last_update_kwargs(storage)
     assert last_update.get("phase") == "running"
     assert last_update.get("failure_reason") is None
 
@@ -112,6 +115,7 @@ async def test_terminating_is_skipped() -> None:
     await task.tick()
 
     registry.get_workspace.assert_not_called()
+    storage.patch_if.assert_not_called()
     storage.update.assert_not_called()
 
 
@@ -120,10 +124,8 @@ async def test_pending_to_running_on_first_hit() -> None:
     """A freshly-created workspace at phase=pending must be promoted to
     running on the FIRST successful ping — no streak required.
 
-    This is the recovery path for Bug 3 (workspace.phase never leaves
-    pending). The fast path is handled in create_workspace which writes
-    phase=running directly; this is the safety net for rows that
-    somehow ended up at pending (e.g. legacy rows, manual inserts).
+    Every create door writes pending (ticket 01a16d72 ruling 2), so this
+    is how every new workspace becomes running.
     """
     ws_row = _ws("pending")
     sp, storage = _storage_provider([ws_row])
@@ -138,7 +140,7 @@ async def test_pending_to_running_on_first_hit() -> None:
     )
     await task.tick()
 
-    last_update = _last_update_kwargs(ws_row)
+    last_update = _last_update_kwargs(storage)
     assert last_update.get("phase") == "running"
     assert last_update.get("failure_reason") is None
 
@@ -181,7 +183,7 @@ async def test_running_to_failed_reconciles_dependent_sessions() -> None:
 
     ws_storage = MagicMock()
     ws_storage.list = AsyncMock(return_value=MagicMock(items=[ws_row]))
-    ws_storage.update = AsyncMock()
+    ws_storage.patch_if = AsyncMock(return_value=MagicMock())
     sess_storage = MagicMock()
     sess_storage.find = AsyncMock(
         return_value=MagicMock(items=[sess_running, sess_ended], next_cursor=None)
@@ -241,7 +243,7 @@ async def test_pending_stays_pending_when_ping_fails() -> None:
     )
     await task.tick()
 
-    last_update = _last_update_kwargs(ws_row)
+    last_update = _last_update_kwargs(storage)
     # phase MUST not change away from pending on a miss.
     assert "phase" not in last_update or last_update["phase"] == "pending"
 
@@ -265,8 +267,7 @@ async def test_two_misses_then_recover() -> None:
 
     # After miss, miss, hit, miss -> miss_count should be 1, not 3.
     # Phase update never set to "failed" because no 3-in-a-row miss streak.
-    for call in ws_row.model_copy.call_args_list:
-        update = call.kwargs.get("update", call.args[0] if call.args else {})
+    for update in _patches(storage):
         assert update.get("phase") != "failed"
 
 
@@ -285,7 +286,7 @@ async def test_registry_failure_counts_as_miss() -> None:
     for _ in range(3):
         await task.tick()
 
-    last_update = _last_update_kwargs(ws_row)
+    last_update = _last_update_kwargs(storage)
     assert last_update.get("phase") == "failed"
     # The failure_reason should preserve the exception type/message.
     assert "backend gone" in (last_update.get("failure_reason") or "")

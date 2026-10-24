@@ -22,6 +22,9 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from pydantic_core import to_jsonable_python
+
+from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace import WorkspaceProvider, WorkspaceProviderType
@@ -212,13 +215,22 @@ class WorkspaceProbeTask:
             else:
                 self._hit_counts.pop(ws.id, None)
 
-        updated = ws.model_copy(update=updates)
+        # ONE field-scoped write of the probe's own fields, fenced on the phase this verdict was made from (ticket 01a16d72 ruling 3). The
+        # ping can take a while, and a whole-document write of the row as listed put back whatever changed meanwhile: the ``terminating``
+        # mark of a destroy that had started (so a reader saw the delete as ``running`` again), the ``failed`` and ``failure_reason`` a
+        # failed destroy leaves, a rename. When the phase moved, the verdict is about a row that is no longer there: it is dropped, and the
+        # next tick judges the row as it is then.
         try:
-            await storage.update(updated)
+            written = await storage.patch_if(ws.id, to_jsonable_python(updates), where={"phase": [ws.phase]})
+        except NotFoundError:
+            return      # deleted while it was being pinged (a destroy that finished)
         except Exception:  # noqa: BLE001 -- log and continue
             logger.exception(
                 "workspace probe: failed to persist update for %s", ws.id
             )
+            return
+        if written is None:
+            logger.info("workspace probe: %s left phase %r while it was pinged; its result is dropped", ws.id, ws.phase)
             return
 
         # When the workspace transitions to failed, reconcile any

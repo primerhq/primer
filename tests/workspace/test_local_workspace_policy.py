@@ -147,6 +147,20 @@ class _Storage:
     async def delete(self, id: str) -> None:
         del self.rows[id]
 
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        """The storage contract's guarded field write, with the reference semantics: a destroy marks the row ``terminating`` with one
+        (ticket 01a16d72 ruling 3)."""
+        from primer.model.except_ import NotFoundError
+        from tests.storage._patch_reference import patch_model
+
+        current = self.rows.get(id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {id!r}")
+        updated = patch_model(current, patch, where=where, set_paths=set_paths)
+        if updated is not None:
+            self.rows[id] = updated
+        return updated
+
 
 class _SP:
     def __init__(self, **by_model: Any) -> None:
