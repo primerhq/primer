@@ -5,6 +5,10 @@ its card and its list to those helpers (``MP_profileCard``, ``MP_withWindows``; 
 loads the plain-JS helper block of ``ui/components/toolsets.jsx`` (``TS_BUILTIN_RESERVED_IDS`` up to ``TS_TABS``), as ``ui/index.html`` loads that file
 before the page: the Toolsets card's status is ``TS_toolsetCardStatus(row, con)`` (revamp 06 Task 6).
 
+Before the stand-ins it loads the REAL ``ui/foundation/api.js``, as ``ui/index.html`` loads it first: the page reads every page of a list with its
+``PR_fetchAllPages``, polls with ``PR_usePagedResource`` and says a list cut short with ``PR_PagedNote`` (ticket 01a16dfa). Those read
+``window.primerApi`` when they are called, so they reach the stand-ins below, which replace the namespace api.js made.
+
 ``platform_page_context(prelude_extra="")`` returns a fresh context (the caller closes it) holding these stand-ins, set up before the code loads and
 free to change afterwards:
 
@@ -30,6 +34,7 @@ from pathlib import Path
 from tests.ui._mini_react import mini_react_context, transpile
 
 ROOT = Path(__file__).resolve().parents[2]
+API = ROOT / "ui" / "foundation" / "api.js"
 KIT = ROOT / "ui" / "components" / "shared" / "platform-kit.jsx"
 PLATFORM = ROOT / "ui" / "components" / "console" / "nv-platform.jsx"
 MODEL_PROFILES = ROOT / "ui" / "components" / "model-profiles.jsx"
@@ -100,7 +105,7 @@ def _code() -> str:
 
 def platform_page_context(prelude_extra: str = ""):
     """A fresh V8 context: the hook runtime, the stand-ins above (plus ``prelude_extra``), then the real kit and Platform page. The caller closes it."""
-    return mini_react_context(_code(), PRELUDE + prelude_extra)
+    return mini_react_context(_code(), API.read_text(encoding="utf-8") + "\n" + PRELUDE + prelude_extra)
 
 
 def platform_navs() -> list[str]:
