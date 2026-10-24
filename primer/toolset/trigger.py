@@ -413,7 +413,8 @@ TOOL_UPDATE_SUB = make_tool(
         "change trigger-level fields use ``update``. Missing returns "
         "``type=subscription_not_found``. From a session outside the "
         "default workspace (prime) a subscription whose target is not your "
-        "own workspace or a session in it answers type=not-found."
+        "own workspace or a session in it answers "
+        "``type=subscription_not_found`` too, as an unknown id does."
     ),
     args_schema=_SubUpdateArgs.model_json_schema(),
     examples=[
@@ -823,14 +824,13 @@ def _make_update_sub_handler(
                 trigger_id=args.trigger_id,
                 subscription_id=args.subscription_id,
                 owner=_caller(ctx),
+                # A subscription whose target is out of the caller's reach answers as an unknown one (review of #874, C1).
                 reach=await caller_reach(storage_provider, ctx),
                 deps=deps,
                 **kwargs,
             )
         except SubscriptionNotFound as exc:
             return _err(str(exc), error_type="subscription_not_found")
-        except SubscriptionTargetNotFound as exc:
-            return _err(str(exc), error_type="not-found")
         return _ok(sub)
 
     return _handler
