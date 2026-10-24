@@ -177,6 +177,17 @@ memory by the registry and rebuilt from the rows. The reserved default row is se
 - System tools, all admin-only: the generic `create_`, `update_` and `delete_artifact_storage_provider`, and
   `system::test_artifact_storage_provider`, `system::get_active_artifact_store`, `system::set_active_artifact_store` (agent doc:
   `docs/agents/artifact-storage.md`).
+- Console: Providers > Artifact Store draws the "Store new files in" selector above the cards (`AS_ActiveStoreSelector` in
+  `ui/components/artifact-store-selector.jsx`, the class's `PC_TYPE_EXTRAS` entry). It reads the active row and
+  `GET /v1/artifact_storage_providers?limit=200` (again when the select takes the focus, so a store registered on the page shows up) and lists
+  each store as `<id> (<kind>)`, with the active id added when the list lacks it. A change is one `PUT /v1/artifact_storage_active_config`:
+  while it is out the select is `aria-busy` and never natively disabled (that would drop the focus), and a second change is ignored. Success
+  says "New files now go to <id>"; a refusal (the probe failed, the store is gone, a lost race) shows the server's sentence under the field,
+  never its code, and the select shows the stored store again while both are read again. It draws loading, a load error with Retry, and the
+  case of a single store (only the reserved database row), and nothing at all for a non-admin, because the routes are admin-only. The
+  provider form gives the `s3` kind the install hint when the `s3` extra is missing (`EXTRA_FOR_PROVIDER_TYPE` in
+  `ui/foundation/capabilities.js`). `tests/ui/test_artifact_store_selector.py` runs it in MiniRacer on the real routers' answers, and
+  `tests/ui_e2e/test_artifact_store_selector_journey.py` runs it in a browser, the phone width included.
 
 ## 9. Internal contracts
 
