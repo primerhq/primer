@@ -624,6 +624,17 @@ function NV_Shell() {
         });
       },
     });
+    // Pivot P2 Task 15: an admin's reset of prime's agents.md to the shipped version (NV_resetPrimeInstructions, nv-system.jsx: it asks first). Its
+    // pointer affordance is the row of the Dashboard Setup card's menu, which carries this id as its data-verb and is drawn for an admin only; the
+    // palette offers it to an admin only too (available reads the role the palette ranks with, nv-palette.jsx), since the route answers 403 to anyone else.
+    reg({
+      id: "setup.reset_prime_instructions", label: "Reset Prime Instructions",
+      surfaces: ["overlay-button", "palette"], destructive: true,
+      available: function (c) { return c.role === "admin"; },
+      run: function () {
+        if (typeof window.NV_resetPrimeInstructions === "function") window.NV_resetPrimeInstructions();
+      },
+    });
     // Every Platform page and every provider type is a palette verb too ("Open Providers", "Open Providers: TTS", "Open LLM Profiles" ...) on the platform-nav
     // surface: the rows of the Platform sidebar are their pointer affordance (the data-verb of NV_PlatNav, nv-platform.jsx). NV_platVerbSpecs lists them in the
     // sidebar's order and leaves the custom pages out: a custom page registers its own verb with one reg() call right after this loop (platform.open.web,

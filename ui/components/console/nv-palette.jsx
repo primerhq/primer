@@ -150,6 +150,8 @@ function NV_Palette() {
     frecency: con.frecency,
     // The focused session's row, for a verb's `available` predicate (Interrupt only while a turn runs).
     session: window.NV_focusedSessionRow ? window.NV_focusedSessionRow() : null,
+    // The signed-in role, for an admin-only verb's `available` (Reset Prime Instructions).
+    role: con.role,
   });
   // Notes 1.3: a focused session tab prepends its session verbs
   // (Interrupt/Park/End/Rename/Split Right/Compact/Rewind) ahead of the
