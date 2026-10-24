@@ -32,14 +32,17 @@ Session core reaches this module lazily (``primer.session.enqueue`` imports it i
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
-from primer.canvas.blocks import canvas_event_block
+from primer.canvas.blocks import MAX_DIGEST_LINES, canvas_changes_block, canvas_event_block
 from primer.canvas.records import append_canvas_record
+from primer.canvas.service import CanvasService
 from primer.canvas.state import CanvasState
-from primer.canvas.wait import CANVAS_WAIT_TOOL, canvas_wait_matches
+from primer.canvas.wait import CANVAS_WAIT_TOOL, canvas_wait_matches, queued_canvas_event_ids
 from primer.events.visibility import payload_without_input
-from primer.model.canvas import CanvasEvent
+from primer.model.canvas import CanvasEvent, SessionCanvas
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import (
     CANVAS_DIGEST_PAYLOAD_KEY,
@@ -159,14 +162,66 @@ async def deliver_canvas_event(
     return DELIVERY_QUEUED if receipt.outcome == "queued" else DELIVERY_WOKEN
 
 
+# ---- the digest (plan Decision 9) ------------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CanvasDigest:
+    """The canvas changes a wake adds to its instruction.
+
+    ``text`` is the ``<canvas_changes>`` block (the second text part), ``payload`` what the USER_INPUT record keeps under
+    ``canvas_digest`` (``{"rev", "events": [event_attribution ...]}``: the listed events, never their input) and ``seqs`` the events the
+    block lists, which the wake marks read once the instruction is written (and no other: audit G8-07).
+    """
+
+    text: str
+    payload: dict[str, Any]
+    seqs: tuple[int, ...]
+
+
+async def canvas_digest_for(storage_provider: Any, session_id: str, *, exclude_event_id: str | None) -> CanvasDigest | None:
+    """The digest of ``session_id``'s unread canvas events, or ``None`` when it has no canvas or nothing to list.
+
+    Left out: the event ``exclude_event_id`` (the click this wake delivers as its block) and every click still queued as a steer (it
+    reaches the agent as its own block when the queue is realized; listed here too it would arrive twice). They stay unread, and so do
+    the events past :data:`~primer.canvas.blocks.MAX_DIGEST_LINES`: the block counts them and the agent reads them with ``canvas_get``,
+    or in the next digest.
+    """
+    row = await storage_provider.get_storage(SessionCanvas).get(session_id)
+    if row is None:
+        return None
+    unread = [event for event in row.unseen_events() if event.id != exclude_event_id]
+    if not unread:
+        return None
+    queued = await queued_canvas_event_ids(storage_provider, session_id)
+    unread = [event for event in unread if event.id not in queued]
+    if not unread:
+        return None
+    listed = unread[:MAX_DIGEST_LINES]
+    return CanvasDigest(
+        text=canvas_changes_block(unread, rev=row.rev),
+        payload={"rev": row.rev, "events": [event_attribution(event) for event in listed]},
+        seqs=tuple(event.seq for event in listed),
+    )
+
+
+async def mark_delivered(storage_provider: Any, session_id: str, seqs: Sequence[int]) -> None:
+    """Mark the canvas events ``seqs`` read, and no other (``CanvasService.mark_events_seen``): what a wake handed the agent, the
+    digest's lines and the click it delivered. An earlier event left out stays unread (audit G8-07)."""
+    await CanvasService(storage_provider).mark_events_seen(session_id, seqs)
+
+
 __all__ = [
     "CANVAS_DIGEST_PAYLOAD_KEY",
     "CANVAS_EVENT_PAYLOAD_KEY",
+    "CanvasDigest",
     "DELIVERY_QUEUED",
     "DELIVERY_RECORDED",
     "DELIVERY_WAIT",
     "DELIVERY_WOKEN",
+    "canvas_digest_for",
     "deliver_canvas_event",
     "event_attribution",
     "event_record",
+    "mark_delivered",
 ]

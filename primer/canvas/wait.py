@@ -92,6 +92,28 @@ def _event_id_of(attribution: Mapping[str, Any] | None) -> str | None:
     return event_id if isinstance(event_id, str) else None
 
 
+async def _queued_canvas_events(storage_provider: Any, session_id: str) -> list[tuple[str, str]]:
+    """``(row id, event id)`` of each of the session's queued steers that carries a canvas event, oldest first."""
+    storage = storage_provider.get_storage(PendingSessionMessage)
+    predicate = Predicate(left=FieldRef(name="session_id"), op=Op.EQ, right=Value(value=session_id))
+    order = [OrderBy(field="enqueued_at", direction="asc"), OrderBy(field="id", direction="asc")]
+    found: list[tuple[str, str]] = []
+    for page_no in range(_MAX_PAGES):
+        page = await storage.find(predicate, OffsetPage(offset=page_no * _PAGE, length=_PAGE), order_by=order)
+        for row in page.items:
+            event_id = _event_id_of(row.attribution)
+            if event_id is not None:
+                found.append((row.id, event_id))
+        if len(page.items) < _PAGE:
+            break
+    return found
+
+
+async def queued_canvas_event_ids(storage_provider: Any, session_id: str) -> set[str]:
+    """The ids of the canvas events the session's queued steers carry: clicks on their way to the agent as their own blocks."""
+    return {event_id for _row_id, event_id in await _queued_canvas_events(storage_provider, session_id)}
+
+
 async def drop_queued_steers(storage_provider: Any, session_id: str, event_ids: Iterable[str]) -> int:
     """Delete the session's queued steers that carry one of the canvas events ``event_ids``; return how many.
 
@@ -103,14 +125,7 @@ async def drop_queued_steers(storage_provider: Any, session_id: str, event_ids: 
     if not wanted:
         return 0
     storage = storage_provider.get_storage(PendingSessionMessage)
-    predicate = Predicate(left=FieldRef(name="session_id"), op=Op.EQ, right=Value(value=session_id))
-    order = [OrderBy(field="enqueued_at", direction="asc"), OrderBy(field="id", direction="asc")]
-    doomed: list[str] = []
-    for page_no in range(_MAX_PAGES):
-        page = await storage.find(predicate, OffsetPage(offset=page_no * _PAGE, length=_PAGE), order_by=order)
-        doomed += [row.id for row in page.items if _event_id_of(row.attribution) in wanted]
-        if len(page.items) < _PAGE:
-            break
+    doomed = [row_id for row_id, event_id in await _queued_canvas_events(storage_provider, session_id) if event_id in wanted]
     dropped = 0
     for row_id in doomed:
         try:
@@ -150,4 +165,5 @@ __all__ = [
     "canvas_wait_matches",
     "consume_events",
     "drop_queued_steers",
+    "queued_canvas_event_ids",
 ]
