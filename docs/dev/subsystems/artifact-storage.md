@@ -93,14 +93,20 @@ thread is writing (a client that went away) cannot stop the thread and never han
 finishes, a cleanup task removes both files (the module holds the task until it is done).
 
 **Preparing a filesystem root** (`prepare_artifact_provider`, run LAST by the REST create and update hooks and the system tool pre-create
-and pre-update, and by the draft `_test` as its `prepare` step): create the folder when missing, check that it takes a write, and write
-the marker when it has none. A root that is not absolute, is a file, or cannot be written is a 422 (`validation-error` from a tool)
-`artifact_root_unusable` naming `config.root`, and nothing is stored. The saved-row `_test` and the active-store selection do not prepare:
-they check what every process will find.
+and pre-update, and by the draft `_test` as its `prepare` step). Only a NEW root is prepared (`filesystem_root_is_new`: a create, or an
+update that changes the root or the kind): create the folder when missing, refuse an existing folder that already holds files and has no
+marker (a typo guard against `/`, `/etc` or an application's data folder; `lost+found` alone does not count, so a freshly formatted volume
+is taken), check that it takes a write, and write the marker. The root a stored row already names is only CHECKED (`check_root`): an
+unchanged re-save handled by a pod without the shared volume must not write the marker into that pod's own empty mount point, after which
+the pod would pass every check. A root that is not absolute, holds a NUL, is a file, already holds files, has lost its marker or cannot be
+written is a 422 (`validation-error` from a tool) `artifact_root_unusable` naming `config.root`, and nothing is stored. The draft `_test`
+of a stored row whose root is unchanged, the saved-row `_test` and the active-store selection do not prepare: they check what every process
+will find.
 
 **Using a filesystem root** (`initialize`, through `check_root`, in every process that resolves the store): the root must be absolute,
 exist, be a folder, hold the marker and take a write. It creates nothing. A missing root or a missing marker is refused with a message that
-names the root and says to mount the shared artifact volume in every server pod. A failed `initialize` is not cached by the registry, so
+names the root and says the shared artifact volume is not mounted there (and that a new store starts in a new or empty folder); it never
+says to save the provider again. A failed `initialize` is not cached by the registry, so
 every later use checks again.
 
 **Boot check.** `check_filesystem_artifact_stores` resolves every filesystem provider row (up to 200) through the registry and logs, at

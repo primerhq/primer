@@ -508,7 +508,7 @@ def build_system_toolset(
     async def _artifact_provider_pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider) -> None:
         check_artifact_provider_write(entity)
         await check_artifact_provider_update(storage_provider, entity, existing)
-        await prepare_artifact_provider(entity)
+        await prepare_artifact_provider(entity, existing)
 
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "collection": (_collection_pre_create, _collection_pre_update),

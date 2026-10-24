@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import re
 import tarfile
 from pathlib import Path
@@ -145,6 +146,66 @@ async def test_an_edit_prepares_a_new_root(client, tmp_path: Path) -> None:
 
     assert r.status_code == 200, r.text
     assert (tmp_path / "b" / ROOT_MARKER).is_file()
+
+
+async def _a_pod_without_the_volume(client, tmp_path: Path) -> tuple[dict, Path]:
+    """A provider prepared on the shared volume, seen from a process where the volume is gone: an empty folder at the same path."""
+    root = tmp_path / "vol"
+    body = {"id": "fs-pod", "provider": "filesystem", "config": {"root": str(root)}}
+    r = await client.post(PROVIDERS, json=body)
+    assert r.status_code == 201, r.text
+    os.rename(root, tmp_path / "vol-real")
+    root.mkdir()
+    return body, root
+
+
+async def test_an_unchanged_resave_on_a_pod_without_the_volume_is_a_422_and_writes_no_marker(client, tmp_path: Path) -> None:
+    """Review of #890, item 5: an unchanged re-save prepared the root again, which wrote the marker into the pod's own empty mount point, after
+    which that pod passed every check and wrote files no other pod can read. An update that keeps the root only checks it."""
+    body, root = await _a_pod_without_the_volume(client, tmp_path)
+
+    r = await client.put(f"{PROVIDERS}/fs-pod", json=body)
+
+    ext = r.json()["extensions"]
+    assert r.status_code == 422 and (ext["error"], ext["field"]) == ("artifact_root_unusable", "config.root"), r.text
+    assert "the shared artifact volume is not mounted here" in ext["message"]
+    assert list(root.iterdir()) == [], "no marker was written"
+    saved = (await client.post(f"{PROVIDERS}/fs-pod/_test")).json()
+    assert (saved["ok"], saved["step"]) == (False, "initialize"), saved
+
+
+async def test_an_unchanged_resave_of_a_healthy_root_is_accepted(client, tmp_path: Path) -> None:
+    body = {"id": "fs-ok", "provider": "filesystem", "config": {"root": str(tmp_path / "ok")}}
+    assert (await client.post(PROVIDERS, json=body)).status_code == 201
+
+    r = await client.put(f"{PROVIDERS}/fs-ok", json=body)
+
+    assert r.status_code == 200, r.text
+
+
+async def test_a_draft_test_of_a_saved_row_with_its_root_unchanged_does_not_prepare(client, tmp_path: Path) -> None:
+    """The console's Test of an edit form sends the row's id: with the root unchanged, it checks, as the save will, and writes no marker."""
+    body, root = await _a_pod_without_the_volume(client, tmp_path)
+
+    r = await client.post(f"{PROVIDERS}/_test", json=body)
+
+    assert (r.json()["ok"], r.json()["step"]) == (False, "initialize"), r.text
+    assert list(root.iterdir()) == []
+
+
+async def test_creating_a_store_on_a_folder_that_already_holds_files_is_a_422(client, app, tmp_path: Path) -> None:
+    """Review of #890, item 5: the typo guard (a root of ``/``, ``/etc``, an application's data folder)."""
+    taken = tmp_path / "taken"
+    taken.mkdir()
+    (taken / "unrelated.txt").write_text("keep me")
+
+    r = await client.post(PROVIDERS, json={"id": "fs-taken", "provider": "filesystem", "config": {"root": str(taken)}})
+
+    ext = r.json()["extensions"]
+    assert r.status_code == 422 and (ext["error"], ext["field"]) == ("artifact_root_unusable", "config.root"), r.text
+    assert "already holds files" in ext["message"]
+    assert sorted(p.name for p in taken.iterdir()) == ["unrelated.txt"]
+    assert await app.state.storage_provider.get_storage(ArtifactStorageProvider).get("fs-taken") is None
 
 
 async def test_a_draft_test_prepares_the_folder(client, tmp_path: Path) -> None:

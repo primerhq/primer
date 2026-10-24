@@ -190,6 +190,24 @@ async def test_a_tool_create_and_update_prepare_the_root(world, tmp_path) -> Non
     assert (await sp.get_storage(ArtifactStorageProvider).get("fs-1")).config.root == str(tmp_path / "b"), "the row is unchanged"
 
 
+async def test_a_tool_resave_with_the_root_unchanged_only_checks_it(world, tmp_path) -> None:
+    """Review of #890, item 5, through the tool: an unchanged re-save on a process without the volume is refused and writes no marker."""
+    import os
+
+    sp, toolset, _ = world
+    body = {"id": "fs-pod", "provider": "filesystem", "config": {"root": str(tmp_path / "vol")}}
+    created_error, _ = await _call(toolset, "create_artifact_storage_provider", entity=body)
+    assert not created_error
+    os.rename(tmp_path / "vol", tmp_path / "vol-real")
+    (tmp_path / "vol").mkdir()
+
+    is_error, answer = await _call(toolset, "update_artifact_storage_provider", id="fs-pod", entity=body)
+
+    assert is_error and answer["type"] == "validation-error" and answer["message"].startswith("config.root: "), answer
+    assert "the shared artifact volume is not mounted here" in answer["message"]
+    assert list((tmp_path / "vol").iterdir()) == []
+
+
 async def test_a_tool_move_the_holds_check_refuses_prepares_nothing(world, tmp_path) -> None:
     """The preparation runs LAST in the tool's pre-update, as in the REST hook."""
     sp, toolset, _ = world

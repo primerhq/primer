@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
-from primer.artifact.filesystem import prepare_root
+from primer.artifact.filesystem import check_root, prepare_root
 from primer.artifact.routing import count_artifacts_held
 from primer.common.entity_checks import EntityCheckError
 from primer.model.except_ import ConfigError
@@ -101,16 +101,33 @@ async def check_artifact_provider_update(
         )
 
 
-async def prepare_artifact_provider(entity: ArtifactStorageProvider) -> None:
-    """Prepare the location a provider row names before the row is written: a filesystem root is created when missing, checked for a write and
-    given its marker (``primer.artifact.filesystem.prepare_root``, run in a thread). Other kinds have nothing to prepare.
+def filesystem_root_is_new(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider | None) -> bool:
+    """True when ``entity`` names a filesystem root that ``existing`` (the stored row, if any) did not: a create, a kind change or a root change.
+    Only a new root is prepared; the root a stored row already names is only checked."""
+    if entity.provider is not ArtifactStorageProviderType.FILESYSTEM:
+        return False
+    return not (
+        existing is not None
+        and existing.provider is ArtifactStorageProviderType.FILESYSTEM
+        and existing.config.root == entity.config.root
+    )
+
+
+async def prepare_artifact_provider(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider | None = None) -> None:
+    """Make ready, or check, the location a provider row names before the row is written. Other kinds than filesystem have nothing to do.
+
+    A NEW filesystem root (a create, or an update that changes the root or the kind) is prepared: created when missing, checked for a write and
+    given its marker (``primer.artifact.filesystem.prepare_root``). The root a stored row already names is only checked (``check_root``): an
+    unchanged re-save handled by a pod without the shared volume must not write the marker into that pod's own empty mount point (review of
+    #890, item 5). Either runs in a thread; a refusal is a ``validation`` error ``artifact_root_unusable`` naming ``config.root``.
 
     The REST route and the system tools run it LAST in their create and update checks, so a write that another check refuses prepares nothing.
     """
     if entity.provider is not ArtifactStorageProviderType.FILESYSTEM:
         return
+    step = prepare_root if filesystem_root_is_new(entity, existing) else check_root
     try:
-        await asyncio.to_thread(prepare_root, entity.config.root)
+        await asyncio.to_thread(step, entity.config.root)
     except ConfigError as exc:
         raise EntityCheckError("validation", str(exc), code="artifact_root_unusable", field="config.root") from exc
 
@@ -120,5 +137,6 @@ __all__ = [
     "check_artifact_provider_delete",
     "check_artifact_provider_update",
     "check_artifact_provider_write",
+    "filesystem_root_is_new",
     "prepare_artifact_provider",
 ]
