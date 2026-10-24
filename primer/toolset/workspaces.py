@@ -101,6 +101,7 @@ from primer.model.workspace_session import (
 from primer.model.yield_ import ToolContext, Yielded
 from primer.session.peer_messages import (
     PEER_MESSAGE_MAX_CHARS,
+    REACH_NOTE,
     REFUSE_RESTART_NEEDS_INPUT,
     PeerMessageRefused,
     PeerSendResult,
@@ -1580,7 +1581,7 @@ def build_workspaces_toolset(
         (
             "Use when you have a workspace id and want its persisted "
             "record; not for listing all of them (use "
-            "``list_workspaces``). ``type=not-found`` if missing. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "``list_workspaces``). ``type=not-found`` if missing. " + REACH_NOTE
         ),
         _IdArgs,
         _make_get_handler(_workspace_storage, "Workspace", served=_workspace_row_served, scope=_workspace_in_reach),
@@ -1750,12 +1751,11 @@ def build_workspaces_toolset(
             "its template (use ``delete_workspace_template``). "
             "``type=not-found`` when the id is unknown; "
             "``type=forbidden`` for the default workspace (prime), "
-            "which cannot be deleted. From a session outside the default "
-            "workspace (prime) only your own workspace is reachable: "
-            "another one (prime included) answers type=not-found, as an "
-            "unknown id does. Deleting a workspace ends every open session in "
-            "it, so ``type=forbidden`` while one of them runs at a higher "
-            "rank than you (the rule of ``cancel_workspace_session``)."
+            "which cannot be deleted. " + REACH_NOTE + " Prime too is another "
+            "workspace there, so it answers type=not-found from outside it. "
+            "Deleting a workspace ends every open session in it, so "
+            "``type=forbidden`` while one of them runs at a higher rank than "
+            "you (the rule of ``cancel_workspace_session``)."
         ),
         _IdArgs,
         _delete_workspace,
@@ -1832,10 +1832,7 @@ def build_workspaces_toolset(
             "Use when you need to execute an agent or graph headlessly; "
             "poll it with ``get_workspace_session`` and read outputs with "
             "``read_workspace_file``; stop it with "
-            "``cancel_workspace_session``. From a session outside the "
-            "default workspace (prime) only your own workspace is "
-            "reachable: another one answers type=not-found, as an unknown "
-            "workspace does."
+            "``cancel_workspace_session``. " + REACH_NOTE
         ),
         _CreateSessionArgs,
         _create_session,
@@ -1918,7 +1915,7 @@ def build_workspaces_toolset(
             "Use when you need to stop a run; a created or paused session "
             "ends immediately, a running one is preempted at the next safe "
             "point. Not for a temporary halt (use "
-            "``pause_workspace_session``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does. type=forbidden when the session runs at a higher rank than you (or your run)."
+            "``pause_workspace_session``). " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
         ),
         _WorkspaceSessionArgs,
         _cancel_workspace_session,
@@ -1987,7 +1984,7 @@ def build_workspaces_toolset(
             "parked waiting on an approval, an answer or a timer (cancel it "
             "instead). A session may stop itself; an autonomous session that "
             "does waits until something wakes it, and a graph session stops "
-            "between graph events, not at the next model call. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "between graph events, not at the next model call. " + REACH_NOTE
         ),
         _WorkspaceSessionArgs,
         _interrupt_workspace_session,
@@ -2043,9 +2040,7 @@ def build_workspaces_toolset(
         (
             "Use when enumerating the agent sessions on a workspace; "
             "not for one session's state (use "
-            "``get_workspace_session``). From a session outside the default "
-            "workspace (prime) only your own workspace is reachable: another "
-            "one answers type=not-found, as an unknown id does."
+            "``get_workspace_session``). " + REACH_NOTE
         ),
         _WorkspaceListSessionsArgs,
         _list_sessions,
@@ -2174,7 +2169,7 @@ def build_workspaces_toolset(
         ),
         (
             "Use when inspecting one session on a workspace; not for "
-            "listing all of them (use ``list_workspace_sessions``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "listing all of them (use ``list_workspace_sessions``). " + REACH_NOTE
         ),
         _WorkspaceSessionArgs,
         _get_session,
@@ -2248,7 +2243,7 @@ def build_workspaces_toolset(
             "(use ``get_workspace_session``). Never read "
             "``.state/sessions/<id>/messages.jsonl`` with "
             "``read_workspace_file``: raw ``.state`` reads are refused "
-            "unless the caller is an admin. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "unless the caller is an admin. " + REACH_NOTE
         ),
         _SessionMessagesArgs,
         _session_messages,
@@ -2305,7 +2300,7 @@ def build_workspaces_toolset(
             "Use when you want to halt a running session; not to "
             "resume it (use ``resume_workspace_session``). "
             "``type=conflict`` when the session is in an incompatible "
-            "lifecycle state (already ended, etc.). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "lifecycle state (already ended, etc.). " + REACH_NOTE
         ),
         _WorkspaceSessionArgs,
         _session_op("request_pause"),
@@ -2324,7 +2319,7 @@ def build_workspaces_toolset(
         (
             "Use when restarting a paused session; not to pause it "
             "(use ``pause_workspace_session``). ``type=conflict`` when "
-            "the session is not currently paused. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does. type=forbidden when the session runs at a higher rank than you (or your run)."
+            "the session is not currently paused. " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
         ),
         _WorkspaceSessionArgs,
         _session_op("request_resume", ranked=True),
@@ -2781,7 +2776,7 @@ def build_workspaces_toolset(
         (
             "Use when browsing a workspace's filesystem; not for one "
             "entry's metadata (use ``get_workspace_file_info``) or its "
-            "bytes (use ``read_workspace_file``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "bytes (use ``read_workspace_file``). " + REACH_NOTE
         ),
         _ListFilesArgs,
         _list_files,
@@ -2828,7 +2823,7 @@ def build_workspaces_toolset(
             "not for listing a directory (use ``list_workspace_files``) "
             "or reading bytes (use ``read_workspace_file``). "
             "``type=not-found`` when missing; ``type=bad-request`` on "
-            "path-escape attempts. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "path-escape attempts. " + REACH_NOTE
         ),
         _WorkspacePathArgs,
         _file_info,
@@ -2898,7 +2893,7 @@ def build_workspaces_toolset(
         (
             "Use when you need a file's bytes; not for its metadata "
             "(use ``get_workspace_file_info``) or to write it (use "
-            "``write_workspace_file``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "``write_workspace_file``). " + REACH_NOTE
         ),
         _ReadFileArgs,
         _read_file,
@@ -2940,7 +2935,7 @@ def build_workspaces_toolset(
             "Use when removing one path from a workspace; not for "
             "destroying the whole workspace (use ``delete_workspace``). "
             "Refuses to delete the workspace root or paths inside "
-            "``.state`` / ``.tmp`` with ``type=bad-request``. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "``.state`` / ``.tmp`` with ``type=bad-request``. " + REACH_NOTE
         ),
         _WorkspacePathArgs,
         _delete_file,
@@ -2999,7 +2994,7 @@ def build_workspaces_toolset(
             "Use when creating or overwriting file content; not for "
             "reading it (use ``read_workspace_file``). Refuses to "
             "overwrite a directory or write inside reserved ``.state`` "
-            "/ ``.tmp`` trees. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "/ ``.tmp`` trees. " + REACH_NOTE
         ),
         _WriteFileArgs,
         _write_file,
@@ -3063,7 +3058,7 @@ def build_workspaces_toolset(
         (
             "Use when you need the workspace's state-repo history; not "
             "for a session's lifecycle state (use "
-            "``get_workspace_session``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "``get_workspace_session``). " + REACH_NOTE
         ),
         _LogArgs,
         _get_log,
@@ -3200,7 +3195,7 @@ def build_workspaces_toolset(
             "loop (the request/response analogue of the SSE tap stream). "
             "Page with ``next_cursor``; an empty ``events`` with the same "
             "``next_cursor`` means nothing new. Not for one session's "
-            "lifecycle state (use ``get_workspace_session``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
+            "lifecycle state (use ``get_workspace_session``). " + REACH_NOTE
         ),
         _WorkspaceTapArgs,
         _workspace_tap,
