@@ -188,7 +188,7 @@ Four rules make that safe:
   turn, in any two processes: a routed wake (`deliver_steer`, the REST steer
   route, the drain's realize; a plain text message) decides the open turn with
   ONE conditional write of the row, `patch_if` of `turn_status` idle ->
-  `arming` plus `last_seq` + 1, fenced on the `last_seq`, `status` and
+  `arming` (stamping `armed_at`) plus `last_seq` + 1, fenced on the `last_seq`, `status` and
   `pause_requested` it read and on no park, BEFORE it writes the USER_INPUT,
   which it writes AT that reserved seq. The other wake's write is refused; it
   reads the row again, finds the turn taken and queues its message (or reports
@@ -199,21 +199,32 @@ Four rules make that safe:
   untouched (`entity_noop`, requeued in a second) instead of running a turn
   without the message. The wake's closing write promotes it to `claimable`: ONE
   field-scoped `patch_if` fenced on the status it decided from and on the turn
-  still being `arming`, so a routed wake never writes `claimable` over a turn
-  another writer started, and a Cancel or a pause that landed on another process
-  wins; a wake no person stands behind is also fenced on `pause_requested`, so it
-  never clears a pause requested since its decision (01a08c08). The claim is
-  armed even when the scheduler's pulse fails. A wake that does not promote (its
-  write or its closing write failed, it was cancelled, a pause or a Cancel won)
-  gives the turn back (`arming` -> `idle`; a reserved seq stays a gap). A message
+  still being this wake's (`arming` under its own `armed_at`), so a routed wake
+  never writes `claimable` over a turn another writer started, and a Cancel or a
+  pause that landed on another process wins; a wake no person stands behind is
+  also fenced on `pause_requested`, so it never clears a pause requested since its
+  decision (01a08c08). The claim is armed even when the scheduler's pulse fails.
+  A wake that took the turn settles it in a `finally` on EVERY exit (review round
+  2, N1), the early returns after a reopen (the pause hold) and a Cancel that won
+  included: a pause or a Cancel that won gets the turn back (`idle`), and a RUNNING
+  row a pause flag landed on goes PAUSED with it, as the worker pauses one at a
+  turn boundary, so `/resume` runs the turn that answers a message already
+  written (N9); a message already written whose closing write did not land (a
+  storage error, a cancellation) is promoted bare and claimed, so it is never
+  left in the log of an idle session nothing will run (if that fails too, the
+  sweep heals the stale arm); with no message written the turn goes back to
+  `idle` (a reserved seq stays a gap). The drain's queued message leaves the
+  queue once its USER_INPUT is written, before the promotion (N4), so a turn
+  that runs and drains before the realize returns never gets it twice. A message
   never overtakes an older queued one: `route_steer` counts a non-empty pending
   queue as busy (except for an ENDED session, which the message reopens, and a
   PAUSED one, which a person's message resumes). The drain's realize takes the
   same path, handing `wake_session` the queued row's id: a turn that is armed
   again, a pause, or another drain that already delivered the row leave it where
   it is, at the head of the queue, and the row is deleted only after its wake
-  landed (a crash between the USER_INPUT and the delete delivers it a second
-  time at the next realize; nothing is lost).
+  landed: the wake deletes it right after its USER_INPUT is written and before
+  the turn is promoted (a crash between the two delivers it a second time at the
+  next realize; nothing is lost).
 
   Reopening an ENDED session is fenced the same way (`_reopen_ended_locked`):
   ONE `patch_if` decides it and reserves the divider's seq (fenced on the row
@@ -246,7 +257,17 @@ Four rules make that safe:
   slot append landed and whose log write failed appends the message to the slot
   again at the next realize; the dispatch safety net flips idle without writing
   `last_seq` first, and a cancellation inside the streaming phase's `finally`
-  can still leave a row `running`.
+  can still leave a row `running`. From the second review round, ticketed under
+  01a16c3a: an advisory record (a PAUSE_SUPERSEDED note, a cap drop's record)
+  reserved while a turn runs can take a seq the running turn also writes (N6);
+  a turn that exits ENDED with its flag still `running` and its lease held, and
+  never drains, leaves a message queued behind its row (N7); a wake without a
+  receipt writes `claimable` over another wake's `arming` (N8); N10 and N11 of
+  that review; and the remaining whole-row writers of the session row
+  (`interrupt_session`, rewind, compact, `_transition_session_status`,
+  `_write_agent_phase`, `_clear_interrupt_requested`, the busy branch of
+  `switch_session_binding`, `abandon_session_gate`, `ChannelEventRouter._map_thread`,
+  the resume coordinators). The Cancel route writes its own fields only now (N5).
 - **Queued messages are not stranded (audit G7-14).** A session can come to
   rest with messages still queued and no turn boundary to come: the worker
   died between the turn's terminal write and its drain, or a realize's wake
@@ -263,16 +284,22 @@ Four rules make that safe:
   session keeps its queue on purpose, and an ENDED one is reopened by its next
   message, whose turn boundary then drains it. Queued rows of a session that no
   longer exists are deleted. Each tick first heals a turn left armed with no
-  claim (review of the G7-03 fix): a row `claimable` with no SESSION lease row
-  (a promotion whose claim upsert failed) gets its claim, and a row `arming`
-  with no wake behind it (its process died) is decided by the log: a USER_INPUT
-  nobody answered (`has_open_turn` from the drain cursor) makes it `claimable`
-  and claimed, none gives it back to `idle`, an unreadable log counts as one;
-  a stale `arming` on an ENDED row goes back to `idle`. Only a row seen in the
-  same state, at the same `last_seq` and without a lease on two ticks at least
-  `STALE_ARM_GRACE_SECONDS` (120 s, longer than a workspace write may take)
-  apart is healed, with one `patch_if` fenced on what it was judged on; a PAUSED
-  row is left to `/resume`. Without a claim engine the sweep does nothing.
+  claim (review of the G7-03 fix): a row `arming` whose `armed_at` is older than
+  the grace (`persistence.stale_arm_grace_seconds()`: two message-log flushes at
+  their longest, `2 x 4 x session_message_write_timeout_seconds`, plus a minute,
+  above a live wake's worst case) is judged dead WHETHER OR NOT a lease row exists
+  (a claim armed by `/resume` or boot recovery is handed back while the turn is
+  arming, so a lease proves nothing about the wake; review round 2, N2): a
+  PAUSED or ENDED row goes back to `idle`, any other is decided by the log (a
+  USER_INPUT nobody answered, `has_open_turn` from the drain cursor, makes it
+  `claimable` and claimed; none gives it back to `idle`; an unreadable log counts
+  as one). A live wake that finds its turn given back after writing its message
+  takes it again and arms the claim (N3). A row `claimable` with no SESSION lease
+  row (a promotion whose claim upsert failed), seen in the same state at the same
+  `last_seq` on two ticks at least the grace apart, gets its claim; a PAUSED row is
+  left to `/resume`. Each heal is one `patch_if` fenced on what it was judged on,
+  and the candidates are read before any is healed (N12). Without a claim engine
+  the sweep does nothing.
   Known and ticketed: the sweep skips ENDED sessions (an autonomous or failed
   one keeps its queue until its next message reopens it, and that message runs
   first), and it decides "at rest" on a read a Cancel can overtake before the

@@ -34,7 +34,8 @@ from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.dispatch import run_one_session_turn
 from primer.session.steer_delivery import deliver_steer
 from primer.worker.pool import WorkerPool
-from tests.session._peer_fakes import World, make_world, records, seed_session
+from tests.session._peer_fakes import World, records, seed_session
+from tests.session._wake_worlds import install_sessions, new_world  # noqa: F401  (new_world is a fixture)
 from tests.session.test_dispatch import _make_lease
 from tests.session.test_one_turn_per_wake import (
     _AnsweringExecutor,
@@ -82,11 +83,11 @@ def _kinds(world: World) -> list[str]:
 # ---- H1: the arm is a state nothing claims ------------------------------------------------------------------------------------------------
 
 
-async def test_a_release_that_rearms_while_a_wake_writes_its_message_arms_no_claim(monkeypatch):
+async def test_a_release_that_rearms_while_a_wake_writes_its_message_arms_no_claim(new_world, monkeypatch):
     """The pool's re-arm after a release (``WorkerPool._maybe_rearm_session``, the real method) reads the row while a wake on another process is
     writing its message. It used to find ``claimable`` and arm a claim for a turn whose message was not there yet."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         await seed_session(world, sid="ses-b", turn_no=1, created_at=T0)
         pool = SimpleNamespace(_storage=world.sp, _engine=world.engine)
@@ -105,12 +106,12 @@ async def test_a_release_that_rearms_while_a_wake_writes_its_message_arms_no_cla
         assert (await _row(world)).turn_status == "claimable"
 
 
-async def test_a_claim_that_reaches_a_turn_a_wake_is_arming_is_handed_back_and_the_turn_runs_once_with_the_message(monkeypatch):
+async def test_a_claim_that_reaches_a_turn_a_wake_is_arming_is_handed_back_and_the_turn_runs_once_with_the_message(new_world, monkeypatch):
     """A claim armed by ``/resume`` or boot recovery reaches the session while a wake writes its message: the real turn hands the claim back
     untouched (no executor built, no model call, nothing written to the row) instead of answering without the message. Once the wake has promoted
     the turn, the claim comes round again and the ONE turn runs, after the message."""
     async with asyncio.timeout(BOUND_S):
-        world = await _armed_turn_world()
+        world = await _armed_turn_world(new_world)
         try:
             _each_wake_in_its_own_process(monkeypatch)
             await world.sessions.patch_if("ses-b", {"turn_status": "idle", "status": "waiting"}, where={"turn_status": ["claimable"]})
@@ -146,10 +147,10 @@ async def test_a_claim_that_reaches_a_turn_a_wake_is_arming_is_handed_back_and_t
             await world.bus.aclose()
 
 
-async def test_boot_recovery_leaves_a_turn_a_wake_is_arming_to_that_wake():
+async def test_boot_recovery_leaves_a_turn_a_wake_is_arming_to_that_wake(new_world):
     """Boot recovery re-arms every RUNNING row. A row a wake on another process (one that did not restart) is arming is that wake's to arm."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world()
+        world = await new_world()
         await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="arming", turn_no=1, created_at=T0)
         await seed_session(world, sid="ses-c", status=SessionStatus.RUNNING, turn_no=1, created_at=T0)
 
@@ -158,9 +159,9 @@ async def test_boot_recovery_leaves_a_turn_a_wake_is_arming_to_that_wake():
         assert world.engine.upserts == [(ClaimKind.SESSION, "ses-c")]
 
 
-async def test_a_routed_wake_never_writes_claimable_over_a_turn_another_writer_started(monkeypatch):
+async def test_a_routed_wake_never_writes_claimable_over_a_turn_another_writer_started(new_world, monkeypatch):
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         await seed_session(world, sid="ses-b", turn_no=1, created_at=T0)
 
@@ -177,12 +178,12 @@ async def test_a_routed_wake_never_writes_claimable_over_a_turn_another_writer_s
 # ---- H2: the reopen is fenced, and the turn's records are on the row before it ends --------------------------------------------------------
 
 
-async def test_two_wakes_in_two_processes_that_both_read_the_session_ended_reopen_it_once(monkeypatch):
+async def test_two_wakes_in_two_processes_that_both_read_the_session_ended_reopen_it_once(new_world, monkeypatch):
     """Both read ENDED. One reopens it (one divider at the seq its decision reserved) and starts the turn; the other's decision is refused, it
     reads the turn armed and queues its message. Before, both wrote a divider at the same seq, and the second's whole-row reopen put ``last_seq``
     back, so its USER_INPUT repeated the first's seq."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="completed", turn_no=2, last_seq=3,
                            metadata={"invocation": 1}, created_at=T0)
@@ -233,13 +234,13 @@ class _OnEnded:
         return await self._watch(id, lambda: self._inner.patch_if(id, patch, **kw))
 
 
-async def test_cancel_then_type_straight_away_reuses_no_seq_and_answers_the_message_after_the_cancel(monkeypatch):
+async def test_cancel_then_type_straight_away_reuses_no_seq_and_answers_the_message_after_the_cancel(new_world, monkeypatch):
     """A person cancels a turn and types at once; the steer lands on another process the moment the row reads ENDED. Before, the cancelled exit
     wrote ENDED before the turn's ``last_seq``: the reopen read a stale ``last_seq``, so its divider and USER_INPUT repeated seqs the turn had
     written (the CANCELLED record among them). Now ``last_seq`` is on the row first; the turn still holds its claim at that instant, so the
     steer is queued and the drain of the cancelled exit reopens the session with it, after the CANCELLED record."""
     async with asyncio.timeout(BOUND_S):
-        world = await _armed_turn_world()
+        world = await _armed_turn_world(new_world)
         try:
             _each_wake_in_its_own_process(monkeypatch)
             world.engine.leased.add("ses-b")              # the turn holds its claim until its release
@@ -249,7 +250,7 @@ async def test_cancel_then_type_straight_away_reuses_no_seq_and_answers_the_mess
                 deliveries.append(await _steer(world, "never mind, do this instead"))
 
             hook = _OnEnded(world.sessions, "ses-b", type_straight_away)
-            world.sp._stores[WorkspaceSession] = hook
+            install_sessions(world, hook)
 
             await run_one_session_turn(_make_lease("ses-b"), _dispatch_deps(world, _CancelBeforeTheLastEvent(world.sessions, "ses-b")))
 
@@ -268,9 +269,9 @@ async def test_cancel_then_type_straight_away_reuses_no_seq_and_answers_the_mess
 # ---- M3: no turn is left armed with nothing to run, or with no claim ------------------------------------------------------------------------
 
 
-async def test_a_scheduler_pulse_that_fails_still_arms_the_claim(monkeypatch):
+async def test_a_scheduler_pulse_that_fails_still_arms_the_claim(new_world, monkeypatch):
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         await seed_session(world, sid="ses-b", turn_no=1, created_at=T0)
 
@@ -285,11 +286,12 @@ async def test_a_scheduler_pulse_that_fails_still_arms_the_claim(monkeypatch):
         assert world.engine.upserts == [(ClaimKind.SESSION, "ses-b")], "the claim is armed whatever the pulse did"
 
 
-async def test_a_closing_write_that_fails_gives_the_turn_back(monkeypatch):
-    """The wake's message is written and its closing write (the promotion to claimable) fails: the turn goes back to idle, not left armed with
-    no claim for every later message to queue behind."""
+async def test_a_closing_write_that_fails_after_the_message_is_written_still_promotes_and_claims_the_turn(new_world, monkeypatch):
+    """The wake's message is written and its closing write (the promotion to claimable) fails: the turn is not left armed for every later
+    message to queue behind, and the written message is not left unclaimed in the log either (review N1, N3): the settle promotes the turn
+    bare and arms its claim."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         await seed_session(world, sid="ses-b", turn_no=1, created_at=T0)
         sessions = world.sessions
@@ -304,15 +306,17 @@ async def test_a_closing_write_that_fails_gives_the_turn_back(monkeypatch):
         with pytest.raises(ConnectionError):
             await _steer(world)
 
-        assert (await _row(world)).turn_status == "idle"
-        assert world.engine.upserts == []
+        row = await _row(world)
+        assert (row.turn_status, row.armed_at) == ("claimable", None)
+        assert world.engine.upserts == [(ClaimKind.SESSION, "ses-b")]
+        assert [r["payload"]["text"] for r in _user_inputs(world)] == ["the message"]
 
 
-async def test_a_sender_stopped_mid_delivery_gives_the_turn_back(monkeypatch):
+async def test_a_sender_stopped_after_its_message_is_written_still_has_the_message_answered(new_world, monkeypatch):
     """A peer message's sender is stopped (its task cancelled) after the message is written, during the wake's closing write: the turn its wake
-    took goes back to idle instead of staying armed with no claim."""
+    took is not left arming, and the message is not left unclaimed: the settle promotes the turn bare and arms its claim."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         await seed_session(world, sid="ses-b", turn_no=1, created_at=T0)
         writing = asyncio.Event()
@@ -333,8 +337,9 @@ async def test_a_sender_stopped_mid_delivery_gives_the_turn_back(monkeypatch):
             await delivery
         sessions.patch_if = real
 
-        assert (await _row(world)).turn_status == "idle"
-        assert world.engine.upserts == []
+        row = await _row(world)
+        assert (row.turn_status, row.armed_at) == ("claimable", None)
+        assert world.engine.upserts == [(ClaimKind.SESSION, "ses-b")]
 
 
 def _sweeper(world: World, *, grace: float = 0.0) -> SessionMessagingSweeper:
@@ -355,10 +360,10 @@ def _log_is_readable(world: World) -> None:
     ws.read_file = read_file
 
 
-async def test_the_sweep_arms_the_claim_of_a_turn_left_claimable_with_none(monkeypatch):
+async def test_the_sweep_arms_the_claim_of_a_turn_left_claimable_with_none(new_world, monkeypatch):
     """The wake promoted the turn and its claim upsert failed: nothing ran it, and every later message queued behind it."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         await seed_session(world, sid="ses-b", turn_no=1, created_at=T0)
         real = world.engine.upsert
@@ -381,10 +386,10 @@ async def test_the_sweep_arms_the_claim_of_a_turn_left_claimable_with_none(monke
         assert world.scheduler.enqueued[-1] == "ses-b"
 
 
-async def test_the_sweep_heals_an_unclaimed_turn_only_after_it_stayed_so_for_the_grace(monkeypatch):
+async def test_the_sweep_heals_an_unclaimed_turn_only_after_it_stayed_so_for_the_grace(new_world, monkeypatch):
     """A row claimable with no lease for a moment is the normal instant between a promotion and its upsert: the first sighting only notes it."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world()
+        world = await new_world()
         await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="claimable", turn_no=1, created_at=T0)
         sweeper = _sweeper(world, grace=0.2)
 
@@ -397,11 +402,11 @@ async def test_the_sweep_heals_an_unclaimed_turn_only_after_it_stayed_so_for_the
 
 
 @pytest.mark.parametrize("message_written", [True, False], ids=["its message was written", "its message never landed"])
-async def test_the_sweep_heals_a_turn_left_arming_by_a_wake_that_died(message_written):
+async def test_the_sweep_heals_a_turn_left_arming_by_a_wake_that_died(new_world, message_written):
     """The wake's process died between its arm and its promotion. The log decides: a USER_INPUT nobody answered arms the turn and its claim; none
     gives the turn back."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world()
+        world = await new_world()
         await seed_session(world, sid="ses-b", status=SessionStatus.WAITING, turn_status="arming", turn_no=1, last_seq=5,
                            next_unprocessed_seq=5, created_at=T0)
         if message_written:
@@ -418,9 +423,9 @@ async def test_the_sweep_heals_a_turn_left_arming_by_a_wake_that_died(message_wr
             assert row.turn_status == "idle" and world.engine.upserts == []
 
 
-async def test_the_sweep_leaves_a_turn_a_claim_holds():
+async def test_the_sweep_leaves_a_turn_a_claim_holds(new_world):
     async with asyncio.timeout(BOUND_S):
-        world = make_world()
+        world = await new_world()
         world.engine.leased.add("ses-b")
         await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="claimable", turn_no=1, created_at=T0)
 
@@ -431,12 +436,12 @@ async def test_the_sweep_leaves_a_turn_a_claim_holds():
 # ---- M6: a pause requested on another process wins over a machine wake ---------------------------------------------------------------------
 
 
-async def test_a_pause_requested_on_another_process_while_a_machine_wake_writes_is_not_cleared(monkeypatch):
+async def test_a_pause_requested_on_another_process_while_a_machine_wake_writes_is_not_cleared(new_world, monkeypatch):
     """A trigger's message (no person behind it) to an idle RUNNING session; a pause is requested on another process while the message is being
     written. The wake used to clear the flag with its closing write. Now the pause wins: the flag stays, the turn goes back to idle and is not
     claimed; the message is in the log for the turn that runs after the resume."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_no=1, created_at=T0)
 
@@ -452,10 +457,10 @@ async def test_a_pause_requested_on_another_process_while_a_machine_wake_writes_
         assert [r["payload"]["text"] for r in _user_inputs(world)] == ["from a trigger"]
 
 
-async def test_a_person_s_message_still_resumes_over_a_pause_requested_since(monkeypatch):
+async def test_a_person_s_message_still_resumes_over_a_pause_requested_since(new_world, monkeypatch):
     """The fence is for a wake no person stands behind: a person typing while paused means resume (01a08c08), as before."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_no=1, created_at=T0)
 
