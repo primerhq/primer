@@ -796,8 +796,9 @@ def test_every_input_is_named_by_its_label(ctx) -> None:
     assert js(ctx, 'allUnder("mp-aggregate").filter(function (n) { return n.type === "input"; }).length') >= 5, "the name, select-all and the three rows: the walk did reach them"
     mount(ctx, {"existing": FULL_SINGLE, "providers": PROVIDERS})
     assert js(ctx, 'unlabelled("mp-single")') == []
-    kinds = js(ctx, 'allUnder("mp-single").filter(function (n) { return n.type === "input" || n.type === "select"; }).map(function (n) { return n.type; })')
-    assert sorted(kinds) == ["input", "input", "input", "input", "select"], "id, description, model, context window and the provider select: the walk did reach them"
+    kinds = js(ctx, 'allUnder("mp-single").filter(function (n) { return n.type === "input" || n.type === "select" || n.type === "textarea"; }).map(function (n) { return n.type; })')
+    assert sorted(kinds) == ["input", "input", "input", "input", "select", "textarea"], (
+        "id, description, model, context window, the provider select and the extended JSON: the walk did reach them")
 
 
 def test_every_button_that_is_only_an_arrow_has_a_name(ctx) -> None:
@@ -947,15 +948,15 @@ def test_a_conflict_on_a_single_edit_is_a_form_level_error(ctx, envelopes) -> No
     assert field_error(ctx, "Id") is None
     assert text_at(ctx, "mp-single-error") == TAKEN and closed_count(ctx) == 0
 
-def test_there_is_no_reasoning_control_until_task_7_and_config_is_kept_as_stored(ctx) -> None:
-    """Model calls apply a profile's ``config`` now. The overlay does not draw a control for it yet: the Reasoning control returns in plan 03 Task 7, and until then ``config`` is kept as stored."""
+def test_the_reasoning_control_is_drawn_and_an_untouched_config_goes_back_as_stored(ctx) -> None:
+    """Replaces test_there_is_no_reasoning_control_until_task_7_and_config_is_kept_as_stored (Plan 03 Task 7). Model calls apply a profile's ``config``
+    (#756), so the overlay draws its settings again; a save that did not touch them sends ``config`` back as stored."""
     single(ctx, FULL_SINGLE)
-    assert not present(ctx, "profile-reasoning-segment")
-    assert "Reasoning" not in js(ctx, 'textOf(MR.find("mp-single"))'), "the Reasoning control returns in plan 03 Task 7; until then the form does not draw one"
+    assert present(ctx, "mp-single-reasoning") and present(ctx, "mp-single-settings")
+    assert not present(ctx, "profile-reasoning-segment"), "the old segment of the retired modal is not back"
     assert not present(ctx, "profile-model-picker") and not present(ctx, "profile-provider-picker"), "the discovered-models picker and the provider row picker are gone"
     click(ctx, "mp-single-submit")
     assert calls(ctx)[0][2]["config"] == FULL_SINGLE["config"], "a save sends config back as stored"
-
 
 def test_a_blank_field_is_named_once_it_has_been_typed_in(ctx) -> None:
     single(ctx, FULL_SINGLE)
@@ -1005,3 +1006,116 @@ def test_a_providers_list_that_changes_does_not_wipe_the_draft(ctx) -> None:
     type_(ctx, "mp-single-description", "mid-sentence")
     ctx.eval(f"MR.rerender({{ open: true, existing: {json.dumps(FULL_SINGLE)}, providers: {json.dumps(PROVIDERS)}, onSaved: function () {{}}, onClose: function () {{}} }})")
     assert prop(ctx, "mp-single-description", "value") == "mid-sentence"
+
+
+
+# ---- the model settings of a single profile (Task 7) ------------------------------------------------------------------------------------------------------
+
+EXTENDED_RULE = 'Enter a JSON object, for example {"top_k": 20}.'
+
+
+def type_extended(ctx, text: str) -> None:
+    type_(ctx, "mp-single-extended", text)
+
+
+def test_the_settings_show_the_stored_reasoning_and_extended(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    seg = 'MR.findProp("testid", "mp-single-reasoning").props'
+    assert js(ctx, f"{seg}.value") == "high" and js(ctx, f"{seg}.ariaLabel") == "Reasoning"
+    assert [o["label"] for o in js(ctx, f"{seg}.options")] == ["Vendor default", "Off", "Minimal", "Low", "Medium", "High"]
+    assert js(ctx, 'MR.findProp("label", "Reasoning").props.help') == "Mapped onto each vendor's own setting. Not every vendor has a true off."
+    assert js(ctx, 'MR.findProp("testid", "mp-single-settings").props.title') == "MODEL SETTINGS"
+    assert prop(ctx, "mp-single-extended", "value") == '{\n  "top_k": 20\n}'
+    assert js(ctx, 'MR.findProp("label", "Extended (JSON)").props.help') == "Passed to the provider as-is; keys the adapter does not know are ignored."
+    single(ctx, {**FULL_SINGLE, "config": {"reasoning": None, "extended": {}}})
+    assert js(ctx, f"{seg}.value") == "", "no level is the vendor's default"
+
+
+def test_setting_reasoning_keeps_extended(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    segment(ctx, "mp-single-reasoning", "off")
+    click(ctx, "mp-single-submit")
+    sent = {k: v for k, v in FULL_SINGLE.items() if k not in ("agent_count", "graph_node_count")}
+    assert calls(ctx) == [["PUT", "/model_profiles/p-a", {**sent, "config": {"reasoning": "off", "extended": {"top_k": 20}}}]]
+    assert toasts(ctx) == [{"kind": "success", "text": "Saved p-a"}]
+
+
+def test_vendor_default_sends_null_reasoning(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    segment(ctx, "mp-single-reasoning", "")
+    click(ctx, "mp-single-submit")
+    assert calls(ctx)[0][2]["config"] == {"reasoning": None, "extended": {"top_k": 20}}
+
+
+def test_editing_extended_sends_the_parsed_object_and_keeps_reasoning(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    type_extended(ctx, '{"top_k": 5, "seed": 7}')
+    click(ctx, "mp-single-submit")
+    assert calls(ctx)[0][2]["config"] == {"reasoning": "high", "extended": {"top_k": 5, "seed": 7}}
+
+
+def test_a_blank_extended_is_the_empty_object(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    type_extended(ctx, "")
+    assert field_error(ctx, "Extended (JSON)") is None
+    click(ctx, "mp-single-submit")
+    assert calls(ctx)[0][2]["config"] == {"reasoning": "high", "extended": {}}
+
+
+def test_bad_extended_json_blocks_save(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    for bad in ("[1]", "{", "null"):
+        type_extended(ctx, bad)
+        assert field_error(ctx, "Extended (JSON)") == EXTENDED_RULE, bad
+        assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is True, bad
+    click(ctx, "mp-single-submit")
+    assert calls(ctx) == [], "a press while the JSON is not an object sends nothing"
+    type_extended(ctx, '{"top_k": 1}')
+    assert field_error(ctx, "Extended (JSON)") is None and js(ctx, 'MR.find("mp-single-submit").props.disabled') is False
+
+
+def test_a_folded_box_with_bad_json_says_so_on_the_fold(ctx) -> None:
+    """Folding hides the box and its error, and Save stays off: the fold's own label says why."""
+    single(ctx, FULL_SINGLE)
+    fold_label = 'textOf(MR.find("mp-single-extended-fold:toggle"))'
+    assert js(ctx, fold_label).strip().endswith("Extended settings")
+    type_extended(ctx, "[1]")
+    ctx.eval('MR.click("mp-single-extended-fold:toggle")')
+    assert not present(ctx, "mp-single-extended")
+    assert js(ctx, fold_label).strip().endswith("Extended settings (not a JSON object)")
+    assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is True
+
+def test_the_extended_fold_is_open_only_when_the_profile_has_extended_settings(ctx) -> None:
+    """The Advanced fold's rule (the lead's ruling for #774) carried over: folded unless it holds something that is set."""
+    single(ctx, FULL_SINGLE)
+    assert present(ctx, "mp-single-extended"), "extended settings are set: the fold starts open"
+    single(ctx, {**FULL_SINGLE, "config": {"reasoning": "high", "extended": {}}})
+    assert not present(ctx, "mp-single-extended") and present(ctx, "mp-single-extended-fold")
+    ctx.eval('MR.click("mp-single-extended-fold:toggle")')
+    assert prop(ctx, "mp-single-extended", "value") == "{}"
+    single(ctx, {k: v for k, v in FULL_SINGLE.items() if k != "config"})
+    assert not present(ctx, "mp-single-extended"), "a row with no config has nothing set"
+    click(ctx, "mp-single-submit")
+    assert calls(ctx)[0][2]["config"] == {"reasoning": None, "extended": {}}, "the model's defaults, which is what the server stores for no config"
+
+
+def test_a_settings_refusal_lands_above_the_footer(ctx, envelopes) -> None:
+    """The real router's 422 for a level the model does not have: the form maps no field for it, so it is the form-level line, and the draft stays."""
+    single(ctx, FULL_SINGLE)
+    segment(ctx, "mp-single-reasoning", "off")
+    reject_with(ctx, envelopes["bad_reasoning"])
+    click(ctx, "mp-single-submit")
+    settle(ctx)
+    expected = js(ctx, f"window.primerApi.readRefusal(new window.primerApi.ApiError({json.dumps(envelopes['bad_reasoning'])})).message")
+    assert expected and text_at(ctx, "mp-single-error") == expected
+    assert closed_count(ctx) == 0 and toasts(ctx) == []
+    assert js(ctx, 'MR.findProp("testid", "mp-single-reasoning").props.value') == "off", "the draft is kept"
+
+
+def test_a_managed_profile_shows_its_settings_read_only(ctx) -> None:
+    single(ctx, {**FULL_SINGLE, "harness_id": "h1"})
+    fieldset = 'allUnder("mp-single").filter(function (n) { return n.type === "fieldset"; })[0]'
+    inside = js(ctx, f'(function () {{ var ids = []; (function walk(n) {{ if (n == null || typeof n !== "object") return; if (Array.isArray(n)) {{ n.forEach(walk); return; }}'
+                     f' if (!n.__el) return; if (n.props && n.props.testid) ids.push(n.props.testid); if (n.props && n.props["data-testid"]) ids.push(n.props["data-testid"]);'
+                     f' if (typeof n.type === "function" && n.type !== React.Fragment) walk(n.out); else walk(n.children); }})({fieldset}); return ids; }})()')
+    assert "mp-single-reasoning" in inside and "mp-single-extended" in inside, "the settings sit in the disabled fieldset with the rest"

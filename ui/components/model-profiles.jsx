@@ -1,4 +1,4 @@
-/* global React, Btn, Banner, PK_FormOverlay, PK_Field, PK_Grid, PK_Fold, PK_Segmented, PK_CheckTable */
+/* global React, Btn, Banner, PK_FormOverlay, PK_Field, PK_Grid, PK_Section, PK_Fold, PK_Segmented, PK_CheckTable */
 // LLM profiles: a "single" profile is one (provider, model) pair plus its API-level config; an "aggregated" one (kind="aggregated", 01a067c4) is an
 // ORDERED chain of single profiles with a routing and failover policy, and has no provider of its own.
 //
@@ -234,6 +234,38 @@ function MP_providerOptions(providers, currentId) {
   return options;
 }
 
+// A single profile's model settings, its `config` (plan 03 Task 7): every model call made under the profile applies them (#756), so the overlay edits them. The reasoning
+// levels are the model's (ReasoningLevel, primer/model/model_profile.py); the empty value is the vendor's default, which the model stores as null.
+var MP_REASONING_OPTIONS = [
+  { value: "", label: "Vendor default" },
+  { value: "off", label: "Off" },
+  { value: "minimal", label: "Minimal" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
+var MP_REASONING_HELP = "Mapped onto each vendor's own setting. Not every vendor has a true off.";
+var MP_EXTENDED_HELP = "Passed to the provider as-is; keys the adapter does not know are ignored.";
+
+// `config.extended` as the text of its box, and back. The model's `extended` is a JSON object (an empty one by default), so a blank box is the empty object and anything that is
+// not one object (a list, a number, null, text that does not parse) is refused before it is sent.
+function MP_extendedText(obj) {
+  return JSON.stringify(obj || {}, null, 2);
+}
+
+function MP_parseExtended(text) {
+  var typed = text == null ? "" : String(text);
+  if (!typed.trim()) return { value: {} };
+  var value = null;
+  try {
+    value = JSON.parse(typed);
+  } catch (e) {
+    value = null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { error: 'Enter a JSON object, for example {"top_k": 20}.' };
+  return { value: value };
+}
+
 // The LLM Profiles page (design 7.1). The `profiles` entry of NV_PLAT_PAGES (nv-platform.jsx) hands each row to MP_profileCard and its list to MP_withWindows. The card is
 // the one card view model of every Platform page (seam I-8): the desktop's PK_Card draws its badge, its icon and up to three facts, and the phone's fact sheet draws each fact
 // as a [label, value] pair of strings. The icons are 14 by 14 paths: a chip for a single profile (one model on one provider), a link for an aggregated one (a chain of them).
@@ -323,17 +355,21 @@ function MP_ProfileModal(props) {
 const MP_READONLY_FIELDSET = { display: "flex", flexDirection: "column", gap: 16, minWidth: 0, margin: 0, padding: 0, border: "none" };
 
 // The single profile's overlay (design 7.1: "opening a profile shows its overlay for viewing and editing the fields the model allows"): the id (fixed: the profile exists),
-// the description, the provider and the model it names, and the context window. It is only ever an edit or, for a harness-managed row, a view: a single profile is created by
-// the Register provider overlay's import, never here. A profile's `config` (reasoning, extended) is not drawn here: the Reasoning control returns in plan 03 Task 7, and until
-// then `config` is kept as stored. Model calls apply it, so a save must not lose it: an edit sends the stored row back with these four fields laid over it (MP_editBody), and
-// `config` and every other field the form does not draw round-trip untouched. The fields start from the profile the overlay is mounted with and then belong to the person
-// typing: a new `providers` array (the host hands over a fresh empty one on every render until its list loads) must not wipe a draft.
+// the description, the provider and the model it names, the context window, and the MODEL SETTINGS its calls apply (plan 03 Task 7): the reasoning level and the extended
+// JSON of its `config`. It is only ever an edit or, for a harness-managed row, a view: a single profile is created by the Register provider overlay's import, never here. An
+// edit sends the stored row back with the form's fields laid over it (MP_editBody), and `config` is the stored one with the two settings laid over it, so every field the form
+// does not draw round-trips untouched. The Extended fold starts open when the profile holds extended settings (or is managed, whose fold cannot be toggled), like the
+// aggregate's Advanced fold. The fields start from the profile the overlay is mounted with and then belong to the person typing: a new `providers` array (the host hands over
+// a fresh empty one on every render until its list loads) must not wipe a draft.
 function MP_SingleProfileOverlay({ existing, providers, onClose, onSaved }) {
   const managed = MP_isManaged(existing);
   const [description, setDescription] = React.useState(() => existing.description || "");
   const [provider, setProvider] = React.useState(() => existing.provider_id || "");
   const [modelName, setModelName] = React.useState(() => existing.model_name || "");
   const [contextText, setContextText] = React.useState(() => (existing.context_length != null ? String(existing.context_length) : ""));
+  const storedConfig = existing.config || {};
+  const [reasoning, setReasoning] = React.useState(() => storedConfig.reasoning || "");
+  const [extendedText, setExtendedText] = React.useState(() => MP_extendedText(storedConfig.extended));
   const [touched, setTouched] = React.useState({});
   const [saving, setSaving] = React.useState(false);
   const [refused, setRefused] = React.useState({ fields: {}, form: null });
@@ -349,7 +385,8 @@ function MP_SingleProfileOverlay({ existing, providers, onClose, onSaved }) {
   const descriptionError = description.trim() ? null : "Enter a description.";
   const modelError = modelName.trim() ? null : "Enter the model name.";
   const contextError = MP_contextError(contextText);
-  const formReady = !managed && !descriptionError && !!provider && !modelError && !contextError;
+  const extended = MP_parseExtended(extendedText);
+  const formReady = !managed && !descriptionError && !!provider && !modelError && !contextError && !extended.error;
   // A blank field is not a mistake until it has been typed in; a complaint from the server is about what was in the field, so editing the field takes it away.
   const shown = (field, error) => (touched[field] ? error : null) || undefined;
   const forget = (field) => setRefused((r) => {
@@ -369,7 +406,10 @@ function MP_SingleProfileOverlay({ existing, providers, onClose, onSaved }) {
     setSaving(true);
     setRefused({ fields: {}, form: null });
     const api = window.primerApi;
-    const draft = { description: description.trim(), provider_id: provider, model_name: modelName.trim(), context_length: Number(contextText) };
+    const draft = {
+      description: description.trim(), provider_id: provider, model_name: modelName.trim(), context_length: Number(contextText),
+      config: Object.assign({}, existing.config || {}, { reasoning: reasoning || null, extended: extended.value }),
+    };
     let row;
     try {
       row = await api.apiFetch("PUT", "/model_profiles/" + encodeURIComponent(existing.id), MP_editBody(existing, draft));
@@ -408,6 +448,20 @@ function MP_SingleProfileOverlay({ existing, providers, onClose, onSaved }) {
         error={shown("context", contextError) || refused.fields.context}>
         <input type="number" min={1} step={1} value={contextText} data-testid="mp-single-context" onChange={typed("context", setContextText)} />
       </PK_Field>
+      <PK_Section title="MODEL SETTINGS" testid="mp-single-settings" cols={1}>
+        <PK_Field label="Reasoning" help={MP_REASONING_HELP}>
+          <PK_Segmented testid="mp-single-reasoning" ariaLabel="Reasoning" options={MP_REASONING_OPTIONS} value={reasoning}
+            onChange={(v) => setReasoning(v)} />
+        </PK_Field>
+        {/* A folded box hides its error, so the fold's label says the JSON is not an object (Save is off until it is). */}
+        <PK_Fold label={extended.error ? "Extended settings (not a JSON object)" : "Extended settings"} testid="mp-single-extended-fold"
+          open={managed || Object.keys(storedConfig.extended || {}).length > 0}>
+          <PK_Field label="Extended (JSON)" help={MP_EXTENDED_HELP} error={extended.error || undefined}>
+            <textarea value={extendedText} rows={6} spellCheck={false} className="mono" data-testid="mp-single-extended"
+              onChange={(e) => setExtendedText(e.target.value)} />
+          </PK_Field>
+        </PK_Fold>
+      </PK_Section>
     </>
   );
 
