@@ -939,3 +939,44 @@ async def test_the_rest_delete_follows_the_rank_rule_of_the_rest_cancel(app, cli
 
     assert deleted.status_code == 204, deleted.text
     assert await fake_storage_provider.get_storage(Workspace).get("ws-2") is None
+
+
+# -- create_workspace from a session outside prime (F4) ---------------------------------------------------------------------------------------
+
+
+async def _template_world() -> WsWorld:
+    world = await _ws_world()
+    await world.sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(id="tpl", description="t", provider_id="local-1"))
+    return world
+
+
+@pytest.mark.parametrize("arguments", [
+    pytest.param({"id": "ws-new", "template_id": "tpl"}, id="a new id"),
+    pytest.param({"id": "ws-2", "template_id": "tpl"}, id="an id that exists"),
+    pytest.param({"template_id": "no-such-template"}, id="an unknown template"),
+])
+@pytest.mark.parametrize(("own", "door"), [("ws-1", "tool manager"), ("ws-1", "system__call_tool"), ("ws-2", "system__call_tool")])
+async def test_create_workspace_is_refused_from_a_session_outside_prime(arguments, own, door):
+    """F4: a session outside prime creates no workspace (it could not reach it anyway). The refusal comes before the template and id lookups, so it
+    confirms neither, and it says where workspaces are made."""
+    world = await _template_world()
+    before = await world.snapshot()
+
+    outcome, body = await asyncio.wait_for(_call(world, "workspaces", "create_workspace", arguments, own=own, door=door), 30)
+
+    assert outcome == F, body
+    assert await world.snapshot() == before
+    from primer.toolset.workspaces import REFUSE_CREATE_WORKSPACE
+
+    assert body == {"type": F, "message": REFUSE_CREATE_WORKSPACE}
+    assert "prime" in REFUSE_CREATE_WORKSPACE and "console" in REFUSE_CREATE_WORKSPACE
+
+
+@pytest.mark.parametrize(("own", "door"), [("ws-prime", "tool manager"), ("ws-prime", "system__call_tool"), (None, "MCP")])
+async def test_create_workspace_from_prime_or_with_no_session_creates_it(own, door):
+    world = await _template_world()
+
+    outcome, body = await asyncio.wait_for(_call(world, "workspaces", "create_workspace", {"id": "ws-new", "template_id": "tpl"}, own=own, door=door), 30)
+
+    assert outcome == D, body
+    assert (await world.sp.get_storage(Workspace).get("ws-new")) is not None and "ws-new" in world.backend.live
