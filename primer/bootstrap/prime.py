@@ -55,7 +55,7 @@ from primer.bootstrap.defaults import (
     PRIME_WORKSPACE_NAME,
     RESERVED_OPERATOR_AGENT,
 )
-from primer.model.except_ import NotFoundError, WorkspaceUnreachableError
+from primer.model.except_ import NotFoundError, PrimerError, WorkspaceUnreachableError
 from primer.model.workspace import Workspace
 from primer.storage import raw_generation
 
@@ -316,8 +316,10 @@ async def ensure_prime_agents_md(storage_provider: Any, *, workspace_registry: A
     ``False``, nothing more is written by this boot, and the next boot tries again. A write given up on may still land afterwards;
     it writes the same shipped bytes. A check that times out never reads as "absent".
 
-    Any other failure propagates, so the ensure pass records it under its step and the next boot tries again: a check that
-    fails never reads as "absent".
+    A platform error (a :class:`PrimerError`: an ``AGENTS.md`` link out of the root is a ``BadRequestError``, a refused workspace a
+    ``WorkspaceRefusedError``) is a known answer: one WARNING without a traceback, ``False``, and the next boot tries again. Any other
+    exception (a local workspace's ``RuntimeError`` for a symlink loop) propagates, so the ensure pass records it under its step with
+    its traceback. Either way a check that fails never reads as "absent", and nothing is written.
 
     Two processes seeding at once both see no file and write the same bytes, so the result is the same file. A person writing
     the file between the check and the write is the one window this leaves; the pass runs at boot and on the setup seed only.
@@ -340,6 +342,12 @@ async def ensure_prime_agents_md(storage_provider: Any, *, workspace_registry: A
             extra={"workspace_id": workspace_id},
         )
         return False
+    except PrimerError as exc:
+        logger.warning(
+            "prime: checking the default workspace %r for agents.md or AGENTS.md failed; nothing was written, the next boot tries "
+            "again: %s: %s", workspace_id, type(exc).__name__, exc,
+        )
+        return False
     except TimeoutError:
         if not bound.expired():
             raise
@@ -353,6 +361,12 @@ async def ensure_prime_agents_md(storage_provider: Any, *, workspace_registry: A
     try:
         async with asyncio.timeout(timeout) as bound:
             await workspace.write_file(PRIME_AGENTS_MD, shipped_prime_agents_md())
+    except PrimerError as exc:
+        logger.warning(
+            "prime: writing agents.md to the default workspace %r failed; the next boot tries again: %s: %s",
+            workspace_id, type(exc).__name__, exc,
+        )
+        return False
     except TimeoutError:
         if not bound.expired():
             raise

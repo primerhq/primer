@@ -25,7 +25,7 @@ from primer.bootstrap.prime import (
     shipped_prime_agents_md,
 )
 from primer.bootstrap.seed import run_ensure_pass
-from primer.model.except_ import NotFoundError, WorkspaceUnreachableError
+from primer.model.except_ import BadRequestError, NotFoundError, WorkspaceUnreachableError
 from primer.model.workspace import FileEntry, Workspace, WorkspaceRuntimeMeta
 from primer.workspace.instructions import AGENTS_MD_NAMES, load_workspace_instructions
 
@@ -200,8 +200,9 @@ async def test_a_workspace_the_backend_cannot_find_is_a_no_op(fake_storage_provi
     assert await ensure_prime_agents_md(fake_storage_provider, workspace_registry=_Gone()) is False
 
 
-async def test_a_check_that_fails_writes_nothing_and_raises(fake_storage_provider):
-    """A failure that is not "absent" never reads as absent: the step records it and the next boot tries again."""
+async def test_a_check_that_fails_on_a_platform_error_writes_nothing_and_warns_once(fake_storage_provider, caplog):
+    """A failure that is not "absent" never reads as absent. A platform error (a ``PrimerError``) is a known answer: one WARNING without
+    a traceback, the step answers False, and the next boot tries again."""
     await _prime(fake_storage_provider)
 
     class _Down(_Ws):
@@ -209,23 +210,48 @@ async def test_a_check_that_fails_writes_nothing_and_raises(fake_storage_provide
             raise WorkspaceUnreachableError("the runtime did not answer")
 
     ws = _Down()
-    with pytest.raises(WorkspaceUnreachableError):
-        await ensure_prime_agents_md(fake_storage_provider, workspace_registry=_Registry(ws))
+    assert await ensure_prime_agents_md(fake_storage_provider, workspace_registry=_Registry(ws)) is False
     assert ws.writes == []
+    assert "the runtime did not answer" in _one_warning(caplog).getMessage()
 
 
-async def test_a_failing_check_of_the_second_name_writes_nothing(fake_storage_provider):
+async def test_a_failing_check_of_the_second_name_writes_nothing(fake_storage_provider, caplog):
     """``agents.md`` is absent but ``AGENTS.md`` cannot be checked: it may be there, so nothing is written."""
     await _prime(fake_storage_provider)
 
     class _HalfDown(_Ws):
         async def file_info(self, path):
             if path == "AGENTS.md":
-                raise WorkspaceUnreachableError("the runtime did not answer")
+                raise BadRequestError("'AGENTS.md' resolves outside the workspace root")
             return await super().file_info(path)
 
     ws = _HalfDown()
-    with pytest.raises(WorkspaceUnreachableError):
+    assert await ensure_prime_agents_md(fake_storage_provider, workspace_registry=_Registry(ws)) is False
+    assert ws.writes == []
+    _one_warning(caplog)
+
+
+async def test_a_write_refused_by_the_platform_warns_once(fake_storage_provider, caplog):
+    await _prime(fake_storage_provider)
+
+    class _Refused(_Ws):
+        async def write_file(self, path, content):
+            raise BadRequestError(f"{path!r} is a directory; cannot overwrite with file content")
+
+    assert await ensure_prime_agents_md(fake_storage_provider, workspace_registry=_Registry(_Refused())) is False
+    _one_warning(caplog)
+
+
+async def test_an_unknown_failure_still_propagates(fake_storage_provider):
+    """Only the platform's own errors are known answers: anything else reaches the ensure pass, which records it with its traceback."""
+    await _prime(fake_storage_provider)
+
+    class _Broken(_Ws):
+        async def file_info(self, path):
+            raise RuntimeError("Symlink loop from '/ws/prime/agents.md'")
+
+    ws = _Broken()
+    with pytest.raises(RuntimeError, match="Symlink loop"):
         await ensure_prime_agents_md(fake_storage_provider, workspace_registry=_Registry(ws))
     assert ws.writes == []
 
@@ -324,7 +350,7 @@ async def test_a_failing_seed_is_recorded_under_its_step_and_the_others_run(fake
 
     class _Down(_Ws):
         async def file_info(self, path):
-            raise WorkspaceUnreachableError("the runtime did not answer")
+            raise RuntimeError("Symlink loop from '/ws/prime/agents.md'")
 
     result = await run_ensure_pass(fake_storage_provider, workspace_registry=_Registry(_Down()))
     assert [step for step, _ in result.errors] == ["prime_agents_md"]
@@ -422,3 +448,22 @@ async def test_the_reset_writes_through_an_agents_md_link_to_AGENTS_md(local_pri
     await reset_prime_agents_md(sp, workspace_registry=registry)
     assert os.path.islink(f"{_root(ws)}/agents.md")
     assert await ws.read_file("AGENTS.md") == shipped_prime_agents_md()
+
+
+async def test_an_AGENTS_md_link_out_of_the_root_is_a_warning_and_nothing_is_written(local_prime, caplog):
+    """The local backend refuses to describe a link out of the root (``BadRequestError``): one WARNING, False, no agents.md."""
+    sp, registry = local_prime
+    ws = await registry.get_workspace("prime")
+    os.symlink("/etc/hostname", f"{_root(ws)}/AGENTS.md")
+    assert await ensure_prime_agents_md(sp, workspace_registry=registry) is False
+    assert not os.path.lexists(f"{_root(ws)}/agents.md")
+    _one_warning(caplog)
+
+
+async def test_an_agents_md_symlink_loop_still_propagates(local_prime):
+    """A loop is a ``RuntimeError`` on the local backend, not a platform error: the ensure pass records it under the step."""
+    sp, registry = local_prime
+    ws = await registry.get_workspace("prime")
+    os.symlink("agents.md", f"{_root(ws)}/agents.md")
+    with pytest.raises(RuntimeError, match="Symlink loop"):
+        await ensure_prime_agents_md(sp, workspace_registry=registry)
