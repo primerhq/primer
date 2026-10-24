@@ -5030,6 +5030,13 @@ button.nv-trace-line { cursor: pointer; }
   color: var(--text-4);
   font-size: 13px;
 }
+/* the note under a list that was cut short (PR_PagedNote, ui/foundation/api.js): the page cap, or a page that failed after the first */
+.pr-paged-note {
+  padding: 6px 10px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.4;
+}
 .nv-audit { margin-top: 22px; }
 /* The audit's header is the kit's (.pk-header: title, count, filter, pager); the sort controls the records-sheet's header row used to hold (uiv2 Wave 3, a-14
    fold) are its `extra`, on one line. */
