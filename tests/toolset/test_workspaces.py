@@ -1476,6 +1476,25 @@ class TestPauseAndResumeWorkspaceSession:
         assert json.loads(result.output) == {"type": "conflict", "message": "Session 'sess-c1' has ended"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool", "doing"), [("pause_workspace_session", "pausing"), ("resume_workspace_session", "resuming")])
+    async def test_a_status_that_moves_under_the_call_twice_is_a_conflict_to_try_again(
+        self, session_toolset, seeded, sp, monkeypatch, tool, doing,
+    ) -> None:
+        """The other ``conflict`` the descriptors name (review of #904): every fenced write is refused (another writer moved the status each
+        time), so the helper gives up in the REST route's words."""
+        from primer.model.workspace_session import SessionStatus, WorkspaceSession
+
+        _seed_session(sp, status=SessionStatus.WAITING)
+
+        async def refused(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(sp.get_storage(WorkspaceSession), "patch_if", refused)
+        result = await session_toolset.call(tool_name=tool, arguments={"workspace_id": seeded, "session_id": "sess-c1"})
+        assert result.is_error
+        assert json.loads(result.output) == {"type": "conflict", "message": f"Session 'sess-c1' changed status twice while {doing}; try again"}
+
+    @pytest.mark.asyncio
     async def test_resume_without_scheduler_is_unavailable(self, toolset) -> None:
         result = await toolset.call(tool_name="resume_workspace_session", arguments={"workspace_id": "ws-stub", "session_id": "x"})
         assert result.is_error
