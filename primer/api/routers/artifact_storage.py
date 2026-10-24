@@ -119,7 +119,6 @@ async def _pre_delete(entity: ArtifactStorageProvider, request: Request) -> None
 # through ``ArtifactStorageRegistry.get_default()``, the routing store (primer/artifact/routing.py): a put goes to the ACTIVE provider (``ActiveArtifactStorageConfig``; the database, through the reserved
 # ``artifact-storage-default``, until another is selected) and a get or a delete follows the artifact's location record. So a ``db`` row registered here is not the default. A ``filesystem`` root must be ONE folder that every
 # server pod mounts at the same path; its label and help say so. The two S3 keys go together (both, or neither for the server's own credentials); their help says so.
-# The test builds a row of each kind and requires 'not implemented' in the label of every kind the factory has no builder for, so a label has to change when a kind loses or gains its backend.
 #
 # This router MUST be mounted before the CRUD router in _app_routes.py, or GET /{id} swallows "_types".
 
