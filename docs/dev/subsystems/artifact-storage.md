@@ -88,7 +88,8 @@ cached after `initialize`, and a volume that went away later would leave the pro
 and refuses with the same named-root message as `initialize`. It then writes the bytes, then the sidecar, each to a temporary file that is synced and renamed into
 place, and syncs the shard folder after the sidecar rename (and the parent of each shard folder it creates), so the renames survive a
 crash; a sidecar (or the folder sync) that fails removes the files again, so a sidecar is never seen without its bytes. A get reads the sidecar, then the
-bytes, and answers `None` when either is missing. A delete removes the sidecar, then the bytes; missing files are fine. Every file
+bytes, and answers `None` when either is missing; also, with one WARNING, when the sidecar cannot be read (not JSON, not UTF-8, a field
+missing or of the wrong type) or when the bytes are not as long as the sidecar's `size` says: a damaged artifact is never served. A delete removes the sidecar, then the bytes; missing files are fine. Every file
 operation runs in a worker thread (`asyncio.to_thread`), so a slow or hung volume never blocks the event loop. A put cancelled while its
 thread is writing (a client that went away) cannot stop the thread and never hands out its id, so the write is shielded and, once the thread
 finishes, a cleanup task removes both files (the module holds the task until it is done).

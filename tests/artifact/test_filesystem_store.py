@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import threading
@@ -653,3 +654,38 @@ def test_preparing_a_root_syncs_it_after_writing_the_marker(tmp_path: Path, monk
     prepare_root(str(tmp_path / "root"))
 
     assert synced == [str(tmp_path / "root")]
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    [b"{not json", b"\xff\xfe", b"[]", b'{"filename": "x.txt", "size": 1}', b'{"mime_type": 5, "filename": null, "size": 1}',
+     b'{"mime_type": "text/plain", "filename": null}', b'{"mime_type": "text/plain", "filename": null, "size": "1"}'],
+    ids=["not-json", "not-utf8", "not-an-object", "no-mime-type", "mime-type-not-text", "no-size", "size-not-a-number"],
+)
+async def test_a_corrupt_sidecar_reads_as_missing_with_one_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture, sidecar: bytes) -> None:
+    """Review of #890, item 8: a sidecar that cannot be read raised (a 500 to whoever asked for the file)."""
+    store = await _ready(tmp_path)
+    aid = await store.put(data=b"x", mime_type="text/plain")
+    store.path_for(aid).with_name(aid + ".json").write_bytes(sidecar)
+
+    with caplog.at_level(logging.WARNING, logger="primer.artifact.filesystem"):
+        assert await store.get(aid) is None
+
+    warnings = [r for r in caplog.records if r.name == "primer.artifact.filesystem" and r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and aid in warnings[0].getMessage() and "sidecar" in warnings[0].getMessage(), warnings
+    await store.delete(aid)
+    assert _files_under(tmp_path / "root") == [], "a corrupt artifact can still be deleted"
+
+
+@pytest.mark.parametrize("stored", [b"0123", b"0123456789-and-more"], ids=["truncated", "longer"])
+async def test_bytes_whose_length_differs_from_the_sidecar_are_never_served(tmp_path: Path, caplog: pytest.LogCaptureFixture, stored: bytes) -> None:
+    """Review of #890, item 8: a truncated blob (a crash, a copy that stopped half way) was served as the file."""
+    store = await _ready(tmp_path)
+    aid = await store.put(data=b"0123456789", mime_type="text/plain")
+    store.path_for(aid).write_bytes(stored)
+
+    with caplog.at_level(logging.WARNING, logger="primer.artifact.filesystem"):
+        assert await store.get(aid) is None
+
+    warnings = [r.getMessage() for r in caplog.records if r.name == "primer.artifact.filesystem" and r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "10" in warnings[0] and str(len(stored)) in warnings[0], warnings
