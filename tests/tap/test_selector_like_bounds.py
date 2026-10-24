@@ -346,4 +346,5 @@ async def test_like_matching_runs_on_the_user_regex_executor(monkeypatch):
     io = _IO()
     io.add("s1", 1, "user_input", text="needle")
     await read_session_since(io, workspace_id=_WID, session=_session(), after_seq=0, selector=_like("need%"))
-    assert names and all(name.startswith("user-regex") for name in names), names
+    # R2-3: a tap read is interactive work, on the executor greps never take.
+    assert names and all(name.startswith("user-regex-interactive") for name in names), names

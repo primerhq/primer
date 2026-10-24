@@ -149,9 +149,9 @@ def _log_expr_rejection(expr_text: str, exc: Exception) -> None:
         logger.warning("event filter expr rejected (no match): %s", exc)
 
 
-def _compile_field_regex(pattern: str) -> regex.Pattern:
-    """The one compile the save-time check and the dispatcher share: a stored pattern, so its verdict and compile are cached."""
-    return compile_user_regex(pattern, max_length=None, what="event filter regex", stored=True)
+def _compile_field_regex(pattern: str, *, stored: bool = True) -> regex.Pattern:
+    """The dispatcher's compile of a field pattern: cached with its verdict on the match path only (``stored``)."""
+    return compile_user_regex(pattern, max_length=None, what="event filter regex", stored=stored)
 
 
 def check_field_regex(pattern: str) -> None:
@@ -163,7 +163,8 @@ def check_field_regex(pattern: str) -> None:
         raise UserRegexError(
             f"event filter regex is {len(pattern)} characters long; the limit is {MAX_PATTERN_LENGTH}"
         )
-    _compile_field_regex(pattern)
+    # The save path never touches the verdict cache (#859 round 3, R2-8).
+    _compile_field_regex(pattern, stored=False)
 
 
 def _compiled(pattern: str) -> regex.Pattern | None:

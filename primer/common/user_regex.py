@@ -13,7 +13,11 @@ hold everywhere (G6-4, G6-5, G6-11; #812 introduced the timed matcher):
   compiled the pattern is PARSED by the engine's own parser
   (``regex._regex_core``: ``Source``, ``Info``, ``_parse_pattern``, which
   never unrolls) and the parse tree is walked: a repeat multiplies by its
-  largest finite count, alternatives and sequences add. A pattern whose
+  largest finite count, alternatives and sequences add, and the leaves that
+  compile to more code weigh more (``\\X`` 8, a set 1 per property in it).
+  ``tests/common/test_user_regex_cost.py`` compiles near-cap shapes in a
+  capped child, so a ``regex`` release that changes per-node cost fails a
+  test. A pattern whose
   tree costs more than :data:`MAX_REPEAT_EXPANSION` is refused. Because
   the count comes from the tree the engine compiles, no spelling (a comment
   group, verbose whitespace, an inline flag) can hide a repeat from it.
@@ -27,16 +31,19 @@ hold everywhere (G6-4, G6-5, G6-11; #812 introduced the timed matcher):
 * **Engine and memory.** Patterns compile with the ``regex`` engine
   (``VERSION0``, the stdlib ``re`` dialect; never into the engine's own
   cache). A pattern the platform stores (a subscription's ``text_pattern``,
-  a filter's field regex, an ``output_schema`` pattern) is kept in a cache
-  bounded by the total expansion it holds, together with the check's
-  verdict, refusals included; a one-shot pattern (grep, collection grep,
-  the tap selector) is never cached. ``MemoryError`` and ``RecursionError``
-  at compile are refusals like an over-cap pattern.
+  a filter's field regex, an ``output_schema`` pattern) is kept, on its
+  MATCH path only, in a cache bounded by the total expansion it holds,
+  together with the check's verdict, refusals included; a save-time check
+  and a one-shot pattern (grep, collection grep, the tap selector) never
+  touch the cache. ``MemoryError`` and ``RecursionError`` at compile are
+  refusals like an over-cap pattern, and are never cached.
 * **Time.** Matching passes ``timeout=`` (the engine raises
   ``TimeoutError``) and ``concurrent=True``, which releases the GIL while
   the engine runs. A :class:`MatchBudget` shares one total across many
-  searches (and may draw on a parent budget); bounded work that must leave
-  the event loop runs on :func:`run_off_loop`'s small dedicated executor.
+  searches (and may draw on a parent budget, charging it at most its own
+  remaining share); bounded work that must leave the event loop runs on
+  one of two small executors, :func:`run_interactive` (tap, output_schema)
+  and :func:`run_bulk` (grep), never the default ``to_thread`` pool.
 """
 
 from __future__ import annotations
@@ -89,10 +96,18 @@ except (ImportError, AttributeError) as exc:  # pragma: no cover - exercised onl
 MAX_PATTERN_LENGTH = 1000
 MAX_REPEAT_EXPANSION = 10_000
 
-# The stored-pattern cache holds at most this much total expansion (about 150
-# bytes of compiled code per unit: some 30 MB at the bound) and this many entries.
-_CACHE_EXPANSION_BUDGET = 200_000
+# The stored-pattern cache holds at most this much total expansion, and this
+# many entries. Measured worst case (a fresh process, RSS after one compile):
+# about 290 bytes per expansion unit for a plain near-cap pattern such as
+# (?:a{100}){100}, and about the same per WEIGHTED unit for the costly leaves
+# the walk weights up (\X, sets of several properties). So the bound holds
+# about 30 MB of compiled code at worst, and much less in practice: a typical
+# stored pattern weighs a few dozen units.
+_CACHE_EXPANSION_BUDGET = 100_000
 _CACHE_MAX_ENTRIES = 2048
+# Leaves that compile to far more code than one node (measured, see above):
+# \X compiles to about 4.4x the memory and 7x the time of a plain character.
+_GRAPHEME_WEIGHT = 8
 
 # The global inline-flag letters a pattern may set, in one group at the very start.
 _START_FLAGS = frozenset("aimsu")
@@ -166,6 +181,10 @@ def _check_extension(pattern: str, index: int, what: str) -> None:
     )
     if calls:
         raise UserRegexError(f"{what} may not use group calls or recursion")
+    if rest[:1] == "'":
+        raise UserRegexError(f"{what} may not use (?'name'...) named groups; write (?P<name>...) or (?<name>...)")
+    if not (rest[:1].isalpha() or rest[:1] in "-^"):
+        raise UserRegexError(f"{what} uses a group construct that is not supported: (?{rest[:1]}")
     flags_end = 0
     while flags_end < len(rest) and (rest[flags_end].isalnum() or rest[flags_end] in "-^"):
         flags_end += 1
@@ -223,9 +242,28 @@ def _expansion(node: Any, what: str) -> int:
         return _expansion(node.yes_item, what) + _expansion(node.no_item, what)
     if isinstance(node, _STRING):
         return max(len(node.characters), 1)
+    if isinstance(node, _core.Grapheme):
+        return _GRAPHEME_WEIGHT
+    if isinstance(node, _core.SetBase):
+        return _set_weight(node)
     if isinstance(node, _LEAVES):
         return 1
     raise UserRegexError(f"{what} uses a construct the bounds do not know ({type(node).__name__})")
+
+
+def _set_weight(node: Any) -> int:
+    """A character set: 1, plus 1 per property in it, plus 1 per 16 other members (measured: each property is a table)."""
+    properties = others = 0
+    stack = list(node.items)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, _core.SetBase):
+            stack.extend(item.items)
+        elif isinstance(item, _core.Property):
+            properties += 1
+        else:
+            others += 1
+    return 1 + properties + others // 16
 
 
 def repeat_expansion(pattern: str, flags: int = 0, *, what: str = "pattern") -> int:
@@ -264,10 +302,18 @@ def check_user_pattern(
     return expansion
 
 
+class _TransientRefusal(UserRegexError):
+    """A refusal that depends on the process's state (memory, stack depth), so it is never cached."""
+
+
 def _compile_checked(pattern: str, flags: int, what: str) -> regex.Pattern:
     try:
         return regex.compile(pattern, flags | regex.VERSION0, cache_pattern=False)
-    except (MemoryError, RecursionError, OverflowError):
+    except (MemoryError, RecursionError):
+        raise _TransientRefusal(
+            f"{what} repeats too much to compile; use smaller {{n}} counts or * and +"
+        ) from None
+    except OverflowError:
         raise UserRegexError(
             f"{what} repeats too much to compile; use smaller {{n}} counts or * and +"
         ) from None
@@ -341,11 +387,14 @@ def compile_user_regex(
     """Check and compile a user pattern with the ``regex`` engine.
 
     ``flags`` are ``regex`` flags (``IGNORECASE``, ``DOTALL``, ``MULTILINE``).
-    ``stored=True`` is for a pattern the platform keeps and runs again (a
-    subscription, a filter, a schema): its compile AND its verdict (a refusal
-    too) are cached, so a hit neither re-checks nor recompiles. A one-shot
-    pattern is never cached. Raises :class:`UserRegexError`, whose message
-    starts with ``invalid regex`` when the engine refuses the syntax.
+    ``stored=True`` is for the MATCH path of a pattern the platform keeps
+    and runs again (a subscription, a filter, a schema): its compile AND its
+    verdict (a refusal too) are cached, so a hit neither re-checks nor
+    recompiles. A save-time check and a one-shot pattern pass
+    ``stored=False`` and never touch the cache, and a refusal that depends on
+    the process's state (``MemoryError``, ``RecursionError``) is never cached.
+    Raises :class:`UserRegexError`, whose message starts with
+    ``invalid regex`` when the engine refuses the syntax.
     """
     key = (pattern, flags, max_length, what)
     if stored:
@@ -359,7 +408,7 @@ def compile_user_regex(
         expansion = check_user_pattern(pattern, flags, max_length=max_length, what=what)
         compiled = _compile_checked(pattern, flags, what)
     except UserRegexError as exc:
-        if stored:
+        if stored and not isinstance(exc, _TransientRefusal):
             _STORED.put(key, None, str(exc), 1)
         raise
     if stored:
@@ -367,22 +416,56 @@ def compile_user_regex(
     return compiled
 
 
-def line_prefilter(pattern: str, flags: int = 0, *, what: str = "pattern") -> regex.Pattern | None:
-    """A whole-text pattern whose matches touch every line on which ``pattern`` matches by itself, or ``None``.
+def can_match_newline(node: Any) -> bool:
+    """Whether a leaf of the parse tree could consume ``\\n`` (refused by the line scanner).
 
-    Searching a whole text once is far cheaper than one timed search per
-    line. The text is the lines joined by ``\\n``; the prefilter is the same
-    pattern with ``MULTILINE``, so ``^`` and ``$`` mean the line ends. That
-    is sound only for a backtracking-complete pattern that cannot look past a
-    line end or test a string end: built from literals, sets, ``.``, groups,
-    alternatives, greedy and lazy repeats, line anchors and word boundaries.
-    Any other construct (lookaround, ``\\A``/``\\Z``, atomic and possessive
-    groups, backreferences, conditionals, ``\\G``, backtracking verbs) gets
-    ``None`` and the caller searches line by line.
+    ``.`` under DOTALL; a negated set; a character, range or property that
+    matches ``\\n`` (``matches(10)``: ``\\n``, ``\\s``, ``\\W``, ``[^y]``, ``[\\x00-z]``); a
+    string holding ``\\n``; a positive set with any such member.
+    """
+    if isinstance(node, _core.AnyAll):
+        return True
+    if isinstance(node, _core.SetBase):
+        if not node.positive:
+            return True
+        return any(can_match_newline(item) for item in node.items)
+    if isinstance(node, (_core.Character, _core.Range, _core.Property)):
+        return bool(node.matches(10))
+    if isinstance(node, _STRING):
+        return 10 in node.characters
+    return False
+
+
+# One group of global inline flags at the very start (the only place the check allows one).
+_LEADING_FLAGS = regex.compile(r"\(\?[aimsu]+\)")
+
+
+def line_scanner(pattern: str, flags: int = 0, *, what: str = "pattern") -> regex.Pattern | None:
+    """One pattern that finds, in ONE timed scan of a file, every line on which ``pattern`` matches by itself; or ``None``.
+
+    The lines are joined by ``\\n`` and scanned with ``(?m)(?:pattern)[^\\n]*``:
+    each match starts where ``pattern`` first matches in a line and runs on
+    to the line's end, so the scan resumes at the next line, a line yields at
+    most one match (plus, at most, an empty one at its end), and ONE
+    ``finditer`` over the text lists exactly the matching lines: one timed
+    call per file, since the engine's ``timeout=`` alone costs about 1.4 us a
+    call, and with ``pattern`` first the engine keeps its fast skip to
+    ``pattern``'s literal text.
+
+    That holds only when nothing in ``pattern`` can see or cross a line end
+    (#859 round 3, R2-2: a leaf that can consume ``\\n``, such as ``[^y]``,
+    made round 2's fast path quadratic). So the scanner is offered only for a
+    backtracking-complete pattern built from literals, sets, ``.`` without
+    DOTALL, groups, alternatives, greedy and lazy repeats, line anchors and
+    word boundaries, with NO leaf that can match ``\\n``
+    (:func:`can_match_newline`). Anything else (lookaround, ``\\A``/``\\Z``,
+    atomic and possessive groups, backreferences, conditionals, ``\\G``,
+    backtracking verbs, ``\\X``) gets ``None`` and the caller searches line by
+    line.
     """
     try:
         tree = _parse(pattern, flags | regex.MULTILINE)
-    except Exception:  # noqa: BLE001 - no prefilter is always correct
+    except Exception:  # noqa: BLE001 - no scanner is always correct
         return None
     stack = [tree]
     while stack:
@@ -400,9 +483,14 @@ def line_prefilter(pattern: str, flags: int = 0, *, what: str = "pattern") -> re
         elif isinstance(node, _core.ZeroWidthBase):
             if not isinstance(node, _LINE_SAFE_ZERO_WIDTH):
                 return None
-        elif not isinstance(node, (_core.Character, _core.SetBase, _core.Any, _core.Property, _core.Range, _STRING)):
+        elif isinstance(node, (_core.Character, _core.SetBase, _core.Any, _core.Property, _core.Range, _STRING)):
+            if can_match_newline(node):
+                return None
+        else:
             return None
-    return _compile_checked(pattern, flags | regex.MULTILINE, what)
+    leading = _LEADING_FLAGS.match(pattern)
+    head, body = (leading.group(0), pattern[leading.end():]) if leading else ("", pattern)
+    return _compile_checked(f"{head}(?:{body})[^\\n]*", flags | regex.MULTILINE, what)
 
 
 # --------------------------------------------------------------------------- time
@@ -460,10 +548,16 @@ class MatchBudget:
         return self.spent >= self.seconds or (self.parent is not None and self.parent.exhausted)
 
     def charge(self, seconds: float) -> None:
-        """Count ``seconds`` of work (a compile, say) against this budget and its parent."""
+        """Count ``seconds`` of work (a compile, say) against this budget and its parent.
+
+        The parent is charged at most what was left of this budget, so work
+        that overshoots one share (a slow compile) cannot spend the time of
+        the parent's other shares (#859 round 3, R2-1).
+        """
+        left = max(self.seconds - self.spent, 0.0)
         self.spent = min(self.spent + seconds, self.seconds)
         if self.parent is not None:
-            self.parent.charge(seconds)
+            self.parent.charge(min(seconds, left))
 
     def _exhaust(self) -> None:
         """Mark the budget in the chain that bound the last search as spent."""
@@ -503,9 +597,9 @@ class MatchBudget:
     def search(self, compiled: regex.Pattern, text: str) -> regex.Match | None:
         return self._run(lambda t: compiled.search(text, timeout=t, concurrent=True))
 
-    def scan(self, compiled: regex.Pattern, text: str, pos: int) -> regex.Match | None:
-        """``compiled.search(text, pos)`` for a whole-text scan: bounded by the budget alone, not ``per_search``."""
-        return self._run(lambda t: compiled.search(text, pos, timeout=t, concurrent=True), per_search=False)
+    def whole(self, call: Callable[[float], T]) -> T:
+        """Run ``call(timeout)``, one whole-text pass over a file, bounded by the budget alone (not ``per_search``)."""
+        return self._run(call, per_search=False)
 
     def match(self, compiled: regex.Pattern, text: str) -> regex.Match | None:
         return self._run(lambda t: compiled.match(text, timeout=t, concurrent=True))
@@ -523,37 +617,31 @@ def matching_lines(
     lines: list[str],
     budget: MatchBudget,
     *,
-    prefilter: regex.Pattern | None = None,
+    scanner: regex.Pattern | None = None,
     limit: int | None = None,
 ) -> list[int]:
     """The indexes of the ``lines`` that ``compiled`` matches (a ``search`` of each line on its own), in order.
 
-    With a :func:`line_prefilter` the lines are joined by ``\\n`` and scanned
-    by whole-text searches, each starting at the line after the last one the
-    previous match touched. A match that lies within one line IS a match of
-    that line by itself (the prefilter's constructs read the same at a line's
-    ends either way); a match that spans lines only nominates them, and each
-    is then searched on its own. Lines no match touches cannot match by
-    themselves. So an ordinary grep costs one timed scan instead of one timed
-    search per line (``timeout=`` alone costs the engine about 1.4 us a call).
+    With a :func:`line_scanner` the lines are joined by ``\\n`` and the answer
+    is ONE timed ``finditer`` of the scanner over the text, bounded by the
+    budget alone: each scanner match starts at the start of a matching line.
+    Without one, each line is searched on its own, under ``per_search``.
 
-    At most ``limit`` indexes. A :class:`UserRegexTimeout` carries ``line``,
-    the index being searched when time ran out.
+    At most ``limit`` indexes. A :class:`UserRegexTimeout` carries ``line``:
+    the index being searched, or for a scan the last line found so far.
     """
     out: list[int] = []
     if not lines:
         return out
 
-    def _search_line(index: int) -> bool:
-        try:
-            return budget.search(compiled, lines[index]) is not None
-        except UserRegexTimeout as exc:
-            exc.line = index
-            raise
-
-    if prefilter is None:
+    if scanner is None:
         for index in range(len(lines)):
-            if _search_line(index):
+            try:
+                found = budget.search(compiled, lines[index])
+            except UserRegexTimeout as exc:
+                exc.line = index
+                raise
+            if found is not None:
                 out.append(index)
                 if limit is not None and len(out) >= limit:
                     break
@@ -565,42 +653,50 @@ def matching_lines(
     for line in lines:
         starts.append(offset)
         offset += len(line) + 1
-    pos = 0
-    while True:
-        try:
-            found = budget.scan(prefilter, joined, pos)
-        except UserRegexTimeout as exc:
-            exc.line = bisect.bisect_right(starts, pos) - 1
-            raise
-        if found is None:
-            break
-        first = bisect.bisect_right(starts, found.start()) - 1
-        if found.end() <= starts[first] + len(lines[first]):
-            out.append(first)
-            last = first
-        else:
-            last = bisect.bisect_right(starts, found.end() - 1) - 1
-            out.extend(index for index in range(first, last + 1) if _search_line(index))
-        if limit is not None and len(out) >= limit:
-            return out[:limit]
-        if last + 1 >= len(lines):
-            break
-        pos = starts[last + 1]
-    return out
+
+    def _scan(timeout: float) -> list[int]:
+        for found in scanner.finditer(joined, timeout=timeout, concurrent=True):
+            index = bisect.bisect_right(starts, found.start()) - 1
+            if out and out[-1] == index:
+                # After an empty match at a line start the engine may match again from
+                # the same start (a non-empty match): the same line, already counted.
+                continue
+            out.append(index)
+            if limit is not None and len(out) >= limit:
+                break
+        return out
+
+    try:
+        return budget.whole(_scan)
+    except UserRegexTimeout as exc:
+        exc.line = out[-1] if out else 0
+        raise
 
 
 # --------------------------------------------------------------------------- the executor
 
-# Bounded regex work that must leave the event loop runs here, not on the
-# default to_thread pool: a burst of greps cannot take every default worker.
-_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="user-regex")
+# Bounded regex work that must leave the event loop runs on one of two small
+# executors, never the default to_thread pool. Bulk work (grep over files,
+# collection grep) cannot delay interactive work (a tap read's LIKE, a graph
+# node's output_schema): four hostile greps hold the bulk threads, not these.
+_INTERACTIVE = ThreadPoolExecutor(max_workers=4, thread_name_prefix="user-regex-interactive")
+_BULK = ThreadPoolExecutor(max_workers=4, thread_name_prefix="user-regex-bulk")
 
 
-async def run_off_loop(fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
-    """``fn(*args, **kwargs)`` on the dedicated user-regex executor, with the caller's context variables."""
+async def _run_on(executor: ThreadPoolExecutor, fn: Callable[..., T], args: tuple, kwargs: dict) -> T:
     context = contextvars.copy_context()
     call = functools.partial(context.run, fn, *args, **kwargs)
-    return await asyncio.get_running_loop().run_in_executor(_EXECUTOR, call)
+    return await asyncio.get_running_loop().run_in_executor(executor, call)
+
+
+async def run_interactive(fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
+    """``fn(*args, **kwargs)`` on the interactive user-regex executor (tap LIKE, output_schema), with the caller's context."""
+    return await _run_on(_INTERACTIVE, fn, args, kwargs)
+
+
+async def run_bulk(fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
+    """``fn(*args, **kwargs)`` on the bulk user-regex executor (grep, collection grep), with the caller's context."""
+    return await _run_on(_BULK, fn, args, kwargs)
 
 
 def _self_check() -> None:
@@ -625,10 +721,12 @@ __all__ = [
     "UserRegexTimeout",
     "check_user_pattern",
     "compile_user_regex",
-    "line_prefilter",
+    "can_match_newline",
+    "line_scanner",
     "matching_lines",
     "repeat_expansion",
-    "run_off_loop",
+    "run_bulk",
+    "run_interactive",
     "stored_cache_size",
     "timed",
     "timed_search",

@@ -133,3 +133,22 @@ async def test_the_timeout_error_names_its_cause(store, monkeypatch):
     monkeypatch.setattr(grep_module, "GREP_MATCH_SECONDS", 0.05)
     with pytest.raises(BadRequestError, match=r"grep stopped after \d+ lines, at slow line 2: .*longest single search"):
         await grep_collection(store, collection_id="c1", pattern=per_line_hostile)
+
+
+async def test_collection_grep_runs_on_the_bulk_executor(store, monkeypatch):
+    """R2-3: collection grep is bulk work; it cannot hold the threads a tap read or an output_schema waits on."""
+    import threading
+
+    import primer.knowledge.grep as grep_module
+
+    names: list[str] = []
+    real = grep_module.matching_lines
+
+    def _recording(*args, **kwargs):
+        names.append(threading.current_thread().name)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(grep_module, "matching_lines", _recording)
+    res = await grep_collection(store, collection_id="c1", pattern="needle")
+    assert [(h.path, h.line) for h in res.hits] == [("a", 2), ("sub/c", 1)]
+    assert names and all(name.startswith("user-regex-bulk") for name in names), names

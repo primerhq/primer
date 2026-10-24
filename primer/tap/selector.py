@@ -34,7 +34,7 @@ from primer.common.user_regex import (
     MatchBudget,
     UserRegexError,
     compile_user_regex,
-    run_off_loop,
+    run_interactive,
 )
 from primer.model.except_ import BadRequestError
 from primer.model.storage import FieldRef, Op, Predicate, Value
@@ -365,7 +365,7 @@ async def match_events(
 ) -> list[bool]:
     """``event_matches`` for each of ``events``, in order.
 
-    A predicate with a LIKE / ILIKE runs on the user-regex executor (the
+    A predicate with a LIKE / ILIKE runs on the interactive user-regex executor (the
     engine releases the GIL) under ONE :data:`TAP_MATCH_SECONDS` budget for
     the read (``budget``, shared by the read's batches; a fresh one when not
     given), so a hostile pattern neither stalls the event loop nor runs past
@@ -380,4 +380,4 @@ async def match_events(
     def _all() -> list[bool]:
         return [_eval_predicate(selector.events, event, ctx) for event in events]
 
-    return await run_off_loop(_all)
+    return await run_interactive(_all)

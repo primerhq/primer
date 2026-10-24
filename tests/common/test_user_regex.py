@@ -26,10 +26,12 @@ from primer.common.user_regex import (
     UserRegexTimeout,
     check_user_pattern,
     compile_user_regex,
-    line_prefilter,
+    can_match_newline,
+    line_scanner,
     matching_lines,
     repeat_expansion,
-    run_off_loop,
+    run_bulk,
+    run_interactive,
     stored_cache_size,
     timed_search,
 )
@@ -99,6 +101,8 @@ def test_the_check_refuses_each_review_shape_without_compiling(pattern, monkeypa
         ("a{10001}", "repeats too much"),
         ("(unclosed", "invalid regex"),
         ("a**", "invalid regex"),
+        ("(?'name'x)", "(?'name'...) named groups"),
+        ("(?*x)", "a group construct that is not supported: (?*"),
         ("(" * 499 + ")" * 499, "invalid regex"),
     ],
 )
@@ -159,6 +163,33 @@ def test_a_compile_that_runs_out_of_memory_is_a_refusal(monkeypatch, error):
     monkeypatch.setattr(user_regex.regex, "compile", _raise)
     with pytest.raises(UserRegexError, match="repeats too much to compile"):
         compile_user_regex("plain-pattern-for-the-memory-test")
+
+
+@pytest.mark.parametrize("error", [MemoryError, RecursionError])
+def test_a_refusal_that_depends_on_the_process_is_never_cached(monkeypatch, error):
+    """R2-8: a MemoryError at one moment must not refuse the stored pattern forever."""
+    pattern = f"transient-{error.__name__}-[0-9]+"
+    real = user_regex.regex.compile
+
+    def _raise(*args, **kwargs):
+        raise error()
+
+    monkeypatch.setattr(user_regex.regex, "compile", _raise)
+    with pytest.raises(UserRegexError):
+        compile_user_regex(pattern, stored=True)
+    monkeypatch.setattr(user_regex.regex, "compile", real)
+    assert compile_user_regex(pattern, stored=True).search(f"transient-{error.__name__}-12")
+
+
+def test_costly_leaves_weigh_more():
+    """R2-4: \\X compiles to about 4.4x the memory and 7x the time of a plain character; a set's properties are tables."""
+    assert repeat_expansion(r"\X") == 8
+    assert check_user_pattern(r"(?:\X{100}){12}") == 9600
+    with pytest.raises(UserRegexError, match="repeats too much"):
+        check_user_pattern(r"(?:\X{100}){13}")
+    assert repeat_expansion(r"[\p{L}\p{N}]") == 3
+    assert repeat_expansion("[abcdefghijklmnopqrstuvwxyz0123456789]") == 3
+    assert repeat_expansion("[a-z]") == 1
 
 
 # ---- B2: memory through the cache ---------------------------------------------------------------------------------------
@@ -271,25 +302,103 @@ async def test_bounded_work_runs_on_the_dedicated_executor_and_leaves_the_loop_r
             pass
         return threading.current_thread().name
 
-    name = await run_off_loop(_work)
+    name = await run_interactive(_work)
     state["stop"] = True
     await task
-    assert name.startswith("user-regex")
+    assert name.startswith("user-regex-interactive")
     assert max(gaps) < 0.2, max(gaps)
 
 
-# ---- M4: the line prefilter is exact ------------------------------------------------------------------------------------
+async def test_hostile_bulk_work_does_not_delay_interactive_work():
+    """R2-3: four greps that run their whole budget hold the bulk threads, not the interactive ones."""
+    hostile = regex.compile(HOSTILE)
+
+    def _slow() -> str:
+        try:
+            MatchBudget(1.0).search(hostile, HOSTILE_TEXT)
+        except UserRegexTimeout:
+            pass
+        return threading.current_thread().name
+
+    def _tiny() -> str:
+        MatchBudget(1.0).search(regex.compile("x"), "abc x")
+        return threading.current_thread().name
+
+    jobs = [asyncio.create_task(run_bulk(_slow)) for _ in range(4)]
+    await asyncio.sleep(0.05)
+    started = time.perf_counter()
+    name = await run_interactive(_tiny)
+    waited = time.perf_counter() - started
+    names = await asyncio.gather(*jobs)
+    assert waited < 0.2, waited
+    assert name.startswith("user-regex-interactive")
+    assert all(n.startswith("user-regex-bulk") for n in names), names
+
+
+def test_a_share_charges_its_parent_at_most_what_it_had_left():
+    """R2-1 (b): a compile that overshoots one owner's share cannot spend the other owners' time."""
+    pool = MatchBudget(1.0)
+    share = MatchBudget(0.02, parent=pool)
+    share.charge(0.5)
+    assert share.exhausted
+    assert pool.spent == pytest.approx(0.02)
+    share.charge(0.5)
+    assert pool.spent == pytest.approx(0.02)
+
+
+# ---- the line scanner: exact, and only where nothing can cross a line end (round 3, R2-2) -------------------------------
 
 
 @pytest.mark.parametrize(
     "pattern",
-    [r"(?<=a)b", r"\Afoo", r"foo\Z", r"(?>a+)b", r"a++b", r"(a)\1", r"a(?=b)", r"\Gx", r"(?(1)a|b)(a)", r"a\Kb"],
+    [r"(?<=a)b", r"\Afoo", r"foo\Z", r"(?>a+)b", r"a++b", r"(a)\1", r"a(?=b)", r"\Gx", r"(?(1)a|b)(a)", r"a\Kb", r"\X"],
 )
-def test_constructs_that_see_past_a_line_get_no_prefilter(pattern):
-    assert line_prefilter(pattern) is None
+def test_constructs_that_see_past_a_line_get_no_scanner(pattern):
+    assert line_scanner(pattern) is None
 
 
-_ATOMS = ["a", "b", ".", r"\s", r"\S", r"\w", r"\W", "[ab]", "[^a]", r"\d", r"\n", "x", " "]
+@pytest.mark.parametrize(
+    "pattern, leaf",
+    [
+        (r"(?s)a.b", "AnyAll: . under DOTALL"),
+        (r"x[^y]*z", "a negated character, the review's quadratic case"),
+        (r"x[^ab]*z", "a negated set"),
+        (r"a\nb", "a character that is \n"),
+        (r"[\x00-z]+", "a range holding \n"),
+        (r"a\s+b", "a property holding \n"),
+        (r"a\W+b", "a negated property holding \n"),
+        (r"[a\s]+", "a positive set with a property holding \n"),
+        (r"[a\n]+", "a positive set with \n"),
+        (r"[[:space:]]", "a POSIX class holding \n"),
+    ],
+)
+def test_a_leaf_that_can_consume_a_newline_gets_no_scanner(pattern, leaf):
+    assert line_scanner(pattern) is None, leaf
+
+
+def test_a_string_holding_a_newline_can_consume_one():
+    from regex import _regex_core
+
+    assert can_match_newline(_regex_core.String([ord("a"), 10]))
+    assert not can_match_newline(_regex_core.String([ord("a"), ord("b")]))
+
+
+@pytest.mark.parametrize("pattern", [r"[^\n]x", r"\S+=", r"a.b", r"[a-z]+\d", r"(?i)^def \w+$", r"\bTODO\b|FIXME"])
+def test_line_local_patterns_get_a_scanner(pattern):
+    assert line_scanner(pattern) is not None
+
+
+def test_the_reviews_quadratic_case_is_linear():
+    """R2-2: x[^y]*z over 8,001 lines ran past the 10 s budget on round 2's fast path."""
+    lines = ["x" * 30] * 8000 + ["yz"]
+    compiled = compile_user_regex(r"x[^y]*z")
+    started = time.perf_counter()
+    got = matching_lines(compiled, lines, MatchBudget(10.0), scanner=line_scanner(r"x[^y]*z"))
+    assert got == []
+    assert time.perf_counter() - started < 1.0
+
+
+_ATOMS = ["a", "b", ".", r"\s", r"\S", r"\w", r"\W", "[ab]", "[^a]", r"[^\n]", r"\d", r"\n", "x", " "]
 _EDGES = ["^", "$", r"\b", r"\B"]
 
 
@@ -310,29 +419,35 @@ def _random_pattern(rng: random.Random, depth: int = 0) -> str:
     return "".join(parts)
 
 
+# Every separator str.splitlines() splits on, so the scanner sees them only as line ends.
+_ALPHABET = [
+    "a", "b", "x", " ", "1", "\t", "ab", "aa",
+    "\n", "\r\n", "\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", " ", " ",
+]
+
+
 def _random_text(rng: random.Random) -> str:
-    alphabet = ["a", "b", "x", " ", "1", "\n", "\r\n", "\r", " ", "ab", "aa", "\t"]
-    return "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 30)))
+    return "".join(rng.choice(_ALPHABET) for _ in range(rng.randint(0, 30)))
 
 
-def test_the_prefiltered_line_search_finds_exactly_the_lines_a_per_line_search_finds():
+def test_the_scanned_line_search_finds_exactly_the_lines_a_per_line_search_finds():
     rng = random.Random(859)
-    checked = 0
-    for _ in range(3000):
+    checked = scanned = 0
+    for _ in range(4000):
         pattern = _random_pattern(rng)
         flags = regex.IGNORECASE if rng.random() < 0.3 else 0
         if rng.random() < 0.2:
-            pattern = "(?s)" + pattern
+            pattern = "(?i)" + pattern
         try:
             compiled = compile_user_regex(pattern, flags)
         except UserRegexError:
             continue
-        prefilter = line_prefilter(pattern, flags)
-        assert prefilter is not None, pattern
+        scanner = line_scanner(pattern, flags)
         for _ in range(3):
             lines = _random_text(rng).splitlines()
             expected = [i for i, line in enumerate(lines) if compiled.search(line)]
-            got = matching_lines(compiled, lines, MatchBudget(5.0), prefilter=prefilter)
+            got = matching_lines(compiled, lines, MatchBudget(5.0), scanner=scanner)
             assert got == expected, (pattern, flags, lines)
             checked += 1
-    assert checked > 3000
+            scanned += scanner is not None
+    assert checked > 3000 and scanned > 1000, (checked, scanned)
