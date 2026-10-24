@@ -740,6 +740,11 @@ function Section({ label, sub }) {
 // Detail page
 // ----------------------------------------------------------------------
 
+// What the delete dialog says when its read of the collections was cut short (round 2 of #923). The server allows the delete whatever points at the
+// provider, so this never promises a refusal: a collection the read did not reach keeps pointing at the provider, and its semantic search fails.
+const SSP_PARTIAL_CHECK =
+  "None of these use this provider. The rest were not checked: a collection among them that does keeps pointing at it once it is deleted, and its semantic search then fails.";
+
 function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
   const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
@@ -758,9 +763,12 @@ function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
   // Collections that reference this SSP — used by the "Collections" tab
   // and the delete-confirmation 409 preview. /v1/collections is a CRUD
   // list endpoint; we read every page (PR_fetchAllPages) and filter
-  // client-side. (Server returns the 409 if we still try to delete, so this
-  // is just the UX preview; the source of truth is the backend
-  // cascade-block hook.) A read cut short never claims "Deletion is safe".
+  // client-side on the collection's own reference, search.vector_store_provider_id
+  // (primer/model/collection.py). The server allows the delete even then
+  // (primer/api/routers/semantic_search.py): a collection that still points at
+  // the provider keeps the reference and its semantic search fails, so the
+  // console holds Delete while it sees one. A read cut short never claims
+  // "Deletion is safe" (round 2 of #923).
   const collections = useResource(
     `ssp-detail:${sspId}:collections`,
     (signal) => PR_fetchAllPages("/collections", { signal, apiFetch }),
@@ -774,7 +782,7 @@ function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
   const collectionsState = window.primerApi.resourceState(collections);
   const referencingCollections = React.useMemo(() => {
     const items = collections.data?.items ?? [];
-    return items.filter((c) => c.search_provider_id === sspId);
+    return items.filter((c) => !!c.search && c.search.vector_store_provider_id === sspId);
   }, [collections.data, sspId]);
 
   // Platform wave P4: test-connect for the SAVED row, wired to the real
@@ -984,18 +992,18 @@ function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
               Checking for collections that reference this provider…
             </div>
           ) : referencingCollections.length > 0 ? (
-            <>
-              <strong style={{ color: "var(--red)" }}>409 Conflict</strong> — this provider is referenced by{" "}
-              <strong>{referencingCollections.length}</strong> collection{referencingCollections.length === 1 ? "" : "s"}:
+            <div data-testid="ssp-delete-collections-in-use">
+              This provider holds the vectors of <strong>{referencingCollections.length}</strong>{" "}
+              collection{referencingCollections.length === 1 ? "" : "s"}:
               <ul>
                 {referencingCollections.slice(0, 6).map((c) => <li key={c.id} className="mono">{c.id}</li>)}
               </ul>
-              Reassign or delete those collections first.
-            </>
+              {"Their semantic search fails once it is deleted. Point them at another provider, or turn their search off, first."}
+            </div>
           ) : collections.data?.truncated ? (
             <div data-testid="ssp-delete-collections-partial">
               <PR_PagedNote list={collections.data} noun="collections" testid="ssp-delete-collections-note" />
-              None of these reference this provider. The rest were not checked here; the server refuses the delete if one of them does.
+              {SSP_PARTIAL_CHECK}
             </div>
           ) : (
             <>
