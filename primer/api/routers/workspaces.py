@@ -1383,10 +1383,27 @@ async def list_sessions(
     }
 
 
+class MainSessionOut(WorkspaceSession):
+    """Response-only shape of ``POST /v1/workspaces/{id}/main_session``: the session row plus whether this call created it.
+
+    Never persisted. The status says the same (201 created, 200 found), but a client that reads only the body (the console's
+    ``apiFetch``) needs it in the body: the console opens the main session on a user's first login only, when ``created`` is
+    true (pivot plan P2 task 14, lead ruling), never on a later load.
+    """
+
+    created: bool = Field(
+        ...,
+        description=(
+            "True when this call created the caller's main session (their first), false when it returned the one they already "
+            "had. Response-only; never stored."
+        ),
+    )
+
+
 @sessions_router.post(
     "/workspaces/{workspace_id}/main_session",
     status_code=200,
-    response_model=WorkspaceSession,
+    response_model=MainSessionOut,
     summary="Ensure the caller's main operator session on a workspace",
     responses=common_responses(404, 500),
 )
@@ -1398,13 +1415,13 @@ async def ensure_main_session(
     workspace_registry=Depends(get_workspace_registry),
     engine=Depends(get_claim_engine),
     storage_provider=Depends(get_storage_provider),
-) -> WorkspaceSession:
+) -> MainSessionOut:
     """Get or create the caller's own main operator session on the workspace.
 
-    The console opens the default workspace (prime) on first login and picks this result (pivot plan P2 task 14). The
-    session runs as the caller: ``initiated_by`` carries the caller's role, so an admin's main session clears the admin
-    role floor and a user's does not (A-20). 201 when this call created the row, 200 when it returned the caller's
-    existing one.
+    The console asks for it when it opens the default workspace (prime) with no address, and opens the result as a tab only
+    when ``created`` is true, so only on the user's first login (pivot plan P2 task 14). The session runs as the caller:
+    ``initiated_by`` carries the caller's role, so an admin's main session clears the admin role floor and a user's does not
+    (A-20). 201 when this call created the row, 200 when it returned the caller's existing one; ``created`` says the same.
     """
     await workspace_registry.get_workspace(workspace_id)
 
@@ -1427,7 +1444,7 @@ async def ensure_main_session(
     )
     if created:
         response.status_code = 201
-    return row
+    return MainSessionOut.model_validate({**row.model_dump(), "created": created})
 
 
 @sessions_router.get(
