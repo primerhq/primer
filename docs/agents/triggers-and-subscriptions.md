@@ -151,7 +151,9 @@ it acts on every subscription of it. From a session outside prime,
 `trigger::update`, `trigger::fire_now` and `trigger::delete` answer
 `type=trigger_not_found`, exactly as an unknown trigger, when any of
 the trigger's subscriptions starts or feeds a session outside your own
-workspace.
+workspace. For `trigger::fire_now` this is asked before the rank rule
+(see Gotchas), so such a trigger answers `trigger_not_found`, never
+`forbidden`.
 
 Reading and deleting subscriptions follow the same reach. From a
 session outside prime, `trigger::list_subscriptions` and
@@ -283,7 +285,9 @@ agent is doing generic entity CRUD.
 - `trigger::delete` - cascade-deletes subscriptions.
 - `trigger::fire_now` - manual fire, bypassing schedule. Useful
   for testing and on-demand kicks. Increments `last_fired_at` and
-  runs the normal subscription dispatch.
+  runs the normal subscription dispatch. Only a caller at or above the
+  trigger owner's rank may fire it (see Gotchas); otherwise
+  `type=forbidden` and nothing fires.
 
 ### Subscription management
 
@@ -491,6 +495,22 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   `session_append` fire never reopens a session an operator cancelled,
   even one queued on the session before the Cancel: only a person
   reopens it. The fire is skipped with `skipped_session_ended`.
+- **You may fire a trigger by hand only at or above its owner's
+  rank.** A fire runs as the trigger's owners, so `trigger::fire_now`
+  (and the console's Fire now, `POST /v1/triggers/{id}/fire_now`)
+  drives the owner's automation: a `session_append` subscription of an
+  admin's trigger steers at the admin's rank. The caller is your run's
+  principal from a session, or the request's account (an API token
+  counts as its user) over MCP and REST. You may fire when you rank at
+  least as high as the trigger's `owner`: an admin fires any trigger, a
+  user fires a user's trigger, and a trigger saved before owners were
+  recorded (no `owner`) ranks as an ordinary user. Over MCP or REST you
+  may also always fire a trigger your own account owns, even after a
+  demotion; from inside a run you may not. Otherwise the tool answers
+  `type=forbidden` (REST: 403 `forbidden_rank`) naming the trigger and
+  both ranks, and nothing fires: no `trigger.fired` event, no
+  subscription dispatched, `last_fired_at` unchanged. Scheduled and
+  delayed fires, webhook calls and channel events are not ranked.
 - **A fresh-session subscription whose owner is gone does not fire.**
   When the account that saved the subscription is deleted or disabled,
   or the API token it was saved with is revoked or has expired, an
@@ -539,9 +559,10 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   conversation is handled correlation-first and never reaches the
   rules; only fresh events are matched.
 - **`trigger::fire_now` is synchronous from the operator's side**
-  (returns when the fire dispatch starts) but the subscribers act
-  asynchronously. The endpoint returns 202; check `last_fired_at`
-  to confirm the fire actually ran.
+  (returns once every enabled subscription was dispatched, with
+  `{skipped, fire_id, results}`; the REST route answers 200) but the
+  sessions it starts or feeds run on their own afterwards. Read each
+  result's `ok` and `error_code` to see what a subscription did.
 - **`subscribe_to_trigger` is invisible from MCP.** External agents
   must poll. The `trigger::list` tool gives them the trigger's
   metadata; `trigger::list_subscriptions(trigger_id=X)` lets them
