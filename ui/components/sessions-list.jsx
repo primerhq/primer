@@ -48,11 +48,12 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
   // search doesn't get rug-pulled by a refresh.
   const filterFocused = React.useRef(false);
 
-  // Every session, every page of 200 (PR_fetchAllPages, ui/foundation/api.js). The 3 s poll is per page read (PR_usePagedResource): a list of
-  // five pages is read every 15 s, one request per 3 s on average, as the one page it replaced.
+  // Every session, every page of 200 (PR_fetchAllPages, ui/foundation/api.js), NEWEST first: session ids are random, so in the default (id) order the
+  // page cap would keep an arbitrary set; newest first it keeps the newest. The 3 s poll is per page read (PR_usePagedResource, at most a minute): a
+  // list of five pages is read every 15 s, one request per 3 s on average, as the one page it replaced.
   const list = PR_usePagedResource(
     "sessions:list",
-    (signal) => PR_fetchAllPages("/sessions", { signal, apiFetch }),
+    (signal) => PR_fetchAllPages("/sessions?order_by=created_at:desc", { signal, apiFetch }),
     {
       pollMs: 3000,
       pauseWhile: () => filterFocused.current,
