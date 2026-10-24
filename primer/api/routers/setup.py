@@ -148,8 +148,8 @@ class PrimeInstructionsReset(BaseModel):
     response_model=PrimeInstructionsReset,
     summary="Rewrite prime's agents.md with the shipped version",
     # 404: no default workspace, or its row or live instance is gone; 400: a directory called agents.md; 409: a workspace this
-    # deployment refuses (WorkspaceRefusedError); 503: the workspace did not answer within the bound (WorkspaceUnreachableError,
-    # raised by the reset's own timeout), or no workspace registry (ConfigError).
+    # deployment refuses (WorkspaceRefusedError); 503: only the reset's own timeout (WorkspaceUnreachableError) or no workspace
+    # registry (ConfigError); 500: anything else the backend raises (a local workspace's RuntimeError for a symlink loop).
     responses=common_responses(400, 404, 409, 500, 503),
 )
 async def reset_prime_instructions(request: Request) -> PrimeInstructionsReset:
