@@ -119,7 +119,8 @@ EventMatcher (the binding predicate, AND of present fields):
   repeats that multiply past 10000. Matching also has a 10 ms
   execution budget; a pattern that exceeds it is treated as a non-match.
   One channel event spends at most 100 ms on text patterns in total,
-  shared equally by the owners of the bindings it is matched against.
+  shared equally by the users who own the bindings it is matched against
+  (an API token counts as its user).
   Past an owner's share, that owner's remaining bindings with a
   `text_pattern` are skipped (`skipped_match_budget`).
 
