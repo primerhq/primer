@@ -448,3 +448,62 @@ async def test_extra_mounts_reach_the_adapter_as_volume_mounts(tmp_path: Path) -
 
     assert seen == [VolumeMount(source="/srv/data", target="/data", read_only=True)]
     await backend.aclose()
+
+
+class _RefusingAdapter(_FakeAdapter):
+    """An adapter whose daemon refuses the size it is given, as the Docker adapter reports it (the G5 audit, G5-07)."""
+
+    def __init__(self, tmp_path: Path, fields: list[str]) -> None:
+        super().__init__(tmp_path)
+        self._fields = fields
+
+    async def create_sandbox(self, **kwargs) -> Sandbox:
+        from primer.workspace.size_overrides import ProviderSizeRefused
+
+        raise ProviderSizeRefused("container", self._fields, "Range of CPUs is from 0.01 to 16.00")
+
+
+def _sized_template() -> WorkspaceTemplate:
+    return WorkspaceTemplate(
+        id="t-big", provider_id="c1", description="",
+        backend=ContainerTemplateConfig(image="alpine:latest", cpu_cores=64, memory_bytes=2**30),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_size_from_the_override_is_named_where_the_request_sent_it(tmp_path: Path) -> None:
+    from primer.workspace.size_overrides import ProviderSizeRefused
+
+    backend = ContainerWorkspaceBackend(_config(), adapter=_RefusingAdapter(tmp_path, ["cpu_cores"]))
+    await backend.initialize()
+    over = WorkspaceTemplateOverrides(resources=WorkspaceResourceOverrides(cpu_cores=64))
+
+    with pytest.raises(ProviderSizeRefused) as caught:
+        await backend.create(_sized_template(), overrides=over)
+
+    assert caught.value.message == "overrides.resources.cpu_cores: Docker refused this size: Range of CPUs is from 0.01 to 16.00."
+    assert caught.value.problem_extensions == {"errors": [{
+        "loc": ["body", "overrides", "resources", "cpu_cores"],
+        "msg": "Docker refused this size: Range of CPUs is from 0.01 to 16.00.",
+        "type": "refused_by_provider",
+    }]}
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_size_from_the_template_names_the_template_field(tmp_path: Path) -> None:
+    from primer.workspace.size_overrides import ProviderSizeRefused
+
+    backend = ContainerWorkspaceBackend(_config(), adapter=_RefusingAdapter(tmp_path, ["cpu_cores"]))
+    await backend.initialize()
+    only_memory = WorkspaceTemplateOverrides(resources=WorkspaceResourceOverrides(memory_bytes=2**31))   # the CPU is the template's
+
+    with pytest.raises(ProviderSizeRefused) as caught:
+        await backend.create(_sized_template(), overrides=only_memory)
+
+    assert caught.value.message == (
+        "backend.cpu_cores: Docker refused this size: Range of CPUs is from 0.01 to 16.00. Template 't-big' sets backend.cpu_cores: "
+        "edit the template, or give this workspace its own size in overrides.resources."
+    )
+    assert caught.value.problem_extensions == {}, "stored in the template, not sent in this request: no loc"
+    await backend.aclose()

@@ -25,7 +25,7 @@ import pytest
 aiodocker = pytest.importorskip("aiodocker")
 
 import primer.workspace.runtime.docker as docker_mod  # noqa: E402
-from primer.model.except_ import ConfigError  # noqa: E402
+from primer.model.except_ import ConfigError, ValidationError  # noqa: E402
 from primer.model.workspace import (  # noqa: E402
     ContainerConnectionSocket,
     ContainerReachabilityHostPort,
@@ -34,6 +34,7 @@ from primer.model.workspace import (  # noqa: E402
 )
 from primer.workspace import base_backend  # noqa: E402
 from primer.workspace.runtime.docker import DockerRuntimeAdapter  # noqa: E402
+from primer.workspace.size_overrides import ProviderSizeRefused  # noqa: E402
 
 NAME = "workspace-ws-1"
 VOLUME = "workspace-ws-1-data"
@@ -393,3 +394,63 @@ async def test_a_container_request_that_dropped_the_connection_is_still_removed(
     with pytest.raises(ConnectionResetError):
         await _create(_adapter(docker))
     assert _nothing_left(docker)
+
+
+# ---- the G5 audit, G5-07: a size the daemon refuses is a 422, and the rollback still runs ---------------------------------------------
+
+
+async def _create_sized(adapter: DockerRuntimeAdapter, resources: ResourceLimits):
+    return await adapter.create_sandbox(
+        name=NAME, image="img:1", command=["run"], env={}, workdir="/w", volume_name=VOLUME, volume_target="/data",
+        extra_mounts=[], user=None, resources=resources, network="full", pull_policy="if_missing",
+        reachability=ContainerReachabilityHostPort(), token="tok",
+    )
+
+
+def _daemon_refuses(status: int, message: str, *, as_dict: bool = False):
+    """What aiodocker raises for a refused request: 0.27 passes the message string, an older version the response body's dict."""
+    async def refuse(fake: _FakeDocker, name: str) -> None:
+        raise aiodocker.DockerError(status, {"message": message} if as_dict else message)
+    return refuse
+
+
+_TOO_MANY_CPUS = "Range of CPUs is from 0.01 to 16.00, as there are only 16 CPUs available"
+
+
+@pytest.mark.parametrize("as_dict", [False, True])
+@pytest.mark.parametrize(("resources", "message", "fields"), [
+    (ResourceLimits(cpu_cores=64), _TOO_MANY_CPUS, ["cpu_cores"]),
+    (ResourceLimits(memory_bytes=2**20), "Minimum memory limit allowed is 6MB", ["memory_bytes"]),
+    (ResourceLimits(cpu_cores=64, memory_bytes=2**20), _TOO_MANY_CPUS, ["cpu_cores"]),
+])
+async def test_a_size_the_daemon_refuses_is_a_422_naming_the_field_and_the_rollback_still_runs(resources, message, fields, as_dict):
+    """Inside the caps Docker refuses sizes of its own. The raw ``DockerError`` is no ``PrimerError``, so it used to answer the generic 500
+    after the rollback; it is a ``ValidationError`` (422) naming the size field now, and what this call made is still removed."""
+    docker = _FakeDocker()
+    docker.create_or_replace_hook = _daemon_refuses(400, message, as_dict=as_dict)
+
+    with pytest.raises(ProviderSizeRefused) as caught:
+        await _create_sized(_adapter(docker), resources)
+
+    assert isinstance(caught.value, ValidationError)
+    assert caught.value.fields == fields and caught.value.reason == message
+    assert caught.value.message == f"{', '.join(f'backend.{f}' for f in fields)}: Docker refused this size: {message}."
+    assert isinstance(caught.value.__cause__, aiodocker.DockerError)
+    assert docker.volumes_present == set() and docker.removed == [f"volume:{VOLUME}"], "the volume this call made is removed"
+    assert docker.containers_present == set()
+
+
+@pytest.mark.parametrize(("status", "message", "resources"), [
+    (400, "invalid mount config for type \"bind\": bind source path does not exist", ResourceLimits(cpu_cores=64)),
+    (400, _TOO_MANY_CPUS, ResourceLimits()),                 # the create set no CPU, so the refusal is not that size's
+    (500, _TOO_MANY_CPUS, ResourceLimits(cpu_cores=64)),     # a server error is not a refusal of the request
+])
+async def test_a_failure_that_is_not_a_size_refusal_passes_on_as_it_was(status, message, resources):
+    docker = _FakeDocker()
+    docker.create_or_replace_hook = _daemon_refuses(status, message)
+
+    with pytest.raises(aiodocker.DockerError) as caught:
+        await _create_sized(_adapter(docker), resources)
+
+    assert not isinstance(caught.value, ProviderSizeRefused) and caught.value.status == status
+    assert docker.volumes_present == set()
