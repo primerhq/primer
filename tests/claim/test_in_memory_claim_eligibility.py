@@ -11,8 +11,9 @@ its entity. ``claim_due`` now asks the adapter's twin, ``is_eligible``.
   ticket's measurement): the boot-recovery lease of a parked session, a kept harness lease whose operation finished, a trigger released
   without a requeue, and a tool-call task failed by an invalid retry release.
 * The engine contract: eligibility is decided before ``max_count``, a missing entity is never claimed, a kind with no adapter or an
-  adapter with no storage stays claimable, an unreadable entity is skipped without failing the claim, and a row claimed or dropped
-  while its entity was read is not claimed again.
+  adapter with no storage stays claimable, an unreadable entity is skipped without failing the claim (logged once per row and error
+  type, counted every time) while a bug in an adapter propagates, a row written to while its entity was read is not claimed on that
+  read, and a lease's stamps are read from the clock when they are written (review of #928, round 2).
 """
 
 from __future__ import annotations
@@ -26,13 +27,14 @@ from unittest.mock import patch
 import pytest
 
 import primer.harness.dispatch as harness_dispatch
+import primer.observability.metrics as metrics
 from primer.api._app_lifespan_phases import recover_sessions
 from primer.claim.adapters.harnesses import HarnessClaimAdapter
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.claim.adapters.triggers import TriggerClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
-from primer.int.claim import ClaimAdapter, ClaimKind, ParkRequest, ReleaseOutcome
+from primer.int.claim import ClaimAdapter, ClaimKind, ParkRequest, ReleaseOutcome, read_for_eligibility
 from primer.model.harness import Harness, HarnessOperation, HarnessStatus
 from primer.model.provider import SqliteConfig
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
@@ -269,6 +271,25 @@ async def test_trigger_a_due_lease_is_claimed_at_its_tick_and_not_a_moment_befor
     assert await _claimable(engine, ClaimKind.TRIGGER) == ["tr1"]
 
 
+async def test_trigger_the_twin_reads_a_naive_next_fire_at_as_utc():
+    """Probe p1 of the review: ``naive <= aware`` raised in the twin where the SQL casts the value. The model normalises a naive
+    time on read now; the twin holds for a model that did not (a copy made without validation)."""
+    tick = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+    stored = Trigger(
+        id="tr1", slug="daily", name="d", config=ScheduledTriggerConfig(cron="0 9 * * *", timezone="UTC"), enabled=True,
+        next_fire_at=tick, created_at=tick - timedelta(days=2),
+    ).model_copy(update={"next_fire_at": tick.replace(tzinfo=None)})
+    assert stored.next_fire_at.tzinfo is None, "the premise: a naive value reaches the twin"
+
+    class _Storage:
+        async def get(self, entity_id, *, conn=None):
+            return stored
+
+    adapter = TriggerClaimAdapter(storage=_Storage())
+    assert await adapter.is_eligible("tr1", tick - timedelta(microseconds=1)) is False
+    assert await adapter.is_eligible("tr1", tick) is True
+
+
 # ---------------------------------------------------------------------------
 # TOOL_CALL: eligible while state is queued or running (no production claimer: WorkerPool registers no TOOL_CALL handler)
 # ---------------------------------------------------------------------------
@@ -323,16 +344,32 @@ async def test_tool_call_a_task_failed_by_an_invalid_retry_release_is_not_claime
 # ---------------------------------------------------------------------------
 
 
+class _FailingStorage:
+    """A storage whose read raises ``error``: what a backend raises for a row it cannot read or decode."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    async def get(self, entity_id, *, conn=None):
+        raise self.error
+
+
 class _Adapter(ClaimAdapter):
-    """A test adapter whose eligibility is a set of ids, with an optional gate the read waits on."""
+    """A test adapter whose eligibility is a set of ids, with an optional gate the read waits on.
+
+    ``failing`` maps an id to the error its storage read raises; the read goes through ``read_for_eligibility`` as a shipped
+    adapter's does.
+    """
 
     kind = ClaimKind.HARNESS
     entity_table = "harness"
 
-    def __init__(self, eligible: set[str], *, gate: asyncio.Event | None = None, broken: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self, eligible: set[str], *, gate: asyncio.Event | None = None, failing: dict[str, BaseException] | None = None,
+    ) -> None:
         self.eligible = eligible
         self.gate = gate
-        self.broken = broken
+        self.failing = failing if failing is not None else {}
         self.read: list[str] = []
 
     def eligibility_sql(self) -> str:
@@ -342,8 +379,8 @@ class _Adapter(ClaimAdapter):
         self.read.append(entity_id)
         if self.gate is not None:
             await self.gate.wait()
-        if entity_id in self.broken:
-            raise RuntimeError("unreadable row")
+        if entity_id in self.failing:
+            await read_for_eligibility(_FailingStorage(self.failing[entity_id]), entity_id)
         return entity_id in self.eligible
 
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
@@ -388,7 +425,7 @@ async def test_engine_claims_a_kind_with_no_adapter_or_an_adapter_with_no_storag
 
 
 async def test_engine_skips_an_entity_it_cannot_read_and_claims_the_rest(caplog):
-    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _Adapter({"ok", "bad"}, broken=frozenset({"bad"}))})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _Adapter({"ok", "bad"}, failing={"bad": OSError("disk")})})
     await engine.upsert(ClaimKind.HARNESS, "bad", priority=10)
     await engine.upsert(ClaimKind.HARNESS, "ok", priority=100)
 
@@ -428,3 +465,251 @@ async def test_engine_does_not_claim_a_row_dropped_while_its_entity_was_read():
 
     assert await first == []
     assert not await engine.has_lease(ClaimKind.HARNESS, "h1")
+
+
+# ---------------------------------------------------------------------------
+# Review of #928, round 2: an unreadable row is logged once and counted; a bug in an adapter propagates
+# ---------------------------------------------------------------------------
+
+
+def _read_errors(kind: str) -> float:
+    return metrics.claim_eligibility_read_errors_total.labels(kind)._value.get()
+
+
+def _warnings_for(caplog, needle: str) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno == logging.WARNING and needle in r.getMessage()]
+
+
+async def _set_session_json(sp, sid: str, *pairs: str) -> None:
+    """Edit the stored document directly (``json_set`` path/value pairs), the way a hand edit or an older build leaves it."""
+    placeholders = ", ".join("?, ?" for _ in range(len(pairs) // 2))
+    await sp.connection.execute(f"UPDATE sessions SET data = json_set(data, {placeholders}) WHERE id = ?", (*pairs, sid))
+    await sp.connection.commit()
+
+
+async def test_an_undecodable_row_is_logged_once_with_its_traceback_counted_every_poll_and_logged_again_after_a_good_read(
+    sp, engine, caplog,
+):
+    """Probe p3 of the review: one WARNING per poll per bad row, for ever. Now: logged once per row and error type, with the
+    traceback, until a read of the row succeeds; counted on every failed read."""
+    await sp.get_storage(WorkspaceSession).create(_session("s-bad"))
+    await engine.upsert(ClaimKind.SESSION, "s-bad")
+    await _set_session_json(sp, "s-bad", "$.status", "bogus")
+    before = _read_errors("session")
+
+    with caplog.at_level(logging.WARNING, logger="primer.claim.in_memory"):
+        for _ in range(5):
+            assert await engine.claim_due("w", max_count=5) == []
+        first = _warnings_for(caplog, "could not read session/s-bad")
+        assert len(first) == 1, "logged once, not once per poll"
+        assert first[0].exc_info is not None, "the first line carries the traceback"
+        assert _read_errors("session") - before == 5, "counted on every failed read"
+
+        await _set_session_json(sp, "s-bad", "$.status", "running", "$.parked_status", "parked")   # readable, not eligible
+        assert await engine.claim_due("w", max_count=5) == []
+        await _set_session_json(sp, "s-bad", "$.status", "bogus")                                  # unreadable again
+        assert await engine.claim_due("w", max_count=5) == []
+
+    assert len(_warnings_for(caplog, "could not read session/s-bad")) == 2, "a good read in between: the next failure is logged"
+    assert _read_errors("session") - before == 6
+    assert await engine.has_lease(ClaimKind.SESSION, "s-bad")
+
+
+async def test_an_unreadable_row_is_logged_again_for_a_different_error_type(caplog):
+    adapter = _Adapter(set(), failing={"h1": OSError("disk")})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: adapter})
+    await engine.upsert(ClaimKind.HARNESS, "h1")
+
+    with caplog.at_level(logging.WARNING, logger="primer.claim.in_memory"):
+        await engine.claim_due("w", max_count=1)
+        await engine.claim_due("w", max_count=1)
+        adapter.failing["h1"] = ValueError("bad document")
+        await engine.claim_due("w", max_count=1)
+        await engine.claim_due("w", max_count=1)
+
+    logged = _warnings_for(caplog, "could not read harness/h1")
+    assert [r.exc_info[1].__cause__.__class__ for r in logged] == [OSError, ValueError]
+
+
+async def test_an_adapter_without_is_eligible_is_a_bug_that_propagates_and_is_not_counted():
+    """Probe p3b of the review: a duck-typed adapter read as "could not read harness/h1" and its kind was never claimed again."""
+    class _Duck:
+        kind = ClaimKind.HARNESS
+        entity_table = "harness"
+
+        def eligibility_sql(self) -> str:
+            return "TRUE"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            return None
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _Duck()})  # type: ignore[dict-item]
+    await engine.upsert(ClaimKind.HARNESS, "h1")
+    before = _read_errors("harness")
+
+    with pytest.raises(AttributeError):
+        await engine.claim_due("w", max_count=5)
+    assert _read_errors("harness") == before
+
+
+async def test_a_type_error_raised_by_an_adapters_own_logic_propagates():
+    class _Comparing(_Adapter):
+        async def is_eligible(self, entity_id: str, now: datetime) -> bool:
+            return datetime(2026, 1, 1) <= now      # naive against aware: the adapter's bug, not an unreadable row
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _Comparing(set())})
+    await engine.upsert(ClaimKind.HARNESS, "h1")
+
+    with pytest.raises(TypeError):
+        await engine.claim_due("w", max_count=5)
+
+
+# ---------------------------------------------------------------------------
+# Review of #928, round 2: a decision read before a write to the row is not acted on
+# ---------------------------------------------------------------------------
+
+
+class _FlipAdapter(ClaimAdapter):
+    """Decides from the entity as read, then resumes later (the SQLite read runs in its thread); its release finishes the entity."""
+
+    kind = ClaimKind.HARNESS
+    entity_table = "harness"
+
+    def __init__(self) -> None:
+        self.eligible = {"h1"}
+        self.gate: asyncio.Event | None = None
+        self.read: list[str] = []
+
+    def eligibility_sql(self) -> str:
+        return "TRUE"
+
+    async def is_eligible(self, entity_id: str, now: datetime) -> bool:
+        self.read.append(entity_id)
+        decided = entity_id in self.eligible
+        if self.gate is not None:
+            await self.gate.wait()
+        return decided
+
+    async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
+        self.eligible.discard(entity_id)
+
+
+async def test_a_claim_does_not_act_on_eligibility_read_before_an_expired_holders_release():
+    """Probe p4 of the review. A's lease expired while A still runs; B's claim reads the entity (eligible) and is suspended; A
+    releases, keeping the lease, and the release finishes the entity. B resumes on a decision about an entity that has changed:
+    it must not claim (the row's generation moved), and a fresh claim on the same state does not claim either."""
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    adapter = _FlipAdapter()
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: adapter}, clock=lambda: clock["now"])
+    await engine.upsert(ClaimKind.HARNESS, "h1")
+    [held] = await engine.claim_due("A", max_count=1)
+    clock["now"] += timedelta(seconds=engine.lease_ttl_seconds + 1)
+
+    adapter.gate = asyncio.Event()
+    second = asyncio.create_task(engine.claim_due("B", max_count=1))
+    async with asyncio.timeout(5):
+        while adapter.read != ["h1", "h1"]:
+            assert not second.done(), "the claim finished without reading the entity"
+            await asyncio.sleep(0)
+    await engine.release(held, outcome=ReleaseOutcome(success=False, last_error="boom"))
+    assert "h1" not in adapter.eligible
+    adapter.gate.set()
+
+    assert await second == [], "B claimed on the eligibility it read before A's release"
+    adapter.gate = None
+    assert await engine.claim_due("C", max_count=1) == []
+
+
+@pytest.mark.parametrize("write", ["upsert", "mark_resumable"])
+async def test_a_claim_does_not_act_on_a_read_the_row_was_rearmed_during(write):
+    """An upsert that changes only the priority, or a ``mark_resumable``, during the read: the row moved, so that read is not
+    acted on; the next claim reads it again and claims."""
+    gate = asyncio.Event()
+    adapter = _Adapter({"h1"}, gate=gate)
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: adapter})
+    await engine.upsert(ClaimKind.HARNESS, "h1")
+
+    first = asyncio.create_task(engine.claim_due("w1", max_count=1))
+    await _suspended_in_the_read(adapter, first)
+    if write == "upsert":
+        await engine.upsert(ClaimKind.HARNESS, "h1", priority=10)
+    else:
+        await engine.mark_resumable(ClaimKind.HARNESS, "h1")
+    gate.set()
+
+    assert await first == []
+    adapter.gate = None
+    assert [lease.entity_id for lease in await engine.claim_due("w2", max_count=1)] == ["h1"]
+
+
+async def test_the_lease_stamps_are_read_from_the_clock_when_they_are_written():
+    """The due and eligibility decision is made at the claim's start; ``claimed_at`` and ``expires_at`` are the clock's time when
+    the claim is stamped, after the entity read (the review: a slow read made a lease expire early by the time it took)."""
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    clock = {"now": start}
+
+    class _SlowRead(_Adapter):
+        async def is_eligible(self, entity_id: str, now: datetime) -> bool:
+            assert now == start, "the decision is made at the claim's start"
+            clock["now"] = start + timedelta(seconds=7)
+            return True
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _SlowRead(set())}, clock=lambda: clock["now"])
+    await engine.upsert(ClaimKind.HARNESS, "h1")
+
+    [lease] = await engine.claim_due("w", max_count=1)
+
+    stamped = start + timedelta(seconds=7)
+    assert (lease.claimed_at, lease.expires_at) == (stamped, stamped + timedelta(seconds=engine.lease_ttl_seconds))
+    row = engine._leases[(ClaimKind.HARNESS, "h1")]
+    assert (row.claimed_at, row.last_heartbeat_at, row.expires_at) == (lease.claimed_at, stamped, lease.expires_at)
+
+
+# ---------------------------------------------------------------------------
+# Review of #928, round 2: boot recovery through the REAL claim loop
+# ---------------------------------------------------------------------------
+
+
+async def test_session_boot_recovery_over_a_parked_running_session_runs_no_turn_through_the_real_claim_loop(sp, engine):
+    """Probe p6 of the review, next to the ``run_one_turn_now`` pin above: the pool's own claim loop (``start()``, a 0.1 s poll)
+    polls the parked session's armed lease for a second and runs no turn; the lease is kept for the resume. Red before the fix
+    (the loop ran a turn over the park)."""
+    from primer.model.scheduler import WorkerConfig
+    from primer.scheduler.in_memory import InMemoryScheduler
+    from primer.worker.pool import WorkerPool
+
+    await sp.get_storage(WorkspaceSession).create(
+        _session("s1", parked_status="parked", parked_at=_now(), parked_event_key="evt:1"),
+    )
+    scheduler = InMemoryScheduler()
+    await scheduler.initialize()
+    await recover_sessions(engine, scheduler, sp)
+    assert await engine.has_lease(ClaimKind.SESSION, "s1"), "the premise: boot recovery armed the parked session"
+
+    turns: list[str] = []
+
+    async def _turn(lease, deps):
+        turns.append(lease.entity_id)
+        return ReleaseOutcome(success=True, drop_lease=True)
+
+    pool = WorkerPool(
+        config=WorkerConfig(
+            concurrency=2, claim_batch_size=4, heartbeat_interval_seconds=1, lease_ttl_seconds=5,
+            poll_interval_seconds=0.1, drain_timeout_seconds=5,
+        ),
+        scheduler=scheduler, storage=sp, workspace_registry=None, provider_registry=None, engine=engine,  # type: ignore[arg-type]
+    )
+    try:
+        with patch("primer.worker.pool.run_one_session_turn", side_effect=_turn):
+            await pool.start()
+            try:
+                await asyncio.sleep(1.0)                     # about ten polls of the real loop
+                empty_polls = pool.metrics_snapshot()["primer_worker_claims_empty_total"]
+            finally:
+                await pool.drain_and_stop(timeout=2)
+    finally:
+        await scheduler.aclose()
+
+    assert turns == [], "the real claim loop ran a turn over the park"
+    assert empty_polls >= 3, "the loop really polled"
+    assert await engine.has_lease(ClaimKind.SESSION, "s1"), "the armed lease is kept for the resume"

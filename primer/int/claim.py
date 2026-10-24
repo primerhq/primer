@@ -170,6 +170,25 @@ class PostReleaseWake:
     payload: dict[str, Any]
 
 
+class EligibilityReadError(Exception):
+    """The entity behind a lease could not be read to decide its eligibility: the storage read, or the decode of the row.
+
+    Raised by :func:`read_for_eligibility` with the original error as its ``__cause__``. The in-memory engine catches THIS
+    and nothing else around :meth:`ClaimAdapter.is_eligible`: an unreadable row is skipped for that claim (and logged once,
+    and counted), while a programming error in an adapter (an ``AttributeError``, a ``TypeError``) is not mistaken for one
+    and propagates out of ``claim_due``.
+    """
+
+
+async def read_for_eligibility(storage: Any, entity_id: str) -> Any:
+    """``storage.get(entity_id)`` for :meth:`ClaimAdapter.is_eligible`, any failure of the read or of the row's decode raised
+    as :class:`EligibilityReadError` (``None`` for a missing row is an answer, not a failure)."""
+    try:
+        return await storage.get(entity_id)
+    except Exception as exc:  # noqa: BLE001 - every failure of the read is the read's, whatever the backend raised
+        raise EligibilityReadError(f"{type(exc).__name__}: {exc}") from exc
+
+
 class ClaimAdapter(ABC):
     kind: ClaimKind
     entity_table: str
@@ -188,6 +207,9 @@ class ClaimAdapter(ABC):
         An adapter answers False for an entity that is missing, as the claim query's inner join does. One that cannot read its
         entity (it has no storage) answers True, and so does this default: the lease stays claimable, as it was before the
         in-memory engine applied eligibility at all (``is_dead`` makes the opposite, equally conservative choice for a prune).
+
+        Read the entity through :func:`read_for_eligibility`, so a failed read or decode reaches the engine as
+        :class:`EligibilityReadError` (skipped for that claim) and anything else the adapter raises reaches it as the bug it is.
         """
         return True
 
