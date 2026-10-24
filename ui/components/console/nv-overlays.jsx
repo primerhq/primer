@@ -575,7 +575,14 @@ function NV_CreateWorkspaceOverlay() {
   var foldState = React.useState({ files: { open: false, gen: 0 }, init: { open: false, gen: 0 } });
   var folds = foldState[0];
   var setFolds = foldState[1];
+  // A request is out (from the click, before the busy state has rendered), the body it sent, and whether the dialog is still on screen.
   var outRef = React.useRef(false);
+  var sentRef = React.useRef(null);
+  var aliveRef = React.useRef(true);
+  React.useEffect(function () {
+    aliveRef.current = true;
+    return function () { aliveRef.current = false; };
+  }, []);
 
   var template = items.filter(function (t) { return t && t.id === picked.id; })[0]
     || (handed && handed.id === picked.id ? handed : null);
@@ -643,14 +650,22 @@ function NV_CreateWorkspaceOverlay() {
     return apiFetch("POST", "/workspaces", body);
   }, {
     invalidates: ["nv-workspaces"],
+    // The workspace is made either way, so the toast says so. Closing and switching belong to the dialog: when another overlay replaced it while the
+    // request was out, that overlay is left alone and nothing is switched under it.
     onSuccess: function (row) {
-      con.closeOverlay();
       con.toast("Workspace created: " + (row.name || row.id));
+      if (!aliveRef.current) return;
+      con.closeOverlay();
       var verb = con.registry.get("workspace.switch");
       if (verb && row.id) verb.run({ wid: row.id });
     },
+    // A 409 for a create that named an id is that id being taken (the route's one conflict): it is said under Id, the field to change.
     onError: function (err) {
-      setServer(WT_splitErrors(err, function (loc) { return NV_nwFieldKey(loc, kind); }));
+      var split = WT_splitErrors(err, function (loc) { return NV_nwFieldKey(loc, kind); });
+      if (err && err.status === 409 && sentRef.current && sentRef.current.id && !Object.keys(split.fields).length && split.general) {
+        split = { fields: { id: split.general }, general: null };
+      }
+      setServer(split);
     },
   });
   var busy = !!mutation.loading;
@@ -659,10 +674,17 @@ function NV_CreateWorkspaceOverlay() {
   function submit() {
     if (!ready || outRef.current) return;
     outRef.current = true;
+    var body = NV_nwBody(state);
+    sentRef.current = body;
     setServer({ fields: {}, general: null });
-    mutation.mutate(NV_nwBody(state)).then(null, function () {
+    mutation.mutate(body).then(null, function () {
       outRef.current = false;
     });
+  }
+  // X, Escape, the scrim and Cancel: nothing while a Create is out, as Cancel's blocked says.
+  function close() {
+    if (outRef.current || busy) return;
+    con.closeOverlay();
   }
 
   function handBack(row) {
@@ -673,7 +695,7 @@ function NV_CreateWorkspaceOverlay() {
   }
 
   var footer = {
-    left: <Btn kind="ghost" data-testid="nv-nw-cancel" blocked={busy} onClick={con.closeOverlay}>Cancel</Btn>,
+    left: <Btn kind="ghost" data-testid="nv-nw-cancel" blocked={busy} onClick={close}>Cancel</Btn>,
     right: (
       <Btn kind="primary" data-testid="nv-nw-create" disabled={!ready} busy={busy} onClick={submit}>{busy ? "Creating…" : "Create"}</Btn>
     ),
@@ -684,7 +706,8 @@ function NV_CreateWorkspaceOverlay() {
     options = options.concat([{ value: handed.id, label: handed.id, iconPath: WT_KIND_ICONS[WT_kindOf(handed)] }]);
   }
   var selector = template ? {
-    prefix: "From template", value: picked.id, options: options, searchable: true, testid: "nv-nw-template",
+    // Locked while a Create is out: a pick would reset the sizes of the form already sent.
+    prefix: "From template", value: picked.id, options: options, searchable: true, testid: "nv-nw-template", locked: busy,
     onChange: function (value) {
       var next = items.filter(function (t) { return t && t.id === value; })[0] || (handed && handed.id === value ? handed : null);
       if (next && next.id !== picked.id) pick(next);
@@ -714,7 +737,8 @@ function NV_CreateWorkspaceOverlay() {
     var fields = NV_nwSizeFields(kind);
     var sizeInput = function (key, testid) {
       return (
-        <input className="input" data-testid={testid} value={picked.size[key]} inputMode="decimal" placeholder="No limit"
+        <input className="input" data-testid={testid} value={picked.size[key]} inputMode="decimal"
+          placeholder={picked.initial[key] ? picked.initial[key] + " (template)" : "No limit"}
           onChange={function (e) { setSize(key, e.target.value); }} />
       );
     };
@@ -772,7 +796,7 @@ function NV_CreateWorkspaceOverlay() {
 
   return (
     <React.Fragment>
-      <PK_FormOverlay title="New workspace" testid="nv-overlay:new-workspace" onClose={con.closeOverlay} selector={selector} footer={footer}>
+      <PK_FormOverlay title="New workspace" testid="nv-overlay:new-workspace" onClose={close} selector={selector} footer={footer}>
         {body}
         {server.general ? <div className="nv-form-error" role="alert" data-testid="nv-nw-error">{server.general}</div> : null}
       </PK_FormOverlay>

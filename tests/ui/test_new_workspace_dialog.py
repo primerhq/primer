@@ -191,13 +191,27 @@ def test_the_summary_follows_the_template(ctx):
 def test_size_section_by_kind(ctx):
     _mount(ctx, [K8S, DOCKER, LOCAL])
     assert [js(ctx, f"value('{t}')") for t in ("nv-nw-cpu", "nv-nw-memory", "nv-nw-disk")] == ["2", "4", "10"]
-    assert js(ctx, "MR.find('nv-nw-cpu').props.placeholder") == "No limit"
+    assert js(ctx, "MR.find('nv-nw-cpu').props.placeholder") == "2 (template)"
     assert ctx.eval("textOf(MR.find('nv-nw-size-help'))") == "Filled in from the template. A change applies to this workspace only."
     _pick(ctx, "tpl-dock")
     assert [js(ctx, f"value('{t}')") for t in ("nv-nw-cpu", "nv-nw-memory")] == ["1", "2"]
     assert ctx.eval("MR.find('nv-nw-disk') === null"), "Docker cannot limit a disk, so the dialog does not offer one"
     _pick(ctx, "tpl-loc")
     assert ctx.eval("MR.find('nv-nw-size') === null")
+
+
+def test_a_cleared_size_shows_the_templates_value_as_its_placeholder(ctx):
+    """A size the template sets, cleared, runs at the template's value (nothing is sent), so its placeholder says that value, not "No limit"; "No limit"
+    is for a size the template does not set."""
+    no_cpu = {**K8S, "id": "tpl-k3s-nocpu", "resources": {"memory_bytes": 4 * GIB}}
+    _mount(ctx, [K8S, DOCKER, no_cpu])
+    ctx.eval("setValue('nv-nw-cpu', ''); setValue('nv-nw-memory', ''); setValue('nv-nw-disk', '');")
+    assert [js(ctx, f"MR.find('{t}').props.placeholder") for t in ("nv-nw-cpu", "nv-nw-memory", "nv-nw-disk")] == ["2 (template)", "4 (template)", "10 (template)"]
+    _pick(ctx, "tpl-dock")
+    assert [js(ctx, f"MR.find('{t}').props.placeholder") for t in ("nv-nw-cpu", "nv-nw-memory")] == ["1 (template)", "2 (template)"]
+    _pick(ctx, "tpl-k3s-nocpu")
+    assert js(ctx, "MR.find('nv-nw-cpu').props.placeholder") == "No limit"
+    assert js(ctx, "MR.find('nv-nw-memory').props.placeholder") == "4 (template)"
 
 
 def test_a_new_template_resets_the_sizes_the_person_typed(ctx):
@@ -341,16 +355,42 @@ def test_a_refusal_with_no_field_is_said_in_words(ctx):
 
 
 def test_a_refusal_of_an_extra_file_opens_its_fold(ctx):
-    """A refusal of a field inside a closed fold opens the fold, so the error is never drawn where nobody can see it."""
-    env = {
-        "type": "/errors/validation-error", "title": "Validation Error", "status": 422, "detail": "overrides.files.0.path: Field required",
-        "extensions": {"errors": [{"loc": ["body", "overrides", "files", 0, "path"], "msg": "Field required", "type": "missing"}]},
-    }
+    """A refusal of a field inside a closed fold opens the fold, so the error is never drawn where nobody can see it. The envelope is the real router's
+    for a file with no path (the dialog itself drops such a row, so the handler answers it for the test)."""
+    status, env = envelope("POST", "/v1/workspaces", {"template_id": "tpl-loc", "overrides": {"files": [{"source": {"kind": "inline", "content": "x"}}]}})
+    assert status == 422 and env["extensions"]["errors"][0]["loc"] == ["body", "overrides", "files", 0, "path"]
+    _mount(ctx, [LOCAL])
+    _refuse_create_with(ctx, env)
+    assert ctx.eval("MR.find('nv-nw-files') === null"), "the fold starts closed"
+    ctx.eval("press('nv-nw-create');")
+    settle(ctx)
+    assert ctx.eval("!!MR.find('nv-nw-files')") and js(ctx, "errorUnder('nv-nw-files')") == env["extensions"]["errors"][0]["msg"]
+    assert ctx.eval("MR.find('nv-nw-error') === null")
+
+
+def test_a_taken_id_is_refused_under_the_id_field_and_cleared_by_a_new_id(ctx):
+    """The real 409 of a create that names an id another workspace has: it is said under Id (the field the person must change), not in the line, and
+    goes as soon as the Id changes."""
+    status, env = envelope("POST", "/v1/workspaces", {"template_id": "tpl-loc", "id": "taken"}, workspaces=("taken",))
+    assert status == 409 and "extensions" in env and "errors" not in env["extensions"]
+    _mount(ctx, [LOCAL])
+    _refuse_create_with(ctx, env)
+    ctx.eval("setValue('nv-nw-id', 'taken'); press('nv-nw-create');")
+    settle(ctx)
+    assert js(ctx, "errorUnder('nv-nw-id')") == "Workspace with id 'taken' already exists"
+    assert ctx.eval("MR.find('nv-nw-error') === null")
+    ctx.eval("setValue('nv-nw-id', 'free-one');")
+    assert js(ctx, "errorUnder('nv-nw-id')") is None
+
+
+def test_a_conflict_for_a_create_that_named_no_id_is_the_line(ctx):
+    """With no id typed there is no field to put a 409 under: the one line says it (the real envelope's words)."""
+    status, env = envelope("POST", "/v1/workspaces", {"template_id": "tpl-loc", "id": "taken"}, workspaces=("taken",))
     _mount(ctx, [LOCAL])
     _refuse_create_with(ctx, env)
     ctx.eval("press('nv-nw-create');")
     settle(ctx)
-    assert ctx.eval("!!MR.find('nv-nw-files')") and js(ctx, "errorUnder('nv-nw-files')") == "Field required"
+    assert ctx.eval("textOf(MR.find('nv-nw-error'))") == "Workspace with id 'taken' already exists" and js(ctx, "errorUnder('nv-nw-id')") is None
 
 
 # ---- after Create --------------------------------------------------------------------------------------------------------------------------------------
@@ -389,6 +429,53 @@ def test_create_is_busy_not_disabled_while_the_request_is_out(ctx):
     ctx.eval("press('nv-nw-create'); press('nv-nw-create');")
     settle(ctx)
     assert len(_posts(ctx)) == 1, "a second Create while one is out sends nothing"
+
+
+def test_the_template_dropdown_is_locked_while_a_create_is_out(ctx):
+    """A pick while the request is out would reset the sizes of a form already sent: the dropdown is locked until the answer, and opens again after a
+    refusal."""
+    status, env = envelope("POST", "/v1/workspaces", {"template_id": "no-such-template"})
+    _mount(ctx, [K8S, DOCKER])
+    ctx.eval("var REJECT; HANDLER = function (m) { return m === 'POST' ? new Promise(function (r, j) { REJECT = j; }) : Promise.resolve({}); };"
+             " setValue('nv-nw-memory', '8'); press('nv-nw-create');")
+    settle(ctx)
+    assert js(ctx, "dialog().selector.locked") is True
+    ctx.eval("MR.click('nv-nw-template');")
+    assert ctx.eval("MR.find('nv-nw-template:tpl-dock') === null"), "a locked selector opens nothing"
+    ctx.eval(f"REJECT(new window.primerApi.ApiError({json.dumps(env)}));")
+    settle(ctx)
+    assert not js(ctx, "dialog().selector.locked")
+    assert js(ctx, "value('nv-nw-memory')") == "8", "a refusal keeps what the person typed"
+
+
+def test_the_dialog_cannot_be_closed_while_a_create_is_out(ctx):
+    """X, Escape and the scrim all call the overlay's onClose: like Cancel, they do nothing while the request is out, and close again after a refusal."""
+    status, env = envelope("POST", "/v1/workspaces", {"template_id": "no-such-template"})
+    _mount(ctx, [LOCAL])
+    ctx.eval("var REJECT; HANDLER = function (m) { return m === 'POST' ? new Promise(function (r, j) { REJECT = j; }) : Promise.resolve({}); };"
+             " press('nv-nw-create');")
+    settle(ctx)
+    ctx.eval("dialog().onClose(); press('nv-nw-cancel');")
+    assert js(ctx, "OVERLAY_CLOSED") == 0
+    ctx.eval(f"REJECT(new window.primerApi.ApiError({json.dumps(env)}));")
+    settle(ctx)
+    ctx.eval("dialog().onClose();")
+    assert js(ctx, "OVERLAY_CLOSED") == 1
+
+
+def test_a_success_after_the_dialog_has_gone_closes_nothing(ctx):
+    """If another overlay replaced the dialog while its request was out, the answer must not close that overlay, nor switch the workspace under it; the
+    toast still says the workspace was made."""
+    ctx.eval(f"serve({json.dumps(KEY)}, {{ items: {json.dumps([LOCAL])} }});"
+             " function Host(p) { return p.show ? React.createElement(window.NV_CreateWorkspaceOverlay, {}) : null; }"
+             " MR.mount(Host, { show: true });")
+    ctx.eval("var RESOLVE; HANDLER = function (m) { return m === 'POST' ? new Promise(function (r) { RESOLVE = r; }) : Promise.resolve({}); };"
+             " press('nv-nw-create');")
+    settle(ctx)
+    ctx.eval("MR.rerender({ show: false }); RESOLVE({ id: 'ws-9', name: 'late' });")
+    settle(ctx)
+    assert js(ctx, "OVERLAY_CLOSED") == 0 and js(ctx, "VERB_RUNS") == []
+    assert js(ctx, "TOASTS") == [["Workspace created: late", None]]
 
 
 def test_a_failed_create_can_be_sent_again(ctx):

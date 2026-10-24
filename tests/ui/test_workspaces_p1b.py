@@ -88,7 +88,7 @@ def test_overrides_footnote_is_the_designs_sentence() -> None:
 def test_overrides_are_only_sent_when_a_key_is_present() -> None:
     """NV_nwBody builds the body: an env row with no name is left out, and so is an empty overrides (tests/ui/test_nv_new_workspace_helpers.py runs it)."""
     modal = _modal_src()
-    assert "mutation.mutate(NV_nwBody(state))" in modal
+    assert "var body = NV_nwBody(state);" in modal and "mutation.mutate(body)" in modal
     assert "if (named) overrides.env = env;" in modal
     assert "if (Object.keys(overrides).length) body.overrides = overrides;" in modal
 
