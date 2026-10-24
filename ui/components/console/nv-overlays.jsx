@@ -413,6 +413,125 @@ function NV_CreateSessionOverlay() {
   );
 }
 
+// ---- NV_nw pure helpers (tests/ui/test_nv_new_workspace_helpers.py) ----
+// The new-workspace dialog (platform revamp Plan 08, Task 12; design 14.3) is built on these: no JSX and no React, so the test runs them in MiniRacer
+// next to the template helpers they use (WT_* in workspaces/templates.jsx). They decide the id rule, which size fields each provider kind offers and
+// what they are pre-filled with, the body POST /v1/workspaces is sent (only the sizes the person changed, and only those the provider can take, so a
+// pre-filled size in other units is never rewritten), the dialog's own errors, and the field a refusal's loc names.
+
+// The server's one rule for a caller's workspace id (primer/model/workspace.py WORKSPACE_ID_PATTERN).
+var NV_NW_ID_PATTERN = "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$";
+var NV_NW_ID_RE = new RegExp(NV_NW_ID_PATTERN);
+
+// Null for a blank id (the server makes one) or one the server takes, else the sentence that says the rule.
+function NV_nwIdError(text) {
+  var s = WT_trim(text);
+  if (!s || NV_NW_ID_RE.test(s)) return null;
+  return "Use lowercase letters, digits and dashes, starting and ending with a letter or digit (at most 63).";
+}
+
+// The size fields each provider kind takes for one workspace (primer/workspace/size_overrides.py): Kubernetes all three, Docker no disk, Local none.
+var NV_NW_SIZE_FIELDS = { kubernetes: ["cpu", "memoryGiB", "diskGiB"], container: ["cpu", "memoryGiB"], local: [] };
+
+function NV_nwSizeFields(kind) {
+  return WT_has(NV_NW_SIZE_FIELDS, kind) ? NV_NW_SIZE_FIELDS[kind].slice() : [];
+}
+
+// The size fields as the template fills them in, as text ("" where the template sets none).
+function NV_nwInitialSize(t) {
+  var size = WT_templateSize(t);
+  return {
+    cpu: size.cpu != null ? String(size.cpu) : "",
+    memoryGiB: size.memoryGiB != null ? WT_formatGiB(size.memoryGiB) : "",
+    diskGiB: size.diskGiB != null ? WT_formatGiB(size.diskGiB) : (size.diskRaw || ""),
+  };
+}
+
+// The fields of a size the dialog sends: the ones the person changed (sizeDirty), left non-empty, and that the provider takes.
+function NV_nwSentSizes(state) {
+  var dirty = state.sizeDirty || {};
+  var size = state.size || {};
+  return NV_nwSizeFields(state.kind).filter(function (key) { return !!dirty[key] && WT_trim(size[key]) !== ""; });
+}
+
+// The body of POST /v1/workspaces: {template_id, name?, id?, overrides?}. state = {templateId, kind, name, id, size, sizeDirty, envRows, files, init}.
+// An env row with no name, a file with no path and a blank command line are left out, and so is an empty overrides.
+function NV_nwBody(state) {
+  var body = { template_id: state.templateId };
+  var name = WT_trim(state.name);
+  if (name) body.name = name;
+  var id = WT_trim(state.id);
+  if (id) body.id = id;
+  var overrides = {};
+  var env = {};
+  var named = 0;
+  (state.envRows || []).forEach(function (r) {
+    var k = WT_trim(r && r.key);
+    if (!k) return;
+    env[k] = r.value == null ? "" : String(r.value);
+    named += 1;
+  });
+  if (named) overrides.env = env;
+  var files = (state.files || []).filter(function (f) { return f && WT_trim(f.path); }).map(WT_copy);
+  if (files.length) overrides.files = files;
+  var init = WT_lines(state.init);
+  if (init.length) overrides.init_commands = init;
+  var resources = {};
+  NV_nwSentSizes(state).forEach(function (key) {
+    var size = state.size[key];
+    if (key === "cpu") resources.cpu_cores = WT_positiveNumber(size);
+    else if (key === "memoryGiB") resources.memory_bytes = WT_giBToBytes(size);
+    else if (key === "diskGiB") resources.disk_bytes = WT_giBToBytes(size);
+  });
+  if (Object.keys(resources).length) overrides.resources = resources;
+  if (Object.keys(overrides).length) body.overrides = overrides;
+  return body;
+}
+
+// The dialog's own errors, by field key (empty when it may be sent): the id, each size the person changed (positive, and no more than a workspace may
+// have), a name used twice in the extra environment, and a file mode that is not octal. A pre-filled size nobody changed is not checked: it is not sent.
+function NV_nwErrors(state) {
+  var errs = {};
+  var idError = NV_nwIdError(state.id);
+  if (idError) errs.id = idError;
+  NV_nwSentSizes(state).forEach(function (key) {
+    var text = state.size[key];
+    var problem = key === "cpu" ? WT_sizeError(text, WT_MAX_CPU, "At most 1024 CPU cores")
+      : WT_giBToBytes(text) == null ? "Enter a positive number" : WT_sizeError(text, WT_MAX_GIB, "At most 65536 GiB (64 TiB)");
+    if (problem) errs[key] = problem;
+  });
+  if (WT_twice(state.envRows)) errs.envRows = "Each name once";
+  if ((state.files || []).some(function (f) { return f && WT_trim(f.mode) && !/^[0-7]{3,4}$/.test(WT_trim(f.mode)); })) {
+    errs.files = "Use an octal mode such as 0644";
+  }
+  return errs;
+}
+
+// Where each body path is shown: the dialog's field key whose control writes it.
+var NV_NW_PATHS = [
+  ["id", "id"], ["name", "name"], ["template_id", "template"],
+  ["overrides.resources.cpu_cores", "cpu"], ["overrides.resources.memory_bytes", "memoryGiB"], ["overrides.resources.disk_bytes", "diskGiB"],
+  ["overrides.env", "envRows"], ["overrides.files", "files"], ["overrides.init_commands", "init"],
+];
+
+// The field key a refusal's loc names, or null when the dialog draws no such field (a size the provider's kind does not show, Docker's disk say: the
+// refusal then goes to the one line above the footer).
+function NV_nwFieldKey(loc, kind) {
+  var parts = WT_cleanLoc(loc);
+  var hit = null;
+  NV_NW_PATHS.forEach(function (entry) {
+    var path = entry[0].split(".");
+    if (hit || path.length > parts.length) return;
+    for (var i = 0; i < path.length; i++) if (path[i] !== parts[i]) return;
+    hit = entry[1];
+  });
+  if (hit && ["cpu", "memoryGiB", "diskGiB"].indexOf(hit) >= 0 && NV_nwSizeFields(kind).indexOf(hit) < 0) return null;
+  return hit;
+}
+
+Object.assign(window, { NV_NW_ID_PATTERN, NV_nwIdError, NV_nwSizeFields, NV_nwInitialSize, NV_nwBody, NV_nwErrors, NV_nwFieldKey });
+// ---- end NV_nw pure helpers ----
+
 // ---------------------------------------------------------------------------
 // Create workspace: template rows, optional name, per-instantiation
 // overrides (env additions + one extra init command). POST /v1/workspaces
