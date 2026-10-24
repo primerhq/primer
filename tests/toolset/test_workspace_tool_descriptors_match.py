@@ -129,3 +129,25 @@ def test_get_workspace_session_says_where_to_read_the_state_and_the_park_key(too
     assert "no ``session_state`` and no ``parked_event_key``" in description
     tail = description.split("no ``parked_event_key``", 1)[1]
     assert "find_sessions" in tail and "list_my_sessions" in tail
+
+
+# ---- round 2 of #917, item 7: the workspace create and delete -----------------------------------------------------------------------------
+
+
+def test_create_workspace_says_the_row_starts_pending_and_is_usable_at_once(tools) -> None:
+    from primer.api.registries.workspace_registry import NEW_WORKSPACE_PHASE
+
+    description = tools["create_workspace"].description
+    assert f"starts ``phase={NEW_WORKSPACE_PHASE}``" in description
+    assert "usable at once" in description
+    assert "``running`` at its first good probe" in description
+
+
+def test_delete_workspace_says_what_a_failed_delete_answers_and_leaves(tools) -> None:
+    description = tools["delete_workspace"].description
+
+    assert "``phase=terminating``" in description
+    failed = description.split("``type=backend-error``", 1)[1]
+    assert "``phase=failed``" in failed and "failure_reason" in failed and "workspace_lost" in failed
+    assert "delete it again" in failed
+    assert "cannot be resolved" in failed and "put back" in failed
