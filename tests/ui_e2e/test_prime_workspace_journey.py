@@ -1,9 +1,15 @@
-"""Journey: the console opens the default workspace (prime) and never offers to delete it (pivot P2 Tasks 13 and 14).
+"""Journey: the console opens the default workspace (prime), lands a first login in its main session, and never offers to delete it (pivot P2 Tasks 13, 14).
 
 Against the real ui_e2e server: its default workspace is whichever row ``GET /v1/workspaces`` flags ``is_default`` (``prime`` on a fresh install,
 ``primer`` on one that predates it), read through ``default_wid``, never named. A first load with no address lands on it, on a desktop and on a
-phone, and opens the caller's main session there; its rail menu has Settings and no Delete; its settings overlay has no Destroy tab, and a link to that tab shows why; and it holds the
+phone; its rail menu has Settings and no Delete; its settings overlay has no Destroy tab, and a link to that tab shows why; and it holds the
 ``agents.md`` the ensure pass seeds.
+
+The first-login open: the console opens the user's main session as a tab only when ``POST /v1/workspaces/{id}/main_session`` answers
+``created: true``. This server runs with auth disabled, so every request is the one synthetic user, and the harness makes that user's main session
+before any console load (``main_session_exists``, conftest), so every other journey loads with ``created: false``. A fresh user cannot exist here, so
+``test_a_first_login_opens_the_main_session_once_and_a_reload_does_not`` plays one: the server's real answer passes through, with ``created`` set
+true on the first load only.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ from playwright.sync_api import Page, expect
 from tests.ui_e2e._shell_helpers import boot_mobile_shell, default_wid, open_shell
 
 PHONE = {"width": 390, "height": 844}
+_MAIN_SESSION = re.compile(r".*/v1/workspaces/[^/?]+/main_session$")
 
 
 @pytest.mark.ui_e2e
@@ -25,25 +32,45 @@ def test_first_load_selects_the_default_workspace(page: Page, console_url: str) 
     page.goto("about:blank")  # the page fixture already loaded the console: a fresh document, with no address
     page.goto(console_url)
     expect(page.get_by_test_id(f"nv-rail-ws:{wid}")).to_be_visible(timeout=20_000)
-    # The first load also opens the caller's main session in it (below), so the address may name that document too.
-    expect(page).to_have_url(re.compile(re.escape(f"{console_url}#/w/{wid}") + r"($|\?doc=session:)"), timeout=20_000)
+    # Not a first login (the harness made the main session), so nothing else opens and the address names only the workspace.
+    expect(page).to_have_url(f"{console_url}#/w/{wid}", timeout=20_000)
 
 
 @pytest.mark.ui_e2e
-def test_first_load_opens_the_callers_main_session(page: Page, base_url: str, console_url: str) -> None:
-    """The caller's own main operator session (POST /v1/workspaces/{id}/main_session answers the same row every time) is the active tab."""
+def test_a_first_login_opens_the_main_session_once_and_a_reload_does_not(page: Page, console_url: str) -> None:
     wid = default_wid(console_url)
-    page.goto("about:blank")
+    answers: list[dict] = []
+
+    def play_a_first_login(route) -> None:
+        response = route.fetch()
+        body = response.json()
+        answers.append(body)
+        route.fulfill(response=response, json={**body, "created": True} if len(answers) == 1 else body)
+
+    page.route(_MAIN_SESSION, play_a_first_login)
+    page.goto("about:blank")  # the page fixture already loaded the console: a fresh document, with no address
     page.goto(console_url)
-    tab = page.locator('[data-testid^="nv-tg-tab:session:"][data-active="true"]')
-    expect(tab).to_have_count(1, timeout=30_000)
-    with httpx.Client(base_url=base_url, timeout=30.0) as client:
-        r = client.post(f"/v1/workspaces/{wid}/main_session")
-    assert r.status_code == 200, r.text  # the console's own call made it: this one answers the existing row
-    sid = r.json()["id"]
-    assert r.json()["name"] == "main" and re.fullmatch(rf"sess-{re.escape(wid)}-main-\d+", sid), sid
+
+    tabs = page.locator('[data-testid^="nv-tg-tab:session:"]')
+    expect(tabs).to_have_count(1, timeout=30_000)
+    assert len(answers) == 1, answers
+    sid = answers[0]["id"]
+    assert answers[0]["created"] is False, "the harness made the main session before any console load"
+    assert answers[0]["name"] == "main" and re.fullmatch(rf"sess-{re.escape(wid)}-main-\d+", sid), sid
     expect(page.get_by_test_id(f"nv-tg-tab:session:{sid}")).to_have_attribute("data-active", "true")
     expect(page).to_have_url(f"{console_url}#/w/{wid}?doc=session:{sid}", timeout=20_000)
+
+    # Close it, so the working set the reload restores holds no tab, and load again with no address: the answer says created false.
+    page.get_by_test_id(f"nv-tg-tab-close:session:{sid}").click()
+    expect(tabs).to_have_count(0, timeout=10_000)
+    page.goto("about:blank")
+    with page.expect_response(_MAIN_SESSION, timeout=30_000):
+        page.goto(console_url)
+    expect(page.get_by_test_id(f"nv-rail-ws:{wid}")).to_be_visible(timeout=20_000)
+    page.wait_for_timeout(1_500)  # the answer has come; give an open that should not happen the time to show
+    expect(tabs).to_have_count(0)
+    expect(page).to_have_url(f"{console_url}#/w/{wid}")
+    assert [a["created"] for a in answers] == [False, False] and answers[1]["id"] == sid
 
 
 @pytest.mark.ui_e2e
@@ -85,4 +112,4 @@ def test_phone_layout_opens_the_default_workspace(page: Page, console_url: str) 
     page.set_viewport_size(PHONE)
     page.goto("about:blank")
     boot_mobile_shell(page, f"{console_url}#/")
-    expect(page).to_have_url(re.compile(re.escape(f"{console_url}#/w/{wid}") + r"($|\?doc=session:)"), timeout=20_000)
+    expect(page).to_have_url(f"{console_url}#/w/{wid}", timeout=20_000)
