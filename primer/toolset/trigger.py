@@ -587,17 +587,24 @@ def _caller(ctx: ToolContext | None) -> "PrincipalRef | None":
     return ctx.initiated_by if ctx is not None else None
 
 
-def _fire_caller(ctx: ToolContext | None) -> Any:
-    """Who fires a trigger by hand, for the rank rule (ticket 01a16e65-12d1): the calling run's principal
-    (:func:`primer.agent.inner_dispatch.run_principal`, an ordinary user when the run names nobody), or, with no ``ToolContext`` (the MCP endpoint),
-    the request's actor on ``current_actor``. ``None`` (no actor at all) ranks as an ordinary user (:func:`primer.authz.principal_rank`)."""
-    if ctx is not None:
+def _fire_caller(ctx: ToolContext | None) -> tuple[Any, bool, bool]:
+    """Who fires a trigger by hand, for the rank rule (ticket 01a16e65-12d1): ``(caller, from_run, in_session)``.
+
+    A run is ranked by its principal (:func:`primer.agent.inner_dispatch.run_principal`, an ordinary user when the run names nobody) and never gets
+    the owner rule: a call with a ``ToolContext``, and a call made inside a delegated run (``primer.agent.invoke._RUN_ID`` is set). The second is a
+    subagent ``system__invoke_agent`` started over MCP: its manager has no session or chat, so its tool calls carry no context, and it runs as an
+    unattributed user while the MCP person's actor is still on ``current_actor`` (lead ruling on the review of #927). Only a call with neither, the
+    MCP endpoint's own, is the request's actor on ``current_actor``, a person, with the owner rule; ``None`` (no actor at all) ranks as an ordinary
+    user (:func:`primer.authz.principal_rank`)."""
+    from primer.agent.invoke import _RUN_ID
+
+    if ctx is not None or _RUN_ID.get() is not None:
         from primer.agent.inner_dispatch import run_principal
 
-        return run_principal(ctx)
+        return run_principal(ctx), True, bool(ctx is not None and getattr(ctx, "session_id", None))
     from primer.mcp.server import current_actor
 
-    return current_actor.get()
+    return current_actor.get(), False, False
 
 
 def _make_get_handler(
@@ -739,11 +746,13 @@ def _make_fire_now_handler(
             scheduler=scheduler,
             workspace_registry=workspace_registry,
         )
-        # Reach first (an out-of-reach trigger is unknown), then the rank rule against the trigger's owner (ticket 01a16e65-12d1): from a session
-        # the run's principal, which never gets the owner rule; with no calling session (the MCP endpoint) the request's actor, which does.
+        # Reach first (an out-of-reach trigger is unknown), then the rank rule against the trigger's owner (ticket 01a16e65-12d1): from a session or
+        # a delegated run the run's principal, which never gets the owner rule; the MCP endpoint's own call the request's actor, which does.
+        caller, from_run, in_session = _fire_caller(ctx)
         try:
             result = await fire_now(
-                trigger_id=args.id, caller=_fire_caller(ctx), from_run=ctx is not None, reach=await caller_reach(storage_provider, ctx), deps=deps,
+                trigger_id=args.id, caller=caller, from_run=from_run, in_session=in_session, reach=await caller_reach(storage_provider, ctx),
+                deps=deps,
             )
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")

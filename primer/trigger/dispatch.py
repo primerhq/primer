@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -238,6 +239,7 @@ async def fire_trigger(
     scheduled_for: datetime | None,
     deps: DispatchDeps,
     extra_context: dict | None = None,
+    owner_guard: Callable[[Trigger], Awaitable[None]] | None = None,
 ) -> FireResult:
     """Fire a single trigger: load enabled subs, dispatch each.
 
@@ -251,11 +253,20 @@ async def fire_trigger(
     builds its base dict. This lets the webhook inbound endpoint inject
     ``webhook_body``, ``webhook_headers``, ``webhook_query``, and
     ``webhook_method`` without the source needing request-level coupling.
+
+    ``owner_guard`` (a manual fire, :func:`primer.trigger.service.fire_now`; review of #927) is handed the row this
+    function reads, before anything is recorded or dispatched; it raises to refuse the fire. The caller's rank was
+    decided on an EARLIER read of the trigger, and a save between the two reads makes whoever saved it the owner, so
+    the guard holds the owner that read checked and asks the rank rule again when this read shows another one: the
+    fire is decided on the row that is fired. A refusal propagates and nothing is fired. Clock, webhook and channel
+    fires pass none.
     """
     triggers_storage = deps.storage_provider.get_storage(Trigger)
     trigger = await triggers_storage.get(trigger_id)
     if trigger is None or not trigger.enabled:
         return FireResult(skipped=True)
+    if owner_guard is not None:
+        await owner_guard(trigger)
 
     fired_at = datetime.now(timezone.utc)
     source = get_source(trigger.config.kind)

@@ -80,6 +80,25 @@ def test_the_trigger_router_puts_the_code_in_extensions_code_with_its_message(en
     assert envelopes["slug"]["extensions"]["code"] == "trigger_slug_conflict" and envelopes["slug"]["detail"] == "slug 'nightly' already in use"
 
 
+def test_a_fire_the_rank_rule_refuses_is_a_403_forbidden_rank_with_the_rules_sentence(envelopes) -> None:
+    """The real route over the real service (ticket 01a16e65-12d1): a user-role account firing an admin's trigger."""
+    refused = envelopes["fire_outranked"]
+
+    assert refused["status"] == 403 and refused["extensions"]["code"] == "forbidden_rank"
+    assert refused["detail"] == (
+        "trigger 'tr-admin' runs at a higher rank (admin) than you (user); you may fire only your own triggers and triggers at or below your rank"
+    )
+
+
+@pytest.mark.parametrize("fallback", FALLBACKS)
+def test_a_fire_the_rank_rule_refuses_shows_the_servers_sentence_in_every_dialog(envelopes, fallback: str) -> None:
+    """No remedy is added for ``forbidden_rank``: the sentence already says what the caller may fire."""
+    text = _text(envelopes["fire_outranked"], fallback)
+
+    assert text == envelopes["fire_outranked"]["detail"]
+    assert "forbidden_rank" not in text
+
+
 # ---- the auth gate: a sentence, never the code --------------------------------------------------------------------------------------------------------------
 
 
