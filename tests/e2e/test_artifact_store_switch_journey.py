@@ -7,7 +7,7 @@ them) it can.
 
 The e2e server is a host process (``scripts/e2e/bringup.sh`` runs ``uv run primer api``) run by the same user as pytest, so the test's own
 ``tmp_path`` serves as the root. The suite runs serially (``-n0``), so no other test writes while this one has the filesystem store selected;
-the ``finally`` selects the database again whatever happens.
+the ``finally`` selects again the store that was active when the test started (read first), whatever happens.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ import pytest
 
 PROVIDERS = "/v1/artifact_storage_providers"
 ACTIVE = "/v1/artifact_storage_active_config"
-DEFAULT = "artifact-storage-default"
 
 
 def _tar(files: dict[str, bytes]) -> bytes:
@@ -45,8 +44,11 @@ async def test_switching_the_store_keeps_old_and_new_files_readable(client, tmp_
     store_id, name = f"e2e-fs-{uuid4().hex[:8]}", f"e2e-art-{uuid4().hex[:8]}"
     service_id: str | None = None
     provider_created = False
+    found = await client.get(ACTIVE)
+    assert found.status_code == 200, found.text
+    active_before = found.json()["provider_id"]                 # restored at the end, whatever it was
     try:
-        # 1. v1 under the database store.
+        # 1. v1 under the store that is active now (the database on a fresh server).
         created = await client.post("/v1/services", json={"name": name, "description": "artifact store switch journey"})
         assert created.status_code == 201, created.text
         service_id = created.json()["id"]
@@ -75,7 +77,7 @@ async def test_switching_the_store_keeps_old_and_new_files_readable(client, tmp_
         assert v2.status_code == 201, v2.text
         assert any(p.read_bytes() == b"<h1>two</h1>" for p in _blobs(root)), "a blob file under the root holds v2's page"
 
-        # 5. Both versions are served: v2 from the folder, v1 (activated again) from the database.
+        # 5. Both versions are served: v2 from the folder, v1 (activated again) from the store it was written to.
         page = await client.get(f"/svc/{name}/")
         assert page.status_code == 200 and "two" in page.text, page.text
         versions = (await client.get(f"/v1/services/{service_id}/versions")).json()["items"]
@@ -90,14 +92,14 @@ async def test_switching_the_store_keeps_old_and_new_files_readable(client, tmp_
         assert r.status_code == 409 and r.json()["extensions"]["error"] == "cascade_blocked", r.text
 
         # 7. Nor can a store that still holds files: v2's two.
-        r = await client.put(ACTIVE, json={"provider_id": DEFAULT})
+        r = await client.put(ACTIVE, json={"provider_id": active_before})
         assert r.status_code == 200, r.text
         r = await client.delete(f"{PROVIDERS}/{store_id}")
         extensions = r.json()["extensions"]
         assert r.status_code == 409 and extensions["error"] == "artifact_provider_holds_artifacts", r.text
         assert extensions["count"] == 2, extensions
     finally:
-        await client.put(ACTIVE, json={"provider_id": DEFAULT})
+        await client.put(ACTIVE, json={"provider_id": active_before})
         if service_id is not None:
             # The service's files are deleted through the store that holds each of them.
             r = await client.delete(f"/v1/services/{service_id}")
