@@ -231,7 +231,10 @@ first and the one the operator works from. All users share it.
   reset rewrites `AGENTS.md`. From a session outside
   prime the tool returns `type=forbidden` and writes nothing; with no
   default workspace yet it returns `type=not-found` (the route answers
-  404). When the workspace does not answer within 10 seconds (to reach
+  404). When the deployment refuses the default workspace (a local
+  workspace where the topology forbids one) it returns `type=conflict`
+  (409), and when a directory called `agents.md` is in the way,
+  `type=bad-request` (400). When the workspace does not answer within 10 seconds (to reach
   it, then to write) the tool returns `type=unavailable` and the route
   answers 503; a write given up on may still land afterwards, with the
   same shipped text. Any other failure of the write is
