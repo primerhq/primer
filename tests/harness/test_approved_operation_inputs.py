@@ -206,10 +206,9 @@ async def test_the_worker_refuses_an_install_whose_inputs_changed_after_it_was_a
 
 async def test_a_sync_after_the_overrides_changed_shows_them_on_its_card_and_applies_only_them(world):
     """The review's no-race variant: the run changes the overrides of an installed harness (allowed: nothing is pending), then syncs."""
-    await world.harnesses.update(_enqueued(await world.row(), HarnessOperation.INSTALL, operation_requested_by=ADMIN))
-    status, err = await _do_install(world.deps, await world.row())
-    assert err is None, err
-    await world.harnesses.update((await world.row()).model_copy(update={"status": status, "pending_operation": None, "operation_inputs": None}))
+    await _park_and_approve(world, "c-install", "harness__install", {"id": "hns-1", "overrides": BENIGN})
+    await run_one_harness_operation(world.deps, harness_id="hns-1", worker_id="w1")
+    assert (await world.row()).status == HarnessStatus.INSTALLED and await world.stdio_command() == ["sh", "-c", "echo benign"]
     changed = await world.manager.execute(_via_call_tool("c-set", "harness__update_overrides", {"id": "hns-1", "overrides": EVIL}))
     assert not changed.error, changed.output
 
