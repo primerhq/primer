@@ -4,7 +4,8 @@ A session outside the default workspace reaches only its own workspace, for ever
 get, read-messages, pause, resume, interrupt and create tools (an agent that could create a session in prime would reach everything from there). An
 out-of-reach target answers exactly as an unknown id does. Cancel, resume, pause and interrupt (Stop) also follow the rank rule
 (``primer.authz.may_drive``) from a session, over MCP and on their REST routes: they stop or start a run at the creator's rank (pause and interrupt
-since ticket 01a16d3c-a8bc; before, only the console hid their controls). The drive rows are pinned by
+since ticket 01a16d3c-a8bc; before, only the console hid their controls), and so does the REST DELETE of a session, which ends a live one and,
+forced, cancels a running one (ticket 01a16d9f). The drive rows are pinned by
 ``tests/api/test_session_drive_rule_table.py``; these are the rest of ``docs/dev/subsystems/sessions.md`` section 9's table. The REST canvas
 routes follow the rank rule too (pivot P5 S6, the lead's ruling 1): a click on a session's canvas drives it like a steer, and an operator's
 batch or clear puts input its agent reads into it.
@@ -114,6 +115,10 @@ TABLE: dict[str, tuple[SessionStatus, dict[str, str]]] = {
     "REST canvas click":                (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
     "REST canvas draw":                 (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
     "REST canvas clear":                (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    # a DELETE ends a waiting session on the spot, and with ``?force=true`` flags a RUNNING one cancelled and publishes the cancel, before the row
+    # goes: the cancel's rule (ticket 01a16d9f); a delivered delete is seen as the row gone, a refused one as the row untouched
+    "REST delete":                      (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST delete, forced":              (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
     "get session tool, in a session":   (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
     "read messages tool, in a session": (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
 }
@@ -223,6 +228,10 @@ async def _drive(env: Env, path: str) -> tuple[str, dict]:
             f"/v1/workspaces/{env.target_workspace}/sessions/ses-t{tail}", **({"json": body} if body is not None else {}),
         )
         return {200: D, 202: D, 403: F, 404: N}[r.status_code], r.json()
+    if path.startswith("REST delete"):
+        query = {"force": "true"} if path.endswith("forced") else None
+        r = await env.rest.delete(f"/v1/workspaces/{env.target_workspace}/sessions/ses-t", params=query)
+        return {204: D, 403: F, 404: N}[r.status_code], (r.json() if r.content else {})
     if path.startswith("REST"):
         verb = path.removeprefix("REST ")
         r = await env.rest.post(f"/v1/workspaces/{env.target_workspace}/sessions/ses-t/{verb}", json={})
@@ -239,6 +248,8 @@ async def _delivered(env: Env, path: str) -> bool:
             slot = env.world.registry.workspace(env.target_workspace).slot("ses-t")
             return canvas.event_seq == 1 and len(slot.appended) == 1 and slot.appended[0].startswith("<canvas_event")
         return canvas.rev == 2
+    if path.startswith("REST delete"):
+        return row is None
     if path.startswith(("cancel", "REST cancel")):
         return (row.status, row.ended_reason) == (SessionStatus.ENDED, "cancelled")
     if path == "REST resume":
@@ -411,6 +422,72 @@ async def test_a_persons_pause_or_stop_over_rest_reaches_a_session_only_at_or_be
         return
     assert r.status_code in (200, 204), f"{who} could not {verb}: {r.text}"
     assert moved(await sessions.get("ses-p")), f"{who}'s {verb} did not land"
+
+
+# ---- DELETE follows the cancel's rank rule, person by person (ticket 01a16d9f) -----------------------------------------------------------------
+#
+# ``DELETE /v1/workspaces/{wid}/sessions/{sid}`` ends a CREATED, WAITING or PAUSED session on the spot and, with ``?force=true``, flags a RUNNING one
+# cancelled and publishes ``session:{sid}:cancel`` before the row goes: a cancel, so it follows the cancel's rule, decided before anything else as
+# the cancel route decides it (an ended session too). A refused delete answers 403 ``forbidden_rank`` and changes nothing: the row, the session's
+# pending external tool call (a delete resolves it as cancelled), the bus.
+
+#: the target -> (its status, the delete's query).
+DELETES: dict[str, tuple[SessionStatus, dict[str, str]]] = {
+    "a waiting session": (SessionStatus.WAITING, {}),
+    "a running session, forced": (SessionStatus.RUNNING, {"force": "true"}),
+    "an ended session": (SessionStatus.ENDED, {}),
+}
+
+
+@pytest.mark.parametrize("who", list(PERSONS))
+@pytest.mark.parametrize("target", list(DELETES))
+async def test_a_persons_delete_over_rest_reaches_a_session_only_at_or_below_their_rank(app, client, fake_storage_provider, target, who):
+    from primer.model.external_tool import ExternalToolCall
+
+    started_by, asker, accepted = PERSONS[who]
+    r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
+    assert r.status_code == 201, r.text
+    carol_id = await _user_id(app, "carol")
+    creator = {
+        "admin": ADMIN,
+        "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
+        "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
+    }[started_by]
+    status, query = DELETES[target]
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    await sessions.create(WorkspaceSession(
+        id="ses-p", workspace_id="ws-r", binding=AgentSessionBinding(agent_id="operator"), status=status, turn_no=1, created_at=NOW,
+        initiated_by=creator, ended_reason="completed" if status == SessionStatus.ENDED else None,
+        ended_at=NOW if status == SessionStatus.ENDED else None,
+    ))
+    calls = fake_storage_provider.get_storage(ExternalToolCall)
+    await calls.create(ExternalToolCall(id="etool-p", session_id="ses-p", tool_call_id="tc-p", tool_name="client_lookup", created_at=NOW))
+    before = (await sessions.get("ses-p")).model_dump(mode="json")
+    spy = _Spy(app.state.event_bus)
+    route = "/v1/workspaces/ws-r/sessions/ses-p"
+
+    if asker.endswith("token"):
+        async with await _token_client(app, carol_id if asker.startswith("carol") else await _user_id(app, "testuser")) as tok:
+            r = await tok.delete(route, params=query)
+    elif asker == "carol":
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
+            assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
+            r = await carol.delete(route, params=query)
+    else:
+        r = await client.delete(route, params=query)
+
+    if not accepted:
+        assert r.status_code == 403, f"{who} could delete {target}: {r.text}"
+        assert (r.json()["detail"], r.json()["extensions"]["error"]) == (OUTRANKED_MESSAGE, "forbidden_rank")
+        assert (await sessions.get("ses-p")).model_dump(mode="json") == before, "a refused delete wrote to the session"
+        assert (await calls.get("etool-p")).status == "pending", "a refused delete resolved the session's external tool call"
+        assert spy.keys == [], "a refused delete reached the event bus"
+        return
+    assert r.status_code == 204, f"{who} could not delete {target}: {r.text}"
+    assert await sessions.get("ses-p") is None, f"{who}'s delete did not remove the session"
+    assert (await calls.get("etool-p")).status == "cancelled"
+    if query:
+        assert "session:ses-p:cancel" in spy.keys, "the forced delete of a running session published no cancel"
 
 
 #: who -> (the session's creator, the caller: a request's actor over MCP, or a run's principal from another session, or, for ``SELF``, from the

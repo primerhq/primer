@@ -1,7 +1,8 @@
 """The rank rule of the REST routes that act on a session (lead rulings 2 and 3 of the G7 fixes; review of #853; ticket 01a16d3c-a8bc).
 
-A session runs at its creator's rank, so a steer, a restart, a cancel, a resume, a pause or a Stop (interrupt) of it acts on a run at that rank: the
-caller must rank at least as high as the creator, the rule a trigger's fire and a message from another session follow
+A session runs at its creator's rank, so a steer, a restart, a cancel, a resume, a pause, a Stop (interrupt) or a delete (ticket 01a16d9f: it
+ends a live session and, forced, cancels a running one) of it acts on a run at that rank: the caller must rank at least as high as the creator,
+the rule a trigger's fire and a message from another session follow
 (:func:`primer.authz.may_drive`), or the route answers 403 ``forbidden_rank`` with one fixed message that names neither the creator nor its rank. A
 caller acting on a session its own account or token started is never refused (``own_session``: the request carries the account's current role,
 which caps every run of it). People keep their reach over every workspace: this is a rank rule, not a scope.
