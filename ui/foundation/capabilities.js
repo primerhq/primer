@@ -12,6 +12,7 @@
     lance: "lance",
     container: "docker",
     kubernetes: "kubernetes",
+    s3: "s3",
   };
 
   function capabilityHint(extra) {
