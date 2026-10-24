@@ -290,9 +290,14 @@ suppress the acks while still forwarding gates).
   that reach, which every fire checks again (see "reach" in
   [triggers-and-subscriptions](triggers-and-subscriptions.md)).
 - `system::list_channel_bindings` - list the bindings on a channel
-  trigger. Body: `trigger_id`.
+  trigger. Body: `trigger_id`. From a session outside prime only the
+  bindings whose action targets your own workspace or a session in it
+  are listed.
 - `system::delete_channel_binding` - remove one binding while keeping
-  the trigger. Body: `trigger_id`, `subscription_id`.
+  the trigger. Body: `trigger_id`, `subscription_id`. From a session
+  outside prime a binding whose action targets another workspace (or a
+  session in one) answers `type=subscription_not_found`, as an unknown
+  id does, and is not deleted.
 
 The `channel` trigger itself is created with the regular trigger tools
 (`trigger::create` with `config.kind="channel"` and a `provider_id`,

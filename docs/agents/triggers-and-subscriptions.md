@@ -150,9 +150,21 @@ it acts on every subscription of it. From a session outside prime,
 `trigger::update`, `trigger::fire_now` and `trigger::delete` answer
 `type=trigger_not_found`, exactly as an unknown trigger, when any of
 the trigger's subscriptions starts or feeds a session outside your own
-workspace. Listing, reading and deleting single subscriptions
-(`list_subscriptions`, `get_subscription`, `delete_subscription`) are
-not scoped this way.
+workspace.
+
+Reading and deleting subscriptions follow the same reach. From a
+session outside prime, `trigger::list_subscriptions` and
+`system::list_channel_bindings` list only the subscriptions whose
+target is your own workspace or a session in it; the others are left
+out, as if they did not exist. `trigger::get_subscription`,
+`trigger::delete_subscription` and `system::delete_channel_binding`
+answer such a subscription with `type=subscription_not_found`, exactly
+as an unknown subscription id, and delete nothing. A subscription
+whose target session no longer exists is in no workspace, so it is
+out of reach too: delete it from prime or from the console.
+`trigger::list` and `trigger::get` serve every trigger (a trigger is
+in no workspace). From prime, and with no calling session, every
+subscription is listed, read and deleted as before.
 
 ### The `channel` trigger kind
 
