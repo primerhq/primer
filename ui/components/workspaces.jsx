@@ -526,6 +526,8 @@ function WS_NewWorkspaceModal({ onClose, pushToast, onCreated }) {
             setTemplateCreateOpen(false);
             templates.refetch();
           }}
+          // The chain hands the new template back: it is the one selected, not the first row of the refreshed list.
+          onCreated={(row) => { if (row && row.id) setTemplateId(row.id); }}
           pushToast={pushToast}
         />
       )}
