@@ -198,7 +198,7 @@ async def _reopen_ended_locked(
     allowed = ["idle", "claimable", *(["running"] if allow_running else [])]
     reserved_row = await sessions.patch_if(
         session_id,
-        {"last_seq": row.last_seq + 1, "turn_status": "arming"},
+        to_jsonable_python({"last_seq": row.last_seq + 1, "turn_status": "arming", "armed_at": datetime.now(timezone.utc)}),
         where={"status": [SessionStatus.ENDED.value], "last_seq": [raw_generation(row, "last_seq")], "turn_status": allowed},
     )
     if reserved_row is None:
@@ -229,8 +229,9 @@ async def _reopen_ended_locked(
         # Nothing was reopened: the session stays ENDED, with the turn status it had (a failure must leave the session ended).
         try:
             await sessions.patch_if(
-                session_id, {"turn_status": row.turn_status},
-                where={"status": [SessionStatus.ENDED.value], "turn_status": ["arming"]},
+                session_id, {"turn_status": row.turn_status, "armed_at": None},
+                where={"status": [SessionStatus.ENDED.value], "turn_status": ["arming"],
+                       "armed_at": [raw_generation(reserved_row, "armed_at")]},
             )
         except Exception:  # noqa: BLE001 - the failure being reported is the write's
             logger.warning("reopen of session %s: could not give its turn status back after a failed write", session_id, exc_info=True)
@@ -255,6 +256,8 @@ async def _reopen_ended_locked(
             "parked_at": None,
             "parked_state": None,
             "turn_status": "arming" if keep_arming else "idle",
+            # the arm's own stamp stays with a turn the wake goes on to promote; a plain reopen leaves none
+            **({} if keep_arming else {"armed_at": None}),
             "turn_started_at": None,
             "last_turn_error": None,
             "ended_detail": None,
@@ -263,7 +266,7 @@ async def _reopen_ended_locked(
             "agent_phase_stamped_at": None,
         }),
         set_paths={("metadata", "invocation"): invocation},
-        where={"status": [SessionStatus.ENDED.value], "turn_status": ["arming"]},
+        where={"status": [SessionStatus.ENDED.value], "turn_status": ["arming"], "armed_at": [raw_generation(reserved_row, "armed_at")]},
     )
     if reopened is None:
         return None

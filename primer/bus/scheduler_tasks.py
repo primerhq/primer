@@ -521,10 +521,6 @@ def _never_started(session, grace_seconds: float) -> bool:
     return age >= grace_seconds
 
 
-#: How long a row must stay armed with no claim, unchanged, before the sweep heals it: longer than a workspace write may take (the message
-#: writer gives up after 30 s), so a live wake has promoted or given back its turn by then.
-STALE_ARM_GRACE_SECONDS = 120.0
-
 
 class SessionMessagingSweeper(_BackgroundTask):
     """Delivers the queued messages of a session that nothing else will (audit G7-14), and trims the peer-message ledger (audit G7-15).
@@ -561,7 +557,7 @@ class SessionMessagingSweeper(_BackgroundTask):
         workspace_registry,
         event_bus: EventBus | None = None,
         poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
-        stale_arm_grace_seconds: float = STALE_ARM_GRACE_SECONDS,
+        stale_arm_grace_seconds: float | None = None,
     ) -> None:
         super().__init__(name="session-messaging-sweeper")
         self._sp = storage_provider
@@ -570,8 +566,9 @@ class SessionMessagingSweeper(_BackgroundTask):
         self._workspace_registry = workspace_registry
         self._bus = event_bus
         self._poll = poll_seconds
+        # None: derived from the configured message write timeout when the sweep runs (``persistence.stale_arm_grace_seconds``).
         self._stale_arm_grace = stale_arm_grace_seconds
-        # Rows seen armed with no claim: id -> (turn_status, last_seq, first seen on the loop clock).
+        # Rows seen claimable with no claim: id -> (turn_status, last_seq, first seen on the loop clock).
         self._unclaimed: dict[str, tuple[str, int, float]] = {}
 
     async def _run(self) -> None:
@@ -618,80 +615,105 @@ class SessionMessagingSweeper(_BackgroundTask):
             logger.info("session-messaging-sweeper: deleted %d stale peer-message ledger row(s)", deleted)
         return deleted
 
+    def _grace(self) -> float:
+        if self._stale_arm_grace is not None:
+            return self._stale_arm_grace
+        from primer.session.persistence import stale_arm_grace_seconds
+
+        return stale_arm_grace_seconds()
+
     async def _heal_unclaimed_turns(self) -> int:
-        """Give a claim to a turn that was left armed with none (audit G7-03, review M3). Returns how many rows were healed.
+        """Heal a turn a wake took and never settled, and give a claim to a turn left armed with none (audit G7-03). Returns how many rows
+        were healed.
 
-        A wake promotes the turn it decided (``arming`` -> ``claimable``) and then arms the claim; a process that died in between, or a claim
-        upsert that failed, leaves a row ``claimable`` with no SESSION lease row, or ``arming`` with no wake behind it. Every message then
-        queues behind it and nothing runs. A row seen in the same state, at the same ``last_seq`` and with no lease on two ticks at least
-        ``stale_arm_grace_seconds`` apart (longer than a workspace write may take, so a live wake has finished or given up) is healed:
+        * ``arming`` (any status): the wake that took the turn stamped ``armed_at``. Past the grace (above a live wake's documented worst case,
+          derived from the configured message write timeout: ``persistence.stale_arm_grace_seconds``) the wake is judged dead, WHETHER OR
+          NOT the session has a lease row (a claim armed by ``/resume`` or boot recovery is handed back while the turn is arming, so a lease
+          proves nothing about the wake; review N2). A PAUSED or ENDED row goes back to ``idle``; any other is decided by the log: a USER_INPUT
+          nobody answered (``has_open_turn`` from the drain cursor) makes it ``claimable`` and claimed, none gives it back to ``idle``, and a
+          log that cannot be read counts as holding one (a turn that runs with nothing new costs one model call; a message nobody answers
+          costs the person). A wake still alive that finds its turn given back takes it again once its message is written.
+        * ``claimable`` with no SESSION lease row (a promotion whose claim upsert failed): seen in the same state, at the same ``last_seq``, on
+          two ticks at least the grace apart, the claim is armed. A PAUSED row is left to ``/resume``; a row a lease holds is left to its turn.
 
-        * ``claimable``: the claim is armed again (and the scheduler pulsed);
-        * ``arming``: the message log decides (``has_open_turn`` from the drain cursor): a message is waiting, so the turn goes ``claimable``
-          and is claimed; there is none, so it goes ``idle``. A log that cannot be read is treated as holding one: a turn that runs with
-          nothing new costs one model call, a message nobody answers costs the person. An ENDED row's stale ``arming`` (a reopen that died
-          half way) goes back to ``idle``, so the next message reopens it.
-
-        Each heal is one ``patch_if`` fenced on the state and the ``last_seq`` it was judged on. A PAUSED row is left alone (``/resume``
-        arms it).
+        Each heal is one ``patch_if`` fenced on what it was judged on. The candidates are read first and healed after, so healing a row never
+        shifts the pages being read (review N12).
         """
         from primer.model.workspace_session import WorkspaceSession
 
         storage = self._sp.get_storage(WorkspaceSession)
         predicate = Predicate(left=FieldRef(name="turn_status"), op=Op.IN, right=Value(value=["arming", "claimable"]))
-        now = asyncio.get_running_loop().time()
-        seen: dict[str, tuple[str, int, float]] = {}
-        healed = 0
+        candidates = []
         offset = 0
         while True:
             page = await storage.find(predicate, OffsetPage(offset=offset, length=_MAX_PAGE))
             items = list(page.items)
-            for row in items:
-                if row.status == SessionStatus.PAUSED or (row.status == SessionStatus.ENDED and row.turn_status != "arming"):
-                    continue
-                if row.parked_status is not None or await self._has_lease(row.id):
-                    continue
-                key = (row.turn_status, row.last_seq)
-                earlier = self._unclaimed.get(row.id)
-                first_seen = earlier[2] if earlier is not None and earlier[:2] == key else now
-                seen[row.id] = (*key, first_seen)
-                if now - first_seen < self._stale_arm_grace:
-                    continue
-                if await self._heal(storage, row):
-                    healed += 1
-                    seen.pop(row.id, None)
+            candidates.extend(items)
             if len(items) < _MAX_PAGE:
                 break
             offset += _MAX_PAGE
+
+        grace = self._grace()
+        now = asyncio.get_running_loop().time()
+        wall_now = datetime.now(timezone.utc)
+        seen: dict[str, tuple[str, int, float]] = {}
+        healed = 0
+        for row in candidates:
+            if row.turn_status == "arming":
+                armed_at = row.armed_at
+                if armed_at is not None:
+                    if armed_at.tzinfo is None:
+                        armed_at = armed_at.replace(tzinfo=timezone.utc)
+                    if (wall_now - armed_at).total_seconds() < grace:
+                        continue
+                if await self._heal_an_arm(storage, row):
+                    healed += 1
+                continue
+            if row.status in (SessionStatus.PAUSED, SessionStatus.ENDED) or row.parked_status is not None:
+                continue
+            if await self._has_lease(row.id):
+                continue
+            key = (row.turn_status, row.last_seq)
+            earlier = self._unclaimed.get(row.id)
+            first_seen = earlier[2] if earlier is not None and earlier[:2] == key else now
+            if now - first_seen < grace:
+                seen[row.id] = (*key, first_seen)
+                continue
+            await self._arm_the_claim(row.id)
+            logger.warning("session-messaging-sweeper: session %s was left claimable with no claim; it is claimed now", row.id)
+            healed += 1
         self._unclaimed = seen
         return healed
 
-    async def _heal(self, storage, row) -> bool:
-        where = {"turn_status": [row.turn_status], "last_seq": [row.last_seq]}
-        if row.turn_status == "claimable":
-            target = "claimable"
-        elif row.status == SessionStatus.ENDED:
+    async def _heal_an_arm(self, storage, row) -> bool:
+        """Settle a turn a dead wake left ``arming`` (see :meth:`_heal_unclaimed_turns`)."""
+        if row.status in (SessionStatus.PAUSED, SessionStatus.ENDED):
             target = "idle"
         else:
             target = "claimable" if await self._message_is_waiting(row) else "idle"
-        if target != row.turn_status:
-            try:
-                written = await storage.patch_if(row.id, {"turn_status": target}, where=where)
-            except NotFoundError:
-                return False
-            if written is None:
-                return False
+        try:
+            written = await storage.patch_if(
+                row.id, {"turn_status": target, "armed_at": None},
+                where={"turn_status": ["arming"], "armed_at": [raw_generation(row, "armed_at")]},
+            )
+        except NotFoundError:
+            return False
+        if written is None:
+            return False
         if target == "claimable":
-            await self._claim_engine.upsert(ClaimKind.SESSION, row.id)
-            try:
-                await self._scheduler.enqueue(row.id)
-            except Exception:  # noqa: BLE001 - the claim is armed; the scheduler pulse is a hint
-                logger.debug("session-messaging-sweeper: scheduler pulse failed for %s", row.id, exc_info=True)
+            await self._arm_the_claim(row.id)
         logger.warning(
-            "session-messaging-sweeper: session %s was left %s with no claim; it is now %s%s",
-            row.id, row.turn_status, target, " and claimed" if target == "claimable" else "",
+            "session-messaging-sweeper: session %s was left arming by a wake that did not settle it; it is now %s%s",
+            row.id, target, " and claimed" if target == "claimable" else "",
         )
         return True
+
+    async def _arm_the_claim(self, session_id: str) -> None:
+        await self._claim_engine.upsert(ClaimKind.SESSION, session_id)
+        try:
+            await self._scheduler.enqueue(session_id)
+        except Exception:  # noqa: BLE001 - the claim is armed; the scheduler pulse is a hint
+            logger.debug("session-messaging-sweeper: scheduler pulse failed for %s", session_id, exc_info=True)
 
     async def _message_is_waiting(self, row) -> bool:
         """Whether the session's log holds a USER_INPUT no turn has answered yet (from the drain cursor). True when the log cannot be read."""

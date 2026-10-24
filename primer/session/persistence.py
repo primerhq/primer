@@ -93,6 +93,16 @@ _WRITE_TIMEOUT_S = 30.0
 _QUEUE_CAP_FACTOR = 4
 
 
+def stale_arm_grace_seconds() -> float:
+    """How long a wake may hold a turn ``arming`` before the session-messaging sweep judges it dead (audit G7-03).
+
+    Above a live wake's documented worst case: it makes at most two message-log flushes while it holds the turn (a reopen's invocation divider,
+    then its USER_INPUT), and one flush waits at most ``_WRITE_TIMEOUT_S * _QUEUE_CAP_FACTOR`` before the writer gives up; plus a minute for its
+    database calls. Derived from ``session_message_write_timeout_seconds``, read when the sweep runs.
+    """
+    return 2 * _WRITE_TIMEOUT_S * _QUEUE_CAP_FACTOR + 60.0
+
+
 def configure_write_timeout(seconds: float) -> None:
     """Set the write bound (``AppConfig.session_message_write_timeout_seconds``). Must be a finite number above zero."""
     global _WRITE_TIMEOUT_S  # noqa: PLW0603

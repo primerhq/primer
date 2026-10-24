@@ -781,6 +781,14 @@ class WorkspaceSession(Identifiable):
             "where it is while ``parked_status`` flips."
         ),
     )
+    armed_at: datetime | None = Field(
+        default=None,
+        description=(
+            "When a wake took the turn as ``arming`` (audit G7-03): the wake's own stamp, which fences its promotion to "
+            "``claimable`` and its give-back, and which the session-messaging sweep ages to tell a wake that died "
+            "from one still writing its message. None whenever ``turn_status`` is not ``arming``. Additive, no migration."
+        ),
+    )
     turn_started_at: datetime | None = Field(
         default=None,
         description=(

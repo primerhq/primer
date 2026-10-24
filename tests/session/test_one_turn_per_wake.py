@@ -32,7 +32,8 @@ from primer.session.mutation_lock import KeyedLock
 from primer.session.peer_messages import send_peer_message
 from primer.session.pending_messages import realize_next_pending, store_pending_steer
 from primer.session.steer_delivery import deliver_steer
-from tests.session._peer_fakes import World, make_world, records, seed_session
+from tests.session._peer_fakes import World, records, seed_session
+from tests.session._wake_worlds import install_sessions, new_world  # noqa: F401  (new_world is a fixture)
 from tests.session.test_dispatch import FakeExecutor, _make_lease
 
 T0 = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
@@ -93,7 +94,7 @@ def _route_both_then_race(monkeypatch, world: World, sid: str) -> _ReadBarrier:
     """Both deliveries route the idle row first (``deliver_steer``'s read), then both wakes read it again inside their own locks before either
     writes. On main both then wrote a USER_INPUT; the conditional arm lets exactly one through."""
     barrier = _ReadBarrier(world.sp.get_storage(WorkspaceSession), sid)
-    world.sp._stores[WorkspaceSession] = barrier
+    install_sessions(world, barrier)
     real_wake = steer_delivery.wake_session
     entered = asyncio.Barrier(2)
 
@@ -109,9 +110,9 @@ def _route_both_then_race(monkeypatch, world: World, sid: str) -> _ReadBarrier:
 # ---- (a) two wakes in two processes ------------------------------------------------------------------------------------------------------
 
 
-async def test_two_wakes_in_two_processes_that_both_read_the_target_idle_arm_one_turn(monkeypatch):
+async def test_two_wakes_in_two_processes_that_both_read_the_target_idle_arm_one_turn(new_world, monkeypatch):
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         await seed_session(world, sid="ses-b", turn_no=1, last_seq=4, created_at=T0)
         _each_wake_in_its_own_process(monkeypatch)
         _route_both_then_race(monkeypatch, world, "ses-b")
@@ -131,10 +132,10 @@ async def test_two_wakes_in_two_processes_that_both_read_the_target_idle_arm_one
         assert world.scheduler.enqueued == ["ses-b"], "one turn is armed, once"
 
 
-async def test_two_wakes_that_both_read_the_target_idle_skip_the_second_for_if_idle(monkeypatch):
+async def test_two_wakes_that_both_read_the_target_idle_skip_the_second_for_if_idle(new_world, monkeypatch):
     """``parallelism="skip"`` (``if_idle``): the wake that loses the arm reports ``skipped_busy`` and stores nothing."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         await seed_session(world, sid="ses-b", turn_no=1, created_at=T0)
         _each_wake_in_its_own_process(monkeypatch)
         _route_both_then_race(monkeypatch, world, "ses-b")
@@ -149,10 +150,10 @@ async def test_two_wakes_that_both_read_the_target_idle_skip_the_second_for_if_i
         assert await _pending_texts(world) == []
 
 
-async def test_the_audit_shape_two_peer_messages_with_one_lock_each_start_one_turn(monkeypatch):
+async def test_the_audit_shape_two_peer_messages_with_one_lock_each_start_one_turn(new_world, monkeypatch):
     """The audit's reproduction of G7-03 (a) (scratch ``test_fc1``): the #821 scenario with one ``KeyedLock`` per wake."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         await seed_session(world, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER, created_at=T0)
         await seed_session(world, sid="ses-c", binding=AgentSessionBinding(agent_id="reviewer"), initiated_by=USER,
                            status=SessionStatus.RUNNING, turn_status="running", turn_no=1, created_at=T0)
@@ -180,11 +181,11 @@ async def test_the_audit_shape_two_peer_messages_with_one_lock_each_start_one_tu
 # ---- (b) the queue is first in, first out -------------------------------------------------------------------------------------------------
 
 
-async def test_a_message_that_lands_while_an_older_one_is_queued_goes_behind_it():
+async def test_a_message_that_lands_while_an_older_one_is_queued_goes_behind_it(new_world):
     """The audit's reproduction of G7-03 (b) (scratch ``test_fc2``): the turn ended and a peer message is still queued when a person's steer
     lands. The steer is queued behind it, and the drain's realize then starts the turn with the OLDER message: one USER_INPUT for the turn."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         row = await seed_session(world, sid="ses-b", turn_no=1, turn_status="idle", created_at=T0)
         await store_pending_steer(storage_provider=world.sp, session=row, text="older queued peer message",
                                   workspace_registry=world.registry, event_bus=world.bus, attribution=PEER)
@@ -201,12 +202,12 @@ async def test_a_message_that_lands_while_an_older_one_is_queued_goes_behind_it(
         assert await _pending_texts(world) == ["newer person message"], "the newer message waits for the next turn boundary"
 
 
-async def test_a_peer_message_to_an_idle_session_with_older_messages_waiting_is_queued_behind_them_and_says_so():
+async def test_a_peer_message_to_an_idle_session_with_older_messages_waiting_is_queued_behind_them_and_says_so(new_world):
     """The sending agent is told what became of its message: queued behind the older ones (not "in a turn"), and the events say it was steered."""
     from primer.session.peer_messages import NOTE_QUEUED_BEHIND
 
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         await seed_session(world, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER,
                            status=SessionStatus.RUNNING, turn_status="running", turn_no=1, created_at=T0)
         row = await seed_session(world, sid="ses-b", turn_no=1, turn_status="idle", created_at=T0)
@@ -222,11 +223,11 @@ async def test_a_peer_message_to_an_idle_session_with_older_messages_waiting_is_
         assert [e.payload["delivery"] for e in steered] == ["queued"]
 
 
-async def test_a_realize_that_finds_the_turn_already_armed_leaves_the_message_queued_where_it_is(monkeypatch):
+async def test_a_realize_that_finds_the_turn_already_armed_leaves_the_message_queued_where_it_is(new_world, monkeypatch):
     """Another wake armed the turn after the turn ended (a wake on another process, whose queue read came first): the realize must not write a
     second USER_INPUT for that turn. Its message stays at the head of the queue for the next boundary, the same row, not a copy."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         row = await seed_session(world, sid="ses-b", turn_no=1, turn_status="idle", created_at=T0)
         queued = await store_pending_steer(storage_provider=world.sp, session=row, text="older", workspace_registry=world.registry,
@@ -242,17 +243,17 @@ async def test_a_realize_that_finds_the_turn_already_armed_leaves_the_message_qu
         assert [p.id for p in page.items] == [queued.id]
 
 
-async def test_two_realizes_of_one_queue_head_in_two_processes_deliver_it_once(monkeypatch):
+async def test_two_realizes_of_one_queue_head_in_two_processes_deliver_it_once(new_world, monkeypatch):
     """Two drains of the same queue (a turn's checkpoint and the sweep, say) both read the same head and the idle row: one arms the turn with it,
     the other leaves it, and the message is delivered once."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         row = await seed_session(world, sid="ses-b", turn_no=1, created_at=T0)
         await store_pending_steer(storage_provider=world.sp, session=row, text="only once", workspace_registry=world.registry,
                                   event_bus=world.bus)
         barrier = _ReadBarrier(world.sp.get_storage(WorkspaceSession), "ses-b")
-        world.sp._stores[WorkspaceSession] = barrier
+        install_sessions(world, barrier)
         barrier.armed = True
 
         done = await asyncio.gather(*(
@@ -332,9 +333,9 @@ def _exit_executor(world: World, exit_kind: str) -> Any:
     return FakeExecutor([TextDelta(text="half an answer", index=0), RuntimeError("the executor blew up")])
 
 
-async def _armed_turn_world() -> World:
+async def _armed_turn_world(new_world) -> World:
     """A session whose turn is armed (a wake wrote its USER_INPUT at seq 4 and flipped it claimable) and is about to be claimed."""
-    world = make_world()
+    world = await new_world()
     bus = InMemoryEventBus()
     await bus.initialize()
     world.bus = bus
@@ -353,13 +354,13 @@ def _dispatch_deps(world: World, executor: Any) -> SessionDispatchDeps:
 
 
 @pytest.mark.parametrize("exit_kind", ["clean", "cancel", "failure"])
-async def test_a_steer_that_lands_the_moment_the_turn_reads_idle_takes_a_fresh_seq_after_the_turn(monkeypatch, exit_kind):
+async def test_a_steer_that_lands_the_moment_the_turn_reads_idle_takes_a_fresh_seq_after_the_turn(new_world, monkeypatch, exit_kind):
     """The audit's G7-03 (c) (scratch ``test_fc3``), in the production shape: a person's steer on another process lands the instant the ending
     turn's row first reads idle. On main that instant came before the turn wrote its last records and its ``last_seq``, so the USER_INPUT took a seq
     the turn had already written, and the turn's terminal record then landed after it. Now the row reads idle only once everything the turn
     wrote is on the row: the USER_INPUT takes the next seq, after every record of the turn, and arms the next turn."""
     async with asyncio.timeout(BOUND_S):
-        world = await _armed_turn_world()
+        world = await _armed_turn_world(new_world)
         try:
             _each_wake_in_its_own_process(monkeypatch)
             deliveries = []
@@ -369,7 +370,7 @@ async def test_a_steer_that_lands_the_moment_the_turn_reads_idle_takes_a_fresh_s
                                                       **world.deliver_kwargs()))
 
             hook = _OnIdle(world.sessions, "ses-b", steer)
-            world.sp._stores[WorkspaceSession] = hook
+            install_sessions(world, hook)
 
             await run_one_session_turn(_make_lease("ses-b"), _dispatch_deps(world, _exit_executor(world, exit_kind)))
 
@@ -384,12 +385,12 @@ async def test_a_steer_that_lands_the_moment_the_turn_reads_idle_takes_a_fresh_s
             await world.bus.aclose()
 
 
-async def test_a_steer_that_lands_the_moment_the_turn_reads_idle_goes_behind_a_message_queued_during_the_turn(monkeypatch):
+async def test_a_steer_that_lands_the_moment_the_turn_reads_idle_goes_behind_a_message_queued_during_the_turn(new_world, monkeypatch):
     """G7-03 (b) through the real dispatch: a message queued during the turn is still waiting when a person's steer lands the instant the turn's
     row reads idle. On main the steer started the next turn and the drain then wrote the older message as a SECOND USER_INPUT for it, newest first.
     Now the steer queues behind it, and the drain starts the next turn with the older message alone."""
     async with asyncio.timeout(BOUND_S):
-        world = await _armed_turn_world()
+        world = await _armed_turn_world(new_world)
         try:
             _each_wake_in_its_own_process(monkeypatch)
             row = await world.sessions.get("ses-b")
@@ -401,7 +402,7 @@ async def test_a_steer_that_lands_the_moment_the_turn_reads_idle_goes_behind_a_m
                 deliveries.append(await deliver_steer(session_id="ses-b", text="newer", parallelism="queue", human_intent=True,
                                                       **world.deliver_kwargs()))
 
-            world.sp._stores[WorkspaceSession] = _OnIdle(world.sessions, "ses-b", steer)
+            install_sessions(world, _OnIdle(world.sessions, "ses-b", steer))
 
             await run_one_session_turn(_make_lease("ses-b"), _dispatch_deps(world, _exit_executor(world, "clean")))
 

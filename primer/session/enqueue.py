@@ -307,9 +307,14 @@ async def wake_session(
     # boundary after it realizes that): an ended session is always woken (route_steer).
     reopened = False
     async with session_lifecycle_lock().acquire(session_id):
-        # Set once this wake has put the turn into ``arming`` (its reopen, or its arm): from then on it either promotes the turn to claimable
-        # once its message is written, or gives the turn back. No path leaves the row arming (or armed) with nothing to run (audit G7-03).
-        owns_arming = False
+        # ``armed`` is the row as this wake's own conditional write left it once the wake holds the turn as ``arming`` (its reopen, or its
+        # arm); its ``armed_at`` fences the promotion and the give-back. ``settled`` says what became of that turn: ``promoted`` to
+        # claimable, given to a ``pause`` or a Cancel that won, or ``taken`` by another writer. A wake that holds the turn and leaves by any
+        # other way (an early return, an exception, a cancellation) settles it in the ``finally`` below: no path leaves the row arming
+        # with nothing to run, or a written message unclaimed (audit G7-03, review N1).
+        armed: WorkspaceSession | None = None
+        settled: str | None = None
+        message_written = False
         try:
             for _attempt in range(_ARM_ATTEMPTS):
                 row = await sessions.get(session_id)
@@ -378,7 +383,7 @@ async def wake_session(
                         continue
                     row, _invocation = done
                     reopened = True
-                    owns_arming = True
+                    armed = row
                     # Surface the invocation divider live before the USER_INPUT tick
                     # below (mirrors reset_session's divider tick). Advisory.
                     if deps.event_bus is not None:
@@ -467,17 +472,16 @@ async def wake_session(
                 # turn claimable in the same statement. Of two wakes of one idle session, in any two processes, exactly one write lands: the other
                 # is refused, reads the row again above, finds the turn armed and defers its message. A refusal from any other change (a record
                 # that took the next seq, a Cancel, a pause) is decided again the same way. Nothing has been written when it is refused.
-                armed = await _arm_or_reserve(sessions, row, arm=routed, owned=reopened)
-                if armed is not None:
-                    decided, row = row, armed
-                    owns_arming = owns_arming or routed
+                taken = await _arm_or_reserve(sessions, row, arm=routed, owned=reopened)
+                if taken is not None:
+                    decided, row = row, taken
+                    if routed or reopened:
+                        armed = taken
                     break
             else:
                 # Every attempt was overtaken by another writer. A plain routed message is queued (the next turn boundary, or the queue sweep,
-                # delivers it: never lost, never a second USER_INPUT); a call carrying tools or parts cannot be queued, so it is refused.
-                if owns_arming:
-                    await _disarm(sessions, session_id)
-                    owns_arming = False
+                # delivers it: never lost, never a second USER_INPUT); a call carrying tools or parts cannot be queued, so it is refused. A turn
+                # this wake took is given back in the ``finally``.
                 fresh = await sessions.get(session_id)
                 if fresh is None or fresh.workspace_id != workspace_id:
                     raise NotFoundError(
@@ -543,6 +547,12 @@ async def wake_session(
                         created_at=datetime.now(timezone.utc),
                     ))
                     await writer.flush()
+                message_written = True
+                if queued_message_id is not None:
+                    # The drain's message is in the log now: it leaves the queue BEFORE the turn is promoted, so no turn can run (and drain
+                    # the queue) while it is still queued and deliver it a second time (review N4). Were the promotion to fail from here, the
+                    # message is in the log and the turn this wake holds is promoted or healed with it (see the ``finally``).
+                    await _take_off_the_queue(deps.storage_provider, queued_message_id)
 
             # 2. Re-arm the scheduler-visible row: claimable + clear pause;
             #    CREATED/PAUSED/WAITING advance to RUNNING (like /resume).
@@ -553,29 +563,29 @@ async def wake_session(
             # operator returning to the session can see that their pause was
             # superseded, and by what.
             was_paused = decided.pause_requested
-            landed = await _write_the_wake(
+            landed, settled = await _write_the_wake(
                 sessions, row, decided=decided, instruction=instruction, human_intent=human_intent, peer=peer,
-                external_tools=external_tools, armed=owns_arming,
+                external_tools=external_tools, armed=armed,
             )
-        except BaseException:
-            if owns_arming:
-                # The turn this wake armed has no message (or its closing write failed): give it back, so the session is not left armed
-                # with nothing to answer (a reserved seq stays a gap, which readers tolerate). A message the drain was realizing stays queued.
-                await _disarm(sessions, session_id)
-            raise
-        if landed is None:
-            # A Cancel or a pause landed on the row after the decision (on any process): it wins, the session is not woken. A message already
-            # written stays in the log, answered when the session is resumed or reopened.
-            return await sessions.get(session_id) or row
-        row = landed
+            if landed is None:
+                # A Cancel or a pause landed on the row after the decision (on any process): it wins, the session is not woken (a turn this
+                # wake took is given back in the ``finally``). A message already written stays in the log, answered when the session is
+                # resumed or reopened. Or another writer took the turn: its turn reads the message.
+                return await sessions.get(session_id) or row
+            row = landed
 
-        # 3. Pulse the scheduler + claim engine so a worker runs the turn. The row is claimable from here on, so the claim is armed whatever
-        #    the scheduler's hint does (a row left claimable with no lease is re-armed by the session-messaging sweep).
-        try:
-            await deps.scheduler.enqueue(session_id)
+            # 3. Pulse the scheduler + claim engine so a worker runs the turn. The row is claimable from here on, so the claim is armed
+            #    whatever the scheduler's hint does (a row left claimable with no lease is re-armed by the session-messaging sweep).
+            try:
+                await deps.scheduler.enqueue(session_id)
+            finally:
+                if deps.claim_engine is not None:
+                    await deps.claim_engine.upsert(ClaimKind.SESSION, session_id)
         finally:
-            if deps.claim_engine is not None:
-                await deps.claim_engine.upsert(ClaimKind.SESSION, session_id)
+            if armed is not None and settled not in ("promoted", "taken"):
+                await _settle_the_arm(
+                    sessions, deps, session_id, armed=armed, to_a_pause=settled == "paused", message_written=message_written,
+                )
         if deps.event_bus is not None:
             try:
                 await deps.event_bus.publish(
@@ -616,10 +626,11 @@ async def _arm_or_reserve(sessions: Any, row: WorkspaceSession, *, arm: bool, ow
     """Reserve seq ``row.last_seq + 1`` for the wake's USER_INPUT and, with ``arm``, take the turn, in ONE guarded ``patch_if``.
 
     Fenced on the row as read: its ``last_seq`` (the reservation), ``status`` and ``pause_requested`` (what the pause hold and the reopen
-    decided from). With ``arm`` the write also takes the turn: fenced on no park and on ``turn_status`` idle (``arming`` when ``owned``: this
-    wake's own reopen already holds it), it sets ``arming``, a state every other wake treats as busy and that nothing claims or re-arms
-    (audit G7-03, review H1), until :func:`_write_the_wake` promotes it to ``claimable`` once the message is written. Returns the row as
-    written, or ``None`` when the fence was refused (the row changed: nothing was written). A row that is gone raises ``NotFoundError``.
+    decided from). With ``arm`` the write also takes the turn: fenced on no park and on ``turn_status`` idle, it sets ``arming`` and stamps
+    ``armed_at`` (with ``owned`` this wake's own reopen already holds the turn: fenced on ``arming`` and that reopen's ``armed_at``, which it
+    keeps). ``arming`` is a state every other wake treats as busy and that nothing claims or re-arms (audit G7-03, review H1), until
+    :func:`_write_the_wake` promotes it to ``claimable`` once the message is written. Returns the row as written, or ``None`` when the fence
+    was refused (the row changed: nothing was written). A row that is gone raises ``NotFoundError``.
     """
     where: dict[str, list[Any]] = {
         "last_seq": [raw_generation(row, "last_seq")],
@@ -628,23 +639,74 @@ async def _arm_or_reserve(sessions: Any, row: WorkspaceSession, *, arm: bool, ow
     }
     patch: dict[str, Any] = {"last_seq": row.last_seq + 1}
     if arm:
-        where["turn_status"] = ["arming"] if owned else ["idle"]
         where["parked_status"] = [None]
-        patch["turn_status"] = "arming"
-    return await sessions.patch_if(row.id, patch, where=where)
+        if owned:
+            where["turn_status"] = ["arming"]
+            where["armed_at"] = [raw_generation(row, "armed_at")]
+        else:
+            where["turn_status"] = ["idle"]
+            patch["turn_status"] = "arming"
+            patch["armed_at"] = datetime.now(timezone.utc)
+    return await sessions.patch_if(row.id, to_jsonable_python(patch), where=where)
 
 
-async def _disarm(sessions: Any, session_id: str) -> None:
-    """Give back a turn this wake took (``arming`` -> ``idle``) and will not promote: its message could not be written, its closing write did
-    not land, or the message went to the queue. Fenced on the turn still being ``arming``, which only the wake that set it changes. Best effort
-    and logged: the failure being reported, if any, is the caller's (a row left arming is healed by the session-messaging sweep)."""
+def _held_by(armed: WorkspaceSession) -> dict[str, list[Any]]:
+    """The fence of a write only the wake that armed the turn may make: the turn is still ``arming`` under that wake's own ``armed_at``."""
+    return {"turn_status": ["arming"], "armed_at": [raw_generation(armed, "armed_at")]}
+
+
+async def _settle_the_arm(
+    sessions: Any, deps: SessionWakeDeps, session_id: str, *, armed: WorkspaceSession, to_a_pause: bool, message_written: bool,
+) -> None:
+    """Settle a turn this wake took and did not promote (review N1): every exit after the arm comes here, the early returns included.
+
+    * A pause or a Cancel won (``to_a_pause``): the turn goes back to ``idle``. A RUNNING row that a pause flag landed on goes ``PAUSED``
+      with it, as the worker does at a turn boundary (no turn will come to honour the flag; ``/resume`` then runs the turn that answers a
+      message already written: review N9).
+    * The message is written and the wake did not get to promote it (its closing write failed, it was cancelled): the turn is promoted
+      bare (``claimable``, and the claim armed), so the message is not left in the log of a session nothing will run; if that fails too the
+      turn stays ``arming`` and the session-messaging sweep promotes it once it is stale (it reads the log).
+    * Otherwise (no message was written): the turn goes back to ``idle``.
+
+    Each write is fenced on the turn still being this wake's (:func:`_held_by`). Best effort and logged: the failure being reported, if any,
+    is the caller's.
+    """
     try:
-        undone = await sessions.patch_if(session_id, {"turn_status": "idle"}, where={"turn_status": ["arming"]})
-    except Exception:  # noqa: BLE001 -- the failure the caller re-raises is the one to report
-        logger.warning("wake_session: could not give back the turn armed for session %s", session_id, exc_info=True)
-        return
-    if undone is None:
-        logger.warning("wake_session: the turn armed for session %s was no longer arming when it was given back", session_id)
+        held = _held_by(armed)
+        if to_a_pause:
+            fresh = await sessions.get(session_id)
+            if fresh is not None and fresh.status == SessionStatus.RUNNING and fresh.pause_requested:
+                paused = await sessions.patch_if(
+                    session_id, to_jsonable_python({"status": SessionStatus.PAUSED, "turn_status": "idle", "armed_at": None}),
+                    where={**held, "status": [SessionStatus.RUNNING.value], "pause_requested": [True]},
+                )
+                if paused is not None:
+                    return
+        elif message_written:
+            promoted = await sessions.patch_if(
+                session_id, {"turn_status": "claimable", "armed_at": None},
+                where={**held, "status": [s.value for s in (SessionStatus.CREATED, SessionStatus.RUNNING, SessionStatus.WAITING)]},
+            )
+            if promoted is not None:
+                if deps.claim_engine is not None:
+                    await deps.claim_engine.upsert(ClaimKind.SESSION, session_id)
+                logger.warning("wake_session: session %s was promoted bare after the wake's closing write did not land", session_id)
+                return
+        undone = await sessions.patch_if(session_id, {"turn_status": "idle", "armed_at": None}, where=held)
+        if undone is None:
+            logger.info("wake_session: the turn armed for session %s was no longer this wake's when it was settled", session_id)
+    except Exception:  # noqa: BLE001 -- the failure the caller reports (if any) is the one to report; a stale arm is healed by the sweep
+        logger.warning("wake_session: could not settle the turn armed for session %s", session_id, exc_info=True)
+
+
+async def _take_off_the_queue(storage_provider: Any, pending_id: str) -> None:
+    """Delete a queued message whose USER_INPUT is written (review N4). One that is already gone is not an error."""
+    from primer.model.workspace_session import PendingSessionMessage
+
+    try:
+        await storage_provider.get_storage(PendingSessionMessage).delete(pending_id)
+    except NotFoundError:
+        logger.debug("wake_session: queued message %s was already gone", pending_id)
 
 
 async def _still_queued(storage_provider: Any, pending_id: str) -> bool:
@@ -696,28 +758,32 @@ async def _write_the_wake(
     human_intent: bool,
     peer: PeerAttribution | None,
     external_tools: "list | None",
-    armed: bool,
-) -> WorkspaceSession | None:
+    armed: WorkspaceSession | None,
+) -> tuple[WorkspaceSession | None, str | None]:
     """The fields a wake owns, in ONE ``patch_if``: never a whole-row write of a copy read earlier, which put back whatever another process
     committed since (a Cancel's flag, a release's park, a reservation's ``last_seq``).
 
     ``row`` is the row as the wake's conditional write left it (or as read, for a wake without an instruction); ``decided`` is the row the
-    decision was made on, before the arm. The write is fenced on the status the wake decided from; ``armed`` (this wake holds the turn as
-    ``arming``) also fences it on ``turn_status`` still ``arming``, which it promotes to ``claimable``: a routed wake never writes claimable
-    over a turn another writer took. A wake no person stands behind (``human_intent`` False) is also fenced on ``pause_requested`` being
-    false, so a pause requested on another process since is never cleared by it (01a08c08).
+    decision was made on, before the arm. The write is fenced on the status the wake decided from; ``armed`` (the wake holds the turn as
+    ``arming``) also fences it on the turn still being that wake's (``arming`` under its ``armed_at``), which it promotes to ``claimable``: a
+    routed wake never writes claimable over a turn another writer took. A wake no person stands behind (``human_intent`` False) is also fenced
+    on ``pause_requested`` being false, so a pause requested on another process since is never cleared by it (01a08c08).
 
-    Returns the row as written, or ``None`` when the session is not woken: a Cancel ended it, a pause landed (status PAUSED, or the flag for a
-    wake no person stands behind), or another writer took the turn. The pause and the Cancel win, and a turn this wake armed is given back
-    (``arming`` -> ``idle``), so a person's next message still resumes it. Any other change (a status another writer moved) is written over
-    again from a fresh read, a bounded number of times.
+    Returns ``(row as written, "promoted")``; or ``(None, why)`` when the session is not woken: ``"paused"`` (a Cancel ended it or a pause
+    landed: they win, and the caller gives the turn back), ``"taken"`` (another writer took the turn: its turn reads the message), ``"gone"``
+    (the row was deleted), ``None`` (the row kept changing). A turn the session-messaging sweep judged dead and gave back (``idle``, no
+    ``armed_at``) while the message was being written is taken again and promoted (review N3): the message is in the log and must be run.
+    Any other change (a status another writer moved) is written over again from a fresh read, a bounded number of times.
     """
+    reclaim = False
     for _ in range(_ARM_ATTEMPTS):
         fields: dict[str, Any] = {
             "turn_status": "claimable",
             "pause_requested": False,
             "pause_requested_at": None,
         }
+        if armed is not None:
+            fields["armed_at"] = None
         # Replace the active external tool set for the turn this wake
         # triggers (None = leave the set unchanged; [] = clear it). Dumped
         # by_alias so the stored dicts carry the wire "schema" key.
@@ -753,19 +819,19 @@ async def _write_the_wake(
             # restart the clock its age check reads and its write is fenced on, WHATEVER the status was.
             fields["started_at"] = now
         where: dict[str, list[Any]] = {"status": [raw_generation(row, "status")]}
-        if armed:
-            where["turn_status"] = ["arming"]
+        if armed is not None:
+            where.update({"turn_status": ["idle"], "armed_at": [None]} if reclaim else _held_by(armed))
         if not human_intent:
             where["pause_requested"] = [False]
         try:
             written = await sessions.patch_if(row.id, to_jsonable_python(fields), where=where)
         except NotFoundError:
-            return None
+            return None, "gone"
         if written is not None:
-            return written
+            return written, "promoted"
         fresh = await sessions.get(row.id)
         if fresh is None:
-            return None
+            return None, "gone"
         paused_since = (fresh.status == SessionStatus.PAUSED and decided.status != SessionStatus.PAUSED) or (
             not human_intent and fresh.pause_requested
         )
@@ -774,22 +840,26 @@ async def _write_the_wake(
                 "wake_session: session %s was %s after the wake decided; it is not woken", row.id,
                 "paused" if paused_since else fresh.status.value,
             )
-            if armed:
-                await _disarm(sessions, row.id)
-            return None
-        if armed and fresh.turn_status != "arming":
-            # Another writer took the turn from this wake (the sweep healed an arm it judged stale): never written over. The message is in
-            # the log; the turn that writer armed, or the next wake, answers it.
-            logger.warning(
-                "wake_session: the turn of session %s was taken from the wake that armed it (it reads %s); the wake does not write over it",
-                row.id, fresh.turn_status,
-            )
-            return None
+            return None, "paused"
+        if armed is not None:
+            ours = fresh.turn_status == "arming" and raw_generation(fresh, "armed_at") == raw_generation(armed, "armed_at")
+            healed = fresh.turn_status == "idle" and fresh.armed_at is None
+            if healed:
+                logger.warning(
+                    "wake_session: the turn of session %s was given back while its message was being written; it is taken again", row.id,
+                )
+            elif not ours:
+                # Another writer took the turn from this wake (another wake armed it after the sweep gave it back): never written over.
+                # The message is in the log; that writer's turn reads it.
+                logger.warning(
+                    "wake_session: the turn of session %s was taken from the wake that armed it (it reads %s); the wake does not write over it",
+                    row.id, fresh.turn_status,
+                )
+                return None, "taken"
+            reclaim = healed
         row = fresh
     logger.warning("wake_session: session %s kept changing under the wake's closing write; it was not written", row.id)
-    if armed:
-        await _disarm(sessions, row.id)
-    return None
+    return None, None
 
 
 async def _record_pause_superseded(
