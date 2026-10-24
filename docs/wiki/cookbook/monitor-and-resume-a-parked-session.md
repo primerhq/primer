@@ -13,6 +13,7 @@ Find out why a session that stopped moving is waiting, then choose the move: ste
 
 - A `workspace_id` and a `session_id` to watch, for example from [cookbook/create-and-run-a-session](cookbook/create-and-run-a-session).
 - Run it over MCP or from a session in the default workspace (prime). From a session in any other workspace, the workspace tools reach only that session's own workspace: another one answers `type=not-found`, as an unknown id does.
+- A person or token drives only a session at or below their rank: `workspaces__resume_workspace_session`, `workspaces__interrupt_workspace_session` and `workspaces__cancel_workspace_session` answer `type=forbidden` when the session runs at a higher rank than you (or your run).
 
 ## Steps
 
@@ -71,7 +72,7 @@ Response:
 {"id": "sess-a1b2", "status": "waiting", "delivery": "queued"}
 ```
 
-An idle or ended session starts its next turn with the instruction (`delivery: woken`). A busy, parked or paused one reads it at its next turn boundary, so the answer is `delivery: queued` until it can. A steer is never the answer to the session's `ask_user`.
+An idle or ended session starts its next turn with the instruction (`delivery: woken`). A busy, parked or paused one reads it at its next turn boundary, so the answer is `delivery: queued` until it can. A steer is never the answer to the session's `ask_user`. Over MCP, the caller must rank at least as high as the session's creator, or the steer is refused (`type=forbidden`); a session an operator cancelled is refused (`type=conflict`).
 
 ### 4. Resume a paused session
 
