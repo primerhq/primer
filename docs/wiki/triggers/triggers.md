@@ -10,7 +10,7 @@ A trigger is a source of fires: a time, a schedule, a webhook call or a channel 
 
 ## Concepts
 - **The four kinds.** `config.kind` picks one. The kind never changes after create.
-  - `delayed` fires once at `fire_at`, an ISO 8601 instant (write it in UTC, ending in `Z`). After that fire the trigger is disabled.
+  - `delayed` fires once at `fire_at`, an ISO 8601 instant (write it in UTC, ending in `Z`; a time without a zone is read as UTC). After that fire the trigger is disabled.
   - `scheduled` fires on a five-field `cron`, read in `timezone` (an IANA name, default `UTC`). `catchup` (`one`, `all` or `none`, default `one`) decides what happens after downtime (see Gotchas).
   - `webhook` fires when a caller sends `POST /v1/webhooks/{token}`. The server mints `token` (32 hex characters) on create, whatever you send. Optional: `hmac_secret` (the caller must sign the body), `interactive` (hold the POST until the fired runs end, default `false`) and `wait_timeout_seconds` (1 to 600, default 60: how long an interactive POST waits). See [fire a trigger now](triggers/fire-now).
   - `channel` fires when the inbound channel router receives an event from `provider_id`; set `channel_id` to listen to one channel only. `interactive` (default `true`) posts each run's result back into the thread. It fires from the router, never on a clock. Its subscriptions are channel bindings ([bindings](channels/bindings)).

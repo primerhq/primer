@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Literal, get_args
 
@@ -24,6 +24,19 @@ from primer.model.principal import PrincipalRef
 # ---------------------------------------------------------------------------
 
 
+def _read_as_utc(value: datetime | None) -> datetime | None:
+    """A time given or stored without a zone is read as UTC (ticket 01a16e79).
+
+    A naive ``fire_at`` / ``next_fire_at`` used to be stored as given and armed on the claim lease, where comparing it with
+    the engine's aware clock raised: on the in-memory engine one such trigger stopped every claim of every kind. Postgres's
+    ``::timestamptz`` reads such a value in the session's zone, UTC on the default image. Applied on input and on the read of
+    a stored row, so a legacy naive row is read as UTC too. An aware value is kept as it is.
+    """
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 class TriggerKind(str, Enum):
     DELAYED = "delayed"
     SCHEDULED = "scheduled"
@@ -38,7 +51,12 @@ class DelayedTriggerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["delayed"] = "delayed"
-    fire_at: datetime  # UTC instant
+    fire_at: datetime  # UTC instant; a time without a zone is read as UTC
+
+    @field_validator("fire_at")
+    @classmethod
+    def _fire_at_as_utc(cls, v: datetime) -> datetime:
+        return _read_as_utc(v)
 
 
 class ScheduledTriggerConfig(BaseModel):
@@ -143,6 +161,11 @@ class Trigger(Identifiable):
             "ordinary user."
         ),
     )
+
+    @field_validator("next_fire_at")
+    @classmethod
+    def _next_fire_at_as_utc(cls, v: datetime | None) -> datetime | None:
+        return _read_as_utc(v)
 
     @field_validator("slug")
     @classmethod
