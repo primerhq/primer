@@ -4,6 +4,7 @@ Rename (``PATCH /v1/workspaces/{id}`` with ``{"name"}``) was offered only on the
 tab of ``WorkspaceDetail``, the workspace's Settings overlay) shows the workspace's name with a Rename button that opens the same ``WS_RenameWorkspaceModal``;
 a save refetches the row and the rail's workspace list (``nv-workspaces``) so the new name shows where the workspace is picked. Save says it is busy the kit's
 way while the request is out, never natively disabled. The default workspace (prime) can be renamed: the server allows it, only its delete is refused.
+The Destroy tab next to it refreshes the same rail list after a destroy (it named the deleted page's list).
 
 The real ``shared.jsx`` (``Modal``, ``Btn``) and ``workspaces.jsx`` run here on the hook runtime (``tests/ui/_register_harness.py``), with the network and
 ``useMutation`` stubbed.
@@ -16,6 +17,7 @@ import json
 import pytest
 
 from tests.ui._register_harness import COMPONENTS, base_code, context, js, settle, transpiled
+from tests.ui._wt_envelopes import envelope
 
 WORKSPACES_FILE = COMPONENTS / "workspaces.jsx"
 
@@ -112,11 +114,29 @@ def test_save_is_busy_not_disabled_while_the_request_is_out(ctx):
 
 
 def test_a_refused_rename_keeps_the_dialog_open_and_says_why(ctx):
-    env = {"type": "/errors/forbidden", "title": "Forbidden", "status": 403, "detail": "Only the workspace's owner may rename it"}
+    """The real 404 of PATCH /v1/workspaces/{id} (the workspace was deleted while the dialog was open): the dialog stays, nothing is refetched, and the
+    toast says the server's words. The real 422 of a malformed name is said in words too (the field and the sentence, never a code)."""
+    status, env = envelope("PATCH", "/v1/workspaces/ws-1", {"name": "x"})
+    assert status == 404
     _mount(ctx, ROW)
     ctx.eval("var ENV = " + json.dumps(env) + "; HANDLER = function () { return refuse(ENV); };")
     ctx.eval("press('ws-config-rename'); setValue('ws-rename-name', 'x'); press('ws-rename-save');")
     settle(ctx)
     assert ctx.eval("!!MR.find('ws-rename-name')") and js(ctx, "REFETCHED") == 0
     toast = js(ctx, "TOASTS")[0]
-    assert toast["kind"] == "error" and toast["title"] == "Rename failed" and toast["detail"] == "Only the workspace's owner may rename it"
+    assert toast["kind"] == "error" and toast["title"] == "Rename failed" and toast["detail"] == "Workspace 'ws-1' does not exist"
+    status, env = envelope("PATCH", "/v1/workspaces/ws-1", {"name": 5}, workspaces=("ws-1",))
+    assert status == 422
+    ctx.eval("ENV = " + json.dumps(env) + "; press('ws-rename-save');")
+    settle(ctx)
+    assert js(ctx, "TOASTS")[1]["detail"] == "name: Input should be a valid string"
+
+
+def test_a_destroy_refreshes_the_rails_list_not_the_gone_pages(ctx):
+    """The Destroy tab refreshed the deleted Workspaces page's list (workspaces:list), so the rail kept showing a destroyed workspace for up to its 15 s
+    poll; it refreshes the rail's list (nv-workspaces) now."""
+    ctx.eval("window.primerApi.useRouter = function () { return { navigate: function () {}, params: {}, query: {} }; };"
+             " MR.mount(window.WS_DestroyTab, { wid: 'ws-1', pushToast: window.primerApi.toastPush, sessionsForBadge: { data: { items: [] } } });")
+    invalidated = [json.loads(i) for i in js(ctx, "INVALIDATES")]
+    assert ["nv-workspaces"] in invalidated
+    assert not any("workspaces:list" in i for i in invalidated)

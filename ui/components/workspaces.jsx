@@ -1529,7 +1529,8 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
   const destroy = useMutation(
     () => apiFetch("DELETE", `/workspaces/${encodeURIComponent(wid)}`),
     {
-      invalidates: ["workspaces:list"],
+      // The rail's list (the Workspaces page and its workspaces:list are gone, platform revamp 08 Task 14).
+      invalidates: ["nv-workspaces"],
       onSuccess: () => {
         if (typeof pushToast === "function") {
           pushToast({ kind: "warning", title: "Workspace destroyed", detail: wid });
