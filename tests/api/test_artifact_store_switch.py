@@ -106,6 +106,19 @@ async def test_an_edit_to_an_unusable_root_is_a_422_and_keeps_the_row(client, ap
     assert stored.config.root == str(tmp_path / "a")
 
 
+async def test_a_refused_move_prepares_nothing(client, app, tmp_path: Path) -> None:
+    """The preparation runs LAST: a move that the holds-artifacts check refuses never creates the new root."""
+    await app.state.storage_provider.get_storage(ArtifactStorageProvider).create(
+        ArtifactStorageProvider(id="fs-held", provider="filesystem", config={"root": str(tmp_path / "a")}),
+    )
+    await app.state.storage_provider.get_storage(ArtifactLocation).create(ArtifactLocation(id="artifact-" + "1" * 32, provider_id="fs-held"))
+
+    r = await client.put(f"{PROVIDERS}/fs-held", json={"id": "fs-held", "provider": "filesystem", "config": {"root": str(tmp_path / "b")}})
+
+    assert r.status_code == 409 and r.json()["extensions"]["error"] == "artifact_provider_holds_artifacts", r.text
+    assert not (tmp_path / "b").exists()
+
+
 async def test_an_edit_prepares_a_new_root(client, tmp_path: Path) -> None:
     r = await client.post(PROVIDERS, json={"id": "fs-move", "provider": "filesystem", "config": {"root": str(tmp_path / "a")}})
     assert r.status_code == 201, r.text
@@ -257,7 +270,7 @@ def test_the_lifespan_runs_the_check_in_the_background() -> None:
     assert "app.state.artifact_store_check_task = asyncio.create_task(" in src and "store_check.cancel()" in src
 
 
-async def test_a_location_record_for_the_switch_is_a_real_row(client, app, tmp_path: Path) -> None:
+async def test_a_put_to_the_filesystem_store_records_its_provider(client, app, tmp_path: Path) -> None:
     """The filesystem store needs a record (``needs_location_record``): a put through the routing store writes one naming the provider."""
     r = await client.post(PROVIDERS, json={"id": "fs-rec", "provider": "filesystem", "config": {"root": str(tmp_path / "rec")}})
     assert r.status_code == 201, r.text

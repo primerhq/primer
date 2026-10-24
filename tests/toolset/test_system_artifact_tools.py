@@ -173,3 +173,22 @@ async def test_a_tool_create_and_update_prepare_the_root(world, tmp_path) -> Non
     )
     assert refused_error and refused["type"] == "validation-error" and refused["message"].startswith("config.root: "), refused
     assert (await sp.get_storage(ArtifactStorageProvider).get("fs-1")).config.root == str(tmp_path / "b"), "the row is unchanged"
+
+
+async def test_a_tool_move_the_holds_check_refuses_prepares_nothing(world, tmp_path) -> None:
+    """The preparation runs LAST in the tool's pre-update, as in the REST hook."""
+    sp, toolset, _ = world
+    await sp.get_storage(ArtifactStorageProvider).create(
+        ArtifactStorageProvider(id="fs-held", provider="filesystem", config={"root": str(tmp_path / "a")}),
+    )
+    await sp.get_storage(ArtifactLocation).create(ArtifactLocation(id="artifact-" + "1" * 32, provider_id="fs-held"))
+
+    is_error, answer = await _call(
+        toolset,
+        "update_artifact_storage_provider",
+        id="fs-held",
+        entity={"id": "fs-held", "provider": "filesystem", "config": {"root": str(tmp_path / "c")}},
+    )
+
+    assert is_error and answer["type"] == "conflict", answer
+    assert not (tmp_path / "c").exists()

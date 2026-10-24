@@ -123,6 +123,25 @@ async def test_prepare_writes_the_marker_of_a_filesystem_root(tmp_path) -> None:
     assert (tmp_path / "r" / ROOT_MARKER).is_file()
 
 
+async def test_prepare_runs_off_the_event_loop(tmp_path, monkeypatch) -> None:
+    import threading
+
+    from primer.artifact import checks
+
+    seen: list[int] = []
+    real = checks.prepare_root
+
+    def spy(root: str) -> None:
+        seen.append(threading.get_ident())
+        real(root)
+
+    monkeypatch.setattr(checks, "prepare_root", spy)
+
+    await checks.prepare_artifact_provider(ArtifactStorageProvider(id="fs-1", provider="filesystem", config={"root": str(tmp_path / "r")}))
+
+    assert len(seen) == 1 and seen[0] != threading.get_ident()
+
+
 @pytest.mark.parametrize("kind", ["db", "s3"])
 async def test_prepare_does_nothing_for_another_kind(kind, monkeypatch) -> None:
     from primer.artifact import checks
