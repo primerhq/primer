@@ -1099,8 +1099,13 @@ async def _watch_files_handler(
 # state (a child WorkspaceGraphExecutor), and returns its output text.
 # Declared yielding (``-> ToolCallResult | Yielded``) so the provider
 # classifies it as a session-only tool and excludes it from MCP; the
-# happy (non-parking) path returns a ToolCallResult. Parking/resume is a
-# later task - this handler does not yet surface a Yielded.
+# happy (non-parking) path returns a ToolCallResult. A child that parks
+# (an ask_user, an approval gate) parks the CALLING session: the child's
+# YieldToWorker passes through this handler, after ``run_invoke_graph``
+# pushed a ``GraphFrame`` (the child's identity and checkpoint) onto its
+# ``frames``, and the session's resume walks that frame back into the
+# child (``resume_invoke_graph``). A child that ends failed is an error
+# result (``ChildGraphFailed``).
 # ===========================================================================
 
 
