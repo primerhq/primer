@@ -376,8 +376,12 @@ OpenAI accepts whether or not the profile sets a reasoning level, because
 these models reason by default.
 `fit_openai_reasoning_request` in `primer/llm/_openai_common.py` sends the
 Chat Completions `max_tokens` as `max_completion_tokens`, and drops `temperature`
-and `top_p` on both wires unless the effort is `none` (OpenAI accepts them
-only then). A call that sends no effort to gpt-5.1 to 5.x loses them too, on
+and `top_p` on both wires unless the effort is `none` on a model that has a
+true `none` (gpt-5.1 to 5.x, `openai_has_none`; OpenAI accepts them only
+then). Every other reasoning family starts at `minimal` or `low` (gpt-5-pro
+takes only `high`) and refuses them at every effort, so a `none` that a
+profile's `extended` sends to one of them does not keep them (ticket
+01a16b64). A call that sends no effort to gpt-5.1 to 5.x loses them too, on
 purpose (ticket 01a16b64): those models default to `none`, but primer does
 not count on a default it did not send (OpenAI sets it per model and can
 change it), and a dropped knob costs only determinism where a refused one

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from primer.llm._reasoning import debug_once, openai_reasons
+from primer.llm._reasoning import debug_once, openai_has_none, openai_reasons
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +61,13 @@ def build_sampling_params(
     return params
 
 
-# What OpenAI's reasoning models refuse beside a reasoning effort that is not ``none`` ("When reasoning effort is not none, remove
-# temperature, top_p, and top_logprobs", OpenAI's latest-model guide). Only the call's own sampling knobs are fitted here: a
-# refused ``extended`` key (``top_logprobs``, ``logprobs``) is the profile's, and the stream-open guard retries without the profile's
-# settings when OpenAI refuses one, but it cannot take away a knob the call itself passed.
+# The call's own sampling knobs an OpenAI reasoning model refuses. The rule is quoted from OpenAI's latest-model guide, the one
+# written for GPT-6: "When reasoning effort is not none, remove temperature, top_p, and top_logprobs". A true ``none`` exists only on
+# gpt-5.1 to 5.x (the GPT-5.1 guide makes it gpt-5.1's default effort), so the knobs are kept at ``none`` on those models alone
+# (:func:`primer.llm._reasoning.openai_has_none`, ticket 01a16b64 R3): every other reasoning family starts at ``minimal`` or ``low``
+# (pro takes only ``high``) and refuses them at every effort, a ``none`` from a profile's ``extended`` included. Only the call's own
+# sampling knobs are fitted here: a refused ``extended`` key (``top_logprobs``, ``logprobs``) is the profile's, and the stream-open
+# guard retries without the profile's settings when OpenAI refuses one, but it cannot take away a knob the call itself passed.
 _REASONING_REFUSED_SAMPLING: tuple[str, ...] = ("temperature", "top_p")
 
 
@@ -86,10 +89,12 @@ def fit_openai_reasoning_request(
     no ``reasoning_effort`` at all, refuse them too (ticket 01a16b64 R1). For such a model:
 
     * Chat Completions: ``max_tokens`` is sent as ``max_completion_tokens`` (the reasoning models refuse ``max_tokens``).
-    * Both wires: ``temperature`` and ``top_p`` are dropped, unless the request sets the effort to ``none`` (OpenAI accepts
-      them only then). A call that sends no effort to gpt-5.1 to 5.x loses them too, on purpose (ticket 01a16b64 R2): those
-      models default to ``none``, but a default the request did not send is the vendor's to change, and a dropped knob costs
-      only determinism where a refused one fails the call. A profile set to OFF sends ``none`` and keeps them.
+    * Both wires: ``temperature`` and ``top_p`` are dropped, unless the request sets the effort to ``none`` on a model that
+      has a true ``none`` (gpt-5.1 to 5.x, :func:`primer.llm._reasoning.openai_has_none`; OpenAI accepts them only then, see
+      :data:`_REASONING_REFUSED_SAMPLING`). A call that sends no effort to gpt-5.1 to 5.x loses them too, on purpose (ticket
+      01a16b64 R2): those models default to ``none``, but a default the request did not send is the vendor's to change, and a
+      dropped knob costs only determinism where a refused one fails the call. A profile set to OFF sends ``none`` and keeps
+      them.
 
     A model that does not reason (gpt-4o) is sent as shaped. A model the table does not know (a deployment name, a model on a
     compatible server registered with the ``openai`` flavor) keeps the shape it had before the family rule: on Chat Completions
@@ -113,7 +118,7 @@ def fit_openai_reasoning_request(
     elif target == "chat_completions" and "max_tokens" in request:
         request["max_completion_tokens"] = request.pop("max_tokens")
         changed.append("max_tokens sent as max_completion_tokens")
-    if effort != "none":
+    if effort != "none" or not openai_has_none(model):
         dropped = [key for key in _REASONING_REFUSED_SAMPLING if key in request]
         for key in dropped:
             del request[key]

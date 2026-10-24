@@ -338,16 +338,18 @@ serves; the aggregate's own `config` is not applied.
 On real OpenAI (the `openai` flavor), a reasoning model (o-series, codex,
 gpt-5 and later, and o1-mini and o1-preview, which take no reasoning effort
 but reason all the same) refuses `temperature` and `top_p` unless its effort is
-`none`, whether or not the profile sets a reasoning level (these models
-reason by default), and on Chat Completions it takes `max_completion_tokens`
-instead of `max_tokens`. primer shapes every call to such a model that way,
-on Chat Completions and on the Responses API, compaction included. A call to
-gpt-5.1 to 5.x that sends no effort (a profile with no reasoning level) loses
-`temperature` and `top_p` too, on purpose: those models default to `none`,
-but primer does not count on a default it did not send, and a dropped
-setting costs less than a refused call. Set the profile's reasoning to off,
-which sends `none`, to keep them on those models. A model
-that does not reason (gpt-4o), self-hosted OpenAI-compatible servers and
+`none`, an effort only gpt-5.1 to 5.x have (every other reasoning model
+refuses them at any effort), whether or not the profile sets a reasoning
+level (these models reason by default), and on Chat Completions it takes
+`max_completion_tokens` instead of `max_tokens`. primer shapes every call to
+such a model that way, on Chat Completions and on the Responses API,
+compaction included. A call to gpt-5.1 to 5.x that sends no effort (a
+profile with no reasoning level) loses `temperature` and `top_p` too, on
+purpose: those models default to `none`, but primer does not count on a
+default it did not send, and a dropped setting costs less than a refused
+call. Set the profile's reasoning to off, which sends `none`, to keep them
+on those models. A model that does not reason (gpt-4o), self-hosted
+OpenAI-compatible servers and
 OpenRouter keep the call's settings; a deployment name primer cannot
 classify keeps them too, except that Chat Completions drops `temperature`
 and `top_p` when a reasoning effort is sent.

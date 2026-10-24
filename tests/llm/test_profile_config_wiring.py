@@ -1065,8 +1065,9 @@ _SAMPLING = {"temperature": 0.0, "top_p": 0.9}
 
 class TestOpenAIReasoningModelsGetTheRequestOpenAIAccepts:
     """Captured at the HTTP transport, whole. OpenAI's reasoning models refuse ``max_tokens`` on Chat Completions (they take
-    ``max_completion_tokens``) and refuse ``temperature`` and ``top_p`` unless the effort is ``none``, with or without an
-    effort sent (they reason by default). The fit is decided from the model's family and only on the ``openai`` flavor."""
+    ``max_completion_tokens``) and refuse ``temperature`` and ``top_p`` unless the effort is ``none`` on a model that has one
+    (gpt-5.1 to 5.x), with or without an effort sent (they reason by default). The fit is decided from whether the model
+    reasons, not from whether it takes an effort, and only on the ``openai`` flavor."""
 
     @pytest.mark.parametrize("model", ["o3", "gpt-5", "o4-mini"])
     @pytest.mark.parametrize("level, effort", [(ReasoningLevel.LOW, {"reasoning_effort": "low"}), (None, {})])
@@ -1074,10 +1075,6 @@ class TestOpenAIReasoningModelsGetTheRequestOpenAIAccepts:
         cfg = None if level is None else _cfg(level)
         body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), cfg, model, monkeypatch)
         assert body == _chat_body(model, max_completion_tokens=4096, **effort)
-
-    async def test_chat_effort_none_keeps_the_sampling_knobs(self, monkeypatch) -> None:
-        body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), _cfg(ReasoningLevel.OFF), "gpt-5.1", monkeypatch)
-        assert body == _chat_body("gpt-5.1", max_completion_tokens=4096, reasoning_effort="none", **_SAMPLING)
 
     @pytest.mark.parametrize("level", [ReasoningLevel.LOW, None])
     async def test_chat_a_model_that_does_not_reason_is_unchanged(self, monkeypatch, level) -> None:
@@ -1151,3 +1148,35 @@ class TestOpenAIReasoningModelsGetTheRequestOpenAIAccepts:
     async def test_responses_gpt_5_1_with_no_effort_sent_drops_the_sampling_knobs_on_purpose(self, monkeypatch, model) -> None:
         body = await _whole_body("openresponses", OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI)), None, model, monkeypatch)
         assert body == _responses_body(model, max_output_tokens=4096)
+
+    # Ticket 01a16b64 R3: the sampling knobs are kept at the effort ``none`` only on the models that HAVE a true ``none`` (gpt-5.1 to
+    # 5.x). The other reasoning families have no such effort and refuse the knobs at every effort, so a ``none`` that reaches them
+    # (from a profile's ``extended``) does not keep them.
+    @pytest.mark.parametrize("model", ["gpt-5.1", "gpt-5.2"])
+    @pytest.mark.parametrize("cfg", [_cfg(ReasoningLevel.OFF), _cfg(None, reasoning_effort="none")], ids=["level-off", "extended-none"])
+    async def test_chat_effort_none_keeps_the_sampling_knobs_where_the_model_has_a_true_none(self, monkeypatch, model, cfg) -> None:
+        body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), cfg, model, monkeypatch)
+        assert body == _chat_body(model, max_completion_tokens=4096, reasoning_effort="none", **_SAMPLING)
+
+    @pytest.mark.parametrize("model", ["o3", "o4-mini", "gpt-5", "gpt-5-codex", "gpt-5.1-codex", "gpt-5-pro", "gpt-6-astra"])
+    async def test_chat_effort_none_on_a_family_without_none_drops_the_sampling_knobs(self, monkeypatch, model) -> None:
+        cfg = _cfg(None, reasoning_effort="none")
+        body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), cfg, model, monkeypatch)
+        assert body == _chat_body(model, max_completion_tokens=4096, reasoning_effort="none")
+
+    async def test_responses_effort_none_keeps_the_sampling_knobs_where_the_model_has_a_true_none(self, monkeypatch) -> None:
+        body = await _whole_body("openresponses", OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI)), _cfg(ReasoningLevel.OFF), "gpt-5.1", monkeypatch)
+        assert body == _responses_body("gpt-5.1", max_output_tokens=4096, reasoning={"effort": "none"}, **_SAMPLING)
+
+    @pytest.mark.parametrize("model", ["o3", "gpt-5", "gpt-5-codex", "gpt-6-astra"])
+    async def test_responses_effort_none_on_a_family_without_none_drops_the_sampling_knobs(self, monkeypatch, model) -> None:
+        cfg = _cfg(None, reasoning_effort="none")
+        body = await _whole_body("openresponses", OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI)), cfg, model, monkeypatch)
+        assert body == _responses_body(model, max_output_tokens=4096, reasoning={"effort": "none"})
+
+    async def test_chat_an_unknown_model_at_effort_none_keeps_the_earlier_rule(self, monkeypatch) -> None:
+        """No family, so no table to say whether it has a true ``none``: the rule from before the family table stands (Chat
+        Completions drops the knobs only for an effort other than ``none``)."""
+        cfg = _cfg(None, reasoning_effort="none")
+        body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), cfg, "my-deployment", monkeypatch)
+        assert body == _chat_body("my-deployment", max_tokens=4096, reasoning_effort="none", **_SAMPLING)
