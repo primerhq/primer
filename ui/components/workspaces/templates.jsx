@@ -43,6 +43,15 @@ function ContainerMountEditor({ value, onChange }) {
   );
 }
 
+// The rows of the template form that show a 422's field error, per backend kind (a row reads the error by the last segment of its loc,
+// or by its full path). Any other field error is listed in the line above the fields, so no refusal is lost (the review of #869, F4).
+function _wtFieldErrorShown(kind, path, last) {
+  if (last === "provider_id") return true;
+  if (kind === "container") return last === "cpu_cores" || last === "memory_bytes";
+  if (kind === "kubernetes") return path === "resources.cpu_cores" || path === "resources.memory_bytes" || last === "pvc_size";
+  return false;
+}
+
 function _wtToastErr(pushToast, fallback) {
   return (err) => {
     if (typeof pushToast !== "function") return;
@@ -309,6 +318,7 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
   const isEdit = !!existing;
   const [form, setForm] = React.useState(() => isEdit ? _fromTemplate(existing, providerItems) : _emptyForm(providerItems[0]));
   const [fieldErrors, setFieldErrors] = React.useState({});
+  const [formErrors, setFormErrors] = React.useState([]);
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
 
   React.useEffect(() => {
@@ -337,12 +347,18 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
       onError: (err) => {
         if (err?.status === 422 && Array.isArray(err.fieldErrors)) {
           const map = {};
+          const unshown = [];
           for (const fe of err.fieldErrors) {
             const loc = (fe.loc || []).filter((s) => s !== "body");
-            map[loc.join(".")] = fe.msg;
-            if (loc.length > 0) map[loc[loc.length - 1]] = fe.msg;
+            // The backend's discriminator tag ("backend.kubernetes.pvc_size") is not a path the operator typed.
+            const path = loc.filter((s, i) => !(i === 1 && loc[0] === "backend" && s === form.backend_kind)).join(".");
+            const last = loc.length > 0 ? loc[loc.length - 1] : "";
+            map[path] = fe.msg;
+            if (last) map[last] = fe.msg;
+            if (!_wtFieldErrorShown(form.backend_kind, path, last)) unshown.push({ key: path || "body", label: path, msg: fe.msg });
           }
           setFieldErrors(map);
+          setFormErrors(unshown);
         } else {
           _wtToastErr(pushToast, isEdit ? "Update failed" : "Create failed")(err);
         }
@@ -357,9 +373,11 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
     if (form.backend_kind === "kubernetes" && !form.k_image) errs.k_image = "value is required";
     if (Object.keys(errs).length > 0) {
       setFieldErrors(errs);
+      setFormErrors([]);
       return;
     }
     setFieldErrors({});
+    setFormErrors([]);
 
     let backend;
     if (form.backend_kind === "local") {
@@ -451,6 +469,20 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
         </>
       }
     >
+      {formErrors.length > 0 && (
+        <div role="alert" data-testid="ws-template-form-errors" style={{ marginBottom: 12 }}>
+          <Banner
+            kind="error"
+            title={isEdit ? "Could not save the template" : "Could not create the template"}
+            detail={formErrors.map((e) => (
+              <div key={e.key}>
+                {e.label ? <><span className="mono">{e.label}</span>{": "}</> : null}
+                {e.msg}
+              </div>
+            ))}
+          />
+        </div>
+      )}
       {!isEdit && (
         <WS_FieldRow label="id" hint="optional · backend assigns if blank">
           <input className="input mono" value={form.id} onChange={(e) => update("id", e.target.value)} placeholder="dev-template" style={{ width: "100%" }} />
@@ -499,10 +531,10 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
         </WS_FieldRow>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <WS_FieldRow label="cpu_cores" hint="optional · docker --cpus value" err={fieldErrors.cpu_cores}>
-            <input className="input mono" type="number" step="0.1" min="0" value={form.c_cpu_cores} onChange={(e) => update("c_cpu_cores", e.target.value)} placeholder="2" style={{ width: "100%" }} />
+            <input className="input mono" type="number" step="0.1" min="0.1" value={form.c_cpu_cores} onChange={(e) => update("c_cpu_cores", e.target.value)} placeholder="2" style={{ width: "100%" }} />
           </WS_FieldRow>
           <WS_FieldRow label="memory_bytes" hint="optional · integer bytes" err={fieldErrors.memory_bytes}>
-            <input className="input mono" type="number" step="1" min="0" value={form.c_memory_bytes} onChange={(e) => update("c_memory_bytes", e.target.value)} placeholder="2147483648" style={{ width: "100%" }} />
+            <input className="input mono" type="number" step="1" min="1" value={form.c_memory_bytes} onChange={(e) => update("c_memory_bytes", e.target.value)} placeholder="2147483648" style={{ width: "100%" }} />
           </WS_FieldRow>
         </div>
         <div className="field-help" data-testid="ws-template-admin-only-note">
@@ -536,15 +568,15 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
           <input className="input mono" value={form.k_workdir} onChange={(e) => update("k_workdir", e.target.value)} style={{ width: "100%" }} />
         </WS_FieldRow>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <WS_FieldRow label="cpu_cores" hint="optional · requests and limits">
-            <input className="input mono" type="number" step="0.1" min="0" value={form.k_cpu_cores} onChange={(e) => update("k_cpu_cores", e.target.value)} placeholder="2" style={{ width: "100%" }} data-testid="ws-template-cpu-cores" />
+          <WS_FieldRow label="cpu_cores" hint="optional · requests and limits" err={fieldErrors["resources.cpu_cores"]}>
+            <input className="input mono" type="number" step="0.1" min="0.1" value={form.k_cpu_cores} onChange={(e) => update("k_cpu_cores", e.target.value)} placeholder="2" style={{ width: "100%" }} data-testid="ws-template-cpu-cores" />
           </WS_FieldRow>
-          <WS_FieldRow label="memory_bytes" hint="optional · requests and limits">
-            <input className="input mono" type="number" step="1" min="0" value={form.k_memory_bytes} onChange={(e) => update("k_memory_bytes", e.target.value)} placeholder="2147483648" style={{ width: "100%" }} data-testid="ws-template-memory-bytes" />
+          <WS_FieldRow label="memory_bytes" hint="optional · requests and limits" err={fieldErrors["resources.memory_bytes"]}>
+            <input className="input mono" type="number" step="1" min="1" value={form.k_memory_bytes} onChange={(e) => update("k_memory_bytes", e.target.value)} placeholder="2147483648" style={{ width: "100%" }} data-testid="ws-template-memory-bytes" />
           </WS_FieldRow>
         </div>
-        <WS_FieldRow label="pvc_size">
-          <input className="input mono" value={form.k_pvc_size} onChange={(e) => update("k_pvc_size", e.target.value)} placeholder="10Gi" style={{ width: "100%" }} />
+        <WS_FieldRow label="pvc_size" hint="a Kubernetes quantity · more than zero, at most 64Ti" err={fieldErrors.pvc_size}>
+          <input className="input mono" value={form.k_pvc_size} onChange={(e) => update("k_pvc_size", e.target.value)} placeholder="10Gi" style={{ width: "100%" }} data-testid="ws-template-pvc-size" />
         </WS_FieldRow>
         <WS_FieldRow label="pvc_access_modes">
           <window.WorkspaceStringListEditor value={form.k_pvc_access_modes} onChange={(v) => update("k_pvc_access_modes", v)} placeholder="ReadWriteOnce" />
