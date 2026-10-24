@@ -1508,6 +1508,32 @@ def build_workspaces_toolset(
     async def _workspace_row_served(row: WorkspaceRow) -> dict[str, Any]:
         return _with_is_default(row, await _default_workspace_id())
 
+    async def _caller_reach(ctx: ToolContext | None) -> str | None:
+        """The one workspace the caller may reach, or ``None`` for every workspace (lead ruling 3 of the G7 fixes, audit G7-05).
+
+        A call from a workspace session reaches its own workspace, and every workspace when that is the default one (prime, the management
+        plane): :func:`primer.session.peer_messages.reach_of`, the reach ``message_session`` and the steer and restart tools apply. A call with no
+        calling session (a person over MCP, an API client) keeps its reach over every workspace.
+        """
+        if ctx is None or not ctx.session_id:
+            return None
+        workspace_id = ctx.workspace_id
+        if not workspace_id:
+            row = await _session_row_storage().get(ctx.session_id)
+            workspace_id = row.workspace_id if row is not None else _NO_WORKSPACE
+        return await reach_of(storage_provider, workspace_id)
+
+    async def _out_of_reach(ctx: ToolContext | None, workspace_id: str) -> ToolCallResult | None:
+        """The answer to a call on ``workspace_id`` from a session that may not reach it, else ``None`` (ticket 01a16ad1).
+
+        Exactly the not-found of a workspace that does not exist, in the registry's words (:func:`_unknown_workspace`), so a workspace id seen in a
+        file or a log is never confirmed. Every tool that names a workspace asks this at the point where it would look the workspace up, after its
+        own argument checks, so an out-of-reach id and an unknown one answer alike whatever else the call says.
+        """
+        if in_reach(await _caller_reach(ctx), workspace_id):
+            return None
+        return _err_from_primer(_unknown_workspace(workspace_id), error_type="not-found")
+
     name, entry = _tool(
         "list_workspaces",
         (
@@ -1652,11 +1678,15 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _delete_workspace(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _delete_workspace(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _IdArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # Out of reach before the default-workspace refusal: prime is out of reach of a session outside it, and is answered as unknown too.
+        refusal = await _out_of_reach(ctx, args.id)
+        if refusal is not None:
+            return refusal
         try:
             # Carried to its end if this call is cancelled: destroy() is the instance, its sessions, then the row.
             await _carry_on(workspace_registry.destroy(args.id), what=f"delete_workspace {args.id}")
@@ -1681,7 +1711,10 @@ def build_workspaces_toolset(
             "its template (use ``delete_workspace_template``). "
             "``type=not-found`` when the id is unknown; "
             "``type=forbidden`` for the default workspace (prime), "
-            "which cannot be deleted."
+            "which cannot be deleted. From a session outside the default "
+            "workspace (prime) only your own workspace is reachable: "
+            "another one (prime included) answers type=not-found, as an "
+            "unknown id does."
         ),
         _IdArgs,
         _delete_workspace,
@@ -1932,21 +1965,6 @@ def build_workspaces_toolset(
         # loses only the fast path, never the Stop.
     )
     registry[name] = entry
-
-    async def _caller_reach(ctx: ToolContext | None) -> str | None:
-        """The one workspace the caller may reach, or ``None`` for every workspace (lead ruling 3 of the G7 fixes, audit G7-05).
-
-        A call from a workspace session reaches its own workspace, and every workspace when that is the default one (prime, the management
-        plane): :func:`primer.session.peer_messages.reach_of`, the reach ``message_session`` and the steer and restart tools apply. A call with no
-        calling session (a person over MCP, an API client) keeps its reach over every workspace.
-        """
-        if ctx is None or not ctx.session_id:
-            return None
-        workspace_id = ctx.workspace_id
-        if not workspace_id:
-            row = await _session_row_storage().get(ctx.session_id)
-            workspace_id = row.workspace_id if row is not None else _NO_WORKSPACE
-        return await reach_of(storage_provider, workspace_id)
 
     async def _list_sessions(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
@@ -2645,6 +2663,9 @@ def build_workspaces_toolset(
             args = _ListFilesArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        refusal = await _out_of_reach(ctx, args.workspace_id)
+        if refusal is not None:
+            return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
             refused = _refuse_reserved_read(ws, args.path, ctx)
@@ -2718,7 +2739,7 @@ def build_workspaces_toolset(
         (
             "Use when browsing a workspace's filesystem; not for one "
             "entry's metadata (use ``get_workspace_file_info``) or its "
-            "bytes (use ``read_workspace_file``)."
+            "bytes (use ``read_workspace_file``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _ListFilesArgs,
         _list_files,
@@ -2742,6 +2763,9 @@ def build_workspaces_toolset(
             args = _WorkspacePathArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        refusal = await _out_of_reach(ctx, args.workspace_id)
+        if refusal is not None:
+            return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
             refused = _refuse_reserved_read(ws, args.path, ctx)
@@ -2762,7 +2786,7 @@ def build_workspaces_toolset(
             "not for listing a directory (use ``list_workspace_files``) "
             "or reading bytes (use ``read_workspace_file``). "
             "``type=not-found`` when missing; ``type=bad-request`` on "
-            "path-escape attempts."
+            "path-escape attempts. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _WorkspacePathArgs,
         _file_info,
@@ -2788,6 +2812,9 @@ def build_workspaces_toolset(
                 f"unknown encoding {args.encoding!r}; use 'text' or 'base64'",
                 error_type="bad-request",
             )
+        refusal = await _out_of_reach(ctx, args.workspace_id)
+        if refusal is not None:
+            return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
             refused = _refuse_reserved_read(ws, args.path, ctx)
@@ -2829,7 +2856,7 @@ def build_workspaces_toolset(
         (
             "Use when you need a file's bytes; not for its metadata "
             "(use ``get_workspace_file_info``) or to write it (use "
-            "``write_workspace_file``)."
+            "``write_workspace_file``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _ReadFileArgs,
         _read_file,
@@ -2847,11 +2874,14 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _delete_file(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _delete_file(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _WorkspacePathArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        refusal = await _out_of_reach(ctx, args.workspace_id)
+        if refusal is not None:
+            return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
             await ws.delete_file(args.path)
@@ -2868,7 +2898,7 @@ def build_workspaces_toolset(
             "Use when removing one path from a workspace; not for "
             "destroying the whole workspace (use ``delete_workspace``). "
             "Refuses to delete the workspace root or paths inside "
-            "``.state`` / ``.tmp`` with ``type=bad-request``."
+            "``.state`` / ``.tmp`` with ``type=bad-request``. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _WorkspacePathArgs,
         _delete_file,
@@ -2885,7 +2915,7 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _write_file(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _write_file(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _WriteFileArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -2904,6 +2934,9 @@ def build_workspaces_toolset(
                 return _err(
                     f"invalid base64 content: {exc}", error_type="bad-request"
                 )
+        refusal = await _out_of_reach(ctx, args.workspace_id)
+        if refusal is not None:
+            return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
             await ws.write_file(args.path, raw)
@@ -2924,7 +2957,7 @@ def build_workspaces_toolset(
             "Use when creating or overwriting file content; not for "
             "reading it (use ``read_workspace_file``). Refuses to "
             "overwrite a directory or write inside reserved ``.state`` "
-            "/ ``.tmp`` trees."
+            "/ ``.tmp`` trees. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _WriteFileArgs,
         _write_file,
@@ -2953,11 +2986,14 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     # ------------------- Log sub-resource ----------------------------
-    async def _get_log(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _get_log(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _LogArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        refusal = await _out_of_reach(ctx, args.workspace_id)
+        if refusal is not None:
+            return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
             commits = await ws.log(limit=args.limit)
@@ -2985,7 +3021,7 @@ def build_workspaces_toolset(
         (
             "Use when you need the workspace's state-repo history; not "
             "for a session's lifecycle state (use "
-            "``get_workspace_session``)."
+            "``get_workspace_session``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _LogArgs,
         _get_log,
@@ -3001,7 +3037,7 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     # ------------------- Tap drain (read-only) -----------------------
-    async def _workspace_tap(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _workspace_tap(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         """Drain tap events for a workspace; advance the batch cursor.
 
         Request/response cursor-drain over the shared
@@ -3037,6 +3073,11 @@ def build_workspaces_toolset(
 
         # Tolerant decode: absent / empty / garbage → fresh drain.
         cursor = TapCursor.decode(args.cursor)
+
+        # A workspace out of the calling session's reach answers as one that does not exist: the tap reads every session's stream in it.
+        refusal = await _out_of_reach(ctx, args.workspace_id)
+        if refusal is not None:
+            return refusal
 
         # Resolve the live workspace IO the same way the SSE endpoint does.
         try:
@@ -3117,7 +3158,7 @@ def build_workspaces_toolset(
             "loop (the request/response analogue of the SSE tap stream). "
             "Page with ``next_cursor``; an empty ``events`` with the same "
             "``next_cursor`` means nothing new. Not for one session's "
-            "lifecycle state (use ``get_workspace_session``)."
+            "lifecycle state (use ``get_workspace_session``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _WorkspaceTapArgs,
         _workspace_tap,
