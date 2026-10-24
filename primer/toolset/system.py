@@ -147,6 +147,7 @@ from primer.artifact.checks import (
     check_artifact_provider_delete,
     check_artifact_provider_update,
     check_artifact_provider_write,
+    prepare_artifact_provider,
 )
 from primer.channel.checks import check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
@@ -447,12 +448,15 @@ def build_system_toolset(
 
     async def _artifact_provider_pre_create(entity: ArtifactStorageProvider) -> None:
         # The reserved default must name a kind the factory can build, on a create (its row went missing) as on an update; the REST route
-        # runs the same function (ticket 01a1226f).
+        # runs the same function (ticket 01a1226f). The location (a filesystem root and its marker) is prepared last, as the REST route does,
+        # so a refused write prepares nothing.
         check_artifact_provider_write(entity)
+        await prepare_artifact_provider(entity)
 
     async def _artifact_provider_pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider) -> None:
         check_artifact_provider_write(entity)
         await check_artifact_provider_update(storage_provider, entity, existing)
+        await prepare_artifact_provider(entity)
 
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "collection": (_collection_pre_create, _collection_pre_update),

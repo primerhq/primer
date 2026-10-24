@@ -103,6 +103,54 @@ async def seed_default_artifact_provider(asp_storage) -> None:
         logger.exception("seeding default artifact provider failed")
 
 
+#: How long the startup check waits for one filesystem store. A root on a mount that does not answer is reported and the check moves on.
+FILESYSTEM_STORE_CHECK_TIMEOUT_S = 30.0
+
+
+async def check_filesystem_artifact_stores(
+    registry,
+    provider_storage,
+    *,
+    timeout: float = FILESYSTEM_STORE_CHECK_TIMEOUT_S,
+) -> list[str]:
+    """Name every filesystem artifact store this process cannot use, and return their ids.
+
+    For each filesystem provider row (up to 200) it resolves the store through ``registry.get_provider``, whose ``initialize`` checks the root
+    and its marker in a thread. A pod that lacks the shared volume (no folder, or an empty one on its own disk) is named at boot, with its root,
+    instead of failing on the first upload. A store that fails is not cached by the registry, so every later use checks it again and refuses
+    with the same message; a store that passes is cached, warm.
+
+    It never raises (a failure to list the rows is logged too) and it is started as a background task by the lifespan, so it never holds the
+    boot; one store that does not answer within ``timeout`` is reported and the check carries on with the next.
+    """
+    from primer.model.provider import ArtifactStorageProviderType
+    from primer.model.storage import OffsetPage
+
+    unusable: list[str] = []
+    try:
+        page = await provider_storage.list(OffsetPage(offset=0, length=200))
+    except Exception:
+        logger.exception("startup check of the filesystem artifact stores: the provider rows could not be read")
+        return unusable
+    for row in page.items:
+        if row.provider is not ArtifactStorageProviderType.FILESYSTEM:
+            continue
+        try:
+            await asyncio.wait_for(registry.get_provider(row.id), timeout)
+        except TimeoutError:
+            reason = f"the check did not answer within {timeout:g}s (is the volume mounted and reachable?)"
+        except Exception as exc:  # noqa: BLE001 - the check reports every failure and never fails the boot
+            reason = str(exc) or type(exc).__name__
+        else:
+            continue
+        logger.error(
+            "artifact store %r (filesystem, root %r) is not usable in this process: %s",
+            row.id, row.config.root, reason,
+        )
+        unusable.append(row.id)
+    return unusable
+
+
 async def recover_sessions(claim_engine, scheduler, storage_provider) -> None:
     """Session recovery on startup.
 

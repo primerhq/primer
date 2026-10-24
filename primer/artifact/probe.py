@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from primer.artifact.checks import prepare_artifact_provider
 from primer.artifact.factory import build_artifact_storage
 from primer.common.log import redact_credentials
 from primer.int.artifact_storage import ArtifactStorage
@@ -20,7 +21,7 @@ PROBE_DATA = b"primer artifact storage probe"
 PROBE_MIME = "text/plain"
 PROBE_FILENAME = "primer-probe.txt"
 
-ProbeStep = Literal["build", "initialize", "put", "get", "delete"]
+ProbeStep = Literal["prepare", "build", "initialize", "put", "get", "delete"]
 
 
 @dataclass(frozen=True)
@@ -59,14 +60,23 @@ async def probe_artifact_provider(
     storage_provider: StorageProvider,
     build: Callable[[ArtifactStorageProvider, StorageProvider], ArtifactStorage]
     | None = None,
+    prepare: bool = False,
 ) -> ArtifactProbeResult:
-    """Build, initialize and round-trip a temporary object, leaving no bytes."""
+    """Build, initialize and round-trip a temporary object, leaving no bytes.
+
+    With ``prepare`` the row's location is prepared first (step ``prepare``: a filesystem root is created and given its marker), as a create
+    would. The draft Test passes it; the saved-row Test and the active-store selection do not, so they check what every process will find.
+    """
     builder = build or build_artifact_storage
     store: ArtifactStorage | None = None
     artifact_id: str | None = None
     deleted = False
     step: ProbeStep = "build"
     try:
+        if prepare:
+            step = "prepare"
+            await prepare_artifact_provider(row)
+            step = "build"
         store = builder(row, storage_provider=storage_provider)
         step = "initialize"
         await store.initialize()

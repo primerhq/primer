@@ -26,10 +26,19 @@ def _build_db(row: ArtifactStorageProvider, storage_provider: StorageProvider) -
     return DbArtifactStorage(storage_provider)
 
 
-#: The builder of each kind ``build_artifact_storage`` can construct. ``filesystem`` and ``s3`` are accepted enum values with no builder
-#: yet, so a row naming one raises ``ConfigError``. A backend ships by adding its builder here.
+def _build_filesystem(row: ArtifactStorageProvider, storage_provider: StorageProvider) -> ArtifactStorage:
+    del storage_provider  # the files live under the row's root, not in the deployment's storage
+    from primer.artifact.filesystem import FilesystemArtifactStorage
+
+    # Building does no IO: ``initialize`` checks the root (and its marker) in the process that uses the store.
+    return FilesystemArtifactStorage(row.config.root)
+
+
+#: The builder of each kind ``build_artifact_storage`` can construct. ``s3`` is an accepted enum value with no builder yet, so a row naming it
+#: raises ``ConfigError``. A backend ships by adding its builder here.
 _BUILDERS: dict[ArtifactStorageProviderType, Callable[[ArtifactStorageProvider, StorageProvider], ArtifactStorage]] = {
     ArtifactStorageProviderType.DB: _build_db,
+    ArtifactStorageProviderType.FILESYSTEM: _build_filesystem,
 }
 
 #: The kinds ``build_artifact_storage`` can construct: the keys of ``_BUILDERS``, so a kind is in this set exactly when it has a builder.
@@ -43,8 +52,8 @@ def build_artifact_storage(
 ) -> ArtifactStorage:
     """Dispatch a provider row to the builder of its kind.
 
-    Only the ``DB`` backend ships in v1; ``FILESYSTEM`` and ``S3`` are accepted
-    enum values with no builder, whose construction raises until implemented.
+    The ``DB`` and ``FILESYSTEM`` backends build; ``S3`` is an accepted enum
+    value with no builder, whose construction raises until implemented.
     """
     builder = _BUILDERS.get(row.provider)
     if builder is None:

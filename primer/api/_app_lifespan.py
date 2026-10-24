@@ -23,6 +23,7 @@ from primer.api._app_bootstrap import (
 )
 from primer.api._app_lifespan_phases import (
     assert_harness_kinds_registered,
+    check_filesystem_artifact_stores,
     recover_ic_bootstrap,
     recover_sessions,
     recover_webhook_deliveries,
@@ -739,6 +740,13 @@ def _make_lifespan(config: AppConfig):
         else:
             app.state.chat_channel_warm_task = None
 
+        # Name every filesystem artifact store this process cannot use (a pod without the shared volume) in the log, in the BACKGROUND: a root
+        # on a slow or hung mount never holds the boot, and the check never raises. It runs after the invalidation bus is bound, so a store it
+        # caches is evicted by a later edit made in any process.
+        app.state.artifact_store_check_task = asyncio.create_task(
+            check_filesystem_artifact_stores(artifact_storage_registry, _asp_storage),
+        )
+
         # Process-local fan-out of session ticks to per-workspace tap
         # subscribers (the workspace dimension of the tick router). Owns
         # its own bus subscription — a second broadcast subscription
@@ -1175,6 +1183,9 @@ def _make_lifespan(config: AppConfig):
                 await semantic_search_registry.aclose()
             except Exception:
                 logger.exception("semantic_search_registry.aclose failed")
+            store_check = getattr(app.state, "artifact_store_check_task", None)
+            if store_check is not None and not store_check.done():
+                store_check.cancel()
             try:
                 asr = getattr(app.state, "artifact_storage_registry", None)
                 if asr is not None:

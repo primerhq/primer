@@ -17,7 +17,8 @@ from primer.model.provider import ArtifactStorageProvider, ArtifactStorageProvid
 
 
 def _row(provider: str, *, id: str = DEFAULT_ARTIFACT_PROVIDER_ID) -> ArtifactStorageProvider:  # noqa: A002
-    config = {"db": {}, "filesystem": {"root": "/tmp/a"}, "s3": {"bucket": "b"}}[provider]
+    # The root is never touched: building a filesystem store does no IO, and nothing here prepares or initializes one.
+    config = {"db": {}, "filesystem": {"root": "/nonexistent/primer-artifacts"}, "s3": {"bucket": "b"}}[provider]
     return ArtifactStorageProvider.model_validate({"id": id, "provider": provider, "config": config})
 
 
@@ -62,12 +63,15 @@ def test_the_buildable_set_is_the_one_the_factory_dispatches_on() -> None:
         assert (row.provider in BUILDABLE_KINDS) is built, kind
 
 
-def test_a_second_buildable_kind_must_not_relax_the_reserved_database_rule() -> None:
-    """#784 review tripwire: a new backend must extend the tests above while the reserved row remains the database fallback."""
+def test_a_new_buildable_kind_must_not_relax_the_reserved_database_rule() -> None:
+    """#784 review tripwire: a new backend must extend the tests above while the reserved row remains the database fallback.
+
+    ``filesystem`` shipped with plan 09 Task 8 and ``test_the_default_must_stay_db`` already refuses it for the reserved row, so the set pinned
+    here grew by that one kind. The next backend (``s3``, Task 9) moves the tripwire again."""
     from primer.artifact.factory import BUILDABLE_KINDS
 
-    assert BUILDABLE_KINDS == {ArtifactStorageProviderType.DB}, (
-        "a second buildable kind shipped; extend test_the_default_must_stay_db "
+    assert BUILDABLE_KINDS == {ArtifactStorageProviderType.DB, ArtifactStorageProviderType.FILESYSTEM}, (
+        "another buildable kind shipped; extend test_the_default_must_stay_db "
         "without relaxing the reserved row's database-only rule"
     )
 
@@ -77,12 +81,55 @@ def test_each_buildable_kind_builds_its_own_backend() -> None:
     above. A kind that becomes buildable must name its backend class here."""
     from primer.artifact.db import DbArtifactStorage
     from primer.artifact.factory import BUILDABLE_KINDS, build_artifact_storage
+    from primer.artifact.filesystem import FilesystemArtifactStorage
 
-    backend_of = {ArtifactStorageProviderType.DB: DbArtifactStorage}
+    backend_of = {ArtifactStorageProviderType.DB: DbArtifactStorage, ArtifactStorageProviderType.FILESYSTEM: FilesystemArtifactStorage}
 
     assert BUILDABLE_KINDS == set(backend_of), "a kind became buildable without its backend class pinned here"
     for kind, backend in backend_of.items():
         assert type(build_artifact_storage(_row(kind.value), storage_provider=None)) is backend, kind  # type: ignore[arg-type]
+
+
+def test_a_built_filesystem_store_uses_the_rows_root() -> None:
+    from primer.artifact.factory import build_artifact_storage
+
+    store = build_artifact_storage(_row("filesystem", id="fs-1"), storage_provider=None)  # type: ignore[arg-type]
+
+    assert store.root == "/nonexistent/primer-artifacts"
+
+
+# ---- preparing a filesystem root on a create or an edit (plan 09 Task 8) --------------------------------------------------------------------------
+
+
+async def test_prepare_maps_an_unusable_root_to_config_root(tmp_path) -> None:
+    from primer.artifact.checks import prepare_artifact_provider
+
+    (tmp_path / "f").write_text("x")
+    row = ArtifactStorageProvider(id="fs-1", provider="filesystem", config={"root": str(tmp_path / "f")})
+
+    with pytest.raises(EntityCheckError) as info:
+        await prepare_artifact_provider(row)
+
+    assert (info.value.kind, info.value.code, info.value.field) == ("validation", "artifact_root_unusable", "config.root")
+    assert info.value.tool_message().startswith("config.root: artifact root ") and "is not a directory" in info.value.message
+
+
+async def test_prepare_writes_the_marker_of_a_filesystem_root(tmp_path) -> None:
+    from primer.artifact.checks import prepare_artifact_provider
+    from primer.artifact.filesystem import ROOT_MARKER
+
+    await prepare_artifact_provider(ArtifactStorageProvider(id="fs-1", provider="filesystem", config={"root": str(tmp_path / "r")}))
+
+    assert (tmp_path / "r" / ROOT_MARKER).is_file()
+
+
+@pytest.mark.parametrize("kind", ["db", "s3"])
+async def test_prepare_does_nothing_for_another_kind(kind, monkeypatch) -> None:
+    from primer.artifact import checks
+
+    monkeypatch.setattr(checks, "prepare_root", lambda root: pytest.fail("only a filesystem row is prepared"))
+
+    await checks.prepare_artifact_provider(_row(kind, id="other"))
 
 
 # ---- the check and the system toolset import on their own (B1 of the #708 review) ----------------------------------------------------------------
