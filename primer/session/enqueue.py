@@ -588,7 +588,7 @@ async def wake_session(
                 )
             # Tick so the workspace tap surfaces the just-persisted USER_INPUT
             # record live (reset_session publishes the same event for its
-            # invocation divider). Advisory — never break the wake.
+            # invocation divider). Advisory: never break the wake.
             if user_input_seq is not None:
                 try:
                     await deps.event_bus.publish(
