@@ -577,6 +577,9 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
                 event_recorder=_pool_event_recorder(pool),
                 turn_no=session.turn_no,
             )
+        # No holder slot (a graph session created before holder allocation landed): the manager still runs for THIS session, so every
+        # context it builds names the row's session and workspace. Without them a node's tools saw no calling session at all, which the reach
+        # rule reads as a person's call: every workspace (review of #870, F6).
         return ToolExecutionManager(
             toolset_providers=toolset_providers,
             approval_resolver=pool._approval_resolver,
@@ -587,6 +590,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
             external_call_storage=node_call_storage,
             event_recorder=_pool_event_recorder(pool),
             turn_no=session.turn_no,
+            run_scope=(session.id, session.workspace_id),
         )
 
     # (4) Optional handles wired in later phases.

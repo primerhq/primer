@@ -190,6 +190,7 @@ class ToolExecutionManager:
         external_call_storage: "Any | None" = None,
         event_recorder: "Any | None" = None,
         turn_no: int | None = None,
+        run_scope: "tuple[str, str] | None" = None,
     ) -> None:
         # Optional platform event recorder: when wired (worker executor
         # builds), every dispatched call lands a ``tool.called`` event.
@@ -211,6 +212,11 @@ class ToolExecutionManager:
             )
         self._workspace_tools: dict[str, "WorkspaceTool"] = dict(workspace_tools or {})
         self._workspace_session = workspace_session
+        # ``(session_id, workspace_id)`` of the session this manager runs for when it has no session slot to read them from: a graph session
+        # with no holder slot (``build_graph_executor``, review of #870 F6). Every ToolContext it builds names them, so a tool called from inside
+        # that session never sees a call with no session at all (which the reach rule reads as a person's, reaching every workspace). It gives
+        # the manager no workspace tools and no workspace_ext tools: those need the slot itself.
+        self._run_scope = run_scope
         self._approval_resolver = approval_resolver
         self._provider_registry = provider_registry
         self._chat_id = chat_id
@@ -655,9 +661,22 @@ class ToolExecutionManager:
         the outer dispatch received (:attr:`ToolContext.principal`): a tool that runs another tool for this run (``system__call_tool``)
         passes this same context on, so the inner tool sees the run's session, identity, turn and principal, never ones a model chose.
         A bare manager (no session, no chat: ``invoke_agent`` over MCP) has no context to give, and the inner role check ranks such a
-        call as an ordinary user (:func:`primer.agent.inner_dispatch.run_principal`).
+        call as an ordinary user (:func:`primer.agent.inner_dispatch.run_principal`). A manager built for a session that has no slot
+        (``run_scope``: a graph session with no holder) names that session and its workspace all the same.
         """
         sess = self._workspace_session
+        if sess is None and self._run_scope is not None:
+            session_id, workspace_id = self._run_scope
+            return ToolContext(
+                tool_call_id=call_id,
+                session_id=session_id,
+                workspace_id=workspace_id,
+                inform=self._inform_sink,
+                graph_services=self._graph_services,
+                initiated_by=self._initiated_by,
+                turn_no=self._turn_no,
+                principal=principal,
+            )
         if sess is not None:
             return ToolContext(
                 tool_call_id=call_id,
