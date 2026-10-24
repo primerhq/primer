@@ -139,6 +139,7 @@ from primer.model.workspace import (
     WorkspaceChannelLink,
 )
 from primer.model.yield_ import ToolContext, Yielded
+from primer.session.peer_messages import REACH_NOTE, caller_reach, in_reach
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
 from primer.artifact.checks import (
     ARTIFACT_DEFAULT_WRITE_NOTE,
@@ -694,13 +695,28 @@ def build_system_toolset(
     _workspace_storage = storage_provider.get_storage(Workspace)
     _channel_storage = storage_provider.get_storage(Channel)
 
+    async def _workspace_out_of_reach(ctx: ToolContext | None, workspace_id: str) -> ToolCallResult | None:
+        """The answer to a reply-binding call on ``workspace_id`` from a session that may not reach it, else ``None`` (review of #870, F2).
+
+        The reach of the workspaces tools (:func:`primer.session.peer_messages.caller_reach`): a session outside the default workspace (prime)
+        reaches its own workspace, a session in prime and a call with no session reach every one. Out of reach is the not-found of a workspace
+        that does not exist, asked BEFORE the workspace and the channel are looked up, so an existing workspace and an unknown one answer alike,
+        whatever the channel id.
+        """
+        if in_reach(await caller_reach(storage_provider, ctx), workspace_id):
+            return None
+        return _err(f"Workspace {workspace_id!r} does not exist", error_type="not-found")
+
     async def _set_reply_binding_handler(
-        arguments: dict[str, Any],
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
     ) -> ToolCallResult:
         try:
             args = _SetReplyBindingArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        refusal = await _workspace_out_of_reach(ctx, args.workspace_id)
+        if refusal is not None:
+            return refusal
         ws = await _workspace_storage.get(args.workspace_id)
         if ws is None:
             return _err(
@@ -748,7 +764,7 @@ def build_system_toolset(
                 "a Slack / Telegram / Discord channel; pass both ids (and an "
                 "optional ``anchor``) and the reply binding is stored on the "
                 "Workspace row. Returns ``type=not-found`` for unknown "
-                "workspace or channel."
+                "workspace or channel. " + REACH_NOTE
             ),
             args_schema=_SetReplyBindingArgs.model_json_schema(),
             examples=[
@@ -768,12 +784,15 @@ def build_system_toolset(
         )
 
     async def _clear_reply_binding_handler(
-        arguments: dict[str, Any],
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
     ) -> ToolCallResult:
         try:
             args = _ClearReplyBindingArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        refusal = await _workspace_out_of_reach(ctx, args.workspace_id)
+        if refusal is not None:
+            return refusal
         ws = await _workspace_storage.get(args.workspace_id)
         if ws is None:
             return _err(
@@ -798,7 +817,7 @@ def build_system_toolset(
             when=(
                 "Use when you want to detach the channel from a workspace; "
                 "safe to call even if no reply binding is set (no-op). "
-                "Returns ``type=not-found`` for an unknown workspace."
+                "Returns ``type=not-found`` for an unknown workspace. " + REACH_NOTE
             ),
             args_schema=_ClearReplyBindingArgs.model_json_schema(),
             examples=[
