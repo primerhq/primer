@@ -607,6 +607,18 @@ async def delete_session(
             extra={"session_id": session_id, "error": str(exc)},
         )
 
+    # The peer-message ledger rows of the messages this session sent are its rate allowance, which nothing will ask about again: they go with
+    # it (audit G7-15; the TTL sweep takes any that a failure here leaves). Best-effort, like the cleanups above: the row is still deleted.
+    try:
+        from primer.session.peer_messages import delete_peer_ledger_of
+
+        await delete_peer_ledger_of(storage_provider, session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "delete_session: peer-ledger cleanup failed (row still removed)",
+            extra={"session_id": session_id, "error": str(exc)},
+        )
+
     await sessions.delete(session_id)
 
 

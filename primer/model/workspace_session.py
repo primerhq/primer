@@ -1235,7 +1235,8 @@ class PeerAttribution(BaseModel):
 
 
 class PeerMessage(Identifiable):
-    """One delivered session-to-session message (message_session): the rate limit's ledger. Only a sender's newest PEER_RATE_LIMIT rows are kept.
+    """One delivered session-to-session message (message_session): the rate limit's ledger. Only a sender's newest PEER_RATE_LIMIT rows are kept,
+    a deleted session's own rows go with it, and every row older than PEER_LEDGER_TTL is swept (``primer.session.peer_messages``).
 
     A row carries who sent to whom and how, never the text. The sender's recent rows are what the limit counts (``primer.session.peer_messages``);
     a refused attempt writes none, so a refusal never spends the sender's allowance.

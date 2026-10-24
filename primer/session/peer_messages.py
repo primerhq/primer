@@ -77,6 +77,9 @@ MAX_PEER_HOPS: int = MAX_INVOCATION_DEPTH
 #: A sender may send this many messages in any ``PEER_RATE_WINDOW``. The ledger keeps exactly this many rows per sender.
 PEER_RATE_LIMIT: int = 20
 PEER_RATE_WINDOW: timedelta = timedelta(minutes=10)
+#: How long a ledger row is kept at most (audit G7-15). The rate check counts only rows inside ``PEER_RATE_WINDOW``, so a row older than this counts
+#: for nothing; the session-messaging sweep deletes it, whether or not its sender still exists. Twice the window, so a sweep never races the check.
+PEER_LEDGER_TTL: timedelta = 2 * PEER_RATE_WINDOW
 #: The longest message text. Larger outputs go in a file; the tool description says so.
 PEER_MESSAGE_MAX_CHARS: int = 32_000
 
@@ -242,6 +245,62 @@ async def record_peer_message(storage_provider: Any, message: PeerMessage) -> No
             await storage.delete(row.id)
         except NotFoundError:
             logger.debug("peer ledger: row %s was already gone", row.id)
+
+
+#: The ledger is swept oldest first, a page at a time; the page count bounds one sweep (the next sweep goes on where this one stopped).
+_LEDGER_PAGE = 200
+_LEDGER_MAX_PAGES = 50
+_OLDEST_FIRST = [OrderBy(field="sent_at", direction="asc"), OrderBy(field="id", direction="asc")]
+
+
+async def delete_peer_ledger_of(storage_provider: Any, session_id: str) -> int:
+    """Delete the ledger rows of the messages ``session_id`` sent, when the session itself is deleted (audit G7-15). Returns how many went.
+
+    Those rows are only the deleted session's allowance, which nothing will ask about again. The rows of messages OTHER sessions sent to it stay:
+    they are those senders' allowance, trimmed with their next message or by the TTL sweep (:func:`trim_stale_peer_ledger`). A row already
+    deleted by someone else is skipped.
+    """
+    storage = storage_provider.get_storage(PeerMessage)
+    deleted = 0
+    for _ in range(_LEDGER_MAX_PAGES):
+        page = await storage.find(_sent_by(session_id), OffsetPage(offset=0, length=_LEDGER_PAGE), order_by=_OLDEST_FIRST)
+        rows = list(page.items)
+        for row in rows:
+            deleted += await _delete_ledger_row(storage, row.id)
+        if len(rows) < _LEDGER_PAGE:
+            break
+    return deleted
+
+
+async def trim_stale_peer_ledger(storage_provider: Any, *, now: datetime) -> int:
+    """Delete every ledger row older than ``PEER_LEDGER_TTL`` (audit G7-15), oldest first; return how many went.
+
+    The orphans of sessions that ended or were deleted without a cascade, and the old rows of a sender that never sends again, are otherwise kept
+    for ever (the per-sender trim runs only when the same sender sends). A row inside the TTL is never touched, so no row the rate check counts
+    goes. Ordered by ``sent_at`` with no range predicate (the Postgres translator does not type one); stops at the first row inside the TTL, and
+    after ``_LEDGER_MAX_PAGES`` pages (the next sweep goes on).
+    """
+    storage = storage_provider.get_storage(PeerMessage)
+    cutoff = _as_utc(now) - PEER_LEDGER_TTL
+    deleted = 0
+    for _ in range(_LEDGER_MAX_PAGES):
+        page = await storage.find(None, OffsetPage(offset=0, length=_LEDGER_PAGE), order_by=_OLDEST_FIRST)
+        rows = list(page.items)
+        stale = [row for row in rows if _as_utc(row.sent_at) < cutoff]
+        for row in stale:
+            deleted += await _delete_ledger_row(storage, row.id)
+        if len(stale) < len(rows) or len(rows) < _LEDGER_PAGE:
+            break
+    return deleted
+
+
+async def _delete_ledger_row(storage: Any, row_id: str) -> int:
+    try:
+        await storage.delete(row_id)
+    except NotFoundError:
+        logger.debug("peer ledger: row %s was already gone", row_id)
+        return 0
+    return 1
 
 
 def parked_on(row: WorkspaceSession) -> str | None:
@@ -689,6 +748,7 @@ __all__ = [
     "PARKED_ON_LABELS",
     "PEER_MESSAGE_MAX_CHARS",
     "PEER_PREFIX_AGENT",
+    "PEER_LEDGER_TTL",
     "PEER_PREFIX_GRAPH",
     "PEER_RATE_LIMIT",
     "PEER_RATE_WINDOW",
@@ -717,6 +777,7 @@ __all__ = [
     "PeerMessageRefused",
     "PeerSendResult",
     "check_peer_rate",
+    "delete_peer_ledger_of",
     "in_reach",
     "list_workspace_session_summaries",
     "next_peer_hops",
@@ -725,6 +786,7 @@ __all__ = [
     "reach_of",
     "rank_label",
     "record_peer_message",
+    "trim_stale_peer_ledger",
     "resolve_default_workspace_id",
     "send_peer_message",
     "sender_may_message",

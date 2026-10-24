@@ -521,7 +521,7 @@ def _never_started(session, grace_seconds: float) -> bool:
 
 
 class SessionMessagingSweeper(_BackgroundTask):
-    """Delivers the queued messages of a session that nothing else will (audit G7-14).
+    """Delivers the queued messages of a session that nothing else will (audit G7-14), and trims the peer-message ledger (audit G7-15).
 
     A message that waits in a session's pending queue (``PendingSessionMessage``) is realized at a turn boundary: the drain checkpoint of the
     turn that ends, the pool's ``_end_session``, the completed-turn guard. A session that comes to rest with messages still queued and no turn
@@ -536,8 +536,12 @@ class SessionMessagingSweeper(_BackgroundTask):
     no SESSION lease row. A lease row means a turn is running, queued or awaiting reclaim, and that turn's own boundary drains the queue, so
     the sweep never races a drain on another process. A queued row whose session no longer exists is deleted: nothing can deliver it.
 
+    Each tick first deletes the peer-message ledger rows (``PeerMessage``) older than ``PEER_LEDGER_TTL``: the rate check counts only rows
+    inside its window, and the per-sender trim runs only when that sender sends again, so the rows of a session that ended or was deleted
+    (the delete route takes a session's own rows with it) were kept for ever.
+
     Leader-elected (``ROLE_SESSION_MESSAGING_SWEEPER``), so one process sweeps at a time. Without a claim engine it cannot tell a session a
-    turn holds from one at rest, and does nothing.
+    turn holds from one at rest, and realizes nothing (it still trims the ledger).
     """
 
     role = ROLE_SESSION_MESSAGING_SWEEPER
@@ -572,7 +576,9 @@ class SessionMessagingSweeper(_BackgroundTask):
                 break
 
     async def _tick(self) -> int:
-        """Realize the queue head of every session at rest that has one. Returns how many sessions were woken."""
+        """Trim the peer-message ledger, then realize the queue head of every session at rest that has one. Returns how many sessions were
+        woken."""
+        await self._trim_peer_ledger()
         if self._claim_engine is None:
             return 0
         woken = 0
@@ -583,6 +589,20 @@ class SessionMessagingSweeper(_BackgroundTask):
             except Exception:  # noqa: BLE001 - one session must not stop the sweep; its message stays queued for the next tick
                 logger.exception("session-messaging-sweeper: realizing the queue of session %s failed", session_id)
         return woken
+
+    async def _trim_peer_ledger(self) -> int:
+        """Delete the peer-message ledger rows older than ``PEER_LEDGER_TTL`` (audit G7-15): they count for no rate check, and the per-sender
+        trim never reaches the rows of a sender that is gone or stopped sending. Never fails the tick: the queue sweep runs anyway."""
+        from primer.session.peer_messages import trim_stale_peer_ledger
+
+        try:
+            deleted = await trim_stale_peer_ledger(self._sp, now=datetime.now(timezone.utc))
+        except Exception:  # noqa: BLE001 - the rows are kept for the next tick
+            logger.exception("session-messaging-sweeper: trimming the peer-message ledger failed")
+            return 0
+        if deleted:
+            logger.info("session-messaging-sweeper: deleted %d stale peer-message ledger row(s)", deleted)
+        return deleted
 
     async def _sessions_with_queued_messages(self) -> list[str]:
         """The ids of the sessions that have a queued message, oldest queue head first. Paged: the queue is capped per session, but a tick
