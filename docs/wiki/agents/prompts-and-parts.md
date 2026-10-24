@@ -13,7 +13,7 @@ An agent's `system_prompt` is a list of string parts. At every turn the runtime 
 ### The render
 
 - **Join then render.** The parts are joined with blank lines (the same join a raw prompt would use) and rendered with Jinja, in a sandboxed environment with `StrictUndefined`. A `ctx` field the template names but the run does not provide is a render error.
-- **The context.** `ctx` is one frozen object, always present, shared by the agent prompts, the graph node templates and the compaction sizing. Its fields are `surface` (`workspace`, `chat` or `memory`), `workspace_id`, `session_id`, `graph_id`, `artifact_dir` (the per-workflow directory downstream nodes read and write, `artifacts/<session_id>`), `principal` (the bare back-compat actor string) and `identity` (the actor's `type`, `id`, `display`, `role` and `source`; it exposes no secrets).
+- **The context.** `ctx` is one frozen object, always present, shared by the agent prompts, the graph node templates and the compaction sizing. Its fields are `surface` (`workspace` or `memory`), `workspace_id`, `session_id`, `graph_id`, `artifact_dir` (the per-workflow directory downstream nodes read and write, `artifacts/<session_id>`), `principal` (the bare back-compat actor string) and `identity` (the actor's `type`, `id`, `display`, `role` and `source`; it exposes no secrets).
 - **The filters.** Two filters are registered: `fromjson` (parse a JSON string into a value) and `strip_fences` (drop markdown code fences from a value).
 - **The fallback.** A syntax error or a render error (for example the `StrictUndefined` miss) is answered by sending the raw joined parts instead, with a warning logged. The turn runs whatever the prompt is; the model then sees `{{ x }}` as literal text. This is uniform across the session, subagent and graph paths.
 
@@ -35,7 +35,7 @@ A turn in a workspace session appends, in this order, after the rendered `system
 
 ### Outside a workspace
 
-In a session with no workspace (and in a graph's in-memory run) there is no workspace section and no `agents.md`; the prompt is the rendered `system_prompt` alone, and `ctx.surface` is `chat` or `memory`. A subagent runs stateless: its system prompt plus the one prompt it was invoked with, no shared history.
+In a session with no workspace (and in a graph's in-memory run) there is no workspace section and no `agents.md`; the prompt is the rendered `system_prompt` alone, and `ctx.surface` is `memory`. A subagent runs stateless: its system prompt plus the one prompt it was invoked with, no shared history.
 
 ## Gotchas
 
