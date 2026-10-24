@@ -277,7 +277,9 @@ async def pause_session(
     * For RUNNING sessions we set ``pause_requested=True`` on the row and
       return - the worker observes the flag at the next turn boundary: a
       turn not yet started goes PAUSED without running, and a turn in
-      flight finishes and leaves the row WAITING with the flag still set.
+      flight finishes and leaves the row PAUSED with the flag still set
+      (ticket 01a16d9f; an autonomous session whose turn ends it still
+      ends).
     * 409 when the session is already ENDED.
     * 403 ``forbidden_rank`` when the session's creator outranks the caller
       (ticket 01a16d3c-a8bc; ``primer.api.routers._session_rank``), before

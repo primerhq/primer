@@ -249,21 +249,23 @@ async def test_the_terminal_event_of_a_stop_that_lost_the_race_carries_the_rows_
 ) -> None:
     """The cancelled exit of a Stop decides WAITING from the row inside the lock; a writer the lock does not cover
     (the reconciler, the pool's ``_end_session``, a force-delete on another process) ends the row between that read
-    and the write. The write is refused and the exit must announce the row's ENDED reason, not WAITING."""
+    and the write (flipped inside the write: the rest is one field-scoped ``patch_if`` of ``status`` since ticket
+    01a16d9f). The write is refused and the exit must announce the row's ENDED reason, not WAITING."""
     sid = seeded_session.id
     storage = fake_storage_provider.get_storage(WorkspaceSession)
     terminal = _spy_terminal(fake_event_bus, sid)
-    real_update_unless = storage.update_unless
+    real_patch_if = storage.patch_if
     state = {"flipped": False}
 
-    async def update_unless(entity, **kwargs):
-        if kwargs.get("field") == "status" and not state["flipped"]:
+    async def patch_if(entity_id, patch=None, **kwargs):
+        if "status" in (patch or {}) and not state["flipped"]:
             state["flipped"] = True
+            # a real write, not an in-place edit of the stored model: a field-scoped write is guarded on the stored document
             stored = await storage.get(sid)
-            stored.status, stored.ended_reason = SessionStatus.ENDED, "force_deleted"
-        return await real_update_unless(entity, **kwargs)
+            await storage.update(stored.model_copy(update={"status": SessionStatus.ENDED, "ended_reason": "force_deleted"}))
+        return await real_patch_if(entity_id, patch, **kwargs)
 
-    storage.update_unless = update_unless
+    storage.patch_if = patch_if
     executor = _StopAwareExecutor(["BLOCK"])
     executor.session = ended._Slot()
     deps = SessionDispatchDeps(

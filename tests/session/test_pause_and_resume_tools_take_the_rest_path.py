@@ -260,9 +260,10 @@ class _PausingLLM(_FakeLLM):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("two_processes", [False, True], ids=["one process", "another process"])
-async def test_a_tool_pause_that_lands_mid_turn_lets_the_turn_finish_and_rests_waiting_with_the_flag(two_processes, tmp_path, fake_event_bus):
-    """What the descriptor and the docs say (review of #904): a pause that lands while a turn runs does not cut it short and does not end it; the
-    row then rests WAITING with ``pause_requested`` still set (not PAUSED), and nothing re-arms it."""
+async def test_a_tool_pause_that_lands_mid_turn_lets_the_turn_finish_and_rests_paused_with_the_flag(two_processes, tmp_path, fake_event_bus):
+    """What the descriptor and the docs say: a pause that lands while a turn runs does not cut it short and does not end it; the row then rests
+    PAUSED with ``pause_requested`` still set, and nothing re-arms it (ticket 01a16d9f; before, it rested WAITING with the flag, as the review of
+    #904 found; ``tests/session/test_a_pause_mid_turn_rests_paused.py`` pins the other exits and the readers)."""
     api, worker, row, closers = await _world(tmp_path, two_processes=two_processes)
     try:
         answers: list[tuple[str, Any]] = []
@@ -276,7 +277,7 @@ async def test_a_tool_pause_that_lands_mid_turn_lets_the_turn_finish_and_rests_w
         kind, body = answers[0]
         assert (kind, body["status"], body["pause_requested"]) == ("ok", "running", True), body
         after = await worker.sessions.get(row.id)
-        assert (after.status, after.pause_requested, after.ended_reason, len(llm.calls)) == (SessionStatus.WAITING, True, None, 1)
+        assert (after.status, after.pause_requested, after.ended_reason, len(llm.calls)) == (SessionStatus.PAUSED, True, None, 1)
         assert (worker.scheduler.enqueued, worker.engine.upserts) == ([], []), "something re-armed the paused session"
     finally:
         await _close(closers)

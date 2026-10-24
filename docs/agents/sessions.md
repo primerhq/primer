@@ -123,9 +123,11 @@ create sessions in batches and start them on demand.
   the session sees it: an idle or not yet started session pauses at
   once; a running one whose turn has not started yet goes `PAUSED`
   when a worker picks it up, without running the turn. A pause that
-  lands while a turn is in flight lets that turn finish, and the row
-  then rests `WAITING` with `pause_requested: true`, NOT `PAUSED`, and
-  starts no other turn. Either way a message from a trigger, an agent
+  lands while a turn is in flight lets that turn finish (or a Stop cut
+  it short), and the row then rests `PAUSED` with `pause_requested:
+  true` and starts no other turn; an autonomous session (a graph, or a
+  trigger's one-shot run) whose turn ends it still ends, as it would
+  without the pause. Either way a message from a trigger, an agent
   or another session is held (queued) until `POST .../resume` or
   `workspaces::resume_workspace_session` lifts the pause, or a person
   sends the session a message (which resumes it).
@@ -149,7 +151,7 @@ Transitions:
 - `RUNNING ↔ WAITING` - yield enters; resume exits.
 - `RUNNING → PAUSED` - operator action; takes effect at the next turn
   boundary (a turn in flight finishes first, and the row then rests
-  `WAITING` with `pause_requested: true`).
+  `PAUSED` with `pause_requested: true`).
 - `PAUSED → RUNNING` - operator action.
 - any → `ENDED` - terminal; not reversible.
 
@@ -231,8 +233,9 @@ can run an agent or graph headlessly end to end.
   paused at once (`status: "paused"`); on a running one it sets
   `pause_requested: true`: a turn not yet started never runs (the
   session goes `paused`), and a turn in flight finishes, after which the
-  row rests `waiting` with `pause_requested: true` and starts no other
-  turn until it is resumed or a person messages it. Returns the session
+  row rests `paused` (`pause_requested` still `true`) and starts no other
+  turn until it is resumed or a person messages it; an autonomous session
+  whose turn ends it still ends. Returns the session
   row; `type=conflict` when the session has ended, or when its status
   changed under the call twice (try again); `type=forbidden` when the
   session runs at a higher rank than you (or your run).
@@ -586,7 +589,8 @@ principal's id (`PrincipalRef.id`), not its display name.
   blessed coordination directory. `.state/sessions/<id>/` is per-
   session.
 - **Pause is between turns, not mid-LLM-call.** Setting pause
-  finishes the current turn, then stops. Mid-tool-call: the tool
+  finishes the current turn, then stops (the session reads `paused`).
+  Mid-tool-call: the tool
   completes; mid-stream tokens: the stream completes to the next
   stop boundary.
 - **A successful `interrupt_workspace_session` call is not a Stop.** It
