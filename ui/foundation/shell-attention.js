@@ -159,6 +159,11 @@ function SH_mayDecideFor(viewer, session) {
 
 function SH_rankDecisionWords(session) {
   var creator = session && session.initiated_by;
+  // A loaded row whose creator is not recorded (the key present with null) ranks as a user on the server (principal_rank),
+  // so it reads the user words, as a user-role creator does; a row still loading (no key) or a system creator keeps the admin words.
+  if (!creator && session && Object.prototype.hasOwnProperty.call(session, "initiated_by")) {
+    return "Only a user or admin can decide this.";
+  }
   if (creator && creator.type !== "system" && creator.role === "user") {
     return "Only a user or admin can decide this.";
   }
