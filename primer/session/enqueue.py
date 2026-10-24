@@ -140,6 +140,12 @@ async def _mark_canvas_read(deps: "SessionWakeDeps", session_id: str, digest: An
         logger.warning("canvas events %s of session %s stayed unread", seqs, session_id, exc_info=True)
 
 
+class CanvasClickDoesNotReopen(ConflictError):
+    """A canvas click (``extra_payload["canvas_event"]``) found its session ENDED: a click never reopens an ended or cancelled session
+    (design d.8; the lead's ruling 4 on #892 round 2, over ticket 01a1120e's rule for a person's typed steer). Raised before anything is
+    written. The delivery answers ``recorded``; the drain drops a queued click with a summary record, and the click stays unread."""
+
+
 @dataclass
 class SessionWakeDeps:
     """Collaborators :func:`wake_session` needs.
@@ -405,6 +411,10 @@ async def wake_session(
                         receipt.outcome = "gone"
                     return row
                 if row.status == SessionStatus.ENDED:
+                    if _delivered_canvas_event(extra_payload) is not None:
+                        # A canvas click is not a reopener (design d.8, the lead's ruling 4 on #892 round 2): it is decided here, on the row read
+                        # under the lock, so a Cancel that landed after the delivery read the row, or after the click was queued, still wins.
+                        raise CanvasClickDoesNotReopen(f"Session {session_id!r} has ended; a canvas click does not reopen it")
                     # An operator's Cancel sticks (lead ruling R4, and ruling 1 of the G7 fixes): a message no person wrote does not undo it.
                     # ``_reopen_ended_locked`` decides it first, here under the lifecycle lock and on the row just read, so a Cancel that landed after
                     # any earlier look is seen; a person's message (``by_a_person``) still reopens.
@@ -1008,6 +1018,7 @@ async def _record_pause_superseded(
 
 
 __all__ = [
+    "CanvasClickDoesNotReopen",
     "OnlyAPersonReopens",
     "SessionWakeDeps",
     "SessionWakeReceipt",

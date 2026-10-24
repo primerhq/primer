@@ -540,3 +540,87 @@ async def test_a_queued_click_the_session_refuses_is_recorded_as_a_summary() -> 
     assert dropped["text"] == "canvas event e1 (emit on viz)" and SECRET_NOTE not in json.dumps(w.records("s1"))
     assert (await w.sessions.get("s1")).status == SessionStatus.ENDED and _pending(w) == []
     assert [e.id for e in (await w.canvas("s1")).unseen_events()] == ["e1"]
+
+
+# ---- a click never reopens an ended session (the lead's ruling 4 on #892 round 2; design d.8) ------------------------------------------
+
+
+async def _cancel(w: World) -> None:
+    await w.sessions.update((await w.sessions.get("s1")).model_copy(update={
+        "status": SessionStatus.ENDED, "ended_reason": "cancelled", "turn_status": "idle",
+    }))
+
+
+async def test_a_queued_click_realized_after_a_cancel_is_dropped_and_the_session_stays_ended() -> None:
+    w = await _world("running")
+    assert await _deliver(w, await _record(w, "click play")) == DELIVERY_QUEUED
+    await _cancel(w)
+    assert await _deliver(w, await _record(w, "click play")) == DELIVERY_RECORDED     # a fresh click on the ended session
+
+    assert await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w)) is False
+
+    row = await w.sessions.get("s1")
+    assert (row.status, row.turn_status) == (SessionStatus.ENDED, "idle") and _pending(w) == []
+    [dropped] = _dropped(w)
+    assert dropped["text"] == "canvas event e1 (click on play)" and "canvas click" in dropped["reason"]
+    assert w.records("s1", "user_input") == [] and _times_the_agent_got(w, "e1") == 0
+    assert [e.id for e in (await w.canvas("s1")).unseen_events()] == ["e1", "e2"]
+
+
+async def test_a_person_s_steer_queued_behind_a_dropped_click_still_reopens() -> None:
+    """The dropped click does not use up the boundary: the person's typed steer queued behind it is realized and reopens the session, as
+    the ruling on ticket 01a1120e has it for a person's steer; the click is not part of that turn."""
+    from primer.session.pending_messages import store_pending_steer
+
+    w = await _world("running")
+    assert await _deliver(w, await _record(w, "click play")) == DELIVERY_QUEUED
+    await store_pending_steer(storage_provider=w.sp, session=await w.sessions.get("s1"), text="typed after", workspace_registry=w.registry)
+    await _cancel(w)
+
+    assert await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w)) is True
+
+    [user_input] = w.records("s1", "user_input")
+    assert user_input["payload"]["text"] == "typed after" and CANVAS_EVENT_PAYLOAD_KEY not in user_input["payload"]
+    assert (await w.sessions.get("s1")).status != SessionStatus.ENDED and _times_the_agent_got(w, "e1") == 0
+
+
+async def test_a_click_stored_while_a_cancel_lands_is_never_realized_into_a_reopen(monkeypatch) -> None:
+    """The window between the delivery's read (a running turn) and its store: a Cancel lands there, the click is queued on the ended
+    session, and the realize that follows drops it."""
+    import primer.canvas.delivery as delivery
+    from primer.session.pending_messages import store_pending_steer
+
+    w = await _world("running")
+    ev = await _record(w, "click play")
+
+    async def cancel_then_store(**kwargs: Any) -> Any:
+        await _cancel(w)
+        return await store_pending_steer(**kwargs)
+
+    monkeypatch.setattr(delivery, "store_pending_steer", cancel_then_store)
+    assert await _deliver(w, ev) == DELIVERY_QUEUED
+
+    await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w))
+
+    assert (await w.sessions.get("s1")).status == SessionStatus.ENDED and _pending(w) == []
+    assert [d["text"] for d in _dropped(w)] == ["canvas event e1 (click on play)"]
+
+
+async def test_a_click_whose_wake_finds_the_session_ended_is_recorded(monkeypatch) -> None:
+    """The window between the delivery's read (an idle session) and the wake's: a Cancel lands there; the wake refuses to reopen the
+    session for a click, and nothing is written."""
+    import primer.canvas.delivery as delivery
+
+    w = await _world("idle")
+    ev = await _record(w, "click play")
+
+    async def cancel_then_wake(**kwargs: Any) -> Any:
+        await _cancel(w)
+        return await wake_session(**kwargs)
+
+    monkeypatch.setattr(delivery, "wake_session", cancel_then_wake)
+    assert await _deliver(w, ev) == DELIVERY_RECORDED
+
+    row = await w.sessions.get("s1")
+    assert (row.status, row.turn_status) == (SessionStatus.ENDED, "idle")
+    assert w.records("s1", "user_input") == [] and _pending(w) == [] and w.registry.workspace("ws-1").slots == {}
