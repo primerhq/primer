@@ -292,7 +292,9 @@ suppress the acks while still forwarding gates).
 - `system::list_channel_bindings` - list the bindings on a channel
   trigger. Body: `trigger_id`. From a session outside prime only the
   bindings whose action targets your own workspace or a session in it
-  are listed.
+  are listed. A caller who does not manage a binding sees only the
+  owner's display name and role; the owner and admins see the full
+  owner, the same rule as `trigger::list_subscriptions`.
 - `system::delete_channel_binding` - remove one binding while keeping
   the trigger. Body: `trigger_id`, `subscription_id`. From a session
   outside prime a binding whose action targets another workspace (or a
