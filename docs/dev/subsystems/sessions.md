@@ -531,7 +531,7 @@ The `wait_for_event` wake is a doorbell, and the doorbell wake does not advance 
 
 | session | what happens | `delivery` |
 |---|---|---|
-| ended, or gone | nothing more: the events route refuses an ended session before it records (S6), so this is one that ended in between | `recorded` |
+| ended, or gone | nothing more: the events route refuses an ended session before it records (S6), so this is one that ended in between. A click never reopens an ended or cancelled session (design d.8; the lead's ruling 4 of 2026-10-24 on #892 round 2, over ticket 01a1120e's rule for a person's typed steer): a wake that finds the session ended under the lock refuses before it writes (`CanvasClickDoesNotReopen`), and a queued click the drain realizes after a Cancel is dropped with its summary record and stays unread, while a person's steer queued behind it still reopens | `recorded` |
 | parked (still `parked`) on a `canvas_wait` the event matches (the wait's own rule, `canvas_wait_matches`; a graph node's wait too), or on a `canvas_wait` the flip already made `resumable` with THIS event as its answer (`parked_state.resume_event_payload`) | the event dispatcher resumes the wait from the `canvas.event`; a `canvas_event` record is written | `wait` |
 | any state, a silent event (a Select change, an audio event, a link open, an Html `set_value`) | a `canvas_event` record (skipped while a turn runs, plan Decision 2); the agent reads it in the next digest (section 9) or `canvas_get` | `recorded` |
 | a waking event the agent has already read (the canvas, read again before a queue or a wake: a `canvas_wait` took it since it was recorded) | nothing more: it was delivered, so nothing is queued, woken or recorded again | `recorded` |

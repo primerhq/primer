@@ -38,7 +38,7 @@ from primer.model.workspace_session import (
     SessionMessageRecord,
     WorkspaceSession,
 )
-from primer.session.enqueue import OnlyAPersonReopens, SessionWakeReceipt, wake_session
+from primer.session.enqueue import CanvasClickDoesNotReopen, OnlyAPersonReopens, SessionWakeReceipt, wake_session
 from primer.session.persistence import WorkspaceMessageWriter
 from primer.session.seq_reservation import reserve_next_seq
 
@@ -56,6 +56,7 @@ _MAX_PENDING_PER_SESSION = 50
 # Why a message was dropped, as the PAUSE_SUPERSEDED record says it (the console shows "queued message dropped (<reason>): <text>").
 _REASON_CAP = f"pending queue exceeded {_MAX_PENDING_PER_SESSION}"
 _REASON_CANCELLED = "the session was cancelled, and a message no person wrote does not reopen it"
+_REASON_CANVAS_ENDED = "the session has ended, and a canvas click does not reopen it"
 
 _OLDEST_FIRST = [
     OrderBy(field="enqueued_at", direction="asc"),
@@ -418,7 +419,7 @@ async def _realize_oldest(
             queued_message_id=row.id,
             receipt=receipt,
         )
-    except OnlyAPersonReopens as refusal:
+    except (OnlyAPersonReopens, CanvasClickDoesNotReopen) as refusal:
         logger.info("realize: dropped a queued message on %s (%s)", session_id, type(refusal).__name__)
         await _delete_queued(storage, row.id)
         await _record_dropped_pending(
@@ -429,7 +430,7 @@ async def _realize_oldest(
             session_id=session_id,
             dropped_text=_dropped_text(row),
             enqueued_at=row.enqueued_at,
-            reason=_REASON_CANCELLED,
+            reason=_REASON_CANVAS_ENDED if isinstance(refusal, CanvasClickDoesNotReopen) else _REASON_CANCELLED,
         )
         return None
     if receipt.outcome != "woken":
