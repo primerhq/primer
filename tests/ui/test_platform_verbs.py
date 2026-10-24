@@ -99,7 +99,7 @@ def test_the_labels(ctx) -> None:
 
 
 def test_a_custom_page_has_no_spec_whether_or_not_its_component_is_loaded(ctx) -> None:
-    """The custom-page plans register their own verb (Plan 04: Open Web; Plan 08: Open Workspace Templates), right after the shell's loop."""
+    """The custom-page plans register their own verb (Plan 04: Open Web Settings, shipped; Plan 08: Open Workspace Templates), right after the shell's loop."""
     before = js(ctx, "NV_platVerbSpecs()")
     ctx.eval(STAND_INS)
     assert js(ctx, "NV_platVerbSpecs()") == before

@@ -615,9 +615,9 @@ function NV_Shell() {
     });
     // Every Platform page and every provider type is a palette verb too ("Open Providers", "Open Providers: TTS", "Open LLM Profiles" ...) on the platform-nav
     // surface: the rows of the Platform sidebar are their pointer affordance (the data-verb of NV_PlatNav, nv-platform.jsx). NV_platVerbSpecs lists them in the
-    // sidebar's order and leaves the custom pages out: a custom page registers its own verb with one reg() call right after this loop (id platform.open.web,
-    // label "Open Web", surfaces palette and platform-nav, run goView("platform", "web"); platform.open.templates is "Open Workspace Templates"), in the plan
-    // that ships the page. Registered last on purpose: the palette lists the first eight verbs of an empty query in registration order.
+    // sidebar's order and leaves the custom pages out: a custom page registers its own verb with one reg() call right after this loop (platform.open.web,
+    // "Open Web Settings", is the first; platform.open.templates is "Open Workspace Templates"), in the plan that ships the page. Registered last on purpose:
+    // the palette lists the first eight verbs of an empty query in registration order.
     window.NV_platVerbSpecs().forEach(function (s) {
       // The label is built from a page title or a provider type, which is free text. The registry throws on a label its lint refuses (a word that starts with a digit
       // or a symbol), and a throw here takes the console down, so that one verb is skipped with a warning: its page keeps its row and every other verb registers.
@@ -631,6 +631,16 @@ function NV_Shell() {
         run: function () { goView("platform", s.nav, s.sub); },
       });
     });
+    // Platform › Web (platform revamp 04): the custom page where an admin says which providers answer web searches and page fetches. Its sidebar row
+    // carries this verb's id as its data-verb (NV_PlatNav draws one per nav), so the row is the pointer affordance. Like the row, the verb exists only
+    // while the page's component is loaded (NV_platNavAvailable): without it a link to the page opens Providers, and a verb named for it would land there too.
+    if (window.NV_platNavAvailable("web")) {
+      reg({
+        id: "platform.open.web", label: "Open Web Settings", aliases: ["Web Search", "Web Fetch"],
+        surfaces: ["palette", "platform-nav"],
+        run: function () { goView("platform", "web"); },
+      });
+    }
   }, [registry]);
 
   var ctx = React.useMemo(function () {
