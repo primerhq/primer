@@ -86,7 +86,9 @@ class RoutingArtifactStorage(ArtifactStorage):
                 await self._locations.create(ArtifactLocation(id=artifact_id, provider_id=provider_id))
             except (Exception, asyncio.CancelledError):
                 # The id was never returned, so no one can ask for these bytes: remove them rather than leave a file no record points to. A cancel
-                # (a client that went away mid-request) lands here too.
+                # (a client that went away mid-request) lands here too. So may a record INSERT that committed before the call failed (a cancel or a
+                # lost connection after the commit): it is removed as well, or the provider would count an artifact it does not hold, and refuse
+                # every delete and move with "holds 1 artifact(s)" that no one could clear (the G5 audit, G5-05).
                 await self._discard(store, provider_id, artifact_id)
                 raise
         return artifact_id
@@ -121,11 +123,20 @@ class RoutingArtifactStorage(ArtifactStorage):
             logger.warning("artifact %s is recorded on provider %r, which does not exist", artifact_id, record.provider_id)
             return None
 
-    @staticmethod
-    async def _discard(store: ArtifactStorage, provider_id: str, artifact_id: str) -> None:
+    async def _discard(self, store: ArtifactStorage, provider_id: str, artifact_id: str) -> None:
+        """Undo a put whose id was never handed out: its location record, if one was written, and its bytes. Best effort, each on its own."""
+        try:
+            await self._locations.delete(artifact_id)
+        except NotFoundError:
+            pass                                    # the usual case: the record was never written
+        except Exception as exc:  # noqa: BLE001 - best effort: the failure the caller needs to see is the put's own
+            logger.warning(
+                "artifact %s failed after its location record on provider %r was written, and removing the record also failed: %s",
+                artifact_id, provider_id, exc,
+            )
         try:
             await store.delete(artifact_id)
-        except Exception as exc:  # noqa: BLE001 - best effort: the failure the caller needs to see is the record write's
+        except Exception as exc:  # noqa: BLE001 - best effort: the failure the caller needs to see is the put's own
             logger.warning(
                 "artifact %s was written to provider %r but its location record failed, and removing it again also failed: %s",
                 artifact_id, provider_id, exc,
