@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from primer.common.optional import require_extra
 from primer.int.artifact_storage import ArtifactStorage
 from primer.int.storage_provider import StorageProvider
 from primer.model.except_ import ConfigError
@@ -34,11 +35,20 @@ def _build_filesystem(row: ArtifactStorageProvider, storage_provider: StoragePro
     return FilesystemArtifactStorage(row.config.root)
 
 
-#: The builder of each kind ``build_artifact_storage`` can construct. ``s3`` is an accepted enum value with no builder yet, so a row naming it
-#: raises ``ConfigError``. A backend ships by adding its builder here.
+def _build_s3(row: ArtifactStorageProvider, storage_provider: StorageProvider) -> ArtifactStorage:
+    del storage_provider  # the objects live in the row's bucket, not in the deployment's storage
+    require_extra("s3", "the S3 artifact store")
+    from primer.artifact.s3 import S3ArtifactStorage
+
+    # Building does no IO and imports no aiobotocore: ``initialize`` opens the client. A half pair of keys is refused here (ConfigError).
+    return S3ArtifactStorage(row.config)
+
+
+#: The builder of each kind ``build_artifact_storage`` can construct: every kind the enum names. A backend ships by adding its builder here.
 _BUILDERS: dict[ArtifactStorageProviderType, Callable[[ArtifactStorageProvider, StorageProvider], ArtifactStorage]] = {
     ArtifactStorageProviderType.DB: _build_db,
     ArtifactStorageProviderType.FILESYSTEM: _build_filesystem,
+    ArtifactStorageProviderType.S3: _build_s3,
 }
 
 #: The kinds ``build_artifact_storage`` can construct: the keys of ``_BUILDERS``, so a kind is in this set exactly when it has a builder.
@@ -52,8 +62,10 @@ def build_artifact_storage(
 ) -> ArtifactStorage:
     """Dispatch a provider row to the builder of its kind.
 
-    The ``DB`` and ``FILESYSTEM`` backends build; ``S3`` is an accepted enum
-    value with no builder, whose construction raises until implemented.
+    Every kind builds: ``DB``, ``FILESYSTEM`` and ``S3``. An ``S3`` row raises
+    ``ConfigError`` when the ``s3`` extra is not installed (naming the extra)
+    or when it carries one key without the other. A kind with no builder
+    raises ``ConfigError`` too.
     """
     builder = _BUILDERS.get(row.provider)
     if builder is None:

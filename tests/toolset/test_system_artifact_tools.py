@@ -225,3 +225,43 @@ async def test_a_tool_move_the_holds_check_refuses_prepares_nothing(world, tmp_p
 
     assert is_error and answer["type"] == "conflict", answer
     assert not (tmp_path / "c").exists()
+
+
+# ---- an S3 store's keys: both or neither (plan 09 Task 9; slice D ruling 5), never served (ruling 7) ----------------------------------------------
+
+HALF_KEY = "AKIAHALFPAIRTOOL01"
+HALF_SECRET = "half-pair-tool-secret-01"
+
+
+async def test_a_tool_create_with_one_key_is_refused_naming_the_other(world) -> None:
+    sp, toolset, _ = world
+
+    is_error, answer = await _call(
+        toolset,
+        "create_artifact_storage_provider",
+        entity={"id": "s3-half", "provider": "s3", "config": {"bucket": "b", "access_key": HALF_KEY}},
+    )
+
+    assert is_error and answer["type"] == "validation-error", answer
+    assert answer["message"] == "config.secret_key: set both access_key and secret_key, or neither to use the server's own credentials"
+    assert HALF_KEY not in str(answer)
+    assert await sp.get_storage(ArtifactStorageProvider).get("s3-half") is None, "nothing is stored"
+
+
+async def test_a_tool_update_that_blanks_one_key_is_refused_and_keeps_both(world) -> None:
+    """The update handler restores the served masks first, then the pair is judged (the same order as the REST route)."""
+    sp, toolset, _ = world
+    body = {"id": "s3-tool", "provider": "s3", "config": {"bucket": "b", "access_key": HALF_KEY, "secret_key": HALF_SECRET}}
+    created_error, _ = await _call(toolset, "create_artifact_storage_provider", entity=body)
+    assert not created_error
+    read_error, served = await _call(toolset, "get_artifact_storage_provider", id="s3-tool")
+    assert not read_error
+    assert HALF_KEY not in str(served) and HALF_SECRET not in str(served), "the keys are served masked"
+    served["config"]["access_key"] = ""
+
+    is_error, answer = await _call(toolset, "update_artifact_storage_provider", id="s3-tool", entity=served)
+
+    assert is_error and answer["type"] == "validation-error", answer
+    assert answer["message"].startswith("config.access_key: set both access_key and secret_key, or neither")
+    stored = (await sp.get_storage(ArtifactStorageProvider).get("s3-tool")).config
+    assert (stored.access_key.get_secret_value(), stored.secret_key.get_secret_value()) == (HALF_KEY, HALF_SECRET)

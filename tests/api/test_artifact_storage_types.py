@@ -127,12 +127,16 @@ CONFIG_FIELDS = {
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", sorted(CONFIG_OF))
-async def test_a_kind_the_factory_cannot_build_says_so_in_its_label_and_one_it_can_does_not(client, kind: str) -> None:
-    """B1: the menu must not offer as working a backend that is stored and never used. ``build_artifact_storage`` builds ``db`` and ``filesystem`` (plan 09 Task 8) and refuses ``s3``; so the label of
-    every kind the factory refuses says 'not implemented yet: stored, never used', and when a backend ships the label has to lose it (this test flips by itself)."""
+async def test_a_kind_the_factory_cannot_build_says_so_in_its_label_and_one_it_can_does_not(client, monkeypatch, kind: str) -> None:
+    """B1: the menu must not offer as working a backend that is stored and never used. ``build_artifact_storage`` builds every kind since plan 09 Task 9 (``s3``); a kind the factory refused would
+    have to say 'not implemented yet: stored, never used' in its label (this test flips by itself when a kind loses or gains its builder).
+
+    Every optional extra reads as installed here: a kind whose extra is missing (``s3`` without aiobotocore) is refused with "needs the optional 's3' extra", which the console shows as not
+    installed, and is not a kind without a backend."""
     from primer.artifact.factory import build_artifact_storage
     from primer.model.except_ import ConfigError
 
+    monkeypatch.setattr("primer.common.optional._find_spec", lambda name: object())
     label = (await _types(client))[kind]["label"]
     try:
         build_artifact_storage(_row_of(kind), storage_provider=object())  # type: ignore[arg-type]
@@ -161,6 +165,21 @@ async def test_the_filesystem_label_and_help(client) -> None:
         "It is created if missing."
     )
     assert root["placeholder"] == "/var/lib/primer/artifacts"
+
+
+@pytest.mark.asyncio
+async def test_the_s3_label_and_help(client) -> None:
+    """Plan 09 Task 9: the S3 store is built, and the form says how the prefix is used, when the endpoint is needed, and that the keys go together
+    (a half pair is refused with ``artifact_s3_keys_incomplete``; both blank use the server's own credentials)."""
+    meta = (await _types(client))["s3"]
+    fields = {f["key"]: f for f in meta["config_fields"]}
+
+    assert meta["label"] == "S3 or S3-compatible object store (AWS, MinIO)"
+    assert fields["prefix"]["help"] == "Put in front of every object key; end it with / to use a folder. Blank for the bucket root."
+    assert fields["endpoint_url"]["help"] == "For an S3-compatible server such as MinIO; blank for AWS."
+    assert fields["access_key"]["help"] == "Blank, with the secret key blank too, to use the server's own credentials."
+    assert fields["secret_key"]["help"] == "Blank, with the access key id blank too, to use the server's own credentials."
+    assert (fields["access_key"]["type"], fields["secret_key"]["type"]) == ("password", "password")
 
 
 @pytest.mark.asyncio

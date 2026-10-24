@@ -18,11 +18,15 @@ CI_YML = REPO / ".github" / "workflows" / "ci.yml"
 _SYNC_COMMENT_ANCHOR = "--all-extras so the test env has every optional backend"
 
 
+#: An extra name as pyproject spells it: a lowercase letter, then letters, digits or underscores (``s3`` has a digit).
+_EXTRA = r"[a-z][a-z0-9_]*"
+
+
 def _mapped_extras() -> set[str]:
     text = CAPS_JS.read_text(encoding="utf-8")
     block = text.split("EXTRA_FOR_PROVIDER_TYPE = {", 1)[1].split("};", 1)[0]
-    return set(re.findall(r":\s*'([a-z]+)'", block)) | set(
-        re.findall(r':\s*"([a-z]+)"', block)
+    return set(re.findall(rf":\s*'({_EXTRA})'", block)) | set(
+        re.findall(rf':\s*"({_EXTRA})"', block)
     )
 
 
@@ -30,7 +34,7 @@ def _sync_comment_extras() -> set[str]:
     """The extras the `test` lane's sync comment claims it installs."""
     tail = CI_YML.read_text(encoding="utf-8").split(_SYNC_COMMENT_ANCHOR, 1)[1]
     listed = tail.split(";", 1)[0].split("(", 1)[1].split(")", 1)[0]
-    return set(re.findall(r"[a-z_]+", listed))
+    return set(re.findall(_EXTRA, listed))
 
 
 def test_console_map_names_only_live_extras() -> None:

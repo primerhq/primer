@@ -217,7 +217,7 @@ jobs:
             ghcr.io/primerhq/primer:${{ needs.release.outputs.version }}-fat
             ghcr.io/primerhq/primer:latest-fat
       # Slim image, now the DEFAULT: core + the light operational extras
-      # only (kubernetes, docker, channels, lance); drops the multi-GB
+      # only (kubernetes, docker, channels, lance, s3); drops the multi-GB
       # huggingface + docling torch stack. BootstrapRunner self-skips the
       # dep-backed default providers whose extra is absent, so it boots
       # cleanly. It takes the unsuffixed :{version} / :latest tags; the
@@ -229,7 +229,7 @@ jobs:
           file: ./Dockerfile
           push: true
           build-args: |
-            UV_SYNC_EXTRAS=--extra kubernetes --extra docker --extra channels --extra lance
+            UV_SYNC_EXTRAS=--extra kubernetes --extra docker --extra channels --extra lance --extra s3
           tags: |
             ghcr.io/primerhq/primer:${{ needs.release.outputs.version }}
             ghcr.io/primerhq/primer:latest

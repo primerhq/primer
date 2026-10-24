@@ -131,3 +131,45 @@ async def test_a_non_admin_cannot_test(raw_client, app, role: str) -> None:
 
     assert draft.status_code == saved.status_code == 403
     assert draft.json()["extensions"]["error"] == "forbidden_role"
+
+
+# ---- the S3 store, live on moto's server in this process (plan 09 Task 9; slice D ruling 7) ---------------------------------------------------------
+
+from tests.artifact.conftest import S3_BUCKET, isolated_aws_env, s3_endpoint  # noqa: E402, F401  (fixtures)
+
+
+async def test_a_draft_s3_store_on_a_working_bucket_tests_ok(client, s3_endpoint, isolated_aws_env) -> None:
+    body = {"provider": "s3", "config": {"bucket": S3_BUCKET, "prefix": "draft-test/", "endpoint_url": s3_endpoint,
+                                         "access_key": KEY, "secret_key": SECRET}}
+
+    response = await client.post(f"{COLLECTION}/_test", json=body)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+async def test_a_failing_s3_draft_names_the_step_and_shows_no_key(client, s3_endpoint, isolated_aws_env) -> None:
+    """Ruling 7: what the operator typed comes back as a diagnostic, never as the keys."""
+    body = {"provider": "s3", "config": {"bucket": "no-such-bucket", "endpoint_url": s3_endpoint, "access_key": KEY, "secret_key": SECRET}}
+
+    response = await client.post(f"{COLLECTION}/_test", json=body)
+
+    assert response.status_code == 200
+    assert (response.json()["ok"], response.json()["step"]) == (False, "put")
+    assert "NoSuchBucket" in response.json()["error"]
+    assert KEY not in response.text and SECRET not in response.text
+
+
+async def test_a_draft_with_one_key_is_reported_at_build_and_never_uses_ambient_credentials(
+    client, s3_endpoint, isolated_aws_env, monkeypatch,
+) -> None:
+    """Ruling 5 on the draft Test: the server has working ambient credentials, and a draft with one key still fails at ``build``."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    body = {"provider": "s3", "config": {"bucket": S3_BUCKET, "endpoint_url": s3_endpoint, "access_key": KEY}}
+
+    response = await client.post(f"{COLLECTION}/_test", json=body)
+
+    assert (response.json()["ok"], response.json()["step"]) == (False, "build")
+    assert "set both access_key and secret_key, or neither" in response.json()["error"]
+    assert KEY not in response.text

@@ -73,8 +73,11 @@ channels = [
     # that member is what exposed the missing declaration.
     "pillow>=11.0.0",
 ]
+# S3 and S3-compatible (MinIO) artifact storage (primer/artifact/s3.py imports
+# it only when a store is initialized).
+s3 = ["aiobotocore>=3.10.0"]
 # Everything: the batteries-included install.
-full = ["primer-ai[huggingface,lance,kubernetes,docker,channels]"]
+full = ["primer-ai[huggingface,lance,kubernetes,docker,channels,s3]"]
 
 [project.scripts]
 primer = "primer.cli:app"
@@ -273,8 +276,11 @@ match = "main"
 
 [dependency-groups]
 dev = [
+    "flask>=3.1.3",
+    "flask-cors>=6.0.5",
     "grpcio-tools>=1.81.1",
     "import-linter>=2.13",
+    "moto[s3]>=5.2.4",
     "playwright>=1.60.0",
     "pre-commit>=4.0.0",
     "pytest>=9.1.0",
@@ -318,6 +324,7 @@ forbidden_modules = [
     "primer.vector.lance",
     "primer.workspace.container",
     "primer.workspace.k8s",
+    "primer.artifact.s3",
 ]
 allow_indirect_imports = true
 

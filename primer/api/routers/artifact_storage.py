@@ -115,11 +115,11 @@ async def _pre_delete(entity: ArtifactStorageProvider, request: Request) -> None
 # lists mirror the config models in primer/model/providers/artifact.py (tests/api/test_artifact_storage_types.py holds them to the models); a row of this class has no fields of its own, no limits
 # block and no model list to discover.
 #
-# THE LABELS TELL THE TRUTH ABOUT WHAT A ROW DOES. ``build_artifact_storage`` (primer/artifact/factory.py) builds the ``db`` and ``filesystem`` backends, and every consumer goes through ``ArtifactStorageRegistry.get_default()``, the
-# routing store (primer/artifact/routing.py): a put goes to the ACTIVE provider (``ActiveArtifactStorageConfig``; the database, through the reserved ``artifact-storage-default``, until another is selected) and a get or a delete
-# follows the artifact's location record. So an ``s3`` row can be stored but cannot be built, and a ``db`` row registered here is not the default. A ``filesystem`` root must be ONE folder that every server pod mounts at the
-# same path; its label and help say so.
-# The test builds a row of each kind and requires 'not implemented' in the label of every kind the factory refuses, so the labels change by themselves when a backend ships.
+# THE LABELS TELL THE TRUTH ABOUT WHAT A ROW DOES. ``build_artifact_storage`` (primer/artifact/factory.py) builds every kind (``db``, ``filesystem`` and ``s3``; ``s3`` needs the ``s3`` extra), and every consumer goes
+# through ``ArtifactStorageRegistry.get_default()``, the routing store (primer/artifact/routing.py): a put goes to the ACTIVE provider (``ActiveArtifactStorageConfig``; the database, through the reserved
+# ``artifact-storage-default``, until another is selected) and a get or a delete follows the artifact's location record. So a ``db`` row registered here is not the default. A ``filesystem`` root must be ONE folder that every
+# server pod mounts at the same path; its label and help say so. The two S3 keys go together (both, or neither for the server's own credentials); their help says so.
+# The test builds a row of each kind and requires 'not implemented' in the label of every kind the factory has no builder for, so a label has to change when a kind loses or gains its backend.
 #
 # This router MUST be mounted before the CRUD router in _app_routes.py, or GET /{id} swallows "_types".
 
@@ -219,15 +219,15 @@ async def list_artifact_storage_types() -> dict[str, dict[str, Any]]:
             "discoverable": False,
         },
         "s3": {
-            "label": "S3 or S3-compatible store (not implemented yet: stored, never used)",
+            "label": "S3 or S3-compatible object store (AWS, MinIO)",
             "config_fields": [
                 _form_field("bucket", "Bucket", "text", required=True, help_="Target bucket name."),
-                _form_field("prefix", "Key prefix", "text", help_="Prefix of the stored objects' keys; blank for the bucket root."),
-                _form_field("endpoint_url", "Endpoint URL", "url", help_="Override endpoint, for an S3-compatible store; blank for AWS.", placeholder="https://s3.example.com"),
+                _form_field("prefix", "Key prefix", "text", help_="Put in front of every object key; end it with / to use a folder. Blank for the bucket root."),
+                _form_field("endpoint_url", "Endpoint URL", "url", help_="For an S3-compatible server such as MinIO; blank for AWS.", placeholder="https://s3.example.com"),
                 _form_field("region", "Region", "text", help_="Bucket region."),
                 _form_field("addressing_style", "Addressing style", "enum", options=["auto", "path", "virtual"], help_="auto: path-style when an endpoint URL is set (MinIO and most S3-compatible servers), virtual-hosted on AWS."),
-                _form_field("access_key", "Access key id", "password"),
-                _form_field("secret_key", "Secret access key", "password"),
+                _form_field("access_key", "Access key id", "password", help_="Blank, with the secret key blank too, to use the server's own credentials."),
+                _form_field("secret_key", "Secret access key", "password", help_="Blank, with the access key id blank too, to use the server's own credentials."),
             ],
             "row_fields": [],
             "discoverable": False,

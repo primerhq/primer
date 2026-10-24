@@ -1,4 +1,5 @@
-"""The contract every artifact backend keeps, run against each backend that builds (plan 09, Task 8; Task 9 adds ``s3`` to the params).
+"""The contract every artifact backend keeps, run against each backend that builds: ``db``, ``filesystem`` (plan 09, Task 8) and ``s3`` (Task 9, on
+moto's S3 server in this process, ``tests/artifact/conftest.py``).
 
 A consumer never knows which store holds its file, so each backend must hand back exactly what it was given: the bytes, the MIME type and the
 filename, whatever characters the filename holds (Review Focus 4: accents, quotes, a newline and CJK), and ``None`` for a missing one.
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -16,14 +18,28 @@ from primer.artifact.filesystem import FilesystemArtifactStorage, prepare_root
 from primer.int.artifact_storage import ArtifactBlob, ArtifactStorage
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
+from tests.artifact.conftest import S3_BUCKET, S3_TEST_KEY, S3_TEST_SECRET
 
 
-@pytest.fixture(params=["db", "filesystem"])
+@pytest.fixture(params=["db", "filesystem", "s3"])
 async def store(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator[ArtifactStorage]:
-    if request.param == "db":
+    if request.param == "s3":
+        # Requested only for this param, so the db and filesystem runs never need moto. It skips when the s3 extra or moto is missing.
+        endpoint = request.getfixturevalue("s3_endpoint")
+        request.getfixturevalue("isolated_aws_env")
+        from primer.artifact.s3 import S3ArtifactStorage
+        from primer.model.provider import S3ArtifactConfig
+
+        backend: ArtifactStorage = S3ArtifactStorage(S3ArtifactConfig(
+            bucket=S3_BUCKET, prefix=f"t-{uuid4().hex[:8]}/", endpoint_url=endpoint, access_key=S3_TEST_KEY, secret_key=S3_TEST_SECRET,
+        ))
+        await backend.initialize()
+        yield backend
+        await backend.aclose()
+    elif request.param == "db":
         sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "contract.sqlite"))
         await sp.initialize()
-        backend: ArtifactStorage = DbArtifactStorage(sp)
+        backend = DbArtifactStorage(sp)
         await backend.initialize()
         yield backend
         await backend.aclose()

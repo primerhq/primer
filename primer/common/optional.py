@@ -23,6 +23,7 @@ EXTRA_MODULES: dict[str, tuple[str, ...]] = {
     "kubernetes": ("kubernetes_asyncio",),
     "docker": ("aiodocker",),
     "channels": ("slack_bolt", "telegram", "discord"),
+    "s3": ("aiobotocore",),
 }
 
 CHANNEL_PLATFORM_MODULES: dict[str, str] = {

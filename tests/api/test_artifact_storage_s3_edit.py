@@ -110,3 +110,55 @@ async def test_a_blank_secret_on_an_edit_clears_the_stored_key(client, app):
     assert r.status_code == 200, r.text
     stored = await _stored(app, "s3-clear")
     assert (stored.config.access_key, stored.config.secret_key) == (None, None)
+
+
+# ---- both keys or neither (plan 09 Task 9; slice D ruling 5) and the keys are never served (ruling 7) -----------------------------------------------
+#
+# With one key dropped, botocore would sign with whatever ambient credentials the server has (a pod role, an env pair), so a half pair is refused on
+# every write instead of being completed from the environment.
+
+HALF_KEY = "AKIAHALFPAIRKEY01"
+HALF_SECRET = "half-pair-secret-01"
+
+
+@pytest.mark.parametrize(
+    ("keys", "field"),
+    [({"access_key": HALF_KEY}, "config.secret_key"), ({"secret_key": HALF_SECRET}, "config.access_key"),
+     ({"access_key": HALF_KEY, "secret_key": ""}, "config.secret_key")],
+    ids=["access key only", "secret key only", "blank secret"],
+)
+async def test_a_create_with_one_key_is_refused_naming_the_other(client, app, keys: dict, field: str):
+    r = await client.post(COLLECTION, json={"id": "s3-half", "provider": "s3", "config": {"bucket": "media", **keys}})
+
+    assert r.status_code == 422, r.text
+    ext = r.json()["extensions"]
+    assert (ext["error"], ext["kind"], ext["field"]) == ("artifact_s3_keys_incomplete", "artifact_storage_provider", field)
+    assert ext["message"] == "set both access_key and secret_key, or neither to use the server's own credentials"
+    assert HALF_KEY not in r.text and HALF_SECRET not in r.text
+    assert await app.state.storage_provider.get_storage(ArtifactStorageProvider).get("s3-half") is None
+
+
+async def test_an_edit_that_blanks_one_key_is_refused_and_keeps_both(client, app):
+    """The served mask of the access key is restored first (``preserve_masked_secrets``), then the pair is judged: a blanked secret beside a kept
+    access key is a half pair."""
+    assert (await client.post(COLLECTION, json=_body("s3-blank-one"))).status_code == 201
+    served = (await client.get(f"{COLLECTION}/s3-blank-one")).json()
+    served["config"]["secret_key"] = ""
+
+    r = await client.put(f"{COLLECTION}/s3-blank-one", json=served)
+
+    assert r.status_code == 422, r.text
+    assert (r.json()["extensions"]["error"], r.json()["extensions"]["field"]) == ("artifact_s3_keys_incomplete", "config.secret_key")
+    stored = (await _stored(app, "s3-blank-one")).config
+    assert (stored.access_key.get_secret_value(), stored.secret_key.get_secret_value()) == ("AKIAEXAMPLEKEY1", "secret-example-1")
+
+
+async def test_both_keys_are_served_masked_in_a_read_and_a_list(client):
+    assert (await client.post(COLLECTION, json=_body("s3-masked"))).status_code == 201
+
+    one = await client.get(f"{COLLECTION}/s3-masked")
+    listed = await client.get(COLLECTION)
+
+    assert (one.json()["config"]["access_key"], one.json()["config"]["secret_key"]) == ("**********", "**********")
+    for r in (one, listed):
+        assert "secret-example-1" not in r.text and "AKIAEXAMPLEKEY1" not in r.text

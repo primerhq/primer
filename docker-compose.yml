@@ -57,7 +57,7 @@ services:
       dockerfile: Dockerfile
       args:
         # Full (all extras) by default. Build slim by exporting e.g.
-        # UV_SYNC_EXTRAS="--extra kubernetes --extra docker --extra channels --extra lance"
+        # UV_SYNC_EXTRAS="--extra kubernetes --extra docker --extra channels --extra lance --extra s3"
         # before `docker compose build primer` (or use `make docker-build-slim`).
         UV_SYNC_EXTRAS: ${UV_SYNC_EXTRAS:---all-extras}
     container_name: primer-app
