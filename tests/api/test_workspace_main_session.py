@@ -4,7 +4,9 @@
 it as the caller when they have none (role user). The console opens the default workspace on first login and picks
 the result (task 14). The session runs at the caller's rank: ``initiated_by`` carries the caller's role, so an
 admin's main session clears the admin role floor and a user's does not (A-20). The status answers 201 when this call
-created the row and 200 when it returned the caller's existing one.
+created the row and 200 when it returned the caller's existing one, and the body says the same in ``created`` (a
+response-only flag): a client that reads only the body (the console's ``apiFetch``) opens the session on a user's first
+login only, when ``created`` is true (task 14, lead ruling).
 """
 
 from __future__ import annotations
@@ -108,6 +110,18 @@ async def test_ensures_the_callers_main_session(prime_app, client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_call_that_creates_the_session_says_created(prime_app, client) -> None:
+    wid = await _default_id(prime_app)
+
+    r = await client.post(f"/v1/workspaces/{wid}/main_session")
+
+    assert r.status_code == 201, r.text
+    assert r.json()["created"] is True
+    rows = await _sessions(prime_app, wid)
+    assert "created" not in rows[0].model_dump(), "response-only: the stored row has no such field"
+
+
+@pytest.mark.asyncio
 async def test_a_second_call_returns_the_same_session(prime_app, client) -> None:
     wid = await _default_id(prime_app)
 
@@ -117,6 +131,17 @@ async def test_a_second_call_returns_the_same_session(prime_app, client) -> None
     assert again.status_code == 200
     assert again.json()["id"] == first["id"]
     assert len(await _sessions(prime_app, wid)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_finds_the_session_says_not_created(prime_app, client) -> None:
+    wid = await _default_id(prime_app)
+    first = (await client.post(f"/v1/workspaces/{wid}/main_session")).json()
+
+    for _ in range(2):
+        again = await client.post(f"/v1/workspaces/{wid}/main_session")
+        assert again.status_code == 200, again.text
+        assert again.json()["created"] is False and again.json()["id"] == first["id"]
 
 
 @pytest.mark.asyncio
