@@ -230,6 +230,12 @@ async def test_backend_init_command_timeout_kills_process(tmp_path: Path):
 
 # ===========================================================================
 # ops.py _subprocess_timeout() helper tests
+#
+# _subprocess_timeout() reads the env var at CALL time, so these tests only
+# monkeypatch the env. They must never importlib.reload(primer_runtime.ops):
+# a reload re-creates OpError, and every module or test that imported the
+# old class (server, exec, pty_op, runtime/tests/test_ops.py) then stops
+# matching what ops raises, for the rest of the process.
 # ===========================================================================
 
 
@@ -244,11 +250,6 @@ def test_runtime_ops_subprocess_timeout_default(monkeypatch):
 def test_runtime_ops_subprocess_timeout_env(monkeypatch):
     """_subprocess_timeout() reads PRIMER_SUBPROCESS_TIMEOUT_SECONDS."""
     monkeypatch.setenv("PRIMER_SUBPROCESS_TIMEOUT_SECONDS", "60.0")
-    # Reimport to pick up env change (function reads os.environ at call time).
-    import importlib
-    import primer_runtime.ops as ops_mod
-
-    importlib.reload(ops_mod)
     from primer_runtime.ops import _subprocess_timeout
 
     assert _subprocess_timeout() == 60.0
@@ -269,19 +270,35 @@ def test_runtime_ops_subprocess_timeout_invalid_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_runtime_ops_run_git_timeout(tmp_path: Path, monkeypatch):
-    """_run_git raises OpError(EINTERNAL) with 'timed out' when the deadline fires."""
-    monkeypatch.setenv("PRIMER_SUBPROCESS_TIMEOUT_SECONDS", "0.001")
-    # Reload so _subprocess_timeout picks up the new value.
-    import importlib
-    import primer_runtime.ops as ops_mod
-    importlib.reload(ops_mod)
+    """_run_git kills the process and raises OpError(EINTERNAL) 'timed out' when the deadline fires.
+
+    The ``git`` it runs is a stand-in on PATH that never finishes (``exec
+    sleep 30``). A real ``git init`` finishes in a couple of milliseconds,
+    the same order as the 1 ms deadline this test used: whenever git exited
+    before the deadline was checked (a fast or briefly descheduled worker),
+    _run_git returned normally and the test failed with "DID NOT RAISE".
+    """
+    import time
 
     from primer_runtime.ops import OpError, _run_git
     from primer_runtime.protocol import ErrorCode
 
-    state_dir = str(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_git = bin_dir / "git"
+    fake_git.write_text("#!/bin/sh\nexec sleep 30\n")
+    fake_git.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("PRIMER_SUBPROCESS_TIMEOUT_SECONDS", "0.2")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    start = time.monotonic()
     with pytest.raises(OpError) as exc_info:
-        await _run_git(state_dir, "init", "--initial-branch=main")
+        await _run_git(str(state_dir), "init", "--initial-branch=main")
+    elapsed = time.monotonic() - start
 
     assert exc_info.value.code == ErrorCode.EINTERNAL
     assert "timed out" in exc_info.value.message.lower()
+    # Killed at the deadline, not waited out: the stand-in sleeps for 30 s.
+    assert elapsed < 10.0, f"Expected prompt return after kill, took {elapsed:.2f}s"
