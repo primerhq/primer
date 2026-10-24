@@ -53,14 +53,15 @@ function SessionSwitcher({
   const [queued, setQueued] = React.useState(false);
 
   const apiFetch = window.primerApi.apiFetch;
+  // Every agent and every graph, every page of each (window.PR_fetchAllPages, ui/foundation/api.js).
   const agents = window.primerApi.useResource(
     "agents:switcher",
-    (signal) => apiFetch("GET", "/agents?limit=200", null, { signal }),
+    (signal) => window.PR_fetchAllPages("/agents", { signal, apiFetch }),
     {},
   );
   const graphs = window.primerApi.useResource(
     "graphs:switcher",
-    (signal) => apiFetch("GET", "/graphs?limit=200", null, { signal }),
+    (signal) => window.PR_fetchAllPages("/graphs", { signal, apiFetch }),
     {},
   );
 
@@ -181,6 +182,8 @@ function SessionSwitcher({
               </li>
             ))}
           </ul>
+          <window.PR_PagedNote list={agents.data} noun="agents" testid="session-switcher-note:agents" />
+          <window.PR_PagedNote list={graphs.data} noun="graphs" testid="session-switcher-note:graphs" />
         </div>
       )}
     </span>

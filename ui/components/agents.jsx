@@ -1,4 +1,5 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, PK_FormOverlay, PK_Grid, PK_Field, PK_Fold */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, PK_FormOverlay, PK_Grid, PK_Field, PK_Fold, PR_fetchAllPages,
+   PR_usePagedResource, PR_PagedNote */
 
 // Agents page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
@@ -63,9 +64,10 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
     pageSize: 50,
     resetKey: textFilter,
   });
+  // The lookups the rows read (the vendor dot, the profile's model): every page of each (PR_fetchAllPages, ui/foundation/api.js).
   const providers = useResource(
     "agents:llm-providers",
-    (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/llm_providers", { signal, apiFetch }),
     { pollMs: null }
   );
   // An agent names a model PROFILE, not a provider+model pair. The profile
@@ -80,7 +82,7 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
   );
   const profiles = useResource(
     "agents:model-profiles",
-    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/model_profiles", { signal, apiFetch }),
     { pollMs: null }
   );
   const profileById = React.useMemo(() => {
@@ -160,6 +162,8 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
           <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New agent</Btn>
         </div>
       </div>
+      <PR_PagedNote list={providers.data} noun="LLM providers" testid="agents-providers-note" />
+      <PR_PagedNote list={profiles.data} noun="profiles" testid="agents-profiles-note" />
 
       {isMobile ? (
         list.loading && items.length === 0 ? (
@@ -380,9 +384,10 @@ function AG_SessionsPanel({ agentId }) {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [open, setOpen] = React.useState(false);
-  const sessions = useResource(
+  // Every session of the agent, every page (PR_fetchAllPages), polled every 5 s per page read while open (PR_usePagedResource).
+  const sessions = PR_usePagedResource(
     `agent-sessions:${agentId}`,
-    (signal) => apiFetch("GET", "/sessions?agent_id=" + encodeURIComponent(agentId) + "&limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/sessions?agent_id=" + encodeURIComponent(agentId), { signal, apiFetch }),
     { pollMs: open ? 5000 : 0, deps: [agentId] }
   );
   const items = sessions.data?.items ?? [];
@@ -399,6 +404,7 @@ function AG_SessionsPanel({ agentId }) {
       </button>
       {open && (
         <div style={{ padding: "0 10px 10px" }}>
+          <PR_PagedNote list={sessions.data} noun="sessions" testid="agent-sessions-note" />
           {sessions.loading && items.length === 0 ? (
             <div className="muted text-sm" style={{ padding: 10 }}>Loading…</div>
           ) : items.length === 0 ? (
@@ -685,7 +691,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   // key, because the agents list reads the full rows under "agents:model-profiles".
   const profiles = useResource(
     "agents:model-profile-choices",
-    (signal) => apiFetch("GET", "/model_profiles/choices?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/model_profiles/choices", { signal, apiFetch }),
     { pollMs: null }
   );
   // The Voice fold gates a tts_voice picker on the speech capability
@@ -1028,6 +1034,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             {!profiles.loading && profileOptions.length === 0 && !profileId && <option value="">No model profiles yet</option>}
             {profileOptions.map((pr) => <option key={pr.id} value={pr.id}>{pr.id}</option>)}
           </select>
+          <PR_PagedNote list={profiles.data} noun="model profiles" testid="agent-model-profile-note" />
         </PK_Field>
         <PK_Field label="Description" span="full" required error={AG_fieldError(fieldErrors, "body.description")}>
           <input
@@ -1645,7 +1652,7 @@ function AG_ToolsetRefRow({ tsId, registeredCount, navigate }) {
 //
 // U0082 contract: opens with title="New session", Workspace select is
 // .nth(0), Agent select is .nth(1), Agent pre-bound to defaultAgentId,
-// workspace options populated from /workspaces?limit=200.
+// workspace options populated from every page of /workspaces.
 
 function AG_NewSessionModal({ onClose, defaultAgentId, pushToast }) {
   const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
@@ -1653,12 +1660,12 @@ function AG_NewSessionModal({ onClose, defaultAgentId, pushToast }) {
 
   const workspaces = useResource(
     "test-agent:workspaces",
-    (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/workspaces", { signal, apiFetch }),
     { pollMs: null }
   );
   const agents = useResource(
     "test-agent:agents",
-    (signal) => apiFetch("GET", "/agents?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/agents", { signal, apiFetch }),
     { pollMs: null }
   );
 
@@ -1743,6 +1750,7 @@ function AG_NewSessionModal({ onClose, defaultAgentId, pushToast }) {
             No workspaces. Create one at <span className="mono">/workspaces</span> first.
           </div>
         )}
+        <PR_PagedNote list={workspaces.data} noun="workspaces" testid="ns-workspaces-note" />
       </div>
       <div className="field">
         <label className="field-label" htmlFor="ns-agent">Agent</label>
@@ -1763,6 +1771,7 @@ function AG_NewSessionModal({ onClose, defaultAgentId, pushToast }) {
             <option key={a.id} value={a.id}>{a.id}</option>
           ))}
         </select>
+        <PR_PagedNote list={agents.data} noun="agents" testid="ns-agents-note" />
       </div>
       <div className="field">
         <label className="field-label" htmlFor="ns-instructions">
