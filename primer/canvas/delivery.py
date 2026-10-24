@@ -1,9 +1,10 @@
 """Delivering a user's canvas interaction to the agent, by the state of its session (pivot P5, Task 12; plan Decisions 7 and 9).
 
-``POST .../canvas/events`` records an interaction (``CanvasService.record_event``: the canvas row, the ``canvas.event`` platform event,
-the tap frame) and then hands it here. What happens next depends on the session, read fresh:
+The canvas events route (``POST .../canvas/events``, pivot P5 S6; until it ships nothing calls this) records an interaction
+(``CanvasService.record_event``: the canvas row, the ``canvas.event`` platform event, the tap frame) and then hands it here. What happens
+next depends on the session, read fresh:
 
-* ENDED (or gone): ``recorded``. The route refuses an ended session before it records anything; this covers the one that ended between.
+* ENDED (or gone): ``recorded``. The route refuses an ended session before it records anything; this covers one that ended in between.
 * parked on a ``canvas_wait`` the event matches (``primer.canvas.wait.canvas_wait_matches``, the rule the wait's subscription filter is
   built from): ``wait``. The event dispatcher resumes the wait from the ``canvas.event``; here only its ``canvas_event`` record is written.
   Only a park that is still ``parked`` takes it: a wait already being resumed has its answer, so a second click is queued behind its turn.
