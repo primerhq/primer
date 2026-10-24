@@ -138,6 +138,26 @@ async def test_a_backend_that_cannot_be_reached_puts_the_phase_back(sp, wsr, wid
 
 
 @pytest.mark.asyncio
+async def test_the_phase_put_back_is_the_one_read_at_the_mark(sp, wsr, wid, monkeypatch) -> None:  # noqa: F811
+    """Round 2 of #917, item 8: the probe failed the workspace while the rank scan ran (after destroy's first read, before the mark), and
+    the backend then could not be resolved: the phase put back is the one the mark replaced (``failed``), not the stale ``running``."""
+
+    async def _probe_fails_it_meanwhile():
+        await sp.get_storage(Workspace).patch_if(wid, {"phase": "failed", "failure_reason": "runtime unreachable"}, where={"phase": ["running"]})
+
+    async def _unresolvable(provider_id):
+        raise ProviderError("the provider's backend could not be built")
+
+    monkeypatch.setattr(wsr, "get_backend", _unresolvable)
+
+    with pytest.raises(ProviderError):
+        await wsr.destroy(wid, before_teardown=_probe_fails_it_meanwhile)
+
+    row = await _row(sp, wid)
+    assert (row.phase, row.failure_reason) == ("failed", "runtime unreachable")
+
+
+@pytest.mark.asyncio
 async def test_a_refused_rank_scan_never_marks_the_row(sp, wsr, wid) -> None:  # noqa: F811
     phases: list[str] = []
 

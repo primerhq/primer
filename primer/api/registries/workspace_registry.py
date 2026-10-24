@@ -59,6 +59,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: How many times :meth:`WorkspaceRegistry._mark_terminating` reads the phase again when it moved under the fenced mark.
+_MARK_TRIES = 3
+
 
 #: The phase every create door writes a new workspace row with (ticket 01a16d72, ruling 2): ``pending`` until the probe's first good ping
 #: promotes it to ``running`` (:mod:`primer.workspace.probe`). ``POST /v1/workspaces`` and the bootstrap seed used to write ``running`` and the
@@ -471,7 +474,7 @@ class WorkspaceRegistry:
         try:
             if before_teardown is not None:
                 await before_teardown()
-            await self._mark_terminating(workspace_id)
+            marked_from = await self._mark_terminating(workspace_id)
             teardown_started = False
             try:
                 try:
@@ -500,7 +503,7 @@ class WorkspaceRegistry:
                 await self._sp.get_storage(WorkspaceRow).delete(workspace_id)
             except BaseException as exc:
                 # BaseException: a cancel (a client disconnect on REST) leaves the teardown as unfinished as an error does.
-                await self._after_a_failed_destroy(workspace_id, exc, teardown_started=teardown_started, previous_phase=row.phase)
+                await self._after_a_failed_destroy(workspace_id, exc, teardown_started=teardown_started, marked_from=marked_from)
                 raise
         finally:
             left = self._destroying[workspace_id] - 1
@@ -509,15 +512,30 @@ class WorkspaceRegistry:
             else:
                 del self._destroying[workspace_id]
 
-    async def _mark_terminating(self, workspace_id: str) -> None:
-        """Write ``phase = terminating``: one field-scoped write, so a concurrent writer's other fields (a rename, the probe's
-        ``last_probe_at``) survive. A row already ``terminating`` (a destroy of the same id in another process) is left as it is."""
-        await self._sp.get_storage(WorkspaceRow).patch_if(
-            workspace_id, {"phase": "terminating"}, where={"phase": ["pending", "running", "failed"]},
-        )
+    async def _mark_terminating(self, workspace_id: str) -> str | None:
+        """Write ``phase = terminating`` and return the phase it replaced, or ``None`` when the row was already ``terminating`` (a destroy
+        of the same id in another process: its mark is left as it is, and this destroy puts nothing back).
+
+        One field-scoped write fenced on the phase just read, so a concurrent writer's other fields (a rename, the probe's ``last_probe_at``)
+        survive and the phase a failed destroy may put back is the one the mark replaced, not the one :meth:`destroy` read before its rank
+        scan (the probe may have failed the workspace in between; round 2 of #917, item 8). A phase that moved between the read and the
+        write is read again; one that keeps moving (only the probe moves it, every ~30 s) is marked whatever it is after a few tries.
+        """
+        storage = self._sp.get_storage(WorkspaceRow)
+        for _ in range(_MARK_TRIES):
+            current = await self.get_workspace_row(workspace_id)
+            if current.phase == "terminating":
+                return None
+            written = await storage.patch_if(
+                workspace_id, {"phase": "terminating"}, where={"phase": [raw_generation(current, "phase")]},
+            )
+            if written is not None:
+                return current.phase
+        written = await storage.patch_if(workspace_id, {"phase": "terminating"}, where={"phase": ["pending", "running", "failed"]})
+        return current.phase if written is not None else None
 
     async def _after_a_failed_destroy(
-        self, workspace_id: str, exc: BaseException, *, teardown_started: bool, previous_phase: str,
+        self, workspace_id: str, exc: BaseException, *, teardown_started: bool, marked_from: str | None,
     ) -> None:
         """Leave a phase that tells the truth after a destroy failed (or was cancelled) past its ``terminating`` mark.
 
@@ -535,7 +553,8 @@ class WorkspaceRegistry:
         storage = self._sp.get_storage(WorkspaceRow)
         try:
             if not teardown_started:
-                await storage.patch_if(workspace_id, {"phase": previous_phase}, where={"phase": ["terminating"]})
+                if marked_from is not None:
+                    await storage.patch_if(workspace_id, {"phase": marked_from}, where={"phase": ["terminating"]})
                 return
             cause = " ".join(str(exc).split()) or type(exc).__name__
             reason = f"the delete did not finish ({type(exc).__name__}: {cause[:300]}); the runtime may be partly torn down: delete it again"
