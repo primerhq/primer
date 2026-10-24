@@ -121,6 +121,26 @@ A `Subscription` row:
   `parallelism` says) until the session is resumed, and `skip` does
   not skip it.
 - `enabled` - bool.
+- `reach` - server-set, read-only: the one workspace this subscription
+  may start or feed a session in. It is the workspace of the session
+  that last saved the row (created or updated it) when that session was
+  outside the default workspace (prime); `null` (every workspace) when
+  it was saved from prime, by a person, over MCP, or before reach was
+  recorded.
+
+From a session outside the default workspace (prime),
+`trigger::create_subscription`, `trigger::update_subscription` and
+`system::create_channel_binding` accept only a config that names your
+own workspace (`agent_fresh_session`, `graph_fresh_session`) or a
+session in it (`session_append`). Any other target, and a target that
+does not exist, answers `type=not-found` in the words of a target that
+does not exist (`Workspace '<id>' does not exist`, or
+`Session '<id>' does not exist in this workspace`), and nothing is
+stored. From prime, and with no calling session, every workspace is
+reachable. Every fire checks the recorded `reach` again: a target
+outside it is refused with `error_code` `target_out_of_reach` (a failed
+delivery, shown in the subscription's `last_fire_error` and a
+`trigger.delivery_failed` event), and no session is started or fed.
 
 ### The `channel` trigger kind
 
@@ -151,7 +171,9 @@ The fire pipeline:
    timestamp).
 4. Every enabled subscription gets dispatched in parallel. Each
    subscription renders its own `payload_template` against the fire
-   context, then runs its per-kind dispatcher:
+   context, then runs its per-kind dispatcher. Every dispatcher first
+   refuses a target outside the subscription's recorded `reach`
+   (`target_out_of_reach`):
    - `session_append` - appends the payload to an existing session as
      a steer. The dispatch loop picks it up at the next turn.
    - `agent_fresh_session` - creates a new session for the agent in

@@ -236,8 +236,15 @@ these tools that names a workspace reaches only your own workspace:
 workspace (prime included) answers `type=not-found` exactly as a
 workspace that does not exist, and `list_workspaces` lists only your
 own workspace. A session in prime, and a call with no calling session
-(MCP), reach every workspace. A session outside prime may still call
-`create_workspace`, but cannot reach the new workspace afterwards.
+(MCP), reach every workspace. A session outside prime cannot call
+`create_workspace` at all: it answers `type=forbidden` (create
+workspaces from a session in prime or from the console). The same reach
+holds outside this toolset for `system::set_reply_binding`,
+`system::clear_reply_binding`, `system::create_channel_binding` and the
+trigger subscription tools (see
+[triggers-and-subscriptions](triggers-and-subscriptions.md)). A graph
+session's tools reach what its workspace reaches, with or without a
+holder slot.
 
 ### Workspace lifecycle
 
@@ -264,7 +271,10 @@ own workspace. A session in prime, and a call with no calling session
   runtime's own token. Either mistake answers
   `type=validation-error` naming the variable (never its value), as
   does a template whose own `env` or CPU or memory breaks the same
-  rules. Returns the stored row (the REST route answers 201).
+  rules. Returns the stored row (the REST route answers 201). From a
+  session outside the default workspace (prime) it is refused
+  (`type=forbidden`) before anything is looked up, so the answer
+  confirms neither the template nor the id.
 - `workspaces::get_workspace` - fetch by id.
 - `workspaces::list_workspaces` - paginated.
 - `workspaces::delete_workspace` - destroys the workspace: its
@@ -273,7 +283,13 @@ own workspace. A session in prime, and a call with no calling session
   requested (the REST route answers 204). The default workspace
   (prime) cannot be deleted: the tool returns `type=forbidden` and the
   REST route answers 403 with `extensions.error` `reserved_workspace`;
-  nothing is torn down and its sessions keep running. The
+  nothing is torn down and its sessions keep running. Deleting a
+  workspace ends every open session in it, so it follows the rank rule
+  of `cancel_workspace_session` for each of them: while one runs at a
+  higher rank than you (an admin's session, when you are a user), the
+  tool answers `type=forbidden` (from a session, in the words of a
+  cancel refused from a session) and the REST route 403
+  `forbidden_rank`, and nothing is torn down. The
   `list_workspaces` and `get_workspace` rows, like
   `GET /v1/workspaces` and `GET /v1/workspaces/{id}`, carry
   `is_default: true` on that one workspace.
