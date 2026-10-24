@@ -90,7 +90,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceNotImplementedError
+from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceNotImplementedError, WorkspaceRefusedError
 from primer.model.workspace_session import (
     SessionBinding,
     SessionState,
@@ -1687,6 +1687,15 @@ def build_workspaces_toolset(
             # A Kubernetes provider with variant=agent_sandbox: no backend builds it. Refused by materialise, the point REST passes too, in the
             # words REST answers with its 501 (ticket 01a16d72 ruling 1); nothing was built.
             return _err_from_primer(exc, error_type="not-implemented")
+        except WorkspaceRefusedError as exc:
+            # A local provider this deployment refuses (a ConflictError): unchanged, so the conflict branch below is the id's alone.
+            return _err_from_primer(exc, error_type="backend-error")
+        except ConflictError as exc:
+            # Another create of this id got there first, past the check above (round 2 of #917): its workspace is left alone.
+            return _err_from_primer(exc, error_type="conflict")
+        except NotFoundError as exc:
+            # The template's provider is gone: REST's 404, in its words (round 2 of #917).
+            return _err_from_primer(exc, error_type="not-found")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="backend-error")
         return _ok(row)

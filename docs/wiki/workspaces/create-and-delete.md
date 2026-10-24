@@ -83,7 +83,7 @@ Reference: [`workspaces__delete_workspace`](reference/tools/workspaces/delete_wo
 ## Gotchas
 - `create_workspace` from a session outside prime is always `forbidden`. Ask the user, or prime's operator, to create the workspace.
 - Never find prime by its name: any workspace may be called `prime`. Look for `is_default: true`.
-- A template id that does not exist is a `not-found`; an id already taken is a `conflict`.
+- A template id that does not exist is a `not-found`, and so is a template whose provider is gone; an id already taken is a `conflict`, also when two creates of one id race.
 - A template on a Kubernetes provider whose `variant` is `agent_sandbox` is refused with `not-implemented` (REST answers 501 in the same words), and nothing is created. No backend builds that variant yet: use a provider whose `variant` is `system`.
 - A Docker template's image must contain the primer workspace runtime. If the runtime does not answer within 30 seconds, the create fails with `backend-error`, the message names the image, and nothing is left behind.
 - A delete refused with `forbidden` tore nothing down: the workspace and its sessions are as they were.
