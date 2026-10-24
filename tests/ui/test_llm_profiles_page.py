@@ -178,7 +178,7 @@ def test_a_card_never_reads_the_retired_reasoning_fact(ctx) -> None:
 
 def test_list_annotates_aggregates_and_keeps_the_response(ctx) -> None:
     items = list_items(ctx, [A, B, AGG])
-    assert js(ctx, "LIST_CALLS") == [["GET", "/model_profiles?limit=200"]]
+    assert js(ctx, "LIST_CALLS") == [["GET", "/model_profiles?limit=200&offset=0"]]
     assert js(ctx, "LIST_RESULT.total") == 3
     assert [r.get("_window", "absent") for r in items] == ["absent", "absent", 200000], "only the aggregate is annotated"
     assert items[:2] == [A, B]

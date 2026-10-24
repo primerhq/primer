@@ -121,7 +121,7 @@ def test_the_host_fetches_the_providers_and_hosts_the_dialog_or_the_way_out() ->
     host = re.search(r"function NV_ChannelCreateHost\([\s\S]*?\n\}\n", PLAT)
     assert host, "the page needs a host for the channel dialog"
     text = host.group(0)
-    assert "/channel_providers?limit=200" in text, "the dialog needs the provider list, which the host has to fetch"
+    assert 'PR_fetchAllPages("/channel_providers"' in text, "the dialog needs the provider list (every page), which the host has to fetch"
     assert "NV_channelCreateState(" in text
     assert "window.NewChannelModal" in text
     assert re.search(r"pushToast=\{window\.primerApi\.toastPush\}", text)

@@ -59,4 +59,4 @@ def test_the_page_refetches_its_list_through_the_tested_decision() -> None:
         page,
     )
     assert effect, "the effect must refetch on the open -> closed transition and then remember the new state"
-    assert page.index("var res = window.primerApi.useResource(") < effect.start(), "the effect uses the list resource, which is declared first"
+    assert page.index("var res = PR_usePagedResource(") < effect.start(), "the effect uses the list resource, which is declared first"

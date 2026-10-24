@@ -1,4 +1,5 @@
-/* global React, SH_api, NV_useConsole, NV_identity, NV_GRAPH_GLYPH, PK_PageHeader, PK_CardGrid, PK_Card, PK_usePagedFilter */
+/* global React, SH_api, NV_useConsole, NV_identity, NV_GRAPH_GLYPH, PK_PageHeader, PK_CardGrid, PK_Card, PK_usePagedFilter, PR_fetchAllPages,
+   PR_usePagedResource, PR_PagedNote */
 // The Platform view (wiring plan P4 T10): grouped left nav + one
 // config-driven card page per entity, ported from the prototype's
 // PLATFORM region. Every generic page is drawn by the platform kit
@@ -384,7 +385,7 @@ var NV_PLAT_PAGES = {
     // members (MP_withWindows, model-profiles.jsx): the server works that
     // minimum out only when it resolves the profile, and serves it on no route.
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/model_profiles?limit=200", null, { signal: signal })
+      return PR_fetchAllPages("/model_profiles", { signal: signal, apiFetch: apiFetch })
         .then(window.MP_withWindows);
     },
     // The card is MP_profileCard's (model-profiles.jsx, design 7.1): an
@@ -406,7 +407,7 @@ var NV_PLAT_PAGES = {
   agents: {
     title: "Agents", noun: ["agent", "agents"], createLabel: "+ Agent",
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/agents?limit=200", null, { signal: signal });
+      return PR_fetchAllPages("/agents", { signal: signal, apiFetch: apiFetch });
     },
     card: function (row, con) {
       var ident = NV_identity({ kind: "agent", agent_id: row.id });
@@ -429,7 +430,7 @@ var NV_PLAT_PAGES = {
   graphs: {
     title: "Graphs", noun: ["graph", "graphs"], createLabel: "+ Graph",
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/graphs?limit=200", null, { signal: signal });
+      return PR_fetchAllPages("/graphs", { signal: signal, apiFetch: apiFetch });
     },
     card: function (row, con) {
       return {
@@ -512,7 +513,7 @@ var NV_PLAT_PAGES = {
   collections: {
     title: "Collections", noun: ["collection", "collections"], createLabel: "+ Collection",
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/collections?limit=200", null, { signal: signal });
+      return PR_fetchAllPages("/collections", { signal: signal, apiFetch: apiFetch });
     },
     card: function (row, con) {
       return {
@@ -535,7 +536,7 @@ var NV_PLAT_PAGES = {
   triggers: {
     title: "Triggers", noun: ["trigger", "triggers"], createLabel: "+ Trigger",
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/triggers?limit=200", null, { signal: signal });
+      return PR_fetchAllPages("/triggers", { signal: signal, apiFetch: apiFetch });
     },
     card: function (row, con) {
       return {
@@ -556,7 +557,7 @@ var NV_PLAT_PAGES = {
     title: "Channels", createLabel: "+ Channel",
     noun: ["channel", "channels"],
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/channels?limit=200", null, { signal: signal });
+      return PR_fetchAllPages("/channels", { signal: signal, apiFetch: apiFetch });
     },
     card: function (row, con) {
       return {
@@ -578,7 +579,7 @@ var NV_PLAT_PAGES = {
   harnesses: {
     title: "Harnesses", noun: ["harness", "harnesses"], createLabel: "+ Harness",
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/harnesses?limit=200", null, { signal: signal });
+      return PR_fetchAllPages("/harnesses", { signal: signal, apiFetch: apiFetch });
     },
     card: function (row, con) {
       return {
@@ -602,7 +603,7 @@ var NV_PLAT_PAGES = {
   services: {
     title: "Services", noun: ["service", "services"], createLabel: "+ Service",
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/services?limit=200", null, { signal: signal });
+      return PR_fetchAllPages("/services", { signal: signal, apiFetch: apiFetch });
     },
     card: function (row, con) {
       return {
@@ -623,8 +624,7 @@ var NV_PLAT_PAGES = {
   approvals: {
     title: "Approval policies", noun: ["approval policy", "approval policies"], createLabel: "+ Policy",
     list: function (apiFetch, signal) {
-      return apiFetch("GET", "/tool_approval_policies?limit=200", null,
-        { signal: signal });
+      return PR_fetchAllPages("/tool_approval_policies", { signal: signal, apiFetch: apiFetch });
     },
     card: function (row, con) {
       return {
@@ -928,10 +928,7 @@ function NV_CollectionCreateHost(props) {
 function NV_ChannelCreateHost(props) {
   var providers = window.primerApi.useResource(
     "nv-plat:channel-providers",
-    function (signal) {
-      return window.primerApi.apiFetch(
-        "GET", "/channel_providers?limit=200", null, { signal: signal });
-    },
+    function (signal) { return PR_fetchAllPages("/channel_providers", { signal: signal }); },
     { pollMs: 0 }
   );
   var state = NV_channelCreateState(providers);
@@ -1037,10 +1034,7 @@ function NV_PolicyCreateHost(props) {
 function NV_ProfileModalHost(props) {
   var providers = window.primerApi.useResource(
     "nv-plat:llm-providers",
-    function (signal) {
-      return window.primerApi.apiFetch(
-        "GET", "/llm_providers?limit=200", null, { signal: signal });
-    },
+    function (signal) { return PR_fetchAllPages("/llm_providers", { signal: signal }); },
     { pollMs: 0 }
   );
   if (typeof window.MP_ProfileModal !== "function") return null;
@@ -1373,7 +1367,9 @@ function NV_PlatListPage(props) {
   var flightState = React.useState(0);
   var inFlight = flightState[0];
   var setInFlight = flightState[1];
-  var res = window.primerApi.useResource(
+  // Every page of the list (page.list reads them all with PR_fetchAllPages), polled every NV_PLAT_POLL_MS per page read (PR_usePagedResource): a list
+  // of three pages is read every 45 s, one request per 15 s on average, as the one page it replaced.
+  var res = PR_usePagedResource(
     listKey,
     function (signal) {
       if (!page.refresh) return page.list(apiFetch, signal);
@@ -1471,6 +1467,7 @@ function NV_PlatListPage(props) {
             {res.error.detail || res.error.message}
           </div>
         ) : null}
+        <PR_PagedNote list={res.data} noun={page.noun[1]} testid="nv-plat-note" />
         {!paged.visible.length && !res.loading && !res.error ? (
           <div className="nv-plat-empty" data-testid="nv-plat-empty">
             <div>
