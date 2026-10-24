@@ -32,6 +32,16 @@ class _Sessions:
         self.row = row
         self.updates += 1
 
+    async def patch_if(self, sid, patch=None, *, where, set_paths=None, conn=None):
+        # The cursor is one guarded field patch now (audit G7-03, review M5); the reference semantics.
+        from tests.storage._patch_reference import patch_model
+
+        updated = patch_model(self.row, patch, where=where, set_paths=set_paths)
+        if updated is not None:
+            self.row = updated
+            self.updates += 1
+        return updated
+
 
 def _row(**kw) -> WorkspaceSession:
     base = {

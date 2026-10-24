@@ -345,20 +345,29 @@ async def pause_session(
     # PAUSED write is not clobbered (and does not clobber) a racing
     # transition. See primer.session.mutation_lock / T0432.
     async with session_lifecycle_lock().acquire(session_id):
-        s = await sessions.get(session_id)
-        if s is None or s.workspace_id != workspace_id:
-            raise NotFoundError(
-                f"Session {session_id!r} does not exist on workspace "
-                f"{workspace_id!r}"
+        # ONE field-scoped write fenced on the status it decided from, never a whole row read earlier: the lock is this process's alone, and a
+        # wake on another process may have reserved a seq or armed a turn since the read (audit G7-03, review M5). A refused fence is decided
+        # again on a fresh read.
+        for _attempt in range(2):
+            s = await sessions.get(session_id)
+            if s is None or s.workspace_id != workspace_id:
+                raise NotFoundError(
+                    f"Session {session_id!r} does not exist on workspace "
+                    f"{workspace_id!r}"
+                )
+            if s.status == SessionStatus.ENDED:
+                raise ConflictError(f"Session {session_id!r} has ended")
+            patch = (
+                {"status": SessionStatus.PAUSED}
+                if s.status in {SessionStatus.WAITING, SessionStatus.CREATED}
+                else {"pause_requested": True}
             )
-        if s.status == SessionStatus.ENDED:
-            raise ConflictError(f"Session {session_id!r} has ended")
-        if s.status in {SessionStatus.WAITING, SessionStatus.CREATED}:
-            s.status = SessionStatus.PAUSED
-            await sessions.update(s)
-            return
-        s.pause_requested = True
-        await sessions.update(s)
+            written = await sessions.patch_if(
+                session_id, to_jsonable_python(patch), where={"status": [raw_generation(s, "status")]},
+            )
+            if written is not None:
+                return
+        raise ConflictError(f"Session {session_id!r} changed status twice while pausing; try again")
 
 
 @nested_session_router.post(
