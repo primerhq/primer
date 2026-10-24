@@ -30,10 +30,10 @@ from primer.common.user_regex import UserRegexError
 from primer.events.filters import check_field_regex, validate_filter_expr
 from primer.events.redaction import redact_payload
 from primer.events.visibility import (
-    KEEP_INPUT_KEY,
     SCOPE_PATHS,
     input_glob,
     needs_scope,
+    payload_without_input,
     reads_input,
     user_safe_glob,
     user_safe_kinds,
@@ -111,10 +111,10 @@ def _non_admin_refusal(ctx: ToolContext, args: _WaitForEventArgs) -> str | None:
     * a scope on a canvas wait: a ``canvas.*`` event carries what a user entered (a value, Html emit data, who did it), so a wait whose
       kinds can match one must name the run's OWN workspace or session with an ``eq`` matcher on ``workspace_id`` or ``session_id``
       (audit G8-08); without it, or with another workspace's or session's id, a user-role run would wake on a canvas that is not its own;
-    * no matcher on the input of a canvas event: the event that wakes such a wait reaches the run without its ``value`` and ``data``
+    * no matcher on the input of a canvas event: the event that wakes a wait reaches the run without its ``value`` and ``data``
       (``primer.events.visibility.INPUT_KEYS``; the default workspace is shared, so a workspace-scoped wait can wake on another user's
       click), and an ``eq`` or ``prefix`` matcher on them (or on the whole payload) would tell the run what was entered by whether it
-      wakes (``reads_input``).
+      wakes (``reads_input``). An admin's matchers are not limited.
     """
     if _role_allows(run_principal(ctx), "admin"):
         return None
@@ -217,9 +217,6 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
             resume_metadata={
                 "subscription_id": created.id,
                 "event_types": args.event_types,
-                # Whether the wake keeps what a user entered (a canvas.event's value and data): an admin's run only. The dispatcher reads it
-                # from the park and drops them before it publishes otherwise (primer.events.visibility; audit G8-08).
-                KEEP_INPUT_KEY: _role_allows(run_principal(ctx), "admin"),
             },
         )
 
@@ -235,9 +232,10 @@ def wait_for_event_resume(
 
     The dispatcher delivered the full event envelope as the bus
     payload, with stored secrets masked (``redact_payload``, the same
-    masking GET /v1/events applies) and, for a run that is not an
-    admin's, a canvas.event's ``value`` and ``data`` already dropped
-    (``keep_input``); synthetic YieldTimeout / YieldCancelled payloads surface
+    masking GET /v1/events applies) and a canvas.event's ``value`` and
+    ``data`` already removed, whoever waits (the input never leaves the
+    session it belongs to; ``primer.events.visibility``); synthetic
+    YieldTimeout / YieldCancelled payloads surface
     as {timed_out} / {cancelled}. The one-shot subscription is deleted
     by the dispatcher on delivery; a timed-out or cancelled park's
     subscription is garbage-collected by the dispatcher later, so the
@@ -256,13 +254,16 @@ def wait_for_event_resume(
             "cancelled": True,
             "cancel_reason": event_payload.reason,
         })
-    # The dispatcher already publishes a redacted envelope; mask again
-    # here so the agent's transcript never holds a stored secret even if
-    # a wake reaches this hook by another path (SEC-04).
+    # The dispatcher already publishes a redacted envelope without a
+    # canvas.event's input; mask and remove again here so the agent's
+    # transcript never holds a stored secret (SEC-04) or another session's
+    # input (audit G8-08) even if a wake reaches this hook by another path.
     if isinstance(event_payload, dict) and "payload" in event_payload:
         event_payload = {
             **event_payload,
-            "payload": redact_payload(event_payload["payload"]),
+            "payload": redact_payload(payload_without_input(
+                event_payload.get("event_type"), event_payload["payload"],
+            )),
         }
     return _ok({"event": event_payload})
 

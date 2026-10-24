@@ -186,8 +186,7 @@ async def test_no_match_parks_on_a_one_shot_subscription(provider, ctx, world):
     assert sub.filter == canvas_wait_filter("s1", ids=["ok"], kinds=[]) and y.resume_metadata["subscription_id"] == sub.id
     assert sub.sink == SessionWakeSink(event_key="canvaswait:s1:call-1", session_id="s1", one_shot=True)
     assert sub.managed_by == "system"
-    # keep_input: the wake keeps what the user entered, because the wait reads the calling session's own canvas (audit G8-08).
-    assert y.resume_metadata == {"subscription_id": sub.id, "ids": ["ok"], "kinds": [], "after_event_seq": 0, "keep_input": True}
+    assert y.resume_metadata == {"subscription_id": sub.id, "ids": ["ok"], "kinds": [], "after_event_seq": 0}
     store = world.sp.get_event_store()
     assert await store.get_cursor(sub.id) == await store.max_id(), "the cursor is pinned at the head of the log"
 
@@ -548,13 +547,15 @@ async def test_the_resume_returns_the_unredacted_stored_event_and_falls_back_whe
     await _event(world, "viz", "emit", name="submit", data=raw_data)
     await EventDispatcher(storage_provider=world.sp, event_bus=world.bus).drain_once()
     [(_, envelope)] = [(k, p) for k, p in world.bus.published if k == y.event_key]
-    assert envelope["payload"]["data"]["token"] != "tok-123", "the dispatcher redacted the bus envelope"
+    # The wake carries no input at all: the flip stamps it on the waiting row, a shared read (audit G8-08, rulings on #872).
+    assert "data" not in envelope["payload"] and "value" not in envelope["payload"], "the dispatcher removed the input from the wake"
+    assert "tok-123" not in json.dumps(envelope)
 
     result = await canvas_wait_resume(y.resume_metadata, envelope, resume_context(provider))
     body = json.loads(result.output)
-    assert body["events"][0]["data"] == raw_data
+    assert body["events"][0]["data"] == raw_data, "the resume restores the input from the session's own canvas"
 
-    # When the ring has dropped the event, fall back to the envelope payload.
+    # When the ring has dropped the event, fall back to the envelope payload: the event comes back without its input.
     canvas_row = await world.canvas("s1")
     await world.sp.get_storage(type(canvas_row)).update(canvas_row.model_copy(update={"events": []}))
     fallback = await canvas_wait_resume(y.resume_metadata, envelope, resume_context(provider))

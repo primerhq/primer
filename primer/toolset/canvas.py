@@ -53,7 +53,6 @@ from primer.canvas.wait import (
     canvas_wait_matches,
     consume_events,
 )
-from primer.events.visibility import KEEP_INPUT_KEY
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.event import EventSubscription, SessionWakeSink
 from primer.model.except_ import ConflictError, NotFoundError
@@ -442,9 +441,6 @@ def _make_canvas_wait(service: CanvasService, storage_provider: "StorageProvider
                 "ids": ids,
                 "kinds": kinds,
                 "after_event_seq": row.event_seq,
-                # The wake keeps what the user entered: the subscription is pinned to the calling session's own canvas, which the canvas
-                # tools exist to read (a wake from the event log drops it otherwise; primer.events.visibility, audit G8-08).
-                KEEP_INPUT_KEY: True,
             },
         )
 

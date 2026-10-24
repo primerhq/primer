@@ -7,25 +7,31 @@ this module, so the two cannot drift. Prefixes and exact names, checked against 
 non-admin sees, redaction (:mod:`primer.events.redaction`) bounds the values.
 
 The canvas events (``canvas.updated`` and ``canvas.event``, pivot P5) are visible like the session events: the canvas is part of every
-user's chat in the shared install, and what they carry (element ids, the rev, the user's own validated choice or click and who made it)
-is what the chat transcript already shows. Their values are bounded where they are recorded (``primer.canvas.service``) and masked by
-the same redaction as the rest. They are the first user-safe kinds that carry what a user ENTERED (a value, Html emit data), so a
-non-admin ``wait_for_event`` on them must also name the workspace or the session they are for (:func:`needs_scope`; audit G8-08).
+user's chat in the shared install. Their values are bounded where they are recorded (``primer.canvas.service``) and masked by the same
+redaction as the rest. ``canvas.event`` is the first user-safe kind that carries what a user ENTERED (a value, Html emit data), so a
+non-admin ``wait_for_event`` on it must also name the workspace or the session it is for (:func:`needs_scope`; audit G8-08).
 
-What a user entered never reaches a non-admin through the event log (audit G8-08, the lead's ruling D). Sessions and their transcripts
-are a shared read in this install by design (the user's G7-02 decision): every user may open every session, so the feed does not scope
-events to sessions. What it carried that nothing else does is the input of a canvas interaction, so a non-admin reader gets a
-``canvas.event`` without the payload keys of :data:`INPUT_KEYS` (``value`` and ``data``; absent, not masked), and an admin gets it whole.
-It is one rule with no ownership check: a non-admin's own session is stripped too (the run reads its own canvas through the canvas
-tools). The REST feed applies it per reader (:func:`without_input`); a session wake applies it before the event is published, unless
-the park asked to keep the input (:data:`KEEP_INPUT_KEY`), so neither the waiting row nor the tool result holds it; and a non-admin's
-canvas wait may not match on it (:func:`reads_input`), because whether the wait wakes would tell the run what was entered.
+The input never leaves the session it belongs to through the event log (audit G8-08, the lead's rulings on #872). Sessions and their
+transcripts are a shared read in this install by design (the user's G7-02 decision): every user may open every session, so the event log
+does not scope canvas events to sessions; it drops the input. :data:`INPUT_KEYS` names it: a ``canvas.event``'s ``value`` and ``data``
+(the Html emit ``name`` is chosen by the Html code, not typed by the user, and is kept). The keys are removed, not masked:
+
+* ``GET /v1/events`` removes them for every non-admin reader, whoever's session the event is from (:func:`without_input`). An admin reads
+  the full event there; it is the one door that serves another session's input.
+* Every session wake removes them, for every park (an admin's ``wait_for_event`` and ``canvas_wait`` included), BEFORE the dispatcher
+  publishes: the flip stamps the published envelope on the waiting row (``parked_state``, which ``GET /v1/sessions/{id}`` serves to any
+  user) and the resume makes it the run's tool result. ``canvas_wait``'s resume restores the input from the stored event on the calling
+  session's own canvas, so a session's own input reaches its own tool result (accepted: the transcript is the session's own); an event
+  the canvas ring evicted before the resume comes back without it, beside the canvas's current ``values``.
+* ``wait_for_event``'s resume hook removes them again (:func:`payload_without_input`), as defence in depth.
+
+And a non-admin canvas wait may not match on the input (:func:`reads_input`): whether the wait wakes would tell the run what was entered.
 """
 
 from __future__ import annotations
 
 from fnmatch import fnmatchcase
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from primer.model.event import Event
@@ -39,11 +45,8 @@ SCOPED_PREFIXES: tuple[str, ...] = ("canvas.",)
 #: The envelope fields a non-admin's ``eq`` matcher names to scope such a wait.
 SCOPE_PATHS: tuple[str, ...] = ("workspace_id", "session_id")
 #: The payload keys of an event type that hold what a user ENTERED: a Select's or an Html element's ``value``, an Html emit's ``data``.
-#: A non-admin reader never gets them (see the module docstring).
+#: They never leave the session they belong to through the event log, except to an admin reading ``GET /v1/events`` (module docstring).
 INPUT_KEYS: dict[str, frozenset[str]] = {"canvas.event": frozenset({"value", "data"})}
-#: The ``resume_metadata`` key a park sets to ``True`` to receive the input keys from a session wake: ``wait_for_event`` for an admin's
-#: run, ``canvas_wait`` (the calling session's own canvas). A park that does not set it gets the event without them (fail closed).
-KEEP_INPUT_KEY = "keep_input"
 
 # What makes an ``fnmatch`` glob more than a literal name (the dispatcher matches ``event_types`` with ``fnmatchcase``,
 # ``primer.events.filters.matches``; the REST route reads a glob's literal head the same way).
@@ -86,12 +89,19 @@ def user_safe_kinds() -> list[str]:
     return [f"{p}*" for p in USER_SAFE_PREFIXES] + sorted(USER_SAFE_TYPES)
 
 
+def payload_without_input(event_type: Any, payload: Any) -> Any:
+    """``payload`` without the keys of :data:`INPUT_KEYS` for ``event_type`` (removed, not masked); ``payload`` itself when it has none or
+    is not a dict (an envelope read back from a wake is not typed)."""
+    keys = INPUT_KEYS.get(event_type) if isinstance(event_type, str) else None
+    if not keys or not isinstance(payload, dict) or not keys & payload.keys():
+        return payload
+    return {k: v for k, v in payload.items() if k not in keys}
+
+
 def without_input(event: "Event") -> "Event":
     """``event`` without the payload keys of :data:`INPUT_KEYS` for its type (removed, not masked); ``event`` itself when it has none."""
-    keys = INPUT_KEYS.get(event.event_type)
-    if not keys or not keys & event.payload.keys():
-        return event
-    return event.model_copy(update={"payload": {k: v for k, v in event.payload.items() if k not in keys}})
+    payload = payload_without_input(event.event_type, event.payload)
+    return event if payload is event.payload else event.model_copy(update={"payload": payload})
 
 
 def input_glob(glob: str) -> bool:
@@ -116,13 +126,13 @@ def reads_input(path: str) -> bool:
 
 __all__ = [
     "INPUT_KEYS",
-    "KEEP_INPUT_KEY",
     "SCOPED_PREFIXES",
     "SCOPE_PATHS",
     "USER_SAFE_PREFIXES",
     "USER_SAFE_TYPES",
     "input_glob",
     "needs_scope",
+    "payload_without_input",
     "reads_input",
     "user_safe",
     "user_safe_glob",

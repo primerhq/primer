@@ -39,8 +39,9 @@ events_router = APIRouter(tags=["events"])
 # lifecycle, never entity CRUD) is ``user_safe``, checked against the
 # redacted stream, and a canvas.event reaches them without what the user
 # entered (``without_input``: its ``value`` and ``data``, whoever's session
-# it is; audit G8-08). Both live in ``primer.events.visibility`` because
-# the ``wait_for_event`` tool applies the same rules to a non-admin run.
+# it is; audit G8-08). Both live in ``primer.events.visibility``, which the
+# ``wait_for_event`` tool and the dispatcher's session wake read too (a
+# wake drops the input for every run, an admin's included).
 
 
 class EventListResponse(BaseModel):
@@ -97,7 +98,9 @@ async def list_events(
     if not is_admin:
         # Sessions are a shared read (any user may open any session), so the
         # feed does not scope events to sessions; it drops the INPUT of a
-        # canvas interaction, which nothing else serves (audit G8-08).
+        # canvas interaction, which never leaves its session (audit G8-08).
+        # An admin reads the full event: the one door to another session's
+        # input.
         items = [without_input(e) for e in items if user_safe(e.event_type)]
     # EVERY read is redacted, the admin's included: the gate is access
     # control, not an excuse to ship stored secrets to a browser.
