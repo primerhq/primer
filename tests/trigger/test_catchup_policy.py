@@ -115,3 +115,69 @@ async def test_a_worker_clock_a_little_behind_still_fires_the_tick_it_was_claime
     )
 
     assert await _claim(fake_storage_provider, monkeypatch, now=tick(15) - timedelta(seconds=2)) == [tick(15)]
+
+
+# ---------------------------------------------------------------------------
+# A claim delivered again after a lost release fires only what it did not fire (review of #915)
+# ---------------------------------------------------------------------------
+
+
+async def _run_for_real(sp, monkeypatch, *, now: datetime) -> list[str]:
+    """One claim through the real ``fire_trigger`` whose release is LOST (the stub records nothing, so ``next_fire_at`` does not move); the
+    ``scheduled_for`` of each delivery it made."""
+    from primer.model.trigger import SessionAppendSubConfig, Subscription
+    from primer.trigger.subscribers import SubscriptionDispatchResult
+
+    delivered: list[str] = []
+
+    class _Records:
+        async def dispatch(self, sub, *, rendered_payload, **_kw):
+            delivered.append(rendered_payload)
+            return SubscriptionDispatchResult(ok=True, artefact_id="sess-1")
+
+    monkeypatch.setattr(dispatch_mod, "get_dispatcher", lambda kind: _Records())
+    monkeypatch.setattr("primer.worker.engine_handlers._now", lambda: now, raising=False)
+    if await sp.get_storage(Subscription).get("sb-1") is None:
+        await sp.get_storage(Subscription).create(Subscription(
+            id="sb-1", trigger_id="tr-cron", config=SessionAppendSubConfig(session_id="sess-1"), payload_template="{{ scheduled_for }}",
+            created_at=tick(1),
+        ))
+
+    async def _lost(lease, outcome) -> None:
+        return None
+
+    pool = SimpleNamespace(_storage=sp, _engine=None, _scheduler=None, _workspace_registry=None, _event_bus=None, _release_lease=_lost)
+    await run_engine_trigger(pool, SimpleNamespace(entity_id="tr-cron"))  # type: ignore[arg-type]
+    return delivered
+
+
+@pytest.mark.parametrize(("catchup", "fires"), [
+    pytest.param("none", [15], id="none"),
+    pytest.param("one", [14, 15], id="one"),
+    pytest.param("all", [11, 12, 13, 14, 15], id="all"),
+])
+async def test_a_claim_delivered_again_after_a_lost_release_fires_nothing_again(fake_storage_provider, monkeypatch, catchup, fires):
+    """The worker fired every tick and died before its release: the claim comes back with ``next_fire_at`` unchanged and plans the same ticks.
+    ``last_fired_id`` names the due tick, so none of them fires again (the catch-ups used to: only the due tick was deduplicated)."""
+    await fake_storage_provider.get_storage(Trigger).create(
+        _scheduled(catchup, next_fire_at=tick(11), last_fired_at=tick(10) + timedelta(seconds=2)),
+    )
+
+    first = await _run_for_real(fake_storage_provider, monkeypatch, now=NOW)
+    again = await _run_for_real(fake_storage_provider, monkeypatch, now=NOW + timedelta(seconds=30))
+
+    assert first == [tick(day).isoformat() for day in fires]
+    assert again == []
+
+
+async def test_a_claim_delivered_again_after_dying_part_way_fires_the_ticks_it_had_not_reached(fake_storage_provider, monkeypatch):
+    """The worker fired the 11th and 12th of an ``all`` catch-up and died: the claim comes back and fires the 13th, 14th and 15th only."""
+    from primer.trigger.fire_id import make_fire_id
+
+    row = _scheduled("all", next_fire_at=tick(11), last_fired_at=tick(12))
+    row.last_fired_id = make_fire_id("tr-cron", tick(12))
+    await fake_storage_provider.get_storage(Trigger).create(row)
+
+    again = await _run_for_real(fake_storage_provider, monkeypatch, now=NOW)
+
+    assert again == [tick(13).isoformat(), tick(14).isoformat(), tick(15).isoformat()]
