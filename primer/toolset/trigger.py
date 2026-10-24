@@ -679,13 +679,24 @@ def _make_fire_now_handler(
     storage_provider: "StorageProvider",
     claim_engine: Any,
     event_bus: Any,
+    scheduler: Any = None,
+    workspace_registry: Any = None,
 ) -> ToolHandler:
     async def _handler(arguments: dict[str, Any], *, ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _IdArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_validation(exc)
-        deps = _make_deps(storage_provider, claim_engine, event_bus)
+        # The one call here that DISPATCHES: it fires through service.fire_now with what POST /v1/triggers/{id}/fire_now passes (the claim engine,
+        # the event bus, the scheduler and the workspace registry), so a fresh-session or session_append subscription is delivered from the tool
+        # as from the route. Without the registry every one of them answered dispatch_failed (ticket 01a16ddb, ruling 1).
+        deps = ServiceDeps(
+            storage_provider=storage_provider,
+            claim_engine=claim_engine,
+            event_bus=event_bus,
+            scheduler=scheduler,
+            workspace_registry=workspace_registry,
+        )
         try:
             result = await fire_now(trigger_id=args.id, reach=await caller_reach(storage_provider, ctx), deps=deps)
         except TriggerNotFound as exc:
@@ -1049,9 +1060,16 @@ def build_trigger_toolset_provider(
     storage_provider: "StorageProvider",
     claim_engine: Any = None,
     event_bus: Any = None,
+    scheduler: Any = None,
+    workspace_registry: Any = None,
     toolset_id: str = TRIGGER_TOOLSET_ID,
 ) -> InternalToolsetProvider:
-    """Construct the ``trigger`` internal toolset."""
+    """Construct the ``trigger`` internal toolset.
+
+    ``scheduler`` and ``workspace_registry`` are used only by ``fire_now``, which dispatches: the fresh-session and ``session_append``
+    dispatchers need the registry to reach a session's on-disk slot. The lifespan passes what the REST ``fire_now`` route reads from
+    ``app.state``; without them those subscriptions answer ``dispatch_failed`` from the tool.
+    """
     registry: dict[str, tuple[Tool, ToolHandler]] = {
         "list": (
             TOOL_LIST,
@@ -1075,7 +1093,7 @@ def build_trigger_toolset_provider(
         ),
         "fire_now": (
             TOOL_FIRE_NOW,
-            _make_fire_now_handler(storage_provider, claim_engine, event_bus),
+            _make_fire_now_handler(storage_provider, claim_engine, event_bus, scheduler, workspace_registry),
         ),
         "list_subscriptions": (
             TOOL_LIST_SUBS,
