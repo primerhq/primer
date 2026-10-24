@@ -26,7 +26,7 @@ from primer.api.routers._crud import make_crud_router
 from primer.api.errors import common_responses
 from primer.events.filters import validate_filter
 from primer.events.redaction import redact_event
-from primer.events.visibility import user_safe
+from primer.events.visibility import user_safe, without_input
 from primer.model.event import Event, EventSubscription
 from primer.model.except_ import (
     NotFoundError,
@@ -37,8 +37,10 @@ events_router = APIRouter(tags=["events"])
 
 # What a non-admin may see of the log (their workspace's operational
 # lifecycle, never entity CRUD) is ``user_safe``, checked against the
-# redacted stream. It lives in ``primer.events.visibility`` because the
-# ``wait_for_event`` tool applies the same rule to a non-admin run.
+# redacted stream, and a canvas.event reaches them without what the user
+# entered (``without_input``: its ``value`` and ``data``, whoever's session
+# it is; audit G8-08). Both live in ``primer.events.visibility`` because
+# the ``wait_for_event`` tool applies the same rules to a non-admin run.
 
 
 class EventListResponse(BaseModel):
@@ -93,7 +95,10 @@ async def list_events(
     if event_type:
         items = [e for e in items if fnmatchcase(e.event_type, event_type)]
     if not is_admin:
-        items = [e for e in items if user_safe(e.event_type)]
+        # Sessions are a shared read (any user may open any session), so the
+        # feed does not scope events to sessions; it drops the INPUT of a
+        # canvas interaction, which nothing else serves (audit G8-08).
+        items = [without_input(e) for e in items if user_safe(e.event_type)]
     # EVERY read is redacted, the admin's included: the gate is access
     # control, not an excuse to ship stored secrets to a browser.
     items = [redact_event(e) for e in items]
