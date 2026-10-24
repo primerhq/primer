@@ -8,7 +8,8 @@ Every consumer keeps calling ``get_default()`` and gets one object that routes b
 * an id with no record is a database artifact, served by a DIRECT ``DbArtifactStorage`` and never by a registry lookup.
 
 The world is a real SQLite storage (the records are real rows), an in-memory backend registered as ``mem-1`` (like the filesystem and S3 stores it
-needs a record) and a database-kind provider registered as ``db-2`` (it needs none).
+needs a record) and a database-kind provider registered as ``db-2`` (it needs none). Both have provider rows: a put reads the row again after it
+writes the record (the G5 audit, G5-03).
 """
 
 from __future__ import annotations
@@ -25,8 +26,8 @@ from primer.artifact.db import DbArtifactStorage
 from primer.artifact.routing import RoutingArtifactStorage, count_artifacts_held
 from primer.int.artifact_storage import ArtifactStorage
 from primer.model.artifact import Artifact, ArtifactLocation
-from primer.model.except_ import NotFoundError
-from primer.model.provider import SqliteConfig
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.provider import ArtifactStorageProvider, SqliteConfig
 from primer.model.providers.artifact import (
     ACTIVE_ARTIFACT_STORAGE_CONFIG_ID,
     DEFAULT_ARTIFACT_PROVIDER_ID,
@@ -59,6 +60,9 @@ async def world(tmp_path: Path):
     await sp.initialize()
     mem = MemStore()
     stores: dict[str, ArtifactStorage] = {"mem-1": mem, "db-2": DbArtifactStorage(sp)}
+    providers = sp.get_storage(ArtifactStorageProvider)
+    await providers.create(ArtifactStorageProvider(id="mem-1", provider="filesystem", config={"root": str(tmp_path / "mem")}))
+    await providers.create(ArtifactStorageProvider(id="db-2", provider="db"))
     asked: list[str] = []
 
     async def resolve(provider_id: str) -> ArtifactStorage:
@@ -73,6 +77,7 @@ async def world(tmp_path: Path):
         fallback=DbArtifactStorage(sp),
         locations=sp.get_storage(ArtifactLocation),
         active_config=sp.get_storage(ActiveArtifactStorageConfig),
+        providers=providers,
     )
     yield World(sp=sp, mem=mem, routing=routing, asked=asked)
     await sp.aclose()
@@ -262,6 +267,57 @@ async def test_a_failed_record_removal_is_logged_and_the_bytes_are_still_removed
 
     assert "records table down" in caplog.text, "the record cleanup failure is logged"
     assert world.mem.blobs == {}, "the bytes are removed whatever the record cleanup did"
+
+
+class _GatedStore(MemStore):
+    """A store whose put writes the bytes and then waits on ``gate``: an upload still in flight."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+        self.entered = asyncio.Event()
+
+    async def put(self, *, data: bytes, mime_type: str, filename: str | None = None) -> str:
+        artifact_id = await super().put(data=data, mime_type=mime_type, filename=filename)
+        self.entered.set()
+        await self.gate.wait()
+        return artifact_id
+
+
+async def test_a_put_in_flight_when_its_provider_is_deleted_records_nothing_and_fails(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An upload is in flight to ``mem-1``; an admin switches the active store back to the database and deletes ``mem-1``: the delete check passes
+    (not active, 0 records). The put used to record its artifact on the deleted provider and hand back an id that reads as missing, with the bytes
+    orphaned on the backend (the G5 audit, G5-03). It reads the provider row again after the record, finds it gone, removes the record and the
+    bytes, and fails with a 409 that says to try again."""
+    gated = _GatedStore()
+    real_resolve = world.routing._resolve                                      # noqa: SLF001
+
+    async def resolve(provider_id: str) -> ArtifactStorage:
+        return gated if provider_id == "mem-1" else await real_resolve(provider_id)
+
+    monkeypatch.setattr(world.routing, "_resolve", resolve)
+    await _activate(world.sp, "mem-1")
+    put = asyncio.create_task(_put(world, b"user upload"))
+    await asyncio.wait_for(gated.entered.wait(), 5)
+
+    await _activate(world.sp, DEFAULT_ARTIFACT_PROVIDER_ID)
+    await check_artifact_provider_delete(world.sp, "mem-1")                  # every guard passes: not active, 0 records
+    await world.sp.get_storage(ArtifactStorageProvider).delete("mem-1")
+    gated.gate.set()
+
+    with pytest.raises(ConflictError, match="'mem-1' was deleted while this upload was being written"):
+        await asyncio.wait_for(put, 5)
+    assert (await world.locations.list(OffsetPage(offset=0, length=10))).items == [], "no record names the deleted provider"
+    assert gated.blobs == {}, "the bytes are not left orphaned on the deleted provider's backend"
+
+    again = await _put(world, b"user upload")                                  # the retry goes to the store that is active now
+    assert await world.artifacts.get(again) is not None
+
+
+async def test_a_put_whose_provider_still_exists_after_the_record_returns_its_id(world: World) -> None:
+    await _activate(world.sp, "mem-1")
+    aid = await _put(world)
+    assert (await world.locations.get(aid)).provider_id == "mem-1" and aid in world.mem.blobs
 
 
 # ---- get ------------------------------------------------------------------------------------------------------------------------------------------
