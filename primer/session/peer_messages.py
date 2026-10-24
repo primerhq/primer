@@ -56,6 +56,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
     session_state_predicate,
 )
+from primer.session.pending_messages import has_queued_messages
 from primer.session.reset import SessionResetDeps, restart_session
 from primer.session.steer_delivery import (
     DELIVERED_MISSING,
@@ -142,6 +143,7 @@ NOTE_QUEUED_EVENT = (
     "Queued: the session is waiting for an event. If it waits for session.messaged, that wait ends now; it reads your message when its turn ends."
 )
 NOTE_QUEUED_PAUSED = "Queued: the session is paused; it reads your message after it is resumed."
+NOTE_QUEUED_BEHIND = "Queued: older messages are waiting for the session; it reads yours after them, one turn each."
 NOTE_GRAPH = " This restarts the graph: your message is the input of its next run."
 NOTE_GRAPH_STORED_INPUT = (
     " This graph session runs on its stored graph_input, so its next run uses that input and your message is only recorded."
@@ -627,7 +629,12 @@ async def send_peer_message(
         graph_target = isinstance(target.binding, GraphSessionBinding)
         # A graph takes the message as its input, and a prefix would become part of it; the sender is on the record (``payload["peer"]``).
         body = text if graph_target else f"{peer_prefix(sender)}\n{text}"
-        is_steer = route_steer(target) == ROUTE_PENDING
+        # Older messages waiting in the target's queue make this one wait behind them (route_steer's ``queued``: first in, first out), as the
+        # delivery itself decides; the events and the note say so.
+        queued_behind = target.status not in (SessionStatus.ENDED, SessionStatus.PAUSED) and await has_queued_messages(
+            storage_provider, target.id,
+        )
+        is_steer = route_steer(target, queued=queued_behind) == ROUTE_PENDING
         target_state = target.session_state
         waiting_on = parked_on(target)
         paused = _is_paused(target)
@@ -721,6 +728,8 @@ async def send_peer_message(
         note = NOTE_QUEUED_GATE.format(parked_on=waiting_on)
     elif paused:
         note = NOTE_QUEUED_PAUSED
+    elif queued_behind and target.turn_status == "idle":
+        note = NOTE_QUEUED_BEHIND
     else:
         note = NOTE_QUEUED_BUSY
     if graph_target:
@@ -754,6 +763,7 @@ __all__ = [
     "PEER_RATE_WINDOW",
     "NOTE_GRAPH",
     "NOTE_GRAPH_STORED_INPUT",
+    "NOTE_QUEUED_BEHIND",
     "NOTE_QUEUED_BUSY",
     "NOTE_QUEUED_EVENT",
     "NOTE_QUEUED_GATE",

@@ -201,6 +201,27 @@ async def test_a_message_that_lands_while_an_older_one_is_queued_goes_behind_it(
         assert await _pending_texts(world) == ["newer person message"], "the newer message waits for the next turn boundary"
 
 
+async def test_a_peer_message_to_an_idle_session_with_older_messages_waiting_is_queued_behind_them_and_says_so():
+    """The sending agent is told what became of its message: queued behind the older ones (not "in a turn"), and the events say it was steered."""
+    from primer.session.peer_messages import NOTE_QUEUED_BEHIND
+
+    async with asyncio.timeout(BOUND_S):
+        world = make_world(with_bus=True)
+        await seed_session(world, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER,
+                           status=SessionStatus.RUNNING, turn_status="running", turn_no=1, created_at=T0)
+        row = await seed_session(world, sid="ses-b", turn_no=1, turn_status="idle", created_at=T0)
+        await store_pending_steer(storage_provider=world.sp, session=row, text="older", workspace_registry=world.registry, event_bus=world.bus)
+
+        result = await send_peer_message(sender_session_id="ses-a", sender_principal=USER, target_session_id="ses-b", text="newer",
+                                         **world.deliver_kwargs())
+
+        assert (result.delivery, result.note) == ("queued", NOTE_QUEUED_BEHIND)
+        assert _user_inputs(world) == []
+        assert await _pending_texts(world) == ["older", "[from session ses-a (agent planner)]\nnewer"]
+        steered = await world.sp.get_event_store().read_after(0, event_type_prefix="session.steered")
+        assert [e.payload["delivery"] for e in steered] == ["queued"]
+
+
 async def test_a_realize_that_finds_the_turn_already_armed_leaves_the_message_queued_where_it_is(monkeypatch):
     """Another wake armed the turn after the turn ended (a wake on another process, whose queue read came first): the realize must not write a
     second USER_INPUT for that turn. Its message stays at the head of the queue for the next boundary, the same row, not a copy."""

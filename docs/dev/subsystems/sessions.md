@@ -445,6 +445,7 @@ Status: the seam, the park write, the wake and the resume exist; the worker hand
 | ended, restartable | reopens (divider), then a new turn | `woken` | `session.messaged` |
 | ended, not restartable (`force_deleted`, a lost workspace that is not healed) | refused `conflict`, nothing stored | - | - |
 | turn armed or running | queued, realized at its next turn boundary | `queued` | `session.messaged`, `session.steered` |
+| idle, with older messages still queued | queued behind them (first in, first out), realized one per turn boundary, or by the session-messaging sweep; the note says so (`NOTE_QUEUED_BEHIND`) | `queued` | `session.messaged`, `session.steered` |
 | parked on `ask_user` or tool approval | queued; the park is untouched; never the answer | `queued` | `session.messaged`, `session.steered` |
 | parked on `wait_for_event` | queued; the event wakes a wait whose filter matches it | `queued` | `session.messaged`, `session.steered` |
 | paused (while running or while idle) | queued by the `wake_session` pause hold; stays paused | `queued` | `session.messaged` |
