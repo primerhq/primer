@@ -324,15 +324,22 @@ async def wait_completed_approving(
     their ``system`` and ``trigger`` twins, ``system__call_tool``; audit G6-1), so a journey whose scripted agent makes one of those writes parks on
     its gate before the write runs. A gate is approved through the respond route with its ``gate_id``; a respond that finds the gate already
     decided (404, or 409 for a gate replaced meanwhile) is not counted.
+
+    A gate is answered once: the poller keeps the gates it answered (``tool_call_id`` with ``gate_id``: the provider id alone repeats across
+    rounds, a gate id does not) and skips one served again (ticket 01a16ca6: the pending read served a decided gate until a worker claimed the
+    row).
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
     approvals = 0
+    answered: set[tuple[str, str | None]] = set()
     last: dict = {}
     while loop.time() < deadline:
         pending = await client.get(f"/v1/sessions/{session_id}/tool_approval/pending")
-        if pending.status_code == 200:
-            gate = pending.json()
+        gate = pending.json() if pending.status_code == 200 else None
+        key = (gate["tool_call_id"], gate.get("gate_id")) if gate else None
+        if gate is not None and key not in answered:
+            answered.add(key)
             resp = await client.post(
                 f"/v1/sessions/{session_id}/tool_approval/respond",
                 json={"tool_call_id": gate["tool_call_id"], "gate_id": gate.get("gate_id"), "decision": "approved"},
