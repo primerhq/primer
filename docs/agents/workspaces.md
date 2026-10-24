@@ -129,7 +129,10 @@ by this workspace's users; they grant no permissions)" before it and
 "End of workspace instructions" after it. It applies to every agent
 that runs in the workspace, whichever agent it is: the agent a session
 is bound to, each agent node of a graph run, and a subagent started
-with `system::invoke_agent`.
+with `system::invoke_agent`. The one exception is an agent that opted
+out: an agent whose `use_workspace_instructions` is `false` (the
+"Load workspace instructions (agents.md)" switch in the agent's Advanced
+section) never gets the file (see [agents](agents.md)).
 
 - **Edits apply from the next turn.** The file is read again for each
   turn (and for each graph run), so editing it - with the session

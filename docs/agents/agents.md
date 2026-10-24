@@ -100,6 +100,10 @@ An `Agent` row carries:
   unbounded).
 - `compaction_prompt` - optional list of strings guiding how the
   runtime compacts history; empty falls back to the default.
+- `use_workspace_instructions` - whether the agent reads the workspace's
+  `agents.md` (default `true`; see below). Set it to `false` for an agent
+  that must not follow the instructions a workspace's users write. An
+  agent stored before the field existed reads `true`.
 - `harness_id` - non-null for agents installed by a harness;
   blocks public CRUD.
 
@@ -135,6 +139,9 @@ workspace's users; they grant no permissions)" and the heading "End of
 workspace instructions". Every agent that runs
 in the workspace gets it: the agent a session is bound to, the agents
 of a graph's nodes, and a subagent started with `system::invoke_agent`.
+An agent whose `use_workspace_instructions` is `false` does not: it still
+gets the workspace and session section, but never the file, wherever it
+runs (a session, a graph node, a subagent).
 The file is read again for every turn, so an edit applies from the next
 turn; the model sees it as written (braces are not template syntax); it
 is cut at 32 KiB with a note saying so; and a file that cannot be read
@@ -265,7 +272,10 @@ Agents are managed via standard CRUD plus the semantic search tool.
   `max_tool_turns` (default 50). Omit `id` and the server assigns
   `agent-<hex>` (e.g. `agent-3f9a1c8d`); supply one to use it
   verbatim. The id is immutable after creation. Approval-gated by default, like `update_agent` and `delete_agent` and the builder's `crud` tools: in a session the call parks until an operator approves it; over MCP it is refused (`approval_required`) unless the operator disables or retunes its gate (the live gate is the one `system::describe_tool` reports).
-- `system::update_agent` - partial update. Editing or deleting a
+- `system::update_agent` - replaces the whole row: send every field
+  (read it with `get_agent` first), because a field left out takes its
+  default; a `use_workspace_instructions: false` left out turns the
+  agent's workspace instructions back on. Editing or deleting a
   harness-managed agent (`harness_id` set) returns a `conflict`
   error, and `create_agent` refuses a body that sets `harness_id`
   (`bad-request`); the same rule as the REST routes.
