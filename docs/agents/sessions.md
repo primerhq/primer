@@ -222,7 +222,10 @@ can run an agent or graph headlessly end to end.
 - From a session outside the default workspace (prime), every one of
   these tools that names a session or a workspace reaches only your own
   workspace: cancel, get, read messages, pause, resume, interrupt,
-  create, list, find, steer and restart. Another workspace answers
+  create, list, find, steer and restart (and the workspace tools:
+  `delete_workspace`, `get_workspace`, `list_workspaces`, the file
+  tools, `get_workspace_log` and `workspace_tap`, see
+  [workspaces](workspaces.md)). Another workspace answers
   `type=not-found` exactly as an unknown id does. Cancel and resume are
   also refused (`type=forbidden`) when the session runs at a higher rank
   than your run. With no calling session (MCP) the caller keeps its reach,
