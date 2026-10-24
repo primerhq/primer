@@ -118,7 +118,7 @@ def _err_validation(exc: ValidationError) -> ToolCallResult:
 class _ListArgs(BaseModel):
     kind: str | None = Field(
         default=None,
-        description="Optional filter by trigger kind (e.g. 'delayed', 'scheduled').",
+        description="Optional filter by trigger kind: 'delayed', 'scheduled', 'webhook' or 'channel'.",
     )
     enabled: bool | None = Field(
         default=None, description="Optional filter by enabled flag.",
@@ -216,8 +216,8 @@ TOOL_LIST = make_tool(
     purpose="List triggers as an array of Trigger objects.",
     when=(
         "Use when you need to enumerate triggers, optionally filtered by "
-        "``kind`` (delayed / scheduled) or ``enabled`` (true / false); not "
-        "for one known id (use ``get``)."
+        "``kind`` (delayed / scheduled / webhook / channel) or ``enabled`` "
+        "(true / false); not for one known id (use ``get``)."
     ),
     args_schema=_ListArgs.model_json_schema(),
     examples=[
@@ -323,15 +323,19 @@ TOOL_FIRE_NOW = make_tool(
     purpose="Synchronously fire a trigger now (operator/testing aid).",
     when=(
         "Use when you need to fire a trigger immediately, bypassing the "
-        "scheduler, e.g. for testing dispatch. Returns ``{fire_id, "
-        "results: [...]}`` where each result mirrors the per-subscription "
-        "dispatch envelope." + _TRIGGER_REACH_NOTE
+        "scheduler, e.g. for testing dispatch. It dispatches every "
+        "subscription kind, as the console's Fire now does, and returns "
+        "``{skipped, fire_id, results: [...]}``: one result per enabled "
+        "subscription (``subscription_id``, ``ok``, ``skipped``, "
+        "``error_code``, ``error_message``, ``artefact_id``: the session it "
+        "started or fed). A disabled trigger answers ``{skipped: true, "
+        "fire_id: null, results: []}`` and fires nothing." + _TRIGGER_REACH_NOTE
     ),
     args_schema=_IdArgs.model_json_schema(),
     examples=[
         ToolExample(
             args={"id": "trg-1"},
-            returns="{fire_id, results: [...]}",
+            returns="{skipped: false, fire_id, results: [...]}",
             note="bypasses the scheduler",
         ),
     ],
@@ -465,17 +469,21 @@ TOOL_SUBSCRIBE = make_tool(
     ),
     when=(
         "Use when the current session should wait for a trigger to fire "
-        "before continuing. Validates the trigger exists and is enabled, "
-        "otherwise returns ``type=trigger_not_found_or_disabled``. "
+        "before continuing. With no session to park (a chat) it returns "
+        "``type=unsupported-surface``. Validates the trigger exists and is "
+        "enabled, otherwise returns ``type=trigger_not_found_or_disabled``. "
         "Persists a one-shot ``parked_session`` Subscription bound to the "
         "caller's (session_id, tool_call_id); the matching dispatcher "
-        "deletes the row after delivering the resume payload."
+        "deletes the row after delivering the resume payload. The call "
+        "answers ``{ok, fire_context, payload}`` on the fire, "
+        "``{timed_out: true, elapsed_seconds, trigger_id}`` at the global "
+        "yield cap and ``{cancelled: true, cancel_reason}`` on a cancel."
     ),
     args_schema=_SubscribeArgs.model_json_schema(),
     examples=[
         ToolExample(
             args={"trigger_id": "trg-1"},
-            returns="the fire context on next fire",
+            returns="{ok, fire_context, payload} on the next fire",
             note="yielding: parks the session until the trigger fires",
         ),
     ],
@@ -492,11 +500,16 @@ TOOL_SUBSCRIBE_CHANNEL = make_tool(
     ),
     when=(
         "Use when a workflow should wait for a specific channel event (e.g. a "
-        "slash command in a watched room) before continuing. Validates the "
-        "trigger exists, is enabled, and is a channel-kind trigger, else "
-        "returns ``type=trigger_not_found_or_disabled``. Persists a one-shot "
-        "parked_session subscription carrying the matcher; the channel "
-        "dispatch loop resumes the session only on a matching event."
+        "slash command in a watched room) before continuing. With no "
+        "session to park (a chat) it returns ``type=unsupported-surface``. "
+        "Validates the trigger exists, is enabled, and is a channel-kind "
+        "trigger, else returns ``type=trigger_not_found_or_disabled``. "
+        "Persists a one-shot parked_session subscription carrying the "
+        "matcher; the channel dispatch loop resumes the session only on a "
+        "matching event. The call answers ``{ok, fire_context, payload}`` "
+        "on that event (the event is ``fire_context.event``), "
+        "``{timed_out: true, elapsed_seconds, trigger_id}`` at the global "
+        "yield cap and ``{cancelled: true, cancel_reason}`` on a cancel."
     ),
     args_schema=_SubscribeChannelArgs.model_json_schema(),
     examples=[
@@ -508,7 +521,7 @@ TOOL_SUBSCRIBE_CHANNEL = make_tool(
                     "command_name": "approve",
                 },
             },
-            returns="the channel event on the next matching fire",
+            returns="{ok, fire_context: {event, ...}, payload} on the next matching event",
             note="yielding: parks the session until a matching channel event",
         ),
     ],
@@ -893,6 +906,21 @@ def _trigger_wake_key(session_id: str, trigger_id: str) -> str:
     return f"trigger:{session_id}:{trigger_id}"
 
 
+def _no_session_to_park(tool: str, ctx: ToolContext | None) -> ToolCallResult | None:
+    """``unsupported-surface`` for a call with no session to park (a chat, or no context), else ``None``; asked before the trigger is looked up.
+
+    As ``system__wait_for_event`` answers it. It used to be ``trigger_not_found_or_disabled``, the answer to an unknown trigger, and was asked
+    after the lookup, so an unknown trigger and a chat read alike (ticket 01a16ddb, ruling 6). Nothing is written: a row with no session to wake
+    would only be skipped by the next fire.
+    """
+    if ctx is not None and ctx.session_id is not None:
+        return None
+    return _err(
+        f"{tool} needs a workspace session to park; it is not available on this surface",
+        error_type="unsupported-surface",
+    )
+
+
 def _make_subscribe_handler(
     storage_provider: "StorageProvider",
 ) -> ToolHandler:
@@ -914,27 +942,20 @@ def _make_subscribe_handler(
     async def _handler(
         arguments: dict[str, Any],
         *,
-        ctx: ToolContext,
+        ctx: ToolContext | None = None,
     ) -> ToolCallResult | Yielded:
         try:
             args = _SubscribeArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_validation(exc)
+        if (refusal := _no_session_to_park("subscribe_to_trigger", ctx)) is not None:
+            return refusal
 
         trigger_storage = storage_provider.get_storage(Trigger)
         trigger = await trigger_storage.get(args.trigger_id)
         if trigger is None or not trigger.enabled:
             return _err(
                 f"trigger {args.trigger_id!r} does not exist or is disabled",
-                error_type="trigger_not_found_or_disabled",
-            )
-
-        # Chat-only callers have no session to park; refuse rather than
-        # write an orphan row the dispatcher would just skip on fire.
-        if ctx.session_id is None:
-            return _err(
-                "subscribe_to_trigger requires a session-bound caller; "
-                "chat-only invocations have no session to park",
                 error_type="trigger_not_found_or_disabled",
             )
 
@@ -990,12 +1011,14 @@ def _make_subscribe_channel_handler(
     async def _handler(
         arguments: dict[str, Any],
         *,
-        ctx: ToolContext,
+        ctx: ToolContext | None = None,
     ) -> ToolCallResult | Yielded:
         try:
             args = _SubscribeChannelArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_validation(exc)
+        if (refusal := _no_session_to_park("subscribe_to_channel_event", ctx)) is not None:
+            return refusal
         try:
             validate_text_pattern(
                 args.event_matcher.text_pattern
@@ -1015,15 +1038,6 @@ def _make_subscribe_channel_handler(
             return _err(
                 f"channel trigger {args.trigger_id!r} does not exist, is "
                 "disabled, or is not a channel-kind trigger",
-                error_type="trigger_not_found_or_disabled",
-            )
-
-        # Chat-only callers have no session to park; refuse rather than
-        # write an orphan row the dispatcher would just skip on fire.
-        if ctx.session_id is None:
-            return _err(
-                "subscribe_to_channel_event requires a session-bound caller; "
-                "chat-only invocations have no session to park",
                 error_type="trigger_not_found_or_disabled",
             )
 

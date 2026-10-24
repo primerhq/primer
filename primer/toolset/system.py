@@ -1566,15 +1566,17 @@ def build_system_toolset(
             ),
             args_schema=_WaitForEventArgs.model_json_schema(),
             examples=[
+                # A wait any run may make: session.ended is a kind the event feed shows a non-admin (ticket 01a16ddb, ruling 6).
                 ToolExample(
                     args={
-                        "event_types": ["collection.document_pushed"],
+                        "event_types": ["session.ended"],
                         "fields": [{
-                            "path": "payload.collection_id",
-                            "op": "eq", "value": "kb",
+                            "path": "session_id",
+                            "op": "eq", "value": "sess-3f9a1c8d2b7e",
                         }],
+                        "timeout_seconds": 1800,
                     },
-                    returns="``{event: {...}}`` when a matching doc lands",
+                    returns="``{event: {...}}`` when that session ends",
                     note="yielding; worker released",
                 ),
             ],

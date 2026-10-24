@@ -61,7 +61,7 @@ class _WaitForEventArgs(BaseModel):
         min_length=1,
         description=(
             "Event-type globs to wake on, e.g. "
-            '["collection.document_pushed"] or ["agent.*"]. A run whose '
+            '["session.ended"] or ["session.*"]. A run whose '
             "principal is not an admin may name only the kinds the event "
             "feed shows a non-admin (see the tool description)."
         ),

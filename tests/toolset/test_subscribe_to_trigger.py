@@ -10,7 +10,8 @@ Covers:
   ``parked_session`` Subscription bound to the caller's
   (session_id, tool_call_id).
 * Calling from a chat-only context (no session id on the
-  :class:`ToolContext`) is rejected with the spec error code.
+  :class:`ToolContext`) is rejected with ``unsupported-surface``, as
+  ``system__wait_for_event`` rejects it (ticket 01a16ddb, ruling 6).
 """
 
 from __future__ import annotations
@@ -206,7 +207,7 @@ class TestChatOnlyRejected:
         )
         assert result.is_error
         body = json.loads(result.output)
-        assert body["type"] == "trigger_not_found_or_disabled"
+        assert body["type"] == "unsupported-surface"  # no session to park (ticket 01a16ddb, ruling 6)
 
         subs_storage = fake_storage_provider.get_storage(Subscription)
         page = await subs_storage.list(OffsetPage(offset=0, length=10))
