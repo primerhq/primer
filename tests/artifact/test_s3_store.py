@@ -244,7 +244,8 @@ async def test_the_client_uses_the_addressing_style_timeouts_and_retries(store: 
 
     assert config.s3 == {"addressing_style": "path"}, "an endpoint URL makes auto path-style"
     assert (config.connect_timeout, config.read_timeout) == (10, 60)
-    assert config.retries == {"max_attempts": 3, "mode": "standard"}
+    # ``max_attempts: 3`` counts retries; botocore keeps it as the total, the first attempt and three retries.
+    assert config.retries == {"mode": "standard", "total_max_attempts": 4}
 
 
 async def test_ambient_credentials_are_used_when_the_row_has_no_keys(
@@ -347,6 +348,41 @@ async def test_a_cancelled_put_leaves_no_object(store: S3ArtifactStorage, s3_adm
     assert (await store.get(aid)).data == b"after", "the store still works"
 
 
+async def test_a_put_that_times_out_after_the_server_stored_it_leaves_no_object(
+    store: S3ArtifactStorage, s3_admin, s3_prefix: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure that may come after the server stored the object (a read timeout, a dropped connection) never hands out the id either: the
+    object is removed in the background, and the caller sees the failure at once."""
+    from botocore.exceptions import ReadTimeoutError
+
+    real = store._client.put_object
+
+    async def stored_then_timed_out(**kwargs):
+        await real(**kwargs)
+        raise ReadTimeoutError(endpoint_url="http://s3.example")
+
+    monkeypatch.setattr(store._client, "put_object", stored_then_timed_out)
+    with pytest.raises(ReadTimeoutError):
+        await store.put(data=b"maybe", mime_type="text/plain")
+    async with asyncio.timeout(10):
+        await store.drain()
+
+    assert s3_keys_under(s3_admin, s3_prefix) == []
+
+
+async def test_a_put_the_server_refused_schedules_no_removal(s3_endpoint: str, s3_prefix: str, isolated_aws_env: None) -> None:
+    """A put the server answered with an error stored nothing, so there is nothing to remove."""
+    from botocore.exceptions import ClientError
+
+    s3 = S3ArtifactStorage(_config(s3_endpoint, s3_prefix, bucket="no-such-bucket"))
+    try:
+        with pytest.raises(ClientError, match="NoSuchBucket"):
+            await s3.put(data=b"x", mime_type="text/plain")
+        assert not s3._pending
+    finally:
+        await s3.aclose()
+
+
 async def test_closing_a_store_waits_for_the_cleanup_of_a_cancelled_put(
     store: S3ArtifactStorage, s3_admin, s3_prefix: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -423,7 +459,11 @@ async def test_a_store_that_was_never_initialized_initializes_on_first_use(s3_en
 async def test_the_secret_is_never_logged(
     s3_endpoint: str, s3_prefix: str, isolated_aws_env: None, caplog: pytest.LogCaptureFixture, sp,
 ) -> None:
-    """Ruling 7: every logger, at DEBUG, through a working round trip, a failed put and a failed probe. The secret appears in no record."""
+    """Ruling 7: every logger, at DEBUG, through a working round trip, a failed put and a failed probe. The secret appears in no record.
+
+    botocore logs every request at DEBUG (about a hundred records a round trip), and those records are captured here, so the check reads them.
+    The access key id does appear in them (the SigV4 ``Authorization`` header names it as ``Credential=``); the secret key never does: SigV4
+    sends only a signature derived from it."""
     caplog.set_level(logging.DEBUG)
     s3 = S3ArtifactStorage(_config(s3_endpoint, s3_prefix, access_key=ACCESS_KEY, secret_key=SECRET))
     try:
@@ -443,8 +483,11 @@ async def test_the_secret_is_never_logged(
     )
 
     assert not result.ok
-    assert caplog.records, "the run logged something, so the check below looked at real records"
+    botocore_debug = [r for r in caplog.records if r.name.split(".")[0] in ("botocore", "aiobotocore") and r.levelno == logging.DEBUG]
+    assert len(botocore_debug) > 20, "botocore's DEBUG records were captured, so the check below reads them"
+    assert any("Sending http request" in r.getMessage() for r in botocore_debug), "the signed requests themselves were logged"
     assert SECRET not in caplog.text
+    assert not [r for r in caplog.records if SECRET in r.getMessage() or SECRET in str(r.args)]
     assert SECRET not in result.error and ACCESS_KEY not in result.error
     assert SECRET not in repr(s3) and SECRET not in repr(s3.config)
 
@@ -492,7 +535,7 @@ async def test_a_put_whose_row_moved_meanwhile_leaves_no_object_and_no_record(
     """The store was built from the row before an edit moved it, and the edit landed while this put was in flight (no record yet, so the move
     check let it through): the put removes its object and fails with a 409, instead of handing out an id the moved row cannot read."""
     row = _s3_row(
-        "s3-moved", prefix=s3_prefix, endpoint_url=s3_endpoint, access_key=S3_TEST_KEY, secret_key=S3_TEST_SECRET, **moved,
+        "s3-moved", **{"prefix": s3_prefix, "endpoint_url": s3_endpoint, "access_key": S3_TEST_KEY, "secret_key": S3_TEST_SECRET, **moved},
     )
     routing = await _routing_on(sp, store, row)
 
