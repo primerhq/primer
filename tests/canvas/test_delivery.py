@@ -30,11 +30,12 @@ from primer.canvas.delivery import (
     event_attribution,
 )
 from primer.canvas.lang import parse_program
+from primer.canvas.wait import consume_events
 from primer.int.claim import ClaimKind
 from primer.model.canvas import CanvasEvent
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import PendingSessionMessage, SessionStatus
-from primer.session.enqueue import SessionWakeDeps
+from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, wake_session
 from primer.session.pending_messages import realize_next_pending
 from tests.canvas._fakes import World, make_world, seed_session
 
@@ -390,3 +391,105 @@ async def test_a_queued_steer_without_a_canvas_event_is_realized_as_before() -> 
     await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w))
     [user_input] = w.records("s1", "user_input")
     assert user_input["payload"]["text"] == "typed" and CANVAS_EVENT_PAYLOAD_KEY not in user_input["payload"]
+
+
+# ---- a click reaches the agent once (the lead's ruling 2 on #892 round 2) --------------------------------------------------------------
+
+
+def _times_the_agent_got(w: World, event_id: str) -> int:
+    """How many times ``event_id`` reached the session's agent: as a block instruction, or as a digest line riding an instruction."""
+    slot = w.registry.workspace("ws-1").slots.get("s1")
+    times = 0
+    for text, parts in (slot.appended if slot else []):
+        times += text.startswith(f'<canvas_event id="{event_id}" ')
+        times += sum(line.startswith(f"{event_id} ") for part in parts for line in part.text.splitlines())
+    return times
+
+
+async def _realize(w: World) -> None:
+    await _turn_ends(w)
+    await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w))
+
+
+async def test_two_clicks_recorded_before_either_is_delivered_reach_the_agent_once_each() -> None:
+    """The events route records, then delivers: two concurrent POSTs (or an Html element's emits) record e1 and e2 before e1's delivery
+    runs. e1's wake must not list e2 in its digest (a click is never a digest line), so e2 arrives once, as its own block."""
+    w = await _world("idle")
+    e1, e2 = await _record(w, "click play"), await _record(w, "emit viz")
+
+    assert [await _deliver(w, e1), await _deliver(w, e2)] == [DELIVERY_WOKEN, DELIVERY_QUEUED]
+    await _realize(w)
+
+    assert (_times_the_agent_got(w, "e1"), _times_the_agent_got(w, "e2")) == (1, 1)
+    assert (await w.canvas("s1")).unseen_events() == []
+
+
+async def test_a_typed_wake_between_a_clicks_record_and_its_delivery_lists_the_click_once() -> None:
+    w = await _world("idle")
+    e1 = await _record(w, "click play")
+    receipt = SessionWakeReceipt()
+    await wake_session(workspace_id="ws-1", session_id="s1", instruction="typed", deps=_wake_deps(w), human_intent=True, receipt=receipt)
+    assert receipt.outcome == "woken"
+
+    assert await _deliver(w, e1) == DELIVERY_QUEUED
+    await _realize(w)
+
+    assert _times_the_agent_got(w, "e1") == 1
+
+
+async def test_a_click_a_wait_already_took_is_recorded_and_nothing_is_written() -> None:
+    """The dispatcher flipped the canvas_wait park and its resume took e1 (the tool result, marked read) before the route's delivery read
+    the row, which now shows the resumed turn running. The delivery reads the canvas again before it queues or wakes: e1 is read, so it was
+    delivered; nothing is queued, woken or recorded again."""
+    w = await _world("wait-match")
+    e1 = await _record(w, "click play")
+    await consume_events(w.service, w.sp, "s1", [e1.public()])
+    await w.sessions.update((await w.sessions.get("s1")).model_copy(update={
+        "parked_status": None, "parked_state": None, "parked_event_key": None, "turn_status": "running",
+    }))
+    before = w.records("s1")
+
+    assert await _deliver(w, e1) == DELIVERY_RECORDED
+
+    assert _pending(w) == [] and w.records("s1") == before
+    await _realize(w)
+    assert _times_the_agent_got(w, "e1") == 0
+
+
+async def test_a_wait_flipped_but_not_yet_resumed_reads_as_the_waits_answer() -> None:
+    """The flip stamped e1 as the canvas_wait's answer (``parked_state.resume_event_payload``) and made the park resumable before the
+    delivery read the row: e1 is the wait's, not a steer to queue behind its turn."""
+    w = await _world("wait-match")
+    e1 = await _record(w, "click play")
+    row = await w.sessions.get("s1")
+    stamped = {"event_type": "canvas.event", "session_id": "s1", "payload": {k: v for k, v in e1.public().items() if k not in INPUT}}
+    await w.sessions.update(row.model_copy(update={
+        "parked_status": "resumable", "turn_status": "claimable", "parked_state": {**row.parked_state, "resume_event_payload": stamped},
+    }))
+
+    assert await _deliver(w, e1) == DELIVERY_WAIT
+    assert _pending(w) == []
+
+    second = await _record(w, "click play")                     # another click: the wait has its answer, so it is queued
+    assert await _deliver(w, second) == DELIVERY_QUEUED
+
+
+async def test_a_resumable_wait_of_another_kind_does_not_take_the_click() -> None:
+    """Only a canvas_wait answered by THIS event takes it: an ask_user being resumed, or a canvas_wait answered by another event, does not."""
+    w = await _world("parked-ask-user")
+    e1 = await _record(w, "click play")
+    row = await w.sessions.get("s1")
+    stamped = {"event_type": "canvas.event", "payload": {"id": e1.id}}
+    await w.sessions.update(row.model_copy(update={
+        "parked_status": "resumable", "turn_status": "claimable", "parked_state": {**row.parked_state, "resume_event_payload": stamped},
+    }))
+    assert await _deliver(w, e1) == DELIVERY_QUEUED
+
+    w = await _world("wait-match")
+    e1 = await _record(w, "click play")
+    row = await w.sessions.get("s1")
+    stamped = {"event_type": "canvas.event", "payload": {"id": "e99"}}
+    await w.sessions.update(row.model_copy(update={
+        "parked_status": "resumable", "turn_status": "claimable", "parked_state": {**row.parked_state, "resume_event_payload": stamped},
+    }))
+    assert await _deliver(w, e1) == DELIVERY_QUEUED
