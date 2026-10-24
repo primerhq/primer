@@ -60,10 +60,10 @@ Create the live workspace from a template with `workspaces__create_workspace`:
 Response:
 
 ```json
-{"id": "ws-9f2c", "template_id": "py-base", "phase": "running"}
+{"id": "ws-9f2c", "template_id": "py-base", "phase": "pending"}
 ```
 
-Thread the workspace's `id` into the next step.
+The row starts `pending` and is usable at once; the health probe turns it `running` at its first good probe, about 30 seconds later. Thread the workspace's `id` into the next step.
 
 ### 4. Start the graph run
 

@@ -28,10 +28,10 @@ Read the session state with `workspaces__get_workspace_session`:
 Response:
 
 ```json
-{"info": {"session_id": "sess-a1b2", "status": "waiting"}, "status": "waiting"}
+{"info": {"session_id": "sess-a1b2", "status": "running"}, "status": "running"}
 ```
 
-`status` is the lifecycle state: `running` (a turn is in flight), `waiting` (parked or resting), `paused` or `ended`. A session that stopped moving reads `waiting` or `paused`; the transcript says which, so read it next.
+`status` is the lifecycle state: `running` (a turn is in flight, or parked on a yielding tool), `waiting` (a turn ended, resting between turns), `paused` or `ended`. A park does not move `status`: a session parked on a question, an approval or a timer reads `running`, and the answer has no park field to say so (the full row, with the park fields, is in `workspaces__find_sessions`, or `workspaces__list_my_sessions` for your own workspace). A session that stopped moving reads `running` (parked), `waiting` (resting) or `paused`; the transcript says which, so read it next.
 
 ### 2. Read the transcript tail
 
@@ -51,8 +51,8 @@ The last record says what the session waits on. A `yielded` record means it park
 
 | What you found | It means | The move |
 |---|---|---|
-| `status: waiting`, the last `yielded` `event_key` starts with `ask_user:` or `tool_approval:` | a person decides (an answer, an approval) | only a person decides it, in the console; a queued steer is never an answer. Tell the user which session is parked and what it asks |
-| `status: waiting`, the `event_key` starts with `timer:`, `watch:` or `trigger:` | it waits on something that needs no decision | nothing to do: it resumes when the event fires; cancel it if it should not |
+| `status: running`, the last `yielded` `event_key` starts with `ask_user:` or `tool_approval:` | a person decides (an answer, an approval) | only a person decides it, in the console; a queued steer is never an answer. Tell the user which session is parked and what it asks |
+| `status: running`, the `event_key` starts with `timer:`, `watch:` or `trigger:` | it waits on something that needs no decision | nothing to do: it resumes when the event fires; cancel it if it should not |
 | `status: waiting`, the last record is `done` | the turn completed and the session rests | steer it to start the next turn |
 | `status: paused` (with `pause_requested: true` on the row when a pause landed mid-turn) | a pause was requested | resume it |
 | `status: running` longer than it should | the turn is slow or stuck | stop the turn, then steer |
@@ -69,7 +69,7 @@ Send the redirect with `workspaces__steer_workspace_session`:
 Response:
 
 ```json
-{"id": "sess-a1b2", "status": "waiting", "delivery": "queued"}
+{"id": "sess-a1b2", "status": "running", "delivery": "queued"}
 ```
 
 An idle or ended session starts its next turn with the instruction (`delivery: woken`). A busy, parked or paused one reads it at its next turn boundary, so the answer is `delivery: queued` until it can. A steer is never the answer to the session's `ask_user`, and it does not lift a pause: a paused session holds a steer no person wrote until it is resumed or a person messages it. Over MCP, the caller must rank at least as high as the session's creator, or the steer is refused (`type=forbidden`); a session an operator cancelled is refused (`type=conflict`).

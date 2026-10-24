@@ -44,10 +44,10 @@ Create the live workspace from the template with `workspaces__create_workspace`:
 Response:
 
 ```json
-{"id": "ws-9f2c", "template_id": "py-base", "phase": "running"}
+{"id": "ws-9f2c", "template_id": "py-base", "phase": "pending"}
 ```
 
-`phase` is `running` at the answer, because the live instance is up when the row is written; the probe task moves it to `failed` if it later dies. Thread the workspace `id` into the next step.
+`phase` is `pending` at the answer: the row starts `pending` and is usable at once (start sessions in it now). The health probe turns it `running` at its first good probe, about 30 seconds later, and `failed` after three missed probes. Thread the workspace `id` into the next step.
 
 ### 3. Start the session
 
@@ -63,7 +63,7 @@ Response:
 {"id": "sess-a1b2", "workspace_id": "ws-9f2c", "status": "running"}
 ```
 
-Set `autonomous: true` so the session ends on its clean turn. Without it, an agent session rests `waiting` (parked) after each turn, and only a new message or a steer starts the next one. Thread the session `id` into the next step.
+Set `autonomous: true` so the session ends on its clean turn. Without it, the session rests `waiting` after each turn, and only a new message or a steer starts the next one. Thread the session `id` into the next step.
 
 ### 4. Poll until it ends
 
@@ -117,7 +117,7 @@ Response:
 
 ## Gotchas
 
-- A `waiting` answer where you expected `ended` means the session parked on a question, an approval or a timer instead of finishing. This recipe sets `autonomous: true`, so a clean turn ends; when you see `waiting`, read the transcript and follow [cookbook/monitor-and-resume-a-parked-session](cookbook/monitor-and-resume-a-parked-session).
+- `waiting` where you expected `ended` means the turn ended without finishing the work (the assistant ended on a question, a `max_tokens` stop or a content filter, or the model call failed on a transport error): the session rests, and a new message or a steer starts the next turn. A session parked on a question, an approval or a timer keeps `status: running`, and the last `yielded` record of the transcript names what it waits on. Follow [cookbook/monitor-and-resume-a-parked-session](cookbook/monitor-and-resume-a-parked-session).
 - Stopping is not cancelling. `workspaces__interrupt_workspace_session` stops the turn that is running and keeps the session alive; `workspaces__cancel_workspace_session` ends it (`ended_reason: cancelled`).
 - Deleting the workspace ends every open session in it, and it is refused (`type=forbidden`) while one of them runs at a higher rank than you: end the session first.
 - `workspaces__create_workspace` answers `type=backend-error` when the live instance does not answer within 30 seconds: the image must run the primer workspace runtime. Nothing is left behind.
