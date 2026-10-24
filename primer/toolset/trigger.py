@@ -1050,6 +1050,54 @@ def _make_subscribe_channel_handler(
     return _handler
 
 
+def subscribe_resume(
+    yield_metadata: dict[str, Any],
+    event_payload: Any,
+    ctx: Any,
+) -> ToolCallResult:
+    """Format the woken park of ``subscribe_to_trigger`` and ``subscribe_to_channel_event``, as ``wait_for_event_resume`` does (ticket 01a16ddb, ruling 2).
+
+    * a fire: what the ``parked_session`` dispatcher delivered, ``{ok, fire_context, payload}`` (a channel trigger's ``fire_context`` carries
+      its ``event``; with no ``payload_template`` the payload is the fire context);
+    * the yield cap: ``{timed_out: true, elapsed_seconds, trigger_id}``;
+    * a cancel: ``{cancelled: true, cancel_reason}``.
+
+    Storage-free, as ``wait_for_event_resume`` is: a fire deletes its one-shot ``parked_session`` subscription, and one a timeout or a cancel
+    left behind is skipped and deleted as an orphan by the next fire of its trigger (or deleted with the trigger). A wake that reaches the park's
+    key from the event log carries an event envelope, not a fire: it is masked as ``wait_for_event_resume`` masks one (stored secrets masked, a
+    ``canvas.event``'s ``value`` and ``data`` removed: the input never leaves its session, #872).
+    """
+    del ctx  # the result needs nothing beyond the wake and the park's metadata
+    from primer.events.redaction import redact_payload
+    from primer.events.visibility import payload_without_input
+    from primer.model.yield_ import YieldCancelled, YieldTimeout
+
+    if isinstance(event_payload, YieldTimeout):
+        return _ok({
+            "timed_out": True,
+            "elapsed_seconds": event_payload.elapsed_seconds,
+            "trigger_id": yield_metadata.get("trigger_id"),
+        })
+    if isinstance(event_payload, YieldCancelled):
+        return _ok({
+            "cancelled": True,
+            "cancel_reason": event_payload.reason,
+        })
+    if isinstance(event_payload, dict) and isinstance(event_payload.get("event_type"), str) and "payload" in event_payload:
+        event_payload = {
+            **event_payload,
+            "payload": redact_payload(payload_without_input(event_payload["event_type"], event_payload["payload"])),
+        }
+    return _ok(event_payload)
+
+
+from primer.worker.yield_resume_registry import register_resume_hook  # noqa: E402
+
+# The provider stamps a park with the tool's bare name (InternalToolsetProvider.call), so the hooks are keyed by both names.
+register_resume_hook("subscribe_to_trigger", subscribe_resume)
+register_resume_hook("subscribe_to_channel_event", subscribe_resume)
+
+
 # ---------------------------------------------------------------------------
 # Public factory
 # ---------------------------------------------------------------------------
