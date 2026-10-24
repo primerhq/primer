@@ -24,6 +24,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from primer.bootstrap.prime import resolve_default_workspace_id
+from primer.model.common import dump_for_storage
 from primer.model.except_ import NotFoundError, ValidationError
 from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceRefusedError
 from primer.model.workspace import WORKSPACE_ID_PATTERN, Workspace as WorkspaceRow
@@ -32,6 +33,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.storage import raw_generation
 from primer.workspace.env_names import refuse_bad_env_names
 from primer.workspace.files import FileResolvers
 from primer.workspace.local_policy import LocalWorkspacePolicy
@@ -204,6 +206,9 @@ class WorkspaceRegistry:
         cache. We pass the workspace's create-time template snapshot to
         ``backend.get`` so every backend can re-attach without consulting
         a template row that may since have changed or been deleted.
+
+        A row with NO snapshot re-attaches from its template row and gets
+        the snapshot written (:meth:`_backfill_template_snapshot`).
         """
         row = await self.get_workspace_row(workspace_id)
         try:
@@ -211,7 +216,10 @@ class WorkspaceRegistry:
         except WorkspaceRefusedError as exc:
             # The gate only sees a provider; say which workspace the caller was resolving.
             raise exc.for_workspace(workspace_id) from None
-        ws = await backend.get(workspace_id, template=row.template_snapshot)
+        template = row.template_snapshot
+        if template is None:
+            template = await self._backfill_template_snapshot(row)
+        ws = await backend.get(workspace_id, template=template)
         if ws is None:
             raise NotFoundError(
                 f"Workspace {workspace_id!r} row exists but the backend "
@@ -220,6 +228,41 @@ class WorkspaceRegistry:
                 "out-of-band."
             )
         return ws
+
+    async def _backfill_template_snapshot(self, row: WorkspaceRow) -> WorkspaceTemplate | None:
+        """The template a row without a snapshot re-attaches with, written to the row as its snapshot.
+
+        Migration 12 snapshots every row once, at boot, but a process still on the code before it (a worker running ``create_workspace``
+        for an agent, a second API replica, during a rollout) goes on writing rows without one, and nothing backfilled those: every
+        backend's re-attach got ``template=None`` and the workspace was "re-attach failed" for good although its template still
+        existed (the G5 audit, G5-08). Such a row now re-attaches from its template row, as m012 would have snapshotted it, and the
+        snapshot is written the way m012 writes it: a field-scoped ``patch_if`` of ``template_snapshot`` alone, guarded on the
+        ``template_id`` read and an absent snapshot, so a concurrent writer's other fields survive and a snapshot written meanwhile
+        wins (and is the one used). Best effort: a failed write is logged and the re-attach goes on with the template row. A row
+        whose template is gone too returns ``None``, as before.
+        """
+        template = await self._sp.get_storage(WorkspaceTemplate).get(row.template_id)
+        if template is None:
+            logger.warning(
+                "workspace %s has no template snapshot and its template %r no longer exists: it cannot be re-attached",
+                row.id, row.template_id,
+            )
+            return None
+        storage = self._sp.get_storage(WorkspaceRow)
+        try:
+            written = await storage.patch_if(
+                row.id,
+                {"template_snapshot": dump_for_storage(template)},
+                where={"template_id": [raw_generation(row, "template_id")], "template_snapshot": [None]},
+            )
+            if written is None:
+                written = await storage.get(row.id)      # a snapshot was written meanwhile: that one is the workspace's
+        except Exception:  # noqa: BLE001 - best effort: the re-attach does not depend on the write
+            logger.warning("workspace %s: writing the missing template snapshot failed", row.id, exc_info=True)
+            return template
+        if written is not None and written.template_snapshot is not None:
+            return written.template_snapshot
+        return template
 
     async def materialise(
         self,
