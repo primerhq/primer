@@ -110,6 +110,10 @@ def previous_fire_at(
 #: The most missed ticks one claim of a ``catchup: all`` trigger replays (the oldest first), besides the due tick.
 CATCHUP_LIMIT = 64
 
+#: How far a claim's tick may lie ahead of the worker's clock and still be fired: the engine claims on the database's clock, which may run a
+#: little ahead of the worker's. A claim whose tick is further ahead is early and fires nothing (ticket 01a16ddb, review of #915).
+CLOCK_SKEW = timedelta(seconds=5)
+
 
 def scheduled_ticks_to_fire(
     cron_expr: str,
@@ -119,20 +123,25 @@ def scheduled_ticks_to_fire(
     first_unfired: datetime | None,
     now: datetime,
     limit: int = CATCHUP_LIMIT,
+    skew: timedelta = CLOCK_SKEW,
 ) -> list[datetime]:
     """The ticks one claim of a ``scheduled`` trigger fires, oldest first: the missed ticks its ``catchup`` keeps, then the due tick.
 
     ``first_unfired`` is the trigger's ``next_fire_at``: the first tick no claim has fired. It is computed after each claim's fire, on create
     and on every update, so a trigger enabled again has missed nothing while it was disabled.
 
-    * The due tick is the latest tick at or before the claim: at or before ``now``, or at ``first_unfired`` when the worker's clock reads a
-      little before the tick the claim was made for (the engine claims on the database's clock). It fires in every policy, exactly once.
+    * The due tick is the latest tick at or before the claim: at or before ``now``, or at ``first_unfired`` when the worker's clock reads at
+      most ``skew`` before the tick the claim was made for (the engine claims on the database's clock). It fires in every policy, exactly
+      once. A claim whose ``first_unfired`` is further ahead than ``skew`` is early: nothing is due, and the answer is ``[]`` (a future tick
+      is never fired early).
     * A missed tick is one the platform did not fire when it came: from ``first_unfired`` up to, not including, the due tick.
     * ``none`` fires no missed tick; ``one`` fires the most recent one; ``all`` fires each, at most ``limit``, the oldest first.
 
     Ticket 01a16ddb (ruling 3): ``all`` used to replay from ``last_fired_at`` THROUGH the due tick and then fire the current tick again (every
     tick twice, with or without downtime), and ``one`` and ``none`` both fired the current tick alone.
     """
+    if first_unfired is not None and first_unfired > now + skew:
+        return []
     claim_at = now if first_unfired is None else max(now, first_unfired)
     due = previous_fire_at(cron_expr, tz_name, at_or_before=claim_at)
     if first_unfired is None or first_unfired >= due or catchup == "none":
@@ -150,6 +159,7 @@ def scheduled_ticks_to_fire(
 
 __all__ = [
     "CATCHUP_LIMIT",
+    "CLOCK_SKEW",
     "CronInvalid",
     "TimezoneInvalid",
     "validate_cron",

@@ -21,7 +21,7 @@ trees at startup — mirroring the original methods.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -91,14 +91,18 @@ def _clock_ticks(trigger, *, now: datetime) -> list[datetime | None]:
       once, for its ``next_fire_at``: a malformed row never blocks the fire.
     * ``delayed``: its ``fire_at``.
     * a row that is gone or disabled (``fire_trigger`` answers it skipped), or any other kind: one fire with no tick.
+
+    ``[]`` when the claim is early: its tick (a ``scheduled`` trigger's ``next_fire_at``, a ``delayed`` one's ``fire_at``) is more than
+    :data:`~primer.trigger.cron.CLOCK_SKEW` ahead of ``now``. A future tick is never fired early.
     """
-    from primer.trigger.cron import scheduled_ticks_to_fire
+    from primer.trigger.cron import CLOCK_SKEW, scheduled_ticks_to_fire
 
     if trigger is None or not trigger.enabled:
         return [None]
     kind = trigger.config.kind
     if kind == "delayed":
-        return [trigger.config.fire_at]
+        fire_at = trigger.config.fire_at
+        return [] if fire_at > now + CLOCK_SKEW else [fire_at]
     if kind != "scheduled":
         return [None]
     try:
@@ -117,19 +121,50 @@ def _clock_ticks(trigger, *, now: datetime) -> list[datetime | None]:
         return [trigger.next_fire_at]
 
 
+async def _lease_after_the_fire(pool: "WorkerPool", trigger_id: str) -> tuple[bool, timedelta | None]:
+    """How a claim that fired gives its lease back: ``(drop_lease, requeue_after)`` (ticket 01a16ddb, review of #915).
+
+    The lease is requeued to the trigger's next tick, the one the release records (``TriggerClaimAdapter.on_release``: the next cron tick
+    after now for a ``scheduled`` trigger), so it is not claimable again before it. Without the requeue the in-memory claim engine, which does
+    not evaluate the adapter's eligibility SQL, re-claimed a released trigger at once, and every scheduled trigger re-fired in a loop on a
+    SQLite deployment. A trigger with no next tick (a ``delayed`` trigger that fired, a disabled or deleted one, an unreadable cron) drops the
+    lease: the save that lets it fire again upserts a new one (``primer.trigger.service._upsert_claim_if_eligible``). A row that cannot be
+    read leaves the lease as the engine would.
+    """
+    from primer.model.trigger import Trigger
+    from primer.trigger.cron import next_fire_at
+
+    try:
+        trigger = await pool._storage.get_storage(Trigger).get(trigger_id)
+    except Exception:
+        logger.exception("trigger %s: could not read it to requeue its lease", trigger_id)
+        return False, None
+    if trigger is None or not trigger.enabled or trigger.config.kind != "scheduled":
+        return True, None
+    now = _now()
+    try:
+        upcoming = next_fire_at(trigger.config.cron, trigger.config.timezone, after=now)
+    except Exception:
+        return True, None
+    return False, max(upcoming - now, timedelta(0))
+
+
 async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> None:
     """Handle a TRIGGER claim from the engine.
 
     Routes the lease to :func:`primer.trigger.dispatch.fire_trigger`,
     which fans out to each enabled subscription's dispatcher. The
     ``TriggerClaimAdapter.on_release`` hook advances ``next_fire_at``
-    (cron tick for ``scheduled``, null/disabled for ``delayed``) so
-    the engine's next claim window is correct.
+    (cron tick for ``scheduled``, null/disabled for ``delayed``), and the
+    lease is requeued to that next tick (:func:`_lease_after_the_fire`).
 
     Every fire carries the tick it is for as ``scheduled_for`` (:func:`_clock_ticks`). A ``scheduled`` trigger fires the missed ticks its
     ``catchup`` keeps (``none`` none, ``one`` the most recent, ``all`` each, at most 64, the oldest first), then the due tick once; a missed tick
-    is one from the trigger's ``next_fire_at`` up to the due tick (ticket 01a16ddb, rulings 3 and 4). A catch-up fire that raises is logged and
-    the next one runs; the due tick's own errors reach the outer except.
+    is one from the trigger's ``next_fire_at`` up to the due tick (ticket 01a16ddb, rulings 3 and 4). A catch-up fire that raises is logged
+    and the next one runs; the due tick's own errors reach the outer except.
+
+    An early claim (its tick more than ``CLOCK_SKEW`` ahead of the worker's clock) fires nothing and hands the lease back untouched
+    (``entity_noop``: the release must not advance or disable a trigger that did not fire), requeued to its tick.
     """
     from primer.int.claim import ReleaseOutcome
     from primer.model.trigger import Trigger
@@ -157,31 +192,41 @@ async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
     failed_deliveries = 0
     replay_errors = 0
     last_error: str | None = None
+    early_until: datetime | None = None
+    now = _now()
     try:
         trigger = await pool._storage.get_storage(Trigger).get(engine_lease.entity_id)
-        *catch_ups, due = _clock_ticks(trigger, now=_now())
-        for missed_ts in catch_ups:
-            try:
-                replayed = await fire_trigger(
-                    trigger_id=engine_lease.entity_id,
-                    scheduled_for=missed_ts,
-                    deps=deps,
-                )
-                failed_deliveries += _failed_deliveries(replayed)
-            except Exception:
-                replay_errors += 1
-                logger.exception(
-                    "trigger %s: catchup fire at %s raised; "
-                    "skipping to next",
-                    engine_lease.entity_id, missed_ts.isoformat(),
-                )
-
-        current = await fire_trigger(
-            trigger_id=engine_lease.entity_id,
-            scheduled_for=due,
-            deps=deps,
-        )
-        failed_deliveries += _failed_deliveries(current)
+        ticks = _clock_ticks(trigger, now=now)
+        if not ticks:
+            early_until = trigger.config.fire_at if trigger.config.kind == "delayed" else trigger.next_fire_at
+            logger.info(
+                "trigger %s: claimed before its tick %s; firing nothing, requeued to it",
+                engine_lease.entity_id, early_until.isoformat(),
+            )
+            return
+        for position, tick in enumerate(ticks):
+            if position < len(ticks) - 1:
+                try:
+                    replayed = await fire_trigger(
+                        trigger_id=engine_lease.entity_id,
+                        scheduled_for=tick,
+                        deps=deps,
+                    )
+                    failed_deliveries += _failed_deliveries(replayed)
+                except Exception:
+                    replay_errors += 1
+                    logger.exception(
+                        "trigger %s: catchup fire at %s raised; "
+                        "skipping to next",
+                        engine_lease.entity_id, tick.isoformat() if tick is not None else None,
+                    )
+                continue
+            current = await fire_trigger(
+                trigger_id=engine_lease.entity_id,
+                scheduled_for=tick,
+                deps=deps,
+            )
+            failed_deliveries += _failed_deliveries(current)
         if failed_deliveries or replay_errors:
             # Honest claim-row bookkeeping only: TriggerClaimAdapter
             # advances next_fire_at whatever the outcome, so this does
@@ -206,9 +251,13 @@ async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
             engine_lease.entity_id,
         )
     finally:
-        await pool._release_lease(
-            engine_lease,
-            ReleaseOutcome(
-                success=success, drop_lease=False, last_error=last_error,
-            ),
-        )
+        if early_until is not None:
+            outcome = ReleaseOutcome(
+                success=True, entity_noop=True, requeue_after=max(early_until - now, timedelta(0)),
+            )
+        else:
+            drop, requeue_after = await _lease_after_the_fire(pool, engine_lease.entity_id)
+            outcome = ReleaseOutcome(
+                success=success, drop_lease=drop, requeue_after=requeue_after, last_error=last_error,
+            )
+        await pool._release_lease(engine_lease, outcome)
