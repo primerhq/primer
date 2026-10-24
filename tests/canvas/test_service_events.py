@@ -15,7 +15,7 @@ from primer.canvas.decompile import decompile
 from primer.canvas.lang import parse_program
 from primer.canvas.service import CanvasEventRefused, CanvasRevConflict
 from primer.canvas.settings import write_canvas_settings
-from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings, SessionCanvas
+from primer.model.canvas import CANVAS_SETTINGS_ID, MAX_SILENT_EVENTS_PER_MINUTE, CanvasSettings, SessionCanvas
 from primer.model.except_ import ConflictError
 from tests.canvas._fakes import StoreSpy, World, make_world, seed_session
 
@@ -348,6 +348,51 @@ async def test_the_eleventh_waking_event_in_a_minute_is_refused(world_with_playl
     assert (await _event(w, "genre", "change", value="Lo-fi")).wake is False, "a silent event still passes"
 
 
+async def test_the_silent_events_of_a_minute_are_capped():
+    """The lead's ruling 3 on S6 (audit G8-04): an event that does not wake the agent is capped at MAX_SILENT_EVENTS_PER_MINUTE a
+    session; the next is refused with its own code and nothing is written, announced or framed."""
+    now = [NOW]
+    w = await _world(clock=lambda: now[0])
+    for n in range(MAX_SILENT_EVENTS_PER_MINUTE):
+        now[0] = NOW + timedelta(milliseconds=n)
+        await _event(w, "more", "open") if n % 2 else await _event(w, "player", "pause", position=n)
+    before = (await w.canvas("s1")).model_dump()
+    events_before, frames_before = len(await w.events("canvas.event")), len(w.bus.published)
+    with pytest.raises(CanvasEventRefused) as exc:
+        await _event(w, "viz", "set_value", value=7)
+    assert (exc.value.code, exc.value.message) == (
+        "silent_rate_limited",
+        "This canvas takes at most 120 events a minute that do not wake the agent. Wait a moment, then try again.",
+    )
+    assert (await w.canvas("s1")).model_dump() == before, "a refused event writes nothing"
+    assert len(await w.events("canvas.event")) == events_before and len(w.bus.published) == frames_before
+    assert (await _event(w, "play", "click")).wake is True, "a waking event has its own budget"
+
+
+async def test_the_silent_budget_comes_back_after_a_minute():
+    now = [NOW]
+    w = await _world(clock=lambda: now[0])
+    for _ in range(MAX_SILENT_EVENTS_PER_MINUTE):
+        await _event(w, "more", "open")
+    with pytest.raises(CanvasEventRefused):
+        await _event(w, "more", "open")
+    now[0] = NOW + timedelta(seconds=59)
+    with pytest.raises(CanvasEventRefused):
+        await _event(w, "more", "open")
+    now[0] = NOW + timedelta(seconds=61)
+    await _event(w, "more", "open")
+    row = await w.canvas("s1")
+    assert len(row.silent_times) == MAX_SILENT_EVENTS_PER_MINUTE and row.silent_times[-1] == NOW + timedelta(seconds=61)
+
+
+async def test_waking_events_do_not_count_against_the_silent_cap(world_with_playlist):
+    w = world_with_playlist
+    for _ in range(10):
+        await _event(w, "play", "click")
+    row = await w.canvas("s1")
+    assert (len(row.wake_times), row.silent_times) == (10, [])
+
+
 async def test_the_limit_comes_from_the_settings(world_with_playlist):
     w = world_with_playlist
     await write_canvas_settings(w.sp, CanvasSettings(id=CANVAS_SETTINGS_ID, max_waking_events_per_minute=2))
@@ -432,9 +477,12 @@ async def test_an_event_is_one_fenced_patch_of_only_what_it_changed(world_with_p
     await _event(w, "play", "click")
     await _event(w, "player", "play", position=1)
     change, click, audio = spy.patches
-    assert set(change["patch"]) == {"events", "event_seq", "updated_at", "values", "value_set_by", "rev"}
+    # A value written moves value_seq (what a batch is fenced on, the S6 decision on G8-04); a silent event joins silent_times (the
+    # cap of the lead's ruling 3 on S6), a waking one wake_times.
+    assert set(change["patch"]) == {"events", "event_seq", "updated_at", "values", "value_set_by", "value_seq", "rev", "silent_times"}
     assert set(click["patch"]) == {"events", "event_seq", "updated_at", "wake_times"}
-    assert set(audio["patch"]) == {"events", "event_seq", "updated_at", "values", "value_set_by"}
+    assert set(audio["patch"]) == {"events", "event_seq", "updated_at", "values", "value_set_by", "value_seq", "silent_times"}
+    assert (change["patch"]["value_seq"], audio["patch"]["value_seq"]) == (1, 2)
     assert change["where"] == {"rev": [1], "event_seq": [0]} and click["where"] == {"rev": [2], "event_seq": [1]}
     assert audio["where"] == {"rev": [2], "event_seq": [2]}
 

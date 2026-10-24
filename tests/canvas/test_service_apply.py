@@ -139,7 +139,9 @@ async def test_a_second_apply_is_one_fenced_patch_and_never_a_whole_row_write():
     [one] = writes.patches
     assert set(one["patch"]) == {"rev", "elements", "values", "value_set_by", "updated_at"}
     assert one["patch"]["rev"] == 2
-    assert one["where"] == {"rev": [1], "event_seq": [0]}, "fenced on both counters, so a click and a batch never overwrite each other"
+    # The S6 decision on audit G8-04: fenced on rev and value_seq, not event_seq, so an event that set no value never fails a batch
+    # (tests below), while one that set a value makes it read again.
+    assert one["where"] == {"rev": [1], "value_seq": [0]}
 
 
 async def test_a_batch_that_changes_nothing_still_moves_rev():
@@ -309,7 +311,9 @@ async def test_a_retry_that_keeps_losing_gives_up_and_writes_nothing():
     async def contended(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
         calls["n"] += 1
         fresh = await store.get(id)
-        await real(id, {"event_seq": fresh.event_seq + 1}, where={"event_seq": [fresh.event_seq]})   # somebody else always wins first
+        # Somebody always sets a value first (an audio event's play state: value_seq moves, rev does not). An event that sets NO value
+        # does not fail a batch any more (the S6 decision on G8-04), so that is no longer what contends.
+        await real(id, {"value_seq": fresh.value_seq + 1}, where={"value_seq": [fresh.value_seq]})
         return await real(id, patch, where=where, set_paths=set_paths, conn=conn)
 
     store.patch_if = contended
@@ -319,6 +323,73 @@ async def test_a_retry_that_keeps_losing_gives_up_and_writes_nothing():
     row = await w.canvas("s1")
     assert row.rev == 1 and "skip" not in row.elements
     assert len(await w.events("canvas.updated")) == 1
+
+
+#: Events that set no value: a click, a link open, an Html emit, and values set to what they already are (the looping ``setValue(1)`` of
+#: audit G8-04 after its first call). (element, kind, extra fields).
+_PURE_EVENTS = {
+    "a click": ("play", "click", {}),
+    "a link open": ("more", "open", {}),
+    "an Html emit": ("viz", "emit", {"name": "tick", "data": {"n": 1}}),
+    "a Select set to its value": ("genre", "change", {"value": "Jazz"}),
+    "an Html value set to nothing": ("viz", "set_value", {"value": None}),
+}
+
+
+@pytest.mark.parametrize("which", list(_PURE_EVENTS))
+async def test_an_event_that_sets_no_value_never_fails_a_batch(which):
+    """The S6 decision on audit G8-04: such an event lands between the batch's read and its write before EVERY attempt the batch could
+    make, and the batch still lands at its first write. Before the decision each one failed an attempt, and five of them in a row
+    failed the agent's batch with "the canvas changed too often"."""
+    element, kind, extra = _PURE_EVENTS[which]
+    w = make_world()
+    await seed_session(w)
+    await _apply(w, G("playlist_create.cl"))
+    writes, landed = StoreSpy(w), []
+    real = writes.store.patch_if
+
+    async def busy(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        if patch is not None and "elements" in patch:                     # the batch's write: an event lands first, every time
+            await w.service.record_event(session_id="s1", workspace_id="ws-1", element=element, kind=kind, by="alice", **extra)
+            written = await real(id, patch, where=where, set_paths=set_paths, conn=conn)
+            landed.append(written is not None)
+            return written
+        return await real(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    writes.store.patch_if = busy
+    out = await _apply(w, 'skip = Button("Skip")\ncontrols += [skip]', src="agent", by="agent")
+    row = await w.canvas("s1")
+    assert landed == [True], f"{which} failed the batch's write"
+    assert out.rev == 2 == row.rev and "skip" in row.elements and row.event_seq == 1
+    assert [e.kind for e in row.events] == [kind], "the event landed too, before the batch"
+
+
+async def test_an_event_that_set_a_value_meanwhile_makes_the_batch_read_again_and_keeps_it():
+    """An audio event sets the element's play state without moving rev: the batch read the row before it, so its write is refused on
+    value_seq, it reads again, and the play state survives the batch."""
+    w = make_world()
+    await seed_session(w)
+    await _apply(w, G("playlist_create.cl"))
+    writes, landed, state = StoreSpy(w), [], {"played": False}
+    real = writes.store.patch_if
+
+    async def racing(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        if patch is not None and "elements" in patch:
+            if not state["played"]:
+                state["played"] = True
+                await w.service.record_event(session_id="s1", workspace_id="ws-1", element="player", kind="play", by="alice", position=3)
+            written = await real(id, patch, where=where, set_paths=set_paths, conn=conn)
+            landed.append(written is not None)
+            return written
+        return await real(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    writes.store.patch_if = racing
+    out = await _apply(w, 'skip = Button("Skip")\ncontrols += [skip]', src="agent", by="agent")
+    row = await w.canvas("s1")
+    assert landed == [False, True], "the first write was refused: a value had been set since the batch read the row"
+    assert out.rev == 2 and "skip" in row.elements
+    assert row.values["player"] == {"playing": True, "position": 3.0} and row.value_set_by["player"] == "user"
+    assert row.value_seq == 1
 
 
 async def test_two_first_applies_both_land():
