@@ -49,6 +49,8 @@ class HarnessClaimAdapter(ClaimAdapter):
 
         updated = harness.model_copy(update={
             "pending_operation": None,
+            # The inputs the operation was asked for belong to it (ticket 01a16a29): cleared with it, as _release_harness does.
+            "operation_inputs": None,
             "status": new_status,
             "last_operation_at": now,
             "last_operation_error": last_error,
