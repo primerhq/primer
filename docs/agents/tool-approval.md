@@ -269,11 +269,12 @@ Body: {"tool_call_id": "tc-abc", "gate_id": "3f9a1c8d...", "decision": "approved
 
 Send back the `gate_id` the pending response served. A respond naming a gate that is no longer the pending one under that `tool_call_id` (the
 gate it showed was decided or timed out and the agent has since parked on the same raw id again) is refused with `409` and
-`extensions.code = "approval_stale"`, and nothing moves: no wake, no record. Reload the pending list. What separates the two answers is whether the `tool_call_id` is still pending under an approval gate: the `409` is for an id that is pending under ANOTHER gate, a `404` is for an id that is pending under NO approval gate (the first gate of a graph ToolCall node whose approved call re-parked under a fresh id, a gate decided elsewhere after which the session moved on, a session that is gone). Treat both alike and reload the pending list; a `404` is not always a replacement, so do not tell the operator that it was. A `gate_id` is 32 lowercase hex
+`extensions.code = "approval_stale"`, and nothing moves: no wake, no record. Reload the pending list. What separates the two answers is whether the `tool_call_id` is still pending under an approval gate: the `409` is for an id that is pending under ANOTHER gate, a `404` with `extensions.code = "gate_not_pending"` is for an id that is pending under NO approval gate while the session is there (the first gate of a graph ToolCall node whose approved call re-parked under a fresh id, a gate decided elsewhere after which the session moved on or parked on the tool's own yield). Treat both alike and reload the pending list; the `404` is not a replacement, so do not tell the operator that it was. A `404` WITHOUT that code is not a gate that moved on: the session does not exist, or its park cannot be read (a gate with no event key, a park that names nothing it waits on); report it as the error it is. A `gate_id` is 32 lowercase hex
 characters; anything else is a `422`. A respond with no `gate_id` is still accepted while clients catch up (it is logged once and counted in
 `gate_respond_total{kind="approval",gate_token="absent"}`), but it cannot tell a stale card from a current one, so always send it.
 `POST .../yields/{tool_call_id}/cancel` takes the same optional `gate_id` in its body, and so does `POST .../ask_user/respond`
-(`{"tool_call_id": ..., "gate_id": ..., "response": ...}`; the stale code is the same `approval_stale`, and the message says "question").
+(`{"tool_call_id": ..., "gate_id": ..., "response": ...}`; the stale code is the same `approval_stale`, the message says "question", and a question
+that is no longer pending is the same `404 gate_not_pending`).
 
 ## MCP tools
 
@@ -365,7 +366,8 @@ but require human review for any other host.
   keys built from it do too. Every approval and `ask_user` park carries a `gate_id` minted when it was created (in the pending entry's
   `resume_metadata`, which the graph checkpoint keeps verbatim, so it survives every re-park while the gate stays pending, and one gate of a
   multi-gate graph park being decided does not change its siblings'). The pending responses serve it, the respond and cancel routes take it
-  back, and a decision naming a gate that has been replaced is a `409 approval_stale` that moves nothing, before the approver check. Yields that are
+  back, and a decision naming a gate that has been replaced is a `409 approval_stale` that moves nothing, before the approver check; one naming a gate
+  that is pending nowhere any more (decided elsewhere, re-parked under a fresh id) is a `404 gate_not_pending`, and the console reloads for both. Yields that are
   not a human gate (`sleep`, `watch_files`, external waits) have no gate id; their cancel takes the optional `expected_tool_name` and refuses (409) a Skip drawn for a
   different kind of yield. Slack and Discord buttons and the Telegram button's cache entry keep the id with the button, so an Approve left in a messaging
   platform thread from an earlier round answers "This approval was replaced by a newer one" and decides nothing; a reply to a question message is judged against the
