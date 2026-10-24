@@ -34,6 +34,8 @@ from primer.int.claim import ClaimKind
 from primer.model.canvas import CanvasEvent
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import PendingSessionMessage, SessionStatus
+from primer.session.enqueue import SessionWakeDeps
+from primer.session.pending_messages import realize_next_pending
 from tests.canvas._fakes import World, make_world, seed_session
 
 PROGRAM = """
@@ -299,3 +301,77 @@ async def test_every_structured_copy_carries_the_event_without_its_input(row_sta
         [text] = texts
         assert entered in text, "the session's own input text carries what the user entered"
 
+
+# ---- a queued click, realized ---------------------------------------------------------------------------------------------------------
+
+
+def _wake_deps(w: World) -> SessionWakeDeps:
+    return SessionWakeDeps(storage_provider=w.sp, scheduler=Scheduler(), claim_engine=Engine(), workspace_registry=w.registry,
+                           event_bus=w.bus)
+
+
+async def _turn_ends(w: World) -> None:
+    await w.sessions.update((await w.sessions.get("s1")).model_copy(update={"turn_status": "idle"}))
+
+
+async def test_a_realized_queued_click_keeps_its_canvas_payload() -> None:
+    w = await _world("running")
+    ev = await _record(w, "click play")
+    assert await _deliver(w, ev) == DELIVERY_QUEUED
+    [queued] = _pending(w)
+    await _turn_ends(w)
+
+    assert await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w)) is True
+
+    [user_input] = w.records("s1", "user_input")
+    assert user_input["payload"][CANVAS_EVENT_PAYLOAD_KEY] == event_attribution(ev) == queued.attribution[CANVAS_EVENT_PAYLOAD_KEY]
+    assert user_input["payload"]["text"] == queued.parts[0]["text"]
+    assert _pending(w) == []
+
+
+async def test_a_realized_queued_click_is_marked_read_and_not_before() -> None:
+    """The lead's ruling on #795: the click is marked read when it is delivered, so canvas_get and canvas_wait do not return it again;
+    while it waits in the queue it is unread (canvas_get lists it)."""
+    w = await _world("running")
+    assert await _deliver(w, await _record(w, "click play")) == DELIVERY_QUEUED
+    assert [e.id for e in (await w.canvas("s1")).unseen_events()] == ["e1"]
+    await _turn_ends(w)
+
+    await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w))
+
+    assert (await w.canvas("s1")).unseen_events() == []
+    [(text, parts)] = w.registry.workspace("ws-1").slots["s1"].appended
+    assert text.startswith('<canvas_event id="e1" ') and parts == [], "marked as the delivered click, not repeated in a digest"
+
+
+async def test_two_queued_clicks_arrive_once_each_in_order() -> None:
+    """Review Focus 1, delivered once: the first click's wake does not list the second, still queued, in its digest."""
+    w = await _world("running")
+    first, second = await _record(w, "click play"), await _record(w, "emit viz")
+    assert [await _deliver(w, first), await _deliver(w, second)] == [DELIVERY_QUEUED, DELIVERY_QUEUED]
+    await _turn_ends(w)
+
+    await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w))
+    [(text, parts)] = w.registry.workspace("ws-1").slots["s1"].appended
+    assert text.startswith('<canvas_event id="e1" ') and parts == []
+    assert [e.id for e in (await w.canvas("s1")).unseen_events()] == ["e2"]
+
+    await _turn_ends(w)
+    await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w))
+    texts = [text for text, _parts in w.registry.workspace("ws-1").slots["s1"].appended]
+    assert texts[1].startswith('<canvas_event id="e2" ') and SECRET_NOTE in texts[1]
+    assert [r["payload"][CANVAS_EVENT_PAYLOAD_KEY]["id"] for r in w.records("s1", "user_input")] == ["e1", "e2"]
+    assert (await w.canvas("s1")).unseen_events() == []
+
+
+async def test_a_queued_steer_without_a_canvas_event_is_realized_as_before() -> None:
+    w = await _world("running")
+    session = await w.sessions.get("s1")
+    from primer.session.pending_messages import store_pending_steer
+
+    await store_pending_steer(storage_provider=w.sp, session=session, text="typed", workspace_registry=w.registry,
+                              attribution={"canvas_event": "not a dict"})
+    await _turn_ends(w)
+    await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w))
+    [user_input] = w.records("s1", "user_input")
+    assert user_input["payload"]["text"] == "typed" and CANVAS_EVENT_PAYLOAD_KEY not in user_input["payload"]

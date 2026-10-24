@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import (
+    CANVAS_EVENT_PAYLOAD_KEY,
     MACHINE_ATTRIBUTION_KEY,
     PEER_PAYLOAD_KEY,
     PeerAttribution,
@@ -86,6 +87,17 @@ def _written_by_a_person(attribution: dict | None) -> bool:
     if not isinstance(attribution, dict):
         return True
     return PEER_PAYLOAD_KEY not in attribution and MACHINE_ATTRIBUTION_KEY not in attribution
+
+
+def _canvas_payload(attribution: dict | None) -> dict | None:
+    """``{"canvas_event": ...}`` for a queued canvas click (pivot P5), to go back into the wake that realizes it, else ``None``.
+
+    The event is the one the delivery queued (``primer.canvas.delivery.event_attribution``, without what the user entered): the USER_INPUT
+    record names it, the wake leaves it out of the digest and marks it read once its block is written. Anything else under the key is
+    ignored, and the message is realized as a plain one.
+    """
+    found = attribution.get(CANVAS_EVENT_PAYLOAD_KEY) if isinstance(attribution, dict) else None
+    return {CANVAS_EVENT_PAYLOAD_KEY: found} if isinstance(found, dict) else None
 
 
 def _queued_for(session_id: str) -> Predicate:
@@ -325,6 +337,11 @@ async def realize_next_pending(
     malformed attribution is logged and the message is realized as a plain
     one: it must not be lost, and it must not wedge the queue.
 
+    A canvas click that was queued (pivot P5) carries its event the same
+    way (``attribution["canvas_event"]``); it goes back into the wake as
+    ``extra_payload``, so the USER_INPUT record names the event, the digest
+    leaves it out and the wake marks it read.
+
     A message the session then refuses is dropped, on the record, and the drain goes on to the next row (lead rulings R4 and R1): the session was
     cancelled and no person wrote the message (another session sent it, or a trigger fire or a tool call queued it: the row's attribution says so),
     and only a person's message reopens a cancelled session (:class:`~primer.session.reset.OnlyAPersonReopens`; ruling 1 of the G7 fixes extends R4
@@ -384,6 +401,8 @@ async def _realize_oldest(
             # Who WROTE it, which the queue kept: a person's steer still reopens a session cancelled since; a peer's or a machine's does not.
             by_a_person=_written_by_a_person(row.attribution),
             peer=peer,
+            # A queued canvas click (pivot P5) names its event on the record, and is marked read by this wake.
+            extra_payload=_canvas_payload(row.attribution),
             deps=wake_deps,
             queued_message_id=row.id,
             receipt=receipt,
