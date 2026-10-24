@@ -25,6 +25,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from primer.api.config import RequestLimitsConfig
 from primer.api.errors import payload_too_large_response
 from primer.api.version import API_VERSION
+from primer.model.canvas import MAX_EVENT_BODY_BYTES, MAX_OPS_BODY_BYTES
 
 
 class _BodyTooLarge(HTTPException):
@@ -47,12 +48,22 @@ _OVERRIDES: tuple[tuple[str, str, str], ...] = (
 )
 
 
+# (method, path pattern, cap) for the routes whose bodies are small by contract: the cap is the route's, never above ``max_body_bytes``.
+# The canvas routes (pivot P5 S6) bound a body before the service walks what is in it (the #790 review).
+_FIXED_CAPS: tuple[tuple[str, str, int], ...] = (
+    ("POST", rf"^/{API_VERSION}/workspaces/[^/]+/sessions/[^/]+/canvas/events$", MAX_EVENT_BODY_BYTES),
+    ("POST", rf"^/{API_VERSION}/workspaces/[^/]+/sessions/[^/]+/canvas/ops$", MAX_OPS_BODY_BYTES),
+)
+
+
 def body_limit_options(limits: RequestLimitsConfig) -> dict[str, object]:
     """The keyword arguments ``BodySizeLimitMiddleware`` is installed with, from the config."""
     return {
         "max_body_bytes": limits.max_body_bytes,
         "overrides": tuple(
             (method, pattern, getattr(limits, field)) for method, pattern, field in _OVERRIDES
+        ) + tuple(
+            (method, pattern, min(cap, limits.max_body_bytes)) for method, pattern, cap in _FIXED_CAPS
         ),
     }
 

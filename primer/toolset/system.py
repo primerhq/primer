@@ -100,6 +100,7 @@ from primer.common.log import redact_credentials
 from primer.model.chat import Tool, ToolCallResult, ToolExample, ToolTurnCapReached, TurnStreamFailure
 from primer.toolset._describe import make_tool
 from primer.toolset._system_artifact import artifact_store_tools
+from primer.toolset._system_canvas import canvas_settings_tools
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.model.collection import Collection, Document
 from primer.model.except_ import (
@@ -1142,6 +1143,9 @@ def build_system_toolset(
     # They read no storage and no registry (nothing is stored), so they carry no per-build dependency.
     registry.update(probe_tools())
     registry.update(artifact_store_tools(storage_provider=storage_provider))
+    # The canvas settings (pivot P5): the tool twins of GET / PUT /v1/canvas_settings, admin-only. Not in the canvas toolset, which keeps the
+    # design's three tools.
+    registry.update(canvas_settings_tools(storage_provider))
 
     # ---- Toolset extras ---------------------------------------------
     # call_tool's meta-dispatch path enforces the same approval gate the
