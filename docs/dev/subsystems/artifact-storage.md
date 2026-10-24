@@ -70,7 +70,8 @@ record second, so a delete that fails in the store keeps the record and can be r
 
 **Select** (`set_active_artifact_store`): read the provider, probe it, read it again, and write the selection with a compare-and-set
 against the selection read before the probe (`patch_if_checked`; a create for the first selection). A provider deleted during the probe,
-or a selection someone else wrote meanwhile, is a 409 and leaves the selection unchanged.
+or a selection of another provider someone else wrote meanwhile, is a 409 and leaves the selection unchanged; a selection of the same
+provider written meanwhile is the answer (a 200).
 
 What is left of the put and select races is a window two statements wide: a delete whose check ran before the record (or the selection)
 was written and whose row delete lands after the re-read.

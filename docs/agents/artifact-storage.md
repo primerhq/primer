@@ -83,7 +83,7 @@ Select another store for new files. It is tested first, and only a store that pa
 
 - **These tools need an admin.** A run started by a user without the admin role cannot call them.
 - **Selecting tests first.** An unknown id, or a store that fails its test, is a `validation-error` that names `provider_id` (and the failing step), and the selection is unchanged.
-- **A selection can lose a race, and then nothing changes.** The test can take seconds. If the store is deleted while it is being tested, or someone else selects a store meanwhile, the answer is `type=conflict` and the selection stays as it was: read it again with `system::get_active_artifact_store` and decide.
+- **A selection can lose a race, and then nothing changes.** The test can take seconds. If the store is deleted while it is being tested, or someone else selects ANOTHER store meanwhile, the answer is `type=conflict` and the selection stays as it was: read it again with `system::get_active_artifact_store` and decide. Someone selecting the same store meanwhile is no conflict: the answer is the selection.
 - **An upload can lose the same race.** A file being written to a store that is deleted meanwhile fails with a conflict and is not kept; sending it again puts it in the store that is active now.
 - **Files stay where they were written.** Selecting a store changes where NEW files go; it moves nothing. Delete a store only after the files it holds are gone.
 
