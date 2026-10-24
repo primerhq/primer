@@ -2,8 +2,8 @@
 
 A "reply binding" answers one question: when a workspace session emits
 something the operator should see (a gate forward, an ``inform`` message,
-a start ack, the final result), which channel (and optional anchor) does
-it post to?
+the final result; there is no start acknowledgement), which channel (and
+optional anchor) does it post to?
 
 Two scopes resolve through :func:`resolve_reply_binding`, most-specific
 first:
@@ -19,9 +19,10 @@ When neither resolves the session is silent (non-channel session).
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
+
+from primer.model.trigger import ExplicitReplyTarget, ReplyTarget, ReplyTargetInput
 
 _log = logging.getLogger(__name__)
 
@@ -49,43 +50,19 @@ class ReplyBinding(BaseModel):
         default=False,
         description=(
             "Per-binding quiet mode: when True the lifecycle relay suppresses "
-            "the start ack and the final result for this session (gates still "
-            "forward). Per spec 8 this is per-binding overridable."
+            "the final result of each turn for this session (questions, "
+            "approval requests and inform updates still post)."
         ),
     )
-
-
-class _ExplicitReplyTarget(BaseModel):
-    """An explicit reply target naming the channel (and optional anchor)."""
-
-    channel_id: str = Field(
-        ..., description="Channel the reply is pinned to."
-    )
-    anchor: str | None = Field(
-        default=None,
-        description="Optional thread/message anchor inside the channel.",
-    )
-    quiet: bool = Field(
+    silent: bool = Field(
         default=False,
         description=(
-            "Per-binding quiet mode: suppress the lifecycle relay (start ack "
-            "and final result) for this target."
+            "When True nothing is posted at all: no question, approval "
+            "request, update or answer (a binding's reply_target 'none'). "
+            "The session's questions are answered in the console. A silent "
+            "binding is quiet too."
         ),
     )
-
-
-ReplyTarget = Annotated[
-    Literal["source_thread", "source_room", "dm_sender", "none"] | _ExplicitReplyTarget,
-    Field(
-        description=(
-            "Where an action's outbound reply goes. One of the relative "
-            "literals (source_thread / source_room / dm_sender / none) "
-            "resolved against the triggering event, or an explicit "
-            "{channel_id, anchor} target."
-        ),
-    ),
-]
-"""Discriminated reply-target value carried on a Subscription."""
 
 
 async def resolve_reply_binding(
@@ -129,8 +106,10 @@ async def resolve_reply_binding(
 
 
 __all__ = [
+    "ExplicitReplyTarget",
     "ReplyBinding",
     "ReplyTarget",
+    "ReplyTargetInput",
     "SESSION_REPLY_BINDING_KEY",
     "resolve_reply_binding",
 ]

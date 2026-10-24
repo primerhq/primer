@@ -131,11 +131,29 @@ EventMatcher (the binding predicate, AND of present fields):
   Past an owner's share, that owner's remaining bindings with a
   `text_pattern` are skipped (`skipped_match_budget`).
 
-ReplyTarget (where the action's reply goes):
-- `source_thread` (default) | `source_room` | `dm_sender` | `none`,
-  or an explicit `{channel_id, anchor}`. For session actions the
-  resolved target becomes a session-scoped reply binding that wins
-  over the workspace-standing one.
+ReplyTarget (where the session a binding starts or feeds posts its
+questions, approval requests, `inform` updates and answers):
+- omitted (`null`, the default) - a message in a thread or a DM is
+  answered there; a room post maps nothing and its session answers
+  through the workspace's `reply_binding`, if any.
+- `source_thread` - the message's thread; a message outside a thread
+  is answered in its room.
+- `source_room` - the message's room; on Slack and Discord each session
+  opens its own thread there.
+- `none` - nothing is posted, not even through the workspace binding;
+  the session's questions are answered in the console. A binding stored
+  with `none` before this release is silent now.
+- `{channel_id, anchor, quiet}` - that channel, and that thread when
+  `anchor` is set (Telegram has no threads and ignores it); `quiet`
+  suppresses the answers but not the questions, approvals or updates.
+- `dm_sender` is refused (`validation-error`, REST 422 naming
+  `reply_target`): no channel adapter can post to a person's direct
+  messages. A binding stored with it before still loads and answers as
+  `source_thread`, with one warning per binding in the server log.
+- The target moves only the replies. The message's own conversation
+  stays mapped to the session, so the next message there still feeds
+  it. The resolved target becomes the session-scoped reply binding,
+  which wins over the workspace-standing one.
 
 ChannelCorrelation (DB, internal):
 - Keyed `(channel_id, anchor)`.
@@ -538,8 +556,9 @@ the trigger.
   that channel (plus the start ack and final result, unless the
   binding is quiet).
 - **Session-scoped reply binding wins over the workspace one.** A
-  channel rule's `reply_target` sets a per-session binding anchored to
-  the originating thread, which takes precedence over the workspace
+  session a channel binding starts or feeds gets a per-session binding
+  (the originating thread by default, else what the binding's
+  `reply_target` names), which takes precedence over the workspace
   `reply_binding`.
 - **Correlation-first inbound.** A reply that continues an existing
   conversation (a known thread already mapped to a session)

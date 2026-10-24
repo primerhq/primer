@@ -110,14 +110,17 @@ const CR_ACTIONS = [
   },
 ];
 
-// ReplyTarget is a relative literal ("source_thread" etc.) sent verbatim, or
-// "none" which means "omit reply_target". (The backend ReplyTarget union is
-// a bare string literal, not a {kind} object.)
+// ReplyTarget is a relative literal sent verbatim, or the default (""), which
+// sends no reply_target at all (null): a message in a thread or a DM is
+// answered there, a room post through the workspace's reply binding. "none" is
+// a real value: the session posts nothing. dm_sender is refused by the server
+// (no channel can post to a person's direct messages), so it is not offered.
+// (The backend ReplyTarget union is a bare string literal, not a {kind} object.)
 const CR_REPLY_TARGETS = [
+  { value: "", label: "default" },
   { value: "source_thread", label: "source_thread" },
   { value: "source_room", label: "source_room" },
-  { value: "dm_sender", label: "dm_sender" },
-  { value: "none", label: "none" },
+  { value: "none", label: "none (post nothing)" },
 ];
 
 function CR_toastErr(pushToast, fallbackTitle) {
@@ -332,7 +335,7 @@ function CR_RuleModal({ providers, allTriggers, initialProviderId, onClose, onCh
   const [senderRoles, setSenderRoles] = React.useState("");
   const [action, setAction] = React.useState("agent_fresh_session");
   const [actionFields, setActionFields] = React.useState({});
-  const [replyTarget, setReplyTarget] = React.useState("source_thread");
+  const [replyTarget, setReplyTarget] = React.useState("");
   const [creating, setCreating] = React.useState(false);
 
   const selectedCap = capEvents.find((e) => e.type === eventType) || { type: eventType, supported: true, prerequisites: [] };
@@ -371,7 +374,7 @@ function CR_RuleModal({ providers, allTriggers, initialProviderId, onClose, onCh
       (actionDef.fields || []).forEach((f) => { config[f.key] = (actionFields[f.key] || "").trim(); });
 
       const body = { event_matcher, config };
-      if (replyTarget !== "none") body.reply_target = replyTarget;
+      if (replyTarget) body.reply_target = replyTarget;
 
       await apiFetch("POST", "/triggers/" + encodeURIComponent(trig.id) + "/subscriptions", body);
       onClose();

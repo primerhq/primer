@@ -238,6 +238,27 @@ async def test_create_channel_binding_creates_subscription_on_channel_trigger(
 
 
 @pytest.mark.asyncio
+async def test_create_channel_binding_refuses_dm_sender(sp: _SP, system_toolset):
+    """Ticket 01a16e37-b98e, ruling 2: no channel can post to a person's direct messages, so the target is refused by name."""
+    await _seed_channel_trigger(sp)
+
+    result = await system_toolset.call(
+        tool_name="create_channel_binding",
+        arguments={
+            "trigger_id": "trg-ch-1",
+            "config": {"kind": "session_append", "session_id": "sess-1"},
+            "reply_target": "dm_sender",
+        },
+    )
+
+    assert result.is_error
+    payload = json.loads(result.output)
+    assert payload["type"] == "validation-error"
+    assert "reply_target" in payload["message"] and "direct messages" in payload["message"]
+    assert not sp.get_storage(Subscription)._data
+
+
+@pytest.mark.asyncio
 async def test_create_channel_binding_unknown_trigger_returns_trigger_not_found(
     sp: _SP, system_toolset
 ):

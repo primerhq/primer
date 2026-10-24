@@ -57,3 +57,33 @@ async def test_create_channel_trigger_and_matched_subscription(client):
     assert got["event_matcher"]["event_type"] == "command.invoked"
     assert got["event_matcher"]["command_name"] == "run"
     assert got["reply_target"] == "source_thread"
+
+
+@pytest.mark.asyncio
+async def test_dm_sender_is_refused_on_create_and_update_and_an_explicit_target_round_trips(client):
+    """Ticket 01a16e37-b98e, ruling 2: no channel can post to a person's direct messages, so ``dm_sender`` is refused (422 naming
+    ``reply_target``) and nothing is stored or changed. ``none`` and an explicit ``{channel_id, anchor}`` are kept as sent."""
+    r = await client.post("/v1/triggers", json={"slug": "ch-dm", "name": "Channel", "config": {"kind": "channel", "provider_id": "cp-1"}})
+    assert r.status_code == 201, r.text
+    trig_id = r.json()["id"]
+    config = {"kind": "agent_fresh_session", "workspace_id": "ws-1", "agent_id": "ag-1"}
+
+    refused = await client.post(f"/v1/triggers/{trig_id}/subscriptions", json={"config": config, "reply_target": "dm_sender"})
+    assert refused.status_code == 422, refused.text
+    assert "reply_target" in refused.text and "direct messages" in refused.text
+    listed = await client.get(f"/v1/triggers/{trig_id}/subscriptions")
+    assert listed.json()["total"] == 0
+
+    explicit = {"channel_id": "ch-2", "anchor": "1700000000.000100", "quiet": False}
+    created = await client.post(f"/v1/triggers/{trig_id}/subscriptions", json={"config": config, "reply_target": explicit})
+    assert created.status_code == 201, created.text
+    sub_id = created.json()["id"]
+    assert created.json()["reply_target"] == explicit
+
+    refused = await client.put(f"/v1/triggers/{trig_id}/subscriptions/{sub_id}", json={"reply_target": "dm_sender"})
+    assert refused.status_code == 422, refused.text
+    assert "reply_target" in refused.text
+    updated = await client.put(f"/v1/triggers/{trig_id}/subscriptions/{sub_id}", json={"reply_target": "none"})
+    assert updated.status_code == 200, updated.text
+    got = await client.get(f"/v1/triggers/{trig_id}/subscriptions/{sub_id}")
+    assert got.json()["reply_target"] == "none"

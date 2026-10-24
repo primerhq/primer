@@ -103,10 +103,13 @@ A `Subscription` row:
   has a 100 ms total across all the subscriptions it is matched against:
   past it, each remaining subscription with a `text_pattern` is skipped
   with `error_code` `skipped_match_budget`, so keep patterns simple.
-- `reply_target` - optional `ReplyTarget` (channel triggers only).
-  `source_thread` (default) | `source_room` | `dm_sender` | `none`,
-  or an explicit `{channel_id, anchor}`. For session subscriptions the
-  resolved target becomes the session's reply binding.
+- `reply_target` - optional `ReplyTarget` (channel triggers only):
+  omitted (the default: the message's thread or DM, else the
+  workspace's reply binding) | `source_thread` | `source_room` |
+  `none` (post nothing) | an explicit `{channel_id, anchor, quiet}`.
+  `dm_sender` is refused (`validation-error`). For session
+  subscriptions the resolved target becomes the session's reply
+  binding. See the channels doc.
 - `parallelism` - `skip | queue`. With `skip` (default), if the
   prior fire is still being processed, the new fire is a no-op for
   this sub. With `queue`, always fire. That busy check belongs to the
