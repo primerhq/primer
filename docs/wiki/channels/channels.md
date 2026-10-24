@@ -13,7 +13,8 @@ A channel is one room on a [channel provider](channels/providers): a Slack chann
 - **`external_id` is the platform's id, not the room's name.** A Slack channel id looks like `C012ABCDEF`. A Telegram room id is a number (a group's is negative). A Discord channel id is a long number. Put the name in `label`.
 - **One room, one channel.** The pair `provider_id` and `external_id` belongs to one channel only.
 - **`config.chats`** has two keys and no others: `enabled` (default `false`) and `relay_mode` (`final` or `all`, default `final`).
-- **`chats.enabled: true` lets the room start sessions.** The bot listens in a room only while the room's listener runs. A room with `chats.enabled` gets its listener when primer starts, and when a person saves the channel in the console. Any room also gets one the first time a session posts to it.
+- **`chats.enabled: true` lets a message in the room start a session.** With `false`, the [bindings](channels/bindings) that start a session (`agent_fresh_session`, `graph_fresh_session`) do not fire for the room. A `session_append` binding still feeds its session, a session waiting on a channel event still wakes, and a thread mapped to a session still feeds it.
+- **Listening.** The bot hears a room only while the room's listener runs. It shares one connection per provider, but it drops a message from a room with no listener. A room with `chats.enabled: true` gets its listener when primer starts, and when a person saves the channel in the console. Any room also gets one the first time a session posts to it. So after a restart, a room with `chats.enabled: false` is not heard at all until a session posts there.
 - **The channel does not pick the agent.** A message starts the agent or graph that a [binding](channels/bindings) on a `channel` trigger names, so one room can route to different agents by rule.
 - **`relay_mode` is stored, but the server does not read it today.** How much a conversation hears back is set by the `interactive` flag of the channel trigger ([inbound bindings](channels/bindings)).
 - **A DM is a room too.** A direct message with the bot needs its own channel, with the DM's id as `external_id` (for Telegram, the person's user id).
@@ -97,7 +98,7 @@ Reference: [`system__delete_channel`](reference/tools/system/delete_channel)
 - A pair that another channel holds is a `conflict` naming that channel.
 - An unknown key in `config.chats`, such as the retired `default_agent` or `allowed_agents`, is a `validation-error`.
 - An update replaces the whole row. Leave out `config` and `chats.enabled` falls back to `false`: after the next restart the bot no longer listens there until a session posts to the room.
-- `chats.enabled: false` is not a block: a room that a session posts to is heard again. To stop a room starting sessions, disable its `channel` trigger or delete its binding.
+- `chats.enabled: false` stops new sessions only. A room that a session posts to is heard again, and its threads, `session_append` bindings and channel-event waits work. To stop those too, disable the `channel` trigger or delete the binding.
 - The tools do not reach the running listener. A deleted channel's room can still be heard until a restart.
 - Nothing blocks deleting a channel that a workspace's reply binding or a `channel` trigger still names. The reply binding then posts nothing (a server log line only), and the trigger never fires. Clear the reply binding and fix the trigger first.
 

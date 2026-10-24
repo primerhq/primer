@@ -59,7 +59,7 @@ Response:
 ```json
 { "id": "ops-help" }
 ```
-`external_id` is the Slack channel ID (the last path segment of the channel's Copy link). `config.chats.enabled` lets messages in this room start sessions. Thread `id` ("ops-help") into the trigger below.
+`external_id` is the Slack channel ID (the last path segment of the channel's Copy link). `config.chats.enabled` lets a message in this room start a session: with `false`, the binding below (which starts a fresh session) does not fire for the room. Thread `id` ("ops-help") into the trigger below.
 
 ### 3. Create the workspace
 `workspaces::create_workspace`

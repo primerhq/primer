@@ -240,7 +240,12 @@ class ChatConfig(BaseModel):
 
     enabled: bool = Field(
         default=False,
-        description="Whether inbound messages on this room start sessions.",
+        description=(
+            "Whether a message in this room may start a session: when false, the channel bindings that start one "
+            "(agent_fresh_session, graph_fresh_session) do not fire for it. Bindings that feed a running session "
+            "(session_append) or wake a waiting one, and threads already mapped to a session, are not affected. "
+            "It also starts the room's listener when primer starts and when the channel is saved in the console."
+        ),
     )
     relay_mode: Literal["final", "all"] = Field(
         default="final",

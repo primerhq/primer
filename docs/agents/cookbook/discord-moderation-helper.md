@@ -59,7 +59,7 @@ Response:
 ```json
 { "id": "general-mod" }
 ```
-`external_id` is the channel snowflake of the text channel to moderate. `config.chats.enabled` lets messages in this room start sessions.
+`external_id` is the channel snowflake of the text channel to moderate. `config.chats.enabled` lets a message in this room start a session: with `false`, the binding below (which starts a fresh session) does not fire for the room.
 
 ### 3. Create the workspace
 `workspaces::create_workspace`

@@ -31,9 +31,8 @@ adapter implementations exist today - Slack, Telegram, and Discord -
 each backed by an external app/bot integration the operator
 configures via a `ChannelProvider` row. A Channel is per-room: one
 Slack channel, one Discord guild channel, one Telegram conversation.
-Its `config.chats` block controls whether incoming messages on that
-room start primer sessions, and how much of the output is relayed
-back.
+Its `config.chats.enabled` flag controls whether a message in that
+room may start a primer session.
 
 A channel is one room used by two independent surfaces. **Inbound:**
 a raw provider event is normalized into a `ChannelEvent`, matched
@@ -83,8 +82,21 @@ Channel:
 
 ChatConfig (inside `config.chats`, named for the platform it faces
 rather than for a primer entity):
-- `enabled` (bool, default false) - whether incoming messages on this
-  room start primer sessions.
+- `enabled` (bool, default false) - whether a message in this room may
+  start a session. When it is false, the bindings that START a session
+  (`agent_fresh_session`, `graph_fresh_session`) do not fire for a
+  message there (counted in
+  `channel_events_skipped_total{reason="room_disabled"}`). Everything
+  else still works in the room: a `session_append` binding still feeds
+  its session, a session waiting with
+  `workspace_ext::subscribe_to_channel_event` still wakes, and a thread
+  already mapped to a session still feeds it. The flag also decides
+  listening: the room's listener starts when primer starts and when the
+  channel is saved in the console only when it is true. The bot shares
+  one connection per provider, but it hands a message only to a room
+  whose listener runs; a message from any other room is dropped. So
+  after a restart a room with `enabled: false` is not heard at all until
+  a session posts to it (the post starts its listener).
 - `relay_mode` (`"final"` | `"all"`, default `"final"`) - controls
   which session messages are relayed back to the platform. `"final"`
   sends only the last assistant turn; `"all"` streams every turn.
@@ -271,10 +283,13 @@ system toolset for completeness but agents rarely need to touch them.
   take another channel's `(provider_id, external_id)` pair
   (`type=conflict` naming the channel that holds it); a channel keeps
   its own pair freely.
-- `config.chats` controls inbound enablement for the room. Set
-  `config.chats.enabled=true` to allow incoming messages to start
-  sessions on it; the agent they run under comes from the channel
-  trigger's binding.
+- `config.chats.enabled` decides whether a message in the room may
+  start a session. Set it to `true` to let the bindings that start a
+  session (`agent_fresh_session`, `graph_fresh_session`) fire for the
+  room; the agent they run under comes from the channel trigger's
+  binding. With `false` those bindings do not fire there, while
+  `session_append` bindings, channel-event waits and mapped threads
+  still work once the room is heard.
 - `update_channel` and `delete_channel` do NOT flush or re-warm the
   channel's adapter, for the same reason as above. Turning
   `config.chats.enabled` on through the tool changes the row, but the
@@ -420,7 +435,9 @@ Slack channel #ops-pager.
 
 2. Create a `channel`-kind trigger whose binding names the `helpdesk`
    agent. The binding lives on the trigger, so the same room can route
-   to different agents by rule.
+   to different agents by rule. `chats.enabled: true` is what lets that
+   binding start a session for a DM in this room: with `false` it does
+   not fire.
 
 3. Incoming DMs now start a session under `helpdesk`. The thread and
    the session are one to one, so the conversation persists across
@@ -569,13 +586,12 @@ the trigger.
   open a separate thread or message on the channel, attributed with
   a `Workspace: <name> / Session: <label>` header.
 - **Inbound messages and session gates coexist on the same channel.** A
-  channel with `config.chats.enabled=true` handles both fresh incoming
-  messages and gate replies from reply bindings. ChannelCorrelation
-  rows keep them separate.
+  channel handles both fresh incoming messages and gate replies from
+  reply bindings; `config.chats.enabled=true` lets its fresh messages
+  start sessions. ChannelCorrelation rows keep them separate.
 - **The binding lives on the trigger, not the room.** `config.chats`
-  says whether a room accepts inbound messages and how much it relays;
-  which agent or graph a thread runs under is the channel trigger's
-  binding. `config` rejects unknown keys, so a body carrying the
+  says whether a message in the room may start a session; which agent
+  or graph a thread runs under is the channel trigger's binding. `config` rejects unknown keys, so a body carrying the
   retired `default_agent`, `allow_agent_switch` or `allowed_agents`
   returns `422`.
 - **Rebinding is a session operation.** A thread's session can be

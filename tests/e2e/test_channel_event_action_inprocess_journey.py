@@ -166,8 +166,10 @@ async def _seed_channel(p) -> Channel:
         provider_id="cp-evj",
         provider=ChannelProviderType.TELEGRAM,
         external_id="555",
+        # The room starts sessions: a binding that starts one does not fire in a room whose chats.enabled is false (ticket
+        # 01a16e37-b98e, ruling 4).
         config=TelegramChannelConfig(
-            chats={"enabled": False},
+            chats={"enabled": True},
         ),
     )
     await p.get_storage(Channel).create(ch)

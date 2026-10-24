@@ -1047,7 +1047,7 @@ function NewChannelModal({ providers, providersList, onClose, onCreated, pushToa
             checked={chatsEnabled}
             onChange={setChatsEnabled}
             label="Start sessions from inbound messages"
-            help="messages posted in this room start sessions; the channel's trigger decides which agent runs"
+            help="messages posted in this room start sessions; the channel's trigger decides which agent runs. Sessions already running in the room still hear it."
             testid="channel-chats-enabled"
           />
         </div>
