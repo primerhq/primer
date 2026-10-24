@@ -164,3 +164,118 @@ async def test_an_admin_acts_on_a_session_recorded_as_system_and_a_user_does_not
 
     r = await client.post(f"/v1/workspaces/ws-r/sessions/ses-sys/{action}", json=payload)
     assert r.status_code == 200, r.text
+
+
+# ---- the human-input paths (ticket 01a16a35, from the review of #853) -------------------------------------------------------------------
+#
+# A person's answer to a session's ask_user and a person's resume of it put that person's input into a run at the session's creator's rank, so
+# they follow the same rule as the steer: the caller ranks at least as high as the creator, or the session is the caller's own (lead ruling 1). Every
+# row goes over HTTP through the auth middleware; a refused row leaves the session row, the bus and the event log as they were.
+
+HUMAN_TC = "tc-h"
+#: action -> (the route it posts to, its body, the answer of an accepted request).
+HUMAN: dict[str, tuple[str, dict, int]] = {
+    "answer the question": ("/v1/sessions/{sid}/ask_user/respond", {"tool_call_id": HUMAN_TC, "response": "go ahead"}, 202),
+    "resume": ("/v1/workspaces/ws-r/sessions/{sid}/resume", {}, 200),
+}
+
+
+def _parked_row(sid: str, *, by: PrincipalRef | None, tool: str, metadata: dict) -> WorkspaceSession:
+    """``sid`` parked on one yield of ``tool`` under :data:`HUMAN_TC`, shaped as the agent loop writes it."""
+    key = {"ask_user": "ask_user", "_approval": "tool_approval"}.get(tool, tool) + f":{sid}:{HUMAN_TC}"
+    return WorkspaceSession(
+        id=sid, workspace_id="ws-r", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.RUNNING, turn_no=1, created_at=NOW,
+        initiated_by=by, parked_status="parked", parked_at=NOW, parked_event_key=key,
+        parked_state={"tool_call_id": HUMAN_TC, "yielded": {"tool_name": tool, "event_key": key, "resume_metadata": metadata}},
+    )
+
+
+async def _seed_human(sp, action: str, sid: str, *, by: PrincipalRef | None) -> WorkspaceSession:
+    if action == "resume":
+        row = WorkspaceSession(
+            id=sid, workspace_id="ws-r", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.PAUSED, turn_no=1, created_at=NOW,
+            initiated_by=by,
+        )
+    else:
+        row = _parked_row(sid, by=by, tool="ask_user", metadata={"prompt": "May I delete the workspace?"})
+    await sp.get_storage(WorkspaceSession).create(row)
+    return row
+
+
+class _Spy:
+    """Records every publish on the app's event bus."""
+
+    def __init__(self, bus) -> None:
+        self.keys: list[str] = []
+        real = bus.publish
+
+        async def publish(key, payload):
+            self.keys.append(key)
+            return await real(key, payload)
+
+        bus.publish = publish
+
+
+async def _token_client(app, owner_id: str) -> httpx.AsyncClient:
+    """A client that authenticates only with a bearer API token of ``owner_id`` (no cookie)."""
+    from primer.auth.api_tokens import extract_prefix, hash_token, mint_plaintext
+    from primer.model.api_token import ApiToken
+
+    plaintext = mint_plaintext()
+    await app.state.storage_provider.get_storage(ApiToken).create(ApiToken(
+        id=f"at-{owner_id}", user_id=owner_id, name="automation", token_hash=hash_token(plaintext), prefix=extract_prefix(plaintext), scopes=[],
+        created_at=NOW,
+    ))
+    return httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"Authorization": f"Bearer {plaintext}"})
+
+
+#: who -> (who started the session, who asks, whether it is accepted). ``carol`` ranks user; ``carol then admin`` is carol recorded while she was
+#: an admin (a demoted admin's own session: refused by rank, accepted as her own); the token rows ask with an API token of carol or of the admin,
+#: which ranks as its owner does.
+WHO: dict[str, tuple[str, str, bool]] = {
+    "a user on an admin's session": ("admin", "carol", False),
+    "an admin on a user's session": ("carol", "admin", True),
+    "a user on their own session": ("carol", "carol", True),
+    "a demoted admin on their own session": ("carol then admin", "carol", True),
+    "a user's token on an admin's session": ("admin", "carol's token", False),
+    "an admin's token on a user's session": ("carol", "admin's token", True),
+}
+
+
+@pytest.mark.parametrize("who", list(WHO))
+@pytest.mark.parametrize("action", list(HUMAN))
+async def test_a_persons_input_reaches_a_session_only_at_or_below_their_rank(world, app, client, carol, fake_storage_provider, action, who):
+    started_by, asker, accepted = WHO[who]
+    carol_id = await _user_id(app, "carol")
+    creator = {
+        "admin": ADMIN,
+        "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
+        "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
+    }[started_by]
+    sid = "ses-human"
+    await _seed_human(fake_storage_provider, action, sid, by=creator)
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    before = (await sessions.get(sid)).model_dump(mode="json")
+    events_before = await fake_storage_provider.get_event_store().read_after(0)
+    spy = _Spy(app.state.event_bus)
+    route, body, ok = HUMAN[action]
+
+    if asker.endswith("token"):
+        async with await _token_client(app, carol_id if asker.startswith("carol") else await _user_id(app, "testuser")) as tok:
+            r = await tok.post(route.format(sid=sid), json=body)
+    else:
+        r = await {"carol": carol, "admin": client}[asker].post(route.format(sid=sid), json=body)
+
+    if not accepted:
+        assert r.status_code == 403, f"{who} could {action}: {r.text}"
+        assert (r.json()["detail"], r.json()["extensions"]["error"]) == (OUTRANKED_MESSAGE, "forbidden_rank")
+        assert (await sessions.get(sid)).model_dump(mode="json") == before, f"a refused {action} wrote to the session"
+        assert spy.keys == [], f"a refused {action} reached the event bus"
+        assert await fake_storage_provider.get_event_store().read_after(0) == events_before, f"a refused {action} was recorded"
+        return
+    assert r.status_code == ok, f"{who} could not {action}: {r.text}"
+    row = await sessions.get(sid)
+    if action == "resume":
+        assert row.status == SessionStatus.RUNNING
+    else:
+        assert row.parked_status == "resumable", f"{action} did not wake the session"

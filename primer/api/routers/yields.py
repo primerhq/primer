@@ -28,10 +28,11 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, Path
+from fastapi import APIRouter, Body, Depends, Path, Request
 from pydantic import BaseModel, Field
 
 from primer.api.approver_guard import enforce_approvers
+from primer.api.routers._session_rank import refuse_outranked
 from primer.api.gate_fence import GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
 from primer.api.deps import (
     get_claim_engine,
@@ -423,9 +424,10 @@ def _validate_response_against_schema(
     "/sessions/{session_id}/ask_user/respond",
     status_code=202,
     summary="Submit a response to a pending ask_user prompt",
-    responses=common_responses(404, 409, 422, 500),
+    responses=common_responses(403, 404, 409, 422, 500),
 )
 async def post_ask_user_respond(
+    request: Request,
     session_id: str = Path(...),
     body: AskUserRespondBody = Body(...),
     session_storage=Depends(get_session_storage),
@@ -437,6 +439,9 @@ async def post_ask_user_respond(
     # under a fresh id, parked on another tool) is a 404 ``gate_not_pending`` (GateNotPendingError), so a client reloads instead of showing an
     # error. A missing session and a park that cannot be read (no state, no tool, no call id, no event key) stay a plain 404.
     sess = await _load_session_or_404(session_storage, session_id)
+    # An answer is a person's input into a run at the session's creator's rank: 403 ``forbidden_rank`` unless the caller ranks at least as high or
+    # the session is their own (ticket 01a16a35, the rule of the REST steer and resume), before the park is read and before anything moves.
+    refuse_outranked(request, sess)
     blob = _parked_blob(sess)
     if blob is None:
         if sess.parked_status not in ("parked", "resumable"):
