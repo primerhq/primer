@@ -200,6 +200,20 @@ async def test_events_past_the_digest_lines_stay_unread() -> None:
     assert await _unread(w) == []
 
 
+async def test_the_digest_lists_only_silent_events() -> None:
+    """The lead's ruling 2 (a) on #892 round 2: a click reaches the agent as its own block, never as a digest line, whether it is queued,
+    not delivered yet, or was only recorded (a session that could not take it): the agent reads those with canvas_get."""
+    w = await _world()
+    await _click(w)                                               # recorded, not delivered (yet)
+    await _change(w)
+    await w.service.record_event(session_id="s1", workspace_id="ws-1", element="viz", kind="emit", name="pick", by="alice")
+
+    await _wake(w)
+
+    assert _slot_texts(w)[0][1] == '<canvas_changes rev="2" count="1">\ne2 genre change value="Lo-fi" by="alice"\n</canvas_changes>'
+    assert await _unread(w) == ["e1", "e3"]
+
+
 async def test_a_queued_click_is_left_out_of_the_digest_and_stays_unread() -> None:
     """It reaches the agent as its own block when the queue is realized; listing it in a digest first would deliver it twice."""
     w = await _world(turn_status="running", status=SessionStatus.RUNNING)

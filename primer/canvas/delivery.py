@@ -6,10 +6,13 @@ next depends on the session, read fresh:
 
 * ENDED (or gone): ``recorded``. The route refuses an ended session before it records anything; this covers one that ended in between.
 * parked on a ``canvas_wait`` the event matches (``primer.canvas.wait.canvas_wait_matches``, the rule the wait's subscription filter is
-  built from): ``wait``. The event dispatcher resumes the wait from the ``canvas.event``; here only its ``canvas_event`` record is written.
-  Only a park that is still ``parked`` takes it: a wait already being resumed has its answer, so a second click is queued behind its turn.
+  built from), or a ``canvas_wait`` the flip already made resumable with THIS event as its answer: ``wait``. The event dispatcher resumes
+  the wait from the ``canvas.event``; here only its ``canvas_event`` record is written. A wait being resumed with another answer does not
+  take it: a second click is queued behind its turn.
 * a silent event (a Select change, an audio event, a link open, an Html ``set_value``): ``recorded``, with a ``canvas_event`` record
   (skipped while a turn runs: plan Decision 2). It reaches the agent in the next digest, or in ``canvas_get``.
+* a waking event the agent has already read (the canvas, read again: a ``canvas_wait`` took it since it was recorded): ``recorded``, and
+  nothing is written. It was delivered.
 * a waking event while a turn is open, or while the session is parked on anything else (an ``ask_user``, an approval, a wait on other
   elements): ``queued``, as a steer whose text is the ``<canvas_event>`` block (``store_pending_steer``). The park is untouched, so a
   click never answers a gate (Review Focus 1); the drain realizes it at the next turn boundary.
@@ -24,8 +27,9 @@ next depends on the session, read fresh:
 ``canvas_event`` record (:func:`event_record`).
 
 **Read marks (audit G8-07; the lead's ruling on #795).** ``wake_session`` marks read the events it hands the agent and no other: the click
-it delivers (its seq rides ``payload.canvas_event``, so a realized queued click is marked when it is realized) and the digest's lines. An
-event the digest leaves out (past :data:`~primer.canvas.blocks.MAX_DIGEST_LINES`, or queued to arrive as its own block) stays unread.
+it delivers (its seq rides ``payload.canvas_event``, so a realized queued click is marked when it is realized) and the digest's lines. The
+digest lists only silent events, so a click reaches the agent once, as its own block; an event the digest leaves out (a click, or one past
+:data:`~primer.canvas.blocks.MAX_DIGEST_LINES`) stays unread.
 
 Session core reaches this module lazily (``primer.session.enqueue`` imports it inside functions), and a canvas failure never fails a wake.
 """
@@ -41,7 +45,7 @@ from primer.canvas.blocks import MAX_DIGEST_LINES, canvas_changes_block, canvas_
 from primer.canvas.records import append_canvas_record
 from primer.canvas.service import CanvasService
 from primer.canvas.state import CanvasState
-from primer.canvas.wait import CANVAS_WAIT_TOOL, canvas_wait_matches, queued_canvas_event_ids
+from primer.canvas.wait import CANVAS_WAIT_TOOL, canvas_wait_matches
 from primer.events.visibility import payload_without_input
 from primer.model.canvas import CanvasEvent, SessionCanvas
 from primer.model.except_ import ConflictError, NotFoundError
@@ -88,15 +92,48 @@ def event_attribution(event: CanvasEvent) -> dict[str, Any]:
     return attribution
 
 
+def _stamped_ids(parked_state: dict[str, Any]) -> set[str]:
+    """The ids of the canvas events the flip stamped on a resumable park as its answer: ``resume_event_payload`` (the envelope), and on a
+    multi-event park each ``resume_event_payloads`` entry's envelope."""
+    envelopes = [parked_state.get("resume_event_payload")]
+    entries = parked_state.get("resume_event_payloads")
+    if isinstance(entries, dict):
+        envelopes += [entry.get("payload") for entry in entries.values() if isinstance(entry, dict)]
+    ids: set[str] = set()
+    for envelope in envelopes:
+        if not isinstance(envelope, dict) or envelope.get("event_type", _EVENT_TYPE) != _EVENT_TYPE:
+            continue
+        payload = envelope.get("payload")
+        if isinstance(payload, dict) and isinstance(payload.get("id"), str):
+            ids.add(payload["id"])
+    return ids
+
+
 def _a_wait_takes(row: WorkspaceSession, event: CanvasEvent) -> bool:
-    """Whether ``row`` is parked on a ``canvas_wait`` (its own, or a graph node's) that ``event`` ends."""
-    if row.parked_status != "parked" or not isinstance(row.parked_state, dict):
+    """Whether ``event`` is the answer of a ``canvas_wait`` of ``row`` (its own, or a graph node's).
+
+    A park still ``parked`` takes an event its wait matches. A park the flip already made ``resumable`` takes only the event it stamped as
+    the answer (the lead's ruling 2 (c) on #892 round 2: the dispatcher woke the wait with THIS click before the delivery read the row);
+    any other click waits behind its turn.
+    """
+    if not isinstance(row.parked_state, dict):
         return False
-    public = event.public()
-    return any(
-        entry.get("kind") == CANVAS_WAIT_TOOL and canvas_wait_matches(entry.get("resume_metadata") or {}, public)
-        for entry in enumerate_pending_gates(row.parked_state)
-    )
+    waits = [entry for entry in enumerate_pending_gates(row.parked_state) if entry.get("kind") == CANVAS_WAIT_TOOL]
+    if not waits:
+        return False
+    if row.parked_status == "parked":
+        public = event.public()
+        return any(canvas_wait_matches(entry.get("resume_metadata") or {}, public) for entry in waits)
+    if row.parked_status == "resumable":
+        return event.id in _stamped_ids(row.parked_state)
+    return False
+
+
+async def _already_read(storage_provider: Any, session_id: str, event: CanvasEvent) -> bool:
+    """Whether the agent has already read ``event`` (the canvas, read again now): a ``canvas_wait`` took it as its result since the click
+    was recorded, or ``canvas_get`` listed it. Such an event was delivered; the lead's ruling 2 (b) on #892 round 2."""
+    row = await storage_provider.get_storage(SessionCanvas).get(session_id)
+    return row is not None and (event.seq <= row.seen_event_seq or event.seq in row.seen_ahead)
 
 
 async def deliver_canvas_event(
@@ -134,6 +171,9 @@ async def deliver_canvas_event(
         return DELIVERY_WAIT
     if not event.wake:
         await record()
+        return DELIVERY_RECORDED
+    if await _already_read(storage_provider, session_id, event):
+        logger.info("canvas event %s: session %s has already read it; not delivered again", event.id, session_id)
         return DELIVERY_RECORDED
     block = canvas_event_block(event, state=state)
     carried = {CANVAS_EVENT_PAYLOAD_KEY: event_attribution(event)}
@@ -181,21 +221,18 @@ class CanvasDigest:
 
 
 async def canvas_digest_for(storage_provider: Any, session_id: str, *, exclude_event_id: str | None) -> CanvasDigest | None:
-    """The digest of ``session_id``'s unread canvas events, or ``None`` when it has no canvas or nothing to list.
+    """The digest of ``session_id``'s unread SILENT canvas events, or ``None`` when it has no canvas or nothing to list.
 
-    Left out: the event ``exclude_event_id`` (the click this wake delivers as its block) and every click still queued as a steer (it
-    reaches the agent as its own block when the queue is realized; listed here too it would arrive twice). They stay unread, and so do
-    the events past :data:`~primer.canvas.blocks.MAX_DIGEST_LINES`: the block counts them and the agent reads them with ``canvas_get``,
-    or in the next digest.
+    Only silent events are listed (the lead's ruling 2 (a) on #892 round 2): a waking one (a click, an emit) reaches the agent as its own
+    block, queued or woken, and listing it here too would deliver it twice; one that was only recorded (the session could not take it) is
+    read with ``canvas_get``. ``exclude_event_id`` (the click this wake delivers) is therefore never listed either. The events left out stay
+    unread, and so do the ones past :data:`~primer.canvas.blocks.MAX_DIGEST_LINES`: the block counts them and the agent reads them with
+    ``canvas_get``, or in the next digest.
     """
     row = await storage_provider.get_storage(SessionCanvas).get(session_id)
     if row is None:
         return None
-    unread = [event for event in row.unseen_events() if event.id != exclude_event_id]
-    if not unread:
-        return None
-    queued = await queued_canvas_event_ids(storage_provider, session_id)
-    unread = [event for event in unread if event.id not in queued]
+    unread = [event for event in row.unseen_events() if not event.wake and event.id != exclude_event_id]
     if not unread:
         return None
     listed = unread[:MAX_DIGEST_LINES]
