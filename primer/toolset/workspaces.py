@@ -128,6 +128,7 @@ from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.workspace.env_names import ENV_NAME_PATTERN, MAX_ENV_NAME_LENGTH, RUNTIME_TOKEN_ENV_NAMES
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
+from primer.workspace.session_reconcile import open_sessions_on
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
     admin_only_settings_held,
@@ -1684,6 +1685,22 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
+    async def _refuse_outranked_in_workspace(ctx: ToolContext | None, workspace_id: str) -> ToolCallResult | None:
+        """``forbidden`` when an open session in ``workspace_id`` ranks above the caller, else ``None`` (review of #870, F3).
+
+        Deleting a workspace ends every open session in it (``workspace_lost``), so it acts on each of them as a cancel does, and follows the cancel
+        tool's rank rule for each (:func:`_refuse_outranked`, in its words: a session's refusal from a session, the fixed message with none). The
+        default workspace is left to ``destroy``'s own refusal, which comes first. Asked after the reach check, so an out-of-reach workspace is
+        still answered as an unknown one.
+        """
+        if workspace_id == await _default_workspace_id():
+            return None
+        async for row in open_sessions_on(storage_provider, workspace_id):
+            refusal = _refuse_outranked(ctx, row)
+            if refusal is not None:
+                return refusal
+        return None
+
     async def _delete_workspace(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _IdArgs.model_validate(arguments)
@@ -1691,6 +1708,9 @@ def build_workspaces_toolset(
             return _err_from_validation(exc)
         # Out of reach before the default-workspace refusal: prime is out of reach of a session outside it, and is answered as unknown too.
         refusal = await _out_of_reach(ctx, args.id)
+        if refusal is not None:
+            return refusal
+        refusal = await _refuse_outranked_in_workspace(ctx, args.id)
         if refusal is not None:
             return refusal
         try:
@@ -1720,7 +1740,9 @@ def build_workspaces_toolset(
             "which cannot be deleted. From a session outside the default "
             "workspace (prime) only your own workspace is reachable: "
             "another one (prime included) answers type=not-found, as an "
-            "unknown id does."
+            "unknown id does. Deleting a workspace ends every open session in "
+            "it, so ``type=forbidden`` while one of them runs at a higher "
+            "rank than you (the rule of ``cancel_workspace_session``)."
         ),
         _IdArgs,
         _delete_workspace,

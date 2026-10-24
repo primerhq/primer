@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from pydantic_core import to_jsonable_python
@@ -34,6 +35,32 @@ _LIST_PAGE_SIZE = 200
 # A session is open while it is anything but ENDED. Spelled as "not ended" so a status added later is open by default (the safe direction here).
 # It is part of the query, not a filter on the page: ENDED rows must not use up the pages that hold the open ones.
 _NOT_ENDED = Predicate(left=FieldRef(name="status"), op=Op.NE, right=Value(value=SessionStatus.ENDED.value))
+
+
+async def open_sessions_on(sp: "StorageProvider", workspace_id: str) -> AsyncIterator[WorkspaceSession]:
+    """Every session on ``workspace_id`` that has not ENDED, paged by cursor (pages of ``_LIST_PAGE_SIZE``) over "this workspace AND not ended".
+
+    The read the rank rule of a workspace delete makes (review of #870, F3): deleting a workspace ends every open session in it, so each of them
+    is a session the caller acts on. Unlike :func:`reconcile_sessions_to_workspace_lost` it does not swallow a failed read: a check that cannot
+    see every session must not let the delete through.
+    """
+    match = Predicate(
+        left=Predicate(left=FieldRef(name="workspace_id"), op=Op.EQ, right=Value(value=workspace_id)),
+        op=Op.AND,
+        right=_NOT_ENDED,
+    )
+    storage = sp.get_storage(WorkspaceSession)
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    while True:
+        page = await storage.find(match, CursorPage(cursor=cursor, length=_LIST_PAGE_SIZE))
+        for row in page.items:
+            yield row
+        # A backend that hands back a cursor it has already given would loop forever.
+        if page.next_cursor is None or page.next_cursor in seen_cursors:
+            return
+        seen_cursors.add(page.next_cursor)
+        cursor = page.next_cursor
 
 
 async def _say_why_refused(session_storage, session_id: str, workspace_id: str) -> None:
@@ -205,4 +232,4 @@ async def reconcile_sessions_to_workspace_lost(
     return reconciled
 
 
-__all__ = ["reconcile_sessions_to_workspace_lost"]
+__all__ = ["open_sessions_on", "reconcile_sessions_to_workspace_lost"]
