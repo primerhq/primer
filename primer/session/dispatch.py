@@ -681,9 +681,12 @@ async def run_one_session_turn(
             # Without its stamp a rested first-turn failure has every mark of a session that never started, so it ends. A Cancel that lands
             # (on any process: the lock above is this one's) is not lost either: the rest is a conditional write that refuses a row with
             # ``cancel_requested`` set, and then the session ends, as the clean-completion arm ends one.
-            rested = may_rest and stamped and await _rest_session(session_storage, session, expected_epoch=session.binding_epoch)
-            if rested:
-                written = _TerminalWrite(True, SessionStatus.WAITING, None)
+            rested = (
+                await _rest_session(session_storage, session, expected_epoch=session.binding_epoch) if may_rest and stamped else None
+            )
+            if rested is not None:
+                # WAITING, or PAUSED when a pause landed while the turn ran (ticket 01a16d9f).
+                written = _TerminalWrite(True, rested, None)
                 # The executor ended the on-disk slot when the turn failed. The row now says the session is alive, so the slot must too, or the
                 # next send (or a trigger's append, or the follow-up realized below) meets an ENDED slot and is refused.
                 await _reopen_agent_session_slot(executor)
@@ -2419,9 +2422,14 @@ def _ended_by_another_path(written: "_TerminalWrite", status: SessionStatus, end
     preempt convergence, the reconciler), so the row does not carry this turn's outcome.
 
     Not the same as ``not written.landed``: an identical repeat (the row already had the outcome asked for) and an
-    epoch-voided write also do not land, yet the turn's own outcome stands there.
+    epoch-voided write also do not land, yet the turn's own outcome stands there. Nor is a rest that a pause made PAUSED
+    where the turn asked for WAITING (ticket 01a16d9f): the turn's outcome stands, the session rests paused.
     """
-    return not written.landed and (written.status, written.ended_reason) != (status, ended_reason)
+    return (
+        not written.landed
+        and written.status == SessionStatus.ENDED
+        and (written.status, written.ended_reason) != (status, ended_reason)
+    )
 
 
 async def _mark_turn_completed(session_storage, session_id: str, turn_no: int) -> None:
@@ -3308,6 +3316,9 @@ async def _transition_session_status(
 
     Returns what the row says afterwards (:class:`_TerminalWrite`); callers that announce the outcome use it.
 
+    A WAITING ``new_status`` is a turn's rest (the clean end, a Stop): :func:`_come_to_rest` writes it, PAUSED instead when a
+    pause is on the row (ticket 01a16d9f), as one field-scoped write.
+
     When ``new_status`` is ENDED and an ``executor`` is supplied, the
     terminal status is ALSO mirrored onto the executor's on-disk
     :class:`AgentSession` slot (``session.json``). The scheduler-visible
@@ -3343,6 +3354,9 @@ async def _transition_session_status(
             session.id, expected_epoch, fresh.binding_epoch,
         )
         return _TerminalWrite(False, new_status, ended_reason)
+    if new_status == SessionStatus.WAITING and fresh.status != SessionStatus.ENDED:
+        # A turn that comes to rest (its clean end, a Stop): PAUSED instead when a pause landed while it ran (ticket 01a16d9f).
+        return await _come_to_rest(session_storage, session, fresh, expected_epoch=expected_epoch, executor=executor, workspace_registry=workspace_registry)
     if fresh.status == new_status and (
         ended_reason is None or fresh.ended_reason == ended_reason
     ):
@@ -3393,26 +3407,89 @@ async def _transition_session_status(
     return _TerminalWrite(True, new_status, ended_reason)
 
 
-async def _rest_session(session_storage, session: WorkspaceSession, *, expected_epoch: int) -> bool:
-    """Leave ``session`` RESTING after a failed turn: ONE field-scoped ``patch_if`` of ``status`` to WAITING. True when it landed.
+def _resting_status(row: WorkspaceSession) -> SessionStatus:
+    """Where a turn that did not end the session leaves it: PAUSED when a pause is on ``row``, WAITING otherwise (ticket 01a16d9f).
 
-    The write itself carries the conditions, so they hold on any process (the lifecycle lock is this one's): the row is still RUNNING or WAITING (not
-    ended, not paused), no Cancel is pending (``cancel_requested`` is false: a row that rested with it set would end as cancelled, without calling the
-    model, on the next send) and the binding epoch is the one the turn started under. A refused write means the session ends instead, as it did before
-    a failure could rest.
+    A pause is on the row when it landed while the turn ran (``pause_requested``: the pause found the row RUNNING) or when it was written as a
+    status (PAUSED: the pause found the row WAITING, a turn claimed off a rested row). Either way the turn finishes and the session then rests
+    PAUSED, as the start-of-turn pause exit and a wake held by a pause leave it, instead of WAITING with the flag set. Only a rest becomes a pause:
+    a turn that ENDS the session (an autonomous session's clean end, a failure that ends it) still ends it, since a pause acts between turns and
+    an ended session runs no further turn.
     """
-    try:
-        written = await session_storage.patch_if(
-            session.id, to_jsonable_python({"status": SessionStatus.WAITING}),
-            where={
-                "status": [SessionStatus.RUNNING.value, SessionStatus.WAITING.value],
-                "cancel_requested": [False],
-                "binding_epoch": [expected_epoch],
-            },
-        )
-    except NotFoundError:
-        return False
-    return written is not None
+    return SessionStatus.PAUSED if row.pause_requested or row.status == SessionStatus.PAUSED else SessionStatus.WAITING
+
+
+#: How many times a turn's rest is decided again after its conditional write was refused (the row's status or pause flag moved since the read).
+_REST_ATTEMPTS = 3
+
+
+async def _come_to_rest(
+    session_storage,
+    session: WorkspaceSession,
+    fresh: WorkspaceSession,
+    *,
+    expected_epoch: int | None,
+    executor: Any,
+    workspace_registry: Any | None,
+) -> _TerminalWrite:
+    """Rest a turn's session WAITING, or PAUSED when a pause is on the row (:func:`_resting_status`); ``fresh`` is the row just read, not ENDED.
+
+    ONE field-scoped ``patch_if`` of ``status`` alone, fenced on the status and the pause flag it was decided from (and on the binding epoch the turn
+    ran under): a pause or an end committed on another process after the read refuses the write and is decided again on a fresh read, never written
+    over (a whole-row write of the row read would put a pause flag that landed since back to false, and a pause written as a status back to
+    WAITING). Nothing else is written: the pause flag stays set, as every other PAUSED write of a turn boundary leaves it, and ``/resume`` clears it.
+    A row found ENDED is left alone (:func:`_leave_ended_row_alone`), a row that vanished or moved to another binding epoch is not written.
+    """
+    for _ in range(_REST_ATTEMPTS):
+        target = _resting_status(fresh)
+        if fresh.status == target:
+            return _TerminalWrite(False, target, None)
+        where: dict[str, list[Any]] = {"status": [fresh.status.value], "pause_requested": [fresh.pause_requested]}
+        if expected_epoch is not None:
+            where["binding_epoch"] = [expected_epoch]
+        try:
+            written = await session_storage.patch_if(session.id, to_jsonable_python({"status": target}), where=where)
+        except NotFoundError:
+            return _TerminalWrite(False, target, None)
+        if written is not None:
+            return _TerminalWrite(True, target, None)
+        moved = await session_storage.get(session.id)
+        if moved is None or (expected_epoch is not None and moved.binding_epoch != expected_epoch):
+            return _TerminalWrite(False, target, None)
+        if moved.status == SessionStatus.ENDED:
+            return await _leave_ended_row_alone(
+                session, moved, target, None, executor=executor, workspace_registry=workspace_registry,
+            )
+        fresh = moved
+    logger.warning("session %s: the turn's rest (%s) was not written: the row kept moving", session.id, target.value)
+    return _TerminalWrite(False, target, None)
+
+
+async def _rest_session(session_storage, session: WorkspaceSession, *, expected_epoch: int) -> SessionStatus | None:
+    """Leave ``session`` RESTING after a failed turn: ONE field-scoped ``patch_if`` of ``status``. The status it rested at, or None when it did not.
+
+    WAITING, or PAUSED when a pause landed while the turn ran (``pause_requested``; ticket 01a16d9f): two conditional writes, each fenced on the flag,
+    so a pause committed between them is never rested WAITING. The writes themselves carry the conditions, so they hold on any process (the
+    lifecycle lock is this one's): the row is still RUNNING or WAITING (not ended, not paused as a status), no Cancel is pending (``cancel_requested``
+    is false: a row that rested with it set would end as cancelled, without calling the model, on the next send) and the binding epoch is the one the
+    turn started under. Refused, the session ends instead, as it did before a failure could rest.
+    """
+    for target, paused in ((SessionStatus.WAITING, False), (SessionStatus.PAUSED, True)):
+        try:
+            written = await session_storage.patch_if(
+                session.id, to_jsonable_python({"status": target}),
+                where={
+                    "status": [SessionStatus.RUNNING.value, SessionStatus.WAITING.value],
+                    "pause_requested": [paused],
+                    "cancel_requested": [False],
+                    "binding_epoch": [expected_epoch],
+                },
+            )
+        except NotFoundError:
+            return None
+        if written is not None:
+            return target
+    return None
 
 
 async def _reopen_agent_session_slot(executor) -> None:

@@ -268,19 +268,20 @@ async def test_a_stop_whose_write_another_path_beat_records_no_completed_turn(
     fake_storage_provider, fake_workspace_io, fake_event_bus,
 ):
     """The Stop decides WAITING inside the lock, and a writer the lock does not cover ends the row between that read
-    and the conditional write (flipped inside ``update_unless``): the write is refused, and no marker is written."""
+    and the conditional write (flipped inside it: the rest is one field-scoped ``patch_if`` of ``status`` since ticket
+    01a16d9f): the write is refused, and no marker is written."""
     await _seed(fake_storage_provider, completed_turn_no=TURN - 1)
     sessions = fake_storage_provider.get_storage(WorkspaceSession)
-    real_update_unless = sessions.update_unless
+    real_patch_if = sessions.patch_if
     state = {"flipped": False}
 
-    async def update_unless(entity, **kwargs):
-        if kwargs.get("field") == "status" and not state["flipped"]:
+    async def patch_if(entity_id, patch=None, **kwargs):
+        if "status" in (patch or {}) and not state["flipped"]:
             state["flipped"] = True
             await _end_the_row(sessions, "force_deleted")
-        return await real_update_unless(entity, **kwargs)
+        return await real_patch_if(entity_id, patch, **kwargs)
 
-    sessions.update_unless = update_unless  # type: ignore[method-assign]
+    sessions.patch_if = patch_if  # type: ignore[method-assign]
 
     async def stop():
         await asyncio.sleep(0.1)

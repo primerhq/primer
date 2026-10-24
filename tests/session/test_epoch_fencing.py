@@ -47,6 +47,16 @@ class _Sessions:
         self.row = row
         return row
 
+    async def patch_if(self, _sid, patch, *, where, conn=None):
+        """What the backends do for a field-scoped write (a turn's rest is one, ticket 01a16d9f): refuse it unless every guarded STORED field
+        holds one of its values, then write the patched fields alone."""
+        stored = self.row.model_dump(mode="json")
+        if any(stored[name] not in allowed for name, allowed in where.items()):
+            return None
+        self.updates += 1
+        self.row = WorkspaceSession.model_validate({**self.row.model_dump(), **patch})
+        return self.row
+
 
 async def test_matching_epoch_writes_the_terminal_status():
     sessions = _Sessions(_row(binding_epoch=2))
@@ -68,6 +78,15 @@ async def test_stale_epoch_voids_the_terminal_write():
         new_status=SessionStatus.ENDED, ended_reason="completed",
         expected_epoch=2,
     )
+    assert sessions.row.status is SessionStatus.RUNNING  # untouched
+    assert sessions.updates == 0
+
+
+async def test_stale_epoch_voids_the_rest_too():
+    """A turn's rest (WAITING, or PAUSED under a pause) is a field-scoped write since ticket 01a16d9f; the read-time fence still voids it."""
+    sessions = _Sessions(_row(binding_epoch=3))
+    stale = sessions.row.model_copy(update={"binding_epoch": 2})
+    await _transition_session_status(sessions, stale, new_status=SessionStatus.WAITING, expected_epoch=2)
     assert sessions.row.status is SessionStatus.RUNNING  # untouched
     assert sessions.updates == 0
 
