@@ -115,6 +115,44 @@ def test_a_root_with_a_nul_character_is_refused_by_name(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
+def test_prepare_refuses_a_folder_that_already_holds_files_and_no_marker(tmp_path: Path) -> None:
+    """Review of #890, item 5: a typo guard. A root naming ``/``, ``/etc`` or an application's data folder must not be adopted as an artifact
+    store: the folder holds files and was never prepared."""
+    taken = tmp_path / "taken"
+    taken.mkdir()
+    (taken / "unrelated.txt").write_text("keep me")
+
+    with pytest.raises(ConfigError, match="already holds files") as info:
+        prepare_root(str(taken))
+
+    assert repr(str(taken)) in str(info.value)
+    assert sorted(p.name for p in taken.iterdir()) == ["unrelated.txt"], "no marker, no probe file"
+
+
+def test_prepare_takes_an_empty_folder_and_a_fresh_volume(tmp_path: Path) -> None:
+    """An empty folder is a new store; so is a freshly formatted volume, whose only entry is ``lost+found``."""
+    empty, fresh = tmp_path / "empty", tmp_path / "fresh"
+    empty.mkdir()
+    (fresh / "lost+found").mkdir(parents=True)
+
+    prepare_root(str(empty))
+    prepare_root(str(fresh))
+
+    assert (empty / ROOT_MARKER).is_file() and (fresh / ROOT_MARKER).is_file()
+
+
+def test_the_missing_marker_message_says_the_volume_is_not_mounted(tmp_path: Path) -> None:
+    """Review of #890, item 5: it told the operator to "save the provider again", which re-created the marker on a pod WITHOUT the volume."""
+    (tmp_path / "bare").mkdir()
+
+    with pytest.raises(ConfigError) as info:
+        check_root(str(tmp_path / "bare"))
+
+    message = str(info.value)
+    assert "save the provider again" not in message
+    assert "the shared artifact volume is not mounted here" in message and "new or empty folder" in message
+
+
 @pytest.mark.parametrize("bad", ["relative/dir", "", "./artifacts"])
 def test_prepare_refuses_a_root_that_is_not_absolute(bad: str) -> None:
     with pytest.raises(ConfigError, match="must be an absolute path"):

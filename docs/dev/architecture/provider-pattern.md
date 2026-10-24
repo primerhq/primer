@@ -152,7 +152,8 @@ factory to keep the labels true, and builds a row from what the form is told to 
 
 A provider whose backend needs its location made ready before it is used prepares it in the shared pre-write check, LAST, so a write another
 check refuses prepares nothing. The `filesystem` artifact store is the one case: `prepare_artifact_provider` (`primer/artifact/checks.py`)
-creates the root and writes its `.primer-artifact-root` marker on a create and an edit, through the REST route and the system tools alike, and
+creates a NEW root and writes its `.primer-artifact-root` marker on a create and on an edit that changes the root (an edit that keeps it only
+checks it), through the REST route and the system tools alike, and
 answers 422 `artifact_root_unusable` naming `config.root` when it cannot. Building a backend does no IO: `initialize` checks the location in
 the process that uses it (see [artifact-storage](../subsystems/artifact-storage.md)).
 
@@ -170,7 +171,7 @@ answers 405. The classes that serve one are embedding and cross_encoder (`primer
 openai or gemini server lists, or the Hub check of a Hugging Face one; see `docs/dev/subsystems/model-providers.md`), stt and
 tts (`speech.py`), web_search and web_fetch, and ssp (`ssp/_test`). The LLM class has no `_test`: its draft is probed by
 `POST /v1/llm_providers/_discover_models`. artifact_storage serves one too (`POST /v1/artifact_storage_providers/_test`, a live
-round trip that first prepares a filesystem root, as a create would), but the console does not offer its Test button yet;
+round trip that first prepares a new filesystem root, as the save would), but the console does not offer its Test button yet;
 `channel_providers` and `workspace_providers` serve none. The
 console offers a Test button only on a class that serves one, so a Test that answers 405 is never on screen.
 

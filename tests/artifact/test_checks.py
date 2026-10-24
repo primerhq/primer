@@ -142,11 +142,41 @@ async def test_prepare_runs_off_the_event_loop(tmp_path, monkeypatch) -> None:
     assert len(seen) == 1 and seen[0] != threading.get_ident()
 
 
+def test_only_a_new_filesystem_root_is_prepared() -> None:
+    """Review of #890, item 5: a create, a kind change or a root change prepares; the root a stored row already names is only checked."""
+    from primer.artifact.checks import filesystem_root_is_new
+
+    fs = _row("filesystem", id="fs-1")
+    moved = ArtifactStorageProvider(id="fs-1", provider="filesystem", config={"root": "/nonexistent/elsewhere"})
+    db = _row("db", id="fs-1")
+
+    assert filesystem_root_is_new(fs, None)
+    assert filesystem_root_is_new(fs, db)
+    assert filesystem_root_is_new(moved, fs)
+    assert not filesystem_root_is_new(fs, fs)
+    assert not filesystem_root_is_new(db, fs), "a row that is not a filesystem row has no root to prepare"
+
+
+async def test_an_update_that_keeps_the_root_checks_it_and_never_prepares(tmp_path, monkeypatch) -> None:
+    from primer.artifact import checks
+
+    monkeypatch.setattr(checks, "prepare_root", lambda root: pytest.fail("an unchanged root is never prepared"))
+    (tmp_path / "bare").mkdir()
+    row = ArtifactStorageProvider(id="fs-1", provider="filesystem", config={"root": str(tmp_path / "bare")})
+
+    with pytest.raises(EntityCheckError) as info:
+        await checks.prepare_artifact_provider(row, row)
+
+    assert (info.value.code, info.value.field) == ("artifact_root_unusable", "config.root")
+    assert list((tmp_path / "bare").iterdir()) == []
+
+
 @pytest.mark.parametrize("kind", ["db", "s3"])
 async def test_prepare_does_nothing_for_another_kind(kind, monkeypatch) -> None:
     from primer.artifact import checks
 
     monkeypatch.setattr(checks, "prepare_root", lambda root: pytest.fail("only a filesystem row is prepared"))
+    monkeypatch.setattr(checks, "check_root", lambda root: pytest.fail("only a filesystem row is checked"))
 
     await checks.prepare_artifact_provider(_row(kind, id="other"))
 

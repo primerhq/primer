@@ -26,6 +26,7 @@ from primer.artifact.checks import (
     check_artifact_provider_delete,
     check_artifact_provider_update,
     check_artifact_provider_write,
+    filesystem_root_is_new,
     prepare_artifact_provider,
 )
 from primer.artifact.probe import probe_artifact_provider
@@ -57,10 +58,11 @@ def _refuse_an_unbuildable_default(entity: ArtifactStorageProvider) -> None:
         _raise_check(exc, kind="artifact_storage_provider")
 
 
-async def _prepare(entity: ArtifactStorageProvider) -> None:
-    """Prepare the row's location (a filesystem root and its marker): 422 ``artifact_root_unusable`` naming ``config.root`` when it cannot be."""
+async def _prepare(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider | None = None) -> None:
+    """Prepare a new filesystem root (and its marker), or check the one the stored row already names: 422 ``artifact_root_unusable`` naming
+    ``config.root`` when it is unusable."""
     try:
-        await prepare_artifact_provider(entity)
+        await prepare_artifact_provider(entity, existing)
     except EntityCheckError as exc:
         _raise_check(exc, kind="artifact_storage_provider")
 
@@ -81,7 +83,7 @@ async def _pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorage
         await check_artifact_provider_update(request.app.state.storage_provider, entity, existing)
     except EntityCheckError as exc:
         _raise_check(exc, kind="artifact_storage_provider")
-    await _prepare(entity)
+    await _prepare(entity, existing)
 
 
 async def _reject_reserved_delete(entity_id: str, request: Request) -> None:
@@ -144,6 +146,7 @@ async def test_artifact_storage_draft(
     body: _ArtifactStorageDraft,
     request: Request,
 ) -> dict[str, Any]:
+    stored = None
     try:
         draft = ArtifactStorageProvider.model_validate(
             body.model_dump(exclude_none=True),
@@ -154,13 +157,14 @@ async def test_artifact_storage_draft(
                 preserve_masked_secrets(draft, stored)
     except Exception as exc:  # noqa: BLE001 - a partial draft is a 200 diagnostic
         return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
-    # A draft is tested as it would be saved: its location is prepared first (a filesystem root is created and given its marker), as the
-    # create will. The saved-row Test below does not prepare: it checks what every process will find.
+    # A draft is tested as it would be saved: a NEW filesystem root is prepared first (created and given its marker), as the create or the
+    # edit will. The root the stored row already names is not: the save would only check it, and so does the probe's initialize. The
+    # saved-row Test below never prepares: it checks what every process will find.
     return (
         await probe_artifact_provider(
             draft,
             storage_provider=request.app.state.storage_provider,
-            prepare=True,
+            prepare=filesystem_root_is_new(draft, stored),
         )
     ).as_dict()
 

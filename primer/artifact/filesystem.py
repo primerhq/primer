@@ -113,14 +113,34 @@ def _write_atomic(path: Path, payload: bytes) -> None:
         raise
 
 
+#: Entries that do not make a folder "hold files" for :func:`prepare_root`: the ``lost+found`` of a freshly formatted volume, and the
+#: temporary files an interrupted preparation leaves.
+_NOT_CONTENT_PREFIXES = (".primer-write-probe-", "." + ROOT_MARKER + ".")
+
+
+def _holds_content(root: str) -> bool:
+    try:
+        names = os.listdir(root)
+    except OSError as exc:
+        raise ConfigError(f"artifact root {root!r} cannot be listed: {_reason(exc)}") from exc
+    return any(name != "lost+found" and not name.startswith(_NOT_CONTENT_PREFIXES) for name in names)
+
+
 def prepare_root(root: str) -> None:
     """Make ``root`` usable: create it when missing, check that it takes a write, and write the marker when it has none.
 
-    Run when a provider is created or edited, and by a draft Test. Raises :class:`ConfigError` naming the root.
+    Run when a provider is created, when an edit changes its root, and by a draft Test of a new root. An existing folder that already holds
+    files and has no marker is refused (a typo guard: ``/``, ``/etc``, an application's data folder). Raises :class:`ConfigError` naming the
+    root.
     """
     _require_absolute(root)
     if os.path.lexists(root) and not os.path.isdir(root):
         raise ConfigError(f"artifact root {root!r} is not a directory")
+    if os.path.isdir(root) and not (Path(root) / ROOT_MARKER).is_file() and _holds_content(root):
+        raise ConfigError(
+            f"artifact root {root!r} already holds files and has no {ROOT_MARKER} marker, so it is not an artifact folder; "
+            "name a new or empty folder"
+        )
     try:
         os.makedirs(root, exist_ok=True)
     except OSError as exc:
@@ -142,9 +162,12 @@ def _root_missing(root: str) -> ConfigError:
 
 
 def _marker_missing(root: str) -> ConfigError:
+    # It never says to save the provider again: a save prepared the root, which on a pod without the volume wrote the marker into the pod's own
+    # empty mount point (review of #890, item 5). An update that keeps the root now only checks it; a marker is written for a NEW root.
     return ConfigError(
-        f"artifact root {root!r} has no {ROOT_MARKER} marker in this process, so it is not the folder the provider was prepared on; "
-        "mount the shared artifact volume here in every server pod, or save the provider again to prepare the folder"
+        f"artifact root {root!r} has no {ROOT_MARKER} marker in this process, so the shared artifact volume is not mounted here: mount the "
+        "shared artifact volume at this path in every server pod (the API and every worker). A new store starts in a new or empty folder: "
+        "register a provider with that root"
     )
 
 
