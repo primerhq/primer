@@ -35,8 +35,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from pydantic_core import to_jsonable_python
+
 from primer.int.claim import ClaimKind
-from primer.model.except_ import NotFoundError, PrimerError
+from primer.model.except_ import ConflictError, NotFoundError, PrimerError
 from primer.model.workspace_session import (
     MACHINE_ATTRIBUTION_KEY,
     PEER_PAYLOAD_KEY,
@@ -51,6 +53,7 @@ from primer.session.persistence import WorkspaceMessageWriter, WorkspaceWriteTim
 from primer.session.reset import OnlyAPersonReopens, _reopen_ended_locked
 from primer.session.seq_reservation import reserve_next_seq
 from primer.session.title import derive_title_from_text
+from primer.storage import raw_generation
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +99,7 @@ class SessionWakeDeps:
 class SessionWakeReceipt:
     """How a routed wake handled its instruction after taking the lock."""
 
-    outcome: Literal["woken", "queued", "skipped_busy"] = "woken"
+    outcome: Literal["woken", "queued", "skipped_busy", "gone"] = "woken"
 
 
 async def _reopen_a_stale_ended_slot(slot: Any) -> None:
@@ -195,6 +198,7 @@ async def wake_session(
     open_turn: Literal["queue", "skip"] = "queue",
     receipt: SessionWakeReceipt | None = None,
     by_a_person: bool | None = None,
+    queued_message_id: str | None = None,
 ) -> WorkspaceSession:
     """Append ``instruction`` (if any) and re-arm the session's claim.
 
@@ -250,155 +254,211 @@ async def wake_session(
     any of them realized from the queue later) does not restart a session
     that ended as ``cancelled``: only a person's message does, so that one
     raises :class:`~primer.session.reset.OnlyAPersonReopens` (a ConflictError)
-    before anything is written. Serialised against concurrent
-    cancel/pause/resume via the session lifecycle lock so the ``turn_status``
-    flip + status transition never interleave with a racing cancel's ENDED
-    write.
+    before anything is written. Taken under the session lifecycle lock, which
+    serialises a wake against a cancel, pause or resume of THIS process only:
+    every decision below is also fenced in the data, so it holds across
+    processes (the API pod and the worker pods).
 
     The pause hold below stores a held message through ``store_pending_steer``,
     which refuses a message from another session when the queue is full: that
     raises ``PendingQueueFull`` (a ConflictError) out of this function, before
     anything is written, and the pause stays as it was.
 
-    A routed caller may pass ``receipt`` after deciding an earlier row was
-    idle. The row is then read again under the lifecycle lock, and a plain
-    text instruction that now finds an open turn is queued (or skipped when
-    ``open_turn="skip"``) instead of writing a second USER_INPUT. The receipt
-    reports that late routing decision to the caller. Internal realizations
-    of an already-pending message omit it because they are the turn-boundary
-    action that must write the next USER_INPUT.
+    One turn per wake (audit G7-03). A routed caller passes ``receipt``
+    (``deliver_steer``, the REST steer route, the drain's realize). For a
+    plain text instruction the wake then decides the open turn on the row
+    read under the lock: a turn that is armed, running or parked, or older
+    messages still waiting in the pending queue, defer the message (queued, or
+    ``skipped_busy`` when ``open_turn="skip"``); and an idle turn is armed by
+    ONE conditional write of the row (``turn_status`` idle -> claimable,
+    fenced on the ``last_seq``, status and pause flag it read, which also
+    reserves the USER_INPUT's seq) BEFORE the USER_INPUT is written. Of two
+    wakes of one idle session in any two processes exactly one write lands;
+    the other reads the row again, finds the turn armed and defers its message.
+    The receipt reports that decision. The USER_INPUT is written AT the
+    reserved seq, never seeded from a row read earlier. A wake without a
+    receipt, or one carrying per-turn tools or attachment parts (which the
+    queue cannot hold), still writes its USER_INPUT whatever the turn's state,
+    as it always did, at a seq reserved the same way.
+
+    ``queued_message_id`` is the drain realizing the queue head (the
+    instruction IS that queued message): where another wake would be queued,
+    it is left where it is (the receipt says ``queued``), nothing is stored
+    again, and the receipt says ``gone`` when another drain delivered it
+    since it was read. The caller deletes the queued row only when the
+    receipt says ``woken``.
+
+    The closing write of the wake is ONE ``patch_if`` of the fields it owns,
+    fenced on the status it decided from: a Cancel or a pause that landed on
+    another process since wins, and the session is not woken.
     """
     sent_by_a_person = human_intent if by_a_person is None else by_a_person
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
+    # A plain text instruction from a routed caller can wait in the pending queue, so the open turn is decided for it here (see the docstring).
+    # Calls carrying per-turn tools or attachment parts stay on their existing path: PendingSessionMessage cannot represent those payloads.
+    routed = (
+        receipt is not None
+        and bool(instruction)
+        and external_tools is None
+        and not extra_parts
+        and not extra_payload
+    )
+    # A wake that reopens an ENDED session starts its next invocation with this message, whatever an earlier invocation left queued (the turn
+    # boundary after it realizes that): an ended session is always woken (route_steer).
+    reopened = False
     async with session_lifecycle_lock().acquire(session_id):
-        row = await sessions.get(session_id)
-        if row is None or row.workspace_id != workspace_id:
-            raise NotFoundError(
-                f"Session {session_id!r} does not exist on workspace "
-                f"{workspace_id!r}"
-            )
-        if row.status == SessionStatus.ENDED:
-            # An operator's Cancel sticks (lead ruling R4, and ruling 1 of the G7 fixes): a message no person wrote does not undo it.
-            # ``_reopen_ended_locked`` decides it first, here under the lifecycle lock and on the row just read, so a Cancel that landed after
-            # any earlier look is seen; a person's message (``by_a_person``) still reopens.
-            # Reopen the ended session in place so a NEW message restarts it
-            # (reopen slot + invocation divider + ENDED->CREATED). We hold the
-            # non-reentrant session_lifecycle_lock, and reset_session acquires
-            # the SAME lock -- calling it here would deadlock -- so we share
-            # its lock-free reopen body via _reopen_ended_locked. The helper
-            # raises ConflictError for non-restartable ended_reasons. After
-            # this, row is CREATED and the normal wake flow below appends the
-            # USER_INPUT (after the divider) and runs the turn.
-            #
-            # The guard that reports a failed write as "the workspace was
-            # removed" wraps only the writes INTO the workspace (the slot reopen
-            # and the divider), which the helper takes as a factory. It must not
-            # wrap the helper whole: that also calls the database (the
-            # workspace_lost recheck, the workspace lookup, the row update), and
-            # a refused pool connection is an OSError, so it was reported as the
-            # removal of a workspace nobody had touched.
-            row, _invocation = await _reopen_ended_locked(
-                row=row,
-                workspace_id=workspace_id,
-                session_id=session_id,
-                sessions=sessions,
-                workspace_registry=deps.workspace_registry,
-                by_a_person=sent_by_a_person,
-                workspace_write=lambda: _workspace_write(
-                    deps, workspace_id=workspace_id, what=f"reopening session {session_id!r}",
-                ),
-            )
-            # Surface the invocation divider live before the USER_INPUT tick
-            # below (mirrors reset_session's divider tick). Advisory.
-            if deps.event_bus is not None:
-                try:
-                    await deps.event_bus.publish(
-                        f"session:{session_id}:tick", {"seq": row.last_seq}
-                    )
-                except Exception:  # noqa: BLE001 -- advisory
-                    logger.exception(
-                        "wake_session: failed to publish divider tick for %s",
-                        session_id,
-                    )
-
-        if (row.pause_requested or row.status == SessionStatus.PAUSED) and not human_intent:
-            # 01a08c08: the operator paused this session on purpose; a
-            # non-human wake (trigger fire, agent-to-agent steer, a
-            # queued message replaying) must not be the thing that
-            # silently un-pauses it. The pause is on purpose whether it
-            # landed while a turn ran (pause_requested: the worker honours
-            # the flag at the next turn boundary and writes PAUSED, the flag
-            # still set) or while the session was idle (the pause route
-            # writes PAUSED straight onto a CREATED or WAITING row and sets
-            # no flag), so either one holds the session.
-            # Queue the instruction through the
-            # SAME pending-message mechanism deliver_steer already uses
-            # for a busy session (store_pending_steer / realize_next_
-            # pending), rather than forcing a resume nobody asked for or
-            # dropping the message outright. No wake write happens here
-            # -- pause_requested, status, and turn_status all stay exactly
-            # as they were; only last_seq moves, by the seq the
-            # PAUSE_SUPERSEDED record below reserves and, when the queue is
-            # full, by the seq store_pending_steer reserves for the record
-            # that announces the dropped message (ticket 01a11cd8).
-            pending_id = None
-            if instruction:
-                # Deferred: pending_messages.py imports wake_session from
-                # this module, so a top-level import here would cycle.
-                from primer.session.pending_messages import store_pending_steer
-
-                pending = await store_pending_steer(
-                    storage_provider=deps.storage_provider,
-                    session=row,
-                    text=instruction,
-                    workspace_registry=deps.workspace_registry,
-                    event_bus=deps.event_bus,
-                    # The sender and hop count ride the queue (pivot P3): realize_next_pending hands them back to the wake that
-                    # delivers this message, or a reply chain would restart at hop 1 each time a pause held it. So does whether a person
-                    # wrote it (G7 ruling 1): a held trigger message must not reopen a session cancelled before it is realized.
-                    attribution=queued_attribution(peer, by_a_person=sent_by_a_person),
+        for _attempt in range(_ARM_ATTEMPTS):
+            row = await sessions.get(session_id)
+            if row is None or row.workspace_id != workspace_id:
+                raise NotFoundError(
+                    f"Session {session_id!r} does not exist on workspace "
+                    f"{workspace_id!r}"
                 )
-                pending_id = pending.id
-            await _record_pause_superseded(
-                deps, workspace_id=workspace_id, session_id=session_id,
-                row=row, action="queued", pending_id=pending_id,
-            )
-            if receipt is not None:
-                receipt.outcome = "queued"
-            return row
+            if row.status == SessionStatus.ENDED:
+                # An operator's Cancel sticks (lead ruling R4, and ruling 1 of the G7 fixes): a message no person wrote does not undo it.
+                # ``_reopen_ended_locked`` decides it first, here under the lifecycle lock and on the row just read, so a Cancel that landed after
+                # any earlier look is seen; a person's message (``by_a_person``) still reopens.
+                # Reopen the ended session in place so a NEW message restarts it
+                # (reopen slot + invocation divider + ENDED->CREATED). We hold the
+                # non-reentrant session_lifecycle_lock, and reset_session acquires
+                # the SAME lock -- calling it here would deadlock -- so we share
+                # its lock-free reopen body via _reopen_ended_locked. The helper
+                # raises ConflictError for non-restartable ended_reasons. After
+                # this, row is CREATED and the normal wake flow below appends the
+                # USER_INPUT (after the divider) and runs the turn.
+                #
+                # The guard that reports a failed write as "the workspace was
+                # removed" wraps only the writes INTO the workspace (the slot reopen
+                # and the divider), which the helper takes as a factory. It must not
+                # wrap the helper whole: that also calls the database (the
+                # workspace_lost recheck, the workspace lookup, the row update), and
+                # a refused pool connection is an OSError, so it was reported as the
+                # removal of a workspace nobody had touched.
+                row, _invocation = await _reopen_ended_locked(
+                    row=row,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    sessions=sessions,
+                    workspace_registry=deps.workspace_registry,
+                    by_a_person=sent_by_a_person,
+                    workspace_write=lambda: _workspace_write(
+                        deps, workspace_id=workspace_id, what=f"reopening session {session_id!r}",
+                    ),
+                )
+                reopened = True
+                # Surface the invocation divider live before the USER_INPUT tick
+                # below (mirrors reset_session's divider tick). Advisory.
+                if deps.event_bus is not None:
+                    try:
+                        await deps.event_bus.publish(
+                            f"session:{session_id}:tick", {"seq": row.last_seq}
+                        )
+                    except Exception:  # noqa: BLE001 -- advisory
+                        logger.exception(
+                            "wake_session: failed to publish divider tick for %s",
+                            session_id,
+                        )
 
-        # The routing read in deliver_steer and the REST steer path happens
-        # before this lock. Another wake can arm the target in that gap. Make
-        # the decisive open-turn read here, beside the canonical USER_INPUT
-        # write, so only the first wake starts the turn and every later plain
-        # text instruction follows the pending-message path. Calls carrying
-        # per-turn tools or attachment parts stay on their existing path:
-        # PendingSessionMessage cannot represent those payloads.
-        if (
-            receipt is not None
-            and instruction
-            and external_tools is None
-            and not extra_parts
-            and not extra_payload
-        ):
-            from primer.session.steer_routing import ROUTE_PENDING, route_steer
-
-            if route_steer(row) == ROUTE_PENDING:
-                if open_turn == "skip":
-                    receipt.outcome = "skipped_busy"
+            if (row.pause_requested or row.status == SessionStatus.PAUSED) and not human_intent:
+                # 01a08c08: the operator paused this session on purpose; a
+                # non-human wake (trigger fire, agent-to-agent steer, a
+                # queued message replaying) must not be the thing that
+                # silently un-pauses it. The pause is on purpose whether it
+                # landed while a turn ran (pause_requested: the worker honours
+                # the flag at the next turn boundary and writes PAUSED, the flag
+                # still set) or while the session was idle (the pause route
+                # writes PAUSED straight onto a CREATED or WAITING row and sets
+                # no flag), so either one holds the session.
+                # Queue the instruction through the
+                # SAME pending-message mechanism deliver_steer already uses
+                # for a busy session (store_pending_steer / realize_next_
+                # pending), rather than forcing a resume nobody asked for or
+                # dropping the message outright. No wake write happens here
+                # -- pause_requested, status, and turn_status all stay exactly
+                # as they were; only last_seq moves, by the seq the
+                # PAUSE_SUPERSEDED record below reserves and, when the queue is
+                # full, by the seq store_pending_steer reserves for the record
+                # that announces the dropped message (ticket 01a11cd8).
+                if queued_message_id is not None:
+                    # The drain realizing a message that is already queued: it stays where it is (its place is its order) and nothing is
+                    # written; it is realized at a turn boundary after the pause is lifted.
+                    if receipt is not None:
+                        receipt.outcome = "queued"
                     return row
-                from primer.session.pending_messages import store_pending_steer
+                pending_id = None
+                if instruction:
+                    # Deferred: pending_messages.py imports wake_session from
+                    # this module, so a top-level import here would cycle.
+                    from primer.session.pending_messages import store_pending_steer
 
-                await store_pending_steer(
-                    storage_provider=deps.storage_provider,
-                    session=row,
-                    text=instruction,
-                    workspace_registry=deps.workspace_registry,
-                    event_bus=deps.event_bus,
-                    attribution=queued_attribution(peer, by_a_person=sent_by_a_person),
+                    pending = await store_pending_steer(
+                        storage_provider=deps.storage_provider,
+                        session=row,
+                        text=instruction,
+                        workspace_registry=deps.workspace_registry,
+                        event_bus=deps.event_bus,
+                        # The sender and hop count ride the queue (pivot P3): realize_next_pending hands them back to the wake that
+                        # delivers this message, or a reply chain would restart at hop 1 each time a pause held it. So does whether a person
+                        # wrote it (G7 ruling 1): a held trigger message must not reopen a session cancelled before it is realized.
+                        attribution=queued_attribution(peer, by_a_person=sent_by_a_person),
+                    )
+                    pending_id = pending.id
+                await _record_pause_superseded(
+                    deps, workspace_id=workspace_id, session_id=session_id,
+                    row=row, action="queued", pending_id=pending_id,
                 )
-                receipt.outcome = "queued"
+                if receipt is not None:
+                    receipt.outcome = "queued"
                 return row
+
+            if routed:
+                # The routing read of deliver_steer and of the REST steer path happens before this lock, and the lock is this process's alone.
+                # Decide again on the row just read: a turn that is armed, running or parked, or older messages still waiting in the queue (a
+                # new message never overtakes one: audit G7-03 (b)), defer this one. The drain realizing the queue head is that head, so it
+                # does not wait behind itself; nor does a message that just reopened an ended session (see ``reopened``).
+                from primer.session.pending_messages import has_queued_messages
+                from primer.session.steer_routing import ROUTE_PENDING, route_steer
+
+                queued = queued_message_id is None and not reopened and await has_queued_messages(deps.storage_provider, session_id)
+                if route_steer(row, queued=queued) == ROUTE_PENDING:
+                    return await _defer_routed(
+                        deps, row=row, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
+                        receipt=receipt, queued_message_id=queued_message_id,
+                    )
+                if queued_message_id is not None and not await _still_queued(deps.storage_provider, queued_message_id):
+                    # Another drain (a turn's checkpoint, the queue sweep) delivered this message after it was read: never twice.
+                    receipt.outcome = "gone"
+                    return row
+
+            if not instruction:
+                decided = row
+                break
+            # ONE conditional write decides the turn and reserves the USER_INPUT's seq (audit G7-03 (a) and (c)). It is fenced on the row just
+            # read (its last_seq, status and pause flag) and, for a routed wake, on the turn being idle and the session not parked; it flips the
+            # turn claimable in the same statement. Of two wakes of one idle session, in any two processes, exactly one write lands: the other
+            # is refused, reads the row again above, finds the turn armed and defers its message. A refusal from any other change (a record
+            # that took the next seq, a Cancel, a pause) is decided again the same way. Nothing has been written when it is refused.
+            armed = await _arm_or_reserve(sessions, row, arm=routed)
+            if armed is not None:
+                decided, row = row, armed
+                break
+        else:
+            # Every attempt was overtaken by another writer. A plain routed message is queued (the next turn boundary, or the queue sweep,
+            # delivers it: never lost, never a second USER_INPUT); a call carrying tools or parts cannot be queued, so it is refused.
+            fresh = await sessions.get(session_id)
+            if fresh is None or fresh.workspace_id != workspace_id:
+                raise NotFoundError(
+                    f"Session {session_id!r} does not exist on workspace "
+                    f"{workspace_id!r}"
+                )
+            if not routed:
+                raise ConflictError(
+                    f"Session {session_id!r} kept changing while the message was being delivered; nothing was written, retry"
+                )
+            return await _defer_routed(
+                deps, row=fresh, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
+                receipt=receipt, queued_message_id=queued_message_id,
+            )
 
         # 1. Append the user message to the on-disk slot FIFO (the queue) and
         #    persist a USER_INPUT record to messages.jsonl so the sent message
@@ -407,55 +467,56 @@ async def wake_session(
         #    the USER_INPUT record is written even when the slot is absent
         #    (mirrors the chat lane's append_user_message + reset_session's
         #    divider write via WorkspaceMessageWriter). Exactly one record per
-        #    supplied instruction, so a steer/invoke never double-records.
+        #    supplied instruction, so a steer/invoke never double-records. It is
+        #    written AT the seq the conditional write above reserved (never
+        #    seeded from a row read earlier: audit G7-03 (c)).
         user_input_seq: int | None = None
         if instruction:
-            ws = await deps.workspace_registry.get_workspace(workspace_id)
-            # get_workspace() itself is already defended against a
-            # concurrently-destroyed workspace (WorkspaceRegistry.get_workspace
-            # / the local backend's _reattach both degrade a gone/mid-teardown
-            # workspace to a clean NotFoundError). But once a live `ws` handle
-            # is in hand, a workspace DELETE racing this same wake_session can
-            # still tear down the on-disk root out from under the writes below
-            # (WorkspaceRegistry.destroy: pop-from-cache -> aclose -> rmtree,
-            # not serialised against a caller already holding `ws`). That is
-            # not a real internal error, so _workspace_write maps it to the same
-            # NotFoundError this function already raises for "workspace not
-            # found" rather than letting it surface as an unhandled 500: a
-            # filesystem OSError always, and any other failure (the local state
-            # repo's git command failing in a directory that is gone) when the
-            # registry says the workspace is gone or going (T0716).
-            async with _workspace_write(
-                deps, workspace_id=workspace_id, what=f"writing session {session_id!r}'s instruction",
-            ):
-                slot = await ws.get_session(session_id)
-                if slot is not None:
-                    await _reopen_a_stale_ended_slot(slot)
-                    await slot.append_instruction(
-                        instruction, extra_parts=extra_parts,
+            try:
+                ws = await deps.workspace_registry.get_workspace(workspace_id)
+                # get_workspace() itself is already defended against a
+                # concurrently-destroyed workspace (WorkspaceRegistry.get_workspace
+                # / the local backend's _reattach both degrade a gone/mid-teardown
+                # workspace to a clean NotFoundError). But once a live `ws` handle
+                # is in hand, a workspace DELETE racing this same wake_session can
+                # still tear down the on-disk root out from under the writes below
+                # (WorkspaceRegistry.destroy: pop-from-cache -> aclose -> rmtree,
+                # not serialised against a caller already holding `ws`). That is
+                # not a real internal error, so _workspace_write maps it to the same
+                # NotFoundError this function already raises for "workspace not
+                # found" rather than letting it surface as an unhandled 500: a
+                # filesystem OSError always, and any other failure (the local state
+                # repo's git command failing in a directory that is gone) when the
+                # registry says the workspace is gone or going (T0716).
+                async with _workspace_write(
+                    deps, workspace_id=workspace_id, what=f"writing session {session_id!r}'s instruction",
+                ):
+                    slot = await ws.get_session(session_id)
+                    if slot is not None:
+                        await _reopen_a_stale_ended_slot(slot)
+                        await slot.append_instruction(
+                            instruction, extra_parts=extra_parts,
+                        )
+                    writer = WorkspaceMessageWriter(
+                        workspace_io=ws, session_id=session_id, start_seq=row.last_seq - 1,
                     )
-                writer = WorkspaceMessageWriter(
-                    workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
-                )
-                user_input_seq = await writer.append(SessionMessageRecord(
-                    seq=1,  # overwritten by the writer's monotonic counter
-                    kind=SessionMessageKind.USER_INPUT,
-                    payload={
-                        "text": instruction,
-                        **(extra_payload or {}),
-                        **({PEER_PAYLOAD_KEY: peer.model_dump(mode="json")} if peer is not None else {}),
-                    },
-                    created_at=datetime.now(timezone.utc),
-                ))
-                await writer.flush()
-
-        # Replace the active external tool set for the turn this wake
-        # triggers (None = leave the set unchanged; [] = clear it). Dumped
-        # by_alias so the stored dicts carry the wire "schema" key.
-        if external_tools is not None:
-            row.external_tools = [
-                d.model_dump(by_alias=True) for d in external_tools
-            ]
+                    user_input_seq = await writer.append(SessionMessageRecord(
+                        seq=1,  # overwritten by the writer's monotonic counter: the reserved seq
+                        kind=SessionMessageKind.USER_INPUT,
+                        payload={
+                            "text": instruction,
+                            **(extra_payload or {}),
+                            **({PEER_PAYLOAD_KEY: peer.model_dump(mode="json")} if peer is not None else {}),
+                        },
+                        created_at=datetime.now(timezone.utc),
+                    ))
+                    await writer.flush()
+            except BaseException:
+                if routed:
+                    # The turn this wake armed has no message: give it back, so the session is not left armed with nothing to answer (the
+                    # reserved seq stays a gap, which readers tolerate). A message the drain was realizing stays queued (realize_next_pending).
+                    await _disarm(sessions, session_id, reserved_seq=row.last_seq)
+                raise
 
         # 2. Re-arm the scheduler-visible row: claimable + clear pause;
         #    CREATED/PAUSED/WAITING advance to RUNNING (like /resume).
@@ -465,41 +526,16 @@ async def wake_session(
         # silently. was_paused is recorded below via PAUSE_SUPERSEDED so an
         # operator returning to the session can see that their pause was
         # superseded, and by what.
-        was_paused = row.pause_requested
-        # A human who writes after pressing Stop has re-engaged, so that message wins over the
-        # earlier Stop: left on the row, the flag would stop the very turn their message starts,
-        # before its first token. Only when no turn is executing: a message sent WHILE a turn runs
-        # is queued behind it, and the Stop is aimed at that running turn. And only a human's
-        # message, never an automated wake (a trigger must not override a human's Stop).
-        if human_intent and instruction and row.turn_status != "running":
-            row.interrupt_requested = False
-        row.turn_status = "claimable"
-        row.pause_requested = False
-        row.pause_requested_at = None
-        if instruction:
-            # The hop count of the message that starts this turn: a peer's, else 0. A person, a trigger and a channel start a fresh chain, so
-            # the count never carries from one chain into the next. It rides this write, which is the one that arms the turn.
-            row.peer_hops = peer.hops if peer is not None else 0
-        if user_input_seq is not None:
-            row.last_seq = user_input_seq
-        # Name the session from its opening instruction, once. Sessions
-        # are the only conversational surface now, so the session list
-        # needs the same readable titles the chat list had; a later
-        # rename by the user must never be overwritten, hence the
-        # None check rather than a blanket restamp.
-        if instruction and row.name is None:
-            row.name = derive_title_from_text(instruction)
-        if row.status in _RESUMABLE:
-            row.status = SessionStatus.RUNNING
-            if row.started_at is None:
-                row.started_at = datetime.now(timezone.utc)
-        if row.last_turn_error is not None:
-            # A row that carries a failure (C-024) is RUNNING with no lease row in the instant before the claim below is armed (a rested session this
-            # wake moves to RUNNING), or already is (a failure exit that stamped and never finished), and its old start would make it what the
-            # stuck-session sweeper reaps (turn 0, no lease, past the grace). The sweeper may be on another pod, so the fence is in the data:
-            # restart the clock its age check reads and its write is fenced on, WHATEVER the status was.
-            row.started_at = datetime.now(timezone.utc)
-        await sessions.update(row)
+        was_paused = decided.pause_requested
+        landed = await _write_the_wake(
+            sessions, row, decided=decided, instruction=instruction, human_intent=human_intent, peer=peer,
+            external_tools=external_tools,
+        )
+        if landed is None:
+            # A Cancel or a pause landed on the row after the decision (on any process): it wins, the session is not woken. A message already
+            # written stays in the log, answered when the session is resumed or reopened.
+            return await sessions.get(session_id) or row
+        row = landed
 
         # 3. Pulse the scheduler + claim engine so a worker runs the turn.
         await deps.scheduler.enqueue(session_id)
@@ -534,6 +570,170 @@ async def wake_session(
                 row=row, action="cleared", pending_id=None,
             )
         return row
+
+
+#: How many times a wake decides again after its conditional write was refused (another writer moved the row since its read). A refusal is a
+#: real change each time (a turn armed, a record's seq taken, a Cancel, a pause), so a handful is plenty; the routed message is queued after that.
+_ARM_ATTEMPTS = 5
+
+
+async def _arm_or_reserve(sessions: Any, row: WorkspaceSession, *, arm: bool) -> WorkspaceSession | None:
+    """Reserve seq ``row.last_seq + 1`` for the wake's USER_INPUT and, with ``arm``, flip the idle turn claimable, in ONE guarded ``patch_if``.
+
+    Fenced on the row as read: its ``last_seq`` (the reservation), ``status`` and ``pause_requested`` (what the pause hold and the reopen
+    decided from) and, with ``arm``, ``turn_status`` idle and no park (the turn is open to arm). Returns the row as written, or ``None`` when the
+    fence was refused (the row changed: nothing was written). A row that is gone raises ``NotFoundError``.
+    """
+    where: dict[str, list[Any]] = {
+        "last_seq": [raw_generation(row, "last_seq")],
+        "status": [raw_generation(row, "status")],
+        "pause_requested": [raw_generation(row, "pause_requested")],
+    }
+    patch: dict[str, Any] = {"last_seq": row.last_seq + 1}
+    if arm:
+        where["turn_status"] = ["idle"]
+        where["parked_status"] = [None]
+        patch["turn_status"] = "claimable"
+    return await sessions.patch_if(row.id, patch, where=where)
+
+
+async def _disarm(sessions: Any, session_id: str, *, reserved_seq: int) -> None:
+    """Give back a turn this wake armed and could not write the message of: claimable -> idle, fenced on the arm still being this wake's (the
+    reserved seq is the row's ``last_seq`` and the turn is still claimable). Best effort and logged: the failure being reported is the caller's."""
+    try:
+        undone = await sessions.patch_if(
+            session_id, {"turn_status": "idle"}, where={"turn_status": ["claimable"], "last_seq": [reserved_seq]},
+        )
+    except Exception:  # noqa: BLE001 -- the write failure the caller re-raises is the one to report
+        logger.warning("wake_session: could not give back the turn armed for session %s", session_id, exc_info=True)
+        return
+    if undone is None:
+        logger.warning(
+            "wake_session: the turn armed for session %s moved on before it could be given back (its message was not written)", session_id,
+        )
+
+
+async def _still_queued(storage_provider: Any, pending_id: str) -> bool:
+    """Whether the queued message ``pending_id`` is still in the queue (no other drain delivered it since it was read)."""
+    from primer.model.workspace_session import PendingSessionMessage
+
+    return await storage_provider.get_storage(PendingSessionMessage).get(pending_id) is not None
+
+
+async def _defer_routed(
+    deps: SessionWakeDeps,
+    *,
+    row: WorkspaceSession,
+    instruction: str,
+    peer: PeerAttribution | None,
+    by_a_person: bool,
+    open_turn: str,
+    receipt: SessionWakeReceipt,
+    queued_message_id: str | None,
+) -> WorkspaceSession:
+    """The routed message waits: the turn is open, or older messages are queued. ``skip`` drops it; a message the drain is realizing stays where
+    it is in the queue; any other is stored at the back of the queue, carrying its sender (``queued_attribution``)."""
+    if queued_message_id is not None:
+        receipt.outcome = "queued"
+        return row
+    if open_turn == "skip":
+        receipt.outcome = "skipped_busy"
+        return row
+    from primer.session.pending_messages import store_pending_steer
+
+    await store_pending_steer(
+        storage_provider=deps.storage_provider,
+        session=row,
+        text=instruction,
+        workspace_registry=deps.workspace_registry,
+        event_bus=deps.event_bus,
+        attribution=queued_attribution(peer, by_a_person=by_a_person),
+    )
+    receipt.outcome = "queued"
+    return row
+
+
+async def _write_the_wake(
+    sessions: Any,
+    row: WorkspaceSession,
+    *,
+    decided: WorkspaceSession,
+    instruction: str | None,
+    human_intent: bool,
+    peer: PeerAttribution | None,
+    external_tools: "list | None",
+) -> WorkspaceSession | None:
+    """The fields a wake owns, in ONE ``patch_if`` fenced on the status the wake decided from: never a whole-row write of a copy read earlier,
+    which put back whatever another process committed since (a Cancel's flag, a release's park, a reservation's ``last_seq``).
+
+    ``row`` is the row as the conditional arm wrote it (or as read, for a wake without an instruction); ``decided`` is the row the decision was
+    made on, before the arm flipped the turn. Returns the row as written, or ``None`` when a Cancel or a pause took the row since (it wins; a turn
+    this wake armed is given back to idle on a paused row, so a person's next message still resumes it). Any other change is written over
+    again from a fresh read, a bounded number of times.
+    """
+    for _ in range(_ARM_ATTEMPTS):
+        fields: dict[str, Any] = {
+            "turn_status": "claimable",
+            "pause_requested": False,
+            "pause_requested_at": None,
+        }
+        # Replace the active external tool set for the turn this wake
+        # triggers (None = leave the set unchanged; [] = clear it). Dumped
+        # by_alias so the stored dicts carry the wire "schema" key.
+        if external_tools is not None:
+            fields["external_tools"] = [d.model_dump(by_alias=True) for d in external_tools]
+        # A human who writes after pressing Stop has re-engaged, so that message wins over the
+        # earlier Stop: left on the row, the flag would stop the very turn their message starts,
+        # before its first token. Only when no turn is executing: a message sent WHILE a turn runs
+        # is queued behind it, and the Stop is aimed at that running turn. And only a human's
+        # message, never an automated wake (a trigger must not override a human's Stop).
+        if human_intent and instruction and decided.turn_status != "running":
+            fields["interrupt_requested"] = False
+        if instruction:
+            # The hop count of the message that starts this turn: a peer's, else 0. A person, a trigger and a channel start a fresh chain, so
+            # the count never carries from one chain into the next. It rides this write, which is the one that arms the turn.
+            fields["peer_hops"] = peer.hops if peer is not None else 0
+        # Name the session from its opening instruction, once. Sessions
+        # are the only conversational surface now, so the session list
+        # needs the same readable titles the chat list had; a later
+        # rename by the user must never be overwritten, hence the
+        # None check rather than a blanket restamp.
+        if instruction and row.name is None:
+            fields["name"] = derive_title_from_text(instruction)
+        now = datetime.now(timezone.utc)
+        if row.status in _RESUMABLE:
+            fields["status"] = SessionStatus.RUNNING
+            if row.started_at is None:
+                fields["started_at"] = now
+        if row.last_turn_error is not None:
+            # A row that carries a failure (C-024) is RUNNING with no lease row in the instant before the claim below is armed (a rested session this
+            # wake moves to RUNNING), or already is (a failure exit that stamped and never finished), and its old start would make it what the
+            # stuck-session sweeper reaps (turn 0, no lease, past the grace). The sweeper may be on another pod, so the fence is in the data:
+            # restart the clock its age check reads and its write is fenced on, WHATEVER the status was.
+            fields["started_at"] = now
+        try:
+            written = await sessions.patch_if(
+                row.id, to_jsonable_python(fields), where={"status": [raw_generation(row, "status")]},
+            )
+        except NotFoundError:
+            return None
+        if written is not None:
+            return written
+        fresh = await sessions.get(row.id)
+        if fresh is None:
+            return None
+        if fresh.status == SessionStatus.ENDED or (fresh.status == SessionStatus.PAUSED and decided.status != SessionStatus.PAUSED):
+            logger.info(
+                "wake_session: session %s was %s after the wake decided; it is not woken", row.id, fresh.status.value,
+            )
+            if fresh.status == SessionStatus.PAUSED and fresh.turn_status == "claimable":
+                await sessions.patch_if(
+                    row.id, {"turn_status": "idle"}, where={"turn_status": ["claimable"], "status": [SessionStatus.PAUSED.value]},
+                )
+            return None
+        row = fresh
+    logger.warning("wake_session: session %s kept changing under the wake's closing write; it was not written", row.id)
+    return None
 
 
 async def _record_pause_superseded(

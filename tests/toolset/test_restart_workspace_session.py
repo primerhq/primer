@@ -89,6 +89,18 @@ class _Storage:
         self._data[row.id] = row
         return row
 
+    async def patch_if(self, sid, patch=None, *, where, set_paths=None, conn=None):
+        # The storage contract's guarded field write (a wake reserves its USER_INPUT's seq with one: audit G7-03), with the reference semantics.
+        from tests.storage._patch_reference import patch_model
+
+        current = self._data.get(sid)
+        if current is None:
+            raise NotFoundError(f"no entity with id {sid!r}")
+        updated = patch_model(current, patch, where=where, set_paths=set_paths)
+        if updated is not None:
+            self._data[sid] = updated
+        return updated
+
 
 class _SP:
     async def get_system_state(self):

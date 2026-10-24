@@ -703,6 +703,9 @@ async def run_one_session_turn(
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
+            # Last: a wake that sees the turn idle finds every record of it on the row, and the drain below realizes the queue head into an
+            # idle turn, as every other wake does (audit G7-03).
+            await _clear_turn_running(session_storage, session_id)
         # Every failed turn is announced, ended or resting: ``session.ended`` is only for an ended one, and a session that rests after a
         # transport failure would otherwise fail without a word on the event log (C-024). First, so a consumer that reacts to
         # ``session.ended`` already has the failure that ended it.
@@ -733,6 +736,9 @@ async def run_one_session_turn(
     # in-line, so a mid-turn cancel on a wide fan-out could leave sibling
     # node tasks running in the background for a tick or few.
     turn_events = executor.invoke([])
+    # Set where the stream falls through to the cancelled or the clean-completion exit below: those exits flip the turn back to idle
+    # themselves, as the LAST write of their terminal block, so the finally leaves it to them (audit G7-03, see _clear_turn_running).
+    terminal_block_clears_running = False
     try:
         async for event in turn_events:
             # agent_phase (01a04d91-a7a0): inspect the RAW event, before
@@ -805,6 +811,7 @@ async def run_one_session_turn(
         # turn was interrupted: take the soft exit below, not the clean-completion path.
         if executor_owns_interrupt and getattr(executor, "was_interrupted", False):
             cancel_requested = True
+        terminal_block_clears_running = True
 
     except YieldToWorker as park:
         # ------------------------------------------------------------------
@@ -1319,6 +1326,7 @@ async def run_one_session_turn(
         # cancelled exit: a re-raise would drop it, the pool's convergence skips a row that is already ENDED, and ``on_release``
         # would write a terminal ERROR record.
         cancel_requested = True
+        terminal_block_clears_running = True
         if _task_now is not None:
             while _task_now.cancelling() > _entered_cancelling:
                 _task_now.uncancel()
@@ -1356,99 +1364,109 @@ async def run_one_session_turn(
             pass
         if delta_buffer is not None:
             await delta_buffer.aclose()
-        # The one chokepoint this comment already promises (park, error,
-        # cancel and clean exits all run this finally) - reuse it to clear
-        # turn_status back to "idle" for all four, rather than repeating
-        # the clear at each of their own separate terminal-transition lock
-        # blocks below. _clear_turn_running no-ops if turn_status isn't
-        # "running" (e.g. a wake_session() raced in "claimable" during this
-        # turn's cleanup), so it can never stomp a fresh claim.
+        # Every exit that leaves from inside the try (a park, the failure exit, an exception) has done its terminal writes by now, so the turn
+        # goes back to "idle" here (the failure exit already did it, last in its terminal block, before its drain). The cancelled and the
+        # clean-completion exits fall through to below and do it themselves, last in their terminal blocks: a wake on another process that
+        # sees the row idle must find every record of the turn already on it (its last_seq, the cursor), or its USER_INPUT repeats a seq the
+        # turn wrote and lands before the turn's terminal record (audit G7-03 (c)). _clear_turn_running no-ops if turn_status isn't
+        # "running" (a wake that armed the next turn), so it can never stomp a fresh claim.
+        if not terminal_block_clears_running:
+            async with session_lifecycle_lock().acquire(session_id):
+                await _clear_turn_running(session_storage, session_id)
+
+    # The exits below flip the turn back to idle as the last write of their terminal block (see the finally above). Anything that raises
+    # before that block has run must not leave the row "running" for ever (no wake would arm it again): it is put back to idle on the way
+    # out, as the finally did for every exit before.
+    try:
+        # A Cancel that landed AFTER the stream's last event (the model's terminal event is in, the
+        # executor ended normally) was never seen by the loops above: an executor that owns the Stop
+        # event does not have dispatch break on a set event, and none of them was waiting. Left alone
+        # the turn would complete WAITING with cancel_requested still set ("I cancelled it and nothing
+        # happened"). The row is the truth, so ask it before taking the clean-completion path.
+        if not cancel_requested:
+            late = await session_storage.get(session_id)
+            if late is not None and late.cancel_requested and late.status != SessionStatus.ENDED:
+                cancel_requested = True
+
+        # ------------------------------------------------------------------
+        # 5b. Cancel path: write CANCELLED record, transition row to ENDED
+        # ------------------------------------------------------------------
+        if cancel_requested:
+            return await _finish_despite_cancel(_land_cancelled_turn(
+                deps, session, executor=executor, writer=writer, turn_log=turn_log,
+                started_at=_turn_started_at,
+            ))
+
+        # ------------------------------------------------------------------
+        # 6. Clean completion: an agent turn's DONE record is written by
+        #    translate_stream_event; a GRAPH run's end record (a node-less done,
+        #    primer.session.graph_end) is appended here. Then flush, final tick,
+        #    then transition the scheduler-visible row based on what the
+        #    executor did.
+        # ------------------------------------------------------------------
+        # A graph run's stream ends with the End node's output: none of its records ends the graph's turn (they all carry a node_id), so the graph's own end
+        # is appended here, after everything the stream wrote and flushed with it, as the one terminal of the turn (primer.session.graph_end). An agent turn has none.
+        last_done_reason = getattr(executor, "last_done_reason", None)
+        await _flush_and_tick(deps, writer, session_id, graph_end_for(last_done_reason, executor))
+
+        agent_status = await _read_agent_session_status(executor)
+        new_status, ended_reason = _post_turn_status(
+            last_done_reason, agent_status,
+            autonomous=session_is_autonomous(session),
+        )
+        # _post_turn_status returns ended_reason "completed", "failed" or None
+        # (dispatch.py:833-842: max_tokens / content_filter park the session in
+        # WAITING with no ended_reason). Only "failed" is a failure; a None
+        # reason means the turn ran to a clean stop the session can continue
+        # from, so it counts as completed. (Observed after the lock below: a
+        # Cancel can still turn this turn into a cancelled one.)
+        # Serialize the terminal transition + interrupt-flag clear against a
+        # concurrent resume/pause/cancel/interrupt API call (T0432-style lost
+        # update; see primer.session.mutation_lock). A clean completion can
+        # still carry a stale interrupt_requested (e.g. the interrupt fired
+        # too late to be observed by this turn's cancel_event check), so clear
+        # it here too -- every terminal path must, or it leaks into a future
+        # turn and can downgrade a later genuine Cancel to a Stop.
+        late_cancel = False
+        written: _TerminalWrite | None = None
+        async with session_lifecycle_lock().acquire(session_id):
+            # The Cancel route takes this same lock, so the row read here cannot be stale: a Cancel that
+            # landed in the window since the check above wins over whatever the turn's own stop reason
+            # mapped to (a cancelled session must not come to rest WAITING).
+            locked = await session_storage.get(session_id)
+            if locked is not None and locked.cancel_requested and locked.status != SessionStatus.ENDED:
+                # A cancelled turn, not a completed one with a different status: it takes the SAME exit as
+                # every other cancelled turn (the CANCELLED record, the cancelled metric, no reply event, no
+                # relay), which re-decides and writes inside its own acquisition of this lock below.
+                late_cancel = True
+            else:
+                written = await _transition_session_status(
+                    session_storage,
+                    session,
+                    new_status=new_status,
+                    ended_reason=ended_reason,
+                    executor=executor,
+                    expected_epoch=session.binding_epoch,
+                )
+                await _clear_interrupt_requested(session_storage, session_id)
+                await _persist_last_seq(session_storage, session_id, writer.last_seq)
+                await _advance_drain_cursor(session_storage, session_id)
+                # Only now, with every record of the turn on the row, may a wake see the turn idle (audit G7-03 (c)).
+                await _clear_turn_running(session_storage, session_id)
+                # Last write of the block: present means the cursor already advanced. Not for a row another path
+                # ended meanwhile (the turn's own write was skipped).
+                if not _ended_by_another_path(written, new_status, ended_reason):
+                    await _mark_turn_completed(session_storage, session_id, session.turn_no)
+
+        if late_cancel:
+            return await _finish_despite_cancel(_land_cancelled_turn(
+                deps, session, executor=executor, writer=writer, turn_log=turn_log,
+                started_at=_turn_started_at,
+            ))
+    except BaseException:
         async with session_lifecycle_lock().acquire(session_id):
             await _clear_turn_running(session_storage, session_id)
-
-    # A Cancel that landed AFTER the stream's last event (the model's terminal event is in, the
-    # executor ended normally) was never seen by the loops above: an executor that owns the Stop
-    # event does not have dispatch break on a set event, and none of them was waiting. Left alone
-    # the turn would complete WAITING with cancel_requested still set ("I cancelled it and nothing
-    # happened"). The row is the truth, so ask it before taking the clean-completion path.
-    if not cancel_requested:
-        late = await session_storage.get(session_id)
-        if late is not None and late.cancel_requested and late.status != SessionStatus.ENDED:
-            cancel_requested = True
-
-    # ------------------------------------------------------------------
-    # 5b. Cancel path — write CANCELLED record, transition row to ENDED
-    # ------------------------------------------------------------------
-    if cancel_requested:
-        return await _finish_despite_cancel(_land_cancelled_turn(
-            deps, session, executor=executor, writer=writer, turn_log=turn_log,
-            started_at=_turn_started_at,
-        ))
-
-    # ------------------------------------------------------------------
-    # 6. Clean completion: an agent turn's DONE record is written by
-    #    translate_stream_event; a GRAPH run's end record (a node-less done,
-    #    primer.session.graph_end) is appended here. Then flush, final tick,
-    #    then transition the scheduler-visible row based on what the
-    #    executor did.
-    # ------------------------------------------------------------------
-    # A graph run's stream ends with the End node's output: none of its records ends the graph's turn (they all carry a node_id), so the graph's own end
-    # is appended here, after everything the stream wrote and flushed with it, as the one terminal of the turn (primer.session.graph_end). An agent turn has none.
-    last_done_reason = getattr(executor, "last_done_reason", None)
-    await _flush_and_tick(deps, writer, session_id, graph_end_for(last_done_reason, executor))
-
-    agent_status = await _read_agent_session_status(executor)
-    new_status, ended_reason = _post_turn_status(
-        last_done_reason, agent_status,
-        autonomous=session_is_autonomous(session),
-    )
-    # _post_turn_status returns ended_reason "completed", "failed" or None
-    # (dispatch.py:833-842: max_tokens / content_filter park the session in
-    # WAITING with no ended_reason). Only "failed" is a failure; a None
-    # reason means the turn ran to a clean stop the session can continue
-    # from, so it counts as completed. (Observed after the lock below: a
-    # Cancel can still turn this turn into a cancelled one.)
-    # Serialize the terminal transition + interrupt-flag clear against a
-    # concurrent resume/pause/cancel/interrupt API call (T0432-style lost
-    # update; see primer.session.mutation_lock). A clean completion can
-    # still carry a stale interrupt_requested (e.g. the interrupt fired
-    # too late to be observed by this turn's cancel_event check), so clear
-    # it here too -- every terminal path must, or it leaks into a future
-    # turn and can downgrade a later genuine Cancel to a Stop.
-    late_cancel = False
-    written: _TerminalWrite | None = None
-    async with session_lifecycle_lock().acquire(session_id):
-        # The Cancel route takes this same lock, so the row read here cannot be stale: a Cancel that
-        # landed in the window since the check above wins over whatever the turn's own stop reason
-        # mapped to (a cancelled session must not come to rest WAITING).
-        locked = await session_storage.get(session_id)
-        if locked is not None and locked.cancel_requested and locked.status != SessionStatus.ENDED:
-            # A cancelled turn, not a completed one with a different status: it takes the SAME exit as
-            # every other cancelled turn (the CANCELLED record, the cancelled metric, no reply event, no
-            # relay), which re-decides and writes inside its own acquisition of this lock below.
-            late_cancel = True
-        else:
-            written = await _transition_session_status(
-                session_storage,
-                session,
-                new_status=new_status,
-                ended_reason=ended_reason,
-                executor=executor,
-                expected_epoch=session.binding_epoch,
-            )
-            await _clear_interrupt_requested(session_storage, session_id)
-            await _persist_last_seq(session_storage, session_id, writer.last_seq)
-            await _advance_drain_cursor(session_storage, session_id)
-            # Last write of the block: present means the cursor already advanced. Not for a row another path
-            # ended meanwhile (the turn's own write was skipped).
-            if not _ended_by_another_path(written, new_status, ended_reason):
-                await _mark_turn_completed(session_storage, session_id, session.turn_no)
-
-    if late_cancel:
-        return await _finish_despite_cancel(_land_cancelled_turn(
-            deps, session, executor=executor, writer=writer, turn_log=turn_log,
-            started_at=_turn_started_at,
-        ))
+        raise
 
     assert written is not None   # the only other branch above returned
     # The row was ended by something else while the turn finished (a force-delete, the pool's preempt
@@ -1978,6 +1996,7 @@ async def _land_cancelled_turn(
             else:
                 ended_reason = fresh.ended_reason
                 await _mirror_ended_row_onto_slot(session, fresh, executor=executor, workspace_registry=None)
+                await _clear_turn_running(session_storage, session_id)
         else:
             is_interrupt = not fresh.cancel_requested
             reason = _STOP_REASON if is_interrupt else _CANCEL_REASON
@@ -2001,6 +2020,9 @@ async def _land_cancelled_turn(
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
+            # Only now, with the CANCELLED record and every other record of the turn on the row, may a wake see the turn idle (audit
+            # G7-03 (c)).
+            await _clear_turn_running(session_storage, session_id)
             # Last write of the block: present means the cursor already advanced. Not for a row another path
             # ended meanwhile (the turn's own write was skipped), as in the early branch above.
             if own_outcome:
@@ -3076,32 +3098,30 @@ async def _clear_turn_running(session_storage, session_id: str) -> None:
     ``agent_phase_stamped_at``) to idle.
 
     The counterpart to the "set running" write made right before
-    build_executor (step 2). Called from the finally block guarding the
-    streaming phase (covers park/error/cancel/clean-completion - the four
-    ways a turn that reached streaming can end) and from both pre-streaming
-    exits (build-executor failure, executor-is-None) that return before
-    that finally is ever reached.
+    build_executor (step 2). Every exit of a turn calls it, and WHERE is the
+    point (audit G7-03 (c)): idle is what lets a wake on any process arm the
+    next turn and write its USER_INPUT at the row's next seq, so the turn
+    flips idle only once everything it wrote is on the row. The failure, the
+    cancelled and the clean-completion exits call it as the last write of
+    their terminal block (after the records, ``last_seq`` and the cursor;
+    before ``completed_turn_no``, which stays the block's last word); the
+    park exits and the pre-streaming exits (build-executor failure,
+    executor-is-None) through the streaming phase's finally or their own
+    block; and an exception before a terminal block ran through the safety
+    net after the finally.
 
     Only clears when turn_status is CURRENTLY "running" - never when it
-    reads "claimable" - so a wake_session() that raced in a fresh claim
-    during this turn's own cleanup is never stomped back to idle and
-    stranded (the exact bug the claimable-consume step earlier in this
-    function exists to avoid). Always called from inside a
-    ``session_lifecycle_lock`` critical section, matching every other
-    read-modify-write in this module - belt-and-suspenders alongside the
-    ``update_unless`` guard below, not a substitute for it: the
-    ``fresh.turn_status == "running"`` check is a CHEAP EARLY EXIT on a
-    snapshot (mirrors primer.session.yields.durably_mark_session_resumable's
-    own two-layer pattern - see its docstring), not the safety guarantee
-    itself. The actual guarantee is ``update_unless``, which the backend
-    evaluates against the row's CURRENT ``turn_status`` in the same
-    statement as the write - so even a wake_session() that lands in the
-    gap between this function's own read and write (the lock reduces but
-    does not by itself prove there is no such gap across every caller)
-    is still caught atomically, not by a stale Python-side snapshot.
+    reads "claimable" - so a wake that armed the next turn (on this process
+    or another) is never stomped back to idle and stranded. ONE field-scoped
+    ``patch_if`` guarded on ``turn_status == "running"``: the backend
+    evaluates the guard against the row's current value in the same
+    statement as the write, and nothing else on the row is written, so a
+    field another process committed since (a reserved ``last_seq``, a Cancel
+    flag) is never put back. Called inside a ``session_lifecycle_lock``
+    critical section, which serialises it with this process only.
 
     A worker that hard-crashes (OOM kill, pod eviction) between the
-    "running" write and reaching either of these cleanup points never
+    "running" write and reaching any of these cleanup points never
     calls this - the row is left at turn_status="running" with a real
     turn_started_at. primer.workspace.session_reconcile.
     reconcile_sessions_to_workspace_lost covers the case where the crash
@@ -3110,23 +3130,24 @@ async def _clear_turn_running(session_storage, session_id: str) -> None:
     leaves the workspace reachable is not covered by any reconciler today
     and would need a dedicated lease-staleness sweep to catch.
     """
-    fresh = await session_storage.get(session_id)
-    if fresh is None or fresh.turn_status != "running":
+    try:
+        await session_storage.patch_if(
+            session_id,
+            {
+                "turn_status": "idle",
+                "turn_started_at": None,
+                # agent_phase is scoped to "while a turn is genuinely running"
+                # (its own docstring) - clear it in the same write, same guard,
+                # so it can never survive past the turn_status it's a
+                # finer-grained sub-state of.
+                "agent_phase": None,
+                "agent_phase_turn_no": None,
+                "agent_phase_stamped_at": None,
+            },
+            where={"turn_status": ["running"]},
+        )
+    except NotFoundError:
         return
-    updated = fresh.model_copy(update={
-        "turn_status": "idle",
-        "turn_started_at": None,
-        # agent_phase is scoped to "while a turn is genuinely running"
-        # (its own docstring) - clear it in the same write, same guard,
-        # so it can never survive past the turn_status it's a
-        # finer-grained sub-state of.
-        "agent_phase": None,
-        "agent_phase_turn_no": None,
-        "agent_phase_stamped_at": None,
-    })
-    await session_storage.update_unless(
-        updated, field="turn_status", forbidden="claimable",
-    )
 
 
 async def _write_agent_phase(

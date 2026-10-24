@@ -438,8 +438,9 @@ class TestTheCancelArmDecidesInsideTheLock:
             async def __aenter__(self):
                 if state["armed"]:
                     state["acquisitions"] += 1
-                    # The first lock after the stream ends clears turn_status; the SECOND is the cancel arm's.
-                    if state["acquisitions"] == 2 and not state["injected"]:
+                    # The stream ends into the cancel arm, which flips turn_status back to idle itself, last in its own block (audit
+                    # G7-03): the finally takes no lock on that path, so the FIRST lock after the stream ends is the cancel arm's.
+                    if state["acquisitions"] == 1 and not state["injected"]:
                         state["injected"] = True
                         row = await sessions.get(sid)
                         row.cancel_requested = True

@@ -78,6 +78,18 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        # The storage contract's guarded field write (a wake arms its turn with one: audit G7-03), with the reference semantics.
+        from tests.storage._patch_reference import patch_model
+
+        current = self._data.get(id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {id!r}")
+        updated = patch_model(current, patch, where=where, set_paths=set_paths)
+        if updated is not None:
+            self._data[id] = updated
+        return updated
+
     async def delete(self, id):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")

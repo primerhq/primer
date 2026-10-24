@@ -370,6 +370,9 @@ async def test_a_queued_message_is_realized_in_the_order_it_arrived_each_with_it
             storage_provider=world.sp, workspace_id="ws-1", session_id="ses-b", wake_deps=world.wake_deps(),
         ) is True
         seen.append((await world.sessions.get("ses-b")).peer_hops)
+        # The turn the message armed runs and ends (its exit flips the turn back to idle): the next boundary realizes the next message. While the
+        # turn is armed a realize leaves it queued (one USER_INPUT per armed turn, audit G7-03).
+        await world.sessions.patch_if("ses-b", {"turn_status": "idle"}, where={"turn_status": ["claimable"]})
     assert seen == [2, 6]
     assert [(r["payload"]["text"], r["payload"]["peer"]["hops"]) for r in _user_inputs(world, "ses-b")] == [("first", 2), ("second", 6)]
 
@@ -385,20 +388,22 @@ async def test_a_plain_queued_message_realizes_without_a_peer_and_resets_the_cha
     assert "peer" not in _user_inputs(world, "ses-b")[-1]["payload"]
 
 
-async def test_a_realized_message_for_a_session_that_was_paused_since_is_requeued_with_its_attribution():
-    """The drain replays a queued message as a non-human wake, so a pause that landed meanwhile holds it again: the hop count must survive that."""
+async def test_a_realized_message_for_a_session_that_was_paused_since_stays_queued_with_its_attribution():
+    """The drain replays a queued message as a non-human wake, so a pause that landed meanwhile holds it: it stays where it is, the same row (it
+    used to be stored again, at the back of the queue), and the hop count survives."""
     world = make_world()
     row = await seed_session(world, sid="ses-b", status=SessionStatus.PAUSED, turn_no=1, peer_hops=1)
     queued = PEER.model_copy(update={"hops": 5})
-    await store_pending_steer(
+    stored = await store_pending_steer(
         storage_provider=world.sp, session=row, text=TEXT, workspace_registry=world.registry, attribution=queued.as_attribution(),
     )
     assert await realize_next_pending(
         storage_provider=world.sp, workspace_id="ws-1", session_id="ses-b", wake_deps=world.wake_deps(),
-    ) is True
+    ) is False
     after = await world.sessions.get("ses-b")
     assert (after.status, after.peer_hops) == (SessionStatus.PAUSED, 1)
     pending = await _pending(world)
+    assert [p.id for p in pending] == [stored.id]
     assert [p.attribution for p in pending] == [{"peer": queued.model_dump(mode="json")}]
     assert [p.parts for p in pending] == [[{"type": "text", "text": TEXT}]]
     assert _user_inputs(world, "ses-b") == []
@@ -531,8 +536,10 @@ async def test_the_real_workspace_lost_reconcile_of_a_parked_session_leaves_it_e
 
 async def test_a_steer_in_the_window_where_end_session_has_written_ended_but_not_released_loses_no_message():
     """``WorkerPool._end_session`` writes ENDED while the row still carries its park (the release clears it later), then realizes ONE queued steer through
-    ``wake_session``. A steer that lands in that window finds an ENDED row: it reopens the session itself, and the steer ``_end_session`` realizes right
-    after is written behind it. Both reach the session, the park is gone, nothing stays queued, and the claim is armed once for the pool to re-arm."""
+    ``wake_session``. A steer that lands in that window finds an ENDED row: it reopens the session itself and arms its turn. The steer ``_end_session``
+    realizes right after finds that turn armed and stays queued, at the head, for the boundary of the turn the steer started (one USER_INPUT per armed
+    turn, audit G7-03; it used to be written behind the steer as a second message for the same turn). Both reach the session, one turn each, the park
+    is gone, and the claim is armed once for the pool to re-arm."""
     from primer.session.dispatch import realize_queued_steer
 
     world = make_world(with_bus=True)
@@ -554,12 +561,21 @@ async def test_a_steer_in_the_window_where_end_session_has_written_ended_but_not
         claim_engine=world.engine, workspace_registry=world.registry, event_bus=world.bus,
     )
 
-    assert await _pending(world) == []
-    delivered = {r["payload"]["text"]: r["payload"].get("peer") for r in _user_inputs(world, "ses-b")}
-    assert set(delivered) == {"arrives in the window", "queued while it was parked"}
-    assert delivered["queued while it was parked"]["hops"] == 2, "the queued message lost its attribution"
+    assert [r["payload"]["text"] for r in _user_inputs(world, "ses-b")] == ["arrives in the window"], "one USER_INPUT for the armed turn"
+    assert [p.parts[0]["text"] for p in await _pending(world)] == ["queued while it was parked"]
     after = await world.sessions.get("ses-b")
     assert (after.status, after.turn_status, after.parked_status) == (SessionStatus.RUNNING, "claimable", None)
+
+    # The turn the steer started ends (its exit flips it back to idle) and its boundary realizes the queued message, with its attribution.
+    await world.sessions.patch_if("ses-b", {"turn_status": "idle"}, where={"turn_status": ["claimable"]})
+    await realize_queued_steer(
+        storage_provider=world.sp, workspace_id="ws-1", session_id="ses-b", scheduler=world.scheduler,
+        claim_engine=world.engine, workspace_registry=world.registry, event_bus=world.bus,
+    )
+    assert await _pending(world) == []
+    delivered = [(r["payload"]["text"], r["payload"].get("peer")) for r in _user_inputs(world, "ses-b")]
+    assert [text for text, _ in delivered] == ["arrives in the window", "queued while it was parked"]
+    assert delivered[1][1]["hops"] == 2, "the queued message lost its attribution"
 
 
 @pytest.mark.parametrize("turn_status", ["running", "claimable"])
@@ -585,8 +601,9 @@ async def test_a_binding_switch_queued_on_the_parked_session_waits_for_the_turn_
 
     ``_end_session`` applies the queued switch with the guard that the row is still ENDED, then realizes one queued steer. A steer that lands between
     the ENDED write and that guard reopens the session itself, so the guard no longer holds: the switch is not applied and stays queued. The turn that
-    answers the steer and the queued message therefore runs under the OUTGOING binding, and the switch applies at the checkpoint after it. Applying it
-    before the reopen would need a variant of the applier that does not take the lifecycle lock the wake already holds.
+    answers the steer therefore runs under the OUTGOING binding; the queued message waits for that turn's boundary (one USER_INPUT per armed turn,
+    audit G7-03), where the switch applies first and the message then runs under the INCOMING binding. Applying the switch before the reopen would
+    need a variant of the applier that does not take the lifecycle lock the wake already holds.
     """
     from primer.session.dispatch import apply_queued_binding_switch, realize_queued_steer
 
@@ -612,14 +629,23 @@ async def test_a_binding_switch_queued_on_the_parked_session_waits_for_the_turn_
     )
     answering = await world.sessions.get("ses-b")
     assert answering.pending_binding_switch == request, "the guard (the row is ENDED) no longer held, so the switch stays queued"
-    assert (answering.binding.agent_id, answering.binding_epoch) == ("agent-ses-b", 0), "the turn that answers both messages runs under the outgoing binding"
-    assert {r["payload"]["text"] for r in _user_inputs(world, "ses-b")} == {"arrives in the window", "queued while it was parked"}
+    assert (answering.binding.agent_id, answering.binding_epoch) == ("agent-ses-b", 0), "the turn that answers the steer runs under the outgoing binding"
+    assert [r["payload"]["text"] for r in _user_inputs(world, "ses-b")] == ["arrives in the window"]
+    assert [p.parts[0]["text"] for p in await _pending(world)] == ["queued while it was parked"]
 
-    # The checkpoint after that turn applies it: the turn ran, so the session has no park.
+    # The checkpoint after that turn (its exit flipped it back to idle) applies the switch, then realizes the queued message: the turn ran, so the
+    # session has no park, and the message runs under the incoming binding.
+    await world.sessions.patch_if("ses-b", {"turn_status": "idle"}, where={"turn_status": ["claimable"]})
     await apply_queued_binding_switch(storage_provider=world.sp, workspace_io=io, session_id="ses-b")
     switched = await world.sessions.get("ses-b")
     assert switched.pending_binding_switch is None
     assert (switched.binding.agent_id, switched.binding_epoch) == ("builder", 1)
+    await realize_queued_steer(
+        storage_provider=world.sp, workspace_id="ws-1", session_id="ses-b", scheduler=world.scheduler,
+        claim_engine=world.engine, workspace_registry=world.registry, event_bus=world.bus,
+    )
+    assert [r["payload"]["text"] for r in _user_inputs(world, "ses-b")] == ["arrives in the window", "queued while it was parked"]
+    assert await _pending(world) == []
 
 
 # ---- a full queue refuses a peer message, whichever way it would be queued (lead ruling R1 on #788) -----------------------------------

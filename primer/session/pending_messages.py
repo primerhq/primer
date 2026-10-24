@@ -26,7 +26,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from primer.model.except_ import ConflictError
+from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import (
     MACHINE_ATTRIBUTION_KEY,
@@ -37,7 +37,7 @@ from primer.model.workspace_session import (
     SessionMessageRecord,
     WorkspaceSession,
 )
-from primer.session.enqueue import OnlyAPersonReopens, wake_session
+from primer.session.enqueue import OnlyAPersonReopens, SessionWakeReceipt, wake_session
 from primer.session.persistence import WorkspaceMessageWriter
 from primer.session.seq_reservation import reserve_next_seq
 
@@ -55,9 +55,6 @@ _MAX_PENDING_PER_SESSION = 50
 # Why a message was dropped, as the PAUSE_SUPERSEDED record says it (the console shows "queued message dropped (<reason>): <text>").
 _REASON_CAP = f"pending queue exceeded {_MAX_PENDING_PER_SESSION}"
 _REASON_CANCELLED = "the session was cancelled, and a message no person wrote does not reopen it"
-_REASON_QUEUE_FULL = (
-    f"the pending queue is full ({_MAX_PENDING_PER_SESSION}), and a message from another session does not evict a person's"
-)
 
 _OLDEST_FIRST = [
     OrderBy(field="enqueued_at", direction="asc"),
@@ -100,6 +97,22 @@ def _text_of(row: PendingSessionMessage) -> str:
         p.get("text", "") for p in row.parts
         if isinstance(p, dict) and p.get("type") == "text" and p.get("text")
     )
+
+
+async def has_queued_messages(storage_provider: Any, session_id: str) -> bool:
+    """Whether ``session_id`` has a message waiting in its pending queue: a new message then goes behind it (``route_steer``'s ``queued``).
+
+    One read of at most one row. A storage that cannot be read answers False (logged): the conditional arm in ``wake_session`` still keeps two
+    wakes from arming one turn, so the worst a failed read costs is the order of two messages, never a second USER_INPUT for a turn.
+    """
+    try:
+        page = await storage_provider.get_storage(PendingSessionMessage).find(
+            _queued_for(session_id), OffsetPage(offset=0, length=1), order_by=_OLDEST_FIRST,
+        )
+    except Exception:  # noqa: BLE001 - see above: ordering only, never a second turn
+        logger.warning("pending_messages: could not read the queue of session %s; routing as if it were empty", session_id, exc_info=True)
+        return False
+    return bool(page.items)
 
 
 async def _queue_is_full(storage: Any, session_id: str) -> bool:
@@ -287,9 +300,22 @@ async def realize_next_pending(
 ) -> bool:
     """Realize the oldest queued steer into a real turn.
 
-    Returns True when a row was realized and the session woken. The row
-    is deleted before the wake so a crash between the two loses the
-    follow-up rather than replaying it forever.
+    Returns True when a row was realized and the session woken. The realize
+    takes the same conditional path as every routed wake (audit G7-03 (b)):
+    ``wake_session`` is handed the row's id (``queued_message_id``) and a
+    receipt, and arms the turn with ONE conditional write of the session row
+    (idle -> claimable) before it writes the USER_INPUT. A session that is
+    busy again (another wake armed it since the turn ended), paused, or whose
+    message another drain already delivered, keeps the row where it is, at
+    the head of the queue, and this returns False: nothing is written and the
+    next turn boundary (or the queue sweep) realizes it.
+
+    The row is deleted only AFTER its wake landed (audit G7-14): a crash, a
+    workspace that refuses the write, or any other failure between the read
+    and the wake leaves the message queued instead of losing it. The cost is
+    the other side of that trade: a crash after the USER_INPUT is written and
+    before the delete delivers the message a second time, at the next
+    realize.
 
     A message that came from another session carries its sender and hop
     count in ``attribution`` (pivot P3); they go back into the wake, so the
@@ -302,12 +328,12 @@ async def realize_next_pending(
     A message the session then refuses is dropped, on the record, and the drain goes on to the next row (lead rulings R4 and R1): the session was
     cancelled and no person wrote the message (another session sent it, or a trigger fire or a tool call queued it: the row's attribution says so),
     and only a person's message reopens a cancelled session (:class:`~primer.session.reset.OnlyAPersonReopens`; ruling 1 of the G7 fixes extends R4
-    from peers to every message no person wrote); or the pause that now holds a peer's message found the queue full again and a peer does not evict
-    a person's steer (:class:`PendingQueueFull`). The wake is still a replay (``human_intent=False``: it does not clear a pause that landed since),
+    from peers to every message no person wrote). The wake is still a replay (``human_intent=False``: it does not clear a pause that landed since),
     but a person's steer is woken as written by a person (``by_a_person``), so it reopens a cancelled session as the lead's ruling on ticket 01a1120e
     has it. The drop is announced like a cap drop, and it does not use up the checkpoint: the person's steer queued behind it is still realized now,
     because no later checkpoint will come for a session that stays ended. Nothing else is skipped: the rows behind a realized one wait for the next
-    checkpoint, as ever.
+    checkpoint, as ever. (A pause that landed since no longer stores the message again: it stays in its place, so the hold can no longer find the
+    queue full and drop it.)
     """
     while True:
         realized = await _realize_oldest(
@@ -324,7 +350,8 @@ async def _realize_oldest(
     session_id: str,
     wake_deps: Any,
 ) -> bool | None:
-    """One pass of :func:`realize_next_pending`: the oldest row, woken or dropped. ``None`` is a row the session refused and this dropped: look at the next."""
+    """One pass of :func:`realize_next_pending`: the oldest row, woken, left or dropped. ``None`` is a row the session refused and this dropped:
+    look at the next."""
     storage = storage_provider.get_storage(PendingSessionMessage)
     page = await storage.find(_queued_for(session_id), OffsetPage(offset=0, length=1), order_by=_OLDEST_FIRST)
     rows = list(page.items)
@@ -332,16 +359,17 @@ async def _realize_oldest(
         return False
     row = rows[0]
     text = _text_of(row)
-    await storage.delete(row.id)
     if not text:
         # Reaped rather than left at the head of the queue, where it
         # would block every later follow-up behind an empty wake.
+        await _delete_queued(storage, row.id)
         return False
     peer = None
     try:
         peer = PeerAttribution.from_attribution(row.attribution)
     except ValidationError:
         logger.warning("realize: ignoring a malformed peer attribution on pending row %s", row.id)
+    receipt = SessionWakeReceipt()
     try:
         await wake_session(
             workspace_id=workspace_id,
@@ -357,9 +385,12 @@ async def _realize_oldest(
             by_a_person=_written_by_a_person(row.attribution),
             peer=peer,
             deps=wake_deps,
+            queued_message_id=row.id,
+            receipt=receipt,
         )
-    except (OnlyAPersonReopens, PendingQueueFull) as refusal:
+    except OnlyAPersonReopens as refusal:
         logger.info("realize: dropped a queued message on %s (%s)", session_id, type(refusal).__name__)
+        await _delete_queued(storage, row.id)
         await _record_dropped_pending(
             workspace_registry=wake_deps.workspace_registry,
             event_bus=wake_deps.event_bus,
@@ -368,10 +399,24 @@ async def _realize_oldest(
             session_id=session_id,
             dropped_text=text,
             enqueued_at=row.enqueued_at,
-            reason=_REASON_CANCELLED if isinstance(refusal, OnlyAPersonReopens) else _REASON_QUEUE_FULL,
+            reason=_REASON_CANCELLED,
         )
         return None
+    if receipt.outcome != "woken":
+        # Busy again, paused, or already delivered by another drain: the message stays where it is (see realize_next_pending).
+        logger.info("realize: left the queued message %s of session %s in place (%s)", row.id, session_id, receipt.outcome)
+        return False
+    # Only now that the wake landed (its USER_INPUT is written and the turn armed) does the message leave the queue (audit G7-14).
+    await _delete_queued(storage, row.id)
     return True
 
 
-__all__ = ["PendingQueueFull", "realize_next_pending", "store_pending_steer"]
+async def _delete_queued(storage: Any, pending_id: str) -> None:
+    """Delete one queued row; one that is already gone (another drain delivered it, a session delete took it) is not an error."""
+    try:
+        await storage.delete(pending_id)
+    except NotFoundError:
+        logger.debug("pending_messages: queued row %s was already gone", pending_id)
+
+
+__all__ = ["PendingQueueFull", "has_queued_messages", "realize_next_pending", "store_pending_steer"]

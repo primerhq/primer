@@ -69,10 +69,13 @@ Four rules make that safe:
   goes on to the next row, so a person's steer queued behind it is still
   realized. A message that lands
   between `_end_session`'s ENDED write and the switch application reopens the
-  session itself, so the applier's `{"status": ["ended"]}` guard no longer holds
-  and the switch stays queued: it applies at the checkpoint after the turn that
-  answers that message and the realized one, which therefore runs under the
-  OUTGOING binding (`tests/session/test_peer_attribution.py` pins it).
+  session itself and arms its turn, so the applier's `{"status": ["ended"]}`
+  guard no longer holds and the switch stays queued; the steer `_end_session`
+  then realizes finds that turn armed and stays queued too (one USER_INPUT per
+  armed turn, see "One run per session"). The turn that answers the message
+  therefore runs under the OUTGOING binding, and at its boundary the switch
+  applies first and the queued steer then runs under the incoming one
+  (`tests/session/test_peer_attribution.py` pins it).
 - **The switch itself is ONE protocol for every caller of
   `apply_binding_switch`, under the session's lifecycle lock (held by the
   caller; the function never takes it): reserve, append, fence.** (1) RESERVE
@@ -183,6 +186,39 @@ Four rules make that safe:
   when there is none, each drop announced by a `PAUSE_SUPERSEDED` `dropped`
   record: a peer never pushes a person's steer out, even when two senders pass
   the check together.
+- **One turn per wake (audit G7-03).** Two wakes of one idle session arm ONE
+  turn, in any two processes: a routed wake (`deliver_steer`, the REST steer
+  route, the drain's realize; a plain text message) decides the open turn with
+  ONE conditional write of the row, `patch_if` of `turn_status` idle ->
+  claimable plus `last_seq` + 1, fenced on the `last_seq`, `status` and
+  `pause_requested` it read and on no park, BEFORE it writes the USER_INPUT,
+  which it writes AT that reserved seq. The other wake's write is refused; it
+  reads the row again, finds the turn armed and queues its message (or reports
+  `skipped_busy` for `if_idle`). The process-local `session_lifecycle_lock` is
+  only an optimisation. A message never overtakes an older queued one:
+  `route_steer` counts a non-empty pending queue as busy (except for an ENDED
+  session, which the message reopens, and a PAUSED one, which a person's
+  message resumes). The drain's realize takes the same path, handing
+  `wake_session` the queued row's id: a turn that is armed again, a pause, or
+  another drain that already delivered the row leave it where it is, at the
+  head of the queue, and the row is deleted only after its wake landed (a
+  crash between the USER_INPUT and the delete delivers it a second time at
+  the next realize; nothing is lost). A wake whose USER_INPUT write fails
+  gives its armed turn back (the reserved seq stays a gap). The wake's closing
+  write is one field-scoped `patch_if` fenced on the status it decided from, so
+  a Cancel or a pause that landed on another process wins. Every exit of a turn
+  flips `turn_status` back to idle only as the LAST write of its terminal
+  block, after its records, `last_seq` and cursor (see the turn flow below), so
+  a wake that sees the turn idle never repeats a seq the turn wrote. Pinned by
+  `tests/session/test_one_turn_per_wake.py` (each wake on its own lock, over
+  the suite's storage whose `patch_if` honours its predicate, through the real
+  dispatch). Not covered: a wake that carries per-turn tools or attachment
+  parts (the queue cannot hold them) still writes its USER_INPUT whatever the
+  turn's state, as before, and one that lands WHILE a turn runs reserves its
+  seq from a row the running turn has not yet advanced; and in the rare
+  cross-process order where a concurrent release re-arms the claim between a
+  wake's arm and its USER_INPUT write, that turn runs once without the message
+  and the message is answered by the next turn.
 
 The message log stays append-only under all of this. Compaction appends a
 `compaction_marker` carrying its summary, the span it replaced and the tail it kept verbatim (`kept_tail_messages`, read back by `reconstruct_compacted_history` right after the summary) its verdict (`outcome`, `unreducible`, `trigger_tokens`, `fixed_overhead_tokens`) and where the summary sits among the kept messages (`summary_after`, absent or 0 meaning in front); a compaction that could not reduce the prompt, or deliberately skipped, and wrote no marker leaves a `compaction_note` record instead (display and derivation only, never history; a verdict that repeats (skipped or unreducible) is noted once per run, and the reader that tells the executor so, `last_compaction_state`, reports the newest note's outcome and reason since the newest marker, and also the newest marker's `tokens_after`, which the strategy uses to avoid summarising a summary it just wrote); rewind
@@ -324,6 +360,7 @@ The park sub-states (`parked` -> `resumable`) live under `RUNNING`: parking rele
 5. **Stream.** Iterate `executor.invoke([])`. Each `StreamEvent` is run through `translate_stream_event`; every produced `SessionMessageRecord` is appended (the writer assigns `seq`) and a `session:{sid}:tick` is published with that seq. That tick is an early pointer: it goes out right after the append, while the record can still sit in the writer's buffer, so a tap woken by it may find nothing new yet; the tick that announces the tail of a turn is the one after the flush (step 7). A Stop or Cancel is honoured one of two ways. An executor that bound the event decides where the turn stops (see "Stop (interrupt)" below) and dispatch reads `executor.was_interrupted` when the stream ends. Any other executor (graph sessions, test fakes) is stopped by dispatch itself, which checks the event between events and breaks.
 6. **Terminal arms.** A `YieldToWorker` writes a `TurnLogYielded` + `yielded` record, flushes, publishes a tick, and returns `ReleaseOutcome(success=True, drop_lease=False)` so the worker parks the row. An unexpected exception builds one `ProblemDetails` via `to_problem_details` and reuses it for both the `TurnLogFailed` event and the `messages.jsonl` `ERROR` record, then transitions to `ENDED`/`failed`, EXCEPT that a transport failure of the model call (`_RESTING_FAILURE_CODES`, below) in an interactive session lands `WAITING` with no `ended_reason` (C-024). A cancel writes `TurnLogCancelled` + a `cancelled` record and transitions to `ENDED`/`cancelled`. A Stop takes the same arm but lands `WAITING` with `interrupt_requested` cleared; Cancel wins if both flags are set. Whatever text or reasoning the model had already streamed is first written as durable records (`flush_partial_output`), because it would otherwise exist only in the live view. A FAILED turn does the same, ahead of its ERROR record: the stream's own fatal `Error` event flushes the coalesce buffers inside `translate_stream_event` (`_after_the_partial_output`): ONLY the failing node's when the error is scoped to a node (a healthy parallel sibling keeps its buffers and its live part, and flushes them at its own `Done` or tool call, so its answer is one record), and every node's when it is not scoped (the agent-only path, or the run itself failing) and for a graph's terminal `_GraphErrorEvent` (`flush_partial_output(node_id=...)`); a delegated subagent's fatal `Error` drains the subagent's own coalesce state in `DelegationRecorder` (both records stamped `delegated`) and never the parent turn's; and `_end_turn_failed` flushes before it writes its ERROR record for an exception raised out of the stream (a timeout, a bug); both are best effort and bounded like the cancel path. Before this a model that died mid-answer left `user_input, llm_call, error, error` in the log and the half answer the user had watched stream in was gone after a refresh. A lost lease flushes nothing (the session may belong to another worker now), and a non-fatal `Error` leaves the buffers alone.
 7. **Clean completion.** Flush and publish a final tick (`_flush_and_tick`: flush, bounded by the writer's write timeout so a workspace that never answers cannot hold the exit, then `session:{sid}:tick` carrying `writer.last_seq`), read the executor's `last_done_reason` and the `AgentSession` status, map them via `_post_turn_status` to the final `WorkspaceSession.status`, write `TurnLogCompleted`, close the turn log.
+8. **Back to idle, last.** `turn_status` returns to `idle` (`_clear_turn_running`: one `patch_if` guarded on `running`, so a turn a wake armed is never stomped) as the LAST write of each terminal block: the failure exit's (before its drain), the cancelled exit's (after the CANCELLED record) and the clean completion's (after `last_seq` and the cursor, before `completed_turn_no`). A park and the pre-streaming exits clear it in the streaming phase's `finally`, and an exception between that `finally` and a terminal block clears it on the way out. Idle is what lets a wake on any process arm the next turn and write its USER_INPUT at the row's next seq, so every record of the turn must already be on the row (audit G7-03 (c)); a wake that lands while the turn still reads `running` is queued and realized by the drain right after.
 
 ```mermaid
 sequenceDiagram
@@ -398,7 +435,7 @@ Status: the seam, the park write, the wake and the resume exist; the worker hand
 | paused (while running or while idle) | queued by the `wake_session` pause hold; stays paused | `queued` | `session.messaged` |
 | graph-bound | as above by state; receives the raw text (no prefix); the result says it restarts the graph | as above | as above |
 
-The `wait_for_event` wake is a doorbell, and the doorbell wake does not advance the hop count: the hops are the MESSAGE's, written by `wake_session` when the message lands, not the wait's. The event carries the attribution and never the text, so a non-admin may subscribe to `session.messaged` when its payload holds nothing beyond what the unscoped `POST /sessions/find` already shows (one shared install) (R3); the message itself stays queued until the turn boundary, so a wait that times out first neither loses it nor delivers it twice: it lands as the next user message when the turn ends. An agent target's USER_INPUT text is prefixed with `[from session <sender id> (agent <agent id>)]` (a graph-bound sender is named `(graph <graph id>)`), but a graph target receives the raw text, because the prefix would become part of the graph's input; a graph session started with a structured `graph_input` re-runs with that stored input, so the result note says the message is only recorded. The pause hold (section 2) now also covers a session paused while idle: a non-human wake of it queues the instruction and the session stays paused, while a person's message still resumes it. Two lead rulings hold on every delivery: a peer never evicts a person's queued steer through the 50-row queue cap, so at the cap a peer message is refused (conflict, `queue_full`, nothing written) while a person's steer at the cap evicts the oldest queued peer message first (R1); and a session an operator cancelled is never reopened by a peer message, whose delivery to it is refused (R4), nor, since lead ruling 1 of the G7 fixes, by any other message no person wrote (a trigger fire, a steer or restart tool call, and any of them realized from the queue): only a person's message or Restart reopens it. A routed text wake rechecks the target under `session_lifecycle_lock` beside the USER_INPUT write, so two concurrent wakes of one idle target IN ONE PROCESS start one turn: the first writes its USER_INPUT and the second queues its text for the next turn (or reports `skipped_busy` for `if_idle`). The race of R2 (ticket 01a15019) is NOT closed: the lock is process-local, so two wakes in two processes (the API pod and a worker pod) can still both write a USER_INPUT for one armed turn, and the drain's realize, which passes no receipt, can write a second USER_INPUT for a turn that a wake armed in the window after the turn ended (audit G7-03, a separate fix).
+The `wait_for_event` wake is a doorbell, and the doorbell wake does not advance the hop count: the hops are the MESSAGE's, written by `wake_session` when the message lands, not the wait's. The event carries the attribution and never the text, so a non-admin may subscribe to `session.messaged` when its payload holds nothing beyond what the unscoped `POST /sessions/find` already shows (one shared install) (R3); the message itself stays queued until the turn boundary, so a wait that times out first neither loses it nor delivers it twice: it lands as the next user message when the turn ends. An agent target's USER_INPUT text is prefixed with `[from session <sender id> (agent <agent id>)]` (a graph-bound sender is named `(graph <graph id>)`), but a graph target receives the raw text, because the prefix would become part of the graph's input; a graph session started with a structured `graph_input` re-runs with that stored input, so the result note says the message is only recorded. The pause hold (section 2) now also covers a session paused while idle: a non-human wake of it queues the instruction and the session stays paused, while a person's message still resumes it. Two lead rulings hold on every delivery: a peer never evicts a person's queued steer through the 50-row queue cap, so at the cap a peer message is refused (conflict, `queue_full`, nothing written) while a person's steer at the cap evicts the oldest queued peer message first (R1); and a session an operator cancelled is never reopened by a peer message, whose delivery to it is refused (R4), nor, since lead ruling 1 of the G7 fixes, by any other message no person wrote (a trigger fire, a steer or restart tool call, and any of them realized from the queue): only a person's message or Restart reopens it. Two wakes of one idle target start one turn in any two processes (the API pod and a worker pod), and the drain never writes a second USER_INPUT for a turn a wake armed: the open turn is decided by a conditional write of the row ("One turn per wake", section 2; the R2 race of ticket 01a15019, closed by the G7-03 fix).
 
 ## 7. Persistence
 

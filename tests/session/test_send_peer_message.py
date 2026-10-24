@@ -536,11 +536,15 @@ async def test_a_reply_chain_through_the_queue_is_refused_at_the_hop_limit():
         row.turn_status = "running"
         await world.sessions.update(row)
 
+    async def end_turn(sid: str) -> None:
+        await world.sessions.patch_if(sid, {"turn_status": "idle"}, where={"turn_status": ["running"]})
+
     sender, target = "ses-a", "ses-b"
     for expected in range(1, MAX_PEER_HOPS + 1):
         result = await _send(world, target, sender=sender, text=f"hop {expected}")
         assert (result.hops, result.delivery) == (expected, "queued"), "the other side is mid-turn, so the reply is queued"
-        # The target's turn ends; the drain realizes the queued message, which starts its next turn.
+        # The target's turn ends (its exit flips it back to idle); the drain realizes the queued message, which starts its next turn.
+        await end_turn(target)
         assert await realize_next_pending(
             storage_provider=world.sp, workspace_id="ws-1", session_id=target, wake_deps=world.wake_deps(),
         ) is True
