@@ -111,7 +111,7 @@ WorkerPool per-kind handlers (`primer/worker/pool.py`):
 
 - `_run_engine_session` runs one workspace-session turn through `primer.session.dispatch.run_one_session_turn`, mediating workspace I/O through a `_WorkspaceIOShim` and installing the turn-log writer factory.
 - `_run_engine_harness` runs a harness fetch/install/sync/build/push operation.
-- `_run_engine_trigger` fires a due trigger, enumerating missed cron ticks for `catchup='all'` via `iter_missed_fires` before firing the current tick.
+- `_run_engine_trigger` fires a due trigger (`run_engine_trigger` in `primer/worker/engine_handlers.py`): the missed ticks its `catchup` keeps (`none` none, `one` the most recent, `all` each, at most 64), then the due tick exactly once, each with its tick as `scheduled_for` (`scheduled_ticks_to_fire` in `primer/trigger/cron.py`).
 
 The pool also still carries the legacy `_run_one_turn` (the pre-engine Scheduler-only path) which implements the same hot path (transient retry with `compute_backoff` exponential cap, fatal `-> ENDED/failed`, cancel/pause early-exit, yielding-tool park and resume, graph resume); the engine path is the production path.
 

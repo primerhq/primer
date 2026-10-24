@@ -91,10 +91,10 @@ Reference: [`trigger__update_subscription`](reference/tools/trigger/update_subsc
 Reference: [`trigger__delete_subscription`](reference/tools/trigger/delete_subscription)
 
 ## Gotchas
-- `scheduled_for` is null on an on-time fire; only a `catchup: all` replay sets it. Use `fired_at` for the time of a fire.
+- `scheduled_for` is the tick a clock fire is for: a `scheduled` trigger's tick (on time or caught up) or a `delayed` trigger's `fire_at`. It is null for a fire now, a webhook call and a channel event. `fired_at` is when the fire ran.
 - An update cannot change `config`. To point at another target, delete the subscription and create a new one.
 - An update makes you the owner and records your reach, as a create does.
-- Send exactly `skip` or `queue`: `trigger__update_subscription` stores any other value.
+- `parallelism` is exactly `skip` or `queue`: any other value answers `validation-error` and nothing is stored.
 - A `session_append` fire never reopens a session an operator cancelled (`skipped_session_ended`). A session that ended any other way is reopened by the message. A missing session is `skipped_session_missing`.
 - The session a fire starts carries `trigger_id`, `subscription_id`, `fire_id` and `fired_at` in its `metadata`.
 

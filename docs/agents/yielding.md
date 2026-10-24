@@ -191,10 +191,12 @@ What happens:
    `subscription_matched("trigger:sess-7c1e:tr-3f9a1c0b7d42")` (the key the
    parked session stored, once per parked subscription), and the worker
    pool marks that session resumable.
-4. A worker claims the resumable session, calls
-   `subscribe_to_trigger.resume(metadata, fire_context)`. The resume
-   hook deletes the parked subscription and returns
-   `ToolResult(output="trigger fired at <ts>, payload=<...>")`.
+4. A worker claims the resumable session and runs the tool's resume
+   hook, which answers the call with what the fire delivered:
+   `{ok, fire_context, payload}` (the fire already deleted the one-shot
+   subscription). At the yield cap it answers `{timed_out: true,
+   elapsed_seconds, trigger_id}`, on a cancel `{cancelled: true,
+   cancel_reason}`.
 5. The LLM sees that result on its next turn and continues.
 
 ### Workflow 2 - yield is cancelled mid-park

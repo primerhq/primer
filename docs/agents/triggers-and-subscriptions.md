@@ -237,13 +237,19 @@ on the lease means no two workers fire the same scheduled instance.
 Catch-up policy for scheduled triggers handles what happens when
 the server was down across a fire window:
 
-- `catchup: one` (default) - fire once, with the most recent
-  missed timestamp. Then schedule the next fire normally.
-- `catchup: all` - fire once per missed instance, in order. Useful
-  for triggers where each instance has meaningful state (don't skip
-  a daily report just because the server was down).
-- `catchup: none` - skip missed fires entirely; schedule next fire
-  for the next future instance.
+- `catchup: one` (default) - fire once for the most recent missed
+  tick, then once for the tick that is due.
+- `catchup: all` - fire once per missed tick (at most 64, oldest
+  first), then once for the tick that is due. Useful for triggers
+  where each instance has meaningful state (don't skip a daily report
+  just because the server was down).
+- `catchup: none` - skip the missed ticks; fire once for the tick
+  that is due.
+
+The due tick fires exactly once in every policy, and every fire
+carries its own tick as `scheduled_for`. A missed tick is one after
+the trigger's `next_fire_at`, so a trigger enabled again catches up
+nothing for the time it was disabled.
 
 Missed instances are replayed once each; a failed delivery is not
 retried. To find out whether a given delivery arrived, look at the

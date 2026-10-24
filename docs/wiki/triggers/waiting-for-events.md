@@ -24,7 +24,7 @@ A pausing tool parks your turn until something happens. Use one instead of polli
 | `canvas__canvas_wait` | the user acts on your session's canvas | see [the canvas](human-in-the-loop/canvas) |
 
 - **Through the door.** A pausing tool called through `system__call_tool` pauses the same way, and its answer is the `call_tool` result.
-- **Sessions only.** Only a workspace session can park. With no session, `system__wait_for_event` answers `unsupported-surface` and the subscribe tools answer `trigger_not_found_or_disabled`. MCP clients do not see pausing tools at all: they poll.
+- **Sessions only.** Only a workspace session can park. With no session, `system__wait_for_event` and the subscribe tools answer `unsupported-surface`. MCP clients do not see pausing tools at all: they poll.
 - **Time limits.** `system__wait_for_event` takes `timeout_seconds`. Without it, and for the subscribe tools, which take none, the wait ends at the global yield cap: 60 minutes by default.
 - **While you wait.** A message from a person or another session queues behind the park ([messaging other sessions](sessions/messaging-other-sessions)). A person can cancel the wait, or the session, from the console when they rank at or above the session.
 
@@ -40,6 +40,7 @@ A pausing tool parks your turn until something happens. Use one instead of polli
 ### The subscribe tools
 - `workspace_ext__subscribe_to_trigger` takes the trigger's `id`, never its slug. The trigger must exist and be enabled (`trigger_not_found_or_disabled` otherwise). It saves a one-shot `parked_session` subscription for this call; the next fire wakes you and deletes it ([subscriptions](triggers/subscriptions)).
 - `workspace_ext__subscribe_to_channel_event` takes the `id` of an enabled `channel` trigger and an optional `event_matcher`. Every field you set must hold: `event_type` (required: `message.posted`, `command.invoked`, `component.acted`, `reaction.added`, `reaction.removed`, `message.edited`, `member.joined`, `bot.installed`, `bot.removed` or `room.created`), `surface`, `room_external_ids`, `command_name`, `mentions_bot`, `sender_roles_any`, `sender_ids_any` and `text_pattern`. Leave the matcher out to wake on any event of the trigger. An unsafe `text_pattern` answers `validation-error`.
+- The answer is `{ok, fire_context, payload}` on the fire (`fire_context` has the trigger, `fired_at`, `scheduled_for` and `fire_id`, and a channel event under `event`; with no template the payload is the fire context), `{timed_out: true, elapsed_seconds, trigger_id}` at the cap, or `{cancelled: true, cancel_reason}`.
 - The fire runs at no more than its owners' rank. If the trigger's owner ranks below the person who started your session, the fire is refused (`steer_outranks_fire`) and your wait runs to its cap.
 
 ## How to
@@ -92,7 +93,7 @@ Reference: [`workspace_ext__subscribe_to_trigger`](reference/tools/workspace_ext
 Reference: [`workspace_ext__subscribe_to_channel_event`](reference/tools/workspace_ext/subscribe_to_channel_event)
 
 ## Gotchas
-- Today neither subscribe tool has a resume handler. The call wakes on the fire, the cap or a cancel, but answers an error whose reason starts `resume failed`, not the fire. Treat that answer as a wake and check what you need (the trigger's `last_fired_at`). To get the fire itself, wait on `trigger.fired` as shown above.
+- After a subscribe tool times out or is cancelled, its one-shot subscription stays on the trigger until the next fire, which deletes it and wakes nothing.
 - A wait for `session.ended` on an interactive session runs to its timeout: such a session rests between turns and never ends by itself.
 - An event that happened before your call does not wake you. Check the current state first, then wait.
 - A wait on `session.*` with no matcher wakes on the first event of any session. Always add an `eq` matcher.
