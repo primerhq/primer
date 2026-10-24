@@ -127,11 +127,17 @@ def test_the_palette_ranks_each_label_first(shell):
 
 
 def test_the_verb_has_its_pointer_affordances():
+    """The new-workspace dialog's "Create a template" is the verb's affordance in the console. Since slice 5 of Plan 08 (lead ruling 2) it makes the
+    template in place: it opens the template overlay over the dialog and takes the new template back, selected, where the verb would send the person to
+    the templates page with no way back to the workspace they were making (tests/ui/test_new_workspace_dialog.py drives it)."""
     assert 'data-verb="template.create"' in _all_console_text(), "the dual-render guard reads the console files"
     assert 'data-verb="template.create"' in TEMPLATES.read_text(encoding="utf-8"), "the page's empty state"
     dialog = OVERLAYS[OVERLAYS.index("function NV_CreateWorkspaceOverlay("):OVERLAYS.index("// Legacy adapter")]
-    button = dialog[dialog.index('data-verb="template.create"') - 400:dialog.index('data-verb="template.create"') + 400]
-    assert 'con.registry.get("template.create")' in button and "con.closeOverlay()" in button and "Create a template" in button
+    at = dialog.index('data-verb="template.create"')
+    button = dialog[dialog.rindex("<Btn", 0, at):dialog.index("</Btn>", at) + len("</Btn>")]
+    assert "Create a template" in button and "setMaking(true)" in button
+    assert "con.closeOverlay" not in button and 'registry.get("template.create")' not in dialog, "the dialog is not left"
+    assert "<window.WT_TemplateOverlay create={true} onSaved={handBack}" in dialog
 
 
 def test_the_overlay_address_draws_the_template_overlay_without_double_chrome():

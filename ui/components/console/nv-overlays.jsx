@@ -7,8 +7,9 @@
 //                    combined agent+graph binding picker, instructions,
 //                    an Advanced fold for autonomy, and the graph
 //                    Begin.input_schema form where a graph declares one.
-//   new-workspace  - the designer's instantiation panel: template rows,
-//                    optional name, per-instantiation env/init overrides.
+//   new-workspace  - the kit form overlay that makes a workspace from a
+//                    template: a searchable template dropdown, name and
+//                    id, its size, extra env, files and start-up commands.
 //   everything else- the existing management surfaces (NV_OVERLAY_MOUNTS)
 //                    re-hosted inside an nv panel via a thin shell
 //                    adapter. They keep their handlers and data logic and
@@ -533,192 +534,245 @@ Object.assign(window, { NV_NW_ID_PATTERN, NV_nwIdError, NV_nwSizeFields, NV_nwIn
 // ---- end NV_nw pure helpers ----
 
 // ---------------------------------------------------------------------------
-// Create workspace: template rows, optional name, per-instantiation
-// overrides (env additions + one extra init command). POST /v1/workspaces
-// {template_id, name?, overrides?{env, init_commands}}; ids are
-// backend-allocated.
+// New workspace (platform revamp Plan 08, Task 13; design 14.3): a kit form overlay. "From template" at the centre top is the kit selector, searchable,
+// over EVERY template (WT_fetchAllTemplates, a page of 200 at a time); the template's summary line under it; Name and Id; a SIZE section for a provider
+// that takes one, filled in from the template; EXTRA ENVIRONMENT; and folds for extra files and extra start-up commands. Create sends NV_nwBody to
+// POST /v1/workspaces: a size goes only when the person changed it. A refusal lands under the field its loc names, and anything the dialog has no field
+// for in the one line above the footer (NV_nwFieldKey, WT_splitErrors). With no template yet, "Create a template" opens the template overlay over the
+// dialog and hands the new template back, selected: nobody is sent to another page and left to find the way back (lead ruling 2 of slice 5).
+var NV_NW_FOLDS = ["files", "init"];
+
 function NV_CreateWorkspaceOverlay() {
   var con = NV_useConsole();
-  var apiFetch = window.primerApi.apiFetch;
-  var templates = window.primerApi.useResource(
-    "nv-ov:workspace-templates",
-    function (signal) {
-      return apiFetch("GET", "/workspace_templates?limit=200", null,
-        { signal: signal });
-    },
-    { pollMs: 0 }
-  );
-  var tplState = React.useState("");
-  var tplId = tplState[0];
-  var setTplId = tplState[1];
+  var api = window.primerApi;
+  var apiFetch = api.apiFetch;
+  var isAdmin = con.role === "admin";
+  var templates = api.useResource("nv-ov:workspace-templates", function (signal) {
+    return WT_fetchAllTemplates(apiFetch, signal);
+  }, { pollMs: 0 });
+  var items = (templates.data && templates.data.items) || [];
+
+  // The picked template, the sizes it filled in (what a size is compared with to know it was changed) and the sizes as they stand now.
+  var pickState = React.useState({ id: "", initial: NV_nwInitialSize(null), size: NV_nwInitialSize(null) });
+  var picked = pickState[0];
+  var setPicked = pickState[1];
+  // The template the template overlay handed back: drawn from here until the refreshed list holds it.
+  var handedState = React.useState(null);
+  var handed = handedState[0];
+  var makingState = React.useState(false);
+  var making = makingState[0];
+  var setMaking = makingState[1];
   var nameState = React.useState("");
-  var name = nameState[0];
-  var setName = nameState[1];
+  var idState = React.useState("");
   var envState = React.useState([]);
-  var envRows = envState[0];
-  var setEnvRows = envState[1];
+  var filesState = React.useState([]);
   var initState = React.useState("");
-  var init = initState[0];
-  var setInit = initState[1];
-  var busyState = React.useState(false);
-  var busy = busyState[0];
-  var setBusy = busyState[1];
-  var errState = React.useState(null);
-  var err = errState[0];
-  var setErr = errState[1];
-  var seqRef = React.useRef(0);
+  var serverState = React.useState({ fields: {}, general: null });
+  var server = serverState[0];
+  var setServer = serverState[1];
+  // Each fold's open state, and a count that remounts it open when a refusal lands inside it while it is closed.
+  var foldState = React.useState({ files: { open: false, gen: 0 }, init: { open: false, gen: 0 } });
+  var folds = foldState[0];
+  var setFolds = foldState[1];
+  var outRef = React.useRef(false);
 
-  var tplItems = (templates.data && templates.data.items) || [];
+  var template = items.filter(function (t) { return t && t.id === picked.id; })[0]
+    || (handed && handed.id === picked.id ? handed : null);
+  var kind = template ? WT_kindOf(template) : "local";
+
+  function pick(t) {
+    var initial = NV_nwInitialSize(t);
+    setPicked({ id: t.id, initial: initial, size: Object.assign({}, initial) });
+    setServer({ fields: {}, general: null });
+  }
+  // The first template is picked once the list arrives, and again if the picked one has left the list (deleted meanwhile). A template the template
+  // overlay handed back is known before the list holds it.
+  var known = !!template;
   React.useEffect(function () {
-    if (!tplId && tplItems.length) setTplId(tplItems[0].id);
-  }, [tplItems.length]);
+    if (!known && items.length) pick(items[0]);
+  }, [items.length, known]);
 
-  function submit() {
-    if (!tplId || busy) return;
-    setBusy(true);
-    setErr(null);
-    var body = { template_id: tplId };
-    if (name.trim()) body.name = name.trim();
-    var env = {};
-    var envCount = 0;
-    envRows.forEach(function (row) {
-      if (row.k.trim()) {
-        env[row.k.trim()] = row.v;
-        envCount += 1;
-      }
+  function clearServer(key) {
+    setServer(function (e) {
+      if (!e.fields[key]) return e;
+      var fields = Object.assign({}, e.fields);
+      delete fields[key];
+      return { fields: fields, general: e.general };
     });
-    if (envCount || init.trim()) {
-      body.overrides = {};
-      if (envCount) body.overrides.env = env;
-      if (init.trim()) body.overrides.init_commands = [init.trim()];
-    }
-    apiFetch("POST", "/workspaces", body).then(function (row) {
+  }
+  function setSize(key, text) {
+    setPicked(function (p) {
+      var size = Object.assign({}, p.size);
+      size[key] = text;
+      return { id: p.id, initial: p.initial, size: size };
+    });
+    clearServer(key);
+  }
+  function setField(st, key) {
+    return function (v) {
+      st[1](v);
+      clearServer(key);
+    };
+  }
+
+  var sizeDirty = {};
+  Object.keys(picked.size).forEach(function (k) { if (picked.size[k] !== picked.initial[k]) sizeDirty[k] = true; });
+  var state = {
+    templateId: picked.id, kind: kind, name: nameState[0], id: idState[0], size: picked.size, sizeDirty: sizeDirty,
+    envRows: envState[0], files: filesState[0], init: initState[0],
+  };
+  var errs = template ? NV_nwErrors(state) : {};
+  var ready = !!template && Object.keys(errs).length === 0;
+  function fieldError(key) {
+    return errs[key] || server.fields[key] || null;
+  }
+
+  // A refusal (or an error) inside a closed fold opens it, so no error is drawn where nobody can see it.
+  React.useEffect(function () {
+    var shut = NV_NW_FOLDS.filter(function (f) { return !folds[f].open && !!fieldError(f); });
+    if (!shut.length) return;
+    setFolds(function (fs) {
+      var next = Object.assign({}, fs);
+      shut.forEach(function (f) { next[f] = { open: true, gen: fs[f].gen + 1 }; });
+      return next;
+    });
+  });
+
+  var mutation = api.useMutation(function (body) {
+    return apiFetch("POST", "/workspaces", body);
+  }, {
+    invalidates: ["nv-workspaces"],
+    onSuccess: function (row) {
       con.closeOverlay();
       con.toast("Workspace created: " + (row.name || row.id));
       var verb = con.registry.get("workspace.switch");
       if (verb && row.id) verb.run({ wid: row.id });
-    }, function (e) {
-      setBusy(false);
-      setErr(e);
+    },
+    onError: function (err) {
+      setServer(WT_splitErrors(err, function (loc) { return NV_nwFieldKey(loc, kind); }));
+    },
+  });
+  var busy = !!mutation.loading;
+
+  // One request at a time: a second Create while one is out does nothing (the ref holds before the busy state has rendered).
+  function submit() {
+    if (!ready || outRef.current) return;
+    outRef.current = true;
+    setServer({ fields: {}, general: null });
+    mutation.mutate(NV_nwBody(state)).then(null, function () {
+      outRef.current = false;
     });
   }
 
+  function handBack(row) {
+    if (!row || !row.id) return;
+    handedState[1](row);
+    pick(row);
+    templates.refetch();
+  }
+
+  var footer = {
+    left: <Btn kind="ghost" data-testid="nv-nw-cancel" blocked={busy} onClick={con.closeOverlay}>Cancel</Btn>,
+    right: (
+      <Btn kind="primary" data-testid="nv-nw-create" disabled={!ready} busy={busy} onClick={submit}>{busy ? "Creating…" : "Create"}</Btn>
+    ),
+  };
+
+  var options = items.map(function (t) { return { value: t.id, label: t.id, iconPath: WT_KIND_ICONS[WT_kindOf(t)] }; });
+  if (handed && !items.some(function (t) { return t && t.id === handed.id; })) {
+    options = options.concat([{ value: handed.id, label: handed.id, iconPath: WT_KIND_ICONS[WT_kindOf(handed)] }]);
+  }
+  var selector = template ? {
+    prefix: "From template", value: picked.id, options: options, searchable: true, testid: "nv-nw-template",
+    onChange: function (value) {
+      var next = items.filter(function (t) { return t && t.id === value; })[0] || (handed && handed.id === value ? handed : null);
+      if (next && next.id !== picked.id) pick(next);
+    },
+  } : null;
+
+  var body;
+  if (!template && templates.error && !templates.data) {
+    body = (
+      <div data-testid="nv-nw-load-error">
+        <Banner kind="error" title="Couldn't load workspace templates." detail={api.readRefusal(templates.error).message}
+          actions={<Btn size="sm" icon="refresh" data-testid="nv-nw-retry" onClick={templates.refetch}>Retry</Btn>} />
+      </div>
+    );
+  } else if (!template && !templates.data) {
+    body = <div className="nv-bind-empty" role="status" data-testid="nv-nw-loading">Loading templates…</div>;
+  } else if (!template && !items.length) {
+    body = (
+      <div className="nv-bind-empty col" data-testid="nv-nw-empty" style={{ gap: 10, alignItems: "center" }}>
+        <div>No workspace templates yet.</div>
+        <Btn kind="primary" data-testid="nv-nw-create-template" data-verb="template.create" onClick={function () { setMaking(true); }}>Create a template</Btn>
+      </div>
+    );
+  } else if (!template) {
+    body = <div className="nv-bind-empty" role="status" data-testid="nv-nw-loading">Loading templates…</div>;
+  } else {
+    var fields = NV_nwSizeFields(kind);
+    var sizeInput = function (key, testid) {
+      return (
+        <input className="input" data-testid={testid} value={picked.size[key]} inputMode="decimal" placeholder="No limit"
+          onChange={function (e) { setSize(key, e.target.value); }} />
+      );
+    };
+    body = (
+      <React.Fragment>
+        <div className="field-help" data-testid="nv-nw-summary" style={{ textAlign: "center" }}>{WT_summaryLine(template)}</div>
+        {fieldError("template") ? (
+          <div className="field-help" role="alert" data-testid="nv-nw-template-error" style={{ color: "var(--red)", textAlign: "center" }}>
+            {fieldError("template")}
+          </div>
+        ) : null}
+        <PK_Grid cols={2}>
+          <PK_Field label="Name" help="Shown in the workspace menu in place of the id" error={fieldError("name")}>
+            <input className="input" data-testid="nv-nw-name" value={nameState[0]} onChange={function (e) { setField(nameState, "name")(e.target.value); }} />
+          </PK_Field>
+          <PK_Field label="Id" help="Made for you if left empty. Lowercase letters, digits and dashes." error={fieldError("id")}>
+            <input className="input mono" data-testid="nv-nw-id" value={idState[0]} onChange={function (e) { setField(idState, "id")(e.target.value); }} />
+          </PK_Field>
+        </PK_Grid>
+        {fields.length ? (
+          <PK_Section title="SIZE" cols={3} testid="nv-nw-size">
+            <PK_Field label="CPU cores" error={fieldError("cpu")}>{sizeInput("cpu", "nv-nw-cpu")}</PK_Field>
+            <PK_Field label="Memory (GiB)" error={fieldError("memoryGiB")}>{sizeInput("memoryGiB", "nv-nw-memory")}</PK_Field>
+            {fields.indexOf("diskGiB") >= 0 ? (
+              <PK_Field label="Disk (GiB)" error={fieldError("diskGiB")}>{sizeInput("diskGiB", "nv-nw-disk")}</PK_Field>
+            ) : null}
+            <div className="field-help pk-span-full" data-testid="nv-nw-size-help">Filled in from the template. A change applies to this workspace only.</div>
+          </PK_Section>
+        ) : null}
+        <WT_TableWithNotes help="Added to the template's; values are hidden" error={fieldError("envRows")} table={{
+          title: "EXTRA ENVIRONMENT", testid: "nv-nw-env", addLabel: "+ Add", rows: envState[0],
+          columns: [{ key: "key", label: "Name", input: "text" }, { key: "value", label: "Value", input: "secret" }],
+          onChange: setField(envState, "envRows"),
+        }} />
+        <PK_Fold key={"nv-nw-files-" + folds.files.gen} open={folds.files.open} label="Extra files" testid="nv-nw-files-fold"
+          onToggle={function (open) { setFolds(function (fs) { return Object.assign({}, fs, { files: { open: open, gen: fs.files.gen } }); }); }}>
+          <WT_FilesEditor value={filesState[0]} isAdmin={isAdmin} testid="nv-nw-files" error={fieldError("files")} onChange={setField(filesState, "files")} />
+        </PK_Fold>
+        <PK_Fold key={"nv-nw-init-" + folds.init.gen} open={folds.init.open} label="Extra start-up commands" testid="nv-nw-init-fold"
+          onToggle={function (open) { setFolds(function (fs) { return Object.assign({}, fs, { init: { open: open, gen: fs.init.gen } }); }); }}>
+          <PK_Field label="Commands" help="One per line; they run after the template's own" error={fieldError("init")}>
+            <textarea className="input mono" rows={3} data-testid="nv-nw-init" value={initState[0]} style={{ width: "100%" }}
+              onChange={function (e) { setField(initState, "init")(e.target.value); }} />
+          </PK_Field>
+        </PK_Fold>
+      </React.Fragment>
+    );
+  }
+
   return (
-    <NV_OverlayPanel title="Create workspace"
-      testid="nv-overlay:new-workspace" onClose={con.closeOverlay}
-      footer={(
-        <React.Fragment>
-          <button type="button" className="nv-btn-secondary"
-            onClick={con.closeOverlay}>Cancel</button>
-          <button type="button" className="nv-btn-primary"
-            data-testid="nv-nw-create" disabled={!tplId || busy}
-            onClick={submit}>
-            {busy ? "Creating…" : "Create workspace"}
-          </button>
-        </React.Fragment>
-      )}>
-      {err ? (
-        <div className="nv-form-error" data-testid="nv-nw-error">
-          {NV_errText(err)}
-        </div>
+    <React.Fragment>
+      <PK_FormOverlay title="New workspace" testid="nv-overlay:new-workspace" onClose={con.closeOverlay} selector={selector} footer={footer}>
+        {body}
+        {server.general ? <div className="nv-form-error" role="alert" data-testid="nv-nw-error">{server.general}</div> : null}
+      </PK_FormOverlay>
+      {making ? (
+        <window.WT_TemplateOverlay create={true} onSaved={handBack} onClose={function () { setMaking(false); }} />
       ) : null}
-      <NV_Field label="Template">
-        {templates.loading && !tplItems.length ? (
-          <div className="nv-bind-empty">Loading templates…</div>
-        ) : !tplItems.length ? (
-          <div className="nv-form-error">
-            No workspace templates yet.
-            {/* The template.create verb (Platform revamp 08): it leaves this dialog for the Workspace templates page and opens its create overlay. */}
-            <button type="button" className="nv-btn-secondary"
-              style={{ marginTop: 8 }} data-testid="nv-nw-create-template" data-verb="template.create"
-              onClick={function () {
-                con.closeOverlay();
-                var verb = con.registry.get("template.create");
-                if (verb) verb.run();
-              }}>Create a template</button>
-          </div>
-        ) : (
-          <div className="nv-pick-list">
-            {tplItems.map(function (t) {
-              return (
-                <button type="button" key={t.id} className="nv-pick-row"
-                  data-active={t.id === tplId ? "true" : "false"}
-                  aria-pressed={t.id === tplId}
-                  data-testid={"nv-nw-tpl:" + t.id}
-                  onClick={function () { setTplId(t.id); }}>
-                  {t.id}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </NV_Field>
-      <NV_Field label="Name"
-        hint="optional — shows in the selector in place of the id">
-        <input className="nv-input" data-testid="nv-nw-name" value={name}
-          placeholder="e.g. checkout-spike"
-          onChange={function (ev) { setName(ev.target.value); }} />
-      </NV_Field>
-      <NV_Field label="Overrides" hint="this instantiation only">
-        <div className="nv-kv-box">
-          {envRows.map(function (row) {
-            return (
-              <div key={row.key} className="nv-kv-row">
-                <input className="nv-input nv-kv-key" value={row.k}
-                  placeholder="KEY"
-                  onChange={function (ev) {
-                    var val = ev.target.value;
-                    setEnvRows(function (prev) {
-                      return prev.map(function (r) {
-                        return r.key === row.key
-                          ? { key: r.key, k: val, v: r.v } : r;
-                      });
-                    });
-                  }} />
-                <span className="nv-kv-eq">=</span>
-                <input className="nv-input nv-kv-val" value={row.v}
-                  placeholder="value (secret-typed)"
-                  onChange={function (ev) {
-                    var val = ev.target.value;
-                    setEnvRows(function (prev) {
-                      return prev.map(function (r) {
-                        return r.key === row.key
-                          ? { key: r.key, k: r.k, v: val } : r;
-                      });
-                    });
-                  }} />
-                <button type="button" className="nv-kv-del" title="Remove"
-                  onClick={function () {
-                    setEnvRows(function (prev) {
-                      return prev.filter(function (r) { return r.key !== row.key; });
-                    });
-                  }}>×</button>
-              </div>
-            );
-          })}
-          <div className="nv-kv-row">
-            <span className="nv-kv-key nv-kv-label">init</span>
-            <input className="nv-input nv-kv-val" value={init}
-              aria-label="Extra init command"
-              data-testid="nv-nw-init"
-              placeholder="extra init command"
-              onChange={function (ev) { setInit(ev.target.value); }} />
-          </div>
-          <button type="button" className="nv-btn-secondary nv-kv-add"
-            data-testid="nv-nw-add-env"
-            onClick={function () {
-              seqRef.current += 1;
-              setEnvRows(function (prev) {
-                return prev.concat([{ key: "e" + seqRef.current, k: "", v: "" }]);
-              });
-            }}>+ env var</button>
-          <div className="nv-kv-note">
-            Env values are secret-typed; the template's own mounts,
-            network policy and init commands still apply first.
-          </div>
-        </div>
-      </NV_Field>
-    </NV_OverlayPanel>
+    </React.Fragment>
   );
 }
 
