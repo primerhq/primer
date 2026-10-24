@@ -136,3 +136,36 @@ def test_the_setup_card_fits_a_phone(page: Page, console_url: str) -> None:
     scroll_width = page.evaluate("() => document.documentElement.scrollWidth")
     inner_width = page.evaluate("() => window.innerWidth")
     assert scroll_width <= inner_width
+
+
+def test_reset_prime_instructions_asks_then_says_what_it_did(page: Page, console_url: str) -> None:
+    """Pivot P2 Task 15: the admin's row (the ui_e2e server runs auth-disabled, as an admin) asks first, then says what the reset did. The POST is
+    answered here, with an AGENTS.md beside the file, so the shared server's prime keeps its own agents.md."""
+    posts = []
+
+    def handle_reset(route):
+        posts.append(route.request.method)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"workspace_id": wid, "path": "agents.md", "bytes": 4096, "shadows": "AGENTS.md"}),
+        )
+
+    page.route(re.compile(r".*/v1/setup/reset_prime_instructions$"), handle_reset)
+
+    wid = default_wid(console_url) or "primer"
+    open_view(page, console_url, wid, "system:dashboard")
+
+    page.get_by_test_id("nv-sys-setup-menu-btn").click()
+    row = page.get_by_test_id("nv-sys-setup-reset-prime")
+    expect(row).to_have_attribute("data-verb", "setup.reset_prime_instructions")
+    row.click()
+
+    modal = page.locator(".modal-overlay")
+    expect(modal).to_be_visible(timeout=10_000)
+    expect(modal).to_contain_text("overwrites agents.md in the default workspace")
+    modal.get_by_role("button", name="Reset instructions").click()
+
+    expect(page.get_by_test_id("nv-sys-setup-prime-shadows")).to_contain_text("the loader now reads agents.md instead", timeout=15_000)
+    expect(page.get_by_text(f"Prime instructions reset: agents.md in {wid} is the shipped version again.", exact=False).first).to_be_visible()
+    assert posts == ["POST"]
