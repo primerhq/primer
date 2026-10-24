@@ -260,24 +260,37 @@ Where the bytes live depends on the kind:
 A record is written after the bytes and before the id is returned, and removed after the bytes on a delete. Neither the files nor the
 objects are listed or counted by primer: a provider's count is the count of its records.
 
-**Deploying a filesystem store on Kubernetes (k3s).** A filesystem store needs ONE volume shared by every API and every worker pod
-(`ReadWriteMany`), mounted at the same path in each, holding the root marker. Until a deployment has that volume, keep its active store
-`db`: the selection probe runs in one pod only, and every pod without the volume would refuse the store at its next put. The cluster
-manifests are not in this repository; these are the steps to apply to them:
+**Deploying a filesystem store on Kubernetes (k3s).** A filesystem store needs ONE volume shared by every API and every worker pod,
+mounted at the same path in each, holding the root marker. Until a deployment has that volume, keep its active store `db`: the selection
+probe runs in one pod only, and every pod without the volume would refuse the store at its next put. The cluster manifests are not in this
+repository; these are the steps to apply to them:
 
-1. **The volume.** One `PersistentVolumeClaim` in the primer namespace, from a storage class that provides `ReadWriteMany` (an NFS or
-   CephFS class, Longhorn, a cloud file share), sized for the artifacts it will hold. It must read `Bound` with access mode `RWX` before
-   the next step.
+1. **The volume.** One `PersistentVolumeClaim` in the primer namespace, sized for the artifacts it will hold. Which access mode depends on
+   the cluster:
 
-   ```yaml
-   apiVersion: v1
-   kind: PersistentVolumeClaim
-   metadata: {name: primer-artifacts, namespace: primer}
-   spec:
-     accessModes: [ReadWriteMany]
-     storageClassName: <a class that provides ReadWriteMany>
-     resources: {requests: {storage: 20Gi}}
-   ```
+   - **A single-node cluster** (the k3s setup: one node, the bundled `local-path` class): a `ReadWriteOnce` `local-path` claim is enough.
+     ReadWriteOnce limits a volume to one NODE, not one pod, and every API and worker pod runs on that node, so they all mount the same
+     folder (the earlier `primer-local-workspaces` claim shared local workspaces between the API and the workers this way). The condition
+     is that every pod that mounts it runs on that one node: a `local-path` volume is a folder on that node's disk, and a pod that mounts
+     it can run nowhere else. Adding a node breaks this setup (a pod that does not fit on the first node stays `Pending`, and the workers
+     can no longer spread): move to `ReadWriteMany` before adding one.
+
+     ```yaml
+     apiVersion: v1
+     kind: PersistentVolumeClaim
+     metadata: {name: primer-artifacts, namespace: primer}
+     spec:
+       accessModes: [ReadWriteOnce]
+       storageClassName: local-path
+       resources: {requests: {storage: 20Gi}}
+     ```
+
+   - **A cluster with more than one node**: a `ReadWriteMany` claim, from a storage class that provides it (an NFS or CephFS class,
+     Longhorn, a cloud file share) or bound to a statically provisioned `PersistentVolume` that does (an NFS export, for example). The
+     same claim with `accessModes: [ReadWriteMany]` and that class.
+
+   The claim must read `Bound` (`kubectl -n primer get pvc primer-artifacts`) before the provider is registered (step 3). A `local-path`
+   claim binds only when its first pod is scheduled (`WaitForFirstConsumer`), so it reads `Pending` until step 2 rolls the Deployments.
 
 2. **The mount, on every pod.** Add the claim as a volume and mount it at one path, for example `/var/lib/primer/artifacts`, in the API
    Deployment's container (`primer api --no-worker`) and in every worker Deployment's container (`primer worker`), so every replica
@@ -419,8 +432,9 @@ A tool's error message starts with the field (`config.secret_key: ...`); it does
   trailing newline) before it becomes a path; a get or a delete of any other id logs a warning and does nothing. Below the root each shard
   folder must be a real folder, never a link, and resolve inside the resolved root, and the files are opened with `O_NOFOLLOW`; a delete
   unlinks a link itself, never what it points at. The root itself may be a link (a mount reached through one).
-- **Deployment.** On Kubernetes a filesystem store needs one shared volume (ReadWriteMany) mounted at `root` in the API pod and every
-  worker pod (section 7). Do not select a filesystem store on a deployment that lacks it: the selection probe runs in one pod only, and
+- **Deployment.** On Kubernetes a filesystem store needs one shared volume mounted at `root` in the API pod and every worker pod
+  (section 7: `ReadWriteMany` on a cluster with more than one node; a `ReadWriteOnce` `local-path` claim is enough while every pod runs
+  on a single node). Do not select a filesystem store on a deployment that lacks it: the selection probe runs in one pod only, and
   every other pod would refuse the store (the boot check names them). An S3 store needs the `s3` extra in every pod (the slim image has
   it) and the same bucket reachable from each; with no keys on the row, each pod uses its own ambient credentials.
 
