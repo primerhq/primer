@@ -710,9 +710,7 @@ function PC_ProviderForm({
       <div className="col" style={{ gap: 16, minWidth: 0 }} ref={rootRef} data-testid={`provider-form-${plural}`}>
         <PC_FocusAfterRetry retried={retried} failed={typesFailed} rootRef={rootRef} />
         {missingExtra ? (
-          <Banner kind="info" title="Optional dependency required">
-            {capabilityHint(extra)}
-          </Banner>
+          <Banner kind="info" title="Optional dependency required" detail={capabilityHint(extra)} />
         ) : null}
         <PK_Grid cols={2}>
           <window.PC_IdField value={draft.id} locked={kindLocked} testid="pc-field:id" problem={idTyped ? idProblem : null}
@@ -821,9 +819,7 @@ function PC_ProviderForm({
   const fields = (
     <div className="col" style={{ gap: 12, minWidth: 0 }}>
       {missingExtra ? (
-        <Banner kind="info" title="Optional dependency required">
-          {capabilityHint(extra)}
-        </Banner>
+        <Banner kind="info" title="Optional dependency required" detail={capabilityHint(extra)} />
       ) : null}
 
       <PC_Field
