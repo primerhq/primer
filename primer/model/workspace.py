@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from enum import Enum
 from typing import Annotated, Any, ClassVar, Literal, Union
 
@@ -144,15 +144,24 @@ _K8S_QUANTITY_SCALE: dict[str, Decimal] = {
 
 
 def parse_k8s_quantity(value: str) -> Decimal | None:
-    """The amount a Kubernetes quantity names (``10Gi`` is ``10 * 2**30``), or ``None`` when ``value`` is not one (``10 Gi``, ``lots``)."""
+    """The amount a Kubernetes quantity names (``10Gi`` is ``10 * 2**30``), or ``None`` when ``value`` is not one (``10 Gi``, ``lots``).
+
+    A known unit is looked up first, so ``Ei`` (exbibytes) is a unit and only ``e3`` / ``E-2`` is an exponent (the review of #869,
+    F2: ``Ei`` used to be read as an exponent and raised). The arithmetic is exact: it runs with enough precision for every digit of
+    the number, so a value a hair above a cap is not rounded down onto it.
+    """
     match = _K8S_QUANTITY_RE.fullmatch(value)
     if match is None:
         return None
-    number = Decimal(match["number"])
+    digits = match["number"]
     suffix = match["suffix"] or ""
-    if len(suffix) > 1 and suffix[0] in "eE":
-        return number.scaleb(int(suffix[1:]))
-    return number * _K8S_QUANTITY_SCALE[suffix]
+    with localcontext() as exact:
+        exact.prec = len(digits) + 40
+        number = Decimal(digits)
+        scale = _K8S_QUANTITY_SCALE.get(suffix)
+        if scale is not None:
+            return number * scale
+        return number.scaleb(int(suffix[1:]))       # the regular expression admits no other suffix than an exponent here
 
 
 def disk_quantity_problem(value: str) -> str | None:
@@ -162,7 +171,10 @@ def disk_quantity_problem(value: str) -> str | None:
     phrase that follows "is" (``pvc_size '10 Gi' is not a Kubernetes quantity ...``), so the model and the create-time check
     (``primer.workspace.size_overrides``) say the same thing.
     """
-    amount = parse_k8s_quantity(value)
+    try:
+        amount = parse_k8s_quantity(value)
+    except (ArithmeticError, ValueError):     # never a 500: whatever the parser cannot read is not a quantity
+        amount = None
     if amount is None:
         return "not a Kubernetes quantity: write a number and an optional unit with no space, for example 10Gi, 500Mi or 1Ti"
     if amount <= 0:

@@ -9,6 +9,7 @@ provider cannot honour is refused with a 422 that names the field, never silentl
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import pydantic
 import pytest
@@ -17,6 +18,8 @@ from primer.model.common import STORAGE_LOAD_CONTEXT
 from primer.model.except_ import ValidationError
 from primer.model.workspace import (
     ContainerTemplateConfig,
+    disk_quantity_problem,
+    parse_k8s_quantity,
     KubernetesTemplateConfig,
     ResourceLimits,
     WorkspaceProviderType,
@@ -334,6 +337,27 @@ def test_a_local_or_docker_templates_unused_resources_are_not_capped_but_must_be
         refuse_oversized_template_sizes(
             _stored(provider_id="dock", backend={"kind": "container"}, resources={"cpu_cores": 0}), _o(cpu_cores=1),
         )
+
+
+@pytest.mark.parametrize(("pvc_size", "refused"), [("1Ei", True), ("2Ei", True), ("0.00001Ei", False), ("1E", True), ("1E3", False)])
+def test_ei_is_a_unit_and_never_an_exponent(pvc_size, refused):
+    """``Ei`` (exbibytes) used to be read as an exponent and raised ValueError: a 500 at create from a stored ``2Ei`` template (the
+    review of #869, F2)."""
+    if refused:
+        with pytest.raises(pydantic.ValidationError, match="more than the 64 TiB"):
+            KubernetesTemplateConfig(image="rt:1", pvc_size=pvc_size)
+        with pytest.raises(TemplateSizeRefused, match="more than the 64 TiB"):
+            refuse_oversized_template_sizes(_stored(backend={"kind": "kubernetes", "image": "rt:1", "pvc_size": pvc_size}), None)
+    else:
+        assert KubernetesTemplateConfig(image="rt:1", pvc_size=pvc_size).pvc_size == pvc_size
+        refuse_oversized_template_sizes(_stored(backend={"kind": "kubernetes", "image": "rt:1", "pvc_size": pvc_size}), None)
+
+
+def test_the_disk_arithmetic_is_exact_at_the_cap():
+    """A value a hair above 64 TiB is not rounded down onto the cap (Decimal's default 28 digits did)."""
+    assert disk_quantity_problem("64Ti") is None and disk_quantity_problem("70368744177664") is None
+    assert "more than" in disk_quantity_problem("70368744177664.00000000000000000000001")
+    assert parse_k8s_quantity("0.00001Ei") == Decimal("11529215046068.46976")
 
 
 async def test_the_storage_reads_a_stored_row_back_tolerantly_and_patch_if_still_applies(tmp_path):
