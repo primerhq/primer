@@ -115,7 +115,12 @@ every later use checks again.
 predicate, 200 rows a page until they run out) through the registry and logs, at
 ERROR, `artifact store <id> (filesystem, root <root>) is not usable in this process: <reason>` for each one that fails, giving each 30
 seconds. It never raises. The lifespan starts it as a background task after the invalidation bus is bound (a store it caches is evicted by
-a later edit in any process) and cancels it at shutdown, so it never holds the boot.
+a later edit in any process) and cancels it at shutdown, so it never holds the boot. The cancel does not wait for a check thread that is
+stuck on a hung mount (Python cannot stop a thread): that thread ends when the mount answers or the process exits (accepted in the review
+of #890).
+
+Known limits, ticketed rather than handled: temporary files left by a crash in the middle of a write (`.<id>.<hex>.tmp` in a shard
+folder) are not swept, and the marker carries no install identity, so two deployments pointed at one folder would both accept it.
 
 **Select** (`set_active_artifact_store`): read the provider, probe it, read it again, and write the selection with a compare-and-set
 against the selection read before the probe (`patch_if_checked`; a create for the first selection). A provider deleted during the probe,
