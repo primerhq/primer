@@ -1,8 +1,10 @@
-"""The trigger tools record the calling run's identity as the owner (security review A-20).
+"""The trigger tools record the caller's identity as the owner (security review A-20, ticket 01a16ee4).
 
 A fired run is ranked by its owner, so a run that creates or re-saves a trigger or subscription through a tool stamps
-``ctx.initiated_by`` as the owner, the same way the REST routes stamp the request's actor. A call with no identity (the MCP
-endpoint dispatches handlers without a ``ToolContext``) records no owner, which fires as an ordinary user (fail closed).
+``ctx.initiated_by`` as the owner, the same way the REST routes stamp the request's actor. The MCP endpoint's own call (no
+``ToolContext`` and no delegated run) stamps the MCP person's actor (``current_actor``), so what it saves fires at most at the
+person's rank, and a later save by a lower rank is refused by the rank rule. A call with no identity at all (a delegated run,
+a subagent started over MCP) records no owner, which fires as an ordinary user (fail closed).
 """
 
 from __future__ import annotations
@@ -71,6 +73,35 @@ async def test_a_call_without_an_identity_records_no_owner(fake_storage_provider
 
     assert (await fake_storage_provider.get_storage(Trigger).get(tid)).owner is None
     assert (await fake_storage_provider.get_storage(Subscription).get(json.loads(sub.output)["id"])).owner is None
+
+
+async def test_the_mcp_door_records_the_mcp_principal_as_owner(fake_storage_provider) -> None:
+    """Ticket 01a16ee4: the MCP endpoint's own call (no ``ToolContext``) records the MCP person's actor, so what it saves fires at
+    most at the person's rank. A call inside a delegated run (a subagent started over MCP, ``_RUN_ID`` set) is not the MCP person
+    and records no owner."""
+    from primer.agent.invoke import _RUN_ID
+    from primer.mcp.server import current_actor
+    from primer.model.principal import Principal
+
+    tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
+    actor = Principal(type="user", id="u-mcp", display="mcp", role="user", source="local")
+    token = current_actor.set(actor)
+    try:
+        created = await tools.call(tool_name="create", arguments=_create_args(), ctx=None)
+        assert not created.is_error, created.output
+        tid = json.loads(created.output)["id"]
+    finally:
+        current_actor.reset(token)
+
+    assert _owner(await fake_storage_provider.get_storage(Trigger).get(tid)) == ("user", "u-mcp", "user")
+
+    _RUN_ID.set("run-1")
+    try:
+        upd = await tools.call(tool_name="update", arguments={"id": tid, "name": "by a delegated run"}, ctx=None)
+    finally:
+        _RUN_ID.set(None)
+    assert not upd.is_error, upd.output
+    assert (await fake_storage_provider.get_storage(Trigger).get(tid)).owner is None, "a delegated run is not the MCP person"
 
 
 async def test_create_channel_binding_records_the_owner(fake_storage_provider) -> None:

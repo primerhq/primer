@@ -116,11 +116,13 @@ async def test_update_preserves_token_and_new_fields(fake_storage_provider):
         owner=PrincipalRef.system(),
         deps=deps,
     )
-    # The same owner re-saves: a save that hands the trigger to someone else mints a new token.
+    # The same owner re-saves: a save that hands the trigger to someone else mints a new token. The caller is the system
+    # principal (the rank rule of a manual fire is asked on it; ticket 01a16ee4), which is never outranked.
     updated = await update_trigger(
         trigger_id=trigger.id,
         config=WebhookTriggerConfig(interactive=True, wait_timeout_seconds=9),
         owner=PrincipalRef.system(),
+        caller=PrincipalRef.system(),
         deps=deps,
     )
     assert updated.config.token == trigger.config.token

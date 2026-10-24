@@ -207,6 +207,32 @@ function TR_fireOutcome(res, label) {
 }
 
 // Copy text to clipboard + flash a brief toast.
+// The rank rule of a manual fire, mirrored from the server (primer.trigger.owner.refuse_fire_now / refuse_trigger_change, tickets
+// 01a16e65-12d1 and 01a16ee4): a viewer may fire, edit or delete a trigger only when they rank at least as high as the trigger's owner, or
+// when it is their own. The server ranks an admin with the system principal, so an admin is never blocked. A trigger with no recorded owner
+// ranks as an ordinary user. A non-manager's view of the owner is reduced to {display, role} (no id), so ownership is compared by the id
+// only when the full owner is served (a manager's own view, which always includes one's own trigger).
+// The rank the server gives a principal (primer.authz.principal_rank): system above admin above user above restricted, an unknown role below
+// restricted. A system owner carries no role (null), so the type decides.
+function TR_roleRank(role, type) {
+  if (type === "system" || role === "system" || role === "admin") return 3;
+  if (role === "user") return 1;
+  if (role === "restricted") return 0;
+  return -1;
+}
+
+// null when the viewer may act on the trigger, else the reason the button is disabled. The server answers the same refusal; this only removes
+// the dead click, so it fails open (null) whenever it cannot decide (no principal served, unknown role).
+function TR_rankBlockedReason(trigger, principal, verb) {
+  if (!principal || !principal.role || !principal.id) return null;
+  var owner = trigger && trigger.owner;
+  if (owner && owner.id && owner.type === principal.type && owner.id === principal.id) return null; // one's own trigger
+  var mine = TR_roleRank(principal.role, principal.type);
+  var theirs = owner ? TR_roleRank(owner.role, owner.type) : 1; // a row with no recorded owner ranks as an ordinary user
+  if (mine >= theirs) return null;
+  return "You rank below this trigger's owner (" + ((owner && owner.role) || "user") + "). Ask the owner or an administrator to " + verb + " it.";
+}
+
 function TR_CopyButton({ text, label, testId }) {
   const [copied, setCopied] = React.useState(false);
   const copy = async () => {
@@ -250,9 +276,20 @@ function TR_TriggersPage({ triggerId }) {
 const TR_PAGE_SIZE = 25;
 
 function TR_TriggerList() {
-  const { useRouter, usePagedList, Pager } = window.primerApi;
+  const { useRouter, usePagedList, Pager, useResource, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [createOpen, setCreateOpen] = React.useState(false);
+
+  // The viewer's principal (from /auth/status): the rank rule of a manual fire mirrored on the row buttons (see TR_rankBlockedReason).
+  const authStatus = typeof useResource === "function"
+    ? useResource(
+        "trigger-auth-status",
+        (signal) => apiFetch("GET", "/auth/status", null, { signal }),
+        { pollMs: 0 },
+      )
+    : { data: null };
+
+  const principal = (authStatus && authStatus.data && authStatus.data.principal) || null;
 
   // Server-side offset pagination (bug #19). Replaces the client-side slice
   // over a default-limit /triggers fetch, which silently capped the visible
@@ -330,6 +367,7 @@ function TR_TriggerList() {
                 <TR_TriggerRow
                   key={t.id}
                   trigger={t}
+                  principal={principal}
                   onOpen={() => navigate("/triggers/" + t.id)}
                   onChanged={list.refetch}
                 />
@@ -399,11 +437,20 @@ function TR_focusAfterRowGone(tr) {
   if (focusTarget) focusTarget.focus();
 }
 
-function TR_TriggerRow({ trigger, onOpen, onChanged }) {
+function TR_TriggerRow({ trigger, principal, onOpen, onChanged }) {
   const { apiFetch } = window.primerApi;
   const kind = trigger?.config?.kind || "—";
   const enabled = !!trigger.enabled;
   const [busy, setBusy] = React.useState(false);
+
+  // The rank rule of a manual fire, mirrored from the server (primer.trigger.owner, tickets 01a16e65-12d1 and 01a16ee4): a viewer who ranks
+  // below the trigger's owner (and it is not their own) gets Fire now / Edit / Delete disabled with the reason; the server refuses the same
+  // way, this only removes the dead click.
+  const blocked = {
+    fire: TR_rankBlockedReason(trigger, principal, "fire"),
+    edit: TR_rankBlockedReason(trigger, principal, "edit"),
+    del: TR_rankBlockedReason(trigger, principal, "delete"),
+  };
 
   const stop = (e) => { e.stopPropagation(); };
 
@@ -531,9 +578,9 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
           size="sm"
           kind="ghost"
           icon="zap"
-          disabled={busy}
+          disabled={busy || !!blocked.fire}
           onClick={fireNow}
-          title="Fire this trigger immediately, bypassing the schedule"
+          title={blocked.fire || "Fire this trigger immediately, bypassing the schedule"}
           data-testid={`trigger-row-fire-${trigger.id}`}
         >
           Fire now
@@ -542,9 +589,9 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
           size="sm"
           kind="ghost"
           icon="edit"
-          disabled={busy}
+          disabled={busy || !!blocked.edit}
           onClick={(e) => { e.stopPropagation(); onOpen(); }}
-          title="Open the trigger to edit it"
+          title={blocked.edit || "Open the trigger to edit it"}
           data-testid={`trigger-row-edit-${trigger.id}`}
         >
           Edit
@@ -553,9 +600,9 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
           size="sm"
           kind="danger"
           icon="trash"
-          disabled={busy}
+          disabled={busy || !!blocked.del}
           onClick={remove}
-          title="Delete this trigger"
+          title={blocked.del || "Delete this trigger"}
           data-testid={`trigger-row-delete-${trigger.id}`}
         >
           Delete
@@ -1390,6 +1437,14 @@ function TR_TriggerDetail({ id }) {
     { pollMs: 2000, deps: [id] },
   );
 
+  // The viewer's principal (from /auth/status): the rank rule of a manual fire mirrored on the buttons (see TR_rankBlockedReason).
+  const authStatus = useResource(
+    "trigger-auth-status",
+    (signal) => apiFetch("GET", "/auth/status", null, { signal }),
+    { pollMs: 0 },
+  );
+  const principal = (authStatus.data && authStatus.data.principal) || null;
+
   const [editOpen, setEditOpen] = React.useState(false);
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const [deleteBusy, setDeleteBusy] = React.useState(false);
@@ -1497,6 +1552,14 @@ function TR_TriggerDetail({ id }) {
   const t = detail.data;
   const kind = t?.config?.kind || "—";
   const subItems = subs.data?.items ?? [];
+  // The rank rule of a manual fire, mirrored from the server (primer.trigger.owner, tickets 01a16e65-12d1 and 01a16ee4): a viewer who ranks
+  // below the trigger's owner (and it is not their own) gets Fire now / Edit / Delete disabled with the reason; the server refuses the same
+  // way, this only removes the dead click.
+  const blocked = {
+    fire: TR_rankBlockedReason(t, principal, "fire"),
+    edit: TR_rankBlockedReason(t, principal, "edit"),
+    del: TR_rankBlockedReason(t, principal, "delete"),
+  };
 
   return (
     <div className="col" data-testid="trigger-detail" style={{ gap: 14 }}>
@@ -1521,11 +1584,22 @@ function TR_TriggerDetail({ id }) {
           </span>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
-          <Btn size="sm" kind="ghost" icon="edit" onClick={() => setEditOpen(true)}>Edit</Btn>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="edit"
+            disabled={!!blocked.edit}
+            title={blocked.edit || "Edit this trigger"}
+            onClick={() => setEditOpen(true)}
+          >
+            Edit
+          </Btn>
           <Btn
             size="sm"
             kind="danger"
             icon="trash"
+            disabled={!!blocked.del}
+            title={blocked.del || "Delete this trigger and its subscriptions"}
             onClick={() => setConfirmDelete(true)}
           >
             Delete trigger
@@ -1685,8 +1759,8 @@ function TR_TriggerDetail({ id }) {
               icon="zap"
               data-testid="fire-now-btn"
               onClick={fireNow}
-              disabled={fireBusy}
-              title="Fire this trigger immediately, bypassing the schedule"
+              disabled={fireBusy || !!blocked.fire}
+              title={blocked.fire || "Fire this trigger immediately, bypassing the schedule"}
             >
               {fireBusy ? "Firing…" : "Fire now"}
             </Btn>

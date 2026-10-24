@@ -261,6 +261,9 @@ async def update_trigger(
     enabled: bool | None = None,
     config=None,
     owner: PrincipalRef | None = None,
+    caller: Any = None,
+    from_run: bool = False,
+    in_session: bool = False,
     reach: str | None = None,
     deps: ServiceDeps,
 ) -> Trigger:
@@ -269,6 +272,15 @@ async def update_trigger(
     The caller becomes the owner: whoever last saved a trigger is who its
     runs are ranked by. ``owner=None`` (a call with no identity) clears it,
     so the trigger fires as an ordinary user.
+
+    The rank rule of a manual fire is asked after the reach check
+    (:func:`primer.trigger.owner.refuse_trigger_change`, ticket 01a16ee4): the
+    caller must rank at least as high as the trigger's owner (an admin is
+    never outranked), and a live request (``from_run`` False: REST, or the
+    MCP endpoint's own call) may also always save a trigger it owns. A
+    refusal raises :class:`TriggerOutranked` before anything changes: the row
+    keeps its owner (a refused change adopts none), its timing and its
+    subscriptions.
 
     A webhook trigger is changed only by its owner or an admin
     (:func:`primer.trigger.owner.may_manage_trigger`; :class:`TriggerForbidden`
@@ -292,6 +304,13 @@ async def update_trigger(
     if trigger is None:
         raise TriggerNotFound(trigger_id)
     await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
+    from primer.trigger.owner import refuse_trigger_change
+
+    refusal = await refuse_trigger_change(
+        trigger, caller, deps.storage_provider, from_run=from_run, in_session=in_session,
+    )
+    if refusal is not None:
+        raise TriggerOutranked(refusal)
     if config is not None and config.kind != trigger.config.kind:
         raise TriggerKindImmutable(
             f"cannot change kind from {trigger.config.kind!r} to {config.kind!r}"
@@ -354,8 +373,18 @@ async def update_trigger(
     return trigger
 
 
-async def delete_trigger(*, trigger_id: str, reach: str | None = None, deps: ServiceDeps) -> None:
+async def delete_trigger(
+    *, trigger_id: str, caller: Any = None, from_run: bool = False, in_session: bool = False, reach: str | None = None, deps: ServiceDeps,
+) -> None:
     """Delete a trigger and cascade-delete its subscriptions.
+
+    The rank rule of a manual fire is asked after the reach check
+    (:func:`primer.trigger.owner.refuse_trigger_change`, ticket 01a16ee4): the
+    caller must rank at least as high as the trigger's owner (an admin is
+    never outranked), and a live request (``from_run`` False) may also always
+    delete a trigger it owns. A refusal raises :class:`TriggerOutranked`
+    before anything is deleted: the row and every subscription stay as they
+    were.
 
     ``reach`` is the calling session's: a trigger with a subscription that starts or feeds a session outside it answers :class:`TriggerNotFound`.
     """
@@ -365,6 +394,13 @@ async def delete_trigger(*, trigger_id: str, reach: str | None = None, deps: Ser
     if trigger is None:
         raise TriggerNotFound(trigger_id)
     await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
+    from primer.trigger.owner import refuse_trigger_change
+
+    refusal = await refuse_trigger_change(
+        trigger, caller, deps.storage_provider, from_run=from_run, in_session=in_session,
+    )
+    if refusal is not None:
+        raise TriggerOutranked(refusal)
     # Cascade-delete all subscriptions bound to this trigger. All of them are read BEFORE any is deleted: deleting
     # while paging by offset shifts the remaining rows down, so every page after the first skipped as many rows as
     # the page before it had deleted (a trigger with more than 200 subscriptions left orphans behind).

@@ -30,8 +30,8 @@ mapping covers the cases the service layer reports:
   (a webhook trigger's PUT / rotate_token by someone other than its owner or
   an admin; list / get show such callers the token masked)
 * :class:`~primer.trigger.service.TriggerOutranked` → 403 ``forbidden_rank``
-  (a ``fire_now`` by a caller ranked below the trigger's owner who does not
-  own it; ticket 01a16e65-12d1)
+  (a ``fire_now``, ``PUT`` or ``DELETE`` by a caller ranked below the
+  trigger's owner who does not own it; tickets 01a16e65-12d1 and 01a16ee4)
 * :class:`~primer.trigger.cron.CronInvalid` → 422 ``cron_invalid``
 * :class:`~primer.trigger.cron.TimezoneInvalid` → 422 ``timezone_invalid``
 * :class:`~primer.model.event_matcher.EventMatcherPatternError` → 422
@@ -263,6 +263,8 @@ async def update_trigger_endpoint(
     event_bus=Depends(get_event_bus),
 ) -> JSONResponse:
     deps = _deps(sp, claim_engine, event_bus)
+    # A save re-arms the trigger's claim and hands it to the saver, so it follows the rank rule of a manual fire (ticket 01a16ee4):
+    # 403 ``forbidden_rank`` otherwise, and nothing changes (the trigger keeps its stored owner).
     try:
         trigger = await update_trigger(
             trigger_id=trigger_id,
@@ -271,10 +273,13 @@ async def update_trigger_endpoint(
             enabled=body.enabled,
             config=body.config,
             owner=_owner(request),
+            caller=getattr(request.state, "actor", None),
             deps=deps,
         )
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
+    except TriggerOutranked as exc:
+        _raise_code(403, "forbidden_rank", str(exc))
     except TriggerKindImmutable as exc:
         _raise_code(409, "trigger_kind_immutable", str(exc))
     except TriggerForbidden as exc:
@@ -291,16 +296,23 @@ async def update_trigger_endpoint(
 
 @triggers_router.delete("/{trigger_id}", summary="Delete a trigger (cascade)")
 async def delete_trigger_endpoint(
+    request: Request,
     trigger_id: str = Path(...),
     sp=Depends(get_storage_provider),
     claim_engine=Depends(get_claim_engine),
     event_bus=Depends(get_event_bus),
 ) -> Response:
     deps = _deps(sp, claim_engine, event_bus)
+    # A delete ends the trigger's subscriptions' automation, so it follows the rank rule of a manual fire (ticket 01a16ee4):
+    # 403 ``forbidden_rank`` otherwise, and nothing is deleted.
     try:
-        await delete_trigger(trigger_id=trigger_id, deps=deps)
+        await delete_trigger(
+            trigger_id=trigger_id, caller=getattr(request.state, "actor", None), deps=deps,
+        )
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
+    except TriggerOutranked as exc:
+        _raise_code(403, "forbidden_rank", str(exc))
     return Response(status_code=204)
 
 

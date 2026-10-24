@@ -261,7 +261,9 @@ TOOL_CREATE = make_tool(
         "scheduled: ``{kind:'scheduled', cron, timezone?, catchup?}``). "
         "Duplicate slug surfaces as ``type=trigger_slug_conflict``; bad "
         "cron / timezone surface as ``type=cron_invalid`` / "
-        "``type=timezone_invalid``."
+        "``type=timezone_invalid``. The save records you as the trigger's "
+        "``owner`` (the calling run, or the MCP person's own call), and a "
+        "run the trigger starts is ranked no higher than it."
     ),
     args_schema=_CreateArgs.model_json_schema(),
     examples=[
@@ -287,7 +289,12 @@ TOOL_UPDATE = make_tool(
         "config. Only supplied fields change. Changing ``config.kind`` is "
         "rejected with ``type=trigger_kind_immutable`` (delete + recreate "
         "to switch kinds). For subscription fields use "
-        "``update_subscription`` instead." + _TRIGGER_REACH_NOTE
+        "``update_subscription`` instead. A save re-arms the trigger's claim, "
+        "so it follows the rank rule of a manual fire: you may change a "
+        "trigger only when you rank at least as high as its owner (an admin "
+        "may change any; with no calling session you may also change your "
+        "own); otherwise ``type=forbidden`` and nothing changes (the trigger "
+        "keeps its stored owner)." + _TRIGGER_REACH_NOTE
     ),
     args_schema=_UpdateArgs.model_json_schema(),
     examples=[
@@ -309,7 +316,11 @@ TOOL_DELETE = make_tool(
         "Use when permanently removing a trigger; this cascade-deletes all "
         "its subscriptions. To remove a single subscription only, use "
         "``delete_subscription``. Returns ``{ok: true}`` or "
-        "``type=trigger_not_found``." + _TRIGGER_REACH_NOTE
+        "``type=trigger_not_found``. It follows the rank rule of a manual "
+        "fire: you may delete a trigger only when you rank at least as high "
+        "as its owner (an admin may delete any; with no calling session you "
+        "may also delete your own); otherwise ``type=forbidden`` and nothing "
+        "is deleted." + _TRIGGER_REACH_NOTE
     ),
     args_schema=_IdArgs.model_json_schema(),
     examples=[
@@ -579,12 +590,25 @@ def _make_list_handler(
 
 
 def _caller(ctx: ToolContext | None) -> "PrincipalRef | None":
-    """The calling run's identity, recorded as the owner of the trigger or subscription it saves (security review A-20).
+    """The caller's identity, recorded as the owner of the trigger or subscription it saves (security review A-20, ticket 01a16ee4).
 
-    A call with no ``ToolContext`` (the MCP endpoint dispatches handlers without one) records no owner, so what it saves fires
-    as an ordinary user: fail closed.
+    A call with a ``ToolContext`` records the run's principal. A call with no context and no delegated run is the MCP endpoint's own: it records
+    the MCP person's actor (``current_actor``), so what it saves fires at most at the person's rank, and a later save by a lower rank is refused
+    by the rank rule. A call inside a delegated run (``primer.agent.invoke._RUN_ID`` is set, a subagent started over MCP) records no owner: the
+    run is unattributed, and what it saves fires as an ordinary user (fail closed).
     """
-    return ctx.initiated_by if ctx is not None else None
+    if ctx is not None:
+        return ctx.initiated_by
+    from primer.agent.invoke import _RUN_ID
+
+    if _RUN_ID.get() is not None:
+        return None
+    from primer.mcp.server import current_actor
+
+    from primer.model.principal import PrincipalRef
+
+    actor = current_actor.get()
+    return PrincipalRef.from_principal(actor) if actor is not None else None
 
 
 def _fire_caller(ctx: ToolContext | None) -> tuple[Any, bool, bool]:
@@ -677,6 +701,9 @@ def _make_update_handler(
         except ValidationError as exc:
             return _err_validation(exc)
         deps = _make_deps(storage_provider, claim_engine, event_bus)
+        # The rank rule of a manual fire (ticket 01a16ee4): the same rule as ``fire_now`` below, asked in the service after the reach check, so a
+        # trigger whose owner outranks the caller answers ``type=forbidden`` and changes nothing (it keeps its stored owner).
+        caller, from_run, in_session = _fire_caller(ctx)
         try:
             trigger = await update_trigger(
                 trigger_id=args.id,
@@ -685,12 +712,17 @@ def _make_update_handler(
                 enabled=args.enabled,
                 config=args.config,
                 owner=_caller(ctx),
+                caller=caller,
+                from_run=from_run,
+                in_session=in_session,
                 # From a session outside prime: refused as an unknown trigger when a subscription of it reaches outside (review of #874, B1).
                 reach=await caller_reach(storage_provider, ctx),
                 deps=deps,
             )
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
+        except TriggerOutranked as exc:
+            return _err(str(exc), error_type="forbidden")
         except TriggerKindImmutable as exc:
             return _err(str(exc), error_type="trigger_kind_immutable")
         except TriggerForbidden as exc:
@@ -715,10 +747,18 @@ def _make_delete_handler(
         except ValidationError as exc:
             return _err_validation(exc)
         deps = _make_deps(storage_provider, claim_engine, event_bus)
+        # The rank rule of a manual fire (ticket 01a16ee4): the same rule as ``fire_now`` below, asked in the service after the reach check, so a
+        # trigger whose owner outranks the caller answers ``type=forbidden`` and is not deleted (its subscriptions stay).
+        caller, from_run, in_session = _fire_caller(ctx)
         try:
-            await delete_trigger(trigger_id=args.id, reach=await caller_reach(storage_provider, ctx), deps=deps)
+            await delete_trigger(
+                trigger_id=args.id, caller=caller, from_run=from_run, in_session=in_session,
+                reach=await caller_reach(storage_provider, ctx), deps=deps,
+            )
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
+        except TriggerOutranked as exc:
+            return _err(str(exc), error_type="forbidden")
         return _ok({"ok": True})
 
     return _handler
