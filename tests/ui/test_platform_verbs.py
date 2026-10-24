@@ -241,8 +241,10 @@ def test_a_title_the_registry_accepts_registers_without_a_warning(palette) -> No
 # ---- the palette ranks a verb's full label first ---------------------------------------------------------------------------------------------
 
 
+# The context the palette ranks with for an admin (nv-palette.jsx passes the signed-in role): every registered verb is offered to an admin, while an
+# admin-only verb (Reset Prime Instructions, pivot P2 Task 15) is hidden from any other role (tests/ui/test_reset_prime_instructions_action.py).
 def _ranked(ctx, query: str) -> list[str]:
-    return js(ctx, "SH_rankVerbs(registry, " + json.dumps(query) + ", {}).map(function (v) { return v.id; })")
+    return js(ctx, "SH_rankVerbs(registry, " + json.dumps(query) + ', { role: "admin" }).map(function (v) { return v.id; })')
 
 
 def test_the_palette_is_the_core_verbs_then_the_platform_verbs(palette) -> None:
@@ -303,7 +305,10 @@ def test_an_empty_query_has_no_tier_and_keeps_registration_order(palette) -> Non
     """The palette lists the first eight verbs of an empty query, and the loop-placement comment in ``nv-shell.jsx`` relies on those being the core verbs in the order they register."""
     ids = js(palette, "registry.ids()")
     ranked = _ranked(palette, "")
-    assert ranked == ids
+    # A destructive verb is dampened (SH_DESTRUCTIVE_DAMPENER), so the one destructive core verb (Reset Prime Instructions) comes after the rest.
+    destructive = set(js(palette, "registry.all().filter(function (v) { return v.destructive; }).map(function (v) { return v.id; })"))
+    assert destructive == {"setup.reset_prime_instructions"}
+    assert ranked == [i for i in ids if i not in destructive] + [i for i in ids if i in destructive]
     assert not set(IDS) & set(ranked[:8]), "the Platform verbs are registered after the core verbs, so they do not push them off the list"
 
 

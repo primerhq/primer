@@ -330,6 +330,60 @@ var NV_RESET_AGENTS_CONFIRM = {
   danger: true,
 };
 
+// Reset prime instructions (pivot P2 Task 15): POST /v1/setup/reset_prime_instructions overwrites agents.md in the default workspace with the
+// instructions the platform ships (primer/bootstrap/prime.py reset_prime_agents_md). Admin only: the route answers 403 to anyone else, so the Setup
+// card's menu row is drawn for an admin only and the palette verb (setup.reset_prime_instructions, nv-shell.jsx) is offered to an admin only. The
+// answer is {workspace_id, path, bytes, shadows}: shadows names an AGENTS.md beside the file, which the loader reads only while agents.md is absent
+// (primer/workspace/instructions.py), so after the reset it is no longer read, and the outcome says so.
+var NV_RESET_PRIME_CONFIRM = {
+  title: "Reset prime instructions",
+  message: "This overwrites agents.md in the default workspace (prime) with the instructions the platform ships. Your edits to that file are lost. "
+    + "An AGENTS.md beside it is left in place, and is not read while agents.md exists.",
+  confirmLabel: "Reset instructions",
+  danger: true,
+};
+
+// What a reset did: the toast's text and, when an AGENTS.md is beside the file, the note the card keeps (null when there is none).
+function NV_primeResetOutcome(result) {
+  var res = result || {};
+  var wid = res.workspace_id || "the default workspace";
+  var note = res.shadows
+    ? res.shadows + " is beside agents.md in " + wid + ": the loader now reads agents.md instead, so " + res.shadows + " is no longer read."
+    : null;
+  var text = "Prime instructions reset: agents.md in " + wid + " is the shipped version again.";
+  return { kind: "success", text: note ? text + " " + note : text, note: note };
+}
+
+// Ask, then reset, then say what happened. opts.toast(text, extra) is the console's toast (con.toast); without it (the palette verb runs this with
+// no card around it) the toast goes to window.primerApi.toastPush. opts.onSending runs once the person has confirmed, before the request: the card's
+// busy state. Resolves to the server's answer, or null when the person declined or the reset was refused (a refusal is said in readRefusal's words).
+function NV_resetPrimeInstructions(opts) {
+  var o = opts || {};
+  // The same (text, kind or {kind, requestId}) signature as con.toast (NV_toastPayload, nv-shell.jsx).
+  var toast = typeof o.toast === "function" ? o.toast : function (text, extra) {
+    var x = typeof extra === "string" ? { kind: extra } : (extra || {});
+    window.primerApi.toastPush({ kind: x.kind || "info", text: String(text), requestId: x.requestId || null });
+  };
+  return Promise.resolve(window.confirmDialog(NV_RESET_PRIME_CONFIRM)).then(function (ok) {
+    if (!ok) return null;
+    if (typeof o.onSending === "function") o.onSending();
+    return window.primerApi.apiFetch("POST", "/setup/reset_prime_instructions", null, {}).then(
+      function (res) {
+        var outcome = NV_primeResetOutcome(res);
+        toast(outcome.text, outcome.kind);
+        return res || {};
+      },
+      function (e) {
+        toast("Couldn't reset prime instructions: " + window.primerApi.readRefusal(e).message, {
+          kind: "error",
+          requestId: e && e.requestId,
+        });
+        return null;
+      }
+    );
+  });
+}
+
 var NV_CAPABILITY_GATES = {
   huggingface: "local embedder + cross-encoder + speech models",
   lance: "local semantic-search vector store",
@@ -384,6 +438,11 @@ function NV_SysSetupCard() {
   var busyState = React.useState(null);
   var busy = busyState[0];
   var setBusy = busyState[1];
+  // The last prime reset's note about an AGENTS.md beside agents.md (NV_primeResetOutcome): a toast goes away, the card keeps it.
+  var primeNoteState = React.useState(null);
+  var primeNote = primeNoteState[0];
+  var setPrimeNote = primeNoteState[1];
+  var isAdmin = con.role === "admin";
 
   NV_useMenuDismiss(con, "sys-setup", "nv-sys-setup-menu-btn");
   // The menu follows the kit's menu pattern (audit G1-14): its first item takes the focus when it opens, and the arrow keys, Home and End move
@@ -452,10 +511,26 @@ function NV_SysSetupCard() {
     });
   }
 
+  function resetPrime() {
+    if (busy != null) return;
+    con.toggleMenu(null);
+    NV_resetPrimeInstructions({
+      toast: con.toast,
+      onSending: function () { setBusy("prime"); },
+    }).then(function (res) {
+      setBusy(null);
+      if (res) setPrimeNote(NV_primeResetOutcome(res).note);
+    }, function () {
+      setBusy(null);
+    });
+  }
+
   var headline = busy === "seed"
     ? "Running the seed…"
     : busy === "reset"
     ? "Resetting the default agents…"
+    : busy === "prime"
+    ? "Resetting prime instructions…"
     : setupUnavailable
     ? "Couldn't check setup"
     : setupResourceState === "loading"
@@ -538,10 +613,32 @@ function NV_SysSetupCard() {
               >
                 Reset default agents
               </button>
+              {/* Admin only, hidden for anyone else (the route answers 403 to them). The row is the pointer affordance of the palette verb
+                  setup.reset_prime_instructions (nv-shell.jsx): the dual-render guard reads the literal data-verb. */}
+              {isAdmin ? (
+                <button
+                  type="button"
+                  className="pk-card-menu-item"
+                  role="menuitem"
+                  data-danger="true"
+                  data-testid="nv-sys-setup-reset-prime"
+                  data-verb="setup.reset_prime_instructions"
+                  onClick={resetPrime}
+                >
+                  Reset prime instructions
+                </button>
+              ) : null}
             </div>
           )}
         </div>
       </div>
+
+      {primeNote ? (
+        <div className="muted text-sm" data-testid="nv-sys-setup-prime-shadows"
+          style={{ color: "var(--text-3)", fontSize: 11, overflowWrap: "anywhere" }}>
+          {primeNote}
+        </div>
+      ) : null}
 
       {setupUnavailable ? (
         <button type="button" className="nv-btn-secondary"
@@ -985,6 +1082,8 @@ function NV_System() {
 window.NV_sysNavsFor = NV_sysNavsFor;
 window.NV_System = NV_System;
 window.NV_SysSetupCard = NV_SysSetupCard;
+window.NV_resetPrimeInstructions = NV_resetPrimeInstructions;
+window.NV_primeResetOutcome = NV_primeResetOutcome;
 window.NV_setupFix = NV_setupFix;
 window.NV_setupCardView = NV_setupCardView;
 window.NV_seedOutcome = NV_seedOutcome;

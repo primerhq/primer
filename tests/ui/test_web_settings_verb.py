@@ -62,8 +62,10 @@ def make():
         ctx.close()
 
 
+# The context the palette ranks with for an admin (nv-palette.jsx passes the signed-in role): every registered verb is offered to an admin, while an
+# admin-only verb (Reset Prime Instructions, pivot P2 Task 15) is hidden from any other role (tests/ui/test_reset_prime_instructions_action.py).
 def _ranked(ctx, query: str) -> list[str]:
-    return js(ctx, "SH_rankVerbs(registry, " + json.dumps(query) + ", {}).map(function (v) { return v.id; })")
+    return js(ctx, "SH_rankVerbs(registry, " + json.dumps(query) + ', { role: "admin" }).map(function (v) { return v.id; })')
 
 
 def test_the_shell_registers_open_web_settings() -> None:
