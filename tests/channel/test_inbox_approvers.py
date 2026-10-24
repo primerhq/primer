@@ -107,6 +107,32 @@ async def test_a_channel_reply_still_decides_an_unrestricted_gate(world, approve
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["tool_approval", "ask_user"])
+async def test_a_channel_reply_is_not_ranked_by_design(world, kind) -> None:
+    """Ticket 01a16a35, lead ruling 3: a channel reply decides an unrestricted gate, or answers a question, of a session an admin started. The
+    REST routes refuse a person the session outranks (``forbidden_rank``); a channel's members act through a reply binding a person deliberately
+    set up, so the inbox has no rank check (only a restricted gate refuses the reply, above)."""
+    from primer.model.principal import PrincipalRef
+
+    row = _parked("s-admin", approvers=None)
+    row.initiated_by = PrincipalRef(type="user", id="u-root", display="root", role="admin", source="local")
+    if kind == "ask_user":
+        row.parked_event_key = "ask_user:s-admin:tc-1"
+        row.parked_state = {"tool_call_id": "tc-1", "yielded": {"tool_name": "ask_user", "event_key": row.parked_event_key, "resume_metadata": {"prompt": "?"}}}
+    await world.sp.get_storage(WorkspaceSession).create(row)
+    reply = _reply("s-admin") if kind == "tool_approval" else ResponseEnvelope(
+        kind="ask_user", workspace_id="ws-1", session_id="s-admin", tool_call_id="tc-1", response="yes", decision=None, reason=None,
+        platform_metadata={"slack_user_id": "U123"},
+    )
+
+    await world.inbox.handle_response(reply)
+
+    event = await world.published()
+    assert event is not None and event.event_key == row.parked_event_key
+    assert event.payload == ({"decision": "approved", "reason": None} if kind == "tool_approval" else {"response": "yes"})
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tool_call_id", ["call-0", "call-1"])
 async def test_each_gate_of_a_graph_park_is_judged_by_its_own_spec(world, tool_call_id) -> None:
     """A fan-out park with two gates, routed to alice and to bob: a channel reply is neither, on either."""

@@ -429,7 +429,16 @@ but require human review for any other host.
   the other give admin-only), so a verdict answering `anyone` cannot open an admin-only gate. The effective spec is recorded when the call parks,
   for every park (the agent loop and `call_tool` alike), and EVERY way of deciding it is checked against it: `POST
   .../tool_approval/respond`, `POST .../yields/{tool_call_id}/cancel` on an approval gate (a cancel is a rejection) and a reply
-  from a channel. A user the spec does not admit gets `403 approver_mismatch`. The spec checked is the stamp of the specific gate the `tool_call_id` names, also on a graph park (where the session's first gate is not necessarily the one named); a cancel of a parked approval whose gate cannot be found is admin-only. Only an approval is judged: cancelling an `ask_user` question or an external-tool wait (also on a graph park, whose top-level yield always reads as an approval) is open to whoever could cancel it before. **A session owner who is not an approver can therefore no longer cancel their own approval yield** (cancelling the whole session still works for them). **A channel reply is refused on a gate restricted
+  from a channel. A user the spec does not admit gets `403 approver_mismatch`. The spec checked is the stamp of the specific gate the `tool_call_id` names, also on a graph park (where the session's first gate is not necessarily the one named); a cancel of a parked approval whose gate cannot be found is admin-only. Only an approval is judged by the spec: cancelling an `ask_user` question or an external-tool wait (also on a graph park, whose top-level yield always reads as an approval) is open to whoever the rank rule below admits. **A session owner who is not an approver can therefore no longer cancel their own approval yield** (cancelling the whole session still works for them).
+- **Under the spec is the rank rule, a floor on every decision made over the REST API.** A session runs at its creator's rank, so
+  a decision is a person's input into a run at that rank: `POST .../tool_approval/respond` and `POST .../yields/{tool_call_id}/cancel`
+  (of any yield) answer `403` with `extensions.error = "forbidden_rank"` and one fixed message (it names neither the creator nor its
+  rank) when the session's creator outranks the caller and the session is not the caller's own, before anything is decided. The rule
+  is the one the steer, restart, resume and cancel routes follow, and `POST .../ask_user/respond` follows it too. It holds whatever
+  the spec says: a gate with no approvers ("anyone"), or one that names the caller, is still not decided by a person the session
+  outranks. The spec is checked as well. Admins are never outranked, and an API token ranks as its owner's current role. **A channel
+  reply is not ranked, by design**: the members of a channel act through a reply binding a person deliberately set up, so a reply
+  and a channel button decide a gate with no restriction, and a restricted gate refuses them as below. **A channel reply is refused on a gate restricted
   to specific approvers**: a Slack, Discord or Telegram user is not an identified primer user, so such a gate is decided in the
   console by an approver or an admin; a gate with no restriction can still be decided from the channel. A spec that cannot be
   read is admin-only, and so is a `call_tool` gate that was parked before approvers were recorded. When several enabled policies

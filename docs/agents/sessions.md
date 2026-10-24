@@ -460,6 +460,14 @@ POST /v1/sessions/{session_id}/ask_user/respond   {"tool_call_id": "...", "respo
 POST /v1/sessions/{session_id}/yields/{tool_call_id}/cancel
 ```
 
+An answer and a cancel are a person's input into a run at the session's
+creator's rank, so both follow the rank rule of the steer and resume routes:
+when the session's creator outranks you and the session is not your own, they
+answer `403` with `extensions.error = "forbidden_rank"` and one fixed message,
+and nothing is answered, cancelled or resumed (an API token ranks as its owner;
+an admin is never outranked). A reply in a channel thread is not ranked, by
+design: it comes through a reply binding a person set up.
+
 `ask_user/pending` returns the `tool_call_id`, the `gate_id` (the id of THIS
 prompt, minted when it was asked; `null` for a prompt parked before gates had
 ids), the `prompt`, and the optional `response_schema` (404 when the session is
