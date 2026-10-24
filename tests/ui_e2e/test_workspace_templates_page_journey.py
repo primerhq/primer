@@ -1,7 +1,8 @@
 """UI E2E: Platform › Workspace templates (platform revamp Plan 08, Task 11; design 14.2). Lead-scheduled: written with the page, run by the lead.
 
-* ``test_create_edit_and_delete_a_template``: "+ Template" on a seeded Local provider, the card it makes, an edit of its description from the card, and
-  Delete from the card's menu.
+* ``test_create_edit_and_delete_a_template``: "+ Template" on a seeded Local provider, the card it makes, an edit of its description from the card, the
+  template opened by its overlay address (``overlay=workspaces:templates:<id>``) and closed again (the address loses ``overlay=``), and Delete from the
+  card's menu.
 * ``test_an_edit_keeps_every_field_it_did_not_show`` (Review Focus 1): a Kubernetes template with every field set (no cluster is needed to store one) is
   opened, only its description is changed and saved, and the stored row equals the one before but for the description (the env and url passwords the
   server serves masked are restored by the server).
@@ -100,6 +101,16 @@ def test_create_edit_and_delete_a_template(page: Page, base_url: str, console_ur
         overlay.get_by_test_id("wt-save").click()
         expect(overlay).not_to_be_visible(timeout=10_000)
         expect(card).to_contain_text("dev workspace v2", timeout=15_000)
+
+        # The overlay address (the workspace provider detail page links there): it opens the template overlay by itself, and closing it leaves the address.
+        page.evaluate("(h) => { window.location.hash = h; }",
+                      f"#/w/{default_wid(console_url)}?view=platform:templates&overlay=workspaces:templates:{template_id}")
+        expect(overlay).to_be_visible(timeout=15_000)
+        expect(overlay.get_by_test_id("ws-template-description")).to_have_value("dev workspace v2", timeout=10_000)
+        overlay.get_by_test_id("wt-cancel").click()
+        expect(overlay).not_to_be_visible(timeout=10_000)
+        expect(page).not_to_have_url(re.compile(r"overlay="), timeout=10_000)
+        expect(page).to_have_url(re.compile(r"view=platform(:|%3A)templates"))
 
         page.get_by_test_id(f"pk-card-menu:{template_id}").click()
         page.get_by_test_id(f"wt-delete:{template_id}").click()
