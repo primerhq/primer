@@ -27,11 +27,13 @@ function PK_focusLeft(ev) {
   return !!next && !(box && typeof box.contains === "function" && box.contains(next));
 }
 
-// Arrow keys, Home and End move the focus between the items of an open menu (the WAI-ARIA menu pattern); Tab leaves it.
+// Arrow keys, Home and End move the focus between the items of an open menu (the WAI-ARIA menu pattern); Tab leaves it. In a searchable selector's filter
+// box, Home and End stay the box's own (they move the caret), and the arrows step from the box into the items.
 function PK_menuKeys(ev) {
   var box = ev.currentTarget;
   var moves = { ArrowDown: 1, ArrowUp: -1, Home: "first", End: "last" };
   if (!(ev.key in moves) || !box || typeof box.querySelectorAll !== "function") return;
+  if ((ev.key === "Home" || ev.key === "End") && ev.target && ev.target.tagName === "INPUT") return;
   var items = Array.prototype.slice.call(box.querySelectorAll('[role="menuitem"], [role="menuitemradio"]'));
   if (!items.length) return;
   ev.preventDefault();
@@ -289,33 +291,57 @@ function PK_usePagedFilter(items, opts) {
 // The type selector at the centre top of a form overlay, larger than the other controls (design 6.1): "Register a", then a button holding the
 // current type's icon and label and a caret that opens the list of types. A pick reports the new value and closes the list; Escape closes only
 // the list. A locked selector (edit mode) shows its type and opens nothing.
+//
+// Each item carries the test id `<selector.testid>:<value>` (Plan 08's K-3 asked for one per item; this is it). `searchable: true` (Plan 08's K-1, for a
+// long list such as every workspace template) puts a filter box at the top of the open menu, `<selector.testid>:search`: it takes the focus when the menu
+// opens, keeps the items whose label or value holds what is typed (any case), says "No match" when none does, and Enter picks the first item left. The
+// box starts empty each time the menu opens.
 function PK_Selector(props) {
   var sel = props.selector;
   var openState = React.useState(false);
   var open = openState[0] && !sel.locked;
   var setOpen = openState[1];
+  var queryState = React.useState("");
+  var query = queryState[0];
+  var setQuery = queryState[1];
   var boxRef = React.useRef(null);
   var triggerRef = React.useRef(null);
   var listRef = React.useRef(null);
+  var searchRef = React.useRef(null);
+  function close() {
+    setOpen(false);
+    setQuery("");
+  }
+  function pick(value) {
+    close();
+    PK_focus(triggerRef);
+    sel.onChange(value);
+  }
   window.primerApi.useEscape(function (ev) {
     if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
-    setOpen(false);
+    close();
     PK_focus(triggerRef);
   }, open);
-  PK_useOutsideClick(open, boxRef, function () { setOpen(false); });
+  PK_useOutsideClick(open, boxRef, close);
   React.useEffect(function () {
-    if (open) PK_focusFirstItem(listRef);
+    if (!open) return;
+    if (sel.searchable) PK_focus(searchRef);
+    else PK_focusFirstItem(listRef);
   }, [open]);
   var options = sel.options || [];
   var current = options.filter(function (o) { return o.value === sel.value; })[0] || { value: sel.value, label: String(sel.value || "") };
+  var needle = sel.searchable ? query.trim().toLowerCase() : "";
+  var shown = needle ? options.filter(function (o) {
+    return String(o.label).toLowerCase().indexOf(needle) >= 0 || String(o.value).toLowerCase().indexOf(needle) >= 0;
+  }) : options;
   return (
     <div className="pk-selector">
       {sel.prefix ? <div className="pk-selector-prefix">{sel.prefix}</div> : null}
       <span className="pk-selector-anchor" ref={boxRef}
-        onBlur={function (ev) { if (open && PK_focusLeft(ev)) setOpen(false); }}>
+        onBlur={function (ev) { if (open && PK_focusLeft(ev)) close(); }}>
         <button type="button" ref={triggerRef} className="pk-selector-btn" data-testid={sel.testid}
           aria-haspopup="menu" aria-expanded={open ? "true" : "false"} aria-disabled={sel.locked ? "true" : undefined}
-          onClick={function (ev) { PK_stop(ev); if (!sel.locked) setOpen(!open); }}>
+          onClick={function (ev) { PK_stop(ev); if (sel.locked) return; if (open) close(); else setOpen(true); }}>
           {current.iconPath ? (
             <svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" aria-hidden="true">
               <path d={current.iconPath} />
@@ -327,16 +353,27 @@ function PK_Selector(props) {
         {open ? (
           <div className="pk-selector-menu" role="menu" ref={listRef} data-testid={sel.testid + ":menu"}
             onClick={PK_stop} onKeyDown={PK_menuKeys}>
-            {options.map(function (o) {
+            {sel.searchable ? (
+              <div role="none" style={{ padding: "2px 2px 6px" }}>
+                <input ref={searchRef} className="input" data-testid={sel.testid + ":search"} aria-label="Filter the list" placeholder="Filter…"
+                  value={query} style={{ width: "100%" }}
+                  onChange={function (ev) { setQuery(ev.target.value); }}
+                  onKeyDown={function (ev) {
+                    if (ev.key !== "Enter") return;
+                    ev.preventDefault();
+                    if (shown.length) pick(shown[0].value);
+                  }} />
+              </div>
+            ) : null}
+            {sel.searchable && !shown.length ? <div role="none" className="field-help">No match</div> : null}
+            {shown.map(function (o) {
               var on = o.value === sel.value;
               return (
                 <button type="button" key={o.value} role="menuitemradio" aria-checked={on ? "true" : "false"} className="pk-selector-item"
                   data-testid={sel.testid + ":" + o.value}
                   onClick={function (ev) {
                     PK_stop(ev);
-                    setOpen(false);
-                    PK_focus(triggerRef);
-                    sel.onChange(o.value);
+                    pick(o.value);
                   }}>
                   {o.iconPath ? (
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" aria-hidden="true">
@@ -435,14 +472,16 @@ function PK_Fold(props) {
 }
 
 // PK_Segmented: a small set of exclusive choices ("Sequential fallback | Round robin"), a group of toggle buttons; the current one is pressed.
+// `disabled` (Plan 08's K-4: a read-only template, a setting only an admin may change) still shows which one is pressed and takes no pick.
 function PK_Segmented(props) {
+  var disabled = !!props.disabled;
   return (
     <div className="pk-seg" role="group" aria-label={props.ariaLabel} data-testid={props.testid}>
       {(props.options || []).map(function (o) {
         var on = o.value === props.value;
         return (
-          <button type="button" key={o.value} className="pk-seg-btn" data-testid={props.testid + ":" + o.value}
-            aria-pressed={on ? "true" : "false"} onClick={function () { if (!on) props.onChange(o.value); }}>{o.label}</button>
+          <button type="button" key={o.value} className="pk-seg-btn" data-testid={props.testid + ":" + o.value} disabled={disabled || undefined}
+            aria-pressed={on ? "true" : "false"} onClick={function () { if (!on && !disabled) props.onChange(o.value); }}>{o.label}</button>
         );
       })}
     </div>
@@ -451,10 +490,12 @@ function PK_Segmented(props) {
 
 // PK_RowTable: an editable list of rows (models, environment, files, node selector, tolerations). "+ Add" appends a row with "" in each column
 // (a select column starts on its first option); "✕" removes a row; every edit hands the parent the next rows. Each control is named by its
-// column and row number ("Model 1"); a secret column is a password input the browser does not fill in.
+// column and row number ("Model 1"); a secret column is a password input the browser does not fill in. `readOnly` (Plan 08's K-4) shows the rows
+// and offers no change: no "+ Add", no "✕", read-only inputs and disabled selects (a select has no read-only state).
 function PK_RowTable(props) {
   var columns = props.columns || [];
   var rows = props.rows || [];
+  var readOnly = !!props.readOnly;
   var template = columns.map(function (c) { return c.width || "minmax(0, 1fr)"; }).concat(["auto"]).join(" ");
   function blank() {
     var row = {};
@@ -475,8 +516,10 @@ function PK_RowTable(props) {
     <div className="pk-rowtable" data-testid={props.testid}>
       <div className="pk-rowtable-head">
         <span className="pk-rowtable-title">{props.title || ""}</span>
-        <button type="button" className="pk-rowtable-add" data-testid={props.testid + ":add"}
-          onClick={function () { props.onChange(rows.concat([blank()])); }}>{props.addLabel}</button>
+        {readOnly ? null : (
+          <button type="button" className="pk-rowtable-add" data-testid={props.testid + ":add"}
+            onClick={function () { props.onChange(rows.concat([blank()])); }}>{props.addLabel}</button>
+        )}
       </div>
       {rows.length && columns.length > 1 ? (
         <div className="pk-rowtable-row pk-rowtable-cols" style={{ gridTemplateColumns: template }} aria-hidden="true">
@@ -494,7 +537,8 @@ function PK_RowTable(props) {
               function onChange(ev) { edit(i, c.key, ev.target.value); }
               if (c.input === "select") {
                 return (
-                  <select key={c.key} className="pk-rowtable-input" data-testid={testid} aria-label={name} value={value} onChange={onChange}>
+                  <select key={c.key} className="pk-rowtable-input" data-testid={testid} aria-label={name} value={value} onChange={onChange}
+                    disabled={readOnly || undefined}>
                     {(c.options || []).map(function (o) { return <option key={o} value={o}>{o}</option>; })}
                   </select>
                 );
@@ -502,12 +546,14 @@ function PK_RowTable(props) {
               var type = c.input === "secret" ? "password" : c.input === "number" ? "number" : "text";
               return (
                 <input key={c.key} className="pk-rowtable-input" data-testid={testid} aria-label={name} type={type}
-                  autoComplete={c.input === "secret" ? "off" : undefined} value={value} onChange={onChange} />
+                  autoComplete={c.input === "secret" ? "off" : undefined} value={value} onChange={onChange} readOnly={readOnly || undefined} />
               );
             })}
-            <button type="button" className="pk-rowtable-remove" data-testid={props.testid + ":remove:" + i}
-              aria-label={"Remove row " + (i + 1)}
-              onClick={function () { props.onChange(rows.filter(function (_row, j) { return j !== i; })); }}>✕</button>
+            {readOnly ? <span /> : (
+              <button type="button" className="pk-rowtable-remove" data-testid={props.testid + ":remove:" + i}
+                aria-label={"Remove row " + (i + 1)}
+                onClick={function () { props.onChange(rows.filter(function (_row, j) { return j !== i; })); }}>✕</button>
+            )}
           </div>
         );
       })}
