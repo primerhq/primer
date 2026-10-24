@@ -61,10 +61,10 @@ Create the live workspace from the template with `workspaces__create_workspace`:
 Response:
 
 ```json
-{"id": "ws-4c81", "template_id": "rust-build", "phase": "running"}
+{"id": "ws-4c81", "template_id": "rust-build", "phase": "pending"}
 ```
 
-`phase` is `running` at the answer, because the live instance is up when the row is written; the probe task moves it to `failed` if it later dies. Instances do not pick up later template edits: recreate the instance after you change the template. Thread the workspace's `id` into the next step.
+`phase` is `pending` at the answer: the row starts `pending` and is usable at once (start the build session in it now). The health probe turns it `running` at its first good probe, about 30 seconds later, and `failed` after three missed probes. Instances do not pick up later template edits: recreate the instance after you change the template. Thread the workspace's `id` into the next step.
 
 ### 4. Start the build session
 
@@ -80,7 +80,7 @@ Response:
 {"id": "sess-7d2e", "workspace_id": "ws-4c81", "status": "running"}
 ```
 
-`autonomous: true` ends the session on its clean turn. Without it, the session rests `waiting` (parked) after the turn, and only a new message or a steer starts the next one. Thread the session's `id` into the next step.
+`autonomous: true` ends the session on its clean turn. Without it, the session rests `waiting` after the turn, and only a new message or a steer starts the next one. Thread the session's `id` into the next step.
 
 ### 5. Poll until the build ends
 
@@ -144,7 +144,7 @@ Response:
 {"deleted": true, "id": "ws-4c81"}
 ```
 
-Deleting a workspace ends every open session in it, and it is refused (`type=forbidden`) while one of them runs at a higher rank than you: end the session first.
+While the delete runs the workspace reads `phase: terminating`. A teardown that fails part way (`type=backend-error`) leaves it `phase: failed` with a `failure_reason` that says the delete did not finish: delete it again to finish. Deleting a workspace ends every open session in it, and it is refused (`type=forbidden`) while one of them runs at a higher rank than you: end the session first.
 
 ## Verify
 
