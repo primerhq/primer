@@ -24,7 +24,7 @@ from primer.model.trigger import (
     Trigger,
 )
 from primer.storage.q import Q
-from primer.trigger.reach import refuse_target_out_of_reach
+from primer.trigger.reach import refuse_target_out_of_reach, subscription_reaches_outside
 from primer.trigger.cron import (
     CronInvalid,
     TimezoneInvalid,
@@ -233,6 +233,19 @@ async def create_trigger(
     return trigger
 
 
+async def _refuse_trigger_out_of_reach(trigger_id: str, reach: str | None, deps: ServiceDeps) -> None:
+    """Raise :class:`TriggerNotFound` when a subscription of the trigger starts or feeds a session outside ``reach`` (review of #874, B1).
+
+    ``reach`` is the calling session's (:func:`primer.session.peer_messages.caller_reach`); ``None`` (prime, a person, an API client) refuses
+    nothing. Asked right where the trigger is looked up, so the refusal is exactly what an unknown trigger answers.
+    """
+    if reach is None:
+        return
+    for sub in await list_subscriptions(trigger_id=trigger_id, deps=deps):
+        if await subscription_reaches_outside(deps.storage_provider, reach, sub):
+            raise TriggerNotFound(trigger_id)
+
+
 async def update_trigger(
     *,
     trigger_id: str,
@@ -241,6 +254,7 @@ async def update_trigger(
     enabled: bool | None = None,
     config=None,
     owner: PrincipalRef | None = None,
+    reach: str | None = None,
     deps: ServiceDeps,
 ) -> Trigger:
     """Partial update.
@@ -261,11 +275,16 @@ async def update_trigger(
     Changing the trigger's ``config.kind`` discriminator is rejected
     with :class:`TriggerKindImmutable` (delete + recreate is the
     operator path for kind changes).
+
+    ``reach`` is the calling session's: a trigger with a subscription that
+    starts or feeds a session outside it answers :class:`TriggerNotFound`
+    (re-enabling or re-timing it would fire that subscription).
     """
     storage = deps.storage_provider.get_storage(Trigger)
     trigger = await storage.get(trigger_id)
     if trigger is None:
         raise TriggerNotFound(trigger_id)
+    await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
     if config is not None and config.kind != trigger.config.kind:
         raise TriggerKindImmutable(
             f"cannot change kind from {trigger.config.kind!r} to {config.kind!r}"
@@ -328,13 +347,17 @@ async def update_trigger(
     return trigger
 
 
-async def delete_trigger(*, trigger_id: str, deps: ServiceDeps) -> None:
-    """Delete a trigger and cascade-delete its subscriptions."""
+async def delete_trigger(*, trigger_id: str, reach: str | None = None, deps: ServiceDeps) -> None:
+    """Delete a trigger and cascade-delete its subscriptions.
+
+    ``reach`` is the calling session's: a trigger with a subscription that starts or feeds a session outside it answers :class:`TriggerNotFound`.
+    """
     storage = deps.storage_provider.get_storage(Trigger)
     subs_storage = deps.storage_provider.get_storage(Subscription)
     trigger = await storage.get(trigger_id)
     if trigger is None:
         raise TriggerNotFound(trigger_id)
+    await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
     # Cascade-delete all subscriptions bound to this trigger. All of them are read BEFORE any is deleted: deleting
     # while paging by offset shifts the remaining rows down, so every page after the first skipped as many rows as
     # the page before it had deleted (a trigger with more than 200 subscriptions left orphans behind).
@@ -349,18 +372,21 @@ async def delete_trigger(*, trigger_id: str, deps: ServiceDeps) -> None:
     await storage.delete(trigger_id)
 
 
-async def fire_now(*, trigger_id: str, deps: ServiceDeps):
+async def fire_now(*, trigger_id: str, reach: str | None = None, deps: ServiceDeps):
     """Synchronously fire a trigger and return its :class:`FireResult`.
 
     Delegates to :func:`primer.trigger.dispatch.fire_trigger`. Raises
-    :class:`TriggerNotFound` if the trigger row is missing; otherwise
-    returns whatever ``fire_trigger`` reports (including the
-    skipped=True envelope when the trigger is disabled).
+    :class:`TriggerNotFound` if the trigger row is missing, or when a
+    subscription of it starts or feeds a session outside ``reach`` (the
+    calling session's); otherwise returns whatever ``fire_trigger``
+    reports (including the skipped=True envelope when the trigger is
+    disabled).
     """
     storage = deps.storage_provider.get_storage(Trigger)
     trigger = await storage.get(trigger_id)
     if trigger is None:
         raise TriggerNotFound(trigger_id)
+    await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
 
     from primer.trigger.dispatch import fire_trigger
     from primer.trigger.subscribers import DispatchDeps

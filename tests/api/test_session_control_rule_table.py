@@ -1047,3 +1047,137 @@ async def test_the_tools_of_a_graph_session_with_no_holder_slot_reach_only_what_
         assert await world.snapshot() == before
     else:
         assert await world.sp.get_storage(Workspace).get("ws-2") is None
+
+
+# -- the trigger-level tools (review of #874, B1) ---------------------------------------------------------------------------------------------
+#
+# A trigger is not in a workspace, but its subscriptions are: updating (re-enabling, re-timing), firing or deleting it acts on every one of them. From
+# a session outside prime, ``trigger::update``, ``trigger::fire_now`` and ``trigger::delete`` are refused, exactly as an unknown trigger, when any
+# subscription of the trigger targets a workspace or a session outside the caller's reach.
+
+TRIGGER_DOORS: dict[str, dict] = {
+    "update": {"id": "<trigger>", "name": "renamed"},
+    "fire_now": {"id": "<trigger>"},
+    "delete": {"id": "<trigger>"},
+}
+
+
+async def _trigger_world(target_workspace: str = "ws-2") -> WsWorld:
+    """The rule-table world, a trigger ``tr-x`` (enabled, delayed) and one subscription of it, saved by a person (no recorded reach), starting a
+    session in ``target_workspace``."""
+    world = await _ws_world()
+    await world.sp.get_storage(Trigger).create(Trigger(
+        id="tr-x", slug="tr-x", name="t", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
+    ))
+    await world.sp.get_storage(Subscription).create(Subscription(
+        id="sb-x", trigger_id="tr-x", config=AgentFreshSubConfig(workspace_id=target_workspace, agent_id="planner"), created_at=NOW, owner=USER,
+    ))
+    return world
+
+
+def _trigger_args(tool: str, trigger_id: str) -> dict:
+    return {k: (trigger_id if v == "<trigger>" else v) for k, v in TRIGGER_DOORS[tool].items()}
+
+
+async def _trigger_acted(world: WsWorld, tool: str) -> bool:
+    row = await world.sp.get_storage(Trigger).get("tr-x")
+    if tool == "delete":
+        return row is None
+    if tool == "update":
+        return row.name == "renamed"
+    return row.last_fired_id is not None
+
+
+async def _trigger_rows(world: WsWorld) -> tuple:
+    return (
+        (await world.sp.get_storage(Trigger).get("tr-x")).model_dump(mode="json"),
+        sorted(s.model_dump_json() for s in (await _subscriptions(world)).values()),
+    )
+
+
+@pytest.mark.parametrize(("tool", "who", "door"), _rows(TRIGGER_DOORS))
+async def test_the_trigger_level_tools_act_only_on_a_trigger_whose_subscriptions_the_caller_reaches(tool, who, door):
+    """B1: the subscription targets ws-2. From ws-1 the trigger answers exactly as an unknown one (``trigger_not_found``) and nothing changes; from
+    ws-2 (its own workspace), from prime and with no session the tool acts."""
+    world = await _trigger_world()
+    own, expected = WS_CALLERS[who]
+    expected = "trigger_not_found" if expected == N else expected
+    before = await _trigger_rows(world)
+
+    outcome, body = await asyncio.wait_for(_call(world, "trigger", tool, _trigger_args(tool, "tr-x"), own=own, door=door), 30)
+
+    assert outcome == expected, (tool, who, door, body)
+    if outcome == D:
+        assert await _trigger_acted(world, tool), (tool, who, door)
+        return
+    assert await _trigger_rows(world) == before, f"{tool} changed the trigger it refused ({who}, {door})"
+    _, unknown = await _call(world, "trigger", tool, _trigger_args(tool, "tr-nope"), own=own, door=door)
+    assert json.dumps(body).replace("tr-x", "<id>") == json.dumps(unknown).replace("tr-nope", "<id>"), (body, unknown)
+
+
+@pytest.mark.parametrize("tool", list(TRIGGER_DOORS))
+async def test_a_trigger_whose_subscriptions_are_all_in_reach_is_acted_on_from_outside_prime(tool):
+    world = await _trigger_world(target_workspace="ws-1")
+
+    outcome, body = await asyncio.wait_for(_call(world, "trigger", tool, _trigger_args(tool, "tr-x"), own="ws-1", door="tool manager"), 30)
+
+    assert outcome == D, body
+    assert await _trigger_acted(world, tool)
+
+
+async def test_fire_now_from_outside_prime_does_not_wake_a_session_parked_in_another_workspace():
+    """Probe A of the #874 review: ``ses-pk`` (ws-2) subscribed itself (reach ws-2), and a session in ws-1 fired the trigger: the park was woken."""
+    world = await _fire_world()
+    await world.sp.get_storage(Subscription).create(Subscription(
+        id="sb-fire", trigger_id="tr-fire", config=ParkedSessionSubConfig(session_id="ses-pk", tool_call_id="tc-1", parked_at=NOW),
+        created_at=NOW, owner=USER, reach="ws-2",
+    ))
+    trig = build_trigger_toolset_provider(storage_provider=world.sp, event_bus=world.bus)
+    manager = ToolExecutionManager(
+        toolset_providers={"trigger": trig},
+        workspace_session=SimpleNamespace(session_id="ses-a", workspace_id="ws-1", agent_id="planner"),  # type: ignore[arg-type]
+        initiated_by=USER,
+    )
+
+    part = await asyncio.wait_for(manager.execute(ToolCallPart(id="call-1", name="trigger__fire_now", arguments={"id": "tr-fire"})), 30)
+
+    assert (part.error, json.loads(part.output)) == (True, {"type": "trigger_not_found", "message": "tr-fire"})
+    assert world.bus.published == [], "a session in ws-1 woke a session parked in ws-2"
+
+
+@pytest.mark.parametrize("subscription", [
+    pytest.param(AgentFreshSubConfig(workspace_id="ws-prime", agent_id="planner"), id="a fresh session in prime"),
+    pytest.param(SessionAppendSubConfig(session_id="ses-t"), id="a steer of a session in ws-2"),
+])
+async def test_update_from_outside_prime_cannot_re_enable_a_trigger_that_starts_or_feeds_a_session_out_of_reach(subscription):
+    """Probe B of the #874 review: a person's disabled trigger whose subscription starts a session in prime. A session in ws-1 re-enabled it and set
+    it due, and the worker's next fire started a session in prime. Refused now, so the fire finds the trigger disabled."""
+    world = await _fire_world()
+    await world.sp.get_storage(Trigger).create(Trigger(
+        id="tr-off", slug="tr-off", name="nightly", created_at=NOW, owner=ADMIN, enabled=False,
+        config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=30)),
+    ))
+    await world.sp.get_storage(Subscription).create(Subscription.model_validate({
+        "id": "sb-off", "trigger_id": "tr-off", "config": subscription.model_dump(mode="json"), "created_at": NOW.isoformat(),
+        "owner": USER.model_dump(mode="json"), "parallelism": "queue",
+    }))
+    before = (await world.sessions.get("ses-t")).model_dump(mode="json")
+    trig = build_trigger_toolset_provider(storage_provider=world.sp, event_bus=world.bus)
+    manager = ToolExecutionManager(
+        toolset_providers={"trigger": trig},
+        workspace_session=SimpleNamespace(session_id="ses-a", workspace_id="ws-1", agent_id="planner"),  # type: ignore[arg-type]
+        initiated_by=USER,
+    )
+
+    part = await asyncio.wait_for(manager.execute(ToolCallPart(
+        id="call-1", name="trigger__update", arguments={"id": "tr-off", "enabled": True, "config": {"kind": "delayed", "fire_at": NOW.isoformat()}},
+    )), 30)
+
+    assert (part.error, json.loads(part.output)) == (True, {"type": "trigger_not_found", "message": "tr-off"})
+    pool = SimpleNamespace(
+        _storage=world.sp, _engine=world.engine, _scheduler=world.scheduler, _workspace_registry=world.registry, _event_bus=world.bus,
+        _release_lease=lambda lease, outcome: asyncio.sleep(0),
+    )
+    await asyncio.wait_for(run_engine_trigger(pool, SimpleNamespace(entity_id="tr-off")), 30)  # type: ignore[arg-type]
+    assert world.registry.workspace("ws-prime").started == [] and world.registry.workspace("ws-2").started == []
+    assert (await world.sessions.get("ses-t")).model_dump(mode="json") == before

@@ -16,6 +16,11 @@ checked twice:
 
 A subscription saved from prime, by a person (REST) or by an API client (MCP) records no reach (``None``, every workspace), and so does every row
 saved before reach was recorded: those fire as they always did.
+
+A trigger is not in a workspace, but its subscriptions are, so the tools that act on a whole trigger ask too (review of #874, B1): from a session
+outside prime, ``trigger::update``, ``trigger::fire_now`` and ``trigger::delete`` answer exactly as an unknown trigger when any subscription of the
+trigger reaches outside the caller's reach (:func:`subscription_reaches_outside`). Without that, re-enabling or firing a person's trigger would start
+a session in prime, or wake a session parked in another workspace.
 """
 
 from __future__ import annotations
@@ -61,6 +66,27 @@ async def refuse_target_out_of_reach(storage_provider: Any, reach: str | None, c
     return f"a {getattr(config, 'kind', '?')} subscription cannot be saved from a session outside the default workspace (prime)"
 
 
+async def subscription_reaches_outside(storage_provider: Any, reach: str | None, sub: Subscription) -> bool:
+    """Whether ``sub`` starts or feeds a session outside ``reach`` (a caller's reach, :func:`primer.session.peer_messages.caller_reach`).
+
+    The question the trigger-level tools ask of every subscription of a trigger (review of #874, B1): updating, firing or deleting the trigger acts on
+    all of them. ``reach`` ``None`` (prime, a person, an API client) reaches everything. A fresh-session subscription reaches outside when its
+    ``workspace_id`` is not the caller's workspace; a ``session_append`` or ``parked_session`` one when its target session is in another workspace.
+    A target session that no longer exists is not outside (there is nothing to feed), and a kind with no rule here is (fail closed).
+    """
+    if reach is None:
+        return False
+    from primer.session.peer_messages import in_reach
+
+    config = sub.config
+    if isinstance(config, AgentFreshSubConfig | GraphFreshSubConfig):
+        return not in_reach(reach, config.workspace_id)
+    if isinstance(config, SessionAppendSubConfig | ParkedSessionSubConfig):
+        row = await storage_provider.get_storage(WorkspaceSession).get(config.session_id)
+        return row is not None and not in_reach(reach, row.workspace_id)
+    return True
+
+
 async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> str | None:
     """Why a fire of ``sub`` may not start or feed its target, or ``None`` when it may.
 
@@ -97,4 +123,4 @@ async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> 
     )
 
 
-__all__ = ["TARGET_OUT_OF_REACH", "refuse_fire_out_of_reach", "refuse_target_out_of_reach"]
+__all__ = ["TARGET_OUT_OF_REACH", "refuse_fire_out_of_reach", "refuse_target_out_of_reach", "subscription_reaches_outside"]
