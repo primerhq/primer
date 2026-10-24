@@ -130,7 +130,7 @@ Then poll:
 ```
 Response:
 ```json
-{ "id": "ses-1", "status": "waiting" }
+{ "info": { "session_id": "ses-1", "status": "running" }, "status": "running" }
 ```
 When the agent finishes the summary it issues `ask_user`; with **Forward ask_user** enabled the prompt is delivered to the bound Slack channel as an Approve / Reject message. After the operator clicks Approve, the session ends:
 ```json
@@ -139,7 +139,7 @@ When the agent finishes the summary it issues `ask_user`; with **Forward ask_use
 Reject sends the rejection reason back to the agent so it can revise.
 
 ## Verify
-The fired session reaches `status: "waiting"` on the `ask_user` prompt, the summary lands in the Slack channel, and after Approve the session ends with `ended_reason: "completed"`. After a clean approval the weekday cron runs unattended.
+The fired session reads `status: "running"` on the `ask_user` prompt (a park keeps `status` and sets `parked_status`), the summary lands in the Slack channel, and after Approve the session ends with `ended_reason: "completed"`. After a clean approval the weekday cron runs unattended.
 
 ## Gotchas
 - Workspace TTL must outlast the agent's longest turn. Default 30 minutes is usually fine; bump to 60 if log volume is large.

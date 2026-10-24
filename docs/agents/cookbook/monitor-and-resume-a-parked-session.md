@@ -4,6 +4,8 @@ title: Monitor And Resume A Parked Session
 summary: Handle a session parked on a yielding tool; inspect why and resume, steer, or cancel it.
 mcp_tools:
   - workspaces::get_workspace_session
+  - workspaces::find_sessions
+  - workspaces::list_my_sessions
   - workspaces::steer_workspace_session
   - workspaces::resume_workspace_session
   - workspaces::pause_workspace_session
@@ -12,7 +14,7 @@ mcp_tools:
 ---
 
 ## Goal
-Inspect a session whose `status` is `waiting` (parked inside its turn on a yielding tool) and decide whether to nudge, resume, or give up.
+Inspect a session parked inside its turn on a yielding tool and decide whether to nudge, resume, or give up. A park does not move `status`: the session reads `status: "running"` with `parked_status` set, and `session_state: "parked"` on the full row.
 
 ## Prerequisites
 - A running session id (`workspace_id` + `session_id`); see `cookbook/create-and-run-a-session`.
@@ -25,16 +27,12 @@ Inspect a session whose `status` is `waiting` (parked inside its turn on a yield
 ```
 Response:
 ```json
-{
-  "id": "ses-1",
-  "status": "waiting",
-  "waiting": { "kind": "ask_user", "prompt": "Which branch should I review?" }
-}
+{ "info": { "session_id": "ses-1", "status": "running" }, "status": "running" }
 ```
-`status: "waiting"` means the agent yielded inside its turn. The `waiting` surface explains what it is parked on (for example `ask_user`, `sleep`, `watch_files`, or a trigger subscription).
+A session parked inside its turn reads `status: "running"`: a park writes the park columns and leaves `status` alone. The answer carries no park field, so it says the session is alive but not what it waits on.
 
-### 2. Read the waiting payload
-Inspect `waiting.kind` and its fields to decide what the session needs. An `ask_user` wants an answer; a `watch_files` or trigger is waiting for an external event and may clear on its own.
+### 2. Read what it waits on
+Read the park fields from the full row: `workspaces::find_sessions` (its `workspace_id`, or `state: "parked"`) answers `session_state` and `parked_event_key`; `workspaces::list_my_sessions` answers `state` and `parked_on` for your own workspace. An `ask_user:` or `tool_approval:` key wants a person's answer; a `timer:`, `watch:` or `trigger:` key waits for an external event and may clear on its own.
 
 ### 3. Nudge it with a steering instruction
 `workspaces::steer_workspace_session`
@@ -77,7 +75,7 @@ Cancel is terminal.
 After resuming, re-poll `workspaces::get_workspace_session`; the session has transitioned out of `paused` to `running` (or onward to `ended`). After steering, read `delivery`: `woken` means the session is `running` with `turn_status: "claimable"`; `queued` means the instruction waits and the session keeps its status until its turn, its park or its pause ends. After cancel, `status` is `ended` with `ended_reason: "cancelled"`.
 
 ## Gotchas
-- `waiting` is not `paused`. `waiting` means the agent yielded inside its turn (see `yielding`); `paused` is an external halt you applied.
+- A parked session is not `waiting` and not `paused`. A park keeps `status: "running"` with `parked_status` set (see `yielding`); `waiting` means the turn ended and the session rests between turns; `paused` is an external halt you applied.
 - Pause vs cancel: pause is resumable, cancel is terminal (`ended_reason: "cancelled"`). Do not cancel a session you intend to continue.
 - A parked session has no turn to stop, so `workspaces::interrupt_workspace_session` is refused with `type=conflict` and records nothing. Resume or steer it, or cancel it.
 - Steering a session that has `ended` reopens it and starts a new turn with the instruction. It answers `type=conflict` only when the session cannot reopen (`ended_reason` `force_deleted`, or `workspace_lost` while the workspace is down).
