@@ -68,6 +68,9 @@ from primer.storage.migrations.m014_approval_twin_policies import (
 )
 from primer.storage.migrations.m015_seeded_agents_v3 import M015SeededAgentsV3
 from primer.storage.migrations.m016_admin_run_gates import M016AdminRunGates
+from primer.storage.migrations.m017_orphan_mcp_oauth_rows import (
+    M017OrphanMcpOAuthRows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M014ApprovalTwinPolicies(),
     M015SeededAgentsV3(),
     M016AdminRunGates(),
+    M017OrphanMcpOAuthRows(),
 )
 
 #: Highest version this build knows how to apply.
