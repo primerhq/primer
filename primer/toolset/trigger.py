@@ -73,6 +73,7 @@ from primer.trigger.service import (
     TriggerForbidden,
     TriggerKindImmutable,
     TriggerNotFound,
+    TriggerOutranked,
     TriggerSlugConflict,
     create_subscription,
     create_trigger,
@@ -330,7 +331,13 @@ TOOL_FIRE_NOW = make_tool(
         "subscription (``subscription_id``, ``ok``, ``skipped``, "
         "``error_code``, ``error_message``, ``artefact_id``: the session it "
         "started or fed). A disabled trigger answers ``{skipped: true, "
-        "fire_id: null, results: []}`` and fires nothing." + _TRIGGER_REACH_NOTE
+        "fire_id: null, results: []}`` and fires nothing. A fire runs as the "
+        "trigger's owner, so you may fire a trigger only when you rank at "
+        "least as high as its owner (an admin fires any; with no calling "
+        "session you may also fire your own); otherwise ``type=forbidden`` "
+        "and nothing fires." + _TRIGGER_REACH_NOTE + " The reach check comes "
+        "first, so such a trigger answers ``trigger_not_found``, not "
+        "``forbidden``."
     ),
     args_schema=_IdArgs.model_json_schema(),
     examples=[
@@ -580,6 +587,19 @@ def _caller(ctx: ToolContext | None) -> "PrincipalRef | None":
     return ctx.initiated_by if ctx is not None else None
 
 
+def _fire_caller(ctx: ToolContext | None) -> Any:
+    """Who fires a trigger by hand, for the rank rule (ticket 01a16e65-12d1): the calling run's principal
+    (:func:`primer.agent.inner_dispatch.run_principal`, an ordinary user when the run names nobody), or, with no ``ToolContext`` (the MCP endpoint),
+    the request's actor on ``current_actor``. ``None`` (no actor at all) ranks as an ordinary user (:func:`primer.authz.principal_rank`)."""
+    if ctx is not None:
+        from primer.agent.inner_dispatch import run_principal
+
+        return run_principal(ctx)
+    from primer.mcp.server import current_actor
+
+    return current_actor.get()
+
+
 def _make_get_handler(
     storage_provider: "StorageProvider",
     claim_engine: Any,
@@ -719,10 +739,16 @@ def _make_fire_now_handler(
             scheduler=scheduler,
             workspace_registry=workspace_registry,
         )
+        # Reach first (an out-of-reach trigger is unknown), then the rank rule against the trigger's owner (ticket 01a16e65-12d1): from a session
+        # the run's principal, which never gets the owner rule; with no calling session (the MCP endpoint) the request's actor, which does.
         try:
-            result = await fire_now(trigger_id=args.id, reach=await caller_reach(storage_provider, ctx), deps=deps)
+            result = await fire_now(
+                trigger_id=args.id, caller=_fire_caller(ctx), from_run=ctx is not None, reach=await caller_reach(storage_provider, ctx), deps=deps,
+            )
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
+        except TriggerOutranked as exc:
+            return _err(str(exc), error_type="forbidden")
         return _ok({
             "skipped": result.skipped,
             "fire_id": result.fire_id,

@@ -29,6 +29,9 @@ mapping covers the cases the service layer reports:
 * :class:`~primer.trigger.service.TriggerForbidden` → 403 ``forbidden_role``
   (a webhook trigger's PUT / rotate_token by someone other than its owner or
   an admin; list / get show such callers the token masked)
+* :class:`~primer.trigger.service.TriggerOutranked` → 403 ``forbidden_rank``
+  (a ``fire_now`` by a caller ranked below the trigger's owner who does not
+  own it; ticket 01a16e65-12d1)
 * :class:`~primer.trigger.cron.CronInvalid` → 422 ``cron_invalid``
 * :class:`~primer.trigger.cron.TimezoneInvalid` → 422 ``timezone_invalid``
 * :class:`~primer.model.event_matcher.EventMatcherPatternError` → 422
@@ -68,6 +71,7 @@ from primer.trigger.service import (
     TriggerForbidden,
     TriggerKindImmutable,
     TriggerNotFound,
+    TriggerOutranked,
     TriggerSlugConflict,
     create_subscription,
     create_trigger,
@@ -355,10 +359,14 @@ async def fire_now_endpoint(
             request.app.state, "workspace_registry", None
         ),
     )
+    # A fire runs as the trigger's owners, so the caller must rank at least as high as the owner or own it (ticket 01a16e65-12d1): 403
+    # ``forbidden_rank`` otherwise, and nothing fires. A person keeps their reach over every trigger: this is a rank rule, not a scope.
     try:
-        result = await fire_now(trigger_id=trigger_id, deps=deps)
+        result = await fire_now(trigger_id=trigger_id, caller=getattr(request.state, "actor", None), from_run=False, deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
+    except TriggerOutranked as exc:
+        _raise_code(403, "forbidden_rank", str(exc))
     return JSONResponse(
         status_code=200,
         content={

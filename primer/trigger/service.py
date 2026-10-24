@@ -76,6 +76,11 @@ class TriggerForbidden(Exception):
     """The caller may not change this trigger's secrets: only its owner or an admin may (lead review of #491, round 2)."""
 
 
+class TriggerOutranked(Exception):
+    """The caller may not fire this trigger by hand: its owner outranks the caller (ticket 01a16e65-12d1,
+    :func:`primer.trigger.owner.refuse_fire_now`). ``str()`` is the refusal's words. Nothing was fired."""
+
+
 class WebhookTokenNotFound(Exception):
     """No trigger found for the supplied webhook token."""
 
@@ -374,21 +379,29 @@ async def delete_trigger(*, trigger_id: str, reach: str | None = None, deps: Ser
     await storage.delete(trigger_id)
 
 
-async def fire_now(*, trigger_id: str, reach: str | None = None, deps: ServiceDeps):
+async def fire_now(*, trigger_id: str, caller: Any, from_run: bool, reach: str | None = None, deps: ServiceDeps):
     """Synchronously fire a trigger and return its :class:`FireResult`.
 
-    Delegates to :func:`primer.trigger.dispatch.fire_trigger`. Raises
-    :class:`TriggerNotFound` if the trigger row is missing, or when a
-    subscription of it starts or feeds a session outside ``reach`` (the
-    calling session's); otherwise returns whatever ``fire_trigger``
-    reports (including the skipped=True envelope when the trigger is
-    disabled).
+    The one manual fire path: ``POST /v1/triggers/{id}/fire_now`` and the ``trigger__fire_now`` tool both call it. Delegates to
+    :func:`primer.trigger.dispatch.fire_trigger`. Raises :class:`TriggerNotFound` if the trigger row is missing, or when a subscription of it starts
+    or feeds a session outside ``reach`` (the calling session's); then :class:`TriggerOutranked` when ``caller`` may not fire it
+    (:func:`primer.trigger.owner.refuse_fire_now`: the caller ranks below the trigger's owner and, for a live request, does not own it). The reach
+    rule is asked first, so an out-of-reach trigger answers as an unknown one, never as a forbidden one. Either refusal fires nothing. Otherwise
+    returns whatever ``fire_trigger`` reports (including the skipped=True envelope when the trigger is disabled).
+
+    ``caller`` is who fires: the request's principal (REST, or the MCP endpoint with no calling session; ``from_run`` False) or the calling run's
+    principal (a tool call from a session; ``from_run`` True). Both are required, so no door can fire without being ranked.
     """
     storage = deps.storage_provider.get_storage(Trigger)
     trigger = await storage.get(trigger_id)
     if trigger is None:
         raise TriggerNotFound(trigger_id)
     await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
+    from primer.trigger.owner import refuse_fire_now
+
+    refusal = await refuse_fire_now(trigger, caller, deps.storage_provider, from_run=from_run)
+    if refusal is not None:
+        raise TriggerOutranked(refusal)
 
     from primer.trigger.dispatch import fire_trigger
     from primer.trigger.subscribers import DispatchDeps
@@ -708,6 +721,7 @@ __all__ = [
     "SubscriptionTargetNotFound",
     "TriggerKindImmutable",
     "TriggerNotFound",
+    "TriggerOutranked",
     "TriggerSlugConflict",
     "WebhookTokenNotFound",
     "create_subscription",
