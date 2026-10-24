@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from pydantic_core import to_jsonable_python
 
 from primer.events.recorder import recorder_for
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import NotFoundError, PrimerError
 from primer.model.storage import CursorPage, FieldRef, Op, Predicate, Value
 from primer.model.workspace_session import NON_ENDED_STATUSES, SessionStatus, WorkspaceSession
 
@@ -42,7 +42,8 @@ async def open_sessions_on(sp: "StorageProvider", workspace_id: str) -> AsyncIte
 
     The read the rank rule of a workspace delete makes (review of #870, F3): deleting a workspace ends every open session in it, so each of them
     is a session the caller acts on. Unlike :func:`reconcile_sessions_to_workspace_lost` it does not swallow a failed read: a check that cannot
-    see every session must not let the delete through.
+    see every session must not let the delete through. So a backend that hands back a cursor it has already given (which would loop forever)
+    raises :class:`~primer.model.except_.PrimerError` instead of ending the scan as if it were complete (review of #874, E1).
     """
     match = Predicate(
         left=Predicate(left=FieldRef(name="workspace_id"), op=Op.EQ, right=Value(value=workspace_id)),
@@ -56,9 +57,13 @@ async def open_sessions_on(sp: "StorageProvider", workspace_id: str) -> AsyncIte
         page = await storage.find(match, CursorPage(cursor=cursor, length=_LIST_PAGE_SIZE))
         for row in page.items:
             yield row
-        # A backend that hands back a cursor it has already given would loop forever.
-        if page.next_cursor is None or page.next_cursor in seen_cursors:
+        if page.next_cursor is None:
             return
+        if page.next_cursor in seen_cursors:
+            # A backend that hands back a cursor it has already given would loop forever; stopping here would skip the rows not yet read.
+            raise PrimerError(
+                f"the open sessions of workspace {workspace_id!r} could not all be read (the storage repeated a cursor); nothing was changed"
+            )
         seen_cursors.add(page.next_cursor)
         cursor = page.next_cursor
 
