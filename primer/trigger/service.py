@@ -379,7 +379,9 @@ async def delete_trigger(*, trigger_id: str, reach: str | None = None, deps: Ser
     await storage.delete(trigger_id)
 
 
-async def fire_now(*, trigger_id: str, caller: Any, from_run: bool, reach: str | None = None, deps: ServiceDeps):
+async def fire_now(
+    *, trigger_id: str, caller: Any, from_run: bool, in_session: bool = False, reach: str | None = None, deps: ServiceDeps,
+):
     """Synchronously fire a trigger and return its :class:`FireResult`.
 
     The one manual fire path: ``POST /v1/triggers/{id}/fire_now`` and the ``trigger__fire_now`` tool both call it. Delegates to
@@ -390,7 +392,12 @@ async def fire_now(*, trigger_id: str, caller: Any, from_run: bool, reach: str |
     returns whatever ``fire_trigger`` reports (including the skipped=True envelope when the trigger is disabled).
 
     ``caller`` is who fires: the request's principal (REST, or the MCP endpoint with no calling session; ``from_run`` False) or the calling run's
-    principal (a tool call from a session; ``from_run`` True). Both are required, so no door can fire without being ranked.
+    principal (a tool call from a session or from a delegated run; ``from_run`` True, ``in_session`` when the run is a session's, which only picks
+    the words). Both are required, so no door can fire without being ranked.
+
+    The rank is decided on this function's read of the trigger and ``fire_trigger`` reads it again; a save in between makes its saver the owner.
+    So the checked owner goes to ``fire_trigger`` as its ``owner_guard`` (review of #927): when its read shows another owner, the rank rule is asked
+    again on that row and a refusal there raises :class:`TriggerOutranked`, in the same words, before anything is fired.
     """
     storage = deps.storage_provider.get_storage(Trigger)
     trigger = await storage.get(trigger_id)
@@ -399,9 +406,17 @@ async def fire_now(*, trigger_id: str, caller: Any, from_run: bool, reach: str |
     await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
     from primer.trigger.owner import refuse_fire_now
 
-    refusal = await refuse_fire_now(trigger, caller, deps.storage_provider, from_run=from_run)
+    refusal = await refuse_fire_now(trigger, caller, deps.storage_provider, from_run=from_run, in_session=in_session)
     if refusal is not None:
         raise TriggerOutranked(refusal)
+    checked_owner = trigger.owner
+
+    async def owner_guard(row: Trigger) -> None:
+        if row.owner == checked_owner:
+            return
+        changed = await refuse_fire_now(row, caller, deps.storage_provider, from_run=from_run, in_session=in_session)
+        if changed is not None:
+            raise TriggerOutranked(changed)
 
     from primer.trigger.dispatch import fire_trigger
     from primer.trigger.subscribers import DispatchDeps
@@ -417,6 +432,7 @@ async def fire_now(*, trigger_id: str, caller: Any, from_run: bool, reach: str |
         trigger_id=trigger_id,
         scheduled_for=None,
         deps=dispatch_deps,
+        owner_guard=owner_guard,
     )
 
 

@@ -79,8 +79,11 @@ async def test_the_tool_and_the_route_hand_the_fire_the_same_collaborators(app, 
 
     seen: list = []
 
-    async def _spy(*, trigger_id, scheduled_for, deps, extra_context=None):
+    guards: list = []
+
+    async def _spy(*, trigger_id, scheduled_for, deps, extra_context=None, owner_guard=None):
         seen.append(deps)
+        guards.append(owner_guard)
         return FireResult(fire_id="fire-x", results=[])
 
     monkeypatch.setattr(dispatch_mod, "fire_trigger", _spy)
@@ -99,6 +102,7 @@ async def test_the_tool_and_the_route_hand_the_fire_the_same_collaborators(app, 
     assert tool_deps.claim_engine is rest_deps.claim_engine
     assert tool_deps.claim_engine is getattr(app.state, "claim_engine", None)
     assert tool_deps.storage_provider is rest_deps.storage_provider is sp
+    assert all(guard is not None for guard in guards), "a manual fire reached fire_trigger without its owner guard (review of #927)"
 
 
 def _call(path: str, opener: str) -> str:

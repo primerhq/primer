@@ -9,24 +9,44 @@ from __future__ import annotations
 
 
 def real_envelopes() -> dict[str, dict]:
-    from datetime import datetime, timezone
+    import asyncio
+    from datetime import datetime, timedelta, timezone
 
     from fastapi import Depends, FastAPI, Request
     from fastapi.testclient import TestClient
 
-    from primer.api.deps import require_user
+    from primer.api.deps import get_claim_engine, get_event_bus, get_storage_provider, require_user
     from primer.api.errors import register_error_handlers
-    from primer.api.routers.triggers import _raise_code
+    from primer.api.routers.triggers import _raise_code, triggers_router
+    from primer.model.principal import Principal, PrincipalRef
+    from primer.model.trigger import DelayedTriggerConfig, Trigger
     from primer.model.user import User
+    from tests.conftest import _FakeStorageProvider
 
     app = FastAPI()
     register_error_handlers(app)
+
+    # The REAL fire_now route over the REAL service: an admin's trigger fired by a user-role account is refused by the rank rule (ticket
+    # 01a16e65-12d1), so the console reads the 403 ``forbidden_rank`` body the route really answers.
+    sp = _FakeStorageProvider()
+    admin = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
+    asyncio.run(sp.get_storage(Trigger).create(Trigger(
+        id="tr-admin", slug="tr-admin", name="nightly", created_at=datetime.now(timezone.utc), owner=admin,
+        config=DelayedTriggerConfig(fire_at=datetime.now(timezone.utc) + timedelta(days=1)),
+    )))
+    app.include_router(triggers_router)
+    app.dependency_overrides[get_storage_provider] = lambda: sp
+    app.dependency_overrides[get_claim_engine] = lambda: None
+    app.dependency_overrides[get_event_bus] = lambda: None
 
     @app.middleware("http")
     async def _sign_in(request: Request, call_next):
         role = request.headers.get("x-test-role")
         if role:
             request.state.user = User(id="u-1", username="someone", role=role, created_at=datetime.now(timezone.utc))
+        actor_role = request.headers.get("x-test-actor-role")
+        if actor_role:
+            request.state.actor = Principal(type="user", id="u-1", display="someone", role=actor_role, source="local")
         return await call_next(request)
 
     @app.post("/v1/gated", dependencies=[Depends(require_user)])
@@ -62,6 +82,7 @@ def real_envelopes() -> dict[str, dict]:
         "not_found_empty": client.post("/v1/not_found_empty").json(),
         "slug": client.post("/v1/slug").json(),
         "router_forbidden": client.post("/v1/router_forbidden").json(),
+        "fire_outranked": client.post("/v1/triggers/tr-admin/fire_now", headers={"x-test-actor-role": "user"}).json(),
     }
 
 
@@ -95,7 +116,8 @@ def real_fire_bodies() -> dict[str, dict]:
     bodies: dict[str, dict] = {}
     try:
         for name, result in results.items():
-            async def answer(*, trigger_id, deps, _result=result):
+            # The service call's real keywords (since ticket 01a16e65-12d1 the route passes who fires): a stale signature is a TypeError here.
+            async def answer(*, trigger_id, caller, from_run, deps, _result=result):
                 return _result
 
             router.fire_now = answer

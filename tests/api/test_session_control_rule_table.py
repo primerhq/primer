@@ -1457,6 +1457,7 @@ _FIRE_WORDS_REQUEST = (
     "trigger 'tr-r' runs at a higher rank ({owner}) than you ({caller}); you may fire only your own triggers and triggers at or below your rank"
 )
 _FIRE_WORDS_RUN = "trigger 'tr-r' runs at a higher rank ({owner}) than this session ({caller}); a session may fire only triggers at or below its own rank"
+_FIRE_WORDS_RUN_OUTSIDE = "trigger 'tr-r' runs at a higher rank ({owner}) than this run ({caller}); a run may fire only triggers at or below its own rank"
 ADA = Principal(type="user", id="u-ada", display="ada", role="user", source="local")
 
 
@@ -1669,6 +1670,231 @@ async def test_the_rest_fire_now_fires_a_trigger_only_when_the_caller_ranks_with
     assert r.status_code == 200, f"{who} could not fire: {r.text}"
     assert await _fired(sp), r.text
     assert [res["subscription_id"] for res in r.json()["results"]] == ["sb-r"], r.json()
+
+
+# -- round 2 of #927: the real MCP endpoint, the approval resume, a delegated run, and the owner read by the fire ---------------------------------
+
+#: who -> (the trigger's owner, who asks over the REAL ``POST /v1/mcp`` (a cookie, or a token with the ``mcp`` scope), whether it may fire).
+MCP_FIRERS: dict[str, tuple[str | None, str, bool]] = {
+    "a user's cookie on an admin's trigger": ("admin", "carol", False),
+    "a user's mcp token on an admin's trigger": ("admin", "carol's token", False),
+    "a user's cookie on a system trigger": ("system", "carol", False),
+    "an admin's cookie on an admin's trigger": ("admin", "admin", True),
+    "an admin's cookie on a system trigger": ("system", "admin", True),
+    "an admin's mcp token on a user's trigger": ("carol", "admin's token", True),
+    "a demoted admin's cookie on their own trigger": ("carol then admin", "carol", True),
+    "a demoted admin's mcp token on their own trigger": ("carol then admin", "carol's token", True),
+    "a user's cookie on a trigger saved before owners were recorded": (None, "carol", True),
+}
+
+
+async def _cookie_of(app, username: str, password: str) -> str:
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        assert (await c.post("/v1/auth/login", json={"username": username, "password": password})).status_code == 200
+        return "; ".join(f"{k.name}={k.value}" for k in c.cookies.jar)
+
+
+async def _mcp_token(sp, user_id: str) -> str:
+    from primer.auth.api_tokens import extract_prefix, hash_token, mint_plaintext
+
+    plaintext = mint_plaintext()
+    await sp.get_storage(ApiToken).create(ApiToken(
+        id=f"at-mcp-{user_id}", user_id=user_id, name="mcp", token_hash=hash_token(plaintext), prefix=extract_prefix(plaintext), scopes=["mcp"],
+        created_at=NOW,
+    ))
+    return plaintext
+
+
+@pytest.mark.parametrize("who", list(MCP_FIRERS))
+async def test_fire_now_over_the_real_mcp_endpoint_fires_a_trigger_only_when_the_caller_ranks_with_its_owner(app, client, fake_storage_provider, who):
+    """Through ``POST /v1/mcp`` (the auth gate, ``invoke_exposed``, ``current_actor``): the person's own call, with the owner rule."""
+    from tests.api.test_mcp_mount import _mcp_call
+
+    owner_name, asker, accepted = MCP_FIRERS[who]
+    sp = fake_storage_provider
+    assert (await client.put("/v1/mcp_exposure", json={"enabled": True, "allowed_tools": ["trigger__fire_now"]})).status_code == 200
+    assert (await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})).status_code == 201
+    carol_id, admin_id = await _user_id(app, "carol"), await _user_id(app, "testuser")
+    owner = {
+        None: None,
+        "system": PrincipalRef.system(),
+        "admin": PrincipalRef(type="user", id=admin_id, display="testuser", role="admin", source="local"),
+        "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
+        "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
+    }[owner_name]
+    await sp.get_storage(Trigger).create(Trigger(
+        id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
+    ))
+    await sp.get_storage(Subscription).create(Subscription(
+        id="sb-r", trigger_id=FIRE_TRIGGER, config=AgentFreshSubConfig(workspace_id="ws-x", agent_id="planner"), created_at=NOW, owner=owner,
+    ))
+    before = await _fire_rows(sp)
+    headers = {
+        "carol": lambda: _cookie_of(app, "carol", "carolpw1"),
+        "admin": lambda: _cookie_of(app, "testuser", "testpassword"),
+    }
+    if asker in headers:
+        sent = {"Cookie": await headers[asker]()}
+    else:
+        sent = {"Authorization": f"Bearer {await _mcp_token(sp, carol_id if asker.startswith('carol') else admin_id)}"}
+
+    result = await _mcp_call(app, headers=sent, tool_name="trigger__fire_now", arguments={"id": FIRE_TRIGGER})
+
+    text = result.content[0].text
+    if not accepted:
+        words = _FIRE_WORDS_REQUEST.format(owner="system" if owner.type == "system" else owner.role, caller="user")
+        assert (result.is_error, json.loads(text)) == (True, {"type": F, "message": words}), text
+        assert await _fire_rows(sp) == before, f"a refused MCP fire fired ({who})"
+        return
+    assert result.is_error is False, text
+    assert await _fired(sp), text
+
+
+@pytest.mark.parametrize(("run_as", "accepted"), [pytest.param(USER, False, id="a user's run"), pytest.param(ADMIN, True, id="an admin's run")])
+async def test_an_approved_fire_now_through_call_tool_ranks_the_resumed_run(run_as, accepted):
+    """The approval resume of a gated ``system__call_tool`` -> ``trigger::fire_now`` (``resume_call_tool_dispatch``) runs the call as the RESUMED
+    run, so it is ranked as that run: a user's run is refused in a session's words and nothing fires; an admin's run fires."""
+    from primer.worker.yield_runtime import resume_call_tool_dispatch
+
+    world = await _rank_world(ADMIN)
+    before = await _fire_rows(world.sp)
+    manager = ToolExecutionManager(
+        toolset_providers=world.providers, provider_registry=world.registry,
+        workspace_session=SimpleNamespace(session_id=CALLERS["ws-2"], workspace_id="ws-2", agent_id="planner"),  # type: ignore[arg-type]
+        initiated_by=run_as,
+    )
+
+    part = await asyncio.wait_for(resume_call_tool_dispatch(
+        via={"toolset_id": "trigger"}, original_call=ToolCallPart(id="c-res", name="fire_now", arguments={"id": FIRE_TRIGGER}),
+        tool_manager=manager,
+    ), 30)
+
+    if not accepted:
+        assert (part.error, json.loads(part.output)) == (True, {"type": F, "message": _FIRE_WORDS_RUN.format(owner="admin", caller="user")})
+        assert await _fire_rows(world.sp) == before
+        return
+    assert not part.error, part.output
+    assert await _fired(world.sp)
+
+
+class _FireOnceLLM:
+    """The subagent's model: its first answer calls ``trigger__fire_now``, its second ends the run. It keeps what it was sent."""
+
+    def __init__(self) -> None:
+        self.sent: list = []
+
+    def stream(self, *, model, messages, **kwargs):  # noqa: ANN001
+        from primer.model.chat import Done, StreamStart, TextDelta, ToolCallEnd, ToolCallStart
+
+        self.sent.append(list(messages))
+        if len(self.sent) == 1:
+            script = [
+                StreamStart(model="m1"), ToolCallStart(id="call-f", name="trigger__fire_now", index=0),
+                ToolCallEnd(id="call-f", arguments={"id": FIRE_TRIGGER}, index=0), Done(stop_reason="tool_use", raw_reason="tool_use"),
+            ]
+        else:
+            script = [StreamStart(model="m1"), TextDelta(index=0, text="done"), Done(stop_reason="stop", raw_reason="stop")]
+
+        async def _gen():
+            for event in script:
+                yield event
+
+        return _gen()
+
+
+def _tool_result_of(llm: _FireOnceLLM) -> dict:
+    from primer.model.chat import ToolResultPart
+
+    [result] = [p for m in llm.sent[-1] for p in m.parts if isinstance(p, ToolResultPart)]
+    return json.loads(result.output)
+
+
+@pytest.mark.parametrize("actor", [
+    pytest.param(Principal(type="user", id="u-root", display="root", role="admin", source="local"), id="under an admin's MCP request"),
+    pytest.param(MCP_USER, id="under a user's MCP request"),
+])
+async def test_a_subagent_started_over_mcp_is_ranked_as_its_run_not_as_the_mcp_person(actor):
+    """Lead ruling on the review of #927: ``system__invoke_agent`` over MCP (no tool context) runs its subagent as an unattributed user
+    (``PrincipalRef.unattributed()``), and the subagent's tool calls carry no context either. Inside that delegated run (``_RUN_ID`` set) the
+    fire is ranked by the run's principal with no owner rule, never as the MCP person whose actor is still on ``current_actor``: the subagent is
+    refused an admin's trigger even under an admin's request, in a run's words, and nothing fires. Driven through the real ``run_subagent``."""
+    from primer.agent.invoke import invocation_depth_guard, run_subagent
+    from tests.agent.test_run_subagent_yield import _agent, _provider_row, _ProviderRegistry, _StorageProvider
+
+    world = await _rank_world(ADMIN)
+    before = await _fire_rows(world.sp)
+    llm = _FireOnceLLM()
+    registry = _ProviderRegistry(llm=llm, toolset=world.trigger)  # type: ignore[arg-type]
+    token = current_actor.set(actor)
+    try:
+        with invocation_depth_guard():
+            text = await asyncio.wait_for(run_subagent(
+                agent_id="agent-sub", prompt="fire it", storage_provider=_StorageProvider(agent=_agent(tools=["trigger__fire_now"]),
+                                                                                           provider_row=_provider_row()),
+                provider_registry=registry, identity=PrincipalRef.unattributed(),  # what invoke_agent passes when it has no context
+            ), 30)
+    finally:
+        current_actor.reset(token)
+
+    assert text == "done"
+    assert _tool_result_of(llm) == {"type": F, "message": _FIRE_WORDS_RUN_OUTSIDE.format(owner="admin", caller="user")}
+    assert await _fire_rows(world.sp) == before, "a subagent fired an admin's trigger at the MCP person's rank"
+
+
+def test_a_call_nobody_can_name_is_worded_as_an_ordinary_user():
+    """A call with no context, no actor and no delegated run ranks as an ordinary user (``principal_rank(None)``) and is worded as one."""
+    from primer.trigger.owner import refuse_fire_now
+
+    trigger = Trigger(id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=ADMIN, config=DelayedTriggerConfig(fire_at=NOW))
+
+    reason = asyncio.run(refuse_fire_now(trigger, None, _FakeStorageProvider(), from_run=False))
+
+    assert reason == _FIRE_WORDS_REQUEST.format(owner="admin", caller="user")
+    assert "unattributed" not in reason
+
+
+#: Who saves the trigger between the rank check and ``fire_trigger``'s read -> whether the fire goes ahead (the caller ranks user).
+SAVED_BY = {
+    "an admin (the saver becomes the owner, above the caller)": (ADMIN, False),
+    "another user (an owner the caller may fire anyway)": (PrincipalRef(type="user", id="u-other", display="other", role="user", source="local"), True),
+}
+
+
+@pytest.mark.parametrize("door", ["a user's run", "MCP: a user"])
+@pytest.mark.parametrize("saved_by", list(SAVED_BY))
+async def test_an_owner_saved_between_the_rank_check_and_the_fire_is_ranked_again_on_the_row_that_is_fired(monkeypatch, saved_by, door):
+    """Review of #927: the rank was decided on ``fire_now``'s read and ``fire_trigger`` read the row again, so a save in between (which makes its
+    saver the owner) fired the trigger at the saver's rank. The checked owner now goes to ``fire_trigger``: when its read shows another owner the
+    rule is asked again on that row, and a refusal there is the same refusal, before anything is recorded or dispatched. A save by an owner the
+    caller may fire anyway does not stop the fire (refusing it would say the trigger runs above the caller when it does not)."""
+    import primer.trigger.dispatch as dispatch_mod
+
+    new_owner, fires = SAVED_BY[saved_by]
+    world = await _rank_world(USER)
+    real_fire = dispatch_mod.fire_trigger
+
+    async def save_then_fire(**kwargs):
+        row = await world.sp.get_storage(Trigger).get(kwargs["trigger_id"])
+        await world.sp.get_storage(Trigger).update(row.model_copy(update={"owner": new_owner}))
+        return await real_fire(**kwargs)
+
+    monkeypatch.setattr(dispatch_mod, "fire_trigger", save_then_fire)
+    if door == "a user's run":
+        outcome, body = await asyncio.wait_for(_call(world, "trigger", "fire_now", {"id": FIRE_TRIGGER}, own="ws-2", door="tool manager"), 30)
+    else:
+        outcome, body = await asyncio.wait_for(_call(world, "trigger", "fire_now", {"id": FIRE_TRIGGER}, own=None, door="MCP"), 30)
+
+    row = await world.sp.get_storage(Trigger).get(FIRE_TRIGGER)
+    assert row.owner == new_owner, "the save landed"
+    if fires:
+        assert outcome == D, body
+        assert await _fired(world.sp)
+        return
+    words = (_FIRE_WORDS_RUN if door == "a user's run" else _FIRE_WORDS_REQUEST).format(owner="admin", caller="user")
+    assert (outcome, body) == (F, {"type": F, "message": words}), body
+    assert (row.last_fired_id, row.last_fired_at) == (None, None), "the trigger records a fire"
+    assert await _fire_events(world.sp) == [], "a trigger.fired was recorded"
+    assert all(s.last_fired_at is None for s in (await _subscriptions(world)).values()), "a subscription was dispatched"
 
 
 # -- the subscription reads and the single-subscription deletes (ticket 01a16c22) -------------------------------------------------------------

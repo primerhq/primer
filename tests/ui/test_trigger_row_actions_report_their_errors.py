@@ -131,7 +131,7 @@ def _disabled(ctx, what: str) -> bool:
     return bool(ctx.eval(f"MR.find('trigger-row-{what}-tr-1').props.disabled"))
 
 
-@pytest.mark.parametrize("which", ["session_ended", "role_refused", "router_forbidden"])
+@pytest.mark.parametrize("which", ["session_ended", "role_refused", "router_forbidden", "fire_outranked"])
 def test_a_refused_fire_now_raises_an_error_toast_with_the_text_the_detail_page_shows(row, envelopes, which: str) -> None:
     _outcome(row, envelopes[which])
     _press(row, "fire")
@@ -140,6 +140,18 @@ def test_a_refused_fire_now_raises_an_error_toast_with_the_text_the_detail_page_
     assert toasts[0]["title"] == "Fire failed"
     assert toasts[0]["detail"] == json.loads(row.eval(f"JSON.stringify(refusalText({json.dumps(envelopes[which])}, 'Fire failed'))")), "the same reader and fallback as the detail page's Fire now"
     assert toasts[0]["detail"] not in ("auth_required", "forbidden_role"), "never a bare code"
+
+
+def test_a_fire_now_the_rank_rule_refuses_says_the_servers_sentence_and_leaves_the_row_alone(row, envelopes) -> None:
+    """The REAL 403 ``forbidden_rank`` body the route answers when a user fires an admin's trigger (ticket 01a16e65-12d1): the toast is the
+    server's sentence, which names both ranks and what the caller may fire, never the code; nothing changed, so the list is not refetched."""
+    _outcome(row, envelopes["fire_outranked"])
+    _press(row, "fire")
+    [toast] = _toasts(row)
+    assert (toast["kind"], toast["title"]) == ("error", "Fire failed"), toast
+    assert toast["detail"] == envelopes["fire_outranked"]["detail"], toast
+    assert toast["detail"].startswith("trigger 'tr-admin' runs at a higher rank (admin) than you (user)") and "forbidden_rank" not in toast["detail"]
+    assert row.eval("__changed") == 0 and not _disabled(row, "fire") and not _disabled(row, "delete")
 
 
 @pytest.mark.parametrize("what", ["fire", "delete"])
