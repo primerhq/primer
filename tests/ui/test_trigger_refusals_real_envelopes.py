@@ -91,11 +91,10 @@ def test_a_fire_the_rank_rule_refuses_is_a_403_forbidden_rank_with_the_rules_sen
 
 
 @pytest.mark.parametrize("fallback", FALLBACKS)
-def test_a_fire_the_rank_rule_refuses_shows_the_servers_sentence_in_every_dialog(envelopes, fallback: str) -> None:
-    """No remedy is added for ``forbidden_rank``: the sentence already says what the caller may fire."""
+def test_a_fire_the_rank_rule_refuses_shows_the_servers_sentence_and_its_remedy_in_every_dialog(envelopes, fallback: str) -> None:
     text = _text(envelopes["fire_outranked"], fallback)
 
-    assert text == envelopes["fire_outranked"]["detail"]
+    assert text == envelopes["fire_outranked"]["detail"] + ". Ask the trigger's owner or an administrator to fire it."
     assert "forbidden_rank" not in text
 
 
