@@ -1,5 +1,5 @@
 /* global React, SH_api, SH_parseUrl, SH_buildUrl, SH_createVerbRegistry,
-   SH_createFrecency */
+   SH_createFrecency, PR_usePagedResource */
 // The three-view console root (wiring plan P1 T4). Owns: parsed URL
 // state (wid, view, doc, overlay, anchor), the workspace + auth
 // resources, the verb registry, panel toggles, and the view host.
@@ -162,7 +162,7 @@ function NV_usernameOf(status) {
   return status.username;
 }
 // The workspace the console opens when the address names none (pivot P2 Task 14): the row GET /v1/workspaces flags with the response-only
-// is_default (prime, the default workspace), else the first listed (the list is capped at one page, and an older server sends no flag), else none.
+// is_default (prime, the default workspace), else the first listed (an older server sends no flag; the list is every page, up to the page cap), else none.
 function NV_defaultWid(items) {
   var rows = items || [];
   for (var i = 0; i < rows.length; i++) {
@@ -289,7 +289,8 @@ function NV_Shell() {
     return window.SH_createFrecency ? window.SH_createFrecency() : null;
   }, []);
 
-  var workspaces = window.primerApi.useResource(
+  // The rail's own list (the same cache key, so one read): every page, polled every 15 s per page read (PR_usePagedResource).
+  var workspaces = PR_usePagedResource(
     "nv-workspaces",
     function (signal) { return SH_api.workspaces(signal); },
     { pollMs: 15000 }
@@ -768,6 +769,8 @@ function NV_Shell() {
       registry: registry,
       frecency: frecency,
       workspaces: wsItems,
+      // What the workspace list read (PR_fetchAllPages): the phone's Spaces tab draws its note when it was cut short.
+      workspacesList: workspaces.data || null,
       username: NV_usernameOf(status.data),
       role: (status.data && status.data.role) || "user",
       viewer: status.data && status.data.principal,
@@ -860,7 +863,7 @@ function NV_Shell() {
       },
     };
   }, [wid, view, doc, overlay, anchor, panels, openMenu, registry,
-    frecency, wsItems, status, caps, voiceRef, paletteRef, goView, replaceView, clearView,
+    frecency, wsItems, workspaces.data, status, caps, voiceRef, paletteRef, goView, replaceView, clearView,
     closeOverlayTo, openSessionInStudio,
     tgModel, setTgModel, resolveSessionMeta, stampSessionMeta, setOpenMenu,
     setOverlay, setTick, markPush, setWid]);

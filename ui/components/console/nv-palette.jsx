@@ -1,4 +1,4 @@
-/* global React, SH_api, SH_rankVerbs, NV_useConsole, NV_identity */
+/* global React, SH_api, SH_rankVerbs, NV_useConsole, NV_identity, PR_PagedNote */
 // The universal search bar (wiring plan P1 T5): one field over verbs,
 // sessions (every workspace), files (current workspace), and platform
 // entities. Grouped rows, arrow keys spanning every group, Enter runs.
@@ -517,6 +517,11 @@ function NV_Palette() {
               </div>
             );
           })}
+          {/* The entity lists read every page (SH_api, PR_fetchAllPages); one that was cut short says so rather than missing rows in silence. */}
+          <PR_PagedNote list={agents.data} noun="agents" testid="nv-palette-note:agents" />
+          <PR_PagedNote list={graphs.data} noun="graphs" testid="nv-palette-note:graphs" />
+          <PR_PagedNote list={toolsets.data} noun="toolsets" testid="nv-palette-note:toolsets" />
+          <PR_PagedNote list={con.workspacesList} noun="workspaces" testid="nv-palette-note:workspaces" />
         </div>
         <div className="nv-palette-foot">
           ↑↓ select · ↵ run · frecency-ranked · one verb registry —

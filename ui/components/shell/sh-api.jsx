@@ -5,22 +5,23 @@
 
 var SH_api = {
   // ---- reads --------------------------------------------------------------
+  // Every workspace, every page of 200 (PR_fetchAllPages, ui/foundation/api.js): a workspace past the 200th is reachable only from the
+  // rail, the phone's Spaces tab and the palette, which all read this list.
   workspaces: function (signal) {
-    return window.primerApi.apiFetch("GET", "/workspaces?limit=200", null,
-      { signal: signal });
+    return PR_fetchAllPages("/workspaces", { signal: signal });
   },
 
-  // One workspace's row: a 404 is the authoritative "no such workspace" (the list is capped and polled, so a workspace created a moment
+  // One workspace's row: a 404 is the authoritative "no such workspace" (the list is polled, so a workspace created a moment
   // ago is not in it yet).
   workspace: function (wid, signal) {
     return window.primerApi.apiFetch(
       "GET", "/workspaces/" + encodeURIComponent(wid), null, { signal: signal });
   },
 
+  // Every session of one workspace, every page (its rows are keyed by session_id).
   sessions: function (wid, signal) {
-    return window.primerApi.apiFetch(
-      "GET", "/workspaces/" + encodeURIComponent(wid) + "/sessions?limit=200",
-      null, { signal: signal });
+    return PR_fetchAllPages("/workspaces/" + encodeURIComponent(wid) + "/sessions",
+      { signal: signal, idKey: "session_id" });
   },
 
   // Cross-workspace (revamp section 3): the rail and palette reach every
@@ -34,6 +35,7 @@ var SH_api = {
   // vanished from its own sidebar on any busy install. Ordering desc
   // makes the cap shed the oldest instead, and an optional wid pushes
   // the workspace filter server-side for the sidebar's feed.
+  // Deliberately a recent window (ticket 01a16dfa): the newest 200 sessions, polled every 5 s, not every page.
   allSessions: function (signal, wid) {
     var body = {
       predicate: wid ? {
@@ -91,6 +93,7 @@ var SH_api = {
   // LAST `limit` (newest). `beforeSeq` is kept for the one caller's signature
   // but ignored: the endpoint has no before_seq (it takes tail/after_seq/
   // offset), so the old branch was a no-op.
+  // Deliberately a recent window (ticket 01a16dfa): the newest `limit` records, not every page.
   messages: function (sid, limit, beforeSeq, signal) {
     var q = "?limit=" + encodeURIComponent(limit || 200) + "&tail=1";
     return window.primerApi.apiFetch(
@@ -139,9 +142,9 @@ var SH_api = {
   // Event subscriptions (events.py's make_crud_router list) - powers the
   // Activity console's subscriptions table (revamp notes section 4).
   // OffsetPageResponse shape: {items, total, ...}.
+  // Every page (PR_fetchAllPages): {items, total, pages, truncated, ...}.
   eventSubscriptions: function (signal) {
-    return window.primerApi.apiFetch(
-      "GET", "/event_subscriptions?limit=200", null, { signal: signal });
+    return PR_fetchAllPages("/event_subscriptions", { signal: signal });
   },
 
   // The one mutation allowed on system-managed rows server-side
@@ -191,30 +194,27 @@ var SH_api = {
   },
 
   collections: function (signal) {
-    return window.primerApi.apiFetch("GET", "/collections?limit=200", null,
-      { signal: signal });
+    return PR_fetchAllPages("/collections", { signal: signal });
   },
 
-  // Entity lists for the palette's mixed results (wiring plan P1 T5).
+  // Entity lists for the palette's mixed results (wiring plan P1 T5), and
+  // the new-session pickers: every page of each (PR_fetchAllPages).
   agents: function (signal) {
-    return window.primerApi.apiFetch("GET", "/agents?limit=200", null,
-      { signal: signal });
+    return PR_fetchAllPages("/agents", { signal: signal });
   },
   graphs: function (signal) {
-    return window.primerApi.apiFetch("GET", "/graphs?limit=200", null,
-      { signal: signal });
+    return PR_fetchAllPages("/graphs", { signal: signal });
   },
   // F9 (2026-08-29 UI review): the palette had no trigger/toolset rows -
   // same GET-list-then-client-filter shape as agents/graphs above.
   // triggers_router carries its own /v1 prefix (primer/api/routers/
-  // triggers.py) and has no ?limit query param.
+  // triggers.py) and has no ?limit query param: it answers every trigger at once.
   triggers: function (signal) {
     return window.primerApi.apiFetch("GET", "/triggers", null,
       { signal: signal });
   },
   toolsets: function (signal) {
-    return window.primerApi.apiFetch("GET", "/toolsets?limit=200", null,
-      { signal: signal });
+    return PR_fetchAllPages("/toolsets", { signal: signal });
   },
   // M5: the mobile Platform fact sheet's one live action - triggers.py's
   // synchronous fire_now (already used by the classic ui/components/

@@ -1,7 +1,7 @@
 /* global React, SH_api, NV_useConsole, NV_identity, SH_statusFromTap,
    SH_statusLine, SH_collapseTurns, SH_nestWithResults, SH_resultForCall, SH_callQuotesNotice, SH_toolChipLabel, SH_turnOfSeq, SH_windowsOfSeq,
    SH_scrollDecision, SH_shortTime, SH_traceHeaderLabel, SH_thoughtLabel,
-   SH_diffLineTone, SH_looksLikeDiff, SH_routingLine, SH_askOptionsOf */
+   SH_diffLineTone, SH_looksLikeDiff, SH_routingLine, SH_askOptionsOf, PR_PagedNote */
 // The session tab (wiring plan P2 T7). DATA layer inherited from the
 // sh session doc (same resources, same pure modules); RENDER is the
 // designer prototype's SESSION DOC / TRANSCRIPT / cards / TRACE /
@@ -691,6 +691,8 @@ function NV_BindingChip(props) {
                 {"+" + hidden + " more - type to narrow"}
               </div>
             ) : null}
+            <PR_PagedNote list={agents.data} noun="agents" testid="nv-binding-note:agents" />
+            <PR_PagedNote list={graphs.data} noun="graphs" testid="nv-binding-note:graphs" />
           </div>
         </div>
       ) : null}
