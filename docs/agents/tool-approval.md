@@ -85,15 +85,30 @@ The platform ships gates of its own: one `ToolApprovalPolicy` row per
 tool, written at boot (an upgraded install gets them from a migration),
 each an ordinary row the operator can disable, retune or replace. A
 tool that already has a policy, under any id, keeps it and gets no
-second row.
+second row. **To turn a shipped gate off, disable it (`enabled:
+false`); do not delete it.** The boot writes a missing shipped gate
+again, and so does Re-run seed (`POST /v1/setup/seed`), so a deleted
+gate comes back at the next start; a disabled one stays disabled.
 
-| Tools | Gate | Why |
-|---|---|---|
-| `crud::create_` / `update_agent`, `_graph`, `_trigger`, and the Python toolset tools | `required` | the builder's platform writes |
-| `system::create_` / `update_` / `delete_agent` and `_graph`; `trigger::create`, `update`, `delete` | `required` | the other doors to the same writes |
-| `system::create_tool_approval_policy`, `update_tool_approval_policy`, `delete_tool_approval_policy` | `required` | a run must not remove or relax the gate that protects a write |
-| `system::create_toolset`, `update_toolset` | `policy` (Rego) | a Python toolset runs its source and a stdio MCP toolset launches a command on the server host |
-| `harness::harness__install`, `harness__sync`, `harness__uninstall` | `required` | they write a bundle's agents, graphs, triggers and toolsets |
+| Tools | Gate | Decided by | Why |
+|---|---|---|---|
+| `crud::create_` / `update_agent`, `_graph`, `_trigger`, and the Python toolset tools | `required` | anyone who may decide the session's gates | the builder's platform writes |
+| `system::create_` / `update_` / `delete_agent` and `_graph`; `trigger::create`, `update`, `delete` | `required` | anyone who may decide the session's gates | the other doors to the same writes |
+| `system::create_tool_approval_policy`, `update_tool_approval_policy`, `delete_tool_approval_policy` | `required` | an admin | a run must not remove or relax the gate that protects a write |
+| `system::create_toolset`, `update_toolset` | `policy` (Rego) | an admin | a Python toolset runs its source and a stdio MCP toolset launches a command on the server host |
+| `harness::harness__install`, `harness__sync`, `harness__uninstall` | `required` | an admin | they write a bundle's agents, graphs, triggers and toolsets |
+
+"An admin" is the admin-only approver spec (`approvers: {"kind":
+"roles", "roles": [], "users": []}`): a user who is not an admin is
+refused (`403 approver_mismatch`), and so is a reply from a messaging
+channel, whose platform user primer cannot identify; decide those in
+the console. The cards of these gates lead with what is approved: the
+Rego source of a policy write, the command of a stdio toolset, the
+fingerprint (`sha256 <12 hex>, <N> lines`) of a python source, which
+the card never draws, and the overrides of a harness install or sync.
+A harness install or sync names the overrides it applies and is
+refused unless they are the stored ones; once enqueued it applies the
+inputs it was asked for or nothing (see [harnesses](harnesses.md)).
 
 The toolset gate reads the body of the call. It lets a call through
 only when `arguments.entity` is exactly an http or sse MCP toolset
@@ -101,8 +116,12 @@ only when `arguments.entity` is exactly an http or sse MCP toolset
 internal one, and parks every other body: Python, stdio, and any body
 it does not recognise (a provider or transport in another case or
 missing). An update that turns an http toolset into a stdio or Python
-one parks; to gate every toolset write, replace the policy with a
-`required` one.
+one parks; one that turns a stdio toolset into an http one does not (it
+starts nothing). To gate every toolset write, replace the policy with
+a `required` one. Where nothing can park (the MCP endpoint, or
+`system::call_tool` dispatched with no session), the gate is evaluated
+all the same and only a call it would park is refused, so an http
+toolset is created there too.
 
 A gate binds the call whatever the run's role: a run an admin started
 (the seeded operator's main session usually runs at its creator's rank)
@@ -171,6 +190,12 @@ without anyone asking, so it draws only what is declared safe to draw:
   format, a graph's and a node's description and templates, a trigger's description, a webhook trigger's token and HMAC secret, a Python toolset's source, a stdio
   toolset's command and env, a toolset's URL and headers, a policy's Rego source and judge prompt. No description is ever listed: a person pastes a key into a
   description as easily as into a prompt.
+- **The code leads.** A tool may also declare `preview_lead` (in memory only): the paths the card draws FIRST, before the one-line preview
+  cuts a long entity, because they are what a person approves. A lead path the allowlist shows is drawn as its value followed by a fingerprint
+  of its text (`sha256 <12 hex>, <N> lines`); one the allowlist withholds is drawn as the fingerprint alone. The PARK computes the fingerprint
+  (it holds the call) and stamps it into `preview` as `lead` and `digests`, so the card never reads a withheld value. The admin-tier gates use
+  it: a policy write leads with its Rego, a toolset write with its stdio command and its python source's fingerprint, a harness install or
+  sync with its overrides.
 - **The operator can override it.** `ToolApprovalPolicy.preview_args` (a list of the same paths) wins over the tool's declaration, and `[]` shows no value. This is the
   only way to cover an MCP tool or a Python tool, whose author declared nothing. Each path must name an argument of the gated tool: the console and the system
   `create_` / `update_tool_approval_policy` tools refuse a path that does not (a typo would hide more than meant, silently), and refuse paths for a tool that is not in
