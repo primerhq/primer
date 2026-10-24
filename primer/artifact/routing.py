@@ -8,6 +8,12 @@ backend does the work:
 * A backend whose ids the database cannot serve (``needs_location_record``: filesystem, S3) gets an :class:`~primer.model.artifact.ArtifactLocation`
   record, written AFTER the bytes and BEFORE the id is returned. A database-kind provider writes none: every one of them stores in the same
   ``Artifact`` table, which the fallback reads.
+* After the record is written, the provider row is read again. The delete of a provider is refused while it is active or holds a record, but a
+  put reads the active setting once, at its start: an upload still in flight when an admin switched away and deleted the provider would
+  otherwise record its artifact on a provider that no longer exists, and hand back an id that reads as missing (the G5 audit, G5-03). A put
+  that finds the row gone removes its record and its bytes and fails with a 409; retried, it goes to the store that is active now. What is
+  left is a window two statements wide: a delete whose check counted the records before this record was written, and whose row delete
+  lands after this re-read.
 * ``get`` and ``delete`` follow the record, even when the recorded provider is not the active one, so an artifact stays readable after a switch.
 * An id with no record is a database artifact and goes to ``fallback``, a DIRECT ``DbArtifactStorage``. It is never a registry lookup: the reserved
   provider row must not be able to break the reading of every old artifact.
@@ -25,7 +31,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from primer.int.artifact_storage import ArtifactBlob, ArtifactStorage
 from primer.model.artifact import ArtifactLocation
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.providers.artifact import (
     ACTIVE_ARTIFACT_STORAGE_CONFIG_ID,
     DEFAULT_ARTIFACT_PROVIDER_ID,
@@ -36,6 +42,7 @@ from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 if TYPE_CHECKING:
     from primer.int.storage import Storage
     from primer.int.storage_provider import StorageProvider
+    from primer.model.provider import ArtifactStorageProvider
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +51,8 @@ class RoutingArtifactStorage(ArtifactStorage):
     """Route puts to the active provider and reads and deletes to the provider recorded for the artifact.
 
     ``resolve`` turns a provider id into its live backend (``ArtifactStorageRegistry.get_provider``); it raises ``NotFoundError`` for an id with no
-    provider row. ``fallback`` is the database backend, used for the reserved default id and for every artifact with no record.
+    provider row. ``fallback`` is the database backend, used for the reserved default id and for every artifact with no record. ``providers`` is
+    the provider rows' storage, read after a record is written to confirm the provider still exists (``resolve`` may answer from a cache).
     """
 
     # The router writes the records itself. A router wrapped in another router would find its ids by itself, so it never asks for one.
@@ -57,11 +65,13 @@ class RoutingArtifactStorage(ArtifactStorage):
         fallback: ArtifactStorage,
         locations: "Storage[ArtifactLocation]",
         active_config: "Storage[ActiveArtifactStorageConfig]",
+        providers: "Storage[ArtifactStorageProvider]",
         default_provider_id: str = DEFAULT_ARTIFACT_PROVIDER_ID,
     ) -> None:
         self._resolve = resolve
         self._fallback = fallback
         self._locations = locations
+        self._providers = providers
         self._active_config = active_config
         self._default_provider_id = default_provider_id
 
@@ -84,6 +94,11 @@ class RoutingArtifactStorage(ArtifactStorage):
         if store.needs_location_record:
             try:
                 await self._locations.create(ArtifactLocation(id=artifact_id, provider_id=provider_id))
+                if await self._providers.get(provider_id) is None:
+                    raise ConflictError(
+                        f"artifact store {provider_id!r} was deleted while this upload was being written, so nothing was stored; "
+                        "try again: new uploads go to the active artifact store"
+                    )
             except (Exception, asyncio.CancelledError):
                 # The id was never returned, so no one can ask for these bytes: remove them rather than leave a file no record points to. A cancel
                 # (a client that went away mid-request) lands here too. So may a record INSERT that committed before the call failed (a cancel or a

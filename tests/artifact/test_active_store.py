@@ -40,6 +40,7 @@ async def world(tmp_path: Path):
         fallback=DbArtifactStorage(sp),
         locations=sp.get_storage(ArtifactLocation),
         active_config=sp.get_storage(ActiveArtifactStorageConfig),
+        providers=sp.get_storage(ArtifactStorageProvider),
     )
     yield sp, mem, routing
     await sp.aclose()

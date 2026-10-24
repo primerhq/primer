@@ -115,6 +115,45 @@ async def test_the_routing_store_resolves_providers_through_the_registry():
 
 
 @pytest.mark.asyncio
+async def test_the_routing_store_checks_the_provider_row_not_the_cache_after_the_record():
+    """A put confirms the provider row still exists after it writes the record, by reading the registry's row storage: the cached instance
+    outlives a delete until the eviction lands (the bus publishes, every process evicts asynchronously), so ``resolve`` cannot tell (the G5
+    audit, G5-03). Here the instance is cached and the row is gone: the put fails with a 409 and leaves no record."""
+    from primer.model.artifact import ArtifactLocation
+    from primer.model.except_ import ConflictError
+    from primer.model.providers.artifact import ACTIVE_ARTIFACT_STORAGE_CONFIG_ID, ActiveArtifactStorageConfig
+    from primer.model.storage import OffsetPage
+
+    class _Store(_StubArtifactStorage):
+        needs_location_record = True
+
+        def __init__(self):
+            super().__init__()
+            self.deleted = []
+
+        async def put(self, *, data, mime_type, filename=None):
+            return "artifact-" + uuid4().hex
+
+        async def delete(self, artifact_id):
+            self.deleted.append(artifact_id)
+
+    store = _Store()
+    rows = {"asp-a": object()}
+    sp = _FakeStorageProvider()
+    await sp.get_storage(ActiveArtifactStorageConfig).create(ActiveArtifactStorageConfig(id=ACTIVE_ARTIFACT_STORAGE_CONFIG_ID, provider_id="asp-a"))
+    reg = ArtifactStorageRegistry(storage=_FakeStore(rows), storage_provider=sp, factory=lambda row, storage_provider: store)
+    routing = await reg.get_default()
+    await routing.put(data=b"x", mime_type="text/plain", filename=None)       # caches the instance
+
+    del rows["asp-a"]                                                         # the row is deleted; the cached instance is not evicted yet
+    with pytest.raises(ConflictError):
+        await routing.put(data=b"y", mime_type="text/plain", filename=None)
+
+    assert len((await sp.get_storage(ArtifactLocation).list(OffsetPage(offset=0, length=10))).items) == 1, "only the first put's record"
+    assert len(store.deleted) == 1, "the second put's bytes were removed"
+
+
+@pytest.mark.asyncio
 async def test_the_routing_store_uses_the_registrys_default_provider_id():
     """The registry keeps its ``default_provider_id`` argument and hands it to the routing store as the id that means "the database"."""
     from primer.model.providers.artifact import ACTIVE_ARTIFACT_STORAGE_CONFIG_ID, ActiveArtifactStorageConfig

@@ -127,6 +127,7 @@ class ArtifactStorageRegistry:
                 fallback=DbArtifactStorage(self._storage_provider),
                 locations=self._storage_provider.get_storage(ArtifactLocation),
                 active_config=self._storage_provider.get_storage(ActiveArtifactStorageConfig),
+                providers=self._storage,
                 default_provider_id=self._default_provider_id,
             )
         return self._routing
