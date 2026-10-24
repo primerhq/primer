@@ -44,7 +44,8 @@ async def set_active_artifact_store(
     during the probe passes its own check. So the provider row is read again after the probe, and the selection is written with a
     compare-and-set against the selection read BEFORE the probe (the G5 audit, G5-06). Either race lost is a 409 (``kind="conflict"``) and
     leaves the selection as it was: ``artifact_store_deleted`` when the provider is gone, ``active_artifact_store_changed`` when another
-    selection was written meanwhile. What is left is a window two statements wide: a delete whose active-store check ran before this
+    selection was written meanwhile. A selection written meanwhile that names the SAME provider is no lost race: the store asked for is
+    the active one, and that row is the answer (the review of #869, F9). What is left is a window two statements wide: a delete whose active-store check ran before this
     selection was written and whose row delete lands after the re-read.
     """
     providers = storage_provider.get_storage(ArtifactStorageProvider)
@@ -75,23 +76,28 @@ async def set_active_artifact_store(
             field="provider_id",
         )
 
+    written: ActiveArtifactStorageConfig | None = None
     if before is None:
         try:
             return await storage.create(ActiveArtifactStorageConfig(id=ACTIVE_ARTIFACT_STORAGE_CONFIG_ID, provider_id=provider_id))
         except ConflictError:
-            raise _selection_changed() from None
-    try:
-        written = await patch_if_checked(
-            storage,
-            ACTIVE_ARTIFACT_STORAGE_CONFIG_ID,
-            {"provider_id": provider_id},
-            where={"provider_id": [raw_generation(before, "provider_id")]},
-        )
-    except NotFoundError:
-        raise _selection_changed() from None
-    if written is None:
-        raise _selection_changed()
-    return written
+            pass                                    # someone made the first selection meanwhile: see what it says
+    else:
+        try:
+            written = await patch_if_checked(
+                storage,
+                ACTIVE_ARTIFACT_STORAGE_CONFIG_ID,
+                {"provider_id": provider_id},
+                where={"provider_id": [raw_generation(before, "provider_id")]},
+            )
+        except NotFoundError:
+            written = None
+    if written is not None:
+        return written
+    current = await storage.get(ACTIVE_ARTIFACT_STORAGE_CONFIG_ID)
+    if current is not None and current.provider_id == provider_id:
+        return current
+    raise _selection_changed()
 
 
 __all__ = ["read_active_artifact_store", "set_active_artifact_store"]
