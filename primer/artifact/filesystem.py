@@ -271,8 +271,24 @@ def _write_files(root: str, path: Path, data: bytes, sidecar: bytes) -> None:
         raise
 
 
+def _parse_sidecar(raw: bytes) -> tuple[str, str | None, int]:
+    """``(mime_type, filename, size)`` from a sidecar. Raises ``ValueError`` for anything that is not the object a put writes."""
+    meta = json.loads(raw.decode("utf-8"))
+    if not isinstance(meta, dict):
+        raise ValueError("not a JSON object")
+    mime_type, filename, size = meta.get("mime_type"), meta.get("filename"), meta.get("size")
+    if not isinstance(mime_type, str):
+        raise ValueError("mime_type is missing or not text")
+    if filename is not None and not isinstance(filename, str):
+        raise ValueError("filename is not text")
+    if not isinstance(size, int) or isinstance(size, bool):
+        raise ValueError("size is missing or not a number")
+    return mime_type, filename, size
+
+
 def _read_files(root: str, path: Path) -> ArtifactBlob | None:
-    """The stored blob, or ``None`` when the sidecar or the bytes are missing, or when a path below the root is unsafe (logged)."""
+    """The stored blob, or ``None`` when the sidecar or the bytes are missing, when a path below the root is unsafe, when the sidecar cannot be
+    read, or when the bytes are not as long as the sidecar says (the last three logged). A damaged artifact is never served."""
     try:
         if _shard_dir(root, path, create=False) is None:
             return None
@@ -283,8 +299,17 @@ def _read_files(root: str, path: Path) -> ArtifactBlob | None:
     except UnsafeArtifactPath as exc:
         logger.warning("filesystem artifact store: refused to read %s: %s", path.name, exc)
         return None
-    meta = json.loads(sidecar.decode("utf-8"))
-    return ArtifactBlob(data=data, mime_type=meta["mime_type"], filename=meta.get("filename"))
+    try:
+        mime_type, filename, size = _parse_sidecar(sidecar)
+    except ValueError as exc:                   # a JSON or UTF-8 decode error is a ValueError too
+        logger.warning("filesystem artifact store: the sidecar of %s cannot be read (%s); the artifact reads as missing", path.name, exc)
+        return None
+    if len(data) != size:
+        logger.warning(
+            "filesystem artifact store: %s holds %d bytes but its sidecar says %d; the artifact reads as missing", path.name, len(data), size,
+        )
+        return None
+    return ArtifactBlob(data=data, mime_type=mime_type, filename=filename)
 
 
 def _remove_files(root: str, path: Path) -> None:
