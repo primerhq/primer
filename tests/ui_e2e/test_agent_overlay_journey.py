@@ -6,6 +6,7 @@
   before it closes the overlay (Review Focus 4). Full screen is a focus trap: Tab and Shift+Tab stay inside it however often they are pressed (review of #779).
   A two-part prompt is saved as two parts.
 * A response format that does not parse reopens the folded Advanced section and sends nothing (Review Focus 5).
+* The workspace instructions switch in Advanced starts on, and turned off it creates an agent that opts out of its workspace's agents.md (pivot P2, Task 16).
 * A refused save brings its message into view: the overlay's body scrolls (the create form is about 1400px tall, with about 620px in sight at 1366x768), so the
   first message is scrolled into view inside the body and its field takes the focus (review of #779, required fix 3).
 * The Chat button makes its session in the default workspace and opens it in the studio. It used to post a session route that does not exist. Opening the
@@ -34,6 +35,7 @@ EVERY_FIELD = {
     "description": "before the journey", "temperature": 0.7, "max_tool_turns": 25, "max_output_tokens": 1024,
     "tools": ["system__invoke_agent", "web__web_search"], "system_prompt": ["You triage refunds.", "Be brief."],
     "compaction_prompt": ["Keep the cited sources."], "compaction_tool_access": True, "allow_external_tools": True,
+    "use_workspace_instructions": False,
     "response_format": {"type": "object", "properties": {"verdict": {"type": "string"}}, "required": ["verdict"]},
     "tts_voice": "alloy",
 }
@@ -224,6 +226,36 @@ def test_a_response_format_that_does_not_parse_reopens_advanced_and_sends_nothin
         expect(alert).to_be_in_viewport(ratio=1, timeout=5_000)  # inside the visible part of the body, whole: not left below the fold
         expect(modal.locator("#na-response-format")).to_be_focused()  # and the field it is about takes the focus
         assert posts == [], "an unparseable response format must not be sent"
+    finally:
+        _remove(base_url, f"/v1/agents/{agent_id}", f"/v1/llm_providers/{provider_id}")
+
+
+def test_the_workspace_instructions_switch_creates_an_agent_that_opts_out(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
+    """Pivot P2, Task 16: the switch in the folded Advanced section starts on, and an agent created with it off is stored off. The edit journey above
+    proves a stored off goes back off on an edit that never opens the fold."""
+    provider_id = f"llm-agw-{unique_suffix}"
+    agent_id = f"ag-agw-{unique_suffix}"
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        _seed_provider(c, provider_id)
+    try:
+        open_legacy_route(page, console_url, "agents")
+        page.get_by_role("button", name="New agent").first.click()
+        modal = page.locator(".modal").first
+        expect(modal.get_by_text("New agent", exact=True)).to_be_visible(timeout=5_000)
+        modal.locator("#na-id").fill(agent_id)
+        modal.locator("#na-description").fill("workspace instructions journey")
+        modal.locator("#na-model-profile").select_option(value=profile_id_for(provider_id, "fake-model"))
+
+        modal.get_by_test_id("agent-advanced-fold:toggle").click()
+        switch = modal.get_by_test_id("na-use-workspace-instructions")
+        expect(switch).to_have_attribute("aria-checked", "true")
+        expect(modal.get_by_test_id("na-use-workspace-instructions-label")).to_have_text("Load workspace instructions (agents.md)")
+        switch.click()
+        expect(switch).to_have_attribute("aria-checked", "false")
+        modal.get_by_test_id("agent-form-submit").click()
+
+        row = _wait_for_agent(page, base_url, agent_id, lambda r: True)
+        assert row is not None and row["use_workspace_instructions"] is False, row
     finally:
         _remove(base_url, f"/v1/agents/{agent_id}", f"/v1/llm_providers/{provider_id}")
 

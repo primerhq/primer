@@ -35,11 +35,14 @@ _CLOSE = "## End of workspace instructions"
 # ---------------------------------------------------------------------------
 
 
-async def _system_text(monkeypatch, *, system_prompt, **kwargs) -> str | None:
+async def _system_text(monkeypatch, *, system_prompt, use_workspace_instructions=True, **kwargs) -> str | None:
     """Run ``run_subagent`` with the model and the tools stubbed out, and return the text of the system message its
     turn was handed (``None`` when it was handed none)."""
     captured: dict = {}
-    agent = Agent(id="sub", description="a subagent", model=AgentModel(profile_id="p--m"), system_prompt=system_prompt)
+    agent = Agent(
+        id="sub", description="a subagent", model=AgentModel(profile_id="p--m"), system_prompt=system_prompt,
+        use_workspace_instructions=use_workspace_instructions,
+    )
 
     async def _resolve(agent_id, *, storage_provider, provider_registry):
         return agent, object(), object()
@@ -109,6 +112,16 @@ async def test_a_blank_file_adds_nothing(monkeypatch, blank):
     assert await _system_text(
         monkeypatch, system_prompt=[], workspace_id="ws-1", session_id="s-1", workspace_instructions=blank,
     ) is None
+
+
+async def test_a_subagent_that_opted_out_gets_only_its_own_prompt(monkeypatch):
+    """``use_workspace_instructions`` off (pivot P2, Task 16): the subagent runs in the workspace without its agents.md."""
+    text = await _system_text(
+        monkeypatch, system_prompt=["Sub prompt."], use_workspace_instructions=False, workspace_id="ws-1", session_id="s-1",
+        workspace_instructions="rules",
+    )
+
+    assert text == "Sub prompt."
 
 
 async def test_a_subagent_called_without_the_argument_behaves_as_before(monkeypatch):

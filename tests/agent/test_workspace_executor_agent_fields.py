@@ -32,6 +32,7 @@ def _non_default_agent() -> Agent:
         compaction_prompt=["summarise carefully"],
         compaction_tool_access=True,
         allow_external_tools=True,
+        use_workspace_instructions=False,
         response_format={"type": "object", "properties": {"x": {"type": "string"}}},
         tts_voice="alloy",
         harness_id="harness-1",

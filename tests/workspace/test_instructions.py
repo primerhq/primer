@@ -111,8 +111,8 @@ class _Ws:
         return value
 
 
-def _agent() -> Agent:
-    return Agent(id="a-1", description="an agent", model=AgentModel(profile_id="p--m"))
+def _agent(**fields) -> Agent:
+    return Agent(id="a-1", description="an agent", model=AgentModel(profile_id="p--m"), **fields)
 
 
 def _warnings(caplog) -> list[logging.LogRecord]:
@@ -514,3 +514,21 @@ async def test_an_empty_file_on_disk_adds_no_part_end_to_end():
 def test_a_file_that_is_only_a_closing_marker_is_not_blank():
     """It has content, so it gets the section: the marker is quoted, so the section still ends where the platform ends it."""
     assert workspace_instructions_parts(_agent(), _CLOSE) == [f"{_OPEN}\n\n(quoted) {_CLOSE}\n\n{_CLOSE}"]
+
+
+# ---------------------------------------------------------------------------
+# An agent that opted out (pivot P2, Task 16)
+# ---------------------------------------------------------------------------
+
+
+def test_an_agent_that_opted_out_gets_no_part():
+    assert workspace_instructions_parts(_agent(use_workspace_instructions=False), "rules") == []
+
+
+def test_an_agent_that_opted_out_gets_no_part_for_a_file_that_is_only_a_closing_marker():
+    """The opt-out is decided before the text is looked at: no framing, quoted or not."""
+    assert workspace_instructions_parts(_agent(use_workspace_instructions=False), _CLOSE) == []
+
+
+def test_an_agent_that_did_not_opt_out_gets_the_part():
+    assert workspace_instructions_parts(_agent(use_workspace_instructions=True), "rules") == [workspace_instructions_part("rules")]

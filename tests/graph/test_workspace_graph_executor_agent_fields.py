@@ -141,6 +141,27 @@ async def test_a_graph_with_no_holder_session_still_gets_the_instructions() -> N
     assert seen.system_prompt == ["base prompt", workspace_instructions_part("rules")]
 
 
+def _opted_out() -> Agent:
+    """Every knob turned, and ``use_workspace_instructions`` off (pivot P2, Task 16)."""
+    return _non_default_agent().model_copy(update={"use_workspace_instructions": False})
+
+
+async def test_a_node_agent_that_opted_out_gets_the_fragment_and_not_the_file() -> None:
+    agent = _opted_out()
+
+    seen = await _resolve_with(agent, "rules")
+
+    assert seen.system_prompt == ["base prompt", FRAGMENT]
+    dropped = [name for name in Agent.model_fields if name != "system_prompt" and getattr(seen, name) != getattr(agent, name)]
+    assert dropped == [], f"the graph executor's agent resolver dropped Agent fields: {dropped}"
+
+
+async def test_a_node_agent_that_opted_out_with_no_holder_session_is_the_agent_the_resolver_returned() -> None:
+    agent = _opted_out()
+
+    assert await _resolve_with(agent, "rules", session=None) is agent
+
+
 async def test_no_session_and_no_file_leaves_the_agent_the_resolver_returned() -> None:
     agent = _non_default_agent()
 

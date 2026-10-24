@@ -88,6 +88,24 @@ async def test_the_registry_agent_is_not_changed(tmp_path: Path) -> None:
         await backend.aclose()
 
 
+async def test_an_agent_that_opted_out_gets_the_fragment_and_not_the_file(tmp_path: Path) -> None:
+    """``use_workspace_instructions`` off (pivot P2, Task 16): the workspace fragment stays, the agents.md part does not, and the
+    flag itself is carried over like every other field."""
+    backend, _ws, session = await _build_session(tmp_path)
+    try:
+        agent = _agent(system_prompt=["base"]).model_copy(update={"use_workspace_instructions": False})
+        ex = WorkspaceAgentExecutor(
+            agent=agent, llm=_FakeLLM(scripts=[]), llm_model=_model(),  # type: ignore[arg-type]
+            tool_manager=ToolExecutionManager.for_workspace(toolset_providers={}, session=session),
+            session=session, workspace_instructions="Be brief.",
+        )
+        assert ex._agent.system_prompt == ["base", session.system_prompt_fragment]
+        assert ex._agent.use_workspace_instructions is False
+    finally:
+        await session.aclose()
+        await backend.aclose()
+
+
 # Valid Jinja on purpose: left unescaped it renders without an error, to ``2 y`` and no comment. A text that raised
 # (an unknown tag, an undefined name) would send the renderer to its raw-join fallback, which returns the file text
 # byte for byte, so a test on such a text could not tell an escaped file from an unescaped one.

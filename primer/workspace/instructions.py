@@ -3,7 +3,8 @@
 The platform reads the file, not the agent: at every turn the prompt sites (the agent executor, graph agent
 nodes, the manual compaction route's sizing, ``invoke_agent`` subagents) call :func:`load_workspace_instructions`
 on the workspace and pass the text to :func:`workspace_instructions_parts`. The text is re-read each turn, so an
-edit takes effect on the next one.
+edit takes effect on the next one. An agent opts out with ``Agent.use_workspace_instructions`` (default on), and
+:func:`workspace_instructions_parts` is the one place that honours it.
 
 Four properties matter more than the plumbing:
 
@@ -176,9 +177,12 @@ def workspace_instructions_parts(agent: "Agent", text: str | None) -> list[str]:
     """The prompt parts a workspace's instructions add for ``agent``: none, or the one part.
 
     Every prompt site calls this, never :func:`workspace_instructions_part` directly, so who gets the
-    instructions is decided in one place. A file with nothing in it adds no part: a heading over nothing
-    would only cost tokens and read as an empty instruction.
+    instructions is decided in one place. An agent whose ``use_workspace_instructions`` is off gets none,
+    whatever the file holds. A file with nothing in it adds no part: a heading over nothing would only
+    cost tokens and read as an empty instruction.
     """
+    if not agent.use_workspace_instructions:
+        return []
     if text is None or not text.strip():
         return []
     return [workspace_instructions_part(text)]
