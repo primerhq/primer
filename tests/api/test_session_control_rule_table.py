@@ -980,3 +980,70 @@ async def test_create_workspace_from_prime_or_with_no_session_creates_it(own, do
 
     assert outcome == D, body
     assert (await world.sp.get_storage(Workspace).get("ws-new")) is not None and "ws-new" in world.backend.live
+
+
+# -- a graph session with no holder slot (F6) -------------------------------------------------------------------------------------------------
+
+
+class _HolderlessHost:
+    """The live workspace of a graph session created before holder slots existed: a state repo, no session slot, no agents.md."""
+
+    def __init__(self, workspace_id: str, state_repo: LocalStateRepo) -> None:
+        self.id = workspace_id
+        self.state_repo = state_repo
+
+    async def get_session(self, session_id: str) -> None:
+        return None
+
+    async def file_info(self, path: str) -> FileEntry:
+        raise NotFoundError(f"{path!r} not found")
+
+    async def read_file(self, path: str) -> bytes:
+        raise NotFoundError(f"{path!r} not found")
+
+
+@pytest.mark.parametrize(("own", "expected"), [pytest.param("ws-1", N, id="a graph session outside prime"), pytest.param("ws-prime", D, id="in prime")])
+@pytest.mark.parametrize("door", DOORS)
+async def test_the_tools_of_a_graph_session_with_no_holder_slot_reach_only_what_its_workspace_reaches(own, expected, door, tmp_path):
+    """F6: the worker builds a holder-less graph session's per-node tool manager with no workspace session (``build_graph_executor``). Its tools
+    used to get no context at all, which the workspaces tools read as a caller with no session: every workspace. The manager now names the row's
+    session and workspace on every context it builds, so the node's tools reach what the session's workspace reaches."""
+    world = await _ws_world()
+    graph = _runnable_graph()
+    row = WorkspaceSession(
+        id="ses-g", workspace_id=own, binding=GraphSessionBinding(graph_id=graph.id, graph_snapshot=graph), status=SessionStatus.RUNNING,
+        created_at=NOW, initiated_by=USER,
+    )
+    await world.sp.get_storage(WorkspaceSession).create(row)
+    await world.sp.get_storage(User).create(User(id="u-user", username="user", created_at=NOW, role="user"))
+    repo = LocalStateRepo(tmp_path / "state", workspace_id=own)
+    await repo.initialize()
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1), scheduler=None, storage=world.sp, workspace_registry=world.workspaces,  # type: ignore[arg-type]
+        provider_registry=world.registry, engine=InMemoryClaimEngine(adapters={}),  # type: ignore[arg-type]
+    )
+    driver = await pool._build_executor(row, _HolderlessHost(own, repo))  # noqa: SLF001 -- the worker's own build seam
+    agent = Agent(
+        id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=["workspaces__delete_workspace", "system__call_tool"],
+        system_prompt=[],
+    )
+    manager = await driver._executor._tool_manager_resolver(agent)  # noqa: SLF001 -- what every agent node of the run is given
+
+    ctx = manager.context_for("call-1")
+    assert ctx is not None and (ctx.session_id, ctx.workspace_id, ctx.initiated_by) == ("ses-g", own, USER)
+    before = await world.snapshot()
+    if door == "tool manager":
+        call = ToolCallPart(id="call-1", name="workspaces__delete_workspace", arguments={"id": "ws-2"})
+    else:
+        call = ToolCallPart(
+            id="call-1", name="system__call_tool", arguments={"toolset_id": "workspaces", "tool_name": "delete_workspace", "arguments": {"id": "ws-2"}},
+        )
+    part = await asyncio.wait_for(manager.execute(call), 30)
+
+    body = json.loads(part.output)
+    assert (body["type"] if part.error else D) == expected, body
+    if expected == N:
+        assert body == {"type": N, "message": "Workspace 'ws-2' does not exist"}
+        assert await world.snapshot() == before
+    else:
+        assert await world.sp.get_storage(Workspace).get("ws-2") is None
