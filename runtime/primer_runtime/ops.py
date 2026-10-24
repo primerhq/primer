@@ -294,10 +294,29 @@ def _stat_to_dict(st: os.stat_result, full_path: str, name: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _refuse_unless_regular(mode: int, raw_path: str) -> None:
+    """Raise the op error for a ``read_file`` of anything but a regular file: EISDIR for a directory, EUNSUPPORTED for the rest (a FIFO,
+    a socket, a character or block device), whose read could block or never end."""
+    if _stat_mod.S_ISDIR(mode):
+        raise OpError(ErrorCode.EISDIR, f"Is a directory: {raw_path!r}")
+    if not _stat_mod.S_ISREG(mode):
+        raise OpError(
+            ErrorCode.EUNSUPPORTED,
+            f"Not a regular file (a FIFO, socket or device is not read): {raw_path!r}",
+        )
+
+
 async def read_file(
     args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
 ) -> dict:
-    """``read_file`` op → ``{content_b64}``; read-only, takes no lock."""
+    """``read_file`` op → ``{content_b64}``; read-only, takes no lock.
+
+    Only a regular file is read. The ``stat`` of the path is checked first, and then the file is opened with ``O_NONBLOCK`` and the
+    DESCRIPTOR is checked with ``fstat``, so the check and the read are about the same file: a process in the workspace that swaps a
+    FIFO in after the ``stat`` would otherwise pin this thread in ``open()`` (a FIFO with no writer blocks there) or in ``read()``, and
+    the platform's 5 s timeout only abandons such a thread, so enough of them exhaust the pool (the G5 audit, G5-09). ``O_NONBLOCK``
+    changes nothing for a regular file.
+    """
     raw_path: str = args.get("path", "")
     resolved = _resolve_safe(raw_path, workspace_root)
 
@@ -306,13 +325,21 @@ async def read_file(
             st = os.stat(resolved)
         except OSError as exc:
             raise _os_err_to_op_error(exc, raw_path)
-        if _stat_mod.S_ISDIR(st.st_mode):
-            raise OpError(ErrorCode.EISDIR, f"Is a directory: {raw_path!r}")
+        _refuse_unless_regular(st.st_mode, raw_path)
         try:
-            with open(resolved, "rb") as fh:
-                return fh.read()
+            fd = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
         except OSError as exc:
             raise _os_err_to_op_error(exc, raw_path)
+        try:
+            _refuse_unless_regular(os.fstat(fd).st_mode, raw_path)
+            chunks: list[bytes] = []
+            while chunk := os.read(fd, 1 << 20):
+                chunks.append(chunk)
+            return b"".join(chunks)
+        except OSError as exc:
+            raise _os_err_to_op_error(exc, raw_path)
+        finally:
+            os.close(fd)
 
     content = await asyncio.to_thread(_read)
     return {"content_b64": base64.b64encode(content).decode()}
