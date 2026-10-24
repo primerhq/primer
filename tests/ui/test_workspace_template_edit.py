@@ -114,3 +114,102 @@ def test_kubernetes_size_fields_edit_the_live_resources(ctx) -> None:
     assert body["resources"]["cpu_cores"] == 6
     assert body["resources"]["memory_bytes"] == 10 * 2**30
     assert WorkspaceTemplate.model_validate(body)
+
+
+# ---- the review of #869, F4: the form shows the size rules' 422s -------------------------------------------------------------------------------
+
+ROW_ERROR = r"""
+function rowError(testid) {
+  var hit = null;
+  ALL("ws-template-modal").forEach(function (n) {
+    if (hit !== null || n.type !== "div" || n.props.className !== "field") return;
+    var kids = __flat(n.children);
+    if (!kids.some(function (c) { return c.props && c.props["data-testid"] === testid; })) return;
+    var alert = kids.filter(function (c) { return c.props && c.props.role === "alert"; })[0];
+    hit = alert ? textOf(alert) : "";
+  });
+  return hit;
+}
+"""
+
+
+def _real_422(body: dict) -> dict:
+    """The 422 envelope the real router answers for this template body (a PUT validates the body before anything is read)."""
+    import asyncio
+
+    import httpx
+    from httpx import ASGITransport
+
+    from primer.api.app import create_test_app
+    from primer.api.registries import ProviderRegistry, WorkspaceRegistry
+    from tests.api.test_workspaces import _SP
+
+    async def run() -> dict:
+        sp = _SP()
+        app = create_test_app(
+            storage_provider=sp,  # type: ignore[arg-type]
+            provider_registry=ProviderRegistry(
+                sp,  # type: ignore[arg-type]
+                llm_factory=lambda p: object(), embedder_factory=lambda p: object(),
+                cross_encoder_factory=lambda p: object(), toolset_factory=lambda t: object(),
+            ),
+            workspace_registry=WorkspaceRegistry(sp),  # type: ignore[arg-type]
+        )
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.post("/v1/auth/register", json={"username": "formadmin", "password": "formadminpass1"})
+            assert r.status_code == 200, r.text
+            r = await client.put(f"/v1/workspace_templates/{body['id']}", json=body)
+        assert r.status_code == 422, r.text
+        return r.json()
+
+    return asyncio.run(run())
+
+
+def _save_refused(ctx, envelope: dict) -> None:
+    ctx.eval(ROW_ERROR)
+    ctx.eval("var ENVELOPE = " + json.dumps(envelope) + "; HANDLER = function () { return refuse(ENVELOPE); };")
+    ctx.eval("""
+    ALL("ws-template-modal").filter(function (n) { return n.type === "button" && textOf(n) === "Save"; })[0].props.onClick();
+    """)
+    settle(ctx)
+
+
+def _refused_body(**changes) -> dict:
+    row = _served_template()
+    row["backend"].update(changes.pop("backend", {}))
+    row["resources"].update(changes.pop("resources", {}))
+    return row
+
+
+@pytest.mark.parametrize(("change", "testid", "control"), [
+    ({"backend": {"pvc_size": "10 Gi"}}, "ws-template-pvc-size", "10 Gi"),
+    ({"resources": {"cpu_cores": 0}}, "ws-template-cpu-cores", "0"),
+    ({"resources": {"memory_bytes": -1}}, "ws-template-memory-bytes", "-1"),
+])
+def test_a_size_the_server_refuses_is_shown_under_its_field(ctx, change, testid, control) -> None:
+    envelope = _real_422(_refused_body(**change))
+    message = envelope["extensions"]["errors"][0]["msg"]
+    _mount(ctx, _served_template())
+    ctx.eval(f"setValue({json.dumps(testid)}, {json.dumps(control)});")
+
+    _save_refused(ctx, envelope)
+
+    assert message in js(ctx, f"rowError({json.dumps(testid)})")
+    assert js(ctx, "MR.find('ws-template-form-errors')") is None, "a refusal its row shows is not listed again"
+
+
+def test_a_field_error_no_row_shows_is_listed_above_the_fields(ctx) -> None:
+    envelope = _real_422(_refused_body(backend={"node_selector": {"not a key!": "x"}}))
+    message = envelope["extensions"]["errors"][0]["msg"]
+    _mount(ctx, _served_template())
+
+    _save_refused(ctx, envelope)
+
+    text = js(ctx, "textOf(MR.find('ws-template-form-errors'))")
+    assert "backend.node_selector" in text and message in text
+
+
+def test_the_size_inputs_ask_for_more_than_zero(ctx) -> None:
+    _mount(ctx, _served_template())
+    assert js(ctx, "MR.find('ws-template-cpu-cores').props.min") == "0.1"
+    assert js(ctx, "MR.find('ws-template-memory-bytes').props.min") == "1"
