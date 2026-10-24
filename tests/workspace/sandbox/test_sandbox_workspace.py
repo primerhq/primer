@@ -117,6 +117,28 @@ async def test_read_file_refuses_fifo_before_blocking(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_file_refuses_a_socket_as_a_bad_request(tmp_path: Path) -> None:
+    """Anything that is not a regular file is refused before the runtime is asked (the review of #869, F5): a socket or a device used to
+    reach the read, whose failure came back as a raw error (a 500), not a 400."""
+    import socket
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(str(tmp_path / "agent.sock"))
+        sb = FakeSandbox(root=tmp_path)
+        sb.read_file = AsyncMock(side_effect=AssertionError("the read must not be asked for a socket"))
+        ws = await SandboxWorkspace.materialise(
+            workspace_id="ws-1", template=_template(),
+            sandbox=sb, backend_kind="container",
+            runtime_meta=_runtime_meta(),
+        )
+        with pytest.raises(BadRequestError, match="'agent.sock' is not a regular file"):
+            await ws.read_file("agent.sock")
+    finally:
+        server.close()
+
+
+@pytest.mark.asyncio
 async def test_read_file_still_refuses_directory(tmp_path: Path) -> None:
     sb = FakeSandbox(root=tmp_path)
     ws = await SandboxWorkspace.materialise(
