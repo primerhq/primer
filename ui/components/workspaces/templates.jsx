@@ -579,6 +579,492 @@ Object.assign(window, {
 const WT_ADMIN_ONLY_NOTE =
   "Admin only: only an admin can set or change these fields, and only an admin can edit or delete a template that has any of them set. Users can still create workspaces from such a template and run their own commands next to its mounts, secrets and service account, so do not put host-privileged mounts, secrets or a service account with real permissions in a template ordinary users may use. Kubernetes overlays must also stay on the server's allowlist.";
 
+// ---- WT_FilesEditor and WT_TemplateOverlay (platform revamp Plan 08, Task 10; design 14.2; tests/ui/test_wt_template_overlay.py) ----------------------
+
+var WT_SOURCE_OPTIONS = [
+  { value: "inline", label: "Text" }, { value: "url", label: "URL" }, { value: "document", label: "Document" }, { value: "secret", label: "Secret" },
+];
+
+function WT_blankSource(kind) {
+  if (kind === "url") return { kind: "url", url: "" };
+  if (kind === "document") return { kind: "document", collection_id: "", document_id: "" };
+  if (kind === "secret") return { kind: "secret", name: "" };
+  return { kind: "inline", content: "" };
+}
+
+// The files a template (or, later, one workspace) seeds: a row per FileMount with its path, its source and its mode, and the source's own fields. A new
+// source replaces the row's source with a blank one of that kind; editing a part changes that key only, so a part the row does not show (a url's
+// sha256 when the url is edited) is kept. A Secret source reads an operator secret, so it is offered to admins only (and shown on a row that holds one).
+function WT_FilesEditor(props) {
+  var files = props.value || [];
+  var t = props.testid;
+  var ro = !!props.readOnly;
+  function put(i, next) {
+    props.onChange(files.map(function (f, j) { return j === i ? next : f; }));
+  }
+  function setPart(i, key, value) {
+    var source = Object.assign({}, files[i].source);
+    source[key] = value;
+    put(i, Object.assign({}, files[i], { source: source }));
+  }
+  function part(i, source, key, label, testid, opts) {
+    var o = opts || {};
+    return (
+      <PK_Field label={label} help={o.help}>
+        <input className="input mono" data-testid={t + "-" + testid + ":" + i} value={source[key] == null ? "" : source[key]} readOnly={ro || undefined}
+          placeholder={o.placeholder} onChange={function (e) { setPart(i, key, o.nullWhenBlank && e.target.value === "" ? null : e.target.value); }} />
+      </PK_Field>
+    );
+  }
+  return (
+    <PK_Section title="FILES" cols={1} testid={t}>
+      {files.map(function (f, i) {
+        var source = f.source || WT_blankSource("inline");
+        var options = WT_SOURCE_OPTIONS.filter(function (o) { return o.value !== "secret" || props.isAdmin || source.kind === "secret"; });
+        return (
+          <div key={i} className="col" style={{ gap: 10, paddingBottom: 12, borderBottom: "1px dashed var(--border)" }}>
+            <PK_Grid cols={3}>
+              <PK_Field label="Path">
+                <input className="input mono" data-testid={t + "-path:" + i} value={f.path || ""} readOnly={ro || undefined}
+                  onChange={function (e) { put(i, Object.assign({}, f, { path: e.target.value })); }} />
+              </PK_Field>
+              <PK_Field label="Source">
+                <PK_Segmented testid={t + "-source:" + i} ariaLabel={"Source of file " + (i + 1)} value={source.kind} options={options} disabled={ro}
+                  onChange={function (kind) { put(i, Object.assign({}, f, { source: WT_blankSource(kind) })); }} />
+              </PK_Field>
+              <PK_Field label="Mode" help="Octal, for example 0644">
+                <input className="input mono" data-testid={t + "-mode:" + i} value={f.mode || ""} readOnly={ro || undefined} placeholder="0644"
+                  onChange={function (e) { put(i, Object.assign({}, f, { mode: e.target.value === "" ? null : e.target.value })); }} />
+              </PK_Field>
+            </PK_Grid>
+            {source.kind === "inline" ? (
+              <PK_Field label="Content">
+                <textarea className="input mono" rows={4} data-testid={t + "-content:" + i} value={source.content || ""} readOnly={ro || undefined}
+                  style={{ width: "100%" }} onChange={function (e) { setPart(i, "content", e.target.value); }} />
+              </PK_Field>
+            ) : null}
+            {source.kind === "url" ? (
+              <PK_Grid cols={2}>
+                {part(i, source, "url", "URL", "url", { placeholder: "https://" })}
+                {part(i, source, "sha256", "SHA-256", "sha256", { nullWhenBlank: true })}
+              </PK_Grid>
+            ) : null}
+            {source.kind === "document" ? (
+              <PK_Grid cols={2}>
+                {part(i, source, "collection_id", "Collection id", "collection")}
+                {part(i, source, "document_id", "Document id", "document")}
+              </PK_Grid>
+            ) : null}
+            {source.kind === "secret" ? <PK_Grid cols={2}>{part(i, source, "name", "Secret name", "secret")}</PK_Grid> : null}
+            {ro ? null : (
+              <div>
+                <Btn kind="ghost" size="sm" data-testid={t + "-remove:" + i}
+                  onClick={function () { props.onChange(files.filter(function (_f, j) { return j !== i; })); }}>Remove</Btn>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {props.error ? <div className="field-help" role="alert" data-testid={t + "-error"} style={{ color: "var(--red)" }}>{props.error}</div> : null}
+      {ro ? null : (
+        <div>
+          <button type="button" className="pk-rowtable-add" data-testid={t + "-add"}
+            onClick={function () { props.onChange(files.concat([{ path: "", source: WT_blankSource("inline"), mode: null }])); }}>+ Add</button>
+        </div>
+      )}
+    </PK_Section>
+  );
+}
+
+// A kit row table across its grid row, with its help line and its error under it (where a PK_Field puts them).
+function WT_TableWithNotes(props) {
+  var table = props.table;
+  return (
+    <div className="pk-span-full">
+      <PK_RowTable {...table} />
+      {props.help ? <div className="field-help">{props.help}</div> : null}
+      {props.error ? (
+        <div className="field-help" role="alert" data-testid={table.testid + "-error"} style={{ color: "var(--red)" }}>{props.error}</div>
+      ) : null}
+    </div>
+  );
+}
+
+// The form keys inside each fold: a refusal of one of them opens its fold, so no error is drawn where nobody can see it.
+var WT_FOLD_KEYS = {
+  k8sMore: ["command", "args", "workdir", "extraVolumesJson", "extraVolumeMountsJson", "podSharePid", "podDns", "podRestart", "podGrace"],
+  dockerMore: ["user", "workdir", "extraMountRows"],
+  advanced: ["statePath", "tmpPath", "strict"],
+};
+
+var WT_NOTE_STYLE = { padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8 };
+
+// The one overlay that creates, edits and shows a workspace template. Mode: create; else view for the built-in template, and for a non-admin on a template
+// that holds admin-only settings (the server would answer their save or delete with 403); else edit. A row comes from props.row (a card) or is read by
+// props.templateId (the overlay address workspaces:templates:<id>). The save writes only what changed onto the row it opened (WT_templateBody).
+function WT_TemplateOverlay(props) {
+  var con = NV_useConsole();
+  var isAdmin = con.role === "admin";
+  var api = window.primerApi;
+  var apiFetch = api.apiFetch;
+  var creating = !!props.create;
+  var given = props.row || null;
+  var id = creating ? null : props.templateId || (given && given.id) || null;
+
+  var choicesRes = api.useResource("ws:provider-choices", function (signal) {
+    return apiFetch("GET", "/workspace_providers/_choices", null, { signal: signal });
+  }, { pollMs: 0 });
+  var rowRes = api.useResource(!creating && !given && id ? "ws:template:" + id : null, function (signal) {
+    return apiFetch("GET", "/workspace_templates/" + encodeURIComponent(id), null, { signal: signal });
+  }, { pollMs: 0 });
+  var choices = (choicesRes.data && choicesRes.data.items) || [];
+  var row = creating ? null : given || rowRes.data || null;
+
+  // {form, initial, base}: the form, the form as it was opened (null on create) and the row it was opened from.
+  var stState = React.useState(null);
+  var st = stState[0];
+  var setSt = stState[1];
+  React.useEffect(function () {
+    if (st) return;
+    if (creating) {
+      if (choices.length) setSt({ form: WT_emptyForm(choices[0]), initial: null, base: null });
+      return;
+    }
+    if (row) setSt({ form: WT_formFromTemplate(row), initial: WT_formFromTemplate(row), base: row });
+  }, [creating, row, choices.length]);
+
+  var serverState = React.useState({ fields: {}, general: null });
+  var server = serverState[0];
+  var setServer = serverState[1];
+  var attemptedState = React.useState(false);
+  var foldState = React.useState({ k8sMore: 0, dockerMore: 0, advanced: 0 });
+  var folds = foldState[0];
+
+  var form = st ? st.form : null;
+  var kind = form ? form.kind : (row ? WT_kindOf(row) : null);
+  var held = row ? WT_heldAdminFields(row) : [];
+  var mode = creating ? "create" : row && (WT_isReserved(row) || (!isAdmin && held.length)) ? "view" : "edit";
+  var view = mode === "view";
+  var live = attemptedState[0] && form && !view ? WT_validateForm(form, { isAdmin: isAdmin }) : {};
+
+  function fieldError(key) {
+    return server.fields[key] || live[key] || null;
+  }
+  function openFoldsFor(keys) {
+    foldState[1](function (f) {
+      var next = Object.assign({}, f);
+      Object.keys(WT_FOLD_KEYS).forEach(function (fold) {
+        if (keys.some(function (k) { return WT_FOLD_KEYS[fold].indexOf(k) >= 0; })) next[fold] = f[fold] + 1;
+      });
+      return next;
+    });
+  }
+  function set(key, value) {
+    setSt(function (s) {
+      var next = Object.assign({}, s.form);
+      next[key] = value;
+      return Object.assign({}, s, { form: next });
+    });
+    setServer(function (e) {
+      if (!e.fields[key]) return e;
+      var fields = Object.assign({}, e.fields);
+      delete fields[key];
+      return { fields: fields, general: e.general };
+    });
+  }
+  function choiceFor(providerId) {
+    return choices.filter(function (c) { return c.id === providerId; })[0] || null;
+  }
+  // A refusal's field, when this form draws it: a key of the form's kind (the id on create), and never a stored resources.* of a template whose
+  // size lives in its backend (Docker reads backend.cpu_cores; a Docker template's resources has no field here).
+  function keyForLoc(loc) {
+    var key = WT_fieldKeyForLoc(loc);
+    if (!key) return null;
+    if (WT_cleanLoc(loc)[0] === "resources" && kind !== "kubernetes") return null;
+    return key === "id" || WT_formKeys(kind).indexOf(key) >= 0 ? key : null;
+  }
+
+  var mutation = api.useMutation(function (body) {
+    if (creating) return apiFetch("POST", "/workspace_templates", body);
+    return apiFetch("PUT", "/workspace_templates/" + encodeURIComponent(st.base.id), body);
+  }, {
+    invalidates: WT_TEMPLATE_KEYS.concat(id ? ["ws:template:" + id] : []),
+    onSuccess: function (saved) {
+      var savedId = (saved && saved.id) || id;
+      con.toast((creating ? "Template created: " : "Template saved: ") + savedId);
+      if (props.onSaved) props.onSaved(saved);
+      props.onClose();
+    },
+    onError: function (err) {
+      var split = WT_splitErrors(err, keyForLoc, { withPath: true });
+      setServer(split);
+      openFoldsFor(Object.keys(split.fields));
+    },
+  });
+  var saving = !!mutation.loading;
+
+  function save() {
+    if (!st || view) return;
+    var errs = WT_validateForm(st.form, { isAdmin: isAdmin });
+    attemptedState[1](true);
+    setServer({ fields: {}, general: null });
+    if (Object.keys(errs).length) {
+      openFoldsFor(Object.keys(errs));
+      return;
+    }
+    mutation.mutate(WT_templateBody(st.base, st.form, st.initial)).catch(function () { /* onError shows it */ });
+  }
+
+  var title = creating ? "New workspace template" : mode === "edit" && st ? "Edit workspace template" : "Workspace template";
+  var close = <Btn kind="ghost" data-testid="wt-close" onClick={props.onClose}>Close</Btn>;
+
+  // The states before there is a form.
+  var state = null;
+  if (!st) {
+    if (creating && choicesRes.error && !choices.length) {
+      state = (
+        <div data-testid="wt-providers-error">
+          <Banner kind="error" title="Couldn't load the workspace providers." detail={api.readRefusal(choicesRes.error).message}
+            actions={<Btn size="sm" icon="refresh" data-testid="wt-providers-retry" onClick={choicesRes.refetch}>Retry</Btn>} />
+        </div>
+      );
+    } else if (creating && choicesRes.data && !choices.length) {
+      state = <div className="field-help" data-testid="wt-no-providers" style={WT_NOTE_STYLE}>No workspace providers yet. An admin registers one under Providers › Workspace.</div>;
+    } else if (!creating && rowRes.error && rowRes.error.status === 404) {
+      state = <div className="field-help" data-testid="wt-gone" style={WT_NOTE_STYLE}>This template no longer exists.</div>;
+    } else if (!creating && rowRes.error) {
+      state = (
+        <div data-testid="wt-load-error">
+          <Banner kind="error" title="Couldn't load the template." detail={api.readRefusal(rowRes.error).message}
+            actions={<Btn size="sm" icon="refresh" data-testid="wt-load-retry" onClick={rowRes.refetch}>Retry</Btn>} />
+        </div>
+      );
+    } else {
+      state = <div className="nv-bind-empty" role="status" data-testid="wt-overlay-loading">Loading the template…</div>;
+    }
+    return (
+      <PK_FormOverlay title={title} testid="wt-overlay" onClose={props.onClose} footer={{ right: close }}>
+        {state}
+      </PK_FormOverlay>
+    );
+  }
+
+  var options = choices.map(function (c) { return { value: c.id, label: c.id + " · " + c.label, iconPath: WT_KIND_ICONS[c.kind] }; });
+  if (!choiceFor(form.provider_id)) {
+    options = options.concat([{ value: form.provider_id, label: form.provider_id + " · " + (WT_KIND_LABELS[form.kind] || form.kind), iconPath: WT_KIND_ICONS[form.kind] }]);
+  }
+  var selector = {
+    prefix: "Runs on", value: form.provider_id, options: options, locked: !creating, testid: "ws-template-provider",
+    onChange: function (providerId) {
+      var next = choiceFor(providerId);
+      if (!next) return;
+      setSt(function (s) { return Object.assign({}, s, { form: WT_formForChoice(s.form, next, choiceFor(s.form.provider_id)) }); });
+      setServer({ fields: {}, general: null });
+    },
+  };
+  var footer = view ? { right: close } : {
+    left: <Btn kind="ghost" data-testid="wt-cancel" blocked={saving} onClick={props.onClose}>Cancel</Btn>,
+    right: (
+      <Btn kind="primary" data-testid="wt-save" busy={saving} onClick={save}>
+        {saving ? (creating ? "Creating…" : "Saving…") : (creating ? "Create" : "Save")}
+      </Btn>
+    ),
+  };
+
+  var ro = view || undefined;
+  var adminOff = !isAdmin || undefined;
+  function input(key, testid, extra) {
+    return (
+      <input className="input" data-testid={testid} value={form[key]} readOnly={ro} {...(extra || {})}
+        onChange={function (e) { set(key, e.target.value); }} />
+    );
+  }
+  function area(key, testid, extra) {
+    return (
+      <textarea className="input mono" rows={3} data-testid={testid} value={form[key]} readOnly={ro} style={{ width: "100%" }} {...(extra || {})}
+        onChange={function (e) { set(key, e.target.value); }} />
+    );
+  }
+  function segmented(key, testid, label, choicesOf, disabled) {
+    return (
+      <PK_Segmented testid={testid} ariaLabel={label} value={form[key]} disabled={view || !!disabled}
+        options={choicesOf.map(function (c) { return { value: c[0], label: c[1] }; })} onChange={function (v) { set(key, v); }} />
+    );
+  }
+  var adminNote = isAdmin ? <div className="field-help" data-testid="ws-template-admin-only-note">{WT_ADMIN_ONLY_NOTE}</div> : null;
+  var sizeFields = (
+    <React.Fragment>
+      <PK_Field label="CPU cores" error={fieldError("cpu")}>{input("cpu", "wt-cpu", { inputMode: "decimal", placeholder: "No limit" })}</PK_Field>
+      <PK_Field label="Memory (GiB)" error={fieldError("memoryGiB")}>{input("memoryGiB", "wt-memory", { inputMode: "decimal", placeholder: "No limit" })}</PK_Field>
+    </React.Fragment>
+  );
+
+  var section = null;
+  if (kind === "kubernetes") {
+    section = (
+      <PK_Section title="KUBERNETES" cols={3} testid="wt-k8s">
+        <PK_Field label="Image" span="full" required help="Must include the primer workspace runtime" error={fieldError("image")}>
+          {input("image", "ws-template-image", { className: "input mono", "aria-required": "true" })}
+        </PK_Field>
+        {sizeFields}
+        <PK_Field label="Disk (GiB)" error={fieldError("diskGiB")}>{input("diskGiB", "wt-disk", { inputMode: "decimal" })}</PK_Field>
+        <PK_Field label="Storage class" error={fieldError("storageClass")}>{input("storageClass", "wt-storage-class", { placeholder: "Cluster default" })}</PK_Field>
+        <PK_Field label="Disk access" error={fieldError("diskAccess")}>
+          {segmented("diskAccess", "wt-disk-access", "Disk access", [["one", "One node"], ["many", "Many nodes"]])}
+        </PK_Field>
+        <PK_Field label="Image pull policy" error={fieldError("pullPolicy")}>
+          {segmented("pullPolicy", "wt-pull-policy", "Image pull policy", [["", "Default"], ["Always", "Always"], ["IfNotPresent", "IfNotPresent"], ["Never", "Never"]])}
+        </PK_Field>
+        <PK_Field label="GPU count" error={fieldError("gpuCount")}>{input("gpuCount", "wt-gpu-count", { inputMode: "numeric", placeholder: "None" })}</PK_Field>
+        <PK_Field label="GPU resource" help={isAdmin ? undefined : "Admin only"} error={fieldError("gpuResource")}>
+          {input("gpuResource", "wt-gpu-resource", { className: "input mono", placeholder: WT_DEFAULT_GPU_RESOURCE, disabled: adminOff })}
+        </PK_Field>
+        <PK_Field label="Service account" help="Admin only" error={fieldError("serviceAccount")}>
+          {input("serviceAccount", "wt-service-account", { className: "input mono", disabled: adminOff })}
+        </PK_Field>
+        <WT_TableWithNotes error={fieldError("nodeSelectorRows")} table={{
+          title: "NODE SELECTOR", testid: "wt-node-selector", addLabel: "+ Add", readOnly: view, rows: form.nodeSelectorRows,
+          columns: [{ key: "key", label: "Label", input: "text" }, { key: "value", label: "Value", input: "text" }],
+          onChange: function (rows) { set("nodeSelectorRows", rows); },
+        }} />
+        <WT_TableWithNotes help="Admin only" error={fieldError("tolerationRows")} table={{
+          title: "TOLERATIONS", testid: "wt-tolerations", addLabel: "+ Add", readOnly: view || !isAdmin, rows: form.tolerationRows,
+          columns: [
+            { key: "key", label: "Key", input: "text" }, { key: "operator", label: "Operator", input: "select", options: ["Equal", "Exists"] },
+            { key: "value", label: "Value", input: "text" },
+            { key: "effect", label: "Effect", input: "select", options: ["Any", "NoSchedule", "PreferNoSchedule", "NoExecute"] },
+          ],
+          onChange: function (rows) { set("tolerationRows", rows); },
+        }} />
+        <PK_Fold key={"k8s-more-" + folds.k8sMore} open={folds.k8sMore > 0} label="More" testid="wt-k8s-more">
+          <div className="col" style={{ gap: 12 }}>
+            {adminNote}
+            <PK_Grid cols={2}>
+              <PK_Field label="Command" error={fieldError("command")}
+                help="One item per line. The default starts the primer workspace runtime; keep it unless your image starts it another way.">
+                {area("command", "wt-command")}
+              </PK_Field>
+              <PK_Field label="Arguments" help="One item per line" error={fieldError("args")}>{area("args", "wt-args")}</PK_Field>
+              <PK_Field label="Working directory" error={fieldError("workdir")}>{input("workdir", "wt-workdir", { className: "input mono", placeholder: "/workspace" })}</PK_Field>
+            </PK_Grid>
+            <PK_Field label="Extra volumes" help="Admin only. A JSON list of emptyDir or configMap volumes only." error={fieldError("extraVolumesJson")}>
+              {area("extraVolumesJson", "wt-extra-volumes", { disabled: adminOff, placeholder: '[{"name": "cache", "emptyDir": {}}]' })}
+            </PK_Field>
+            <PK_Field label="Volume mounts" help="Admin only. A JSON list of name, mountPath, readOnly, subPath." error={fieldError("extraVolumeMountsJson")}>
+              {area("extraVolumeMountsJson", "wt-extra-volume-mounts", { disabled: adminOff, placeholder: '[{"name": "cache", "mountPath": "/cache"}]' })}
+            </PK_Field>
+            <PK_Grid cols={2}>
+              <PK_Field label="Share process namespace" help="Admin only" error={fieldError("podSharePid")}>
+                {segmented("podSharePid", "wt-pod-share-pid", "Share process namespace", [["", "Not set"], ["on", "On"], ["off", "Off"]], !isAdmin)}
+              </PK_Field>
+              <PK_Field label="DNS policy" help="Admin only" error={fieldError("podDns")}>
+                <select className="select" data-testid="wt-pod-dns" value={form.podDns} disabled={view || !isAdmin || undefined}
+                  onChange={function (e) { set("podDns", e.target.value); }}>
+                  {[["", "Not set"], ["ClusterFirst", "ClusterFirst"], ["ClusterFirstWithHostNet", "ClusterFirstWithHostNet"], ["Default", "Default"], ["None", "None"]]
+                    .map(function (o) { return <option key={o[0]} value={o[0]}>{o[1]}</option>; })}
+                </select>
+              </PK_Field>
+              <PK_Field label="Restart policy" help="Admin only" error={fieldError("podRestart")}>
+                {segmented("podRestart", "wt-pod-restart", "Restart policy", [["", "Not set"], ["Always", "Always"], ["OnFailure", "OnFailure"], ["Never", "Never"]], !isAdmin)}
+              </PK_Field>
+              <PK_Field label="Termination grace period (s)" help="Admin only" error={fieldError("podGrace")}>
+                {input("podGrace", "wt-pod-grace", { inputMode: "numeric", disabled: adminOff })}
+              </PK_Field>
+            </PK_Grid>
+          </div>
+        </PK_Fold>
+      </PK_Section>
+    );
+  } else if (kind === "container") {
+    section = (
+      <PK_Section title="DOCKER" cols={3} testid="wt-docker">
+        <PK_Field label="Image" span="full" required error={fieldError("image")}
+          help="The built-in runtime image is filled in. A custom image must contain the primer workspace runtime.">
+          {input("image", "ws-template-image", { className: "input mono", "aria-required": "true" })}
+        </PK_Field>
+        {sizeFields}
+        <PK_Fold key={"docker-more-" + folds.dockerMore} open={folds.dockerMore > 0} label="More" testid="wt-docker-more">
+          <div className="col" style={{ gap: 12 }}>
+            {adminNote}
+            <PK_Grid cols={2}>
+              <PK_Field label="User" error={fieldError("user")}>{input("user", "wt-user", { className: "input mono", placeholder: "uid:gid" })}</PK_Field>
+              <PK_Field label="Working directory" error={fieldError("workdir")}>{input("workdir", "wt-workdir", { className: "input mono", placeholder: "/workspace" })}</PK_Field>
+            </PK_Grid>
+            <WT_TableWithNotes help="Admin only" error={fieldError("extraMountRows")} table={{
+              title: "EXTRA MOUNTS", testid: "wt-extra-mounts", addLabel: "+ Add", readOnly: view || !isAdmin, rows: form.extraMountRows,
+              columns: [
+                { key: "host", label: "Host path", input: "text" }, { key: "container", label: "Container path", input: "text" },
+                { key: "readonly", label: "Read only", input: "select", options: ["no", "yes"] },
+              ],
+              onChange: function (rows) { set("extraMountRows", rows); },
+            }} />
+          </div>
+        </PK_Fold>
+      </PK_Section>
+    );
+  } else {
+    section = (
+      <div className="field-help" data-testid="wt-local" style={WT_NOTE_STYLE}>
+        Runs on the server itself, in the provider's root folder. Local workspaces have no size settings.
+      </div>
+    );
+  }
+
+  var note = null;
+  if (view) {
+    note = WT_isReserved(row)
+      ? "Built in: this template ships with primer and cannot be changed."
+      : "This template holds admin-only settings (" + held.join(", ") + "). Only an admin can change or delete it.";
+  }
+
+  return (
+    <PK_FormOverlay title={title} testid="wt-overlay" onClose={props.onClose} selector={selector} footer={footer}>
+      {note ? <div className="field-help" data-testid="wt-readonly-note" style={WT_NOTE_STYLE}>{note}</div> : null}
+      {mode === "edit" ? (
+        <div className="field-help" data-testid="wt-snapshot-note">
+          Changes apply to workspaces made from now on; existing workspaces keep the copy of the template they were made from.
+        </div>
+      ) : null}
+      <PK_Grid cols={2}>
+        <PK_Field label="Id" help={creating ? "Made for you if left empty" : undefined} error={fieldError("id")}>
+          {input("id", "ws-template-id", { className: "input mono", disabled: !creating || undefined, placeholder: creating ? "python-dev" : undefined })}
+        </PK_Field>
+        <PK_Field label="Description" required help="Required; shown in the template picker" error={fieldError("description")}>
+          {input("description", "ws-template-description", { "aria-required": "true" })}
+        </PK_Field>
+      </PK_Grid>
+      {section}
+      <WT_FilesEditor value={form.files} isAdmin={isAdmin} readOnly={view} testid="wt-files" error={fieldError("files")}
+        onChange={function (files) { set("files", files); }} />
+      <WT_TableWithNotes help="Values are hidden; a saved value is kept unless you replace it" error={fieldError("envRows")} table={{
+        title: "ENVIRONMENT", testid: "wt-env", addLabel: "+ Add", readOnly: view, rows: form.envRows,
+        columns: [{ key: "key", label: "Name", input: "text" }, { key: "value", label: "Value", input: "secret" }],
+        onChange: function (rows) { set("envRows", rows); },
+      }} />
+      <PK_Field label="Start-up commands" help="One per line; run once when a workspace is created" error={fieldError("init")}>
+        {area("init", "wt-init", { rows: 4 })}
+      </PK_Field>
+      <PK_Fold key={"advanced-" + folds.advanced} open={folds.advanced > 0} label="Advanced" testid="wt-advanced">
+        <PK_Grid cols={2}>
+          <PK_Field label="State folder" help="Relative to the workspace root" error={fieldError("statePath")}>
+            {input("statePath", "wt-state-path", { className: "input mono" })}
+          </PK_Field>
+          <PK_Field label="Temp folder" help="Relative to the workspace root" error={fieldError("tmpPath")}>
+            {input("tmpPath", "wt-tmp-path", { className: "input mono" })}
+          </PK_Field>
+          <PK_Field label="Strict write locking" span="full" error={fieldError("strict")}>
+            {segmented("strict", "ws-template-strict-write-locking", "Strict write locking", [["off", "Per folder"], ["on", "Whole workspace"]])}
+          </PK_Field>
+        </PK_Grid>
+      </PK_Fold>
+      {server.general ? <div className="nv-form-error" role="alert" data-testid="wt-error">{server.general}</div> : null}
+    </PK_FormOverlay>
+  );
+}
+
+window.WT_FilesEditor = WT_FilesEditor;
+window.WT_TemplateOverlay = WT_TemplateOverlay;
+
 // ---- ContainerMountEditor: list of {host, container, readonly} rows.
 // Matches the ContainerMount pydantic model used by ContainerTemplateConfig
 // (host path → container mount point, optional read-only flag).
