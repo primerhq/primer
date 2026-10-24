@@ -425,3 +425,63 @@ async def test_a_put_whose_provider_was_deleted_meanwhile_leaves_no_file(tmp_pat
         assert (await sp.get_storage(ArtifactLocation).list(OffsetPage(length=10))).total == 0
     finally:
         await sp.aclose()
+
+
+async def test_a_cancelled_put_leaves_no_file_and_no_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #890, item 2: a put cancelled while its thread is writing (a client that went away) never hands its id to anyone, and the thread
+    cannot be stopped, so the files it goes on to write must be removed once it finishes; the routing store writes no record."""
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "a.sqlite"))
+    await sp.initialize()
+    try:
+        store = await _ready(tmp_path)
+        await sp.get_storage(ArtifactStorageProvider).create(
+            ArtifactStorageProvider(id="fs-1", provider="filesystem", config={"root": str(tmp_path / "root")}),
+        )
+        await sp.get_storage(ActiveArtifactStorageConfig).create(
+            ActiveArtifactStorageConfig(id=ACTIVE_ARTIFACT_STORAGE_CONFIG_ID, provider_id="fs-1"),
+        )
+
+        async def resolve(provider_id: str):
+            return store
+
+        routing = RoutingArtifactStorage(
+            resolve=resolve,
+            fallback=None,  # type: ignore[arg-type]  # never reached: the active store is resolved
+            locations=sp.get_storage(ArtifactLocation),
+            active_config=sp.get_storage(ActiveArtifactStorageConfig),
+            providers=sp.get_storage(ArtifactStorageProvider),
+        )
+        entered, release, done = threading.Event(), threading.Event(), threading.Event()
+        real = filesystem._write_files
+
+        def held(*args, **kwargs):
+            entered.set()
+            release.wait(10)
+            try:
+                return real(*args, **kwargs)
+            finally:
+                done.set()
+
+        monkeypatch.setattr(filesystem, "_write_files", held)
+        put = asyncio.create_task(routing.put(data=b"orphan?", mime_type="text/plain"))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        put.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await put
+        release.set()
+        await asyncio.to_thread(done.wait, 10)
+        for _ in range(100):
+            if not _files_under(tmp_path / "root"):
+                break
+            await asyncio.sleep(0.02)
+
+        assert _files_under(tmp_path / "root") == [], "the files the thread wrote after the cancel are removed"
+        assert (await sp.get_storage(ArtifactLocation).list(OffsetPage(length=10))).total == 0
+        assert not filesystem._PENDING_CLEANUPS, "the cleanup finished and let go of its task"
+
+        monkeypatch.setattr(filesystem, "_write_files", real)
+        aid = await routing.put(data=b"kept", mime_type="text/plain")
+        assert (await routing.get(aid)).data == b"kept", "a put that is not cancelled still round-trips"
+    finally:
+        await sp.aclose()

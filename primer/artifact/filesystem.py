@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
+import functools
 import json
 import logging
 import os
@@ -48,6 +49,11 @@ _SIDECAR_SUFFIX = ".json"
 # O_NONBLOCK keeps an open of a planted FIFO from hanging the thread; it changes nothing for a regular file.
 _OPEN_READ = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 _OPEN_NEW = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+#: Cleanups of puts cancelled while their write was running. The event loop keeps only weak references to tasks, so they are held here until
+#: they finish.
+_PENDING_CLEANUPS: set[asyncio.Task[None]] = set()
 
 
 class UnsafeArtifactPath(ValueError):
@@ -231,6 +237,12 @@ def _remove_files(root: str, path: Path) -> None:
             os.unlink(target)
 
 
+def _cleanup_done(task: asyncio.Task[None]) -> None:
+    _PENDING_CLEANUPS.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("filesystem artifact store: removing the files of a cancelled put failed: %s", task.exception())
+
+
 class FilesystemArtifactStorage(ArtifactStorage):
     """Artifacts as files under ``root``, a folder shared by every server pod. Its ids are not database ids, so the routing store records them."""
 
@@ -263,9 +275,24 @@ class FilesystemArtifactStorage(ArtifactStorage):
 
     async def put(self, *, data: bytes, mime_type: str, filename: str | None = None) -> str:
         artifact_id = new_backend_artifact_id()
+        path = self.path_for(artifact_id)
         sidecar = json.dumps({"mime_type": mime_type, "filename": filename, "size": len(data)}, ensure_ascii=False).encode("utf-8")
-        await asyncio.to_thread(_write_files, self._root, self.path_for(artifact_id), data, sidecar)
+        write = asyncio.ensure_future(asyncio.to_thread(_write_files, self._root, path, data, sidecar))
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            # The caller went away (a client that disconnected mid-upload). The thread cannot be stopped and may still write both files, and no
+            # one will ever be handed this id: once the thread finishes, remove whatever it wrote.
+            write.add_done_callback(functools.partial(self._remove_after_cancel, path))
+            raise
         return artifact_id
+
+    def _remove_after_cancel(self, path: Path, write: asyncio.Future[None]) -> None:
+        if not write.cancelled():
+            write.exception()   # retrieve it: no one is waiting for this write any more
+        cleanup = asyncio.ensure_future(asyncio.to_thread(_remove_files, self._root, path))
+        _PENDING_CLEANUPS.add(cleanup)
+        cleanup.add_done_callback(_cleanup_done)
 
     async def get(self, artifact_id: str) -> ArtifactBlob | None:
         path = self._path_or_none(artifact_id, "read")

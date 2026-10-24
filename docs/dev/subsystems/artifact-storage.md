@@ -84,7 +84,9 @@ record second, so a delete that fails in the store keeps the record and can be r
 **Filesystem put, get and delete.** A put writes the bytes, then the sidecar, each to a temporary file that is synced and renamed into
 place; a sidecar that fails removes the bytes again, so a sidecar is never seen without its bytes. A get reads the sidecar, then the
 bytes, and answers `None` when either is missing. A delete removes the sidecar, then the bytes; missing files are fine. Every file
-operation runs in a worker thread (`asyncio.to_thread`), so a slow or hung volume never blocks the event loop.
+operation runs in a worker thread (`asyncio.to_thread`), so a slow or hung volume never blocks the event loop. A put cancelled while its
+thread is writing (a client that went away) cannot stop the thread and never hands out its id, so the write is shielded and, once the thread
+finishes, a cleanup task removes both files (the module holds the task until it is done).
 
 **Preparing a filesystem root** (`prepare_artifact_provider`, run LAST by the REST create and update hooks and the system tool pre-create
 and pre-update, and by the draft `_test` as its `prepare` step): create the folder when missing, check that it takes a write, and write
