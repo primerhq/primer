@@ -9,7 +9,7 @@ A session is one agent or graph working inside a workspace. It has a durable row
 
 ## Concepts
 - **The row.** Every session read serves the same row: `id` (`sess-<hex>`), `workspace_id`, `binding` (`{"kind": "agent", "agent_id": ...}` or `{"kind": "graph", "graph_id": ...}`), `status`, `session_state`, `turn_status`, `ended_reason`, `last_turn_error`, `parked_event_key`, `parent_session_id` and `initiated_by` (who started it).
-- **`status`** is the stored lifecycle: `created` (the row exists, nothing has run), `running` (a turn is armed, running, or parked on a yielding tool), `waiting` (alive and idle between turns), `paused` (a person paused it) and `ended` (terminal).
+- **`status`** is the stored lifecycle: `created` (the row exists, nothing has run), `running` (a turn is armed, running, or parked on a yielding tool), `waiting` (alive and idle between turns), `paused` (a person or an agent paused it) and `ended` (terminal).
 - **`session_state`** is one value derived on every read. Use it to answer "is it working right now":
 
 | `session_state` | meaning |
