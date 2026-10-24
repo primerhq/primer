@@ -77,6 +77,7 @@ from primer.model.chat import (
 )
 from primer.model.except_ import ConfigError
 from primer.model.graph import (
+    FAILED_ENDED_REASONS,
     FanOutSpec,
     GraphContext,
     NodeOutput,
@@ -696,7 +697,7 @@ class _NodeDispatchMixin:
         # The raise surfaces as a FAILED node via _NodeDone(error=...) and
         # honors a fan-out spec's on_failure policy.
         child_ended = getattr(sub_executor, "_last_ended_reason", None)
-        if sub_error is not None or child_ended == "failed":
+        if sub_error is not None or child_ended in FAILED_ENDED_REASONS:
             detail = (
                 sub_error.message
                 if sub_error is not None
