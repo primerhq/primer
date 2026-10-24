@@ -1,7 +1,7 @@
 """Journey: the Platform pages' list filters and the plain create-form inputs have names (console review C-003, found by the runtime sweep of the main surfaces).
 
 A filter box with only a placeholder, and a filter ``<select>`` whose only text is its first option, are unnamed edit fields and combo boxes to a screen reader. This opens, in one browser and one
-after the other, each Platform list page that has a filter, the create forms whose inputs had a placeholder and nothing else (workspaces, collections, the agent form's tool picker), the speech
+after the other, each Platform list page that has a filter, the create forms whose inputs had a placeholder and nothing else (collections, the agent form's tool picker), the speech
 settings, the New workspace overlay and the Activity overlay, and the Platform view (its nav rows and the service card grid, filtered to one seeded service by the id the services card shows as its name, so the assert
 is not a race with the 12-card page size), and fails on any visible input, select, textarea or button without a name (``tests/ui_e2e/_a11y.py``). The create forms are swept
 below their header, so the dialog's close button (its own PR) is not this journey's.
@@ -23,7 +23,7 @@ pytestmark = smk("SMK-UI-06", status="partial")
 
 _OVERLAY = '[data-testid^="nv-overlay:"]'
 _LIST_PAGES = [
-    "agents", "graphs", "toolsets", "services", "workspaces", "channels", "channels/providers", "channels/rules", "knowledge/collections",
+    "agents", "graphs", "toolsets", "services", "channels", "channels/providers", "channels/rules", "knowledge/collections",
     "providers/llm", "providers/stt", "providers/tts", "workspaces/providers",
 ]
 
@@ -53,7 +53,8 @@ def test_the_platform_list_filters_and_plain_create_inputs_have_names(base_url: 
         check(f"list page {route}", _OVERLAY)
 
     # the create forms whose inputs were placeholder-only (swept below the dialog's header)
-    for route, button in (("workspaces", "New workspace"), ("knowledge/collections", "New collection"), ("agents", "New agent")):
+    # The Workspaces page and its create form are gone (platform revamp 08, Task 14): the new-workspace dialog is swept as an overlay below.
+    for route, button in (("knowledge/collections", "New collection"), ("agents", "New agent")):
         open_legacy_route(page, console_url, route)
         new = page.locator(_OVERLAY).get_by_role("button", name=re.compile(rf"^(\+ )?{button}\b")).first
         expect(new).to_be_visible(timeout=15_000)

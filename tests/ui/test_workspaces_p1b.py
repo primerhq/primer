@@ -1,4 +1,4 @@
-"""Platform wave P1b item 6/7: the new-workspace dialog and the Workspaces list's card anatomy (Rename-not-Delete footer).
+"""Platform wave P1b item 6/7: the new-workspace dialog, and the Workspaces list page that item 7 gave a card grid.
 
 Static-source checks only (the tests/ui suite convention).
 
@@ -7,6 +7,10 @@ revamp 08, Task 13 (design 14.3) replaced it with ONE dialog, the console's ``NV
 item 6 pins below read that dialog now and pin its design instead: the template choice is the kit's searchable dropdown over every template, not rows
 and not a native select; the extra environment is a kit row table whose values are secret-typed; and the body is built by ``NV_nwBody``. The
 dialog's behaviour is pinned by ``tests/ui/test_new_workspace_dialog.py`` and ``tests/ui/test_nv_new_workspace_helpers.py``.
+
+Item 7 pinned the Workspaces list page's cards (``WorkspacesPage``: a card grid, served facts, Open and Rename). Platform revamp 08, Task 14 removed the page
+by the user's decision C1 (design 14.1: the studio rail lists the workspaces), so the item 7 pins become one: the page is gone, and its one action no other
+surface had, Rename, is on the workspace's Settings, Config tab (``tests/ui/test_workspace_rename_in_settings.py``).
 """
 
 from __future__ import annotations
@@ -28,13 +32,6 @@ def _modal_src() -> str:
     src = OVERLAYS.read_text(encoding="utf-8")
     start = src.index("// ---- NV_nw pure helpers")
     end = src.index("// The management-surface mount table", src.index("function NV_CreateWorkspaceOverlay("))
-    return src[start:end]
-
-
-def _list_src() -> str:
-    src = _src()
-    start = src.index("function WorkspacesPage(")
-    end = src.index("\nfunction ", start + 1)
     return src[start:end]
 
 
@@ -96,35 +93,15 @@ def test_overrides_are_only_sent_when_a_key_is_present() -> None:
     assert "if (Object.keys(overrides).length) body.overrides = overrides;" in modal
 
 
-# ---- Item 7: card anatomy --------------------------------------------------
+# ---- Item 7: the list page -----------------------------------------------
 
 
-def test_list_is_a_card_grid() -> None:
-    list_src = _list_src()
-    assert 'data-testid="workspaces-grid"' in list_src
-    assert "pc-card-grid" in list_src
-
-
-def test_card_facts_use_only_confirmed_served_fields() -> None:
-    """created_at and terminal_user_access were confirmed live via a
-    GET /v1/workspaces?limit=1 - no invented "sessions count" fact
-    (that field is not served)."""
-    list_src = _list_src()
-    assert "w.created_at" in list_src
-    assert "w.terminal_user_access" in list_src
-    assert "sessions" not in list_src.lower().split("pc-card-facts")[1].split(
-        "pc-card-footer"
-    )[0]
-
-
-def test_card_footer_is_open_and_rename_not_delete() -> None:
-    """Judgment call: destroy already lives behind WS_DestroyTab's own
-    guarded confirmation flow in the detail view; a card-level
-    quick-delete would bypass that guard rather than reuse it."""
-    list_src = _list_src()
-    assert 'data-testid={`workspace-card-open-${w.id}`}' in list_src
-    assert 'data-testid={`workspace-card-rename-${w.id}`}' in list_src
-    assert "workspace-card-delete-" not in list_src
+def test_the_workspaces_list_page_is_gone() -> None:
+    """The user's decision C1 (design 14.1): the card grid, its filters and pager and its create modal left with the page; rename moved to Settings."""
+    src = _src()
+    for gone in ("function WorkspacesPage(", "window.WorkspacesPage", 'data-testid="workspaces-grid"', "workspace-card-open-", "workspace-card-rename-"):
+        assert gone not in src, gone
+    assert 'data-testid="ws-config-rename"' in src, "rename is on the Config tab"
 
 
 def test_bundle_transpiles_with_workspaces_p1b() -> None:

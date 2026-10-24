@@ -165,8 +165,8 @@ def test_multi_page_operator_journey_no_llm(
 
     Pages traversed (in order):
       1. /             — dashboard (initial nav from conftest)
-      2. /workspaces   — list, seeded workspace visible
-      3. /workspaces/{id} — detail
+      2. the rail      - seeded workspace listed (the Workspaces page is gone)
+      3. #/w/{id}      - the workspace entered from its rail row
       4. /agents       — list, seeded agent visible
       5. /agents/{id}  — detail
       6. /graphs       — list, seeded graph visible
@@ -183,26 +183,18 @@ def test_multi_page_operator_journey_no_llm(
             state="visible", timeout=10_000,
         )
 
-        # ----- 2. Workspaces list
-        open_legacy_route(page, console_url, "workspaces")
-        page.locator("h1.page-title").get_by_text(
-            "Workspaces", exact=False,
-        ).first.wait_for(state="visible", timeout=10_000)
-        # RETARGET (platform wave P1b item 7): the workspaces list moved
-        # from a <table>/<tr> to a .pc-card-grid of cards
-        # (data-testid="workspace-card-<id>") - missed in that wave's
-        # own e2e sweep since "tr:has-text" doesn't match the "<tr"/
-        # "tbody" substrings that sweep grepped for. The workspace row
-        # uses the backend-assigned id; assert its card is rendered.
-        ws_card = page.get_by_test_id(f"workspace-card-{ids['workspace']}")
-        ws_card.wait_for(state="visible", timeout=10_000)
+        # ----- 2. The seeded workspace in the rail
+        # RETARGET (platform revamp 08, Task 14): the Workspaces list page and its cards are gone; the studio rail lists the workspaces, so the
+        # seeded workspace's row there is the "it is listed" check. The rail polls its list every 15 s and the workspace was seeded after the
+        # console loaded, so the console is loaded again rather than waiting out a poll.
+        page.reload()
+        page.get_by_test_id("nv-root").wait_for(state="visible", timeout=20_000)
+        ws_row = page.get_by_test_id(f"nv-rail-ws:{ids['workspace']}")
+        ws_row.wait_for(state="visible", timeout=20_000)
 
-        # ----- 3. Enter the workspace (click Open)
-        # Unlike the old <tr>, the card itself carries no click-to-enter
-        # handler (only its Open button does, same as P1a's provider
-        # cards) - "#/w/<wid>" is how the shell says which workspace it
-        # is in.
-        page.get_by_test_id(f"workspace-card-open-{ids['workspace']}").click()
+        # ----- 3. Enter the workspace (click its rail row)
+        # "#/w/<wid>" is how the shell says which workspace it is in.
+        ws_row.click()
         page.wait_for_url(
             re.compile(rf"#/w/{re.escape(ids['workspace'])}\b"), timeout=10_000,
         )

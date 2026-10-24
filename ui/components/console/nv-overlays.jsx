@@ -777,6 +777,31 @@ function NV_CreateWorkspaceOverlay() {
 }
 
 // ---------------------------------------------------------------------------
+// What a bare address of a list that left its overlay says instead (platform revamp 08, Tasks 14 and 15; design 14.1): overlay=workspaces (the Workspaces
+// page is gone: the rail lists the workspaces) and, once the old template list goes, overlay=workspaces:templates (a page of its own). One press closes
+// the overlay, onto the templates page for the second.
+var NV_WS_MOVED = {
+  workspaces: { text: "Workspaces are listed in the studio: pick one from the workspace menu in the rail.", button: "Close", testid: "nv-ws-moved-close" },
+  templates: { text: "Workspace templates have their own page now.", button: "Open Workspace templates", testid: "nv-ws-moved-open" },
+};
+
+function NV_WorkspacesMoved(props) {
+  var con = NV_useConsole();
+  var which = props.which === "templates" ? "templates" : "workspaces";
+  var copy = NV_WS_MOVED[which];
+  return (
+    <div className="nv-bind-empty col" data-testid={"nv-ws-moved:" + which} style={{ gap: 10, alignItems: "center" }}>
+      <div>{copy.text}</div>
+      <Btn kind={which === "templates" ? "primary" : "ghost"} data-testid={copy.testid}
+        onClick={function () {
+          if (which === "templates") con.closeOverlayTo({ name: "platform", nav: "templates" });
+          else con.closeOverlay();
+        }}>{copy.button}</Btn>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The management-surface mount table, moved here from the deleted
 // sh-overlay-host on flag day. Each entry is a SHALLOW one-decision
 // surface addressable as overlay=<name>[:<section>[:<id>]]; the
@@ -958,7 +983,7 @@ var NV_OVERLAY_MOUNTS = {
       // Templates and workspace providers are workspace-shaped
       // configuration, so they are sections of this overlay; an id
       // under either names ONE record. Otherwise an id names ONE
-      // workspace, with the section slot doubling as its tab.
+      // workspace (its Settings), with the section slot doubling as its tab.
       if (state.section === "templates") {
         // A template is the template overlay (Platform revamp 08, Task 11): it draws its own Modal chrome, so NV_LegacyOverlay bypasses its wrapper for
         // this address (bypassChrome below). The workspace provider detail page links here. Close closes the overlay.
@@ -999,17 +1024,8 @@ var NV_OVERLAY_MOUNTS = {
           />
         );
       }
-      return (
-        <window.WorkspacesPage
-          pushToast={window.primerApi.toastPush}
-          onOpen={function (wid) {
-            shell.switchWorkspace(wid);
-          }}
-          onManageTemplates={function () {
-            shell.openOverlay("workspaces", "templates", null);
-          }}
-        />
-      );
+      // The bare address: the Workspaces page is gone (Task 14), so it says where workspaces are.
+      return <NV_WorkspacesMoved which="workspaces" />;
     },
   },
 };
@@ -1223,6 +1239,7 @@ window.NV_OverlayPanel = NV_OverlayPanel;
 window.NV_Field = NV_Field;
 window.NV_CreateSessionOverlay = NV_CreateSessionOverlay;
 window.NV_CreateWorkspaceOverlay = NV_CreateWorkspaceOverlay;
+window.NV_WorkspacesMoved = NV_WorkspacesMoved;
 window.NV_OVERLAY_MOUNTS = NV_OVERLAY_MOUNTS;
 window.NV_OVERLAY_TITLES = NV_OVERLAY_TITLES;
 window.NV_overlayTitle = NV_overlayTitle;
