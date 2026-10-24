@@ -317,7 +317,9 @@
 // read only: useResource (ui/foundation/use-resource.js, PR_partialFailure) keeps the list it already shows when a refresh comes back cut short by a failure.
 // The answer is {items, total: items.length, pages: the requests answered, truncated, limit: maxPages * pageSize, serverTotal: the server's last count or null,
 // error}. Options: signal, pageSize (at most 200), maxPages (default 50), idKey (default "id"; a workspace's sessions are keyed by "session_id") and apiFetch
-// (default window.primerApi.apiFetch, read when called). Pinned by tests/ui/test_fetch_all_pages.py.
+// (default window.primerApi.apiFetch, read when called). PR_fetchAllFind runs the same read loop over the server's filter query (POST <path>, the resource's
+// /find route, the FindRequest body: predicate + offset page + optional sort keys) instead of a whole-table GET, so a filtered panel pays one request per page
+// of the answer. Pinned by tests/ui/test_fetch_all_pages.py (the GET form) and tests/ui/test_fetch_all_find.py (the find form).
 var PR_PAGE_SIZE = 200;
 var PR_MAX_PAGES = 50;
 // The longest a lengthened poll may get (ruling 4 of round 2): a session's status a minute stale is the most a list may show.
@@ -336,6 +338,16 @@ function PR_fetchAllPages(path, opts) {
   var maxPages = o.maxPages > 0 ? o.maxPages : PR_MAX_PAGES;
   var idKey = o.idKey || "id";
   var fetchPage = o.apiFetch || window.primerApi.apiFetch;
+  return PR_pagedLoop(size, maxPages, idKey, o.signal, function (offset) {
+    return fetchPage("GET", PR_pageUrl(path, size, offset), null, { signal: o.signal });
+  });
+}
+
+// The read loop both paged reads share: requestPage(offset) answers one page ({items, total} - a list route's page or a
+// find's OffsetPageResponse), and the loop reads on until a short page, the server's total, a full page that adds no new
+// id (rows are told apart by idKey), or the page cap. What it read past the cap, or before a page that failed, is kept and
+// said (truncated), never dropped in silence; a first-page failure, or a read the caller aborted, rejects as the request did.
+function PR_pagedLoop(size, maxPages, idKey, signal, requestPage) {
   var items = [];
   var seen = Object.create(null);
   var serverTotal = null;
@@ -351,7 +363,7 @@ function PR_fetchAllPages(path, opts) {
     return out;
   }
   function page(n, offset) {
-    return fetchPage("GET", PR_pageUrl(path, size, offset), null, { signal: o.signal }).then(function (body) {
+    return requestPage(offset).then(function (body) {
       var rows = body && Array.isArray(body.items) ? body.items : [];
       if (body && typeof body.total === "number") serverTotal = body.total;
       var signature = rows.length ? JSON.stringify(rows) : null;
@@ -372,13 +384,31 @@ function PR_fetchAllPages(path, opts) {
       if (n + 1 >= maxPages) return answer(n + 1, true, null, null);
       return page(n + 1, read);
     }, function (err) {
-      var aborted = (o.signal && o.signal.aborted) || (err && err.name === "AbortError");
+      var aborted = (signal && signal.aborted) || (err && err.name === "AbortError");
       if (n === 0 || aborted) throw err;
       var said = window.primerApi.readRefusal ? window.primerApi.readRefusal(err).message : (err && err.message) || "Request failed";
       return answer(n, true, said, err);
     });
   }
   return page(0, 0);
+}
+
+// The find sibling of PR_fetchAllPages (ticket 01a16eaa): the same read of every page, over the server's filter query
+// instead of a whole-table GET. POST <path> (the resource's /find route) with the FindRequest body - the predicate (a
+// predicate tree, or null for every row), an offset page, optional sort keys - and the answer is the same offset page
+// shape, so a panel that wants "the rows of this harness" or "the sessions bound to these agents" pays one request per
+// page of the ANSWER, not of the table. Pinned by tests/ui/test_fetch_all_find.py (the GET form by test_fetch_all_pages.py).
+function PR_fetchAllFind(path, predicate, opts) {
+  var o = opts || {};
+  var size = o.pageSize > 0 ? Math.min(o.pageSize, PR_PAGE_SIZE) : PR_PAGE_SIZE;
+  var maxPages = o.maxPages > 0 ? o.maxPages : PR_MAX_PAGES;
+  var idKey = o.idKey || "id";
+  var fetchPage = o.apiFetch || window.primerApi.apiFetch;
+  return PR_pagedLoop(size, maxPages, idKey, o.signal, function (offset) {
+    var body = { predicate: predicate, page: { kind: "offset", offset: offset, length: size } };
+    if (o.order_by) body.order_by = o.order_by;
+    return fetchPage("POST", path, body, { signal: o.signal });
+  });
 }
 
 // The failure that cut an answer of PR_fetchAllPages short (a page after the first failed), or null for any other value. useResource reads it: a refresh that
@@ -448,6 +478,7 @@ window.PR_PAGE_SIZE = PR_PAGE_SIZE;
 window.PR_MAX_PAGES = PR_MAX_PAGES;
 window.PR_MAX_POLL_MS = PR_MAX_POLL_MS;
 window.PR_fetchAllPages = PR_fetchAllPages;
+window.PR_fetchAllFind = PR_fetchAllFind;
 window.PR_partialFailure = PR_partialFailure;
 window.PR_nounFor = PR_nounFor;
 window.PR_pagedNote = PR_pagedNote;

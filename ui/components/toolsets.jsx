@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, CapabilityBadges, FormField, PR_fetchAllPages, PR_PagedNote */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, CapabilityBadges, FormField, PR_fetchAllPages, PR_fetchAllFind, PR_PagedNote */
 
 // Toolsets page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
@@ -1315,57 +1315,79 @@ function TS_ToolsTab({ id, ts, pushToast, onInvalidate }) {
 }
 
 // ============================================================================
-// Sessions tab — joins broad sessions list with agents that reference this id
+// Sessions tab - the server's filter queries select the rows (ticket 01a16eaa)
 // ============================================================================
 
 function TS_SessionsTab({ id }) {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
-  // Every session (newest first, so the page cap keeps the newest; ids are random) and every agent, every page of each (PR_fetchAllPages), joined here.
-  const sessions = useResource(
+  // The server's filter queries, not whole-table reads (ticket 01a16eaa): POST /agents/find keeps the agents whose
+  // tools include this id (`tools CONTAINS id`) and POST /sessions/find keeps the sessions bound to those agents
+  // (`binding.agent_id IN <the ids that came back>`), newest first, so the page cap keeps the newest. Every page of
+  // each answer is read (PR_fetchAllFind); what a read left out is said under the list (PR_PagedNote), never silent.
+  const res = useResource(
     "toolset-sessions:" + id,
-    (signal) => PR_fetchAllPages("/sessions?order_by=created_at:desc", { signal, apiFetch }),
-    { pollMs: null, deps: [id] }
-  );
-  const agents = useResource(
-    "toolset-agents-for-filter:" + id,
-    (signal) => PR_fetchAllPages("/agents", { signal, apiFetch }),
+    (signal) => (async () => {
+      const agents = await PR_fetchAllFind(
+        "/agents/find",
+        {
+          kind: "predicate",
+          left: { kind: "field", name: "tools" },
+          op: "contains",
+          right: { kind: "value", value: id },
+        },
+        { signal, apiFetch }
+      );
+      const ids = agents.items.map((a) => a.id);
+      let sessions;
+      if (ids.length === 0) {
+        sessions = { items: [], total: 0, pages: 0, truncated: false, limit: 0, serverTotal: 0, error: null };
+      } else {
+        sessions = await PR_fetchAllFind(
+          "/sessions/find",
+          {
+            kind: "predicate",
+            left: { kind: "field", name: "binding.agent_id" },
+            op: "in",
+            right: { kind: "value", value: ids },
+          },
+          { signal, apiFetch, order_by: [{ field: "created_at", direction: "desc" }] }
+        );
+        // A cut-short agents read made the id set - and so the sessions it selects - incomplete; say it.
+        if (agents.truncated && !sessions.truncated) sessions = Object.assign({}, sessions, { truncated: true });
+      }
+      return { agents, sessions };
+    })(),
     { pollMs: null, deps: [id] }
   );
 
-  if ((sessions.loading && !sessions.data) || (agents.loading && !agents.data)) {
+  if (res.loading && !res.data) {
     return <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>Loading…</div>;
   }
-  if (sessions.error && !sessions.data) {
+  if (res.error && !res.data) {
     return (
       <div style={{ padding: 14 }}>
         <Banner
           kind="error"
-          title={sessions.error.title || "Couldn't load sessions"}
-          detail={sessions.error.detail || sessions.error.message}
-          actions={<Btn size="sm" icon="refresh" onClick={sessions.refetch}>Retry</Btn>}
+          title={res.error.title || "Couldn't load sessions"}
+          detail={res.error.detail || res.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={res.refetch}>Retry</Btn>}
         />
       </div>
     );
   }
 
-  const agentsUsing = new Set(
-    (agents.data?.items ?? [])
-      .filter((a) => Array.isArray(a.tools) && a.tools.includes(id))
-      .map((a) => a.id)
-  );
-  const matched = (sessions.data?.items ?? []).filter(
-    (s) => s.binding?.agent_id && agentsUsing.has(s.binding.agent_id)
-  );
+  const agents = res.data?.agents ?? { items: [] };
+  const sessions = res.data?.sessions ?? { items: [] };
 
   return (
     <div style={{ padding: 14 }}>
       <div className="muted text-sm mb-3">
-        Sessions whose bound agent references <span className="mono">{id}</span> ({agentsUsing.size} agent{agentsUsing.size === 1 ? "" : "s"}).
+        Sessions whose bound agent references <span className="mono">{id}</span> ({agents.items.length} agent{agents.items.length === 1 ? "" : "s"}).
       </div>
-      <PR_PagedNote list={sessions.data} noun="sessions" testid="ts-sessions-note" />
-      <PR_PagedNote list={agents.data} noun="agents" testid="ts-agents-note" />
-      {matched.length === 0 ? (
+      <PR_PagedNote list={sessions} noun="sessions" testid="ts-sessions-note" />
+      <PR_PagedNote list={agents} noun="agents" testid="ts-agents-note" />
+      {sessions.items.length === 0 ? (
         <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>No sessions reference this toolset.</div>
       ) : (
         <div className="tbl-wrap">
@@ -1374,7 +1396,7 @@ function TS_SessionsTab({ id }) {
               <tr><th>Status</th><th>Session</th><th>Agent</th><th>Workspace</th></tr>
             </thead>
             <tbody>
-              {matched.map((s) => (
+              {sessions.items.map((s) => (
                 <tr key={s.id} onClick={() => navigate("/sessions/" + s.id, { workspace_id: s.workspace_id })} style={{ cursor: "pointer" }}>
                   <td><span className={`pill pill-${_tsPillCls(s.status)}`}><span className="dot"></span>{s.status}</span></td>
                   <td className="mono">{s.id}</td>
