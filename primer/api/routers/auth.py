@@ -2,7 +2,7 @@
 
 Endpoints (all under ``/v1/auth``):
 
-* ``GET  /status``    — returns ``{has_user, authenticated, username}``.
+* ``GET  /status``    - returns ``{has_user, authenticated, username, principal}``.
                         Used by the UI to decide register vs login vs main
                         app on initial load. Public. It also says how the
                         request is signed in (``sign_in_method`` and, for
@@ -44,6 +44,7 @@ from primer.auth.tokens import sign_session
 from primer.auth.user_writes import stamp_login, write_user_fields
 from primer.model.except_ import NotFoundError
 from primer.model.oidc import OidcProvider
+from primer.model.principal import PrincipalRef
 from primer.model.user import User
 from primer.storage._predicate import FieldRef, Op, Predicate, Value
 from primer.model.storage import OffsetPage
@@ -93,6 +94,13 @@ class AuthStatus(BaseModel):
     role: str | None = Field(
         default=None,
         description="Logged-in user's role (only set when authenticated).",
+    )
+    principal: PrincipalRef | None = Field(
+        default=None,
+        description=(
+            "The request actor's stable type, id and role, for console "
+            "affordances that mirror server authorization. Unset when signed out."
+        ),
     )
     must_change_password: bool = Field(
         default=False,
@@ -274,11 +282,13 @@ async def auth_status(request: Request) -> AuthStatus:
     has_user = await _has_any_user(request)
     setup = await evaluate_setup_state(get_storage_provider(request))
     sign_in_method, sign_in_provider = await _sign_in_of(request)
+    actor = getattr(request.state, "actor", None)
     return AuthStatus(
         has_user=has_user,
         authenticated=user is not None,
         username=user.username if user is not None else None,
         role=user.role if user is not None else None,
+        principal=(PrincipalRef.from_principal(actor) if actor is not None else None),
         must_change_password=(
             user.must_change_password if user is not None else False
         ),

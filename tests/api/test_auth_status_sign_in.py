@@ -33,6 +33,9 @@ async def _sso_client(app, provider_id: str) -> httpx.AsyncClient:
 async def test_a_password_session_reports_password(client):
     body = (await client.get("/v1/auth/status")).json()
     assert (body["sign_in_method"], body["sign_in_provider"]) == ("password", None)
+    assert body["principal"]["type"] == "user"
+    assert body["principal"]["display"] == body["username"]
+    assert body["principal"]["role"] == body["role"]
 
 
 async def test_an_sso_session_reports_the_providers_name(app):
@@ -55,6 +58,9 @@ async def test_a_bearer_key_reports_api_token(client, app):
                                  headers={"Authorization": f"Bearer {plaintext}"}) as c:
         body = (await c.get("/v1/auth/status")).json()
     assert (body["sign_in_method"], body["sign_in_provider"]) == ("api_token", None)
+    assert body["principal"]["type"] == "api_token"
+    assert body["principal"]["display"] == "probe"
+    assert body["principal"]["role"] == body["role"]
 
 
 async def test_auth_off_reports_auth_disabled(app):
@@ -63,12 +69,14 @@ async def test_auth_off_reports_auth_disabled(app):
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         body = (await c.get("/v1/auth/status")).json()
     assert (body["sign_in_method"], body["sign_in_provider"]) == ("auth_disabled", None)
+    assert body["principal"]["type"] == "system"
 
 
 async def test_signed_out_reports_neither(raw_client):
     body = (await raw_client.get("/v1/auth/status")).json()
     assert body["authenticated"] is False
     assert (body["sign_in_method"], body["sign_in_provider"]) == (None, None)
+    assert body["principal"] is None
 
 
 async def test_an_sso_session_still_answers_when_the_provider_read_fails(app, monkeypatch, caplog):

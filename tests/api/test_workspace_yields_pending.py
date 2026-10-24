@@ -22,6 +22,7 @@ from pydantic import SecretStr
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage, OffsetPageResponse
 from primer.model.workspace import (
     LocalWorkspaceConfig,
@@ -812,6 +813,9 @@ class TestListPendingAttention:
                 },
             },
         )
+        approval.initiated_by = PrincipalRef(
+            type="user", id="user-root", display="root", role="admin", source="local",
+        )
         ask = _make_session(
             "sess-attn-ask",
             wid1,
@@ -869,6 +873,9 @@ class TestListPendingAttention:
 
         assert by_id["sess-attn-approval"]["agent_binding"]["agent_id"] == "agt-1"
         assert by_id["sess-attn-approval"]["agent_binding"]["kind"] == "agent"
+        assert by_id["sess-attn-approval"]["initiated_by"] == {
+            "type": "user", "id": "user-root", "display": "root", "role": "admin", "source": "local",
+        }
         assert by_id["sess-attn-approval"]["created_at"] == "2026-07-01T09:00:00+00:00"
 
     @pytest.mark.asyncio
