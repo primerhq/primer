@@ -213,9 +213,10 @@ class ToolExecutionManager:
         self._workspace_tools: dict[str, "WorkspaceTool"] = dict(workspace_tools or {})
         self._workspace_session = workspace_session
         # ``(session_id, workspace_id)`` of the session this manager runs for when it has no session slot to read them from: a graph session
-        # with no holder slot (``build_graph_executor``, review of #870 F6). Every ToolContext it builds names them, so a tool called from inside
-        # that session never sees a call with no session at all (which the reach rule reads as a person's, reaching every workspace). It gives
-        # the manager no workspace tools and no workspace_ext tools: those need the slot itself.
+        # with no holder slot (``build_graph_executor``, review of #870 F6). Every identity it builds names them (``_scope``: each ToolContext, the
+        # approval gate, the tool.called and llm.called events), so a tool called from inside that session never sees a call with no session at
+        # all (which the reach rule reads as a person's, reaching every workspace). It gives the manager no workspace tools and no workspace_ext
+        # tools: those need the slot itself.
         self._run_scope = run_scope
         self._approval_resolver = approval_resolver
         self._provider_registry = provider_registry
@@ -318,14 +319,25 @@ class ToolExecutionManager:
         """
         return self._event_recorder
 
+    def _scope(self) -> tuple[str | None, str | None, str | None]:
+        """``(session_id, workspace_id, agent_id)`` of the session this manager runs for: its slot's, else ``run_scope``'s (a graph session with
+        no holder slot; no agent), else Nones.
+
+        The ONE source of the run's session identity (review of #874, G1): the ToolContext of every call (:meth:`context_for`), the approval
+        gate's context and park key, the ``tool.called`` event and, through :attr:`workspace_session_scope`, the ``llm.called`` one.
+        """
+        sess = self._workspace_session
+        if sess is not None:
+            return getattr(sess, "session_id", None), getattr(sess, "workspace_id", None), getattr(sess, "agent_id", None)
+        if self._run_scope is not None:
+            return self._run_scope[0], self._run_scope[1], None
+        return None, None, None
+
     @property
     def workspace_session_scope(self) -> tuple[str | None, str | None]:
-        """(session_id, workspace_id) of the bound session, or Nones."""
-        sess = self._workspace_session
-        return (
-            getattr(sess, "session_id", None),
-            getattr(sess, "workspace_id", None),
-        )
+        """(session_id, workspace_id) of the session this manager runs for (:meth:`_scope`), or Nones."""
+        session_id, workspace_id, _ = self._scope()
+        return session_id, workspace_id
 
     @classmethod
     def for_workspace(
@@ -664,9 +676,8 @@ class ToolExecutionManager:
         call as an ordinary user (:func:`primer.agent.inner_dispatch.run_principal`). A manager built for a session that has no slot
         (``run_scope``: a graph session with no holder) names that session and its workspace all the same.
         """
-        sess = self._workspace_session
-        if sess is None and self._run_scope is not None:
-            session_id, workspace_id = self._run_scope
+        if self._workspace_session is not None or self._run_scope is not None:
+            session_id, workspace_id, agent_id = self._scope()
             return ToolContext(
                 tool_call_id=call_id,
                 session_id=session_id,
@@ -676,20 +687,9 @@ class ToolExecutionManager:
                 initiated_by=self._initiated_by,
                 turn_no=self._turn_no,
                 principal=principal,
-            )
-        if sess is not None:
-            return ToolContext(
-                tool_call_id=call_id,
-                session_id=sess.session_id,
-                workspace_id=sess.workspace_id,
-                inform=self._inform_sink,
-                graph_services=self._graph_services,
-                initiated_by=self._initiated_by,
-                turn_no=self._turn_no,
-                principal=principal,
                 # The agent the approval gate names in its context (``ApprovalContext.agent_id``, below): a door that gates another tool for
                 # this run reads it here, so a policy keyed on the agent fires through the door too (audit G6-7).
-                agent_id=getattr(sess, "agent_id", None),
+                agent_id=agent_id,
             )
         if self._chat_id is not None:
             return ToolContext(
@@ -752,11 +752,11 @@ class ToolExecutionManager:
         """
         if self._event_recorder is None:
             return
-        sess = self._workspace_session
+        session_id, workspace_id, _ = self._scope()
         await self._event_recorder.emit(
             "tool.called",
-            session_id=getattr(sess, "session_id", None),
-            workspace_id=getattr(sess, "workspace_id", None),
+            session_id=session_id,
+            workspace_id=workspace_id,
             payload={"tool": call.name, "ok": ok},
         )
 
@@ -850,13 +850,13 @@ class ToolExecutionManager:
                 # shares one event key, so one session's respond spuriously
                 # resumes another's. chat-surface approvals (no workspace
                 # session) keep session_id=None for now (out of scope).
-                sess = self._workspace_session
+                scope_session_id, _, scope_agent_id = self._scope()
                 ctx = ApprovalContext(
                     tool_name=bare_name,
                     toolset_id=gate_toolset_id,
                     arguments=call.arguments or {},
-                    agent_id=getattr(sess, "agent_id", None),
-                    session_id=getattr(sess, "session_id", None),
+                    agent_id=scope_agent_id,
+                    session_id=scope_session_id,
                     chat_id=getattr(self, "_chat_id", None),
                     requested_at=datetime.now(UTC),
                 )
