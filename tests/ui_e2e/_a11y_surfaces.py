@@ -50,7 +50,8 @@ def _register() -> Form:
 
 
 # the Platform pages that are overlays, opened by their legacy route (the Workspaces page left in platform revamp 08, Task 14: its bare address is a moved
-# notice now, and its create form is the new-workspace overlay, swept under OVERLAYS)
+# notice now, and its create form is the new-workspace overlay, swept under OVERLAYS; the old Workspace templates list left with Task 15: its bare address
+# is a moved notice too, and the templates are swept on their Platform page, platform-view templates)
 LEGACY_FORMS: dict[str, list[Form]] = {
     "agents": [Form("New agent", MODAL)],
     "graphs": [Form("New graph", MODAL)],
@@ -59,7 +60,6 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "approvals": [],
     "harnesses": [Form("Register harness", MODAL)],
     "services": [Form("New service", MODAL)],
-    "workspaces/templates": [Form("New template", MODAL)],
     "workspaces/providers": [_register()],
     "channels": [Form("New channel", MODAL)],          # enabled only while a channel provider exists: the sweep seeds one
     "channels/rules": [Form("New rule", MODAL)],        # its toolbar draws only while a channel provider exists
@@ -85,7 +85,6 @@ LEGACY_TITLES: dict[str, str] = {
     "approvals": "Approvals",
     "harnesses": "Harnesses",
     "services": "Services",
-    "workspaces/templates": "Workspace templates",
     "workspaces/providers": "Providers",
     "channels": "Channels",
     "channels/rules": "Channel rules",
@@ -244,8 +243,6 @@ FLOORS: dict[str, int] = {
     "overlay-page harnesses / Register harness": 3,
     "overlay-page services": 1,
     "overlay-page services / New service": 1,
-    "overlay-page workspaces/templates": 1,
-    "overlay-page workspaces/templates / New template": 4,
     "overlay-page workspaces/providers": 2,
     "overlay-page workspaces/providers / + Register": 3,
     "overlay-page channels": 1,

@@ -427,10 +427,12 @@ function __stub(name) {
     return React.createElement("div", { "data-testid": "stub:" + name });
   };
 }
-["AgentDetail", "GraphDetail", "ToolsetDetail", "TR_TriggersPage", "HarnessesPage", "SV_ServicesPage", "ProviderCatalog", "WorkspaceTemplateDetail", "WT_TemplateOverlay", "WorkspaceProviderDetail", "WorkspaceDetail", "ApprovalsPage", "CollectionsPage"].forEach(function (n) {
+["AgentDetail", "GraphDetail", "ToolsetDetail", "TR_TriggersPage", "HarnessesPage", "SV_ServicesPage", "ProviderCatalog", "WT_TemplateOverlay", "WorkspaceProviderDetail", "WorkspaceDetail", "ApprovalsPage", "CollectionsPage"].forEach(function (n) {
   window[n] = __stub(n);
 });
 window.AP_PolicyDetail = function (props) { window.__apProps = props; return React.createElement("div", { "data-testid": "stub:policy" }); };
+// shared.jsx's Btn, which the moved notice of a bare list address draws (NV_WorkspacesMoved): a native button with its test id and its handler.
+function Btn(props) { return React.createElement("button", { type: "button", "data-testid": props["data-testid"], onClick: props.onClick }, props.children); }
 """
 )
 
@@ -510,7 +512,7 @@ def test_the_crumb_of_a_section_overlay_goes_to_that_sections_page(host, overlay
     assert host.log()["closeTo"] == [target]
 
 
-# The crumb of the bare templates overlay (workspaces:templates, the legacy list until Plan 08 Task 15). A template (workspaces:templates:<id>) is the
+# The crumb of the bare templates overlay (workspaces:templates: the old list until Plan 08 Task 15, a moved notice since). A template (workspaces:templates:<id>) is the
 # template overlay since Plan 08 Task 11, a kit Modal with its own chrome and no crumb (the next test), so the crumb's two shim branches are pinned here.
 def test_the_template_crumb_returns_to_the_legacy_list_until_the_platform_page_exists(host):
     host.mount({"name": "workspaces", "section": "templates", "id": None})
@@ -522,6 +524,8 @@ def test_the_template_crumb_returns_to_the_legacy_list_until_the_platform_page_e
 def test_the_template_crumb_closes_to_platform_after_its_component_loads(host):
     host.eval("(function () { window.WT_TemplatesPage = function () {}; return 1; })()")
     host.mount({"name": "workspaces", "section": "templates", "id": None})
+    # Plan 08 Task 15: the bare address draws the moved notice inside the panel, under the crumb, not the old list.
+    assert host.eval("!!MR.find('nv-ws-moved:templates') && !!MR.find('nv-overlay-crumb')")
     host.click("nv-overlay-crumb")
     assert host.log()["closeTo"] == [TEMPLATES_PAGE]
 
@@ -530,7 +534,7 @@ def test_a_template_address_is_the_template_overlay_with_its_own_chrome(host):
     """Plan 08 Task 11: overlay=workspaces:templates:<id> draws WT_TemplateOverlay for that template inside the bare wrappers (one title bar, not two);
     its Close closes the overlay. The workspace provider detail page links here."""
     host.mount({"name": "workspaces", "section": "templates", "id": "t1"})
-    assert host.eval("!!MR.find('stub:WT_TemplateOverlay') && MR.find('stub:WorkspaceTemplateDetail') === null")
+    assert host.eval("!!MR.find('stub:WT_TemplateOverlay') && MR.findAll('stub:').length === 1"), "the template overlay, and nothing else"
     assert host.eval("MR.find('nv-overlay-crumb') === null && MR.find('nv-overlay-title') === null")
     assert host.eval("MR.find('nv-overlay-body').props.style.position") == "fixed"
     assert host.eval("window.__props.WT_TemplateOverlay.templateId") == "t1"
@@ -765,7 +769,10 @@ def test_every_literal_list_navigation_in_the_pages_is_redirected_or_listed():
             first = target.split("/")[0]
             if first in overlays:
                 found.setdefault(target, set()).add(path.name)
-    known = {"agents", "graphs", "toolsets", "triggers", "harnesses", "services", "workspaces", "workspaces/templates", "workspaces/providers", "providers"}
+    # "workspaces/templates" left this list with the old template detail page (Plan 08 Task 15), whose delete was the one page that navigated there;
+    # a pasted /workspaces/templates still closes to the templates page (test_a_workspace_template_returns_to_the_real_list_that_is_available).
+    known = {"agents", "graphs", "toolsets", "triggers", "harnesses", "services", "workspaces", "workspaces/providers", "providers"}
+    assert "workspaces/templates" not in found, "no page navigates to the gone template list"
     assert known <= set(found), f"the scan no longer finds the pages' navigations (missing {sorted(known - set(found))}); fix the pattern, not the table"
     unnamed = {t: sorted(files) for t, files in found.items() if t not in table and t not in NOT_YET_REDIRECTED}
     assert not unnamed, f"these list paths would open a list inside an overlay; add them to SH_SHIM_LIST_TARGETS: {unnamed}"

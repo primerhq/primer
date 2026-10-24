@@ -140,9 +140,15 @@ def test_representative_pages_use_hook_and_component() -> None:
 
 
 def test_workspace_subpages_use_hook() -> None:
-    for name in ("templates.jsx", "providers.jsx"):
-        src = (UI / "components" / "workspaces" / name).read_text(encoding="utf-8")
-        assert "usePagedList" in src, f"workspaces/{name} missing usePagedList"
+    """The workspace providers page pages its list with ``usePagedList``. The templates page does not page the server: since Plan 08 (Tasks 9 to 11) it
+    reads EVERY template (``WT_fetchAllTemplates``, a page of 200 at a time) and pages the cards in the console with the kit's ``PK_usePagedFilter``,
+    which its filter needs; the old list that used ``usePagedList`` went with Task 15 (``tests/ui/test_wt_templates_page.py`` pins past 200)."""
+    providers = (UI / "components" / "workspaces" / "providers.jsx").read_text(encoding="utf-8")
+    assert "usePagedList" in providers, "workspaces/providers.jsx missing usePagedList"
+    templates = (UI / "components" / "workspaces" / "templates.jsx").read_text(encoding="utf-8")
+    page = templates[templates.index("function WT_TemplatesPage("):templates.index("window.WT_TemplatesPage = WT_TemplatesPage;")]
+    assert "WT_fetchAllTemplates(" in page and "PK_usePagedFilter(" in page
+    assert "usePagedList" not in templates and "<Pager" not in templates, "one pager: the kit header's"
 
 
 # ---- The whole bundle still transpiles with the new primitive ----------

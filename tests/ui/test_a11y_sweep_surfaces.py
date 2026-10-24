@@ -77,6 +77,9 @@ def test_the_retired_views_are_no_longer_swept() -> None:
     assert "workspaces" not in surfaces.PLATFORM_FORMS and "setup" not in surfaces.SYSTEM_VIEWS
     # (Workspace templates was pending until Plan 08 shipped its page; it is swept now: test_the_workspace_templates_page_is_swept_through_its_plus_template.)
     assert not [name for name in surfaces.FLOORS if name.startswith(("platform-view workspaces", "system-view setup"))]
+    # Plan 08 Task 15 removed the old template list: its bare address (overlay=workspaces:templates) is a moved notice with no list or form to sweep.
+    assert "workspaces/templates" not in surfaces.LEGACY_FORMS and "workspaces/templates" not in surfaces.LEGACY_TITLES
+    assert not [name for name in surfaces.FLOORS if name.startswith("overlay-page workspaces/templates")]
     assert "system-view setup" not in surfaces.NO_FORM
 
 
@@ -140,8 +143,9 @@ def test_the_artifact_storage_page_is_swept_through_its_register_overlay_and_no_
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / + Register" in surfaces.expected_surfaces(7)
     # 100, then the Web page and its "+ Fetcher" form (Plan 04), the Workspace templates page and its "+ Template" form (Plan 08), less the Workspaces
-    # page and its "New workspace" form, which Plan 08 Task 14 removed (the dialog is swept as the new-workspace overlay)
-    assert len(surfaces.expected_surfaces(7)) == 102
+    # page and its "New workspace" form, which Plan 08 Task 14 removed (the dialog is swept as the new-workspace overlay), and less the old template list
+    # and its "New template" form, which Task 15 removed (the templates are swept on their Platform page)
+    assert len(surfaces.expected_surfaces(7)) == 100
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:

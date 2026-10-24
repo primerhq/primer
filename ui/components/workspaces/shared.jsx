@@ -217,6 +217,7 @@ window.WorkspaceFileRowEditor = FileRowEditor;
 window.WorkspaceBackendBadge = WorkspaceBackendBadge;
 // Note: WS_FieldRow + WS_Section are top-level function declarations in
 // this file. Babel-standalone shares top-level scope across <script
-// type="text/babel"> tags, so providers.jsx + templates.jsx (loaded
-// AFTER this file per the <script> ordering in ui/console/index.html)
-// reference them as bare identifiers. No window.* registration needed.
+// type="text/babel"> tags, so providers.jsx (loaded AFTER this file per
+// the <script> ordering in ui/index.html) references them as bare
+// identifiers. No window.* registration needed. (templates.jsx used them
+// too until platform revamp 08, Task 15 removed its old template form.)

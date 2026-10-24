@@ -7,10 +7,17 @@ in ``workspaces.jsx`` is the workspace's Settings overlay (``WorkspaceDetail``) 
 
 The bare address ``overlay=workspaces`` (a link pasted from before) says where workspaces went instead of drawing the list (``NV_WorkspacesMoved``), and
 nothing under ``ui/`` names the deleted components.
+
+The old workspace template components followed (Plan 08, Task 15; design 14.2): the list page (``WorkspaceTemplatesPage``), its form with the JSON and table
+rows (``WorkspaceTemplateCreateModal``) and its detail page (``WorkspaceTemplateDetail``), with their helpers. Platform › Workspace templates
+(``WT_TemplatesPage``), the template overlay (``WT_TemplateOverlay``) and the new-workspace dialog replaced them. The bare ``overlay=workspaces:templates``
+says the templates have their own page; ``overlay=workspaces:templates:<id>`` is still the template overlay; the docs embed ``workspace-template-form``
+mounts the page.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -21,8 +28,12 @@ from tests.ui._register_harness import COMPONENTS, base_code, context, js, trans
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 WORKSPACES = (COMPONENTS / "workspaces.jsx").read_text(encoding="utf-8")
+TEMPLATES = (COMPONENTS / "workspaces" / "templates.jsx").read_text(encoding="utf-8")
 OVERLAYS_FILE = COMPONENTS / "console" / "nv-overlays.jsx"
 GONE = ("WorkspacesPage", "WS_NewWorkspaceModal", "WS_PhasePill")
+# The old template components and the helpers only they used (Task 15).
+TEMPLATE_GONE = ("WorkspaceTemplatesPage", "WorkspaceTemplateCreateModal", "WorkspaceTemplateDetail", "ContainerMountEditor", "WT_Toggle",
+                 "_wtToastErr", "_wtFieldErrorShown", "_emptyForm", "_fromTemplate")
 
 STUBS = r"""
 var CON = { closed: 0, to: [] };
@@ -98,3 +109,53 @@ def test_the_moved_notice_for_templates(ctx):
 
 def test_the_bare_address_keeps_its_title(ctx):
     assert js(ctx, "NV_overlayTitle({ name: 'workspaces', section: null, id: null })") == "Workspaces"
+
+
+# ---- Task 15: the old template list, form and detail page ----------------------------------------------------------------------------------------------
+
+
+def test_the_old_template_components_are_gone():
+    """Design 14.2: the JSON and table form, the old list and the old detail page are gone. The form's row helpers went with them: ``WS_FieldRow`` and
+    ``WS_Section`` stay in ``workspaces/shared.jsx`` for the workspace provider form, but ``templates.jsx`` no longer draws them."""
+    for gone in TEMPLATE_GONE + ("WS_FieldRow", "WS_Section"):
+        assert not re.search(rf"\b{gone}\b", TEMPLATES), gone
+    for kept in ("window.WT_TemplatesPage = WT_TemplatesPage;", "window.WT_TemplateOverlay = WT_TemplateOverlay;", "const WT_ADMIN_ONLY_NOTE ="):
+        assert kept in TEMPLATES, kept
+
+
+def test_nothing_under_ui_names_the_deleted_template_components():
+    offenders = []
+    for path in sorted(UI.rglob("*")):
+        if not path.is_file() or "vendor" in path.parts or path.suffix not in {".jsx", ".js", ".html", ".json", ".css"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        offenders += [f"{path.relative_to(ROOT)}: {name}" for name in TEMPLATE_GONE if re.search(rf"\b{name}\b", text)]
+    assert offenders == []
+
+
+def test_the_bare_template_address_says_where_templates_went(ctx):
+    assert js(ctx, "rendered({ name: 'workspaces', section: 'templates', id: null })") == {"type": "NV_WorkspacesMoved", "props": {"which": "templates"}}
+
+
+def test_a_template_address_is_still_the_template_overlay(ctx):
+    ctx.eval("window.WT_TemplateOverlay = function WT_TemplateOverlay() { return null; };")
+    out = js(ctx, "rendered({ name: 'workspaces', section: 'templates', id: 'tpl-1' })")
+    assert out == {"type": "WT_TemplateOverlay", "props": {"templateId": "tpl-1"}}
+
+
+def test_the_bare_template_address_keeps_its_title(ctx):
+    assert js(ctx, "NV_overlayTitle({ name: 'workspaces', section: 'templates', id: null })") == "Workspace templates"
+
+
+def test_the_template_form_embed_mounts_the_templates_page():
+    """The docs embed ``workspace-template-form`` mounted the old list; it mounts Platform › Workspace templates now, which takes no props."""
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    try:
+        ctx.eval("var window = globalThis;")
+        ctx.eval((COMPONENTS / "docs" / "embed-registry.jsx").read_text(encoding="utf-8"))
+        entry = json.loads(ctx.eval("JSON.stringify(window.DocsEmbedRegistry['workspace-template-form'])"))
+    finally:
+        ctx.close()
+    assert entry == {"component": "WT_TemplatesPage", "fixtures": "workspace-template-form", "props": {}}
