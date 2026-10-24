@@ -14,7 +14,8 @@ Covers:
   supplied ``event_matcher``.
 * A non-channel trigger is rejected with ``trigger_not_found_or_disabled``.
 * A disabled trigger is rejected with the same code.
-* A chat-only caller (no session id) is rejected with the same code.
+* A chat-only caller (no session id) is rejected with ``unsupported-surface``
+  (ticket 01a16ddb, ruling 6).
 * The matcher is round-tripped on the persisted Subscription.
 """
 
@@ -208,7 +209,7 @@ async def test_rejects_chat_only_caller(fake_storage_provider):
     )
     assert result.is_error
     body = json.loads(result.output)
-    assert body["type"] == "trigger_not_found_or_disabled"
+    assert body["type"] == "unsupported-surface"  # no session to park (ticket 01a16ddb, ruling 6)
 
     subs_storage = fake_storage_provider.get_storage(Subscription)
     page = await subs_storage.list(OffsetPage(offset=0, length=10))

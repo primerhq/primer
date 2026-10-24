@@ -356,7 +356,7 @@ async def test_parked_session_e2e_chat_only_call_rejected(
     )
     assert result.is_error
     body = json.loads(result.output)
-    assert body["type"] == "trigger_not_found_or_disabled"
+    assert body["type"] == "unsupported-surface"  # no session to park (ticket 01a16ddb, ruling 6)
 
     # No Subscription row written — firing the trigger now is a no-op.
     deps = DispatchDeps(

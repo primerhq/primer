@@ -210,7 +210,7 @@ async def list_triggers_endpoint(
     request: Request,
     kind: Annotated[
         str | None,
-        Query(description="Filter by trigger kind (delayed / scheduled)."),
+        Query(description="Filter by trigger kind (delayed / scheduled / webhook / channel)."),
     ] = None,
     enabled: Annotated[
         bool | None, Query(description="Filter by enabled flag."),
