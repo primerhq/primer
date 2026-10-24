@@ -229,6 +229,18 @@ class Subscription(Identifiable):
             "were recorded: those fire as an ordinary user."
         ),
     )
+    reach: str | None = Field(
+        default=None,
+        description=(
+            "The one workspace this subscription may start or feed a session "
+            "in (server-set on create and update; a request body cannot "
+            "choose it): the workspace of the session that last saved it, "
+            "when that session was outside the default workspace (prime). "
+            "None is every workspace: saved from prime, by a person or an "
+            "API client, or before reach was recorded. A fire whose target is "
+            "outside it is refused (target_out_of_reach) and starts no session."
+        ),
+    )
 
 
 __all__ = [

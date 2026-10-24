@@ -645,3 +645,215 @@ async def test_set_reply_binding_out_of_reach_answers_as_an_unknown_workspace_wh
     ]
     assert answers == [(N, {"type": N, "message": f"Workspace {t!r} does not exist"}) for t in ("ws-2", "ws-prime", "ws-nope")]
     assert await world.snapshot() == before
+
+
+# -- trigger subscriptions and channel bindings (F1) ------------------------------------------------------------------------------------------
+
+TRIGGER, CHANNEL_TRIGGER = "tr-1", "tr-ch"
+_WS_TARGET, _SES_TARGET = ("ws-2", "ws-nope"), ("ses-t", "ses-nobody")
+
+#: door -> (toolset, tool, arguments for a target, (target, unknown id)). A workspace target is ws-2; a session target is ses-t, in ws-2.
+SUB_DOORS: dict[str, tuple[str, str, Callable[[str], dict], tuple[str, str]]] = {
+    "trigger::create_subscription, agent_fresh_session": (
+        "trigger", "create_subscription",
+        lambda t: {"trigger_id": TRIGGER, "config": {"kind": "agent_fresh_session", "workspace_id": t, "agent_id": "planner"}}, _WS_TARGET,
+    ),
+    "trigger::create_subscription, graph_fresh_session": (
+        "trigger", "create_subscription",
+        lambda t: {"trigger_id": TRIGGER, "config": {"kind": "graph_fresh_session", "workspace_id": t, "graph_id": "g-1"}}, _WS_TARGET,
+    ),
+    "trigger::create_subscription, session_append": (
+        "trigger", "create_subscription", lambda t: {"trigger_id": TRIGGER, "config": {"kind": "session_append", "session_id": t}}, _SES_TARGET,
+    ),
+    "system::create_channel_binding, agent_fresh_session": (
+        "system", "create_channel_binding",
+        lambda t: {"trigger_id": CHANNEL_TRIGGER, "config": {"kind": "agent_fresh_session", "workspace_id": t, "agent_id": "planner"}}, _WS_TARGET,
+    ),
+    "system::create_channel_binding, session_append": (
+        "system", "create_channel_binding",
+        lambda t: {"trigger_id": CHANNEL_TRIGGER, "config": {"kind": "session_append", "session_id": t}}, _SES_TARGET,
+    ),
+}
+#: Who calls -> the reach recorded on what it saves: the calling session's workspace outside prime, ``None`` (every workspace) otherwise.
+RECORDED = {"own workspace": "ws-2", P: None, "no session": None}
+
+
+async def _seed_triggers(world: WsWorld) -> None:
+    triggers = world.sp.get_storage(Trigger)
+    await triggers.create(Trigger(
+        id=TRIGGER, slug="tr-one", name="t", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
+    ))
+    await triggers.create(Trigger(id=CHANNEL_TRIGGER, slug="tr-ch", name="c", created_at=NOW, owner=USER, config=ChannelTriggerConfig(provider_id="cp-1")))
+
+
+async def _subscriptions(world: WsWorld) -> dict[str, Subscription]:
+    return {s.id: s for s in (await world.sp.get_storage(Subscription).list(OffsetPage(offset=0, length=100))).items}
+
+
+@pytest.mark.parametrize(("door_name", "who", "door"), _rows(SUB_DOORS))
+async def test_a_subscription_or_channel_binding_names_only_what_the_caller_reaches(door_name, who, door):
+    """F1: a session outside prime may not save a subscription that starts or feeds a session outside its reach. Out of reach answers exactly as an
+    unknown workspace or session does (from the same caller) and stores nothing; within reach the row records the reach it was saved with."""
+    world = await _seed_world_for_subscriptions()
+    toolset, tool, arguments, (target, unknown) = SUB_DOORS[door_name]
+    own, expected = WS_CALLERS[who]
+    before = await _subscriptions(world)
+
+    outcome, body = await asyncio.wait_for(_call(world, toolset, tool, arguments(target), own=own, door=door), 30)
+
+    assert outcome == expected, (door_name, who, door, body)
+    after = await _subscriptions(world)
+    if outcome == D:
+        (new,) = [row for sid, row in after.items() if sid not in before]
+        assert new.reach == RECORDED[who], (door_name, who, new)
+        return
+    assert after == before, f"{door_name} stored a subscription it refused ({who}, {door})"
+    _, unknown_body = await _call(world, toolset, tool, arguments(unknown), own=own, door=door)
+    assert json.dumps(body).replace(target, "<id>") == json.dumps(unknown_body).replace(unknown, "<id>"), (body, unknown_body)
+    assert await _subscriptions(world) == before
+
+
+async def _seed_world_for_subscriptions() -> WsWorld:
+    world = await _ws_world()
+    await _seed_triggers(world)
+    return world
+
+
+@pytest.mark.parametrize(("who", "door"), [(who, door) for who in WS_CALLERS if who != "no session" for door in DOORS] + [("no session", "MCP")])
+async def test_an_update_of_a_subscription_from_a_session_reaches_only_a_target_it_reaches(who, door):
+    """F1: updating a subscription saves it as the caller (its owner, and now its reach). From a session outside prime an update of a subscription
+    whose target is out of reach is refused in the words of an unknown target and changes nothing; within reach the row records the caller's
+    reach."""
+    world = await _seed_world_for_subscriptions()
+    store = world.sp.get_storage(Subscription)
+    for sid, workspace in (("sb-p", "ws-2"), ("sb-u", "ws-nope")):
+        await store.create(Subscription(
+            id=sid, trigger_id=TRIGGER, config=AgentFreshSubConfig(workspace_id=workspace, agent_id="planner"), created_at=NOW, owner=ADMIN,
+        ))
+    own, expected = WS_CALLERS[who]
+    before = await store.get("sb-p")
+
+    def _update(sid: str) -> dict:
+        return {"trigger_id": TRIGGER, "subscription_id": sid, "payload_template": "changed"}
+
+    outcome, body = await asyncio.wait_for(_call(world, "trigger", "update_subscription", _update("sb-p"), own=own, door=door), 30)
+
+    assert outcome == expected, (who, door, body)
+    after = await store.get("sb-p")
+    if outcome == D:
+        assert (after.payload_template, after.reach) == ("changed", RECORDED[who]), after
+        return
+    assert after == before, f"a refused update changed the subscription ({who}, {door})"
+    _, unknown = await _call(world, "trigger", "update_subscription", _update("sb-u"), own=own, door=door)
+    assert json.dumps(body).replace("ws-2", "<ws>") == json.dumps(unknown).replace("ws-nope", "<ws>"), (body, unknown)
+
+
+# -- the fire ---------------------------------------------------------------------------------------------------------------------------------
+
+
+class _FireWorkspace(FakeWorkspace):
+    """The peer world's workspace, which also takes the slot a fresh session is started in."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started: list[str] = []
+
+    async def start_session(self, binding, *, id: str, instructions=None, parent_session_id=None, name=None) -> None:  # noqa: A002
+        self.started.append(id)
+
+
+class _FireRegistry(FakeRegistry):
+    def workspace(self, workspace_id: str) -> _FireWorkspace:
+        return self.workspaces.setdefault(workspace_id, _FireWorkspace())  # type: ignore[return-value]
+
+
+def _runnable_graph() -> Graph:
+    return Graph(
+        id="g-1", description="begin -> end", nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="end")],
+    )
+
+
+async def _fire_world() -> World:
+    """Three workspaces (``ws-prime`` the default), the subscription owner's account, an agent and a graph to start, ``ses-t`` (in ws-2) to steer
+    and ``ses-pk`` (in ws-2) parked on a trigger subscription."""
+    world = World(sp=_FakeStorageProvider(), registry=_FireRegistry(), scheduler=FakeScheduler(), engine=FakeEngine(), bus=FakeBus())
+    await world.sp.set_default_workspace_id("ws-prime")
+    for wid in ("ws-1", "ws-2", "ws-prime"):
+        await world.sp.get_storage(Workspace).create(Workspace(
+            id=wid, name=wid, template_id="tpl", provider_id="local-1", created_at=NOW, phase="running",
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
+        ))
+    await world.sp.get_storage(User).create(User(id="u-user", username="user", created_at=NOW, role="user"))
+    await world.sp.get_storage(Agent).create(Agent(id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]))
+    await world.sp.get_storage(Graph).create(_runnable_graph())
+    await world.sp.get_storage(Trigger).create(Trigger(
+        id="tr-fire", slug="tr-fire", name="f", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW),
+    ))
+    await seed_session(world, sid="ses-t", workspace_id="ws-2", turn_no=1, created_at=NOW, initiated_by=USER)
+    key = "trigger:ses-pk:tr-fire"
+    await seed_session(
+        world, sid="ses-pk", workspace_id="ws-2", turn_no=1, created_at=NOW, initiated_by=USER, turn_status="idle", parked_status="parked",
+        parked_event_key=key,
+        parked_state={
+            "tool_call_id": "tc-1",
+            "yielded": {"tool_name": "subscribe_to_trigger", "event_key": key, "resume_metadata": {"tool_call_id": "tc-1", "subscription_id": "sb-fire"}},
+        },
+    )
+    return world
+
+
+FIRE_KINDS: dict[str, tuple[object, str | None]] = {
+    "agent_fresh_session": (AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner"), None),
+    "graph_fresh_session": (GraphFreshSubConfig(workspace_id="ws-2", graph_id="g-1"), '{"q": 1}'),
+    "session_append": (SessionAppendSubConfig(session_id="ses-t"), None),
+    "parked_session": (ParkedSessionSubConfig(session_id="ses-pk", tool_call_id="tc-1", parked_at=NOW), None),
+}
+
+
+async def _what_the_fire_did(world: World, kind: str, before: dict) -> bool:
+    """Whether the fire started or fed a session in ws-2."""
+    if kind.endswith("fresh_session"):
+        started = world.registry.workspace("ws-2").started
+        rows = (await world.sessions.list(OffsetPage(offset=0, length=100))).items
+        return bool(started) or len(rows) != len(before)
+    if kind == "session_append":
+        return (await world.sessions.get("ses-t")).model_dump(mode="json") != before["ses-t"]
+    return bool(world.bus.published)
+
+
+@pytest.mark.parametrize("kind", list(FIRE_KINDS))
+@pytest.mark.parametrize(("reach", "fed"), [
+    pytest.param("ws-1", False, id="recorded reach ws-1, target in ws-2"),
+    pytest.param("ws-2", True, id="recorded reach ws-2, target in ws-2"),
+    pytest.param(None, True, id="no recorded reach (prime, a person, a row saved before reach was recorded)"),
+])
+async def test_a_fire_never_starts_or_feeds_a_session_outside_the_reach_recorded_on_its_subscription(kind, reach, fed):
+    """F1 at fire time: the worker's trigger handler fires the trigger, and a subscription whose target is outside the reach recorded on it is refused
+    and logged (``target_out_of_reach``, a failed delivery on the subscription) and never starts or feeds a session. A row with no recorded reach
+    fires as before."""
+    world = await _fire_world()
+    config, payload = FIRE_KINDS[kind]
+    await world.sp.get_storage(Subscription).create(Subscription.model_validate({
+        "id": "sb-fire", "trigger_id": "tr-fire", "config": config.model_dump(mode="json"), "payload_template": payload, "parallelism": "queue",
+        "created_at": NOW.isoformat(), "owner": USER.model_dump(mode="json"), "reach": reach,
+    }))
+    before = {s.id: s.model_dump(mode="json") for s in (await world.sessions.list(OffsetPage(offset=0, length=100))).items}
+    released: list = []
+
+    async def _release(lease, outcome) -> None:
+        released.append(outcome)
+
+    pool = SimpleNamespace(
+        _storage=world.sp, _engine=world.engine, _scheduler=world.scheduler, _workspace_registry=world.registry, _event_bus=world.bus,
+        _release_lease=_release,
+    )
+    await asyncio.wait_for(run_engine_trigger(pool, SimpleNamespace(entity_id="tr-fire")), 30)  # type: ignore[arg-type]
+
+    assert await _what_the_fire_did(world, kind, before) is fed, (kind, reach)
+    sub = await world.sp.get_storage(Subscription).get("sb-fire")
+    if fed:
+        assert sub is None or sub.last_fire_error is None, sub.last_fire_error
+        return
+    assert json.loads(sub.last_fire_error)["code"] == "target_out_of_reach", sub.last_fire_error
+    assert [o.success for o in released] == [False], "a refused fire is a failed delivery, not a clean run"

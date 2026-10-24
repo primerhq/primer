@@ -19,6 +19,7 @@ from primer.session.steer_delivery import (
     deliver_steer,
 )
 from primer.trigger.owner import refuse_steer_above_fire
+from primer.trigger.reach import TARGET_OUT_OF_REACH, refuse_fire_out_of_reach
 from primer.trigger.subscribers import (
     DispatchDeps,
     SubscriptionDispatchResult,
@@ -42,6 +43,10 @@ class SessionAppendDispatcher:
         fire_id: str,
         deps: DispatchDeps,
     ) -> SubscriptionDispatchResult:
+        # A target session outside the reach recorded on the subscription (saved from a session outside prime) is never fed (review of #870, F1).
+        out_of_reach = await refuse_fire_out_of_reach(sub, deps.storage_provider)
+        if out_of_reach is not None:
+            return SubscriptionDispatchResult(ok=False, error_code=TARGET_OUT_OF_REACH, error_message=out_of_reach)
         if deps.workspace_registry is None:
             return SubscriptionDispatchResult(
                 ok=False,

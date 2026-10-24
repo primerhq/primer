@@ -40,6 +40,7 @@ from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.pending_gates import enumerate_pending_gates
 from primer.session.yields import RespondToYieldDeps, respond_to_yield
 from primer.trigger.owner import refuse_steer_above_fire
+from primer.trigger.reach import TARGET_OUT_OF_REACH, refuse_fire_out_of_reach
 from primer.trigger.subscribers import (
     DispatchDeps,
     SubscriptionDispatchResult,
@@ -136,6 +137,12 @@ class ParkedSessionDispatcher:
                     "this subscription's yield is parked behind another gate of the same session; it fires when it is the one answered"
                 ),
             )
+
+        # A session outside the reach recorded on the subscription is never woken (review of #870, F1). ``subscribe_to_trigger`` records the
+        # parked session's own reach, so this holds for every row it wrote; the row is kept, as for the rank refusal below.
+        out_of_reach = await refuse_fire_out_of_reach(sub, deps.storage_provider)
+        if out_of_reach is not None:
+            return SubscriptionDispatchResult(ok=False, error_code=TARGET_OUT_OF_REACH, error_message=out_of_reach)
 
         # The woken session runs at its own initiator's rank: a fire ranked
         # below it must not drive it (security review A-20). The row is

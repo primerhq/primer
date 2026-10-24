@@ -56,6 +56,7 @@ from primer.model.trigger import (
     TriggerKind,
 )
 from primer.model.yield_ import ToolContext, Yielded
+from primer.session.peer_messages import caller_reach
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
@@ -65,6 +66,7 @@ from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ServiceDeps,
     SubscriptionNotFound,
+    SubscriptionTargetNotFound,
     TriggerForbidden,
     TriggerKindImmutable,
     TriggerNotFound,
@@ -370,7 +372,11 @@ TOOL_CREATE_SUB = make_tool(
         "(agent_fresh_session / graph_fresh_session / session_append). Subs "
         "of kind ``parked_session`` are rejected with "
         "``type=parked_session_only_from_yield`` (only the "
-        "``subscribe_to_trigger`` yielding tool may create those)."
+        "``subscribe_to_trigger`` yielding tool may create those). From a "
+        "session outside the default workspace (prime) the config may name "
+        "only your own workspace or a session in it: another one answers "
+        "type=not-found, as an unknown id does, and every fire checks it "
+        "again."
     ),
     args_schema=_SubCreateArgs.model_json_schema(),
     examples=[
@@ -397,7 +403,9 @@ TOOL_UPDATE_SUB = make_tool(
         "Use when changing a subscription's payload_template / parallelism "
         "/ enabled / description; only supplied fields are modified. To "
         "change trigger-level fields use ``update``. Missing returns "
-        "``type=subscription_not_found``."
+        "``type=subscription_not_found``. From a session outside the "
+        "default workspace (prime) a subscription whose target is not your "
+        "own workspace or a session in it answers type=not-found."
     ),
     args_schema=_SubUpdateArgs.model_json_schema(),
     examples=[
@@ -759,12 +767,16 @@ def _make_create_sub_handler(
                 description=args.description,
                 enabled=args.enabled,
                 owner=_caller(ctx),
+                # A session outside prime may name only its own workspace or a session in it; the row records that reach for every fire.
+                reach=await caller_reach(storage_provider, ctx),
                 deps=deps,
             )
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         except ParkedSessionOnlyFromYield as exc:
             return _err(str(exc), error_type="parked_session_only_from_yield")
+        except SubscriptionTargetNotFound as exc:
+            return _err(str(exc), error_type="not-found")
         return _ok(sub)
 
     return _handler
@@ -801,11 +813,14 @@ def _make_update_sub_handler(
                 trigger_id=args.trigger_id,
                 subscription_id=args.subscription_id,
                 owner=_caller(ctx),
+                reach=await caller_reach(storage_provider, ctx),
                 deps=deps,
                 **kwargs,
             )
         except SubscriptionNotFound as exc:
             return _err(str(exc), error_type="subscription_not_found")
+        except SubscriptionTargetNotFound as exc:
+            return _err(str(exc), error_type="not-found")
         return _ok(sub)
 
     return _handler
@@ -905,6 +920,8 @@ def _make_subscribe_handler(
             enabled=True,
             created_at=datetime.now(timezone.utc),
             owner=_caller(ctx),
+            # The target is the calling session itself, always within its reach; recorded so the fire checks it like every other row.
+            reach=await caller_reach(storage_provider, ctx),
         )
         await storage_provider.get_storage(Subscription).create(sub)
         return Yielded(
@@ -993,6 +1010,7 @@ def _make_subscribe_channel_handler(
             enabled=True,
             created_at=datetime.now(timezone.utc),
             owner=_caller(ctx),
+            reach=await caller_reach(storage_provider, ctx),
         )
         await storage_provider.get_storage(Subscription).create(sub)
         return Yielded(

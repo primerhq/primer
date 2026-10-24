@@ -24,6 +24,7 @@ from primer.model.trigger import (
     Trigger,
 )
 from primer.storage.q import Q
+from primer.trigger.reach import refuse_target_out_of_reach
 from primer.trigger.cron import (
     CronInvalid,
     TimezoneInvalid,
@@ -58,6 +59,11 @@ class ParkedSessionOnlyFromYield(Exception):
 
 class TriggerSlugConflict(Exception):
     """A trigger with the requested slug already exists."""
+
+
+class SubscriptionTargetNotFound(Exception):
+    """A subscription saved from a workspace session names a target outside that session's reach, or one that does not exist: answered as a
+    ``not-found`` in the words of a target that does not exist (:func:`primer.trigger.reach.refuse_target_out_of_reach`). Nothing is stored."""
 
 
 #: How pydantic serialises a set ``SecretStr`` (``hmac_secret``) in a read; a PUT that echoes it keeps the stored secret.
@@ -389,12 +395,20 @@ async def create_subscription(
     event_matcher=None,
     reply_target=None,
     owner: PrincipalRef | None = None,
+    reach: str | None = None,
     deps: ServiceDeps,
 ) -> Subscription:
     """Create a subscription bound to ``trigger_id``.
 
     ``owner`` is the caller; a fresh-session run the subscription fires is
     attributed to it (see :mod:`primer.trigger.owner`).
+
+    ``reach`` is the calling session's reach
+    (:func:`primer.session.peer_messages.caller_reach`): ``None`` (every
+    workspace) for a person, an API client or a session in prime. A target
+    outside it raises :class:`SubscriptionTargetNotFound` and nothing is
+    stored; within it the row records it, and every fire checks it again
+    (:mod:`primer.trigger.reach`).
 
     Subscriptions with ``kind='parked_session'`` are reserved for the
     ``subscribe_to_trigger`` yielding tool — the REST + toolset create
@@ -411,6 +425,9 @@ async def create_subscription(
             "subscriptions of kind 'parked_session' are only created via "
             "the subscribe_to_trigger yielding tool"
         )
+    refusal = await refuse_target_out_of_reach(deps.storage_provider, reach, config)
+    if refusal is not None:
+        raise SubscriptionTargetNotFound(refusal)
     subs_storage = deps.storage_provider.get_storage(Subscription)
     sub = Subscription(
         id=f"sb-{uuid.uuid4().hex[:12]}",
@@ -424,6 +441,7 @@ async def create_subscription(
         reply_target=reply_target,
         created_at=_now(),
         owner=owner,
+        reach=reach,
     )
     await subs_storage.create(sub)
     return sub
@@ -445,11 +463,16 @@ async def update_subscription(
     event_matcher: Any = _UNSET,
     reply_target: Any = _UNSET,
     owner: PrincipalRef | None = None,
+    reach: str | None = None,
     deps: ServiceDeps,
 ) -> Subscription:
     """Partial update.
 
-    The caller becomes the owner, as in :func:`update_trigger`.
+    The caller becomes the owner, as in :func:`update_trigger`, and its
+    reach becomes the row's (as in :func:`create_subscription`): from a
+    session outside prime, a subscription whose target is out of the
+    caller's reach is refused with :class:`SubscriptionTargetNotFound` and
+    left as it was.
 
     Nullable string fields (``payload_template``, ``description``) use
     the ``_UNSET`` sentinel so callers can leave them untouched while
@@ -461,7 +484,11 @@ async def update_subscription(
     sub = await subs_storage.get(subscription_id)
     if sub is None or sub.trigger_id != trigger_id:
         raise SubscriptionNotFound(subscription_id)
+    refusal = await refuse_target_out_of_reach(deps.storage_provider, reach, sub.config)
+    if refusal is not None:
+        raise SubscriptionTargetNotFound(refusal)
     sub.owner = owner
+    sub.reach = reach
     if payload_template is not _UNSET:
         sub.payload_template = payload_template
     if parallelism is not None:
@@ -627,6 +654,7 @@ __all__ = [
     "ParkedSessionOnlyFromYield",
     "ServiceDeps",
     "SubscriptionNotFound",
+    "SubscriptionTargetNotFound",
     "TriggerKindImmutable",
     "TriggerNotFound",
     "TriggerSlugConflict",
