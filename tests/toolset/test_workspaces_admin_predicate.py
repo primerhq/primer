@@ -12,6 +12,7 @@ since A-20 refuses ``trigger``-typed actors unless their role is high enough; on
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -70,12 +71,17 @@ def _no_initiator_ctx() -> ToolContext:
     return ToolContext(tool_call_id="call-1", session_id="sess-1", workspace_id=None, initiated_by=None)
 
 
+def _in_the_workspace(ctx: ToolContext | None) -> ToolContext | None:
+    """The run reads the workspace its session is in: a session reaches only its own workspace (ticket 01a16ad1)."""
+    return None if ctx is None else dataclasses.replace(ctx, workspace_id=WS_ID)
+
+
 async def _read_state(toolset, *, ctx: ToolContext | None = None):
-    return await _call(toolset, "read_workspace_file", ctx=ctx, workspace_id=WS_ID, path=STATE_FILE)
+    return await _call(toolset, "read_workspace_file", ctx=_in_the_workspace(ctx), workspace_id=WS_ID, path=STATE_FILE)
 
 
 async def _list_state(toolset, *, ctx: ToolContext | None = None):
-    return await _call(toolset, "list_workspace_files", ctx=ctx, workspace_id=WS_ID, path=".state")
+    return await _call(toolset, "list_workspace_files", ctx=_in_the_workspace(ctx), workspace_id=WS_ID, path=".state")
 
 
 async def _hold_an_admin_only_template(toolset) -> None:

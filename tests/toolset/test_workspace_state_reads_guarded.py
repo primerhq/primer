@@ -10,6 +10,7 @@ the check.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -131,7 +132,9 @@ async def test_a_non_admin_mcp_caller_is_refused_a_reserved_path(tool):
 async def test_a_tool_context_with_no_initiator_does_not_inherit_the_mcp_admin(tool):
     ts, registry = _toolset()
     with as_mcp("admin"):
-        result = await _call(ts, tool, {"workspace_id": "w", "path": RESERVED_FILE}, _no_initiator_ctx())
+        # A run of a session in the workspace it reads: a session reaches only its own workspace (ticket 01a16ad1).
+        in_w = dataclasses.replace(_no_initiator_ctx(), workspace_id="w")
+        result = await _call(ts, tool, {"workspace_id": "w", "path": RESERVED_FILE}, in_w)
 
     assert result.is_error and _type(result) == "forbidden", result.output
     assert registry.ws.reads == []
