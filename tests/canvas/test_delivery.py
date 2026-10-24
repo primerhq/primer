@@ -493,3 +493,50 @@ async def test_a_resumable_wait_of_another_kind_does_not_take_the_click() -> Non
         "parked_status": "resumable", "turn_status": "claimable", "parked_state": {**row.parked_state, "resume_event_payload": stamped},
     }))
     assert await _deliver(w, e1) == DELIVERY_QUEUED
+
+
+# ---- a dropped click is recorded as a summary (the lead's ruling 3 on #892 round 2) ----------------------------------------------------
+
+
+def _dropped(w: World) -> list[dict[str, Any]]:
+    return [r["payload"] for r in w.records("s1", "pause_superseded") if r["payload"].get("action") == "dropped"]
+
+
+async def test_a_queued_click_dropped_by_the_cap_is_recorded_as_a_summary() -> None:
+    """The queue keeps 50 messages; the 51st drops the oldest, a queued click. Its record names the event, never the block, whose text
+    holds what the user entered (the transcript is a shared read). The dropped click stays unread: the agent reads it with canvas_get."""
+    from primer.session.pending_messages import store_pending_steer
+
+    w = await _world("running")
+    assert await _deliver(w, await _record(w, "emit viz")) == DELIVERY_QUEUED
+    session = await w.sessions.get("s1")
+    for n in range(50):
+        await store_pending_steer(storage_provider=w.sp, session=session, text=f"typed {n}", workspace_registry=w.registry)
+
+    [dropped] = _dropped(w)
+    assert dropped["text"] == "canvas event e1 (emit on viz)"
+    assert SECRET_NOTE not in json.dumps(w.records("s1"))
+    assert [e.id for e in (await w.canvas("s1")).unseen_events()] == ["e1"]
+    assert all(CANVAS_EVENT_PAYLOAD_KEY not in (r.attribution or {}) for r in _pending(w))
+
+
+async def test_a_queued_click_the_session_refuses_is_recorded_as_a_summary() -> None:
+    """A queued message the realize drops because the session will not take it (a cancelled session, and a message no person wrote) is
+    announced like a cap drop; for a click the record is the summary too, and the click stays unread."""
+    from primer.session.pending_messages import store_pending_steer
+
+    w = await _world("running")
+    ev = await _record(w, "emit viz")
+    block_text = "<canvas_event ...> data: " + SECRET_NOTE
+    await store_pending_steer(storage_provider=w.sp, session=await w.sessions.get("s1"), text=block_text, workspace_registry=w.registry,
+                              attribution={"machine": True, CANVAS_EVENT_PAYLOAD_KEY: event_attribution(ev)})
+    await w.sessions.update((await w.sessions.get("s1")).model_copy(update={
+        "status": SessionStatus.ENDED, "ended_reason": "cancelled", "turn_status": "idle",
+    }))
+
+    assert await realize_next_pending(storage_provider=w.sp, workspace_id="ws-1", session_id="s1", wake_deps=_wake_deps(w)) is False
+
+    [dropped] = _dropped(w)
+    assert dropped["text"] == "canvas event e1 (emit on viz)" and SECRET_NOTE not in json.dumps(w.records("s1"))
+    assert (await w.sessions.get("s1")).status == SessionStatus.ENDED and _pending(w) == []
+    assert [e.id for e in (await w.canvas("s1")).unseen_events()] == ["e1"]
