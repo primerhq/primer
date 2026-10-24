@@ -316,9 +316,24 @@ def test_a_stored_template_size_of_zero_or_less_is_refused_at_create():
     refuse_oversized_template_sizes(docker, _o(cpu_cores=1))           # replaced by the override: not what runs
 
 
-def test_a_local_template_is_still_not_checked():
-    local = _stored(provider_id="loc", resources={"cpu_cores": -1})
-    refuse_oversized_template_sizes(local, None)
+def test_a_local_or_docker_templates_unused_resources_are_not_capped_but_must_be_positive():
+    """Local ignores ``resources`` and Docker reads ``backend.*``, so no cap applies to ``resources`` there; but it is copied into the
+    workspace's snapshot, whose model refuses zero or less, so a stored value of zero or less is refused at create (the review of #869,
+    F1: a Local template with ``cpu_cores: 0`` used to create a workspace whose snapshot the model refused)."""
+    refuse_oversized_template_sizes(_stored(provider_id="loc", resources={"cpu_cores": 1e308}), None)
+    for template, field in (
+        (_stored(provider_id="loc", resources={"cpu_cores": 0}), "resources.cpu_cores"),
+        (_stored(provider_id="loc", resources={"memory_bytes": -1}), "resources.memory_bytes"),
+        (_stored(provider_id="dock", backend={"kind": "container"}, resources={"cpu_cores": -2}), "resources.cpu_cores"),
+    ):
+        with pytest.raises(TemplateSizeRefused) as exc:
+            refuse_oversized_template_sizes(template, None)
+        assert exc.value.fields == [field] and "(not more than zero)" in exc.value.message
+    # A Docker CPU override replaces backend.cpu_cores, not the unused resources.cpu_cores: still refused.
+    with pytest.raises(TemplateSizeRefused):
+        refuse_oversized_template_sizes(
+            _stored(provider_id="dock", backend={"kind": "container"}, resources={"cpu_cores": 0}), _o(cpu_cores=1),
+        )
 
 
 async def test_the_storage_reads_a_stored_row_back_tolerantly_and_patch_if_still_applies(tmp_path):
