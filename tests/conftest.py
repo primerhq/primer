@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 import pytest
@@ -750,6 +751,37 @@ def _no_unclosed_sqlite_providers(request: pytest.FixtureRequest):
             + ("" if open_providers.close_finished else " The guard's own close did NOT finish in time, so the connection's worker thread may still be running."),
             pytrace=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# Subdirectory conftest fixtures in any order of file arguments (pytest 9.1.x)
+# ---------------------------------------------------------------------------
+#
+# pytest 9.1 binds a conftest's fixtures to the Directory NODE that first collects the conftest's directory, once.
+# A file argument directly inside an already-collected directory (``tests/test_provider.py`` after
+# ``tests/api/a.py``) makes Session.collect re-collect that directory without its cache ("files given directly
+# multiple times are not deduplicated"), which builds NEW child Package/Dir nodes. Every later argument under them
+# (``tests/api/b.py``) is collected under a node the subdirectory conftest was never parsed for: its fixtures are
+# missing ("fixture 'client' not found") and its autouse fixtures silently do not run (tests/llm's
+# ``no_real_network`` guard). Upstream: pytest-dev/pytest#14964, fixed on main by #14635 and backported by #14968,
+# in no release up to 9.1.1. This is that fix, applied from here: a re-collected directory hands back the child
+# Directory nodes it produced the first time, so the fixtures bound to them still match; Module nodes stay fresh,
+# as upstream keeps them. With a pytest that carries the fix the children are already those objects and this is a
+# no-op; drop it then. Pinned by tests/tooling/test_collection_order.py.
+
+_FIRST_DIRECTORY_CHILDREN = pytest.StashKey[dict[Path, pytest.Directory]]()
+
+
+@pytest.hookimpl(wrapper=True, specname="pytest_make_collect_report")
+def pytest_make_collect_report_reuses_directory_nodes(collector: pytest.Collector):
+    rep = yield
+    if isinstance(collector, pytest.Directory) and rep.passed:
+        first = collector.stash.setdefault(_FIRST_DIRECTORY_CHILDREN, {})
+        rep.result = [
+            first.setdefault(child.path, child) if isinstance(child, pytest.Directory) else child
+            for child in rep.result
+        ]
+    return rep
 
 
 # ---------------------------------------------------------------------------
