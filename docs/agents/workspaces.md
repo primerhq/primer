@@ -224,8 +224,11 @@ first and the one the operator works from. All users share it.
   and is not read while `agents.md` exists. From a session outside
   prime the tool returns `type=forbidden` and writes nothing; with no
   default workspace yet it returns `type=not-found` (the route answers
-  404). To change the instructions rather than restore them, write the
-  file.
+  404). When the workspace does not answer within 10 seconds (to reach
+  it, then to write) the tool returns `type=unavailable` and the route
+  answers 503; a write given up on may still land afterwards, with the
+  same shipped text. To change the instructions rather than restore
+  them, write the file.
 
 ```json
 {"tool": "system::reset_prime_instructions", "arguments": {}}

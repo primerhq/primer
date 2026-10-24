@@ -9,7 +9,9 @@ beside it would shadow it). Only the explicit reset (task 10) rewrites it.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -212,8 +214,17 @@ async def test_a_failing_check_of_the_second_name_writes_nothing(fake_storage_pr
     assert ws.writes == []
 
 
-async def test_a_check_that_hangs_fails_the_step_and_writes_nothing(fake_storage_provider, monkeypatch):
-    """A stuck backend must not hold the boot: the check is bounded, and a check that outlasts it writes nothing."""
+def _one_warning(caplog) -> logging.LogRecord:
+    """The one record the seed logged: a WARNING, without a traceback."""
+    records = [r for r in caplog.records if r.name == prime_module.logger.name and r.levelno >= logging.WARNING]
+    assert len(records) == 1, [r.getMessage() for r in records]
+    assert records[0].levelno == logging.WARNING and records[0].exc_info is None
+    return records[0]
+
+
+async def test_a_check_that_hangs_writes_nothing_and_warns_once(fake_storage_provider, monkeypatch, caplog):
+    """A stuck backend must not hold the boot: reaching the workspace and the check share one bound; past it nothing is written, the
+    step answers False with one WARNING, and the next boot tries again."""
     await _prime(fake_storage_provider)
     monkeypatch.setattr(prime_module, "PRIME_AGENTS_MD_CHECK_TIMEOUT_S", 0.05)
 
@@ -223,9 +234,57 @@ async def test_a_check_that_hangs_fails_the_step_and_writes_nothing(fake_storage
 
     ws = _Stuck()
     async with asyncio.timeout(5):
-        with pytest.raises(TimeoutError, match="agents.md"):
-            await ensure_prime_agents_md(fake_storage_provider, workspace_registry=_Registry(ws))
+        assert await ensure_prime_agents_md(fake_storage_provider, workspace_registry=_Registry(ws)) is False
     assert ws.writes == []
+    assert "next boot" in _one_warning(caplog).getMessage()
+
+
+async def test_a_reattach_that_hangs_is_under_the_same_bound(fake_storage_provider, monkeypatch, caplog):
+    """``get_workspace`` re-attaches to the workspace's backend (on Kubernetes it can wait for a Pending pod): it is inside the bound."""
+    await _prime(fake_storage_provider)
+    monkeypatch.setattr(prime_module, "PRIME_AGENTS_MD_CHECK_TIMEOUT_S", 0.05)
+
+    class _HungReattach:
+        async def get_workspace(self, workspace_id):
+            await asyncio.Event().wait()
+
+    started = time.monotonic()
+    async with asyncio.timeout(5):
+        assert await ensure_prime_agents_md(fake_storage_provider, workspace_registry=_HungReattach()) is False
+    assert time.monotonic() - started < 2
+    _one_warning(caplog)
+
+
+async def test_a_write_that_hangs_is_bounded_on_its_own(fake_storage_provider, monkeypatch, caplog):
+    """The write has its own bound of the same length. A write given up on may still land later: it writes the same shipped bytes."""
+    await _prime(fake_storage_provider)
+    monkeypatch.setattr(prime_module, "PRIME_AGENTS_MD_CHECK_TIMEOUT_S", 0.05)
+
+    class _HungWrite(_Ws):
+        async def write_file(self, path, content):
+            self.writes.append(path)
+            await asyncio.Event().wait()
+
+    ws = _HungWrite()
+    async with asyncio.timeout(5):
+        assert await ensure_prime_agents_md(fake_storage_provider, workspace_registry=_Registry(ws)) is False
+    assert ws.writes == ["agents.md"]
+    assert "may still" in _one_warning(caplog).getMessage()
+
+
+async def test_a_hung_reattach_does_not_hold_the_ensure_pass(fake_storage_provider, monkeypatch, caplog):
+    """The boot awaits the whole pass before it serves: with prime's backend stuck, the pass still completes within the bound."""
+    await _prime(fake_storage_provider)
+    monkeypatch.setattr(prime_module, "PRIME_AGENTS_MD_CHECK_TIMEOUT_S", 0.05)
+
+    class _HungReattach:
+        async def get_workspace(self, workspace_id):
+            await asyncio.Event().wait()
+
+    async with asyncio.timeout(5):
+        result = await run_ensure_pass(fake_storage_provider, workspace_registry=_HungReattach())
+    assert result.errors == []
+    _one_warning(caplog)
 
 
 # ---- the ensure pass --------------------------------------------------------------------------------------------------------------

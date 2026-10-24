@@ -55,7 +55,7 @@ from primer.bootstrap.defaults import (
     PRIME_WORKSPACE_NAME,
     RESERVED_OPERATOR_AGENT,
 )
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import NotFoundError, WorkspaceUnreachableError
 from primer.model.workspace import Workspace
 from primer.storage import raw_generation
 
@@ -64,10 +64,12 @@ logger = logging.getLogger(__name__)
 #: The name prime's shipped instructions are written under: the name the loader reads first (``AGENTS_MD_NAMES[0]``).
 PRIME_AGENTS_MD: str = "agents.md"
 
-#: How long, in seconds, the ensure pass may spend checking the default workspace for an existing ``agents.md`` or
-#: ``AGENTS.md`` before it gives up for this boot. The pass runs before the server serves, so a stuck backend must not hold
-#: the boot; a check that outlasts this writes nothing and the step is retried at the next boot. Read when the check runs,
-#: so a test can shorten it.
+#: How long, in seconds, each of the two backend steps of the seed and of the reset may take: reaching the default workspace
+#: (``WorkspaceRegistry.get_workspace``, which re-attaches to its backend and on Kubernetes can wait for a Pending pod) together
+#: with the check for ``agents.md`` and ``AGENTS.md``, and then the write. The ensure pass runs before the server serves, so a
+#: stuck backend must not hold the boot: past either bound the seed logs one WARNING and answers ``False`` (the next boot tries
+#: again), and the reset raises ``WorkspaceUnreachableError`` (503). A write given up on may still land afterwards; it writes
+#: the same shipped bytes. Read when each step runs, so a test can shorten it.
 PRIME_AGENTS_MD_CHECK_TIMEOUT_S: float = 10.0
 
 #: The display name a created main session carries (task 14 finds it by this name).
@@ -309,8 +311,13 @@ async def ensure_prime_agents_md(storage_provider: Any, *, workspace_registry: A
     already there, whatever it holds (an edited file, an empty one, a directory): the boot never overwrites or shadows what a
     person put there. Only :func:`reset_prime_agents_md` rewrites an existing file.
 
+    Reaching the workspace and the check share one bound, :data:`PRIME_AGENTS_MD_CHECK_TIMEOUT_S`, and the write has its own of the
+    same length, so a stuck backend cannot hold the boot: past either bound this logs one WARNING (no traceback) and answers
+    ``False``, nothing more is written by this boot, and the next boot tries again. A write given up on may still land afterwards;
+    it writes the same shipped bytes. A check that times out never reads as "absent".
+
     Any other failure propagates, so the ensure pass records it under its step and the next boot tries again: a check that
-    fails, or that outlasts :data:`PRIME_AGENTS_MD_CHECK_TIMEOUT_S` (``TimeoutError``), never reads as "absent".
+    fails never reads as "absent".
 
     Two processes seeding at once both see no file and write the same bytes, so the result is the same file. A person writing
     the file between the check and the write is the one window this leaves; the pass runs at boot and on the setup seed only.
@@ -322,24 +329,38 @@ async def ensure_prime_agents_md(storage_provider: Any, *, workspace_registry: A
         return False
     if await storage_provider.get_storage(Workspace).get(workspace_id) is None:
         return False
+    timeout = PRIME_AGENTS_MD_CHECK_TIMEOUT_S
     try:
-        workspace = await workspace_registry.get_workspace(workspace_id)
+        async with asyncio.timeout(timeout) as bound:
+            workspace = await workspace_registry.get_workspace(workspace_id)
+            present = await _has_instructions_file(workspace)
     except NotFoundError as exc:
         logger.warning(
             "prime: the default workspace could not be reached; its agents.md is seeded at a later boot: %s", exc,
             extra={"workspace_id": workspace_id},
         )
         return False
-    timeout = PRIME_AGENTS_MD_CHECK_TIMEOUT_S
-    try:
-        present = await asyncio.wait_for(_has_instructions_file(workspace), timeout=timeout)
-    except TimeoutError as exc:
-        raise TimeoutError(
-            f"checking {workspace_id!r} for agents.md or AGENTS.md took longer than {timeout:g} seconds; nothing was written"
-        ) from exc
+    except TimeoutError:
+        if not bound.expired():
+            raise
+        logger.warning(
+            "prime: reaching the default workspace %r and checking it for agents.md or AGENTS.md took longer than %g seconds; "
+            "nothing was written, the next boot tries again", workspace_id, timeout,
+        )
+        return False
     if present:
         return False
-    await workspace.write_file(PRIME_AGENTS_MD, shipped_prime_agents_md())
+    try:
+        async with asyncio.timeout(timeout) as bound:
+            await workspace.write_file(PRIME_AGENTS_MD, shipped_prime_agents_md())
+    except TimeoutError:
+        if not bound.expired():
+            raise
+        logger.warning(
+            "prime: writing agents.md to the default workspace %r took longer than %g seconds; the write may still land (with "
+            "the same shipped bytes), and the next boot checks again", workspace_id, timeout,
+        )
+        return False
     logger.info("prime: wrote the shipped agents.md to the default workspace", extra={"workspace_id": workspace_id})
     return True
 
@@ -352,6 +373,9 @@ async def reset_prime_agents_md(storage_provider: Any, *, workspace_registry: An
     :func:`shipped_prime_agents_md`, never a caller's, and only ``agents.md`` is written: an ``AGENTS.md`` beside it stays where it is
     (the loader reads it only while ``agents.md`` is absent).
 
+    Reaching the workspace and the write are each bounded by :data:`PRIME_AGENTS_MD_CHECK_TIMEOUT_S`; past either bound this raises
+    :class:`WorkspaceUnreachableError` (503), and a write given up on may still land afterwards with the same shipped bytes.
+
     Returns ``{"workspace_id", "path", "bytes"}``. Raises :class:`NotFoundError` ``"no default workspace is recorded"`` when there is
     no default workspace, and whatever the registry or the backend raises otherwise (``NotFoundError`` for a missing row or a backend
     that cannot re-attach it, ``BadRequestError`` for a directory called ``agents.md``, ``WorkspaceRefusedError`` for a workspace the
@@ -360,9 +384,27 @@ async def reset_prime_agents_md(storage_provider: Any, *, workspace_registry: An
     workspace_id = await resolve_default_workspace_id(storage_provider)
     if workspace_id is None:
         raise NotFoundError("no default workspace is recorded")
-    workspace = await workspace_registry.get_workspace(workspace_id)
+    timeout = PRIME_AGENTS_MD_CHECK_TIMEOUT_S
+    try:
+        async with asyncio.timeout(timeout) as bound:
+            workspace = await workspace_registry.get_workspace(workspace_id)
+    except TimeoutError:
+        if not bound.expired():
+            raise
+        raise WorkspaceUnreachableError(
+            f"the default workspace {workspace_id!r} did not answer within {timeout:g} seconds; nothing was written"
+        ) from None
     shipped = shipped_prime_agents_md()
-    await workspace.write_file(PRIME_AGENTS_MD, shipped)
+    try:
+        async with asyncio.timeout(timeout) as bound:
+            await workspace.write_file(PRIME_AGENTS_MD, shipped)
+    except TimeoutError:
+        if not bound.expired():
+            raise
+        raise WorkspaceUnreachableError(
+            f"writing agents.md to the default workspace {workspace_id!r} did not finish within {timeout:g} seconds; the write "
+            "may still land (with the same shipped bytes)"
+        ) from None
     logger.info("prime: reset agents.md to the shipped version", extra={"workspace_id": workspace_id})
     return {"workspace_id": workspace_id, "path": PRIME_AGENTS_MD, "bytes": len(shipped)}
 
