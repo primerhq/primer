@@ -146,6 +146,23 @@ async def test_list_toolset_tools_names_the_sign_in() -> None:
     assert answer["message"] == "the MCP server kb needs an operator to reconnect it"
 
 
+async def test_describe_tool_names_the_sign_in_as_the_other_tools_do() -> None:
+    """Ticket 01a16f1d ruling 6: ``describe_tool`` answered ``provider-error`` for an MCP toolset that needs a sign-in, where ``list_toolset_tools``
+    and ``call_tool`` answer ``sign-in-required`` with the same message."""
+    storage_provider = _FakeStorageProvider()
+    registry = _registry(storage_provider, toolset_factory=lambda row: _NeedsSignInProvider())
+    await _store(storage_provider, make_toolset(URL, oauth={}))
+    system = build_system_toolset(storage_provider=storage_provider, provider_registry=registry)
+
+    result, answer = await _call(system, "describe_tool", {"toolset_id": "kb", "tool_name": "search"})
+    listed, listed_answer = await _call(system, "list_toolset_tools", {"toolset_id": "kb"})
+
+    assert result.is_error and answer == {"type": "sign-in-required", "message": "the MCP server kb needs an operator to reconnect it"}
+    assert listed.is_error and listed_answer == answer
+    tools = {tool.id: tool async for tool in system.list_tools()}
+    assert "``type=sign-in-required``" in tools["describe_tool"].description
+
+
 async def test_the_descriptor(world) -> None:
     system, _, _ = world
     tools = {tool.id: tool async for tool in system.list_tools()}
