@@ -31,7 +31,7 @@ class _Sessions:
         self.row = row
         self.updates = 0
 
-    async def get(self, _sid):
+    async def get(self, _sid, conn=None):
         return self.row
 
     async def update(self, row):
@@ -47,7 +47,7 @@ class _Sessions:
         self.row = row
         return row
 
-    async def patch_if(self, _sid, patch, *, where, conn=None):
+    async def patch_if(self, _sid, patch, *, where, set_paths=None, conn=None):
         """What the backends do for a field-scoped write (a turn's rest is one, ticket 01a16d9f): refuse it unless every guarded STORED field
         holds one of its values, then write the patched fields alone."""
         stored = self.row.model_dump(mode="json")

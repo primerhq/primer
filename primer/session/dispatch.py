@@ -77,6 +77,8 @@ from primer.session.graph_end import graph_end_for
 from primer.session.mutation_lock import IN_LOCK_IO_TIMEOUT_S, session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
 from primer.session.seq_reservation import reserve_next_seq
+from primer.storage import raw_generation
+from primer.storage.cas import patch_if_checked
 from primer.session.turns import has_open_turn
 from primer.session.persistence import (
     TurnInvariantError,
@@ -3439,16 +3441,23 @@ async def _come_to_rest(
     over (a whole-row write of the row read would put a pause flag that landed since back to false, and a pause written as a status back to
     WAITING). Nothing else is written: the pause flag stays set, as every other PAUSED write of a turn boundary leaves it, and ``/resume`` clears it.
     A row found ENDED is left alone (:func:`_leave_ended_row_alone`), a row that vanished or moved to another binding epoch is not written.
+
+    The fence is built from the stored values (``raw_generation``) and written with ``patch_if_checked``, so a refusal while a fresh read still
+    matches the guard (a comparison value that never matches what the backend stores) is counted on ``storage_cas_drift_total``. Refused
+    ``_REST_ATTEMPTS`` times, the rest is given up at ERROR and the row is read again: the turn reports what the row says (still RUNNING, say),
+    never a rest that did not land (review of #916).
     """
     for _ in range(_REST_ATTEMPTS):
         target = _resting_status(fresh)
         if fresh.status == target:
             return _TerminalWrite(False, target, None)
-        where: dict[str, list[Any]] = {"status": [fresh.status.value], "pause_requested": [fresh.pause_requested]}
+        where: dict[str, list[Any]] = {
+            "status": [raw_generation(fresh, "status")], "pause_requested": [raw_generation(fresh, "pause_requested")],
+        }
         if expected_epoch is not None:
-            where["binding_epoch"] = [expected_epoch]
+            where["binding_epoch"] = [raw_generation(fresh, "binding_epoch")]
         try:
-            written = await session_storage.patch_if(session.id, to_jsonable_python({"status": target}), where=where)
+            written = await patch_if_checked(session_storage, session.id, to_jsonable_python({"status": target}), where=where)
         except NotFoundError:
             return _TerminalWrite(False, target, None)
         if written is not None:
@@ -3461,8 +3470,17 @@ async def _come_to_rest(
                 session, moved, target, None, executor=executor, workspace_registry=workspace_registry,
             )
         fresh = moved
-    logger.warning("session %s: the turn's rest (%s) was not written: the row kept moving", session.id, target.value)
-    return _TerminalWrite(False, target, None)
+    now = await session_storage.get(session.id)
+    logger.error(
+        "session %s: the turn's rest (%s) was refused %d times (the row kept moving, or its guard never matches what the backend stores: see "
+        "storage_cas_drift_total); the row says %s, and that is what the turn reports",
+        session.id, target.value, _REST_ATTEMPTS, "nothing (it is gone)" if now is None else now.status.value,
+    )
+    if now is None:
+        return _TerminalWrite(False, target, None)
+    if now.status == SessionStatus.ENDED:
+        return await _leave_ended_row_alone(session, now, target, None, executor=executor, workspace_registry=workspace_registry)
+    return _TerminalWrite(False, now.status, now.ended_reason)
 
 
 async def _rest_session(session_storage, session: WorkspaceSession, *, expected_epoch: int) -> SessionStatus | None:

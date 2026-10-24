@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -325,5 +326,50 @@ async def test_a_session_paused_mid_turn_whose_answer_asks_a_question_is_served_
             assert (kind, got["status"]) == ("ok", "paused"), got
             listed = await api.toolset(fake_event_bus).call(tool_name="list_workspace_sessions", arguments={"workspace_id": row.workspace_id})
             assert [(s["session_id"], s["status"]) for s in json.loads(listed.output)["items"] if s["session_id"] == row.id] == [(row.id, "paused")]
+        finally:
+            await _close(closers)
+
+
+@PROCESSES
+async def test_a_rest_refused_every_time_announces_what_the_row_says_and_counts_the_drift(two_processes, tmp_path, fake_event_bus, caplog):
+    """The rest's conditional write refused on every attempt while the row still matches its guard (a comparison value that never matches what
+    the backend stores: drift, or a row that keeps moving). The turn must not announce a rest that never landed: it reads the row again and
+    announces what the row says (still running), logs it at ERROR, and the drift tripwire counts each refusal (review of #916, probe D)."""
+    import primer.observability.metrics as metrics
+
+    async with asyncio.timeout(BOUND_S):
+        api, worker, row, closers = await _world(tmp_path, two_processes=two_processes, turn_no=1)
+        try:
+            store, refused = worker.sessions, []
+            real_patch_if = store.patch_if
+
+            async def patch_if(entity_id, patch=None, *, where, **kwargs):
+                if isinstance(patch, dict) and set(patch) == {"status"} and "pause_requested" in where:
+                    refused.append(dict(where))
+                    return None
+                return await real_patch_if(entity_id, patch, where=where, **kwargs)
+
+            store.patch_if = patch_if
+            terminal: list = []
+            real_publish = fake_event_bus.publish
+
+            async def publish(key, payload, *args, **kwargs):
+                if key == f"session:{row.id}:terminal":
+                    terminal.append(dict(payload))
+                return await real_publish(key, payload, *args, **kwargs)
+
+            fake_event_bus.publish = publish
+            drift_before = metrics.storage_cas_drift_total.labels("WorkspaceSession")._value.get()
+            caplog.set_level(logging.WARNING, logger="primer.session.dispatch")
+
+            await run_one_session_turn(_make_lease(row.id), worker.dispatch_deps(_FakeLLM(scripts=[OK]), fake_event_bus))
+
+            after = await api.sessions.get(row.id)
+            assert len(refused) == 3, refused
+            assert (after.status, after.turn_status) == (SessionStatus.RUNNING, "idle"), "the row moved although every rest was refused"
+            assert terminal == [{"status": "running", "ended_reason": None}], f"the turn announced a rest that never landed: {terminal}"
+            assert metrics.storage_cas_drift_total.labels("WorkspaceSession")._value.get() - drift_before == 3
+            errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.name == "primer.session.dispatch" and "rest" in r.getMessage()]
+            assert len(errors) == 1, [r.getMessage() for r in caplog.records]
         finally:
             await _close(closers)
