@@ -32,6 +32,7 @@ from primer.trigger.subscribers import (
     register,
 )
 from primer.trigger.owner import OWNER_UNRESOLVABLE, principal_for_fire, unresolvable_subscription_owner
+from primer.trigger.reach import TARGET_OUT_OF_REACH, refuse_fire_out_of_reach
 from primer.workspace.session_factory import (
     SessionFactoryDeps,
     start_workspace_session,
@@ -55,6 +56,12 @@ class AgentFreshSessionDispatcher:
         fire_id: str,
         deps: DispatchDeps,
     ) -> SubscriptionDispatchResult:
+        # A target outside the reach recorded on the subscription (saved from a session outside prime) is refused before anything else: no
+        # session is made in a workspace its saver could not reach (review of #870, F1).
+        out_of_reach = await refuse_fire_out_of_reach(sub, deps.storage_provider)
+        if out_of_reach is not None:
+            return SubscriptionDispatchResult(ok=False, error_code=TARGET_OUT_OF_REACH, error_message=out_of_reach)
+
         # A gone subscription owner (deleted, disabled, revoked or expired token) refuses the fire up front: the run would be
         # theirs and could never run, so no session is made and the failure shows on the subscription (review of #853 B1).
         gone = await unresolvable_subscription_owner(sub, deps.storage_provider)

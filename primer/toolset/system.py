@@ -126,6 +126,7 @@ from primer.model.trigger import SubscriptionConfig
 from primer.trigger.service import (
     ServiceDeps,
     SubscriptionNotFound,
+    SubscriptionTargetNotFound,
     TriggerNotFound,
     create_subscription,
     delete_subscription,
@@ -891,12 +892,17 @@ def build_system_toolset(
                 # are ranked no higher (security review A-20). No ctx (the
                 # MCP endpoint) records no owner: fails closed.
                 owner=ctx.initiated_by if ctx is not None else None,
+                # A session outside prime binds only to its own workspace or a session in it, and the row records that reach for every
+                # fire (review of #870, F1).
+                reach=await caller_reach(storage_provider, ctx),
                 deps=_binding_deps(),
             )
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         except EventMatcherPatternError as exc:
             return _err(str(exc), error_type="validation-error")
+        except SubscriptionTargetNotFound as exc:
+            return _err(str(exc), error_type="not-found")
         return _ok(sub)
 
     registry["create_channel_binding"] = (
@@ -912,7 +918,11 @@ def build_system_toolset(
                 "/ command.invoked) to a platform action (agent_fresh_session "
                 "/ graph_fresh_session / session_append). "
                 "The trigger must already exist as a channel-kind trigger; "
-                "unknown trigger returns ``type=trigger_not_found``."
+                "unknown trigger returns ``type=trigger_not_found``. From a "
+                "session outside the default workspace (prime) the config may "
+                "name only your own workspace or a session in it: another one "
+                "answers type=not-found, as an unknown id does, and every "
+                "fire checks it again."
             ),
             args_schema=_CreateChannelBindingArgs.model_json_schema(),
             examples=[

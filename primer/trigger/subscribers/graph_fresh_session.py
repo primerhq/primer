@@ -31,6 +31,7 @@ from primer.trigger.subscribers import (
     register,
 )
 from primer.trigger.owner import OWNER_UNRESOLVABLE, principal_for_fire, unresolvable_subscription_owner
+from primer.trigger.reach import TARGET_OUT_OF_REACH, refuse_fire_out_of_reach
 from primer.workspace.session_factory import (
     SessionFactoryDeps,
     start_workspace_session,
@@ -54,6 +55,11 @@ class GraphFreshSessionDispatcher:
         fire_id: str,
         deps: DispatchDeps,
     ) -> SubscriptionDispatchResult:
+        # A target outside the reach recorded on the subscription is refused before anything else (review of #870, F1).
+        out_of_reach = await refuse_fire_out_of_reach(sub, deps.storage_provider)
+        if out_of_reach is not None:
+            return SubscriptionDispatchResult(ok=False, error_code=TARGET_OUT_OF_REACH, error_message=out_of_reach)
+
         # The rendered payload IS the graph_input; the workspace graph
         # executor reads ``session.metadata['graph_input']`` so the
         # payload must parse as a JSON object.

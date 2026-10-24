@@ -29,6 +29,8 @@ def _owner(row) -> tuple:
 
 
 async def test_the_trigger_tools_record_and_refresh_the_owner(fake_storage_provider) -> None:
+    # The caller's run is in the default workspace (prime), which reaches the subscription's ws-1 (review of #870, F1).
+    await fake_storage_provider.set_default_workspace_id(caller().workspace_id)
     tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
     as_user, as_admin = caller("user"), caller("admin")
 
@@ -72,6 +74,8 @@ async def test_a_call_without_an_identity_records_no_owner(fake_storage_provider
 
 
 async def test_create_channel_binding_records_the_owner(fake_storage_provider) -> None:
+    # The caller's run is in the default workspace (prime), which reaches the binding's ws-1 (review of #870, F1).
+    await fake_storage_provider.set_default_workspace_id(caller().workspace_id)
     await fake_storage_provider.get_storage(Trigger).create(Trigger(
         id="trg-ch-1", slug="ch-trigger", name="ch", created_at=datetime.now(timezone.utc),
         config=ChannelTriggerConfig(provider_id="cp-1"),
