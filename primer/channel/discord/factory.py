@@ -249,9 +249,10 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             adapter = entry.adapters_by_channel_id.get(parent_id)
             if adapter is None:
                 return
-            # Session-prompt reply: the store is the authoritative source.
-            # A thread reply that matches a parked ask_user correlation is
-            # consumed here before chat-surface dispatch.
+            # A reply to an OPEN question: the thread's row names the ask_user gate (tool_call_id set) that the prompt posted into this
+            # thread parked on. The store is the authoritative source. A row with no gate is just the thread's mapping to its session: such
+            # a reply is the next message of that session and goes to the router below, which steers it (ticket 01a16e37-a555: it used to
+            # be taken for an answer, published to a key nothing waits on, and the mapping deleted, so the next message started a new session).
             sp = getattr(adapter, "_sp", None)
             if sp is not None:
                 from primer.channel.correlation import CorrelationStore
@@ -261,7 +262,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                     )
                 except Exception:
                     rec = None
-                if rec is not None and rec.kind == "session":
+                if rec is not None and rec.kind == "session" and rec.tool_call_id:
                     relayed = await adapter._handle_text_reply(
                         workspace_id=rec.workspace_id,
                         session_id=rec.session_id,
@@ -276,18 +277,19 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                             await message.reply(refusal_notice(relayed))
                         except Exception:
                             logger.exception("discord: could not send the stale-question notice")
+                    # One reply answers one question (or finds it replaced): only the gate is cleared, so the thread stays mapped to its
+                    # session and the next reply steers it.
                     try:
-                        await CorrelationStore(sp).clear(
+                        await CorrelationStore(sp).clear_gate(
                             adapter._channel.id, str(thread_id),
                         )
                     except Exception:
-                        pass
+                        logger.warning("discord: clearing the answered question of thread %s failed", thread_id, exc_info=True)
                     return
-            # Chat-surface dispatch: an in-thread message routes to that
-            # thread's chat (thread id = the discord thread id).
             if getattr(adapter, "_sp", None) is None:
                 return
-            # Every inbound message is a routed event (S6 section 5).
+            # Every inbound message is a routed event (S6 section 5): the router steers the session the thread is mapped to, or fires the
+            # channel triggers that create one.
             await _route_channel_event(adapter, provider_id, message)
             return
         # Top-level message in the channel: routed as an event, which fires

@@ -296,15 +296,18 @@ async def test_on_message_thread_session_reply(monkeypatch):
         async def lookup(self, cid, key):
             return rec
 
-        async def clear(self, cid, key):
+        async def clear_gate(self, cid, key):
             cleared.append(key)
+
+        async def clear(self, cid, key):
+            raise AssertionError("an answer must not delete the thread's mapping")
 
     monkeypatch.setattr("primer.channel.correlation.CorrelationStore", Corr)
     msg = _message(_fake_thread(777, 999), content="answer", mid=8)
     await client.on_message(msg)
     adapter._handle_text_reply.assert_awaited_once()
     assert adapter._handle_text_reply.await_args.kwargs["text"] == "answer"
-    assert cleared == ["777"]
+    assert cleared == ["777"], "the answered question was not cleared from the thread"
     adapter.handle_inbound_chat_message.assert_not_awaited()
 
 
@@ -501,7 +504,7 @@ async def test_on_message_thread_clear_error_swallowed(monkeypatch):
         async def lookup(self, cid, key):
             return rec
 
-        async def clear(self, cid, key):
+        async def clear_gate(self, cid, key):
             raise RuntimeError("clear failed")
 
     monkeypatch.setattr("primer.channel.correlation.CorrelationStore", Corr)
