@@ -315,7 +315,7 @@ async def read_file(
     DESCRIPTOR is checked with ``fstat``, so the check and the read are about the same file: a process in the workspace that swaps a
     FIFO in after the ``stat`` would otherwise pin this thread in ``open()`` (a FIFO with no writer blocks there) or in ``read()``, and
     the platform's 5 s timeout only abandons such a thread, so enough of them exhaust the pool (the G5 audit, G5-09). ``O_NONBLOCK``
-    changes nothing for a regular file.
+    changes nothing for a regular file. ``O_NOFOLLOW`` refuses a symbolic link swapped in after the path was resolved (``EACCES``).
     """
     raw_path: str = args.get("path", "")
     resolved = _resolve_safe(raw_path, workspace_root)
@@ -327,8 +327,12 @@ async def read_file(
             raise _os_err_to_op_error(exc, raw_path)
         _refuse_unless_regular(st.st_mode, raw_path)
         try:
-            fd = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+            # O_NOFOLLOW: the path is already resolved, so a symbolic link here was swapped in after the containment check, and
+            # following it could leave the workspace root (the review of #869, F7).
+            fd = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
         except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise OpError(ErrorCode.EACCES, f"A symbolic link was swapped in and is not followed: {raw_path!r}")
             raise _os_err_to_op_error(exc, raw_path)
         try:
             _refuse_unless_regular(os.fstat(fd).st_mode, raw_path)
