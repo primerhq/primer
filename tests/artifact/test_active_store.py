@@ -142,3 +142,22 @@ async def test_selecting_the_store_already_active_again_succeeds(world) -> None:
     assert (await set_active_artifact_store(sp, "mem-1", probe=_passes)).provider_id == "mem-1"
     assert (await set_active_artifact_store(sp, "db-3", probe=_passes)).provider_id == "db-3"
     assert (await read_active_artifact_store(sp)).provider_id == "db-3"
+
+
+@pytest.mark.parametrize("first_selection", [True, False], ids=["no-row-yet", "row-exists"])
+async def test_a_selection_of_the_same_store_written_during_the_probe_is_success(world, first_selection) -> None:
+    """Someone selected the very store this call selects while it was probing: no race was lost, the store asked for is the active one
+    (the review of #869, F9). It used to answer 409."""
+    sp, _, _ = world
+    if not first_selection:
+        await sp.get_storage(ArtifactStorageProvider).create(ArtifactStorageProvider(id="db-3", provider="db"))
+        await set_active_artifact_store(sp, "db-3", probe=_passes)
+
+    async def probe_while_the_same_is_selected(row, *, storage_provider):
+        await set_active_artifact_store(storage_provider, "mem-1", probe=_passes)
+        return ArtifactProbeResult(ok=True)
+
+    selected = await set_active_artifact_store(sp, "mem-1", probe=probe_while_the_same_is_selected)
+
+    assert selected.provider_id == "mem-1"
+    assert (await read_active_artifact_store(sp)).provider_id == "mem-1"
