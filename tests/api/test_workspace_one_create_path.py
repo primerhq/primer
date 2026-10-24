@@ -8,8 +8,8 @@ both doors answer it in the same words: REST 501 ``not_implemented``, the tool `
 The two doors also wrote different first phases: REST ``running`` (``materialise`` returned a live handle), the tool the model's default
 ``pending``, which the probe promotes at its first good ping. Both now build the row with :func:`new_workspace_row` (the bootstrap seed too), whose
 phase is :data:`NEW_WORKSPACE_PHASE`: ``pending`` until the first good probe, which is what the probe is built for. No reader depends on
-``running`` at create: no session start, wake or turn reads the workspace's phase, the console colours ``pending`` amber and shows its failure
-banner on ``failed`` only, and the one ``running`` check (reopening a ``workspace_lost`` session) concerns a workspace that existed before.
+``running`` at create: no session start, wake or turn tells ``pending`` from ``running``, the console reads the phase only for its ``failed``
+banner, and the one ``running`` check (reopening a ``workspace_lost`` session) concerns a workspace that existed before.
 """
 
 from __future__ import annotations

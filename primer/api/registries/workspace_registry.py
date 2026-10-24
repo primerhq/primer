@@ -66,7 +66,8 @@ _MARK_TRIES = 3
 #: The phase every create door writes a new workspace row with (ticket 01a16d72, ruling 2): ``pending`` until the probe's first good ping
 #: promotes it to ``running`` (:mod:`primer.workspace.probe`). ``POST /v1/workspaces`` and the bootstrap seed used to write ``running`` and the
 #: ``create_workspace`` tool ``pending``, so the same workspace read differently depending on who made it. No reader depends on ``running`` at
-#: create: nothing gates a session start, a wake or a turn on the phase, and the console shows ``pending`` as pending, not as broken.
+#: create: nothing gates a session start, a wake or a turn on ``pending`` versus ``running``, and the console reads the phase only for its
+#: ``failed`` banner.
 NEW_WORKSPACE_PHASE: Literal["pending"] = "pending"
 
 
@@ -462,8 +463,8 @@ class WorkspaceRegistry:
         (like :meth:`is_being_destroyed`), and a start already past its check when the mark is set can still write its row after the scan.
 
         Once ``before_teardown`` has passed, and before the backend is reached, the row's ``phase`` is written ``terminating`` (ticket 01a16d72
-        ruling 3; nothing wrote it before), so a reader sees the delete in progress: the probe skips the row, the reply-binding route refuses it,
-        the console greys it. A refused delete (the default workspace, an unknown id, the rank scan) never writes it. If the destroy then fails,
+        ruling 3; nothing wrote it before), so a reader sees the delete in progress: the probe skips the row and the reply-binding route refuses
+        it. A refused delete (the default workspace, an unknown id, the rank scan) never writes it. If the destroy then fails,
         the row must not stay ``terminating``, which nothing would ever move again (:meth:`_after_a_failed_destroy`).
         """
         if workspace_id == await resolve_default_workspace_id(self._sp):
@@ -539,9 +540,11 @@ class WorkspaceRegistry:
     ) -> None:
         """Leave a phase that tells the truth after a destroy failed (or was cancelled) past its ``terminating`` mark.
 
-        * Nothing was torn down (the backend could not be reached): the workspace is as it was, so the phase goes back to what it was
-          and its sessions are left alone.
-        * The teardown itself failed, or the row could not be deleted after it: the runtime may be partly or wholly gone. The row reads
+        * Nothing was torn down because the backend could not be RESOLVED (:meth:`get_backend` raised: no provider row, or its backend could
+          not be built or initialised): the workspace is as it was, so the phase the mark replaced goes back and its sessions are left alone.
+        * The teardown itself failed, or the row could not be deleted after it: the runtime may be partly or wholly gone. An outage during the
+          teardown call is this case too (a Docker daemon or a cluster API that is down, with the backend already resolved and cached, which
+          it is once the probe or a create has used it): nothing may have been torn down, but the destroy cannot tell. The row reads
           ``failed``, with a ``failure_reason`` that says the delete did not finish and why, and every open session is ended
           ``workspace_lost``, as on every other transition to ``failed`` (the probe's): a failed workspace has ended its open sessions. The
           probe brings an intact workspace back to ``running`` after three good probes, and a ``workspace_lost`` session reopens then

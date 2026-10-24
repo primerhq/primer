@@ -277,9 +277,12 @@ row: its files stay on the provider's disk. See "Workspace delete is
 synchronous" under Gotchas. While the delete runs the row reads
 `phase="terminating"`. A delete that fails part way leaves the row
 `failed`, with a `failure_reason` that says the delete did not finish,
-and its open sessions ended `workspace_lost`: delete it again. A
-delete that could not reach the backend at all tore nothing down, and
-the row keeps its phase.
+and its open sessions ended `workspace_lost`: delete it again. That
+includes an outage of the backend during the teardown (a Docker daemon
+or a cluster API that is down). Only a delete that could not resolve
+the backend at all (no provider row, or a backend that could not be
+built) tore nothing down for certain, and the row gets back the phase
+it had.
 
 ## MCP tools
 
