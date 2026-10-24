@@ -13,8 +13,9 @@ every structured copy of the event (the queued steer's attribution, the USER_INP
 ``canvas_event`` record) is the event without its ``value`` and ``data`` (``primer.canvas.delivery``).
 
 Nothing a user typed or an agent wrote can close a block or start a line in it: every string is written as a JSON string, so a newline
-in it is ``\\n``, and every ``<`` in a line of a block is written ``\\u003c`` (both lines and attributes are made only of ids the canvas
-validated, numbers and such strings, so the only ``<`` a block holds are its own two tags). The copy is exact (plan Global Constraints).
+in it is ``\\n``, and every ``<`` in a line of a block is written ``\\u003c`` and every U+2028, U+2029 and U+0085 (which JSON leaves raw)
+as its escape (both lines and attributes are made only of ids the canvas validated, numbers and such strings, so the only ``<`` a block
+holds are its own two tags). The copy is exact (plan Global Constraints).
 Pure: no I/O.
 """
 
@@ -42,9 +43,16 @@ _TRUNCATED = "...(truncated)"
 _ATTRIBUTES = ("id", "rev", "element", "type", "kind", "source", "by")
 
 
+#: What a block's lines write as escapes: ``<`` (so nothing closes the block) and the Unicode line breaks JSON leaves raw, U+2028, U+2029
+#: and U+0085 (so nothing starts a line in it: the lead's ruling 7 on #892 round 2). Each is only ever inside a string, where the escape
+#: reads back as the character.
+_SHIELDED = str.maketrans({"<": "\\u003c", "\u2028": "\\u2028", "\u2029": "\\u2029", "\u0085": "\\u0085"})
+
+
 def _shield(text: str) -> str:
-    """``text`` with every ``<`` written ``\\u003c``: a block's lines hold ``<`` only inside strings, where the escape reads back."""
-    return text.replace("<", "\\u003c")
+    """``text`` with every ``<`` written ``\\u003c`` and every U+2028, U+2029 and U+0085 as its escape: a block's lines hold them only
+    inside strings, where the escape reads back."""
+    return text.translate(_SHIELDED)
 
 
 def _literal(value: Any) -> str:

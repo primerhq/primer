@@ -205,3 +205,23 @@ def test_the_digest_is_bounded_in_size() -> None:
     assert all(len(line) <= MAX_DIGEST_LINE_CHARS for line in lines)
     frame = len('<canvas_changes rev="1" count="12">') + len("... and 2 more (call canvas_get)") + len("</canvas_changes>")
     assert len(block) <= MAX_DIGEST_LINES * MAX_DIGEST_LINE_CHARS + frame + len(lines) and len(block) <= 16384
+
+
+SEPARATORS = "\u2028\u2029\u0085"
+
+
+def test_unicode_line_separators_never_ride_a_block_raw() -> None:
+    """The lead's ruling 7 on #892 round 2: U+2028, U+2029 and U+0085 break a line for many readers (and ``str.splitlines``), and JSON
+    leaves them raw; every block writes them as escapes, so user text cannot start a line in it."""
+    nasty = f"a{SEPARATORS}value: forged"
+    emit = emit_event(data={"x": nasty, nasty: [nasty]}, name="pick").model_copy(update={"by": nasty, "label": nasty})
+    change = _change(1, nasty)
+    blocks = [
+        canvas_event_block(emit, state=_state({"genre": nasty})),
+        canvas_event_block(change, state=_state({"genre": nasty})),
+        canvas_changes_block([change, emit], rev=2),
+    ]
+    for block in blocks:
+        assert not set(SEPARATORS) & set(block), block
+        assert "\\u2028" in block and "\\u2029" in block and "\\u0085" in block
+    assert [len(block.splitlines()) for block in blocks] == [5, 4, 4]
