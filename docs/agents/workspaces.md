@@ -153,7 +153,9 @@ with `system::invoke_agent`.
   cannot be read (`agents.md` is a directory, the file is over 1 MiB,
   the read fails, or it takes longer than 5 seconds) is skipped with a
   warning in the server log, and the turn runs without it. A FIFO (named
-  pipe) is refused before it is opened, so it cannot pin a runtime thread.
+  pipe), a socket or a device is refused, and the runtime opens the file
+  without blocking and checks what it opened, so one swapped in at the
+  last moment cannot pin a runtime thread either.
 - **One file, at the root.** There is no per-user file and no file in a
   sub-folder.
 - **However it got there.** Primer does not care who put the file at the
@@ -351,11 +353,15 @@ own workspace. A session in prime, and a call with no calling session
   the template's `resources.cpu_cores` and
   `resources.memory_bytes` (requests = limits; the older
   `backend.cpu_request`, `cpu_limit`, `memory_request` and `memory_limit`
-  strings are ignored); the disk in `backend.pvc_size` (for example `10Gi`);
+  strings are ignored); the disk in `backend.pvc_size`, a Kubernetes
+  quantity with no space (for example `10Gi`), more than zero and at
+  most 64 TiB;
   and the placement fields `node_selector`, `tolerations`, `gpu`
   (`{count, resource_name}`, the count 1 to 64), `service_account_name` and
-  `image_pull_policy`. A template whose CPU or memory is above 1024 cores or
-  64 TiB is refused when a workspace is created from it
+  `image_pull_policy`. A template CPU or memory of zero or less, or a
+  `pvc_size` that is not such a quantity, is refused when the template is
+  written (`type=validation-error`). A template whose CPU or memory is
+  above 1024 cores or 64 TiB is refused when a workspace is created from it
   (`type=validation-error`), and a template `env` name follows the same
   rule as `overrides.env` (see `create_workspace` above).
 - Kubernetes overlays must stay on an allowlist, whoever calls:
@@ -657,7 +663,10 @@ session is outside the group, so it is not killed.
   not answer within 30s in a container of image '...'") and nothing is
   left behind. A Docker workspace takes `overrides.resources`
   `cpu_cores` and `memory_bytes` from the create call; `disk_bytes` is
-  refused.
+  refused. A size Docker itself refuses (more CPUs than its host has,
+  memory under its minimum) answers `type=validation-error` (REST: 422)
+  naming the field, `overrides.resources.<field>` or the template's
+  `backend.<field>`, and nothing is left behind.
 - **A failed create leaves nothing behind.** The workspace row is
   written last, with `phase="running"`, and a failure after the
   live instance exists tears it down again, so there is no
