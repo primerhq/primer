@@ -1309,7 +1309,6 @@ class TestWorkspaceRouter:
                 request=None,  # type: ignore[arg-type]
                 workspace_storage=row_storage,
                 template_storage=sp.get_storage(WorkspaceTemplate),
-                provider_storage=sp.get_storage(WorkspaceProvider),
                 registry=wsr,
             )
 

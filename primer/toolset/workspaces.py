@@ -90,7 +90,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.model.workspace_refusal import ReservedWorkspaceError
+from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceNotImplementedError
 from primer.model.workspace_session import (
     SessionBinding,
     SessionState,
@@ -636,7 +636,9 @@ _CREATE_WORKSPACE_WHEN = (
     "message that names the image, and nothing is left behind. "
     f"A custom image must contain the primer workspace runtime: build it FROM ``{DOCKER_RUNTIME_IMAGE}``. "
     "Refused (``type=forbidden``) from a session outside the default workspace (prime): create workspaces from a session in prime or "
-    "from the console."
+    "from the console. "
+    "A template on a Kubernetes provider with ``variant: agent_sandbox`` is refused (``type=not-implemented``, REST 501): no backend "
+    "builds that variant yet, and nothing is created."
 )
 
 #: What ``create_workspace`` answers a session outside the default workspace (review of #870, F4, lead ruling): such a session could not reach
@@ -1672,6 +1674,10 @@ def build_workspaces_toolset(
             # A refusal of the request itself (a size the provider cannot honour, master Review Focus 5): the message
             # names overrides.resources.<field>, and nothing was built.
             return _err(exc.message, error_type="validation-error")
+        except WorkspaceNotImplementedError as exc:
+            # A Kubernetes provider with variant=agent_sandbox: no backend builds it. Refused by materialise, the point REST passes too, in the
+            # words REST answers with its 501 (ticket 01a16d72 ruling 1); nothing was built.
+            return _err_from_primer(exc, error_type="not-implemented")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="backend-error")
         # materialise() created a live instance and the durable row is written LAST, so a failure or a cancel before
