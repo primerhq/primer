@@ -296,8 +296,17 @@ async def test_reset_prime_instructions_rewrites_agents_md(client, app):
     registry = await _recorded_prime(app)
     r = await client.post("/v1/setup/reset_prime_instructions")
     assert r.status_code == 200, r.text
-    assert r.json() == {"workspace_id": "prime", "path": "agents.md", "bytes": len(shipped_prime_agents_md())}
+    assert r.json() == {"workspace_id": "prime", "path": "agents.md", "bytes": len(shipped_prime_agents_md()), "shadows": None}
     assert registry.live["prime"].files == {"agents.md": shipped_prime_agents_md()}
+
+
+async def test_reset_prime_instructions_says_when_it_shadows_AGENTS_md(client, app):
+    registry = await _recorded_prime(app, agents_md=None)
+    (await registry.get_workspace("prime")).files["AGENTS.md"] = b"the team's own"
+    r = await client.post("/v1/setup/reset_prime_instructions")
+    assert r.status_code == 200, r.text
+    assert r.json()["shadows"] == "AGENTS.md"
+    assert registry.live["prime"].files == {"AGENTS.md": b"the team's own", "agents.md": shipped_prime_agents_md()}
 
 
 async def test_reset_prime_instructions_is_admin_only(raw_client, app):

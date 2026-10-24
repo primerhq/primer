@@ -141,6 +141,13 @@ class PrimeInstructionsReset(BaseModel):
     )
     path: str = Field(..., description="The file rewritten, relative to the workspace root: always `agents.md`.")
     bytes: int = Field(..., description="The size of the shipped instructions now in the file.")
+    shadows: str | None = Field(
+        ...,
+        description=(
+            "`AGENTS.md` when an `AGENTS.md` is beside the written `agents.md`: it stays, but is no longer read while `agents.md` "
+            "exists. Null when there is none."
+        ),
+    )
 
 
 @setup_router.post(
@@ -157,7 +164,7 @@ async def reset_prime_instructions(request: Request) -> PrimeInstructionsReset:
 
     The explicit reset of pivot P2 (design 5.1): a boot only ever writes the file when it is absent, so this is the one way back to
     the shipped text after an edit. Only ``agents.md`` is written; an ``AGENTS.md`` beside it is left in place, and is not read while
-    ``agents.md`` exists. Admin only, like every setup route. The tool twin is ``system__reset_prime_instructions``.
+    ``agents.md`` exists (``shadows`` names it). Admin only, like every setup route. The tool twin is ``system__reset_prime_instructions``.
     """
     result = await reset_prime_agents_md(
         get_storage_provider(request), workspace_registry=get_workspace_registry(request),

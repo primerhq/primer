@@ -129,7 +129,9 @@ async def test_the_tool_rewrites_the_file(provider, ws):
     """With no calling session (the MCP endpoint hands handlers no context)."""
     result = await _call(provider)
     assert not result.is_error, result.output
-    assert json.loads(result.output) == {"workspace_id": "prime", "path": "agents.md", "bytes": len(shipped_prime_agents_md())}
+    assert json.loads(result.output) == {
+        "workspace_id": "prime", "path": "agents.md", "bytes": len(shipped_prime_agents_md()), "shadows": None,
+    }
     assert ws.files["agents.md"] == shipped_prime_agents_md()
     assert ws.files["notes.md"] == b"keep" and ws.writes == ["agents.md"]
 
@@ -154,12 +156,29 @@ async def test_the_legacy_default_workspace_is_reset_under_its_own_id(fake_stora
     assert ws.files["agents.md"] == shipped_prime_agents_md()
 
 
-async def test_an_AGENTS_md_is_left_in_place(provider, ws):
-    """The reset writes agents.md and nothing else; an AGENTS.md beside it stays (and is not read while agents.md exists)."""
+async def test_an_AGENTS_md_is_left_in_place_and_the_result_says_it_is_shadowed(provider, ws):
+    """The reset writes agents.md and nothing else; an AGENTS.md beside it stays, is not read while agents.md exists, and the result
+    names it in ``shadows``."""
     ws.files = {"AGENTS.md": b"theirs"}
     result = await _call(provider)
     assert not result.is_error, result.output
     assert ws.files == {"AGENTS.md": b"theirs", "agents.md": shipped_prime_agents_md()}
+    assert json.loads(result.output)["shadows"] == "AGENTS.md"
+
+
+async def test_an_AGENTS_md_the_backend_refuses_to_describe_still_counts_as_beside(provider, ws):
+    """A link out of the root (or a socket) at ``AGENTS.md``: the backend answers ``file_info`` with a 400, but an entry is there."""
+    real_info = ws.file_info
+
+    async def _info(path):
+        if path == "AGENTS.md":
+            raise BadRequestError("'AGENTS.md' resolves outside the workspace root")
+        return await real_info(path)
+
+    ws.file_info = _info
+    result = await _call(provider)
+    assert not result.is_error, result.output
+    assert json.loads(result.output)["shadows"] == "AGENTS.md"
 
 
 # ---- reach ------------------------------------------------------------------------------------------------------------------------
