@@ -113,14 +113,19 @@ def render_input_template(
 ) -> str:
     """Render ``template`` against ``context``; return the rendered string.
 
-    Variables exposed to the template:
+    Variables exposed to the template (four, plus the ``fromjson`` and
+    ``strip_fences`` filters of the shared environment):
 
     * ``initial_input`` -- the graph's :attr:`GraphContext.initial_input`
-      (a list of :class:`Message` objects).
+      (whatever the run was given: a dict, a string or a list of
+      :class:`Message` objects).
     * ``iteration`` -- the current graph iteration (int).
     * ``nodes`` -- :attr:`GraphContext.nodes` (a dict keyed by node id;
       values are :class:`NodeOutput` instances). Templates access
       ``nodes.A.text`` / ``nodes.A.parsed`` via attribute syntax.
+    * ``ctx`` -- :attr:`GraphContext.ctx`, the run's
+      :class:`~primer.model.graph.ExecutionContext` (``ctx.artifact_dir``,
+      ``ctx.session_id``, ...).
 
     ``extra_scope`` (when supplied) merges into the Jinja namespace —
     used by the executor's per-fan-out-instance render path to expose

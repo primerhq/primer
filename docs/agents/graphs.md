@@ -62,7 +62,8 @@ checkpoints.
 The execution model is **Pregel-style supersteps**. At each superstep
 a ready set of nodes runs in parallel; when each finishes, edges out
 of it are evaluated and newly-ready nodes join the next superstep. The
-graph terminates when an `end` node fires or no ready nodes remain.
+graph completes when no ready nodes remain: every `end` node fires when it
+is reached, and the first one does not stop the others.
 
 ## Mental model
 
@@ -74,9 +75,12 @@ A `Graph` row carries:
 - `max_iterations` - hard cap on supersteps. Required for any graph
   with a cycle or a callable router; optional otherwise.
 
-There is no `sink` field: termination is structural. Every graph MUST
-have **exactly one `begin` node** and **at least one `end` node**; the
-graph stops when an `end` fires.
+There is no `sink` field: termination is structural. To RUN, a graph
+needs **exactly one `begin` node**, **at least one `end` node**, and every
+`end` reachable from `begin`. These are checked when a session binds the
+graph, not when it is saved: a graph with no `begin`, or with an `end` the
+`begin` cannot reach, saves as a draft, and the session create refuses it
+(422, every problem in one message; see "Lifecycle and states").
 
 ### Node kinds
 
@@ -183,17 +187,24 @@ So a typo in a placeholder fails loudly at run time.
 Every template (`agent`/`graph` `input_template`, `end`
 `output_template`, `fan_in` `aggregate_template`, and each string leaf
 in a `tool_call` `arguments`) renders against the **graph context**,
-which exposes exactly three top-level variables:
+which exposes four top-level variables:
 
 | Variable | Meaning |
 |----------|---------|
 | `initial_input` | The graph's input - whatever you passed as `graph_input` at session-create. Its type is **whatever you passed** (a dict, a string, or a `list[Message]`). NOT named `input`. |
 | `iteration` | The current superstep counter (int). The `begin` node runs at iteration 0, so the **first agent node runs at iteration 1**, not 0. Do not use `iteration == 0` to detect a node's first run in a loop - test `nodes.<prev> is defined` instead (see Workflow 4). |
+| `ctx` | Facts about the run: `ctx.workspace_id`, `ctx.session_id`, `ctx.graph_id`, `ctx.artifact_dir` (`artifacts/<session id>`, a folder for this run's files), `ctx.now` (ISO-8601 UTC, taken once when the run starts), `ctx.surface` and `ctx.identity` (who the run acts for). |
 | `nodes` | A dict keyed by node id; values are `NodeOutput` (or `list[NodeOutput]` for fan-out targets, including `tee`). Holds only nodes that have **already run** this far - referencing a node that has not run yet (e.g. an un-taken conditional branch) raises under `StrictUndefined`, so guard with `{% if nodes.<id> is defined %}`. Access via attribute syntax: `nodes.extract.text`, `nodes.extract.parsed.entities`. |
 
 Inside a fan-out `map`/`broadcast` instance, two more variables are in
 scope for that instance's template: `fanout_index` (int) and
 `fanout_item` (the per-instance item).
+
+Two filters come with the environment: `fromjson` parses a JSON string
+(`{{ (nodes.search.text | fromjson)[0].url }}`, for a tool whose output is
+JSON but whose `parsed` is empty), and `strip_fences` takes code out of
+markdown fences (`{{ nodes.coder.text | strip_fences }}`, before a node
+writes it to a file).
 
 The **default** `input_template` (when omitted) is
 `{% for m in initial_input %}{{ m.parts[0].text }}\n{% endfor %}` - it
@@ -309,8 +320,10 @@ reachable from `begin`.
   not `.` or `..`) to use it verbatim (anything else is refused on create with
   `graph_id_invalid` / `type=validation-error`).
   Immutable after creation. Approval-gated by default, like `update_graph` and `delete_graph` and the builder's `crud` tools: in a session the call parks until an operator approves it; over MCP it is refused (`approval_required`) unless the operator disables or retunes its gate (the live gate is the one `system::describe_tool` reports).
-- `system::update_graph` - replace the row.
-- `system::delete_graph` - refused with a `conflict` error (`in_use_by`,
+- `system::update_graph` - replace the row. Approval-gated by default, like
+  `create_graph`.
+- `system::delete_graph` - approval-gated by default, like `create_graph`.
+  Refused with a `conflict` error (`in_use_by`,
   the same 409 the REST route answers) while another graph has a
   sub-graph (`graph`) node naming it, a session that is not ended is
   bound to it, or a trigger subscription targets it (an ended session
@@ -588,11 +601,17 @@ following `agent` node instead of doing the selection inside the
 
 **Goal.** Pause the graph for a human decision, then route on the
 answer. A `tool_call` node calls the value-yielding `system__ask_user`;
-the run parks until the operator replies, the reply lands in
-`nodes.confirm.text`, and a `json_path` router sends the run down the
-approve or reject branch. The same shape works with an `agent` node that
-calls `ask_user` during its turn; either way the whole graph parks, not
-just the node.
+the run parks until the operator replies, and the reply lands in
+`nodes.confirm.text` as `{"response": "approve"}`. A `json_path` router
+reads `parsed`, never `text`, and a `tool_call` node fills `parsed` only
+when it has an `output_schema`, so the node carries one for that object
+and the router reads `response`. The schema does not require `response`:
+a question that times out or is cancelled answers `{"timed_out": true,
+...}` or `{"cancelled": true, ...}`, which still fits it, has no
+`response`, and takes `default_to` (the reject branch); a required
+`response` would fail the run with `tool_output_invalid` instead. The same
+park works with an `agent` node that calls `ask_user` during its turn;
+either way the whole graph parks, not just the node.
 
 ```json
 {
@@ -605,7 +624,8 @@ just the node.
        "input_template": "Draft the deploy plan for: {{ initial_input.change }}"},
       {"id": "confirm", "kind": "tool_call", "tool_id": "system__ask_user",
        "arguments": {"prompt": "Approve this deploy plan? Reply approve or reject.\n\n{{ nodes.plan.text }}",
-                     "response_schema": {"type": "string", "enum": ["approve", "reject"]}}},
+                     "response_schema": {"type": "string", "enum": ["approve", "reject"]}},
+       "output_schema": {"type": "object", "properties": {"response": {"type": "string"}}}},
       {"id": "do_deploy", "kind": "agent", "agent_id": "deployer",
        "input_template": "Execute the approved plan:\n{{ nodes.plan.text }}"},
       {"id": "end_ok", "kind": "end", "output_template": "deployed: {{ nodes.do_deploy.text }}"},
@@ -616,7 +636,7 @@ just the node.
       {"kind": "static", "from_node": "plan", "to_node": "confirm"},
       {"kind": "conditional", "from_node": "confirm", "router": {
         "kind": "json_path",
-        "branches": [{"conditions": [{"path": "", "op": "eq", "value": "approve"}], "to_node": "do_deploy"}],
+        "branches": [{"conditions": [{"path": "response", "op": "eq", "value": "approve"}], "to_node": "do_deploy"}],
         "default_to": "end_no"
       }},
       {"kind": "static", "from_node": "do_deploy", "to_node": "end_ok"}
@@ -659,12 +679,15 @@ re-parks until every pending decision is resolved, then advances.
 
 - **The template variable is `initial_input`, not `input`.** With
   `StrictUndefined`, `{{ input.text }}` raises at render time.
-- **Exactly one `begin`, at least one `end`.** Begin has no incoming
-  edges; end nodes have no outgoing edges; every end must be reachable
-  from begin, or create fails.
+- **Exactly one `begin`, at least one `end`, every `end` reachable.**
+  Begin has no incoming edges and end nodes have no outgoing edges, or the
+  create fails. The rest is checked when a session binds the graph: a
+  graph with no `begin`, or with an `end` the `begin` cannot reach, saves
+  as a draft, and the session create refuses it (422).
 - **json_path routers read `NodeOutput.parsed`, not `text`.** The
-  source node must set `response_format` or `parsed` is `null` and
-  every condition is False. A missing `path` makes every operator
+  source node must set `response_format` (an `agent` node) or
+  `output_schema` (a `tool_call` node, whose answer must be a JSON
+  object), or `parsed` is `null` and every condition is False. A missing `path` makes every operator
   return False (use `op: "exists"` to test presence).
 - **`nodes.<id>` holds only nodes that already ran.** Referencing an
   un-taken conditional branch (or any not-yet-run node) raises under
@@ -679,9 +702,11 @@ re-parks until every pending decision is resolved, then advances.
   becomes a single-element list.
 - **Node fields are top-level, edges use `from_node`/`to_node`.**
   There is no `config` wrapper and no `from`/`to` shorthand.
-- **Tool outputs land in `text`, not `parsed`.** To make an agent's
-  structured output flow, set its `response_format` and read
-  `nodes.<id>.parsed`.
+- **Tool outputs land in `text`; `parsed` needs an `output_schema`.** A
+  `tool_call` node fills `parsed` only with an `output_schema` and a JSON
+  object answer (see Workflow 7); else read the text (`fromjson` parses
+  it). To make an agent's structured output flow, set its
+  `response_format` and read `nodes.<id>.parsed`.
 - **Cycles and callable routers need `max_iterations`.** A loopable
   graph without the cap saves as a draft but is refused (422) when a
   session binds to it; see "Lifecycle and states".
