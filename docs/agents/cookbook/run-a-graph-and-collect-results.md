@@ -15,6 +15,7 @@ mcp_tools:
 Run a multi-step graph headlessly inside a workspace and collect its result over MCP.
 
 ## Prerequisites
+- Run it over MCP or from a session in the default workspace (prime). From a session in any other workspace `workspaces::create_workspace` answers `type=forbidden`, and the workspace tools reach only that session's own workspace.
 - A registered graph; find one with `search::search_graphs`.
 - A workspace template; list with `workspaces::list_workspace_templates`.
 

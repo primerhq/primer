@@ -265,6 +265,12 @@ system toolset for completeness but agents rarely need to touch them.
 - `system::clear_reply_binding` - sets `workspace.reply_binding` to
   null. Body: `workspace_id`.
 
+From a session outside the default workspace (prime) both tools reach
+only your own workspace: another one answers `type=not-found` exactly
+as a workspace that does not exist, whatever `channel_id` you pass
+(the workspace is checked first). A session in prime, and a call with
+no calling session (MCP), reach every workspace.
+
 After setting a reply binding, all `ask_user`, `tool_approval`, and
 `inform` gates plus the start ack and final result from sessions in
 that workspace forward to the bound channel. No per-gate flags; the
@@ -277,7 +283,12 @@ suppress the acks while still forwarding gates).
   binding (a Subscription) on a `channel`-kind trigger. Body:
   `trigger_id`, `event_matcher`, `config` (the action), optional
   `reply_target`, `payload_template`, `parallelism`, `enabled`. An
-  unknown trigger returns `type=trigger_not_found`.
+  unknown trigger returns `type=trigger_not_found`. From a session
+  outside the default workspace (prime) the action may name only your
+  own workspace or a session in it: another target answers
+  `type=not-found` as one that does not exist, and the binding records
+  that reach, which every fire checks again (see "reach" in
+  [triggers-and-subscriptions](triggers-and-subscriptions.md)).
 - `system::list_channel_bindings` - list the bindings on a channel
   trigger. Body: `trigger_id`.
 - `system::delete_channel_binding` - remove one binding while keeping
