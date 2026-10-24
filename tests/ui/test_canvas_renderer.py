@@ -95,6 +95,18 @@ def test_files_load_their_minted_url_under_every_policy_and_data_loads(ctx):
     assert call(ctx, "mediaDecision", "FILE:assets/c.png", ANY, urls, "")["kind"] == "load", "the scheme in any case, as the server matches it"
 
 
+def test_the_allowlist_refuses_a_port_its_policy_cannot_name(ctx):
+    """The review of #925: an allowlist entry is ``https://<host>`` in an Html frame's policy (port 443 only), so a URL naming another
+    port is refused by the renderer too, listed host or not, and the two agree."""
+    allow = {"media_policy": "allowlist", "media_allowlist": ["a.example.com", "*.cdn.example"]}
+    assert call(ctx, "mediaDecision", "https://a.example.com:8443/x.png", allow, {}, "") == {"kind": "blocked", "host": "a.example.com:8443"}
+    assert call(ctx, "mediaDecision", "https://x.cdn.example:444/x.png", allow, {}, "") == {"kind": "blocked", "host": "x.cdn.example:444"}
+    assert call(ctx, "mediaDecision", "https://other.example:8443/x.png", allow, {}, "") == {"kind": "blocked", "host": "other.example:8443"}
+    assert call(ctx, "mediaDecision", "https://a.example.com:443/x.png", allow, {}, "")["kind"] == "load"
+    assert call(ctx, "mediaDecision", "https://a.example.com/x.png", allow, {}, "")["kind"] == "load"
+    assert call(ctx, "mediaDecision", "https://a.example.com:8443/x.png", ANY, {}, "")["kind"] == "load", "any-https is https: in the header"
+
+
 @pytest.mark.parametrize("url", [
     "https://evil.example/files/x", "//evil.example/canvas/sessions/s/files/t", "/canvas/sessions/s/files/t?x=1",
     "/v1/workspaces/w", "/canvas/sessions/s/files/t\"onerror", "/canvas/sessions/../files/t/x",
@@ -149,6 +161,20 @@ def test_links_are_http_or_https_only(ctx):
         assert call(ctx, "linkTarget", bad) is None, bad
 
 
+@pytest.mark.parametrize("value, ok", [
+    ("\"IBM Plex Sans\", system-ui, -apple-system, sans-serif", True),
+    ("'Segoe UI', \"it's\"", True),
+    ("\"'\"'", False),
+    ("'\"'\"", False),
+    ("\"open", False),
+    ("a 'b", False),
+])
+def test_theme_quotes_are_parsed_not_counted(ctx, value, ok):
+    """The review of #925: ``"'"'`` has two of each quote and still leaves a string open. The console's fonts are quoted, so quotes
+    stay allowed, and each must close."""
+    assert call(ctx, "themeCss", {"--cv-font": value}) == (f":root{{--cv-font:{value};}}" if ok else "")
+
+
 def test_theme_css_drops_unsafe_values(ctx):
     theme = {
         "--cv-bg": "red;}", "--cv-fg": "url(x)", "--other": "blue", "--cv-accent": "#0969da",
@@ -199,6 +225,32 @@ def test_an_oversized_state_is_dropped(ctx):
     huge = {**STATE, "values": {f"v{i}": "x" * 1000 for i in range(2200)}}
     assert len(json.dumps(huge)) > 2 * 1024 * 1024
     assert call(ctx, "validateHostMessage", huge) is None
+
+
+def test_an_over_long_value_is_refused_before_it_is_scanned_or_serialised(ctx):
+    """The review of #925: the size bound runs before the walk's regex, JSON.stringify and the byte count, so a huge string or array
+    costs nothing to refuse."""
+    ctx.eval("var S = " + json.dumps(STATE) + ";")
+    ctx.eval("""
+      var calls = {test: 0, stringify: 0, index: 0};
+      var origTest = RegExp.prototype.test, origStringify = JSON.stringify;
+      function spy() {
+        RegExp.prototype.test = function (s) { calls.test += 1; return origTest.call(this, s); };
+        JSON.stringify = function () { calls.stringify += 1; return origStringify.apply(JSON, arguments); };
+      }
+      function unspy() { RegExp.prototype.test = origTest; JSON.stringify = origStringify; }
+      var huge = "x".repeat(3 * 1024 * 1024);
+      var long = new Proxy(new Array(500000).fill(1), {get: function (t, k) {
+        if (typeof k === "string" && /^[0-9]+$/.test(k)) calls.index += 1; return t[k]; }});
+    """)
+    out = js(ctx, "(function () { spy(); var r = CV.validateHostMessage(Object.assign({}, S, {values: {a: huge}})); unspy(); return [r, calls]; })()")
+    assert out[0] is None and out[1]["stringify"] == 0
+    assert out[1]["test"] < 50, "the 3 MB string is never scanned: only the short strings before it are"
+    out = js(ctx, "(function () { calls.index = 0; var r = CV.validateHostMessage(Object.assign({}, S, {values: {a: long}})); return [r, calls.index]; })()")
+    assert out == [None, 0], "an array longer than the node budget is refused before one element is read"
+    out = js(ctx, "(function () { spy(); calls.stringify = 0; calls.test = 0;"
+                  "var r = CV.validateHtmlMessage({type: 'copy', text: 'x'.repeat(200000)}); unspy(); return [r, calls]; })()")
+    assert out[0] is None and out[1]["stringify"] == 0 and out[1]["test"] <= 3, "only the short key and type strings are scanned"
 
 
 def test_a_state_that_is_not_json_is_dropped(ctx):
@@ -287,20 +339,40 @@ def test_html_messages_are_validated(ctx):
 def test_the_click_gate_passes_three_per_activation_and_none_without_one(ctx):
     """Audit G8-05, the lead's ruling 1 on S7, the gate itself (a stubbed userActivation; the wiring is in the DOM tests)."""
     ctx.eval("var act = {isActive: false}; var g = CV.makeEmitGate(act, 3);")
-    assert js(ctx, "[g.allow(), g.allow()]") == [False, False]
+    assert js(ctx, "[g.allow('a'), g.allow('a')]") == [False, False]
     ctx.eval("act.isActive = true;")
-    assert js(ctx, "[g.allow(), g.allow(), g.allow(), g.allow(), g.allow()]") == [True, True, True, False, False]
+    assert js(ctx, "[g.allow('a'), g.allow('a'), g.allow('a'), g.allow('a'), g.allow('a')]") == [True, True, True, False, False]
     assert js(ctx, "g.observe()") is True, "still the same activation"
-    assert js(ctx, "g.allow()") is False
+    assert js(ctx, "g.allow('a')") is False
     ctx.eval("act.isActive = false;")
-    assert js(ctx, "[g.observe(), g.allow()]") == [False, False]
+    assert js(ctx, "[g.observe(), g.allow('a')]") == [False, False]
     ctx.eval("act.isActive = true;")
-    assert js(ctx, "[g.allow(), g.allow(), g.allow(), g.allow()]") == [True, True, True, False], "a new click, a new budget"
+    assert js(ctx, "[g.allow('a'), g.allow('a'), g.allow('a'), g.allow('a')]") == [True, True, True, False], "a new activation, a new budget"
 
 
 def test_the_click_gate_fails_closed_without_the_activation_api(ctx):
-    assert js(ctx, "(function () { var g = CV.makeEmitGate(undefined, 3); return [g.allow(), g.allow()]; })()") == [False, False]
-    assert js(ctx, '(function () { var g = CV.makeEmitGate({isActive: "yes"}, 3); return g.allow(); })()') is False
+    assert js(ctx, "(function () { var g = CV.makeEmitGate(undefined, 3); return [g.allow('a'), g.allow('a')]; })()") == [False, False]
+    assert js(ctx, '(function () { var g = CV.makeEmitGate({isActive: "yes"}, 3); return g.allow("a"); })()') is False
+
+
+def test_the_first_frame_to_pass_owns_the_activation(ctx):
+    """The review of #925 (b): a frame that took the focus during another frame's activation gets nothing from it."""
+    ctx.eval("var act = {isActive: true}; var g = CV.makeEmitGate(act, 3);")
+    assert js(ctx, "[g.allow('a'), g.allow('b'), g.allow('a'), g.allow('b')]") == [True, False, True, False]
+    ctx.eval("act.isActive = false; g.observe(); act.isActive = true;")
+    assert js(ctx, "[g.allow('b'), g.allow('a')]") == [True, False], "the next activation belongs to whoever passes first"
+
+
+def test_input_on_the_renderer_claims_the_activation_until_it_ends(ctx):
+    """The review of #925 (a): a click on a native control or a Tab press makes an activation no Html frame may use."""
+    ctx.eval("var act = {isActive: true}; var g = CV.makeEmitGate(act, 3); g.claimForRenderer();")
+    assert js(ctx, "[g.allow('a'), g.allow('b'), g.watching(), g.observe()]") == [False, False, True, True]
+    ctx.eval("act.isActive = false;")
+    assert js(ctx, "[g.observe(), g.watching()]") == [False, False], "the claim ends with the activation"
+    ctx.eval("act.isActive = true;")
+    assert js(ctx, "g.allow('a')") is True, "the next activation is a frame's again"
+    ctx.eval("g.claimForRenderer();")
+    assert js(ctx, "g.allow('a')") is False, "a claim also closes an activation a frame already owns"
 
 
 def test_the_bucket_lets_twenty_a_second_through(ctx):

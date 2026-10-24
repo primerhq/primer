@@ -106,7 +106,10 @@ var RENDERER_WINDOW = {name: "renderer"};
 var listeners = {};
 var dispatched = [];
 var styleProps = {};
+var warned = [];
 var window = {
+  RTCPeerConnection: function () {}, webkitRTCPeerConnection: function () {}, RTCDataChannel: function () {},
+  console: {warn: function (m) { warned.push(m); }},
   parent: RENDERER_WINDOW,
   navigator: {userActivation: {isActive: false}},
   document: {visibilityState: "visible", documentElement: {scrollHeight: 120, style: {setProperty: function (k, v) { styleProps[k] = v; }}}},
@@ -160,6 +163,23 @@ def test_emit_copy_and_open_link_throw_without_a_click(frame):
     )
 
 
+def test_the_bootstrap_removes_webrtc_before_the_agents_code(frame):
+    """The lead's WebRTC ruling on #925: defence in depth only (the policy's ``webrtc 'block'`` is the rule where a browser knows it)."""
+    assert js(frame, "[typeof window.RTCPeerConnection, typeof window.webkitRTCPeerConnection, typeof window.RTCDataChannel]") == [
+        "undefined", "undefined", "undefined"]
+    frame.eval("window.RTCPeerConnection = function () {};")
+    assert js(frame, "typeof window.RTCPeerConnection") == "undefined", "the agent's code cannot put it back on the window"
+
+
+def test_a_dropped_call_is_heard_in_the_page(frame):
+    """The review of #925: the renderer answers a call its gate dropped with ``{type: "error"}``; the page gets a warning and a
+    ``primer:error`` event."""
+    frame.eval('var B = new Port(); deliver({type: "primer.html.connect", element: "w"}, RENDERER_WINDOW, [B]);'
+               'B.onmessage({data: {type: "error", message: "primer.emit was not sent"}}); B.onmessage({data: {type: "error", message: 5}});')
+    assert js(frame, "warned") == ["primer.emit was not sent"]
+    assert js(frame, "dispatched.map(function (e) { return [e.type, e.detail]; })") == [["primer:error", "primer.emit was not sent"]]
+
+
 def test_the_renderers_value_and_theme_reach_the_page(frame):
     frame.eval('var B = new Port(); deliver({type: "primer.html.connect", element: "w"}, RENDERER_WINDOW, [B]);')
     frame.eval('B.onmessage({data: {type: "value", value: [1, 2]}}); B.onmessage({data: {type: "nope"}});'
@@ -174,36 +194,47 @@ def test_the_renderers_value_and_theme_reach_the_page(frame):
 
 def test_media_policy_none_restricts_html_media(renderer_ctx):             # Review Focus 4
     assert js(renderer_ctx, 'CV.metaCsp({media_policy: "none", media_allowlist: []}, "http://h:9000")') == \
-        "img-src data: blob: http://h:9000; media-src data: blob: http://h:9000; font-src data:"
+        "img-src data: blob: http://h:9000; media-src data: blob: http://h:9000; font-src data:; webrtc 'block'"
     doc = js(renderer_ctx, 'CV.htmlSrcdoc("<img src=x>", {settings: {media_policy: "none", media_allowlist: []}, ownOrigin: "http://h:9000", theme: {}, bootstrap: "B"})')
     assert doc.index('http-equiv="Content-Security-Policy"') < doc.index("<script>B</script>") < doc.index("<img src=x>")
 
 
-def test_any_https_adds_no_meta_policy(renderer_ctx):
-    assert js(renderer_ctx, 'CV.metaCsp({media_policy: "any-https", media_allowlist: []}, "http://h:9000")') is None
+def test_any_https_adds_no_media_policy_only_webrtc_block(renderer_ctx):
+    """The plan's "any-https adds no meta policy", amended by the lead's WebRTC ruling on #925: under any-https the header's media rule
+    holds and the Html frame's policy carries only ``webrtc 'block'``."""
+    assert js(renderer_ctx, 'CV.metaCsp({media_policy: "any-https", media_allowlist: []}, "http://h:9000")') == "webrtc 'block'"
     doc = js(renderer_ctx, 'CV.htmlSrcdoc("<p>hi</p>", {settings: {media_policy: "any-https", media_allowlist: []}, ownOrigin: "", theme: {}, bootstrap: "B"})')
-    assert "http-equiv" not in doc
-    assert doc.startswith('<!doctype html><html><head><meta charset="utf-8"><style>')
+    assert doc.startswith('<!doctype html><html><head><meta charset="utf-8">'
+                          '<meta http-equiv="Content-Security-Policy" content="webrtc \'block\'"><style>')
     assert doc.endswith("</style><script>B</script></head><body><p>hi</p></body></html>")
+
+
+@pytest.mark.parametrize("policy", ["any-https", "allowlist", "none", "strange"])
+def test_every_html_frame_blocks_webrtc(renderer_ctx, policy):
+    """The lead's WebRTC ruling on #925: ``webrtc 'block'`` under every media policy (a browser that does not know it ignores it)."""
+    csp = js(renderer_ctx, f'CV.metaCsp({{media_policy: "{policy}", media_allowlist: ["a.example.com"]}}, "")')
+    assert csp.split("; ")[-1] == "webrtc 'block'" and csp.count("webrtc") == 1
 
 
 def test_the_allowlist_policy_names_the_hosts_and_the_own_origin(renderer_ctx):
     assert js(renderer_ctx, 'CV.metaCsp({media_policy: "allowlist", media_allowlist: ["a.example.com", "*.cdn.example"]}, "http://h:9000")') == (
         "img-src data: blob: http://h:9000 https://a.example.com https://*.cdn.example; "
         "media-src data: blob: http://h:9000 https://a.example.com https://*.cdn.example; "
-        "font-src data: https://a.example.com https://*.cdn.example"
+        "font-src data: https://a.example.com https://*.cdn.example; webrtc 'block'"
     )
-    assert js(renderer_ctx, 'CV.metaCsp({media_policy: "allowlist", media_allowlist: []}, "")') == "img-src data: blob:; media-src data: blob:; font-src data:"
+    assert js(renderer_ctx, 'CV.metaCsp({media_policy: "allowlist", media_allowlist: []}, "")') == (
+        "img-src data: blob:; media-src data: blob:; font-src data:; webrtc 'block'"
+    )
 
 
 def test_nothing_hostile_reaches_the_policy(renderer_ctx):
     """The origin and the hosts are written into an attribute value: one that is not an origin or a host name is left out."""
     csp = js(renderer_ctx, 'CV.metaCsp({media_policy: "allowlist", media_allowlist: ["a.example\\" onload=\\"x", "b.example; script-src *"]}, '
                            '"http://h:9000\\"><script>x</script>")')
-    assert csp == "img-src data: blob:; media-src data: blob:; font-src data:"
-    assert js(renderer_ctx, 'CV.metaCsp({media_policy: "strange", media_allowlist: []}, "")') == "img-src data: blob:; media-src data: blob:; font-src data:", (
-        "a policy the renderer does not know is the strictest"
-    )
+    assert csp == "img-src data: blob:; media-src data: blob:; font-src data:; webrtc 'block'"
+    assert js(renderer_ctx, 'CV.metaCsp({media_policy: "strange", media_allowlist: []}, "")') == (
+        "img-src data: blob:; media-src data: blob:; font-src data:; webrtc 'block'"
+    ), "a policy the renderer does not know is the strictest"
 
 
 def test_the_srcdoc_puts_the_policy_theme_and_bootstrap_before_the_agents_html(renderer_ctx):

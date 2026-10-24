@@ -139,10 +139,12 @@ var FD = (function () {
   var root = new El("main");
   root.attrs.id = "cv-root";
   var documentElement = new El("html");
+  var docListeners = {};
   var document = {
     activeElement: null,
     visibilityState: "visible",
     documentElement: documentElement,
+    addEventListener: function (type, fn, capture) { (docListeners[type] = docListeners[type] || []).push({fn: fn, capture: !!capture}); },
     getElementById: function (id) { return id === "cv-root" ? root : null; },
     createElement: function (tag) { return new El(tag); },
     createTextNode: function (t) { return new Text(String(t)); }
@@ -167,6 +169,14 @@ var FD = (function () {
     clock: clock, advance: advance, root: root, document: document, window: window, consoleWindow: consoleWindow,
     MessageChannel: MessageChannel, El: El,
     activeTimers: function () { return clock.timers.length; },
+    //: A person's input event on the renderer's own document (a click on a native control, a key press): what its capture listeners see.
+    input: function (type, extra) {
+      var ev = {type: type, isTrusted: true};
+      for (var k in (extra || {})) ev[k] = extra[k];
+      (docListeners[type] || []).slice().forEach(function (l) { l.fn(ev); });
+      return ev;
+    },
+    docListenerTypes: function () { return Object.keys(docListeners).filter(function (t) { return docListeners[t].every(function (l) { return l.capture; }); }); },
     //: Delivers a window message to the renderer as the browser would.
     deliver: function (data, source, ports) {
       (listeners.message || []).slice().forEach(function (fn) { fn({data: data, source: source, ports: ports || [], origin: "null"}); });

@@ -48,7 +48,12 @@ def state(ctx, elements: str, **extra) -> None:
 
 
 def events(ctx):
-    return [m for m in js(ctx, "FD.sent()") if m["type"] != "ready"]
+    """What the renderer sent the console for a person's action (no ready, no error reports)."""
+    return [m for m in js(ctx, "FD.sent()") if m["type"] not in ("ready", "error")]
+
+
+def errors(ctx):
+    return [m["message"] for m in js(ctx, "FD.sent()") if m["type"] == "error"]
 
 
 # --- ruling 4: who may speak ---------------------------------------------------------------------------------------------------------
@@ -331,7 +336,9 @@ def test_a_looping_element_cannot_emit_after_its_activation_expires(ctx):
         if js(ctx, "FD.clock.t") > 1000000 + 5000:
             ctx.eval("FD.window.navigator.userActivation.isActive = false;")
     assert len(events(ctx)) == 3, "one click, at most three emits, however long the loop runs"
-    assert js(ctx, "FD.activeTimers()") == 0, "the activation poll stops once the activation is over"
+    ctx.eval("FD.advance(1000);")
+    assert js(ctx, "FD.activeTimers()") == 0, "the activation poll stops once the activation is over (and the drop count is out)"
+    assert errors(ctx) and all(e.startswith("w: ") for e in errors(ctx)), "the 17 dropped emits were counted for the console"
 
 
 def test_copy_and_open_link_share_the_gate_and_carry_no_other_element(ctx):
@@ -420,6 +427,69 @@ def test_outgoing_messages_are_capped_at_twenty_a_second(ctx):
     assert len(events(ctx)) == 19, "20 a second, the ready message among them"
     ctx.eval("FD.advance(1000); FD.post({type: 'busy', element: 'b29', on: false}); FD.byId('b29').click();")
     assert len(events(ctx)) == 20
+
+
+# --- the review of #925: an activation is not every frame's --------------------------------------------------------------------------
+
+
+def test_the_renderer_listens_for_its_own_input_in_the_capture_phase(ctx):
+    assert sorted(js(ctx, "FD.docListenerTypes()")) == ["keydown", "mousedown", "pointerdown", "pointerup", "touchend"]
+
+
+@pytest.mark.parametrize("event", ["keydown", "pointerdown", "mousedown"])
+def test_input_on_the_renderer_then_a_focus_move_into_a_frame_gives_it_nothing(ctx, event):
+    """A Tab press on a native Button (keydown) or a click on one (pointerdown) activates the renderer; the focus then moving into an
+    Html frame (the Tab's default action, or the frame's own script) gives that frame nothing from the activation."""
+    _html_ready(ctx, "w")
+    ctx.eval(f"FD.input('{event}'); FD.window.navigator.userActivation.isActive = true; frame_w.focus();"
+             "for (var i = 0; i < 5; i++) port_w.postMessage({type: 'emit', name: 'stolen'});")
+    assert events(ctx) == []
+    ctx.eval("FD.advance(1000); port_w.postMessage({type: 'emit', name: 'stolen'});")
+    assert events(ctx) == [], "for as long as the activation lasts"
+    ctx.eval("FD.window.navigator.userActivation.isActive = false; FD.advance(150); FD.window.navigator.userActivation.isActive = true;"
+             "port_w.postMessage({type: 'emit', name: 'clicked'});")
+    assert [e["name"] for e in events(ctx)] == ["clicked"], "a later activation (a click inside the frame) is the frame's"
+
+
+def test_a_scripted_input_event_claims_nothing(ctx):
+    _html_ready(ctx, "w")
+    ctx.eval("FD.input('keydown', {isTrusted: false}); FD.window.navigator.userActivation.isActive = true; frame_w.focus();"
+             "port_w.postMessage({type: 'emit', name: 'x'});")
+    assert [e["name"] for e in events(ctx)] == ["x"]
+
+
+def test_a_second_frame_gets_nothing_from_the_first_frames_activation(ctx):
+    _html_ready(ctx, "a", "b")
+    ctx.eval("FD.window.navigator.userActivation.isActive = true; frame_a.focus(); port_a.postMessage({type: 'emit', name: 'a1'});"
+             "frame_b.focus(); for (var i = 0; i < 4; i++) port_b.postMessage({type: 'emit', name: 'b_stole'});"
+             "frame_a.focus(); port_a.postMessage({type: 'emit', name: 'a2'});")
+    assert [(e["element"], e["name"]) for e in events(ctx)] == [("a", "a1"), ("a", "a2")]
+
+
+def test_a_frame_that_focuses_itself_with_no_input_gets_no_emit(ctx):
+    _html_ready(ctx, "w")
+    ctx.eval("frame_w.focus(); for (var i = 0; i < 5; i++) { port_w.postMessage({type: 'emit', name: 'self'}); FD.advance(50); }")
+    assert events(ctx) == []
+
+
+def test_a_dropped_call_is_answered_in_the_frame_and_counted_for_the_console(ctx):
+    """The review of #925: a call the gate dropped is not silent."""
+    _html_ready(ctx, "w")
+    ctx.eval("port_w.other.sent.length = 0; frame_w.focus();"
+             "port_w.postMessage({type: 'emit', name: 'x'}); port_w.postMessage({type: 'copy', text: 'y'});"
+             "port_w.postMessage({type: 'open_link', url: 'https://a.example/'});")
+    told = js(ctx, "port_w.other.sent")
+    assert [m["type"] for m in told] == ["error", "error", "error"]
+    assert told[0]["message"] == ("primer.emit was not sent: it needs a click or a key press inside this element, and at most 3 go out "
+                                  "in one activation (a few seconds after the input)")
+    assert [m["message"].split(" ")[0] for m in told] == ["primer.emit", "primer.copy", "primer.openLink"]
+    assert errors(ctx) == [], "the console's count comes once a second"
+    ctx.eval("FD.advance(1000);")
+    assert errors(ctx) == ["w: 3 Html call(s) were not sent: an Html element's emit, copy and openLink go out only right after a click "
+                           "or a key press inside it, at most 3 per activation"]
+    ctx.eval("FD.window.navigator.userActivation.isActive = true; for (var i = 0; i < 5; i++) port_w.postMessage({type: 'emit', name: 'n'});"
+             "FD.advance(1000);")
+    assert len(events(ctx)) == 3 and errors(ctx)[-1].startswith("w: 2 Html call(s)"), "the calls past the budget are counted too"
 
 
 def test_an_element_that_throws_in_a_loop_cannot_crowd_out_a_click(ctx):

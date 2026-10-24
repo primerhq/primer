@@ -6,8 +6,12 @@
  *  - primer.setValue(value): the element's value, kept on the canvas and readable by the agent; needs none;
  *  - primer.copy(text): the console offers to copy the text; needs a click or a key press first;
  *  - primer.openLink(url): the console asks the user before it opens an http or https URL; needs a click or a key press first;
- *  - primer.value, and a "primer:value" event on window with the value in event.detail, when the canvas sends one.
- * It reports the page's height (a ResizeObserver) and its uncaught errors.
+ *  - primer.value, and a "primer:value" event on window with the value in event.detail, when the canvas sends one;
+ *  - a "primer:error" event on window (and a console warning) when the canvas dropped a call, with the reason in event.detail.
+ * It reports the page's height (a ResizeObserver) and its uncaught errors. Before any agent code runs it removes RTCPeerConnection,
+ * webkitRTCPeerConnection and RTCDataChannel from the page (the lead's WebRTC ruling on #925): defence in depth only, as the frame's
+ * policy carries webrtc 'block', which a browser that does not know the directive ignores, and code in a nested frame of the page
+ * still has its own copies.
  *
  * The checks here are ADVISORY (audit G8-05): the agent's code shares this realm and can take the port. The renderer gates every
  * emit, copy and open_link on its own activation, focus and budget, and the frame CSP is the only script control (G8-06). The
@@ -92,9 +96,13 @@
     return !!ports && ports.length === 1 && !!ports[0];
   }
 
-  //: A message from the renderer on the port, checked, or null: {type: "value", value} or {type: "theme", theme}.
+  //: A message from the renderer on the port, checked, or null: {type: "value", value}, {type: "theme", theme} or
+  //: {type: "error", message}.
   function PB_validateHostMessage(msg) {
     if (!isPlainObject(msg)) return null;
+    if (msg.type === "error") {
+      return typeof msg.message === "string" && msg.message.length <= MAX_ERROR_CHARS ? {type: "error", message: msg.message} : null;
+    }
     if (msg.type === "value") {
       var text = jsonText(msg.value);
       return text !== null && text.length <= MAX_VALUE_CHARS ? {type: "value", value: JSON.parse(text)} : null;
@@ -120,6 +128,17 @@
   if (typeof window.addEventListener !== "function" || !window.document) return;
 
   var document = window.document;
+
+  // No WebRTC for the agent's code in this page (advisory: see the header).
+  var RTC = ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel"];
+  for (var r = 0; r < RTC.length; r++) {
+    try {
+      Object.defineProperty(window, RTC[r], {value: undefined, writable: false, configurable: false});
+    } catch (e) {
+      try { delete window[RTC[r]]; } catch (e2) { /* not removable */ }
+    }
+  }
+
   var port = null;
   var queue = [];
   var current = null;
@@ -144,6 +163,11 @@
     if (msg.type === "value") {
       current = msg.value;
       if (typeof window.CustomEvent === "function") window.dispatchEvent(new window.CustomEvent("primer:value", {detail: current}));
+      return;
+    }
+    if (msg.type === "error") {
+      if (window.console && typeof window.console.warn === "function") window.console.warn(msg.message);
+      if (typeof window.CustomEvent === "function") window.dispatchEvent(new window.CustomEvent("primer:error", {detail: msg.message}));
       return;
     }
     var style = document.documentElement ? document.documentElement.style : null;
