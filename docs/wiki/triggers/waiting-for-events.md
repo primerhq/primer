@@ -93,7 +93,7 @@ Reference: [`workspace_ext__subscribe_to_trigger`](reference/tools/workspace_ext
 Reference: [`workspace_ext__subscribe_to_channel_event`](reference/tools/workspace_ext/subscribe_to_channel_event)
 
 ## Gotchas
-- After a subscribe tool times out or is cancelled, its one-shot subscription stays on the trigger until the next fire, which deletes it and wakes nothing.
+- After a subscribe tool times out or is cancelled, its one-shot subscription stays on the trigger until a fire reaches it, which deletes it and wakes nothing: the trigger's next fire, or for `workspace_ext__subscribe_to_channel_event` the next event its matcher matches. A disabled trigger keeps it until the trigger is deleted.
 - A wait for `session.ended` on an interactive session runs to its timeout: such a session rests between turns and never ends by itself.
 - An event that happened before your call does not wake you. Check the current state first, then wait.
 - A wait on `session.*` with no matcher wakes on the first event of any session. Always add an `eq` matcher.
