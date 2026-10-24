@@ -66,6 +66,7 @@ from primer.canvas.state import (
 )
 from primer.events.recorder import recorder_for
 from primer.model.canvas import (
+    MAX_CLIENT_EVENT_IDS,
     MAX_EMIT_DATA_BYTES,
     MAX_EVENT_VALUE_CHARS,
     MAX_SILENT_EVENTS_PER_MINUTE,
@@ -97,6 +98,20 @@ _MAX_POSITION_SECONDS = 86400
 
 #: The prop an event's ``label`` is read from, per element type.
 _LABEL_PROP = {"Button": "label", "Select": "label", "Link": "label", "Audio": "title"}
+
+
+@dataclass(frozen=True)
+class RecordedEvent:
+    """What :meth:`CanvasService.record_event_or_repeat` did: the event (``None`` for a repeat whose event the ring no longer holds), its
+    seq, and whether THIS call recorded it (``False``: a retried POST, recognised by its client retry key)."""
+
+    event: CanvasEvent | None
+    seq: int
+    new: bool
+
+    @property
+    def event_id(self) -> str:
+        return self.event.id if self.event is not None else f"e{self.seq}"
 
 
 @dataclass(frozen=True)
@@ -641,23 +656,24 @@ class CanvasService:
         data: Any = None,
         position: float | None = None,
         client_event_id: str | None = None,
-    ) -> CanvasEvent:
+    ) -> CanvasEvent | None:
         """Validate a user's interaction, write it to the canvas and announce it.
 
         The server decides everything that matters: the element must exist and be available, the kind must be one it sends, the
         value must fit, a waking event must be within the per-minute limit and any other event within
         :data:`~primer.model.canvas.MAX_SILENT_EVENTS_PER_MINUTE`, and the label comes from the element, never from the caller.
         Raises ``CanvasEventRefused`` (nothing is written) or ``ConflictError`` (other writers kept getting in first). A
-        ``client_event_id`` already in the ring returns that event unchanged: a retried POST records once.
+        ``client_event_id`` among the canvas's last :data:`~primer.model.canvas.MAX_CLIENT_EVENT_IDS` returns that event unchanged (or
+        ``None`` when the ring no longer holds it): a retried POST records once.
 
         A ``change`` or ``set_value`` that sets a different value moves ``rev``; a click, an emit, an audio event or a link open
         moves only ``event_seq``. The fields a kind does not use (a ``value`` sent with a click) are dropped, not stored.
         """
-        event, _ = await self.record_event_or_repeat(
+        recorded = await self.record_event_or_repeat(
             session_id=session_id, workspace_id=workspace_id, element=element, kind=kind, by=by, value=value, name=name, data=data,
             position=position, client_event_id=client_event_id,
         )
-        return event
+        return recorded.event
 
     async def record_event_or_repeat(
         self,
@@ -672,18 +688,25 @@ class CanvasService:
         data: Any = None,
         position: float | None = None,
         client_event_id: str | None = None,
-    ) -> tuple[CanvasEvent, bool]:
-        """:meth:`record_event`, and whether THIS call recorded the event: ``False`` when ``client_event_id`` was already in the ring
-        (a retried POST), whose event was delivered by the call that recorded it and must not be delivered again."""
+    ) -> RecordedEvent:
+        """:meth:`record_event`, and whether THIS call recorded the event (:class:`RecordedEvent`).
+
+        A retried POST is recognised by its ``client_event_id`` among the canvas's last
+        :data:`~primer.model.canvas.MAX_CLIENT_EVENT_IDS`, kept apart from the event ring, so a short ring (``max_events``) that has
+        dropped the event does not turn the retry into a second event; a row written before the keys were kept is still answered from the
+        ring. Nothing is written for a repeat."""
         store = self._store()
         for _ in range(_ATTEMPTS):
             row = await store.get(session_id)
             if row is None:
                 raise CanvasEventRefused("unknown_element", f"'{clip(str(element))}' is not on the canvas any more")
             if client_event_id is not None:
+                known = next((seq for key, seq in reversed(row.client_events) if key == client_event_id), None)
+                if known is not None:
+                    return RecordedEvent(next((event for event in row.events if event.seq == known), None), known, False)
                 repeat = next((event for event in row.events if event.client_event_id == client_event_id), None)
                 if repeat is not None:
-                    return repeat, False
+                    return RecordedEvent(repeat, repeat.seq, False)
             settings = await read_canvas_settings(self._sp)
             now = self._now()
             accepted = _check_event(
@@ -711,6 +734,10 @@ class CanvasService:
                 patch["wake_times"] = to_jsonable_python([*row.wake_times, now][-settings.max_waking_events_per_minute:])
             else:
                 patch["silent_times"] = to_jsonable_python([*row.silent_times, now][-MAX_SILENT_EVENTS_PER_MINUTE:])
+            if client_event_id is not None:
+                patch["client_events"] = [[key, at] for key, at in row.client_events[-(MAX_CLIENT_EVENT_IDS - 1):]] + [
+                    [client_event_id, seq],
+                ]
             try:
                 written = await patch_if_checked(store, session_id, patch, where={"rev": [row.rev], "event_seq": [row.event_seq]})
             except NotFoundError:
@@ -718,7 +745,7 @@ class CanvasService:
             if written is None:
                 continue                     # another writer got in first: read the fresh row and judge the event again
             await self._announce_event(written, event, session_id=session_id, workspace_id=written.workspace_id)
-            return event, True
+            return RecordedEvent(event, seq, True)
         raise ConflictError(_CONFLICT)
 
     @staticmethod
@@ -775,4 +802,5 @@ __all__ = [
     "CanvasEventRefused",
     "CanvasRevConflict",
     "CanvasService",
+    "RecordedEvent",
 ]

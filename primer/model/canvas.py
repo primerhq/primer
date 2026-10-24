@@ -17,6 +17,8 @@ counters it read.
 * ``events`` is a ring of at most ``CanvasSettings.max_events``; ``seen_event_seq`` is how far the agent has read it in order, and
   ``seen_ahead`` the events past that point it has already read (a ``canvas_wait`` takes only the events it matches, so an earlier
   one it did not match stays unread; audit G8-07). ``seen_version`` moves with every write of the two and fences them.
+* ``client_events`` holds the last :data:`MAX_CLIENT_EVENT_IDS` retry keys a client sent with an event, each with the event's seq, so a
+  retried POST is recognised however short the event ring is (review of #908, round 2).
 * ``wake_times`` is the ring the waking-events-per-minute limit reads, ``silent_times`` the ring of the cap on the events that do not
   wake the agent (:data:`MAX_SILENT_EVENTS_PER_MINUTE`).
 
@@ -69,6 +71,10 @@ MAX_OPS_BODY_BYTES = 8 * 1024 * 1024
 #: choosing, playing or opening things; the renderer debounces an Html ``setValue``. Over the cap the event is refused (429
 #: ``silent_rate_limited``) and nothing is recorded.
 MAX_SILENT_EVENTS_PER_MINUTE = 120
+
+#: How many of a canvas's latest client retry keys (``CanvasEvent.client_event_id``) are kept to recognise a retried POST, whatever
+#: ``CanvasSettings.max_events`` keeps of the events themselves.
+MAX_CLIENT_EVENT_IDS = 256
 
 #: Every kind of event a canvas element can send (``primer.canvas.catalog.EVENT_KINDS`` says which element sends which).
 CANVAS_EVENT_KINDS = ("click", "change", "emit", "set_value", "play", "pause", "ended", "open")
@@ -174,6 +180,7 @@ class SessionCanvas(Identifiable):
     value_seq: int = Field(default=0, ge=0)
     wake_times: list[datetime] = Field(default_factory=list)
     silent_times: list[datetime] = Field(default_factory=list)
+    client_events: list[tuple[str, int]] = Field(default_factory=list)
     updated_at: datetime | None = None
 
     def unseen_events(self) -> list[CanvasEvent]:
@@ -186,6 +193,7 @@ __all__ = [
     "CANVAS_EVENT_KINDS",
     "CANVAS_SETTINGS_ID",
     "MAX_EMIT_DATA_BYTES",
+    "MAX_CLIENT_EVENT_IDS",
     "MAX_EVENT_BODY_BYTES",
     "MAX_EVENT_VALUE_CHARS",
     "MAX_OPS_BODY_BYTES",

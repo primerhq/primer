@@ -15,7 +15,13 @@ from primer.canvas.decompile import decompile
 from primer.canvas.lang import parse_program
 from primer.canvas.service import CanvasEventRefused, CanvasRevConflict
 from primer.canvas.settings import write_canvas_settings
-from primer.model.canvas import CANVAS_SETTINGS_ID, MAX_SILENT_EVENTS_PER_MINUTE, CanvasSettings, SessionCanvas
+from primer.model.canvas import (
+    CANVAS_SETTINGS_ID,
+    MAX_CLIENT_EVENT_IDS,
+    MAX_SILENT_EVENTS_PER_MINUTE,
+    CanvasSettings,
+    SessionCanvas,
+)
 from primer.model.except_ import ConflictError
 from tests.canvas._fakes import StoreSpy, World, make_world, seed_session
 
@@ -448,6 +454,46 @@ async def test_the_client_event_id_stays_out_of_what_others_see(world_with_playl
     [logged] = await w.events("canvas.event")
     assert "client_event_id" not in logged.payload
     assert (await w.canvas("s1")).events[0].client_event_id == "c-2"
+
+
+async def test_a_retry_key_outlives_the_event_ring():
+    """Review of #908, round 2: a retried POST is recognised by its key among the canvas's last MAX_CLIENT_EVENT_IDS, even once a short
+    ring (max_events) has dropped its event: it records nothing and answers the event's seq, without the event."""
+    now = [NOW]
+    w = await _world(clock=lambda: now[0])
+    await write_canvas_settings(w.sp, CanvasSettings(id=CANVAS_SETTINGS_ID, max_events=10))
+    first = await w.service.record_event_or_repeat(
+        session_id="s1", workspace_id="ws-1", element="play", kind="click", by="alice", client_event_id="c-1",
+    )
+    assert (first.new, first.seq, first.event.client_event_id) == (True, 1, "c-1")
+    for n in range(12):
+        now[0] = NOW + timedelta(seconds=n + 1)
+        await _event(w, "more", "open")
+    row = await w.canvas("s1")
+    assert 1 not in [e.seq for e in row.events] and row.event_seq == 13
+    again = await w.service.record_event_or_repeat(
+        session_id="s1", workspace_id="ws-1", element="play", kind="click", by="alice", client_event_id="c-1",
+    )
+    assert (again.new, again.seq, again.event, again.event_id) == (False, 1, None, "e1")
+    assert (await w.canvas("s1")).model_dump() == row.model_dump(), "a repeat writes nothing"
+
+
+async def test_the_retry_keys_are_the_last_256():
+    now = [NOW]
+    w = await _world(clock=lambda: now[0])
+    for n in range(MAX_CLIENT_EVENT_IDS + 1):
+        now[0] = NOW + timedelta(seconds=n)
+        await _event(w, "more", "open", client_event_id=f"k{n}")
+    row = await w.canvas("s1")
+    assert len(row.client_events) == MAX_CLIENT_EVENT_IDS and row.client_events[0] == ("k1", 2)
+    now[0] += timedelta(seconds=1)
+    assert (await w.service.record_event_or_repeat(
+        session_id="s1", workspace_id="ws-1", element="more", kind="open", by="alice", client_event_id="k1",
+    )).new is False
+    forgotten = await w.service.record_event_or_repeat(
+        session_id="s1", workspace_id="ws-1", element="more", kind="open", by="alice", client_event_id="k0",
+    )
+    assert forgotten.new is True and forgotten.seq == MAX_CLIENT_EVENT_IDS + 2, "a key past the last 256 is a new event"
 
 
 async def test_the_ring_keeps_the_newest(world_with_playlist):

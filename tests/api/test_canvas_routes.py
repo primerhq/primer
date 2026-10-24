@@ -234,6 +234,73 @@ async def test_a_retried_post_records_and_delivers_once(client, fake_storage_pro
     assert (row.event_seq, len(row.events)) == (1, 1)
 
 
+async def test_a_retry_whose_first_delivery_raised_delivers_the_click(client, fake_storage_provider, ws, monkeypatch):
+    """Review of #908, round 2: the click was recorded but its delivery raised, so the client retries with the same key. The event is
+    still unread and nothing queued it: the retry delivers it, once, and records nothing more."""
+    import primer.canvas.delivery as delivery
+
+    await _seed(fake_storage_provider)
+    await _draw(client)
+    real, calls = delivery.deliver_canvas_event, []
+
+    async def flaky(**kwargs):
+        calls.append(kwargs["event"].id)
+        if len(calls) == 1:
+            raise RuntimeError("the wake could not be written")
+        return await real(**kwargs)
+
+    monkeypatch.setattr(delivery, "deliver_canvas_event", flaky)
+    body = {"element": "play", "kind": "click", "client_event_id": "c-1"}
+    with pytest.raises(RuntimeError):
+        await client.post(_url(tail="/events"), json=body)
+    assert "s1" not in ws.slots and (await _canvas(fake_storage_provider)).event_seq == 1
+
+    r = await client.post(_url(tail="/events"), json=body)
+    assert r.status_code == 202 and r.json() == {"event_id": "e1", "rev": 1, "event_seq": 1, "delivery": "woken"}
+    assert calls == ["e1", "e1"] and len(ws.slots["s1"].appended) == 1
+    third = await client.post(_url(tail="/events"), json=body)
+    assert third.json()["delivery"] == "recorded" and len(ws.slots["s1"].appended) == 1, "a delivered (read) click is not delivered twice"
+    assert len(await _platform(fake_storage_provider, "canvas.event")) == 1
+
+
+async def test_a_retry_of_a_queued_click_is_not_queued_again(client, fake_storage_provider, ws):
+    from primer.model.workspace_session import PendingSessionMessage
+    from primer.model.storage import OffsetPage
+
+    await _seed(fake_storage_provider, status=SessionStatus.RUNNING, turn_status="running")
+    await _draw(client)
+    body = {"element": "play", "kind": "click", "client_event_id": "c-1"}
+    assert (await client.post(_url(tail="/events"), json=body)).json()["delivery"] == "queued"
+    again = await client.post(_url(tail="/events"), json=body)
+    assert again.status_code == 202 and again.json()["delivery"] == "queued"
+    queued = (await fake_storage_provider.get_storage(PendingSessionMessage).list(OffsetPage(offset=0, length=10))).items
+    assert len(queued) == 1
+
+
+async def test_a_retry_of_a_silent_event_records_nothing_more(client, fake_storage_provider, ws):
+    await _seed(fake_storage_provider)
+    await _draw(client)
+    body = {"element": "genre", "kind": "change", "value": "Lo-fi", "client_event_id": "c-2"}
+    first = await client.post(_url(tail="/events"), json=body)
+    again = await client.post(_url(tail="/events"), json=body)
+    assert first.json()["delivery"] == again.json()["delivery"] == "recorded"
+    assert len([r for r in ws.lines("s1") if r["kind"] == "canvas_event"]) == 1, "it waits in the canvas for the digest, once"
+
+
+async def test_a_retry_after_the_click_left_the_ring_records_nothing(client, fake_storage_provider, ws):
+    await _seed(fake_storage_provider)
+    await _draw(client)
+    assert (await client.put("/v1/canvas_settings", json={"max_events": 10})).status_code == 200
+    body = {"element": "play", "kind": "click", "client_event_id": "c-1"}
+    assert (await client.post(_url(tail="/events"), json=body)).json()["delivery"] == "woken"
+    for _ in range(12):
+        await client.post(_url(tail="/events"), json={"element": "more", "kind": "open"})
+    again = await client.post(_url(tail="/events"), json=body)
+    assert again.status_code == 202, again.text
+    assert again.json() == {"event_id": "e1", "rev": 1, "event_seq": 13, "delivery": "recorded"}
+    assert (await _canvas(fake_storage_provider)).event_seq == 13 and len(ws.slots["s1"].appended) == 1
+
+
 async def test_an_ended_session_refuses_events_with_409(client, fake_storage_provider, ws):
     await _seed(fake_storage_provider)
     await _draw(client)

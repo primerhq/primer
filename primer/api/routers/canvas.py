@@ -282,7 +282,11 @@ class CanvasEventBody(BaseModel):
     position: float | None = Field(default=None, description="An audio event's position, in seconds.")
     client_event_id: str | None = Field(
         default=None, min_length=1, max_length=_CLIENT_EVENT_ID_CHARS,
-        description="The client's retry key: a repeated POST answers the event it recorded and delivers nothing again.",
+        description=(
+            "The client's retry key. A POST repeated with it (among the canvas's last 256 keys) records nothing and answers the event it "
+            "recorded: a waking event the agent has not read and that is not queued is delivered again, so a click whose first delivery "
+            "failed is not lost; one already read or queued is not delivered twice."
+        ),
     )
 
 
@@ -492,8 +496,14 @@ async def post_canvas_event(
     (409 ``session_ended``) before anything is recorded. A refused event is 422 with its ``code`` (``unknown_element``,
     ``kind_not_allowed``, ``invalid_value``, ``element_disabled``) or 429 (``rate_limited``: the waking events of a minute;
     ``silent_rate_limited``: the others), and nothing is recorded. The body is bounded before it is read (413).
+
+    A retried POST (its ``client_event_id`` recorded already) records nothing. Its event is delivered again only when it wakes the agent,
+    the agent has not read it and no queued steer carries it: the first POST's delivery failed, so the click must not be lost. A read
+    event was delivered (``recorded``), a queued one waits (``queued``), a silent one waits in the canvas for the next digest
+    (``recorded``), and one the ring no longer holds cannot be delivered (``recorded``).
     """
-    from primer.canvas.delivery import DELIVERY_RECORDED, deliver_canvas_event
+    from primer.canvas.delivery import DELIVERY_QUEUED, DELIVERY_RECORDED, deliver_canvas_event
+    from primer.canvas.wait import queued_steer_carries
 
     session = await _session_on(storage_provider, workspace_id, session_id)
     refuse_outranked(request, session)
@@ -501,7 +511,7 @@ async def post_canvas_event(
         raise HTTPException(status_code=409, detail={"code": "session_ended", "message": SESSION_ENDED})
     service = _service(storage_provider, event_bus, registry)
     try:
-        event, new = await service.record_event_or_repeat(
+        recorded = await service.record_event_or_repeat(
             session_id=session_id, workspace_id=session.workspace_id, element=body.element, kind=body.kind, by=_by(request),
             value=body.value, name=body.name, data=body.data, position=body.position, client_event_id=body.client_event_id,
         )
@@ -509,9 +519,16 @@ async def post_canvas_event(
         status = 429 if exc.code in ("rate_limited", "silent_rate_limited") else 422
         raise HTTPException(status_code=status, detail={"code": exc.code, "message": exc.message}) from None
     row = await service.current(session_id)
-    if not new:
-        delivery = DELIVERY_RECORDED                 # a retried POST: the call that recorded the event delivered it
-    else:
+    event = recorded.event
+    deliver = recorded.new
+    delivery = DELIVERY_RECORDED
+    if not recorded.new and event is not None and event.wake and row is not None:
+        unread = event.seq > row.seen_event_seq and event.seq not in row.seen_ahead
+        if unread and await queued_steer_carries(storage_provider, session_id, event.id):
+            delivery = DELIVERY_QUEUED               # the first POST queued it: it waits behind the turn, once
+        elif unread:
+            deliver = True                           # the first POST's delivery failed: deliver it now, or the click is lost
+    if deliver and event is not None:
         delivery = await deliver_canvas_event(
             event=event,
             state=service.state_of(row) if row is not None else service.state_of(SessionCanvas(id=session_id, workspace_id=workspace_id)),
@@ -524,8 +541,10 @@ async def post_canvas_event(
             event_bus=event_bus,
         )
     return CanvasEventAccepted(
-        event_id=event.id, rev=row.rev if row is not None else event.rev,
-        event_seq=row.event_seq if row is not None else event.seq, delivery=delivery,
+        event_id=recorded.event_id,
+        rev=row.rev if row is not None else (event.rev if event is not None else 0),
+        event_seq=row.event_seq if row is not None else recorded.seq,
+        delivery=delivery,
     )
 
 
