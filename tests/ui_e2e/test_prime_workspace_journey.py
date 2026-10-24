@@ -2,11 +2,13 @@
 
 Against the real ui_e2e server: its default workspace is whichever row ``GET /v1/workspaces`` flags ``is_default`` (``prime`` on a fresh install,
 ``primer`` on one that predates it), read through ``default_wid``, never named. A first load with no address lands on it, on a desktop and on a
-phone; its rail menu has Settings and no Delete; its settings overlay has no Destroy tab, and a link to that tab shows why; and it holds the
+phone, and opens the caller's main session there; its rail menu has Settings and no Delete; its settings overlay has no Destroy tab, and a link to that tab shows why; and it holds the
 ``agents.md`` the ensure pass seeds.
 """
 
 from __future__ import annotations
+
+import re
 
 import httpx
 import pytest
@@ -23,7 +25,25 @@ def test_first_load_selects_the_default_workspace(page: Page, console_url: str) 
     page.goto("about:blank")  # the page fixture already loaded the console: a fresh document, with no address
     page.goto(console_url)
     expect(page.get_by_test_id(f"nv-rail-ws:{wid}")).to_be_visible(timeout=20_000)
-    expect(page).to_have_url(f"{console_url}#/w/{wid}", timeout=20_000)
+    # The first load also opens the caller's main session in it (below), so the address may name that document too.
+    expect(page).to_have_url(re.compile(re.escape(f"{console_url}#/w/{wid}") + r"($|\?doc=session:)"), timeout=20_000)
+
+
+@pytest.mark.ui_e2e
+def test_first_load_opens_the_callers_main_session(page: Page, base_url: str, console_url: str) -> None:
+    """The caller's own main operator session (POST /v1/workspaces/{id}/main_session answers the same row every time) is the active tab."""
+    wid = default_wid(console_url)
+    page.goto("about:blank")
+    page.goto(console_url)
+    tab = page.locator('[data-testid^="nv-tg-tab:session:"][data-active="true"]')
+    expect(tab).to_have_count(1, timeout=30_000)
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        r = client.post(f"/v1/workspaces/{wid}/main_session")
+    assert r.status_code == 200, r.text  # the console's own call made it: this one answers the existing row
+    sid = r.json()["id"]
+    assert r.json()["name"] == "main" and re.fullmatch(rf"sess-{re.escape(wid)}-main-\d+", sid), sid
+    expect(page.get_by_test_id(f"nv-tg-tab:session:{sid}")).to_have_attribute("data-active", "true")
+    expect(page).to_have_url(f"{console_url}#/w/{wid}?doc=session:{sid}", timeout=20_000)
 
 
 @pytest.mark.ui_e2e
@@ -65,4 +85,4 @@ def test_phone_layout_opens_the_default_workspace(page: Page, console_url: str) 
     page.set_viewport_size(PHONE)
     page.goto("about:blank")
     boot_mobile_shell(page, f"{console_url}#/")
-    expect(page).to_have_url(f"{console_url}#/w/{wid}", timeout=20_000)
+    expect(page).to_have_url(re.compile(re.escape(f"{console_url}#/w/{wid}") + r"($|\?doc=session:)"), timeout=20_000)

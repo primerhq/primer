@@ -171,6 +171,65 @@ function NV_defaultWid(items) {
   return rows.length && rows[0] ? rows[0].id : null;
 }
 
+// The flagged default workspace's id, or null: unlike NV_defaultWid there is no fallback, for a caller that must not act on the first-listed row.
+function NV_flaggedWid(items) {
+  var rows = items || [];
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i] && rows[i].is_default === true) return rows[i].id;
+  }
+  return null;
+}
+
+// Whether the tab groups hold no tab at all.
+function NV_hasNoTab(model) {
+  return !model || !model.groups || model.groups.every(function (g) { return !g.tabs || !g.tabs.length; });
+}
+
+// The first load lands in the caller's main session (pivot P2 Task 14). Each user has their own main operator session in the default workspace, made on
+// demand by POST /v1/workspaces/{id}/main_session as the caller (the plan's lead ruling 3: it runs at the caller's rank, and every later call answers the
+// same row). This asks for it and opens it as a tab when the address named no workspace and no document, the shell has picked the FLAGGED default workspace
+// (the route makes a session, so it is never asked of the first-listed fallback), and the tab groups are still empty once the per-user working set is
+// restored (env.ready). It asks once per page load, and opens nothing if, by the time the answer comes, the person has navigated (env.navigatedRef: a link,
+// Back, a verb), selected another workspace or opened a tab. The open is landing state, not a navigation: no history entry, so the URL write replaces. A
+// refused call is said in a toast, in the words of window.primerApi.readRefusal. The phone shell shares this state, so it lands there too.
+function NV_useMainSessionOpen(env) {
+  var askedRef = React.useRef(false);
+  var liveRef = React.useRef(env);
+  liveRef.current = env;
+  var target = NV_flaggedWid(env.wsItems);
+  React.useEffect(function () {
+    if (askedRef.current) return;
+    if (env.initialWid || env.initialDoc) {
+      askedRef.current = true;
+      return;
+    }
+    if (!env.ready || !target || !env.wid) return;
+    askedRef.current = true;
+    if (env.wid !== target || env.navigatedRef.current || !NV_hasNoTab(env.tgModel)) return;
+    var row = (env.wsItems || []).filter(function (w) { return w && w.id === target; })[0];
+    var label = (row && row.name) || target;
+    function untouched() {
+      var live = liveRef.current;
+      return live.wid === target && !live.navigatedRef.current;
+    }
+    window.primerApi.apiFetch("POST", "/workspaces/" + encodeURIComponent(target) + "/main_session", null).then(function (session) {
+      var sid = session && session.id;
+      if (!sid || !untouched()) return;
+      var live = liveRef.current;
+      live.stampSessionMeta(sid, { wid: target, name: session.name, binding: session.binding });
+      live.setTgModel(function (m) {
+        return NV_hasNoTab(m) ? window.TG_openTab(m, { kind: "session", ref: sid }, {}) : m;
+      });
+    }, function (e) {
+      if (!untouched()) return;
+      window.primerApi.toastPush(NV_toastPayload(
+        "Couldn't open your main session in " + label + ": " + window.primerApi.readRefusal(e).message,
+        { kind: "error", requestId: e && e.requestId }
+      ));
+    });
+  }, [env.ready, env.wid, target, env.initialWid, env.initialDoc, env.tgModel]);
+}
+
 // The tab groups' working set, kept per user in this browser (console review C-023). Identity and layout only (TG_serialize); storage can be
 // unavailable or hold anything (private mode, quota, another version), so every access is guarded and a bad value is the same as no value.
 function NV_loadTabs(key) {
@@ -330,8 +389,12 @@ function NV_Shell() {
   // this ref right before changing state; the write effect below consumes
   // and resets it, so an unmarked change (the default fallback) replaces.
   var pendingPushRef = React.useRef(false);
+  // Whether the person has navigated since the page loaded (a verb, a link, Back or Forward): the first-load open of their main session
+  // (NV_useMainSessionOpen) never lands on top of a place they chose.
+  var navigatedRef = React.useRef(false);
   var markPush = React.useCallback(function () {
     pendingPushRef.current = true;
+    navigatedRef.current = true;
   }, []);
   // The listener effect below hands its reader to the write effect, which
   // reads an address-bar change it has not seen before it writes over it.
@@ -341,6 +404,7 @@ function NV_Shell() {
       var current = window.location.hash || "";
       if (current === ownHashRef.current) return;
       ownHashRef.current = current;
+      navigatedRef.current = true;
       var parsed = SH_parseUrl(current);
       setWid(parsed.wid);
       setView(parsed.view);
@@ -428,6 +492,20 @@ function NV_Shell() {
     if (isMobile || !tabsRestored || !tabsStoreKey || tabsStoreKey !== tabsKeyRef.current) return;
     NV_saveTabs(tabsKeyRef.current, window.TG_serialize(tgModel));
   }, [isMobile, tgModel, tabsStoreKey, tabsRestored]);
+
+  // The first load lands in the caller's main session in the default workspace (pivot P2 Task 14). Ready once the working set is restored: on a desktop
+  // when the restore has run, on a phone (which keeps no working set) once the auth status has said who is signed in.
+  NV_useMainSessionOpen({
+    initialWid: initial.wid,
+    initialDoc: initial.doc,
+    ready: isMobile ? !!tabsStoreKey : tabsRestored,
+    wid: wid,
+    wsItems: wsItems,
+    tgModel: tgModel,
+    setTgModel: setTgModel,
+    stampSessionMeta: stampSessionMeta,
+    navigatedRef: navigatedRef,
+  });
 
   // Menus close on any outside click.
   React.useEffect(function () {
