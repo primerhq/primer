@@ -50,7 +50,7 @@
 //   nv-rail-workspace-menu:{wid} (New session / Settings / Delete,
 //   right-click on a workspace row - US-012b item 5a), rows are
 //   nv-rail-ws-menu-new-session:{wid}, nv-rail-ws-menu-settings:{wid},
-//   nv-rail-ws-menu-delete:{wid}
+//   nv-rail-ws-menu-delete:{wid} (never for the default workspace)
 //
 // Cross-workspace attention aggregate: notes 2.1 wants "every session
 // across ALL workspaces that needs a person" in the Inbox. GET
@@ -225,7 +225,12 @@ function NV_Rail_WorkspaceContextMenu(props) {
     act("settings", "Settings", function () {
       if (typeof props.onOpenSettings === "function") props.onOpenSettings(w.id);
     }),
-    act("delete", "Delete", function () {
+  ];
+  // The default workspace (prime) can never be deleted: WorkspaceRegistry.destroy answers 403 reserved_workspace, so a Delete here could only
+  // fail and its menu offers none (pivot P2 Task 13). GET /v1/workspaces flags that row with the response-only is_default; a row without the
+  // flag (any other workspace, or an older server that sends none) keeps the row and the server stays the guard.
+  if (w.is_default !== true) {
+    rows.push(act("delete", "Delete", function () {
       window.confirmDialog({
         title: "Delete workspace",
         message: "Permanently delete " + (w.name || w.id) + "? This cannot be undone.",
@@ -234,8 +239,8 @@ function NV_Rail_WorkspaceContextMenu(props) {
         if (!ok) return;
         SH_api.deleteWorkspace(w.id).then(props.onChanged);
       });
-    }, true),
-  ];
+    }, true));
+  }
 
   // Same viewport-clamping fix as NV_Rail_SessionContextMenu above (the
   // tree can put a row anywhere down a long scrollable list).

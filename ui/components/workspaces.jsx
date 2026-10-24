@@ -579,6 +579,13 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
   );
   const sessionCount = sessionsForBadge.data?.items?.length ?? null;
 
+  // The default workspace (prime) can never be deleted: WorkspaceRegistry.destroy answers 403 reserved_workspace (pivot P2 Task 13). The row
+  // carries the response-only is_default, so until it has been read the console cannot tell prime from any other workspace and offers no
+  // Destroy; once read, prime's settings have no Destroy tab, and a link that names the tab shows why instead of a button that can only fail.
+  const rowKnown = ws.data != null;
+  const isDefault = rowKnown && ws.data.is_default === true;
+  const offersDestroy = rowKnown && !isDefault;
+
   const tabs = [
     { id: "files", label: "Files", icon: "doc" },
     { id: "sessions", label: "Sessions", icon: "zap", count: sessionCount },
@@ -586,7 +593,7 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
     { id: "log", label: "Log", icon: "git-commit" },
     { id: "channels", label: "Channels", icon: "bell" },
     { id: "config", label: "Config", icon: "settings" },
-    { id: "destroy", label: "Destroy", icon: "trash", danger: true },
+    ...(offersDestroy ? [{ id: "destroy", label: "Destroy", icon: "trash", danger: true }] : []),
   ];
 
   const wsRow = ws.data || {};
@@ -608,7 +615,13 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
   const logPanel = <WS_LogTab wid={wid} />;
   const channelsPanel = <WS_ChannelsTab wid={wid} ws={ws} pushToast={pushToast} />;
   const configPanel = <WS_ConfigTab wid={wid} ws={ws} />;
-  const destroyPanel = <WS_DestroyTab wid={wid} pushToast={pushToast} sessionsForBadge={sessionsForBadge} />;
+  const destroyPanel = isDefault ? (
+    <div style={{ padding: 14 }} data-testid="ws-destroy-reserved">
+      <Banner kind="info" title="This is the default workspace" detail={`${wsRow.name || wid} cannot be deleted.`} />
+    </div>
+  ) : offersDestroy ? (
+    <WS_DestroyTab wid={wid} pushToast={pushToast} sessionsForBadge={sessionsForBadge} />
+  ) : null;
 
   // Mobile tab id "logs" maps onto the desktop "log" tab content so the
   // mobile/desktop label stays singular in routes while the spec-required
