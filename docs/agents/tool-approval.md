@@ -325,6 +325,12 @@ It returns 200 with this envelope when an approval is pending:
 gate is pending. It is `null` for a gate parked before gates had ids. The per-gate lists (`GET /v1/workspaces/{wid}/sessions/{sid}/yields/pending`,
 `GET /v1/workspaces/{wid}/yields/pending`, `GET /v1/yields/pending`) serve it as `gate_id` on each item.
 
+A gate stops being pending the moment a decision on it is accepted (`202`), before the session resumes: `tool_approval/pending` then answers
+as it does for a session with nothing pending (the same `404`, with no `extensions.code`), and the per-gate lists leave it out. A graph park
+with several gates still serves the ones not yet decided, each with its own `gate_id`. So a poller that answers whatever
+`tool_approval/pending` serves answers each gate once; keep the `gate_id`s you answered and skip them all the same, because a second answer
+to one gate is refused (`409 already_decided`, or `404 gate_not_pending` once the session has moved on).
+
 Both return 404 `/errors/not-found` (RFC 7807) if the session does
 not exist or is not currently waiting on an `_approval` gate. To respond
 (a reply on a mapped platform thread resolves the same pending gate):

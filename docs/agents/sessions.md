@@ -471,7 +471,9 @@ design: it comes through a reply binding a person set up.
 `ask_user/pending` returns the `tool_call_id`, the `gate_id` (the id of THIS
 prompt, minted when it was asked; `null` for a prompt parked before gates had
 ids), the `prompt`, and the optional `response_schema` (404 when the session is
-not parked on an `ask_user`); `ask_user/respond` validates the `response` against that
+not parked on an `ask_user`, or when its prompt is already answered: a prompt stops
+being pending the moment an answer is accepted, before the session resumes, and a graph
+park still serves the prompts not yet answered); `ask_user/respond` validates the `response` against that
 schema and resumes the session (a schema whose `$ref` points at nothing, or at another
 document, which is never fetched, is a `422` naming the ref). Send the `gate_id` back
 (`{"tool_call_id": ..., "gate_id": ..., "response": ...}`): the provider repeats its
