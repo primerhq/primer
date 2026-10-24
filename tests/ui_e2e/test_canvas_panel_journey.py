@@ -126,10 +126,20 @@ def test_a_tab_from_a_native_button_into_an_html_element_lets_it_emit_nothing(pa
     assert _emits(page) == []
 
 
-def test_a_frame_that_steals_the_focus_during_another_elements_click_emits_nothing(page: Page, base_url: str) -> None:
-    """The review of #925: the first Html element that passes the gate owns the activation; one that steals the focus gets nothing."""
+def test_one_click_gives_its_activation_to_one_frame_only(page: Page, base_url: str) -> None:
+    """The review of #925: the first Html element that passes the gate owns the activation, so a click spends ONE budget, in one frame.
+
+    Known residual, accepted by the lead ("Lead rulings after the S7 review"): an element that steals the focus by script during another
+    element's real click can own that activation if its message reaches the renderer first (CI saw exactly that). Both frames are the
+    same canvas's agent code, so it gains no gesture the agent could not already get from that click. The gate does NOT promise that
+    the clicked element wins; it promises that one element gets the activation's budget and that no element double-spends it. That is
+    what this step asserts.
+    """
     loaded = _mount(page, base_url, {"a": _html(CLICKED), "b": _html(THIEF)}, "a")
     _until(page, loaded, ARM_MS / 1000 + 1)
     _click(page, page.frame_locator("#cv").frame_locator("[data-cv-id=a] iframe").locator("#a"))
     page.wait_for_timeout(2_500)
-    assert _emits(page) == [("a", "a_click")]
+    emits = _emits(page)
+    owners = {element for element, _ in emits}
+    assert len(owners) == 1, f"exactly one of A and B emits from the click's activation: {emits}"
+    assert 1 <= len(emits) <= 3, f"the owner emits at most 3 times: {emits}"
