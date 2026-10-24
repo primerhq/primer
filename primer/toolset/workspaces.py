@@ -104,9 +104,9 @@ from primer.session.peer_messages import (
     REFUSE_RESTART_NEEDS_INPUT,
     PeerMessageRefused,
     PeerSendResult,
+    caller_reach,
     in_reach,
     list_workspace_session_summaries,
-    reach_of,
     send_peer_message,
 )
 from primer.tap.cursor import TapCursor
@@ -148,10 +148,6 @@ logger = logging.getLogger(__name__)
 
 
 WORKSPACES_TOOLSET_ID = "workspaces"
-
-#: The workspace a calling session is confined to when its workspace cannot be told: an id no workspace has (an id is never empty), so it reaches
-#: nothing (fail closed).
-_NO_WORKSPACE = ""
 
 
 # ===========================================================================
@@ -1523,21 +1519,6 @@ def build_workspaces_toolset(
     async def _workspace_row_served(row: WorkspaceRow) -> dict[str, Any]:
         return _with_is_default(row, await _default_workspace_id())
 
-    async def _caller_reach(ctx: ToolContext | None) -> str | None:
-        """The one workspace the caller may reach, or ``None`` for every workspace (lead ruling 3 of the G7 fixes, audit G7-05).
-
-        A call from a workspace session reaches its own workspace, and every workspace when that is the default one (prime, the management
-        plane): :func:`primer.session.peer_messages.reach_of`, the reach ``message_session`` and the steer and restart tools apply. A call with no
-        calling session (a person over MCP, an API client) keeps its reach over every workspace.
-        """
-        if ctx is None or not ctx.session_id:
-            return None
-        workspace_id = ctx.workspace_id
-        if not workspace_id:
-            row = await _session_row_storage().get(ctx.session_id)
-            workspace_id = row.workspace_id if row is not None else _NO_WORKSPACE
-        return await reach_of(storage_provider, workspace_id)
-
     async def _out_of_reach(ctx: ToolContext | None, workspace_id: str) -> ToolCallResult | None:
         """The answer to a call on ``workspace_id`` from a session that may not reach it, else ``None`` (ticket 01a16ad1).
 
@@ -1551,11 +1532,11 @@ def build_workspaces_toolset(
 
     async def _workspace_in_reach(ctx: ToolContext | None, workspace_id: str) -> bool:
         """Whether the caller may reach ``workspace_id``; ``get_workspace`` answers a row it may not exactly as a missing one."""
-        return in_reach(await _caller_reach(ctx), workspace_id)
+        return in_reach(await caller_reach(storage_provider, ctx), workspace_id)
 
     async def _workspaces_in_reach(ctx: ToolContext | None) -> Predicate | None:
         """``list_workspaces`` confined to the caller's reach: only its own workspace from a session outside prime, every one otherwise."""
-        reach = await _caller_reach(ctx)
+        reach = await caller_reach(storage_provider, ctx)
         return None if reach is None else Predicate(left=FieldRef(name="id"), op=Op.EQ, right=Value(value=reach))
 
     name, entry = _tool(
@@ -1766,7 +1747,7 @@ def build_workspaces_toolset(
             args = _CreateSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if not in_reach(await _caller_reach(ctx), args.workspace_id):
+        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
             # A session outside the default workspace creates sessions only in its own (review of #853): a session it made in prime would reach
             # every workspace. Answered exactly as a workspace that does not exist.
             return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
@@ -1864,7 +1845,7 @@ def build_workspaces_toolset(
             return _err_from_validation(exc)
         # The reach of a calling session, then the rank of the caller (review of #853): out of reach answers exactly as an unknown session does
         # (cancel_session's own words), and a caller below the session's creator is refused before anything is written.
-        if not in_reach(await _caller_reach(ctx), args.workspace_id):
+        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
             return _err(_session_not_on_workspace(args), error_type="not-found")
         target = await _session_row_storage().get(args.session_id)
         if target is not None and target.workspace_id == args.workspace_id:
@@ -1928,7 +1909,7 @@ def build_workspaces_toolset(
             args = _WorkspaceSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if not in_reach(await _caller_reach(ctx), args.workspace_id):
+        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
             # Out of the calling session's reach (review of #853): exactly as an unknown session (interrupt_session's own words).
             return _err(_session_not_on_workspace(args), error_type="not-found")
         from primer.workspace.session_factory import (
@@ -1996,7 +1977,7 @@ def build_workspaces_toolset(
             args = _WorkspaceListSessionsArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if not in_reach(await _caller_reach(ctx), args.workspace_id):
+        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
             # Out of the calling session's reach: answered exactly as a workspace that does not exist (the registry's own words for one), so a
             # workspace id seen in a file or a log is never confirmed.
             return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
@@ -2050,7 +2031,7 @@ def build_workspaces_toolset(
         except ValidationError as exc:
             return _err_from_validation(exc)
         filters: list[Predicate] = []
-        reach = await _caller_reach(ctx)
+        reach = await caller_reach(storage_provider, ctx)
         if reach is not None:
             # A session outside the default workspace finds only its own workspace's sessions (lead ruling 3 of the G7 fixes). Another workspace
             # named in ``workspace_id`` then finds nothing, exactly as a workspace id that does not exist.
@@ -2123,7 +2104,7 @@ def build_workspaces_toolset(
             args = _WorkspaceSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if not in_reach(await _caller_reach(ctx), args.workspace_id):
+        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
             # Out of the calling session's reach (review of #853): exactly as a workspace that does not exist (the registry's own words).
             return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
         try:
@@ -2184,7 +2165,7 @@ def build_workspaces_toolset(
             return _err_from_validation(exc)
         row = await storage_provider.get_storage(WorkspaceSession).get(args.session_id)
         # Out of the calling session's reach (review of #853) answers exactly as a session that does not exist.
-        if row is None or row.workspace_id != args.workspace_id or not in_reach(await _caller_reach(ctx), args.workspace_id):
+        if row is None or row.workspace_id != args.workspace_id or not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
             return _err(
                 f"Session {args.session_id!r} does not exist on "
                 f"workspace {args.workspace_id!r}",
@@ -2252,7 +2233,7 @@ def build_workspaces_toolset(
                 args = _WorkspaceSessionArgs.model_validate(arguments)
             except ValidationError as exc:
                 return _err_from_validation(exc)
-            if not in_reach(await _caller_reach(ctx), args.workspace_id):
+            if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
                 # Out of the calling session's reach (review of #853): exactly as a workspace that does not exist (the registry's own words).
                 return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
             if ranked:

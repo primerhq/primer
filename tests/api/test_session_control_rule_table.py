@@ -9,15 +9,21 @@ over MCP and on their REST routes: they stop or start a run at the creator's ran
 The tool rows go through :func:`primer.agent.inner_dispatch.dispatch_inner_tool`, as ``system__call_tool`` reaches a tool (with the request's actor
 on ``current_actor`` and no context for the MCP rows); the REST rows go over HTTP through the auth middleware as a user-role account.
 
-The last section holds the rows of the tools that name a WORKSPACE rather than a session (ticket 01a16ad1): delete, get and list a workspace, its
+The next section holds the rows of the tools that name a WORKSPACE rather than a session (ticket 01a16ad1): delete, get and list a workspace, its
 tap, its log and its files. They follow the same reach rule and are driven through the real tool manager (by name and through ``system__call_tool``).
+
+The last section holds the follow-ups of #870 (tickets 01a16ba1-da9b and 01a16ba1-e2d1): a trigger subscription or a channel binding (created,
+updated, and fired by the worker's trigger handler), the reply-binding tools, ``delete_workspace``'s rank rule, ``create_workspace`` from a session
+outside prime, and the tools of a graph session that has no holder slot.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -27,25 +33,48 @@ from httpx import ASGITransport
 from primer.agent.inner_dispatch import dispatch_inner_tool
 from primer.agent.tool_manager import ToolExecutionManager, invoke_one
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
+from primer.authz import OUTRANKED_MESSAGE
+from primer.claim.in_memory import InMemoryClaimEngine
 from primer.mcp.server import current_actor
 from primer.model.agent import Agent, AgentModel
+from primer.model.channel import Channel, ChannelProviderType, TelegramChannelConfig
 from primer.model.chat import ToolCallPart
 from primer.model.except_ import NotFoundError
+from primer.model.graph import Graph, _BeginNode, _EndNode, _StaticEdge
 from primer.model.principal import Principal, PrincipalRef
+from primer.model.scheduler import WorkerConfig
 from primer.model.storage import OffsetPage
+from primer.model.trigger import (
+    AgentFreshSubConfig,
+    ChannelTriggerConfig,
+    DelayedTriggerConfig,
+    GraphFreshSubConfig,
+    ParkedSessionSubConfig,
+    SessionAppendSubConfig,
+    Subscription,
+    Trigger,
+)
+from primer.model.user import User
 from primer.model.workspace import (
     CommitInfo,
     FileEntry,
     LocalWorkspaceConfig,
     Workspace,
+    WorkspaceChannelLink,
     WorkspaceProvider,
     WorkspaceProviderType,
     WorkspaceRuntimeMeta,
+    WorkspaceTemplate,
 )
-from primer.model.workspace_session import AgentSessionBinding, SessionInfo, SessionStatus, WorkspaceSession
+from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, SessionInfo, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext
+from primer.session.peer_messages import REFUSE_RANK
 from primer.toolset.system import build_system_toolset
+from primer.toolset.trigger import build_trigger_toolset_provider
 from primer.toolset.workspaces import WORKSPACES_TOOLSET_ID, build_workspaces_toolset
+from primer.worker.engine_handlers import run_engine_trigger
+from primer.worker.pool import WorkerPool
+from primer.workspace.local.state import LocalStateRepo
 from tests.session._peer_fakes import FakeBus, FakeEngine, FakeRegistry, FakeScheduler, FakeSlot, FakeWorkspace, World, seed_session
 from tests.conftest import _FakeStorageProvider
 
@@ -321,6 +350,7 @@ class _LiveWorkspace:
     def __init__(self, workspace_id: str) -> None:
         self.id = workspace_id
         self.files = {"notes.txt": f"hello from {workspace_id}".encode(), ".state/sessions/ses-t/messages.jsonl": _TRANSCRIPT}
+        self.runtime_meta = WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t")
 
     def _entry(self, path: str) -> FileEntry:
         if path not in self.files:
@@ -361,6 +391,11 @@ class _Backend:
     async def get(self, workspace_id: str, *, template=None) -> _LiveWorkspace | None:
         return self.live.get(workspace_id)
 
+    async def create(self, template, *, overrides=None, workspace_id=None, resolvers=None) -> _LiveWorkspace:
+        wid = workspace_id or "ws-made"
+        self.live[wid] = _LiveWorkspace(wid)
+        return self.live[wid]
+
     async def destroy(self, workspace_id: str) -> None:
         if self.live.pop(workspace_id, None) is None:
             raise NotFoundError(f"workspace {workspace_id!r} not found")
@@ -372,6 +407,14 @@ class WsWorld:
     backend: _Backend
     toolset: object
     system: object
+    trigger: object = None
+    registry: ProviderRegistry | None = None
+    workspaces: WorkspaceRegistry | None = None
+
+    @property
+    def providers(self) -> dict:
+        """The toolsets a session's tool manager holds, by id: the doors every row below goes through."""
+        return {"system": self.system, "workspaces": self.toolset, "trigger": self.trigger}
 
     async def snapshot(self) -> dict:
         """Everything a refused call must leave as it was: the workspace and session rows, and every live workspace's files."""
@@ -404,48 +447,64 @@ async def _ws_world() -> WsWorld:
             initiated_by=USER,
         ))
     backend = _Backend()
-    workspaces = build_workspaces_toolset(storage_provider=sp, workspace_registry=WorkspaceRegistry(sp, factory=lambda row: backend))
+    workspace_registry = WorkspaceRegistry(sp, factory=lambda row: backend)
+    workspaces = build_workspaces_toolset(storage_provider=sp, workspace_registry=workspace_registry)
     registry = ProviderRegistry(
         sp, llm_factory=lambda p: object(), embedder_factory=lambda p: object(), cross_encoder_factory=lambda p: object(),
         toolset_factory=lambda p: object(),
     )
     registry._workspaces_toolset_provider = workspaces  # noqa: SLF001 -- as the app lifespan wires it
-    system = build_system_toolset(storage_provider=sp, provider_registry=registry)
+    system = build_system_toolset(storage_provider=sp, provider_registry=registry, workspace_registry=workspace_registry)
     registry._system_toolset_provider = system  # noqa: SLF001
-    return WsWorld(sp=sp, backend=backend, toolset=workspaces, system=system)
+    trigger = build_trigger_toolset_provider(storage_provider=sp)
+    registry._trigger_toolset_provider = trigger  # noqa: SLF001
+    return WsWorld(sp=sp, backend=backend, toolset=workspaces, system=system, trigger=trigger, registry=registry, workspaces=workspace_registry)
 
 
 def _args(tool: str, target: str) -> dict:
     return {k: (target if v == W else v) for k, v in WS_TOOLS.get(tool, {}).items()}
 
 
-async def _ws_call(world: WsWorld, tool: str, target: str, *, own: str | None, door: str) -> tuple[str, dict]:
-    """``tool`` on ``target``, from a session in ``own`` through ``door``, or with no calling session (``own`` None) as the MCP endpoint calls it."""
-    arguments = _args(tool, target)
+#: The calling session in each workspace (``_ws_world`` stores them).
+CALLERS = {"ws-1": "ses-a", "ws-2": "ses-o", "ws-prime": "ses-p"}
+MCP_USER = Principal(type="user", id="u-mcp", display="mcp", role="user", source="local")
+
+
+async def _call(
+    world: WsWorld, toolset: str, tool: str, arguments: dict, *, own: str | None, door: str, run_as: PrincipalRef = USER,
+    actor: Principal = MCP_USER,
+) -> tuple[str, dict]:
+    """``toolset``'s ``tool`` from a session in ``own`` (its run ranked ``run_as``) through ``door``: the tool by its scoped name in the real
+    tool manager, or ``system__call_tool``. With ``own`` None it is the MCP endpoint's own call (``invoke_one``, no context, ``actor`` on
+    ``current_actor``)."""
     if own is None:
-        token = current_actor.set(Principal(type="user", id="u-mcp", display="mcp", role="user", source="local"))
+        token = current_actor.set(actor)
         try:
-            result = await invoke_one(provider=world.toolset, tool_name=tool, arguments=arguments, principal=None)
+            result = await invoke_one(provider=world.providers[toolset], tool_name=tool, arguments=arguments, principal=None)
         finally:
             current_actor.reset(token)
         output, is_error = result.output, result.is_error
     else:
-        caller = {"ws-1": "ses-a", "ws-2": "ses-o", "ws-prime": "ses-p"}[own]
         manager = ToolExecutionManager(
-            toolset_providers={"system": world.system, "workspaces": world.toolset},
-            workspace_session=SimpleNamespace(session_id=caller, workspace_id=own, agent_id="planner"),  # type: ignore[arg-type]
-            initiated_by=USER,
+            toolset_providers=world.providers,
+            workspace_session=SimpleNamespace(session_id=CALLERS[own], workspace_id=own, agent_id="planner"),  # type: ignore[arg-type]
+            initiated_by=run_as,
         )
         if door == "tool manager":
-            call = ToolCallPart(id="call-1", name=f"workspaces__{tool}", arguments=arguments)
+            call = ToolCallPart(id="call-1", name=f"{toolset}__{tool}", arguments=arguments)
         else:
             call = ToolCallPart(
-                id="call-1", name="system__call_tool", arguments={"toolset_id": "workspaces", "tool_name": tool, "arguments": arguments},
+                id="call-1", name="system__call_tool", arguments={"toolset_id": toolset, "tool_name": tool, "arguments": arguments},
             )
         part = await manager.execute(call)
         output, is_error = part.output, part.error
     body = json.loads(output)
     return (body["type"] if is_error else D), body
+
+
+async def _ws_call(world: WsWorld, tool: str, target: str, *, own: str | None, door: str) -> tuple[str, dict]:
+    """``tool`` on ``target``, from a session in ``own`` through ``door``, or with no calling session (``own`` None) as the MCP endpoint calls it."""
+    return await _call(world, "workspaces", tool, _args(tool, target), own=own, door=door)
 
 
 async def _ws_delivered(world: WsWorld, tool: str, body: dict) -> bool:
@@ -519,3 +578,70 @@ async def test_list_workspaces_lists_only_what_the_caller_reaches(own, door, lis
     assert outcome == D, body
     assert sorted(item["id"] for item in body["items"]) == listed
     assert body["total"] == len(listed)
+
+
+# ---- The follow-ups of #870 (tickets 01a16ba1-da9b and 01a16ba1-e2d1) --------------------------------------------------------------------
+#
+# The doors the review of #870 found still open from a session outside prime. Every row goes through the real tool manager (the tool by its scoped
+# name, and ``system__call_tool``) or as the MCP endpoint calls it; the fire rows go through the worker's trigger handler
+# (``primer.worker.engine_handlers.run_engine_trigger``), which runs ``fire_trigger`` and the real subscription dispatchers.
+
+
+def _rows(doors) -> list[tuple]:
+    return [(d, who, door) for d in doors for who in WS_CALLERS if who != "no session" for door in DOORS] + [(d, "no session", "MCP") for d in doors]
+
+
+# -- the reply-binding tools (F2) -------------------------------------------------------------------------------------------------------------
+
+REPLY_DOORS = {
+    "set_reply_binding": {"workspace_id": W, "channel_id": "ch-1"},
+    "clear_reply_binding": {"workspace_id": W},
+}
+
+
+async def _reply_world() -> WsWorld:
+    world = await _ws_world()
+    await world.sp.get_storage(Channel).create(Channel(
+        id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM, external_id="777", config=TelegramChannelConfig(),
+    ))
+    store = world.sp.get_storage(Workspace)
+    await store.update((await store.get("ws-2")).model_copy(update={"reply_binding": WorkspaceChannelLink(channel_id="ch-old")}))
+    return world
+
+
+def _reply_args(tool: str, target: str, **extra) -> dict:
+    return {**{k: (target if v == W else v) for k, v in REPLY_DOORS[tool].items()}, **extra}
+
+
+@pytest.mark.parametrize(("tool", "who", "door"), _rows(REPLY_DOORS))
+async def test_the_reply_binding_tools_reach_only_what_the_caller_reaches(tool, who, door):
+    """F2: ``set_reply_binding`` and ``clear_reply_binding`` name a workspace like the workspaces tools do and follow the same reach."""
+    world = await _reply_world()
+    own, expected = WS_CALLERS[who]
+    before = await world.snapshot()
+
+    outcome, body = await asyncio.wait_for(_call(world, "system", tool, _reply_args(tool, "ws-2"), own=own, door=door), 30)
+
+    assert outcome == expected, (tool, who, door, body)
+    binding = (await world.sp.get_storage(Workspace).get("ws-2")).reply_binding
+    if outcome == D:
+        assert (binding.channel_id if binding else None) == ("ch-1" if tool == "set_reply_binding" else None), binding
+        return
+    assert await world.snapshot() == before, f"{tool} changed the workspace it refused ({who}, {door})"
+    _, unknown = await _call(world, "system", tool, _reply_args(tool, "ws-nope"), own=own, door=door)
+    assert json.dumps(body).replace("ws-2", "<ws>") == json.dumps(unknown).replace("ws-nope", "<ws>"), (body, unknown)
+
+
+@pytest.mark.parametrize("channel", ["ch-1", "no-such-channel"])
+@pytest.mark.parametrize("door", DOORS)
+async def test_set_reply_binding_out_of_reach_answers_as_an_unknown_workspace_whatever_the_channel(channel, door):
+    """The reach is asked before the channel is looked up, so an existing workspace out of reach and an unknown one answer alike, a channel that
+    does not exist included: the tool confirms no workspace id."""
+    world = await _reply_world()
+    before = await world.snapshot()
+    answers = [
+        (await _call(world, "system", "set_reply_binding", _reply_args("set_reply_binding", target, channel_id=channel), own="ws-1", door=door))
+        for target in ("ws-2", "ws-prime", "ws-nope")
+    ]
+    assert answers == [(N, {"type": N, "message": f"Workspace {t!r} does not exist"}) for t in ("ws-2", "ws-prime", "ws-nope")]
+    assert await world.snapshot() == before

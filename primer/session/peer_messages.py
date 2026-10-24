@@ -395,6 +395,35 @@ def in_reach(reach: str | None, workspace_id: str) -> bool:
     return reach is None or workspace_id == reach
 
 
+#: The sentence every tool that names a workspace adds to its description: what a session outside prime reaches (:func:`caller_reach`).
+REACH_NOTE = (
+    "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an "
+    "unknown id does."
+)
+
+#: The workspace a calling session is confined to when its workspace cannot be told: an id no workspace has (an id is never empty), so it reaches
+#: nothing (fail closed).
+NO_WORKSPACE = ""
+
+
+async def caller_reach(storage_provider: Any, ctx: Any) -> str | None:
+    """The one workspace the caller of a tool may reach, or ``None`` for every workspace (lead ruling 3 of the G7 fixes, audit G7-05).
+
+    The reach of every tool that names a workspace or a session, in every toolset that has one (the workspaces tools, the reply-binding and
+    channel-binding tools, the trigger subscription tools): a call from a workspace session reaches its own workspace, and every workspace when that
+    is the default one (prime, the management plane), as :func:`reach_of` says. A call with no calling session (``ctx`` None or with no
+    ``session_id``: a person over MCP, an API client) keeps its reach over every workspace. A context that names a session but no workspace is
+    resolved through the session's row; a session that cannot be found reaches nothing.
+    """
+    if ctx is None or not getattr(ctx, "session_id", None):
+        return None
+    workspace_id = getattr(ctx, "workspace_id", None)
+    if not workspace_id:
+        row = await storage_provider.get_storage(WorkspaceSession).get(ctx.session_id)
+        workspace_id = row.workspace_id if row is not None else NO_WORKSPACE
+    return await reach_of(storage_provider, workspace_id)
+
+
 class PeerSendResult(BaseModel):
     """What ``message_session`` answers when the message was delivered or queued."""
 
@@ -754,6 +783,8 @@ async def send_peer_message(
 
 __all__ = [
     "MAX_PEER_HOPS",
+    "NO_WORKSPACE",
+    "REACH_NOTE",
     "PARKED_ON_LABELS",
     "PEER_MESSAGE_MAX_CHARS",
     "PEER_PREFIX_AGENT",
@@ -786,6 +817,7 @@ __all__ = [
     "REFUSE_TEXT",
     "PeerMessageRefused",
     "PeerSendResult",
+    "caller_reach",
     "check_peer_rate",
     "delete_peer_ledger_of",
     "in_reach",
