@@ -1150,7 +1150,10 @@ class SessionMessageKind(StrEnum):
     CANVAS_OP = "canvas_op"
     # A user interaction with the canvas that did not start a turn (pivot P5,
     # design 8.5). Payload: a ``CanvasEvent`` dump without ``client_event_id``
-    # (primer.model.canvas.CanvasEvent.public). Display only, never history.
+    # (primer.model.canvas.CanvasEvent.public) and without what the user
+    # entered, its ``value`` and ``data`` (primer.canvas.delivery.event_record:
+    # the transcript is a shared read, the lead's ruling 1 on pivot P5 S5).
+    # Display only, never history.
     CANVAS_EVENT = "canvas_event"
 
 
@@ -1213,6 +1216,16 @@ MACHINE_ATTRIBUTION_KEY = "machine"
 ``PendingSessionMessage.attribution == {"machine": True}``. The drain reads it when it realizes the message: such a message, like a peer's, does not
 reopen a session an operator cancelled (lead ruling 1 of the G7 fixes), while a person's queued steer (no attribution) still does. A row queued
 before the key existed has none and is read as a person's."""
+
+CANVAS_EVENT_PAYLOAD_KEY = "canvas_event"
+"""The key a canvas click lives under (pivot P5): in the ``payload`` of the USER_INPUT record its ``<canvas_event>`` block becomes, and in the
+``PendingSessionMessage.attribution`` of the steer it is queued as, from where the drain carries it back into the wake that realizes it. The
+value is ``primer.canvas.delivery.event_attribution``: the event WITHOUT what the user entered (its ``value`` and ``data``), which only the
+block's text carries (the lead's ruling 1 on S5). A queued message that carries it is a person's (``_written_by_a_person``)."""
+
+CANVAS_DIGEST_PAYLOAD_KEY = "canvas_digest"
+"""The key, in a USER_INPUT record's ``payload``, of the canvas changes ``wake_session`` added to the instruction as a ``<canvas_changes>``
+text part (pivot P5): ``{"rev", "events": [event_attribution ...]}``, again without what the user entered."""
 
 
 class PeerAttribution(BaseModel):
@@ -1308,6 +1321,8 @@ __all__ = [
     "AgentSessionBinding",
     "GraphSessionBinding",
     "Instruction",
+    "CANVAS_DIGEST_PAYLOAD_KEY",
+    "CANVAS_EVENT_PAYLOAD_KEY",
     "MACHINE_ATTRIBUTION_KEY",
     "NON_ENDED_STATUSES",
     "NON_ENDED_STATUSES_NOT_PAUSED",

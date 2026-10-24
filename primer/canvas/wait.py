@@ -23,7 +23,7 @@ from typing import Any
 from primer.model.event import EventFilter, FieldMatcher
 from primer.model.except_ import NotFoundError
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
-from primer.model.workspace_session import PendingSessionMessage
+from primer.model.workspace_session import CANVAS_EVENT_PAYLOAD_KEY, PendingSessionMessage
 from primer.model.yield_ import ToolContext
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ CANVAS_WAIT_PREFIX = "canvaswait:"
 
 #: Where a queued canvas click carries its event in ``PendingSessionMessage.attribution`` (``{"canvas_event": {"id": "e3", ...}}``);
 #: the delivery code (``primer.canvas.delivery``) writes it with the same key.
-_ATTRIBUTION_KEY = "canvas_event"
+_ATTRIBUTION_KEY = CANVAS_EVENT_PAYLOAD_KEY
 
 #: Queued steers are read a page at a time; a session queues at most 50 (``pending_messages``), so one page is the usual case and the
 #: page count only bounds a bug.
