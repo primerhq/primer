@@ -899,7 +899,7 @@ function WorkspaceProviderDetail({ providerId, pushToast, onBack = null, onDelet
               <Btn
                 kind="danger"
                 icon="trash"
-                disabled={referencingTemplates.length > 0}
+                disabled={templatesState !== "ready" || referencingTemplates.length > 0}
                 busy={del.loading}
                 onClick={() => del.mutate().catch(() => { /* onError */ })}
               >
@@ -910,6 +910,15 @@ function WorkspaceProviderDetail({ providerId, pushToast, onBack = null, onDelet
         >
           {deleteError ? (
             <><strong style={{ color: "var(--red)" }}>409 Conflict</strong> - {deleteError}</>
+          ) : templatesState === "stuck" ? (
+            <div data-testid="wp-delete-templates-unknown">
+              {"Couldn't check whether any templates use this provider: the check has failed repeatedly. Delete is held until it succeeds. "}
+              <Btn size="sm" icon="refresh" onClick={templates.refetch}>Retry</Btn>
+            </div>
+          ) : templatesState !== "ready" ? (
+            <div data-testid="wp-delete-templates-checking" className="muted text-sm">
+              Checking for templates that use this provider…
+            </div>
           ) : referencingTemplates.length > 0 ? (
             <>
               <strong style={{ color: "var(--red)" }}>409 Conflict</strong> - this provider is referenced by{" "}
