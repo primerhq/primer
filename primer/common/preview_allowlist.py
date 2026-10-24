@@ -16,7 +16,9 @@ does.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from typing import Any
 
 from primer.common.preview_paths import MAX_PATHS, classify, is_segment, path_syntax_error
@@ -46,6 +48,37 @@ _BIG_DOCUMENT_CHARS = 1_000_000    # a JSON string bigger than this is text, not
 _DEFAULT_TEXT_CHARS = 40
 
 
+# The fingerprint of a lead path's text (a stdio command's string, a Rego policy, a python source): computed by the PARK, which holds the call
+# anyway, and stamped as ``preview["digests"][path]``; a card draws it and never reads the text to make one.
+_DIGEST_TEXT = re.compile(r"sha256 [0-9a-f]{12}, [0-9]{1,9} lines?")
+
+
+def text_digest(text: str) -> str:
+    """The fingerprint a card draws for ``text``: the first 12 hex digits of its SHA-256 and its line count (``sha256 1a2b3c4d5e6f, 42 lines``)."""
+    lines = text.count("\n") + (0 if text.endswith("\n") or not text else 1)
+    return f"sha256 {hashlib.sha256(text.encode('utf-8')).hexdigest()[:12]}, {lines} line{'' if lines == 1 else 's'}"
+
+
+def value_at(args: Any, path: str) -> tuple[bool, Any]:
+    """``(True, value)`` for the value a dotted path names through nested dicts (no list is walked), else ``(False, None)``."""
+    node = args
+    for segment in path.split("."):
+        if not isinstance(node, dict) or segment not in node:
+            return False, None
+        node = node[segment]
+    return True, node
+
+
+def lead_digests(lead: "list[str]", arguments: Any) -> dict[str, str]:
+    """The fingerprints a park stamps for the ``lead`` paths of ``arguments`` that hold text."""
+    digests: dict[str, str] = {}
+    for path in lead:
+        found, value = value_at(arguments, path)
+        if found and isinstance(value, str):
+            digests[path] = text_digest(value)
+    return digests
+
+
 def _parse_container(text: str) -> "dict | list | None":
     """The dict or list ``text`` is a JSON document of, else ``None`` (deeply nested text is not a document, it is a hazard)."""
     if text.lstrip()[:1] not in ("{", "["):
@@ -68,7 +101,17 @@ def _preview_stamp(metadata: Any) -> dict[str, Any] | None:
         return None
     if any(path_syntax_error(path) is not None for path in paths):
         return None
-    return {"paths": list(paths), "source": source}
+    out: dict[str, Any] = {"paths": list(paths), "source": source}
+    lead = stamp.get("lead")
+    if isinstance(lead, list) and len(lead) <= MAX_PATHS and all(path_syntax_error(path) is None for path in lead):
+        out["lead"] = list(lead)
+        digests = stamp.get("digests")
+        if isinstance(digests, dict):
+            out["digests"] = {
+                path: digest for path, digest in digests.items()
+                if path in lead and isinstance(digest, str) and _DIGEST_TEXT.fullmatch(digest)
+            }
+    return out
 
 
 def _allow_only(args: dict, paths: "list[str]", budget: "list[int] | None" = None) -> tuple[dict, list[str]]:
@@ -218,5 +261,8 @@ __all__ = [
     "_allow_only",
     "_value_rule",
     "_of_the_default_kind",
+    "lead_digests",
     "scrub_args_for_display",
+    "text_digest",
+    "value_at",
 ]

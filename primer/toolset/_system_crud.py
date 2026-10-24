@@ -1235,7 +1235,7 @@ def _call_tool_tool(
                                 },
                                 # The card filters the INNER call's arguments by the INNER tool's allowlist (design 01a11cd3-66b0), read off the
                                 # descriptor the lookup above listed.
-                                preview=resolve_preview(policy=policy, tool=listed),
+                                preview=resolve_preview(policy=policy, tool=listed, arguments=args.arguments),
                             ),
                         ),
                         tool_call_id=ctx.tool_call_id,

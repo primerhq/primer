@@ -923,7 +923,7 @@ class ToolExecutionManager:
         """The allowlist stamp of this call's approval card (:func:`primer.agent.approval.resolve_preview`). A gate on ``system::call_tool`` is a gate on the tool it runs: unless
         the operator's own list decides, the inner tool's paths (its declaration, else its closed set) join the card as ``arguments.<path>`` when this manager holds the inner
         descriptor; an inner tool it does not hold has its arguments withheld."""
-        preview = resolve_preview(policy=policy, tool=self._descriptors.get(call.name))
+        preview = resolve_preview(policy=policy, tool=self._descriptors.get(call.name), arguments=call.arguments)
         if (toolset_id, bare_name) == _CALL_TOOL and preview["source"] != "policy":
             arguments = call.arguments if isinstance(call.arguments, dict) else {}
             inner = self._descriptors.get(f"{arguments.get('toolset_id')}{_SCOPE_SEPARATOR}{arguments.get('tool_name')}")

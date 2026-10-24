@@ -751,6 +751,16 @@ class Tool(Describeable):
             "In-memory metadata only; excluded from serialization."
         ),
     )
+    preview_lead: tuple[str, ...] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Dotted paths into this tool's arguments that an approval card draws FIRST, before the one-line preview cuts the arguments "
+            "(the code a person approves: a stdio command, a Rego policy, a python source). A path the allowlist shows is drawn as its "
+            "value; text also carries a fingerprint (SHA-256 prefix and line count) the park computes, which is all the card draws for a "
+            "path the allowlist withholds. None means nothing leads. In-memory metadata only; excluded from serialization."
+        ),
+    )
     required_role: str | None = Field(
         default=None,
         exclude=True,
