@@ -22,7 +22,8 @@ from primer.session.dispatch import _advance_drain_cursor
 from primer.session.seq_reservation import reserve_next_seq
 from primer.session.steer_delivery import deliver_steer
 from primer.worker.pool import WorkerPool
-from tests.session._peer_fakes import World, make_world, seed_session
+from tests.session._peer_fakes import World, seed_session
+from tests.session._wake_worlds import install_sessions, new_world  # noqa: F401  (new_world is a fixture)
 from tests.session.test_one_turn_per_wake import _each_wake_in_its_own_process
 
 T0 = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
@@ -51,7 +52,7 @@ class _AfterTheFirstRead:
 
 def _install(world: World, action: Any) -> _AfterTheFirstRead:
     wrapper = _AfterTheFirstRead(world.sp.get_storage(WorkspaceSession), action)
-    world.sp._stores[WorkspaceSession] = wrapper
+    install_sessions(world, wrapper)
     return wrapper
 
 
@@ -61,12 +62,12 @@ async def _reserve(world: World) -> None:
     await reserve_next_seq(getattr(inner, "_inner", inner), "ses-b")
 
 
-async def test_a_pause_that_a_wake_overtakes_between_its_read_and_its_write_does_not_put_the_row_back(monkeypatch):
+async def test_a_pause_that_a_wake_overtakes_between_its_read_and_its_write_does_not_put_the_row_back(new_world, monkeypatch):
     """The pause read the session WAITING and idle; a person's message on another process then woke it (RUNNING, its turn armed, its USER_INPUT at
     the next seq). The pause used to write PAUSED over the copy it read: the armed turn and the seq were erased. Now its write is fenced on the
     status it read, so it decides again on the woken row and requests the pause from the running session."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world(with_bus=True)
+        world = await new_world(with_bus=True)
         _each_wake_in_its_own_process(monkeypatch)
         await seed_session(world, sid="ses-b", turn_no=1, last_seq=4, created_at=T0)
 
@@ -80,9 +81,9 @@ async def test_a_pause_that_a_wake_overtakes_between_its_read_and_its_write_does
         assert (row.status, row.turn_status, row.last_seq, row.pause_requested) == (SessionStatus.RUNNING, "claimable", 5, True)
 
 
-async def test_the_drain_cursor_never_puts_back_a_seq_reserved_after_its_read():
+async def test_the_drain_cursor_never_puts_back_a_seq_reserved_after_its_read(new_world):
     async with asyncio.timeout(BOUND_S):
-        world = make_world()
+        world = await new_world()
         await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="running", turn_no=1, last_seq=6,
                            next_unprocessed_seq=3, created_at=T0)
         sessions = _install(world, lambda: _reserve(world))
@@ -100,9 +101,9 @@ def _pool(world: World) -> SimpleNamespace:
     )
 
 
-async def test_the_pools_end_never_puts_back_a_seq_reserved_after_its_read():
+async def test_the_pools_end_never_puts_back_a_seq_reserved_after_its_read(new_world):
     async with asyncio.timeout(BOUND_S):
-        world = make_world()
+        world = await new_world()
         row = await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_no=1, last_seq=2, created_at=T0)
         _install(world, lambda: _reserve(world))
 
@@ -112,10 +113,10 @@ async def test_the_pools_end_never_puts_back_a_seq_reserved_after_its_read():
         assert (after.status, after.ended_reason, after.last_seq) == (SessionStatus.ENDED, "failed", 3)
 
 
-async def test_the_pools_end_keeps_the_reason_of_a_row_another_path_ended_first():
+async def test_the_pools_end_keeps_the_reason_of_a_row_another_path_ended_first(new_world):
     """The first terminal reason wins: a force-delete that ended the row between the end's read and its write is not overwritten."""
     async with asyncio.timeout(BOUND_S):
-        world = make_world()
+        world = await new_world()
         row = await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_no=1, created_at=T0)
 
         async def force_delete() -> None:
@@ -130,9 +131,9 @@ async def test_the_pools_end_keeps_the_reason_of_a_row_another_path_ended_first(
         assert (after.status, after.ended_reason) == (SessionStatus.ENDED, "force_deleted")
 
 
-async def test_the_pools_pause_never_puts_back_a_seq_reserved_after_its_read():
+async def test_the_pools_pause_never_puts_back_a_seq_reserved_after_its_read(new_world):
     async with asyncio.timeout(BOUND_S):
-        world = make_world()
+        world = await new_world()
         row = await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_no=1, last_seq=2, created_at=T0)
         _install(world, lambda: _reserve(world))
 
