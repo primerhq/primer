@@ -423,8 +423,9 @@ async def test_the_messaging_tools_say_what_the_plan_says():
         "The target sees a user message that starts with [from session <your session id> (agent <your agent id>)]. "
         "A graph session gets the raw text and restarts its graph: the message is recorded in its transcript, but the graph never reads it "
         "(a run takes its input only from the session's stored graph_input). "
-        "Refusals: bad-request (yourself), not-found (no such session in your workspace), forbidden (it runs at a higher rank than you), "
-        "hop-limit (a chain of 8 messages), rate-limited (20 messages per 10 minutes), "
+        "Refusals: bad-request (yourself), not-found (no such session in your reach: your own workspace, or any workspace from a "
+        "session in the default workspace (prime); a session out of reach answers exactly as an unknown id), forbidden (it runs at a "
+        "higher rank than you), hop-limit (a chain of 8 messages), rate-limited (20 messages per 10 minutes), "
         "conflict (mode if_idle and the session is busy, or an ended session that cannot reopen)."
     ) in flat(sending.description)
     assert sending.examples[0].args == {"session_id": "ses-2", "text": "The API spec is in docs/api.md; build the client against it."}
