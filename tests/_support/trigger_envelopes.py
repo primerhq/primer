@@ -7,9 +7,28 @@ A FastAPI app with the real ``register_error_handlers``, the real ``require_user
 
 from __future__ import annotations
 
+from collections.abc import Coroutine
+from typing import Any
+
+
+def _run(coro: Coroutine[Any, Any, Any]) -> Any:
+    """Run ``coro`` to completion from sync code, whether or not this thread already runs an event loop.
+
+    The Playwright journeys call these builders from the sync Playwright API, whose thread runs a loop, and ``asyncio.run`` refuses there (round 3 of
+    #927). With a loop running the coroutine runs on a fresh loop in a worker thread; with none, here.
+    """
+    import asyncio
+    import concurrent.futures
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
 
 def real_envelopes() -> dict[str, dict]:
-    import asyncio
     from datetime import datetime, timedelta, timezone
 
     from fastapi import Depends, FastAPI, Request
@@ -30,7 +49,7 @@ def real_envelopes() -> dict[str, dict]:
     # 01a16e65-12d1), so the console reads the 403 ``forbidden_rank`` body the route really answers.
     sp = _FakeStorageProvider()
     admin = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
-    asyncio.run(sp.get_storage(Trigger).create(Trigger(
+    _run(sp.get_storage(Trigger).create(Trigger(
         id="tr-admin", slug="tr-admin", name="nightly", created_at=datetime.now(timezone.utc), owner=admin,
         config=DelayedTriggerConfig(fire_at=datetime.now(timezone.utc) + timedelta(days=1)),
     )))
@@ -93,7 +112,6 @@ def real_fire_bodies() -> dict[str, dict]:
     ``SubscriptionDispatchResult`` plus the ``subscription_id`` the dispatcher adds (``primer/trigger/dispatch.py``): a disabled or missing trigger is a 200 with ``skipped: true`` and no
     ``fire_id`` (``tests/api/test_triggers_router.py::test_fire_now_disabled_trigger_returns_skipped``), not an error.
     """
-    import asyncio
     import json
     from types import SimpleNamespace
 
@@ -122,7 +140,7 @@ def real_fire_bodies() -> dict[str, dict]:
 
             router.fire_now = answer
             request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()), state=SimpleNamespace())
-            response = asyncio.run(router.fire_now_endpoint(request=request, trigger_id="tr-1", sp=object(), claim_engine=None, event_bus=None))
+            response = _run(router.fire_now_endpoint(request=request, trigger_id="tr-1", sp=object(), claim_engine=None, event_bus=None))
             bodies[name] = json.loads(response.body)
     finally:
         router.fire_now = original
