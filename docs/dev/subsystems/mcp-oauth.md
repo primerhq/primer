@@ -54,6 +54,8 @@ one pod refreshes while its peers wait for the winning token row.
 - `primer/api/routers/mcp_oauth.py` exposes the sign-in routes.
 - `primer/model/mcp_oauth.py` defines the stored rows and the typed
   sign-in-required error.
+- `primer/storage/migrations/m017_orphan_mcp_oauth_rows.py` removes the sign-ins
+  that toolsets deleted before #852 left behind.
 
 ## 5. Data model
 
@@ -114,12 +116,27 @@ before it deletes the row, and a forget that fails answers `storage-error` and
 leaves the toolset in place), and a harness
 uninstall or a sync that drops the toolset through the store's keyless
 `forget_sign_in`, which the service's `forget` is built on. A toolset created
-again under the same id is never connected on the deleted one's sign-in.
+again under the same id is never connected on the deleted one's sign-in. The
+system tool and the harness paths kept the sign-in before #852, so migration 17
+(`primer/storage/migrations/m017_orphan_mcp_oauth_rows.py`, ticket 01a16a36)
+deletes, on an upgraded install, every token row, registered client and pending
+sign-in whose toolset no longer exists. It never touches a row whose toolset
+exists (read through its own frozen view, so a stored toolset of an older shape
+still counts) or a pending sign-in that names no toolset, and a second run
+deletes nothing more.
 
 Changing an OAuth toolset's URL or any OAuth setting requires an admin. An accepted
 change signs the toolset out, even when the typed secret makes the change safe from
 the separate masked-secret repoint guard. An unchanged save and a refused save keep
-the existing sign-in.
+the existing sign-in. Every update path applies the one predicate,
+`toolset_checks.oauth_settings_changed`, against the stored row and forgets the
+sign-in before it writes the row: the REST update and the system `update_toolset`
+tool in their pre-update hooks, and a harness sync for each toolset it changes
+(`primer/harness/service.py::_forget_sign_in_on_oauth_change`, through the same
+keyless `forget_sign_in`; ticket 01a16a36, L4 of the #852 review). A sync's forget
+that fails leaves that toolset's row as it was and fails the sync
+(`partial_apply_failure`, the snapshot not advanced), so the new settings are never
+stored beside the old sign-in. Headers and the transport are outside the rule.
 
 ## 7. Persistence
 

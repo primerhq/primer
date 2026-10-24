@@ -139,7 +139,8 @@ The toolset is ready for every caller once the shared status is `connected`.
 - A shared sign-in means every agent acts as the identity the admin connected.
   Use separate toolsets when upstream identities need different privileges.
 - Changing only extra HTTP headers does not sign out an OAuth toolset. Changing
-  the URL or any OAuth setting does.
+  the URL or any OAuth setting does, whichever way it is changed: the console or
+  the REST API, the `system::update_toolset` tool, or a harness sync.
 - Primer does not call an OAuth endpoint the MCP server names on another host
   when it is on a private, loopback or link-local address (the start answers 400
   naming the URL). An operator whose authorization server is on a private
