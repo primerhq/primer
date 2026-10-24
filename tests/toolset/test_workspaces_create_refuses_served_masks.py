@@ -76,6 +76,8 @@ async def test_a_workspace_whose_overrides_env_value_is_a_served_mask_is_refused
     """``WorkspaceRow.overrides`` keeps the per-instantiation ``env`` and is served masked, so the copy-a-workspace move (read the row, create another) sent the mask back as the variable's value."""
     from primer.model.workspace import Workspace
 
+    # The caller's run is in the default workspace (prime): a session outside it may not create a workspace (review of #870, F4).
+    await sp.set_default_workspace_id(ADMIN_CALLER.workspace_id)
     await toolset.call(tool_name="create_workspace_provider", arguments={"entity": {"id": "local-1", "provider": "local", "config": {"kind": "local", "root_path": "/tmp/x"}}}, ctx=ADMIN_CALLER)
     await toolset.call(tool_name="create_workspace_template", arguments={"entity": {"id": "tpl-1", "description": "dev", "provider_id": "local-1"}}, ctx=ADMIN_CALLER)
 

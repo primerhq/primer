@@ -599,7 +599,16 @@ _CREATE_WORKSPACE_WHEN = (
     f"A Docker workspace runs the template's ``backend.image`` (``{DOCKER_RUNTIME_IMAGE}`` when the template names none); if the "
     "runtime in the container does not answer within 30 seconds the create fails (``type=backend-error``, REST 503) with a "
     "message that names the image, and nothing is left behind. "
-    f"A custom image must contain the primer workspace runtime: build it FROM ``{DOCKER_RUNTIME_IMAGE}``."
+    f"A custom image must contain the primer workspace runtime: build it FROM ``{DOCKER_RUNTIME_IMAGE}``. "
+    "Refused (``type=forbidden``) from a session outside the default workspace (prime): create workspaces from a session in prime or "
+    "from the console."
+)
+
+#: What ``create_workspace`` answers a session outside the default workspace (review of #870, F4, lead ruling): such a session could not reach
+#: the workspace it made, and creating one is the management plane's work.
+REFUSE_CREATE_WORKSPACE = (
+    "create_workspace is refused from a session outside the default workspace (prime); "
+    "create workspaces from a session in prime or from the console"
 )
 
 # Appended to the `when` of create_workspace_template and update_workspace_template: which backend field a provider reads, who may set it, and the limits.
@@ -1587,6 +1596,10 @@ def build_workspaces_toolset(
             args = _CreateWorkspaceArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # A session outside prime makes no workspace (review of #870, F4): asked before any lookup, so neither a template id nor a workspace id
+        # is confirmed by the answer. From prime and with no calling session (a person, an API client) nothing changes.
+        if await caller_reach(storage_provider, ctx) is not None:
+            return _err(REFUSE_CREATE_WORKSPACE, error_type="forbidden")
         # A secret file source in the overrides reads an operator secret by name: admin only, as on REST.
         refusal = _refuse_non_admin(admin_only_override_fields(args.overrides), ctx)
         if refusal is not None:
@@ -3228,7 +3241,7 @@ def build_workspaces_toolset(
     return InternalToolsetProvider(toolset_id=toolset_id, registry=registry)
 
 
-__all__ = ["WORKSPACES_TOOLSET_ID", "build_workspaces_toolset"]
+__all__ = ["REFUSE_CREATE_WORKSPACE", "WORKSPACES_TOOLSET_ID", "build_workspaces_toolset"]
 
 
 # Register yielding-tool resume hooks at import time. The worker's
