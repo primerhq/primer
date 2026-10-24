@@ -12,7 +12,7 @@ An inbound binding routes messages from a room to work: it starts an agent or a 
 - **The route of one message.** The bot hears a message in a room that has a [channel](channels/channels) and turns it into a channel event. Then:
   1. A reply to an open question or approval answers it ([reply binding](channels/reply-binding)).
   2. A message in a conversation already mapped to a session goes to that session as a new message. A session in a turn gets it after the turn; an ended one reopens.
-  3. Anything else fires every enabled `channel` trigger of the provider whose `channel_id` is unset or names this channel. Each enabled binding of those triggers tests its `event_matcher`, and each match runs its action.
+  3. Anything else fires every enabled `channel` trigger of the provider whose `channel_id` is unset or names this channel. Each enabled binding of those triggers tests its `event_matcher`, and each match runs its action. In a room with `chats.enabled: false`, the bindings that start a session (`agent_fresh_session`, `graph_fresh_session`) are left out.
 - **The channel event.** `type`, `surface` (`dm`, `channel` or `thread`), `text`, `command` (`name` and `args`), `sender` (`external_id`, `display_name`, `roles`, `is_bot`), `mentions_bot`, `room_external_id` (the platform's room id) and `thread_anchor`. What each platform sends today:
   - Slack: `message.posted`, surface `channel` or `thread` (a Slack DM is `channel`). Slack slash commands are not received.
   - Discord: `message.posted`, surface `channel`, `thread` or `dm`. Discord slash commands are not received.
@@ -44,7 +44,7 @@ An inbound binding routes messages from a room to work: it starts an agent or a 
 - **The room is trusted.** Anyone in the room can make a binding act, and its session runs at the owner's rank. A reply in a mapped conversation is not ranked at all. Bind only rooms whose members may do that.
 
 ## How to
-1. An admin registers the [provider](channels/providers). Add the [channel](channels/channels) with `chats.enabled: true`.
+1. An admin registers the [provider](channels/providers). Add the [channel](channels/channels) with `chats.enabled: true`. Without it a binding that starts a session does not fire for the room.
 2. Create the `channel` trigger with `trigger__create` ([triggers](triggers/triggers)) and keep its `id` (`tr-` and 12 hex digits). The trigger is approval-gated by default.
 3. Create the binding with `system__create_channel_binding`.
 4. Post a matching message in the room. Read `last_fired_at` and `last_fire_error` on the trigger with `trigger__get`, and on the binding with `system__list_channel_bindings`.

@@ -89,6 +89,39 @@ def _artefacts(result) -> list[tuple[str, str | None]]:
     ]
 
 
+#: The binding kinds that START a session. A room whose ``chats.enabled`` is false does not fire them (ticket 01a16e37-b98e, ruling 4);
+#: ``session_append`` (feeds a running session) and ``parked_session`` (a session waiting on a channel event) fire as before.
+SESSION_STARTING_KINDS: frozenset[str] = frozenset({"agent_fresh_session", "graph_fresh_session"})
+
+
+def _without_session_starts(triggers: list, subscriptions: dict, *, event: ChannelEvent, channel_id: str | None) -> tuple[list, dict]:
+    """Drop the bindings that would start a session in a room whose ``chats.enabled`` is false.
+
+    The subscriptions are the ones ``fire_trigger`` reads through the text budget, so a dropped binding is never matched or dispatched.
+    A trigger left with no binding by the drop is not fired at all (it would record a fire that did nothing); one that had none to begin
+    with fires as before. Counted once per event in ``channel_events_skipped_total{reason="room_disabled"}``.
+    """
+    from primer.observability import metrics
+
+    kept_triggers: list = []
+    kept: dict = {}
+    dropped = 0
+    for trigger in triggers:
+        subs = subscriptions.get(trigger.id, [])
+        remaining = [sub for sub in subs if sub.config.kind not in SESSION_STARTING_KINDS]
+        dropped += len(subs) - len(remaining)
+        kept[trigger.id] = remaining
+        if remaining or not subs:
+            kept_triggers.append(trigger)
+    if dropped:
+        metrics.channel_events_skipped_total.labels(reason="room_disabled").inc()
+        logger.debug(
+            "channel event %s: room %s has chats.enabled false; %d binding(s) that start a session were not fired",
+            event.event_id, channel_id, dropped,
+        )
+    return kept_triggers, kept
+
+
 #: Subscriptions whose stored ``dm_sender`` has been reported, so the warning is logged once per subscription and process.
 _DM_SENDER_REPORTED: set[str] = set()
 
@@ -328,6 +361,8 @@ class ChannelEventRouter:
         # through the budget (#859 round 3, R2-11); an API token counts as
         # its user when the shares are made (R2-1).
         subscriptions = {trigger.id: await enabled_subscriptions(self._sp, trigger.id) for trigger in triggers}
+        if not await self._room_starts_sessions(channel_id, channel):
+            triggers, subscriptions = _without_session_starts(triggers, subscriptions, event=event, channel_id=channel_id)
         keys = await owner_keys(self._sp, [sub for subs in subscriptions.values() for sub in subs])
         with channel_event_text_budget(owner_keys=keys, subscriptions=subscriptions):
             for trigger in triggers:
@@ -432,6 +467,25 @@ class ChannelEventRouter:
         if interactive:
             leaves[("metadata", RELAY_EVERY_TURN_KEY)] = True
         await sessions.patch_if(session_id, None, set_paths=leaves, where={"workspace_id": [row.workspace_id]})
+
+    async def _room_starts_sessions(self, channel_id: str | None, channel: Channel | None) -> bool:
+        """Whether a message in this room may start a session: the room's ``chats.enabled`` (ticket 01a16e37-b98e, ruling 4).
+
+        Read from the stored row, not the adapter's copy: the system ``update_channel`` tool changes the row without rebuilding the
+        adapter, so the copy can be stale. A room with no row to read (``channel`` alone, or nothing) answers from what it has; an
+        unknown room starts sessions as before.
+        """
+        row = None
+        if channel_id is not None:
+            try:
+                row = await self._sp.get_storage(Channel).get(channel_id)
+            except Exception:  # noqa: BLE001 - fall back to the adapter's copy rather than fail the route
+                logger.warning("channel event: channel %s could not be read; using the adapter's copy", channel_id, exc_info=True)
+        row = row if row is not None else channel
+        if row is None:
+            return True
+        chats = getattr(getattr(row, "config", None), "chats", None)
+        return bool(getattr(chats, "enabled", False))
 
     async def _steer_text(
         self,

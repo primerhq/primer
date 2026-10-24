@@ -65,7 +65,9 @@ async def test_thread_roundtrip(tmp_path: Path, monkeypatch, async_closers) -> N
     channel = Channel(
         id="ch-rt", provider_id="cp-rt",
         provider=ChannelProviderType.TELEGRAM, external_id="777",
-        config=TelegramChannelConfig(),
+        # The room starts sessions (chats.enabled): a binding that starts one does not fire in a room where it is false
+        # (ticket 01a16e37-b98e, ruling 4).
+        config=TelegramChannelConfig(chats={"enabled": True}),
     )
     await p.get_storage(Channel).create(channel)
     trigger = Trigger(

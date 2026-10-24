@@ -58,7 +58,7 @@ Response:
 ```json
 { "id": "personal-dm" }
 ```
-`external_id` is your numeric Telegram user ID from `@userinfobot`. Binding to a single private user ID (not a group ID) keeps the bot from acting on group messages. `config.chats.enabled` lets messages in this room start sessions.
+`external_id` is your numeric Telegram user ID from `@userinfobot`. Binding to a single private user ID (not a group ID) keeps the bot from acting on group messages. `config.chats.enabled` lets a message in this room start a session: with `false`, the binding below (which starts a fresh session) does not fire for the room.
 
 ### 3. Create the workspace
 `workspaces::create_workspace`

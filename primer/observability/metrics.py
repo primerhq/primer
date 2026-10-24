@@ -140,6 +140,13 @@ channel_events_dispatched_total = Counter(
     ["event_type", "provider"],
     registry=registry,
 )
+channel_events_skipped_total = Counter(
+    "channel_events_skipped_total",
+    "Total channel events whose bindings were not fired, by reason (room_disabled: the room's chats.enabled is false, so the "
+    "bindings that start a session were dropped).",
+    ["reason"],
+    registry=registry,
+)
 reply_binding_resolutions_total = Counter(
     "reply_binding_resolutions_total",
     "Total reply-binding resolutions, by winning scope (session / workspace / none).",
@@ -377,8 +384,8 @@ ALLOWED_LABEL_NAMES = frozenset({
     "source",
     # Entity model class name (storage_cas_drift_total): bounded by the set of model classes.
     "model",
-    # Why a Stop was found on the session row (queued_before_turn / missed_while_running):
-    # a closed enum, so bounded.
+    # Why a Stop was found on the session row (queued_before_turn / missed_while_running), and why a
+    # channel event's bindings were not fired (room_disabled): closed enums, so bounded.
     "reason",
     # Which code site met a malformed scoped tool-call id (adapter / materializer / dispatch /
     # repark): a closed enum, so bounded.
@@ -433,6 +440,7 @@ def reset_for_test() -> None:
     global claim_active_count, claim_eligibility_read_errors_total  # noqa: PLW0603
     global channel_events_normalized_total, channel_events_matched_total  # noqa: PLW0603
     global channel_events_dispatched_total, reply_binding_resolutions_total  # noqa: PLW0603
+    global channel_events_skipped_total  # noqa: PLW0603
     global gate_respond_total  # noqa: PLW0603
     global session_wake_gate_refused_total, session_wake_stale_refused_total  # noqa: PLW0603
     global discord_gate_token_dropped_total  # noqa: PLW0603
@@ -530,6 +538,13 @@ def reset_for_test() -> None:
         "channel_events_dispatched_total",
         "Total channel events whose matched binding dispatched an action, by normalized type and provider.",
         ["event_type", "provider"],
+        registry=registry,
+    )
+    channel_events_skipped_total = Counter(
+        "channel_events_skipped_total",
+        "Total channel events whose bindings were not fired, by reason (room_disabled: the room's chats.enabled is false, so the "
+        "bindings that start a session were dropped).",
+        ["reason"],
         registry=registry,
     )
     reply_binding_resolutions_total = Counter(
@@ -725,6 +740,7 @@ __all__ = [
     "channel_events_normalized_total",
     "channel_events_matched_total",
     "channel_events_dispatched_total",
+    "channel_events_skipped_total",
     "reply_binding_resolutions_total",
     # Worker / turn / session (S7)
     "worker_tasks_total",

@@ -30,9 +30,10 @@ from primer.model.channel import (
 from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
 from primer.model.storage import OffsetPage
-from primer.model.trigger import AgentFreshSubConfig, ChannelTriggerConfig, Subscription, Trigger
+from primer.model.trigger import AgentFreshSubConfig, ChannelTriggerConfig, SessionAppendSubConfig, Subscription, Trigger
 from primer.model.workspace import Workspace, WorkspaceChannelLink, WorkspaceRuntimeMeta
-from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.model.workspace_session import AgentSessionBinding, PendingSessionMessage, SessionStatus, WorkspaceSession
+from primer.storage.q import Q
 from primer.storage.sqlite import SqliteStorageProvider
 from tests.trigger.conftest import _FakeClaimEngine, _FakeWorkspaceRegistry
 
@@ -405,3 +406,90 @@ async def test_a_stored_dm_sender_still_loads_and_answers_in_the_source_thread_w
     assert all(s.metadata[SESSION_REPLY_BINDING_KEY]["channel_id"] == "ch-sl" for s in sessions)
     warnings = [r for r in caplog.records if "dm_sender" in r.getMessage()]
     assert len(warnings) == 1, [r.getMessage() for r in warnings]
+
+
+# ---------------------------------------------------------------- item 6: chats.enabled gates the bindings that start a session
+
+
+USER = PrincipalRef(type="user", id="u-1", display="dee", role="user", source="local")
+
+
+async def _queued(sp, session_id: str) -> list[str]:
+    """The texts waiting in a session's queue for its drain, oldest first."""
+    page = await sp.get_storage(PendingSessionMessage).find(
+        Q(PendingSessionMessage).where("session_id", session_id).build(), OffsetPage(offset=0, length=50),
+    )
+    rows = sorted(page.items, key=lambda row: row.enqueued_at)
+    return ["\n".join(part["text"] for part in row.parts if part.get("type") == "text") for row in rows]
+
+
+def _skipped_room_disabled() -> float:
+    from primer.observability import metrics
+
+    counter = getattr(metrics, "channel_events_skipped_total", None)      # absent before the gate existed: the red run reads 0
+    return counter.labels(reason="room_disabled")._value.get() if counter is not None else 0.0
+
+
+async def test_a_room_with_chats_disabled_starts_no_session_but_a_session_append_binding_still_feeds(monkeypatch, sp) -> None:
+    """The measurement found a disabled room starting sessions like any other. Now the bindings that start a session do not fire there,
+    and a binding that feeds a running session still does."""
+    world = _World(monkeypatch, sp)
+    append = Subscription(
+        id="sb-append", trigger_id="tr-1", config=SessionAppendSubConfig(session_id="s-run"), payload_template="{{ event.text }}",
+        parallelism="queue", created_at=datetime.now(UTC),
+    )
+    await world.seed(chats_enabled=False, subscriptions=[_fresh(), append])
+    running = WorkspaceSession(
+        id="s-run", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"), status=SessionStatus.RUNNING,
+        turn_status="running", created_at=datetime.now(UTC), initiated_by=USER,
+    )
+    await sp.get_storage(WorkspaceSession).create(running)
+    before = _skipped_room_disabled()
+
+    await world.message("a room post", thread_ts=None, ts="1700000001.000001")
+    await world.message("in a thread", thread_ts=THREAD, ts="1700000001.000002")
+
+    assert [s.id for s in await world.sessions()] == ["s-run"], "a session was started in a room whose chats.enabled is false"
+    assert await _queued(sp, "s-run") == ["a room post", "in a thread"]
+    assert _skipped_room_disabled() == before + 2
+    fresh = await sp.get_storage(Subscription).get("sb-1")
+    assert fresh.last_fired_at is None, "the dropped binding was dispatched"
+
+
+async def test_a_room_with_chats_disabled_still_feeds_the_session_its_thread_is_mapped_to(monkeypatch, sp) -> None:
+    world = _World(monkeypatch, sp)
+    await world.seed(chats_enabled=False)
+    running = WorkspaceSession(
+        id="s-run", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"), status=SessionStatus.RUNNING,
+        turn_status="running", created_at=datetime.now(UTC), initiated_by=USER,
+    )
+    await sp.get_storage(WorkspaceSession).create(running)
+    await CorrelationStore(sp).upsert_thread_session(channel_id="ch-sl", anchor=THREAD, workspace_id="ws-1", session_id="s-run")
+
+    await world.message("any update?")
+
+    assert [s.id for s in await world.sessions()] == ["s-run"]
+    assert await _queued(sp, "s-run") == ["any update?"]
+
+
+async def test_a_room_with_chats_enabled_starts_sessions_and_counts_nothing(monkeypatch, sp) -> None:
+    world = _World(monkeypatch, sp)
+    await world.seed(chats_enabled=True)
+    before = _skipped_room_disabled()
+
+    await world.message("deploy please")
+
+    assert len(await world.sessions()) == 1
+    assert _skipped_room_disabled() == before
+
+
+async def test_a_room_with_no_listener_is_not_heard_on_the_providers_shared_connection(monkeypatch, sp) -> None:
+    """Listening is unchanged and is per room: the connection is the provider's, but a message from a room whose adapter is not
+    registered on it (boot starts only rooms with chats.enabled) is dropped before anything is routed."""
+    world = _World(monkeypatch, sp)
+    await world.seed()
+    event = {"channel": "C03", "ts": "1700000001.000001", "user": "U7", "text": "anyone?"}
+
+    await world.app.events["message"](event, SimpleNamespace(chat_postEphemeral=AsyncMock()))
+
+    assert await world.sessions() == []

@@ -75,6 +75,15 @@ class TestChannelMetricsDeclared:
 
         assert isinstance(m.reply_binding_resolutions_total, Counter)
 
+    def test_skipped_is_counter_and_survives_a_reset(self) -> None:
+        import primer.observability.metrics as m
+
+        assert isinstance(m.channel_events_skipped_total, Counter)
+        m.reset_for_test()
+        m.channel_events_skipped_total.labels(reason="room_disabled").inc()
+        assert m.channel_events_skipped_total.labels(reason="room_disabled")._value.get() == 1.0
+        assert "channel_events_skipped_total" in generate_latest(m.registry).decode()
+
     def test_normalized_increments_under_labels(self) -> None:
         import primer.observability.metrics as m
 
@@ -221,8 +230,11 @@ class _StubWorkspace:
 
 
 class _WsBinding:
-    def __init__(self, channel_id):
+    """Mirrors ``WorkspaceChannelLink``: the resolver reads the anchor too (ticket 01a16e37-b98e item 5)."""
+
+    def __init__(self, channel_id, anchor=None):
         self.channel_id = channel_id
+        self.anchor = anchor
 
 
 @pytest.mark.asyncio
