@@ -13,8 +13,8 @@ class _StubRegistry:
     def __init__(self, adapters: list[NullChannelAdapter]) -> None:
         self._adapters = adapters
 
-    async def for_workspace(self, workspace_id: str):
-        return self._adapters
+    async def route_for_workspace(self, workspace_id: str):
+        return None, self._adapters
 
 
 def _env(*, kind: str = "ask_user") -> PromptEnvelope:

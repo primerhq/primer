@@ -10,14 +10,14 @@ A workspace's reply binding is the [channel](channels/channels) its sessions use
 
 ## Concepts
 - **What is posted.** From every session in the workspace: each `system__ask_user` question, each approval request of a gated tool call, each `misc__inform_user` message, and the answer that ends each turn. A run stopped by its tool-turn cap posts a notice that says so. There is no start message: a session that never asks or answers posts nothing.
-- **Where it lands.** On Slack and Discord each session gets its own thread, opened by its first post (`Agent session <id>`). On Telegram the posts go straight into the room.
+- **Where it lands.** On Slack and Discord each session gets its own thread, opened by its first post (`Agent session <id>`). On Telegram the posts go straight into the room. With an `anchor`, every post goes into that thread instead.
 - **The header.** A question or an approval request starts with `Workspace: <name> · Session: <label>`, so the room knows which work is asking.
 - **The session's own binding wins.** A session that a channel conversation started or fed ([inbound bindings](channels/bindings)) is bound to that conversation, and posts there instead. A session with neither binding posts nowhere.
 - **Answering.** On Slack and Discord, reply in the session's thread. On Telegram, reply to the question's message. An approval request has Approve and Reject buttons, and Reject asks for a reason. The first answer wins, from the console or the room.
 - **Who may answer.** Anyone in the room. Channel answers and decisions are not ranked, by design: a person chose to bind the room. A gate whose policy names its approvers (specific users, roles, or admins only) is the exception. A platform user is not a primer user, so such a gate cannot be decided from the room: the clicker is told to decide it in the console. The gates primer ships on admin-only writes are of this kind. See [approval policies](approvals/policies).
 - **What an approval request shows.** Only the arguments the gate's preview allows (the policy's `preview_args`, else a default rule). Every other value reads `<hidden>`. The decision still acts on the real arguments.
 - **One binding per workspace.** Setting it again replaces it. Read it with `workspaces__get_workspace`: `reply_binding` is `{channel_id, anchor}`, or `null`.
-- **`anchor`** is stored, but the server does not read it today: posts go to the session's own thread, or into the room.
+- **`anchor`** names one thread in the channel: a Slack thread ts or a Discord thread id. Every post of every session in the workspace goes into it: questions, approval requests, updates and answers. Telegram has no threads and ignores it. On Discord, an anchor that is not a thread id is ignored too.
 - **Reach.** From a session outside the default workspace (prime), both tools reach only your own workspace. Another workspace answers `not-found`, exactly as an unknown one, whatever channel you name. From prime, and with no calling session, every workspace is in reach.
 
 ## How to

@@ -168,11 +168,18 @@ class DiscordChannelAdapter(ChannelAdapter):
         A thread-mapped session (S6 section 5) supplies its thread id as
         ``anchor``; resolve it instead of opening a new thread.
         """
-        if anchor:
-            thread = self._client.get_channel(int(anchor))
+        try:
+            anchor_id = int(anchor) if anchor else None
+        except ValueError:
+            # A reply binding's anchor is set by hand (a workspace's, a binding's explicit target): one that is not a Discord id
+            # (a Slack thread ts) names no thread here, so the session's own thread is used instead of failing the post.
+            logger.warning("discord: anchor %r is not a thread id; posting in the session's own thread", anchor)
+            anchor_id = None
+        if anchor_id is not None:
+            thread = self._client.get_channel(anchor_id)
             if thread is None:
                 try:
-                    thread = await self._client.fetch_channel(int(anchor))
+                    thread = await self._client.fetch_channel(anchor_id)
                 except Exception:  # noqa: BLE001 - fall back to the cache
                     thread = None
             if thread is not None:

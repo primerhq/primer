@@ -761,9 +761,11 @@ def build_system_toolset(
         anchor: str | None = Field(
             default=None,
             description=(
-                "Optional standing room anchor (e.g. a Slack thread ts) the "
-                "workspace's outbound replies attach to. Omit to post to the "
-                "channel root."
+                "Optional thread in the channel (a Slack thread ts, a Discord "
+                "thread id) that every post of the workspace's sessions goes "
+                "into: questions, approvals, inform and final results. Omit it "
+                "and each session opens its own thread (Slack, Discord) or "
+                "posts into the room (Telegram, which ignores an anchor)."
             ),
         )
 

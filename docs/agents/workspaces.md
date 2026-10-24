@@ -509,8 +509,11 @@ all session gates (`ask_user`, tool approval, `inform`) from its
 sessions forward to that channel automatically.
 
 - `system::set_reply_binding` - set or overwrite the binding. Body:
-  `workspace_id`, `channel_id`, optional `anchor` (a standing thread to
-  post under; omit it to post to the channel root). Returns
+  `workspace_id`, `channel_id`, optional `anchor` (a standing thread
+  that every post of the workspace's sessions goes into: questions,
+  approvals, `inform` and final results; a Slack thread ts or a Discord
+  thread id, ignored on Telegram. Omit it and each session opens its own
+  thread on Slack and Discord, or posts into the room on Telegram). Returns
   `{ok: true, workspace_id, channel_id, anchor}`. Both the workspace and
   the channel must exist (returns not-found error otherwise).
 - `system::clear_reply_binding` - remove the binding (sets

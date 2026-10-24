@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from primer.channel.adapter import PromptEnvelope
@@ -25,12 +26,23 @@ class ChannelDispatcher:
     async def dispatch_prompt(
         self, *, envelope: PromptEnvelope, session=None,
     ) -> list[dict]:
+        """Post ``envelope`` to the channel of the session's reply binding (the workspace's when there is no session).
+
+        The binding's anchor goes on EVERY post (questions, approvals, ``inform`` and the final result) unless the envelope
+        already names a thread: a session started from a platform thread keeps its whole conversation in that thread, and a
+        reply binding set with an anchor posts there (ticket 01a16e37-b98e items 4 and 5). Before, only the final result
+        carried it, and every other post opened a thread of its own. With no anchor the adapter opens or reuses its
+        per-session thread (Slack, Discord) or posts into the room (Telegram, which has no threads and ignores an anchor).
+        """
         if session is not None:
-            adapters = await self._registry.for_session(session)
+            binding, adapters = await self._registry.route_for_session(session)
         else:
-            adapters = await self._registry.for_workspace(envelope.workspace_id)
+            binding, adapters = await self._registry.route_for_workspace(envelope.workspace_id)
         if not adapters:
             return []
+        anchor = getattr(binding, "anchor", None)
+        if anchor and not envelope.thread_anchor:
+            envelope = replace(envelope, thread_anchor=anchor)
 
         async def _one(adapter) -> dict:
             try:

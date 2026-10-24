@@ -26,6 +26,7 @@ from primer.model.storage import OffsetPage
 
 if TYPE_CHECKING:
     from primer.channel.inbox import ChannelInbox
+    from primer.channel.reply_binding import ReplyBinding
 
 
 logger = logging.getLogger(__name__)
@@ -122,24 +123,26 @@ class ChannelRegistry:
             self._adapters[channel_id] = adapter
             return adapter
 
-    async def for_session(self, session) -> list[ChannelAdapter]:
-        """Return the channel adapter(s) for ``session``'s reply binding.
+    async def route_for_session(self, session) -> tuple["ReplyBinding | None", list[ChannelAdapter]]:
+        """Return ``session``'s reply binding and the channel adapter(s) it names.
 
         Resolves through :func:`resolve_reply_binding`, so the
         session-ephemeral binding (``session.metadata``) takes precedence
-        over the workspace-standing :attr:`Workspace.reply_binding`. Returns
-        an empty list when no binding resolves or the adapter cannot be
-        built (failure is isolated, mirroring :meth:`for_workspace`).
+        over the workspace-standing :attr:`Workspace.reply_binding`. The
+        binding comes back with the adapters so the dispatcher can put its
+        anchor on every post. The adapter list is empty when no binding
+        resolves or the adapter cannot be built (failure is isolated: the
+        binding is still returned).
         """
         if self._storage_provider is None:
-            return []
+            return None, []
         from primer.channel.reply_binding import resolve_reply_binding
 
         binding = await resolve_reply_binding(
             session, storage_provider=self._storage_provider,
         )
         if binding is None:
-            return []
+            return None, []
         try:
             adapter = await self.get_adapter(binding.channel_id)
         except Exception as exc:
@@ -147,29 +150,37 @@ class ChannelRegistry:
                 "ChannelRegistry: build_adapter failed for %s: %s",
                 binding.channel_id, exc,
             )
-            return []
-        return [adapter]
+            return binding, []
+        return binding, [adapter]
 
-    async def for_workspace(
-        self, workspace_id: str,
-    ) -> list[ChannelAdapter]:
-        """Return the channel adapter for this workspace, if any.
+    async def route_for_workspace(self, workspace_id: str) -> tuple["ReplyBinding | None", list[ChannelAdapter]]:
+        """:meth:`route_for_session` for a post with no session: the workspace-standing binding.
 
-        Thin shim over :meth:`for_session`: builds a lightweight stand-in
-        carrying ``workspace_id`` and empty ``metadata`` so the
-        workspace-standing reply-binding path is exercised through the one
-        resolution path. Returns an empty list when the workspace has no
-        reply binding or it cannot be resolved.
+        Builds a lightweight stand-in carrying ``workspace_id`` and empty
+        ``metadata`` so the workspace-standing reply-binding path is
+        exercised through the one resolution path.
         """
         if self._storage_provider is None:
-            return []
+            return None, []
 
         class _WorkspaceStandIn:
             def __init__(self, workspace_id: str) -> None:
                 self.workspace_id = workspace_id
                 self.metadata: dict = {}
 
-        return await self.for_session(_WorkspaceStandIn(workspace_id))
+        return await self.route_for_session(_WorkspaceStandIn(workspace_id))
+
+    async def for_session(self, session) -> list[ChannelAdapter]:
+        """The channel adapter(s) for ``session``'s reply binding (:meth:`route_for_session` without the binding)."""
+        _binding, adapters = await self.route_for_session(session)
+        return adapters
+
+    async def for_workspace(
+        self, workspace_id: str,
+    ) -> list[ChannelAdapter]:
+        """The channel adapter for this workspace's standing reply binding, if any (:meth:`route_for_workspace`)."""
+        _binding, adapters = await self.route_for_workspace(workspace_id)
+        return adapters
 
     async def warm_chat_channels(self) -> int:
         """Eagerly start the adapter for every Channel whose
