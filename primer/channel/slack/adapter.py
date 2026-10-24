@@ -70,6 +70,9 @@ class SlackChannelAdapter(ChannelAdapter):
         self._workspace_registry = workspace_registry
         self._scheduler = scheduler
         self._conn: Any | None = None
+        # The bot's own Slack user id (auth.test user_id), cached by
+        # verify() or bot_user_id() for the mentions_bot flag.
+        self._bot_user_id: str | None = None
         # session_id → root message ts (the per-session conversation thread).
         # Bounded so a long-lived bot does not grow this map without limit; an
         # evicted session simply re-opens its thread on the next prompt.
@@ -107,12 +110,32 @@ class SlackChannelAdapter(ChannelAdapter):
             raise ProviderError(
                 f"slack auth.test failed: {auth.get('error', 'unknown')}"
             )
+        if auth.get("user_id"):
+            self._bot_user_id = auth["user_id"]
         info = await client.conversations_info(channel=self._channel.external_id)
         if not info.get("ok"):
             raise ProviderError(
                 f"channel {self._channel.external_id!r} not reachable: "
                 f"{info.get('error', 'unknown')}"
             )
+
+    async def bot_user_id(self) -> str | None:
+        """The bot's own Slack user id, for the ``mentions_bot`` flag.
+
+        Returns the cached id when ``verify()`` (or an earlier call here)
+        already ran ``auth.test``; otherwise calls ``auth.test`` once and
+        caches its ``user_id``. Before ``initialize()`` there is no client,
+        so the id is unknown and ``None`` is returned (a missing id is a
+        ``mentions_bot`` of False, never an error)."""
+        if self._bot_user_id is not None:
+            return self._bot_user_id
+        if self._conn is None:
+            return None
+        client = _get_web_client(self._conn)
+        auth = await client.auth_test()
+        if auth.get("ok") and auth.get("user_id"):
+            self._bot_user_id = auth["user_id"]
+        return self._bot_user_id
 
     async def post_prompt(self, envelope: PromptEnvelope) -> dict[str, Any]:
         if self._conn is None:

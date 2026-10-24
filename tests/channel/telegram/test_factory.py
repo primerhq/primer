@@ -205,6 +205,197 @@ async def test_route_channel_event_swallows_exception(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# _route_channel_event - mentions_bot (the bot identity read off the
+# application; the real normalizer decides the flag from the entities)
+# --------------------------------------------------------------------------- #
+class _EventCaptureRouter:
+    """Captures every normalized event handed to route_event."""
+
+    def __init__(self) -> None:
+        self.events: list = []
+
+    async def route_event(self, *, event, channel, media_parts=None):
+        self.events.append(event)
+
+
+def _mention_msg(text, entity_type, offset, length, user_id=None):
+    e = SimpleNamespace(type=entity_type, offset=offset, length=length)
+    if user_id is not None:
+        e.user = SimpleNamespace(id=user_id, first_name="MyBot")
+    return SimpleNamespace(
+        chat=SimpleNamespace(id=100, type="group"),
+        from_user=SimpleNamespace(id=7, full_name="Full Name"),
+        entities=[e], text=text, caption=None, message_id=5)
+
+
+def _bot_adapter(router, bot_id=777, bot_username="MyBot"):
+    return SimpleNamespace(
+        _inbound_router=lambda: router,
+        _channel=_channel(),
+        _app=SimpleNamespace(
+            bot=SimpleNamespace(id=bot_id, username=bot_username)),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_route_channel_event_mention_of_the_bot_username_sets_the_flag():
+    # Case-insensitive: the message says @mybot, the bot's username is
+    # MyBot.
+    router = _EventCaptureRouter()
+    adapter = _bot_adapter(router)
+    msg = _mention_msg("hey @mybot", "mention", 4, 6)
+    assert await tg_factory._route_channel_event(adapter, "p", msg) is True
+    assert len(router.events) == 1
+    assert router.events[0].mentions_bot is True
+
+
+@pytest.mark.asyncio
+async def test_route_channel_event_mention_of_another_user_does_not():
+    router = _EventCaptureRouter()
+    adapter = _bot_adapter(router)
+    msg = _mention_msg("hey @other", "mention", 4, 6)
+    assert await tg_factory._route_channel_event(adapter, "p", msg) is True
+    assert len(router.events) == 1
+    assert router.events[0].mentions_bot is False
+
+
+@pytest.mark.asyncio
+async def test_route_channel_event_without_bot_identity_defaults_false():
+    # No application (before initialize): the flag is False, never an error.
+    router = _EventCaptureRouter()
+    adapter = SimpleNamespace(
+        _inbound_router=lambda: router, _channel=_channel(),
+        _app=None, collect_inbound_media=AsyncMock(return_value=[]),
+    )
+    msg = _mention_msg("hey @mybot", "mention", 4, 6)
+    assert await tg_factory._route_channel_event(adapter, "p", msg) is True
+    assert len(router.events) == 1
+    assert router.events[0].mentions_bot is False
+
+
+# --------------------------------------------------------------------------- #
+# End-to-end: a binding on mentions_bot fires for the mentioning message only
+# --------------------------------------------------------------------------- #
+#
+# Drives the real ChannelEventRouter + the real fire_trigger over the
+# top-level fake_storage_provider, through the real _route_channel_event:
+# the factory reads the bot id / username off the (faked) application, the
+# real Telegram normalizer decides the flag from the entities, and the
+# session_append steer fixture of tests/trigger/test_dispatch_event_matcher.py
+# (a queued steer behind an open turn, whose observable is the
+# PendingSessionMessage row) says whether the binding matched.
+class _FakeScheduler:
+    def __init__(self) -> None:
+        self.enqueued: list[str] = []
+
+    async def enqueue(self, sid: str) -> None:
+        self.enqueued.append(sid)
+
+
+class _FakeClaimEngine:
+    def __init__(self) -> None:
+        self.upserts: list = []
+
+    async def upsert(self, kind, entity_id, *, priority=100, next_attempt_at=None):
+        self.upserts.append((kind, entity_id, priority))
+
+
+class _FakeBus:
+    def __init__(self) -> None:
+        self.published: list = []
+
+    async def publish(self, event_key, payload=None):
+        self.published.append((event_key, payload or {}))
+
+
+@pytest.mark.asyncio
+async def test_a_telegram_binding_on_mentions_bot_fires_only_for_the_mentioning_message(
+    fake_storage_provider,
+):
+    from datetime import datetime, timezone
+
+    from primer.channel.correlation import CorrelationStore
+    from primer.channel.event_dispatch import ChannelEventRouter
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.channel import Channel
+    from primer.model.channel_event import NormalizedEventType
+    from primer.model.event_matcher import EventMatcher
+    from primer.model.trigger import (
+        ChannelTriggerConfig,
+        SessionAppendSubConfig,
+        Subscription,
+        Trigger,
+    )
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        PendingSessionMessage,
+        SessionStatus,
+        WorkspaceSession,
+    )
+    from primer.trigger.subscribers import DispatchDeps
+
+    sp = fake_storage_provider
+    now = datetime.now(timezone.utc)
+
+    ch = _channel()
+    await sp.get_storage(Channel).create(ch)
+    await sp.get_storage(Agent).create(Agent(
+        id="ag-1", description="seeded test agent",
+        model=AgentModel(profile_id="p--m"),
+    ))
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="cn-1", workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING, turn_status="running",
+        created_at=now,
+    ))
+    await sp.get_storage(Trigger).create(Trigger(
+        id="trg-t1", slug="mentions-bot", name="mentions binding",
+        config=ChannelTriggerConfig(provider_id="cp-tg", channel_id=ch.id),
+        created_at=now,
+    ))
+    await sp.get_storage(Subscription).create(Subscription(
+        id="sb-mentions", trigger_id="trg-t1",
+        config=SessionAppendSubConfig(session_id="cn-1"),
+        payload_template="hi",
+        parallelism="queue",
+        event_matcher=EventMatcher(
+            event_type=NormalizedEventType.MESSAGE_POSTED, mentions_bot=True,
+        ),
+        enabled=True,
+        created_at=now,
+    ))
+
+    deps = DispatchDeps(
+        storage_provider=sp, claim_engine=_FakeClaimEngine(),
+        scheduler=_FakeScheduler(), workspace_registry=object(),
+    )
+    router = ChannelEventRouter(
+        storage_provider=sp, correlation_store=CorrelationStore(sp),
+        fire_deps=deps, event_bus=_FakeBus(),
+    )
+    adapter = _bot_adapter(router)
+
+    pending = sp.get_storage(PendingSessionMessage)._data
+
+    # The message that mentions the bot username (case differs): the
+    # binding matches, the steer is queued behind the open turn.
+    msg = _mention_msg("hey @mybot", "mention", 4, 6)
+    assert await tg_factory._route_channel_event(adapter, "cp-tg", msg)
+    assert len(pending) == 1
+    row = next(iter(pending.values()))
+    assert row.session_id == "cn-1"
+    assert row.parts == [{"type": "text", "text": "hi"}]
+
+    # The message that mentions someone else: the matcher refuses, nothing
+    # new is queued.
+    msg = _mention_msg("hey @other", "mention", 4, 6)
+    assert await tg_factory._route_channel_event(adapter, "cp-tg", msg)
+    assert len(pending) == 1
+
+
+# --------------------------------------------------------------------------- #
 # _on_callback (inline buttons)
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio

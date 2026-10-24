@@ -11,6 +11,31 @@ from primer.model.channel_event import (
 )
 
 
+def _mentions_bot(entities, text, *, bot_id, bot_username) -> bool:
+    """Whether the message mentions the bot.
+
+    A ``mention`` entity counts when it covers the text ``@<bot
+    username>`` (compared case-insensitively). A ``text_mention`` entity
+    counts when its user id equals the bot's id. A ``bot_command``
+    entity (``/cmd@botname``) is a command, not a mention, and never
+    counts. A missing bot id or username, or no text, is False."""
+    if not text:
+        return False
+    target = f"@{bot_username}".lower() if bot_username else None
+    for e in entities or []:
+        etype = e.get("type")
+        if etype == "mention" and target:
+            offset = e.get("offset", 0)
+            length = e.get("length", 0)
+            if text[offset:offset + length].lower() == target:
+                return True
+        elif etype == "text_mention" and bot_id is not None:
+            user_id = (e.get("user") or {}).get("id")
+            if user_id is not None and str(user_id) == str(bot_id):
+                return True
+    return False
+
+
 class TelegramEventNormalizer:
     def __init__(self, *, provider_id: str) -> None:
         self._provider_id = provider_id
@@ -77,6 +102,14 @@ class TelegramEventNormalizer:
                 text=text,
                 command=command,
                 media=[],
+                # The bot identity (bot_id / bot_username) is what the
+                # factory read off the initialized application; a
+                # message with no entities, or no bot identity, is False.
+                mentions_bot=_mentions_bot(
+                    entities, text,
+                    bot_id=p.get("bot_id"),
+                    bot_username=p.get("bot_username"),
+                ),
                 raw=p,
             )
 

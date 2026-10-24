@@ -45,14 +45,30 @@ async def _route_channel_event(adapter: Any, provider_id: str, msg: Any) -> bool
 
         chat = msg.chat
         sender = msg.from_user
-        entities = [
-            {
+        # The bot's own id and username (available after
+        # Application.initialize, no extra call) let the normalizer
+        # decide mentions_bot from the entities. A missing identity is
+        # an unknown bot, which the normalizer reads as no mention.
+        app_obj = getattr(adapter, "_app", None)
+        bot = getattr(app_obj, "bot", None) if app_obj is not None else None
+        bot_id = getattr(bot, "id", None) if bot is not None else None
+        bot_username = getattr(bot, "username", None) if bot is not None else None
+        entities = []
+        for e in (msg.entities or []):
+            ent = {
                 "type": getattr(e, "type", None),
                 "offset": getattr(e, "offset", 0),
                 "length": getattr(e, "length", 0),
             }
-            for e in (msg.entities or [])
-        ]
+            # text_mention entities carry the mentioned user; the
+            # normalizer matches its id against the bot's.
+            user = getattr(e, "user", None)
+            if user is not None:
+                ent["user"] = {
+                    "id": getattr(user, "id", None),
+                    "first_name": getattr(user, "first_name", None),
+                }
+            entities.append(ent)
         payload = {
             "message_id": msg.message_id,
             "chat": {
@@ -65,6 +81,8 @@ async def _route_channel_event(adapter: Any, provider_id: str, msg: Any) -> bool
             },
             "text": msg.text or msg.caption or "",
             "entities": entities,
+            "bot_id": bot_id,
+            "bot_username": bot_username,
         }
         normalizer = TelegramEventNormalizer(provider_id=provider_id)
         event = await normalizer.normalize({"type": "message", "payload": payload})

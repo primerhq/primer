@@ -109,6 +109,9 @@ def _mock_adapter(sp: bool = True) -> SimpleNamespace:
         _handle_decision=AsyncMock(),
         _handle_text_reply=AsyncMock(),
         handle_inbound_chat_message=AsyncMock(),
+        # The mentions_bot fallback path; unknown id by default (the
+        # tests that exercise the flag set it explicitly).
+        bot_user_id=AsyncMock(return_value=None),
     )
 
 
@@ -373,7 +376,7 @@ class _FakeExec:
 async def test_event_message_ignores_bot(monkeypatch):
     adapter = _mock_adapter()
     _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
-    await app.events["message"]({"bot_id": "B1"}, SimpleNamespace())
+    await app.events["message"]({"bot_id": "B1"}, SimpleNamespace(), SimpleNamespace())
     adapter.handle_inbound_chat_message.assert_not_awaited()
 
 
@@ -382,7 +385,8 @@ async def test_event_message_ignores_edit_subtype(monkeypatch):
     adapter = _mock_adapter()
     _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
     await app.events["message"](
-        {"subtype": "message_changed", "channel": "C123"}, SimpleNamespace())
+        {"subtype": "message_changed", "channel": "C123"}, SimpleNamespace(),
+        SimpleNamespace())
     adapter.handle_inbound_chat_message.assert_not_awaited()
 
 
@@ -391,7 +395,7 @@ async def test_event_message_unknown_channel_is_noop(monkeypatch):
     adapter = _mock_adapter()
     _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
     await app.events["message"](
-        {"channel": "OTHER", "ts": "1"}, SimpleNamespace())
+        {"channel": "OTHER", "ts": "1"}, SimpleNamespace(), SimpleNamespace())
     adapter.handle_inbound_chat_message.assert_not_awaited()
 
 
@@ -419,7 +423,7 @@ async def test_event_message_session_reply(monkeypatch):
     monkeypatch.setattr("primer.channel.correlation.CorrelationStore", Corr)
     event = {"channel": "C123", "thread_ts": "TT",
              "text": "answer", "user": "U", "ts": "1"}
-    await app.events["message"](event, SimpleNamespace())
+    await app.events["message"](event, SimpleNamespace(), SimpleNamespace())
     adapter._handle_text_reply.assert_awaited_once()
     assert adapter._handle_text_reply.await_args.kwargs["text"] == "answer"
     assert cleared == ["TT"], "the answered question was not cleared from the thread"
@@ -435,7 +439,7 @@ async def test_event_message_without_storage_is_noop(monkeypatch):
     adapter = _mock_adapter(sp=False)
     _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
     event = {"channel": "C123", "text": "hi", "user": "U", "ts": "1"}
-    await app.events["message"](event, SimpleNamespace())
+    await app.events["message"](event, SimpleNamespace(), SimpleNamespace())
     adapter.handle_inbound_chat_message.assert_not_awaited()
 
 
@@ -515,10 +519,231 @@ async def test_event_message_correlation_lookup_error_falls_through(monkeypatch)
         slack_factory, "_route_channel_event", AsyncMock(return_value=False))
     event = {"channel": "C123", "thread_ts": "TT",
              "text": "hi", "user": "U", "ts": "2"}
-    await app.events["message"](event, SimpleNamespace())
+    await app.events["message"](event, SimpleNamespace(), SimpleNamespace())
     # lookup failed -> rec None -> the message still routes as an event
     # (S6 section 5: there is no chat dispatch to fall through to).
     slack_factory._route_channel_event.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------- #
+# event: message - mentions_bot (the bot user named as <@BOT_USER_ID>)
+# --------------------------------------------------------------------------- #
+class _EventCaptureRouter:
+    """Captures every normalized event handed to route_event."""
+
+    def __init__(self) -> None:
+        self.events: list = []
+
+    async def route_event(self, *, event, channel, media_parts=None):
+        self.events.append(event)
+
+
+def _bot_context(bot_user_id: str | None = "UBOT") -> SimpleNamespace:
+    ctx = SimpleNamespace()
+    if bot_user_id is not None:
+        ctx.bot_user_id = bot_user_id
+    return ctx
+
+
+def _routing_adapter(router) -> SimpleNamespace:
+    adapter = _mock_adapter()
+    adapter._inbound_router = lambda: router
+    adapter.collect_inbound_media = AsyncMock(return_value=[])
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_message_that_names_the_bot_user_sets_mentions_bot(monkeypatch):
+    router = _EventCaptureRouter()
+    adapter = _routing_adapter(router)
+    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
+    event = {"channel": "C123", "text": "<@UBOT> hi", "user": "U", "ts": "1"}
+    await app.events["message"](event, SimpleNamespace(), _bot_context("UBOT"))
+    assert len(router.events) == 1
+    assert router.events[0].mentions_bot is True
+
+
+@pytest.mark.asyncio
+async def test_message_that_names_only_another_user_does_not_set_it(monkeypatch):
+    router = _EventCaptureRouter()
+    adapter = _routing_adapter(router)
+    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
+    event = {"channel": "C123", "text": "<@UOTHER> hi", "user": "U", "ts": "1"}
+    await app.events["message"](event, SimpleNamespace(), _bot_context("UBOT"))
+    assert len(router.events) == 1
+    assert router.events[0].mentions_bot is False
+
+
+@pytest.mark.asyncio
+async def test_message_without_context_bot_id_uses_the_adapter_cache(monkeypatch):
+    # The bolt context has no bot_user_id (e.g. a token it could not
+    # resolve): the adapter's own cached auth.test id is the fallback.
+    router = _EventCaptureRouter()
+    adapter = _routing_adapter(router)
+    adapter.bot_user_id = AsyncMock(return_value="UBOT")
+    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
+    event = {"channel": "C123", "text": "<@UBOT> hi", "user": "U", "ts": "1"}
+    await app.events["message"](event, SimpleNamespace(), _bot_context(None))
+    assert len(router.events) == 1
+    assert router.events[0].mentions_bot is True
+    adapter.bot_user_id.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_message_with_unknown_bot_id_is_not_a_mention(monkeypatch):
+    # Missing identity (no context value, no cached auth.test): the flag is
+    # False, never an error.
+    router = _EventCaptureRouter()
+    adapter = _routing_adapter(router)  # bot_user_id defaults to None
+    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
+    event = {"channel": "C123", "text": "hi", "user": "U", "ts": "1"}
+    await app.events["message"](event, SimpleNamespace(), _bot_context(None))
+    assert len(router.events) == 1
+    assert router.events[0].mentions_bot is False
+
+
+@pytest.mark.asyncio
+async def test_only_the_message_event_is_routed_so_a_mention_routes_once(
+    monkeypatch,
+):
+    # Slack sends an app_mention event AND the message event for one
+    # mention. Only the message event is routed, so the mention must not
+    # be delivered twice.
+    router = _EventCaptureRouter()
+    adapter = _routing_adapter(router)
+    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
+    assert "message" in app.events
+    assert "app_mention" not in app.events
+    event = {"channel": "C123", "text": "<@UBOT> hi", "user": "U", "ts": "1"}
+    await app.events["message"](event, SimpleNamespace(), _bot_context("UBOT"))
+    assert len(router.events) == 1
+
+
+# --------------------------------------------------------------------------- #
+# End-to-end: a binding on mentions_bot fires for the mentioning message only
+# --------------------------------------------------------------------------- #
+#
+# Drives the real ChannelEventRouter + the real fire_trigger over the
+# top-level fake_storage_provider, through the real _on_message handler:
+# the bot id comes from the bolt context, the flag is computed from the
+# message text, the real Slack normalizer stamps it, and the session_append
+# steer fixture of tests/trigger/test_dispatch_event_matcher.py (a queued
+# steer behind an open turn, whose observable is the PendingSessionMessage
+# row) says whether the binding matched.
+class _FakeScheduler:
+    def __init__(self) -> None:
+        self.enqueued: list[str] = []
+
+    async def enqueue(self, sid: str) -> None:
+        self.enqueued.append(sid)
+
+
+class _FakeClaimEngine:
+    def __init__(self) -> None:
+        self.upserts: list = []
+
+    async def upsert(self, kind, entity_id, *, priority=100, next_attempt_at=None):
+        self.upserts.append((kind, entity_id, priority))
+
+
+class _FakeBus:
+    def __init__(self) -> None:
+        self.published: list = []
+
+    async def publish(self, event_key, payload=None):
+        self.published.append((event_key, payload or {}))
+
+
+@pytest.mark.asyncio
+async def test_a_slack_binding_on_mentions_bot_fires_only_for_the_mentioning_message(
+    monkeypatch, fake_storage_provider,
+):
+    from datetime import datetime, timezone
+
+    from primer.channel.correlation import CorrelationStore
+    from primer.channel.event_dispatch import ChannelEventRouter
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.channel_event import NormalizedEventType
+    from primer.model.event_matcher import EventMatcher
+    from primer.model.trigger import (
+        ChannelTriggerConfig,
+        SessionAppendSubConfig,
+        Subscription,
+        Trigger,
+    )
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        PendingSessionMessage,
+        SessionStatus,
+        WorkspaceSession,
+    )
+    from primer.trigger.subscribers import DispatchDeps
+
+    sp = fake_storage_provider
+    now = datetime.now(timezone.utc)
+
+    adapter = _mock_adapter()
+    adapter._inbound_router = lambda: None  # set below, after the router
+    adapter.collect_inbound_media = AsyncMock(return_value=[])
+    adapter.bot_user_id = AsyncMock(return_value=None)  # context path only
+    entry = _FakeEntry({"C123": adapter})
+    pid, app = _install(monkeypatch, entry)
+
+    ch = _channel()
+    await sp.get_storage(Channel).create(ch)
+    await sp.get_storage(Agent).create(Agent(
+        id="ag-1", description="seeded test agent",
+        model=AgentModel(profile_id="p--m"),
+    ))
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="cn-1", workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING, turn_status="running",
+        created_at=now,
+    ))
+    await sp.get_storage(Trigger).create(Trigger(
+        id="trg-s1", slug="mentions-bot", name="mentions binding",
+        config=ChannelTriggerConfig(provider_id=pid, channel_id=ch.id),
+        created_at=now,
+    ))
+    await sp.get_storage(Subscription).create(Subscription(
+        id="sb-mentions", trigger_id="trg-s1",
+        config=SessionAppendSubConfig(session_id="cn-1"),
+        payload_template="hi",
+        parallelism="queue",
+        event_matcher=EventMatcher(
+            event_type=NormalizedEventType.MESSAGE_POSTED, mentions_bot=True,
+        ),
+        enabled=True,
+        created_at=now,
+    ))
+
+    deps = DispatchDeps(
+        storage_provider=sp, claim_engine=_FakeClaimEngine(),
+        scheduler=_FakeScheduler(), workspace_registry=object(),
+    )
+    router = ChannelEventRouter(
+        storage_provider=sp, correlation_store=CorrelationStore(sp),
+        fire_deps=deps, event_bus=_FakeBus(),
+    )
+    adapter._inbound_router = lambda: router
+
+    pending = sp.get_storage(PendingSessionMessage)._data
+
+    # The message that names the bot user: the binding matches, the steer
+    # is queued behind the open turn.
+    event = {"channel": "C123", "text": "<@UBOT> hi", "user": "U", "ts": "1"}
+    await app.events["message"](event, SimpleNamespace(), _bot_context("UBOT"))
+    assert len(pending) == 1
+    row = next(iter(pending.values()))
+    assert row.session_id == "cn-1"
+    assert row.parts == [{"type": "text", "text": "hi"}]
+
+    # The message that names someone else: the matcher refuses, nothing
+    # new is queued.
+    event = {"channel": "C123", "text": "<@UOTHER> hi", "user": "U", "ts": "2"}
+    await app.events["message"](event, SimpleNamespace(), _bot_context("UBOT"))
+    assert len(pending) == 1
 
 
 # --------------------------------------------------------------------------- #

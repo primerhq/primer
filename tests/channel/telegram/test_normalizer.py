@@ -88,6 +88,140 @@ async def test_command_strips_bot_suffix():
     assert ev.command["name"] == "deploy"
 
 
+# --------------------------------------------------------------------------- #
+# mentions_bot: a mention entity of the bot username, or a text_mention of
+# the bot user. The bot identity (bot_id / bot_username) is what the factory
+# read off the initialized application; a missing identity is False.
+# --------------------------------------------------------------------------- #
+def _tg_payload(**over) -> dict:
+    p = {
+        "message_id": 50,
+        "chat": {"id": 555, "type": "supergroup"},
+        "from": {"id": 42, "full_name": "Ada"},
+        "text": "hi",
+        "entities": [],
+    }
+    p.update(over)
+    return p
+
+
+@pytest.mark.asyncio
+async def test_mention_entity_of_the_bot_username_sets_mentions_bot():
+    # Case-insensitive: the message says @mybot, the bot's username is
+    # MyBot.
+    n = TelegramEventNormalizer(provider_id="x")
+    ev = await n.normalize({
+        "type": "message",
+        "payload": _tg_payload(
+            text="hi @mybot",
+            entities=[{"type": "mention", "offset": 3, "length": 6}],
+            bot_id=777,
+            bot_username="MyBot",
+        ),
+    })
+    assert ev is not None
+    assert ev.mentions_bot is True
+
+
+@pytest.mark.asyncio
+async def test_mention_entity_of_another_user_does_not():
+    n = TelegramEventNormalizer(provider_id="x")
+    ev = await n.normalize({
+        "type": "message",
+        "payload": _tg_payload(
+            text="hi @other",
+            entities=[{"type": "mention", "offset": 3, "length": 6}],
+            bot_id=777,
+            bot_username="MyBot",
+        ),
+    })
+    assert ev is not None
+    assert ev.mentions_bot is False
+
+
+@pytest.mark.asyncio
+async def test_bot_command_addressing_the_bot_is_not_a_mention():
+    # /cmd@mybot carries a bot_command entity, not a mention entity: the
+    # @botname suffix of the command does not count.
+    n = TelegramEventNormalizer(provider_id="x")
+    ev = await n.normalize({
+        "type": "message",
+        "payload": _tg_payload(
+            text="/cmd@mybot",
+            entities=[{"type": "bot_command", "offset": 0, "length": 10}],
+            bot_id=777,
+            bot_username="MyBot",
+        ),
+    })
+    assert ev is not None
+    assert ev.type == NormalizedEventType.COMMAND_INVOKED
+    assert ev.mentions_bot is False
+
+
+@pytest.mark.asyncio
+async def test_text_mention_of_the_bot_user_sets_mentions_bot():
+    n = TelegramEventNormalizer(provider_id="x")
+    ev = await n.normalize({
+        "type": "message",
+        "payload": _tg_payload(
+            text="hi there",
+            entities=[{
+                "type": "text_mention", "offset": 3, "length": 5,
+                "user": {"id": 777, "first_name": "MyBot"},
+            }],
+            bot_id=777,
+            bot_username="MyBot",
+        ),
+    })
+    assert ev is not None
+    assert ev.mentions_bot is True
+
+
+@pytest.mark.asyncio
+async def test_text_mention_of_another_user_does_not():
+    n = TelegramEventNormalizer(provider_id="x")
+    ev = await n.normalize({
+        "type": "message",
+        "payload": _tg_payload(
+            text="hi there",
+            entities=[{
+                "type": "text_mention", "offset": 3, "length": 5,
+                "user": {"id": 999, "first_name": "Someone"},
+            }],
+            bot_id=777,
+            bot_username="MyBot",
+        ),
+    })
+    assert ev is not None
+    assert ev.mentions_bot is False
+
+
+@pytest.mark.asyncio
+async def test_mention_without_bot_identity_is_not_a_mention():
+    # No bot username (and no id to fall back on): nothing can match.
+    n = TelegramEventNormalizer(provider_id="x")
+    ev = await n.normalize({
+        "type": "message",
+        "payload": _tg_payload(
+            text="hi @mybot",
+            entities=[{"type": "mention", "offset": 3, "length": 6}],
+        ),
+    })
+    assert ev is not None
+    assert ev.mentions_bot is False
+
+
+@pytest.mark.asyncio
+async def test_message_without_entities_defaults_to_false():
+    n = TelegramEventNormalizer(provider_id="x")
+    ev = await n.normalize({
+        "type": "message",
+        "payload": _tg_payload(bot_id=777, bot_username="MyBot"),
+    })
+    assert ev is not None
+    assert ev.mentions_bot is False
+
+
 @pytest.mark.asyncio
 async def test_callback_query_to_component_acted():
     n = TelegramEventNormalizer(provider_id="x")
