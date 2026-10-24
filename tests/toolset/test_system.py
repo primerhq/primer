@@ -1320,6 +1320,33 @@ async def test_crud_smoke_per_entity(
     assert not delete.is_error, delete.output
 
 
+@pytest.mark.asyncio
+async def test_create_graph_thread_without_an_id_assigns_one_and_keeps_a_given_one(system_toolset, sp) -> None:
+    """The create schema says the id is optional on create (``Identifiable.id``), and a thread now has an id prefix like the other entities, so the
+    server assigns ``gt-<hex>``; a create without one was refused ("id is required for this entity type"). Lead ruling 3 of ticket 01a16d48."""
+    import re
+
+    from primer.model.graph import GraphThread
+
+    [create_tool] = [t async for t in system_toolset.list_tools() if t.id == "create_graph_thread"]
+    assert "the server assigns" in json.dumps(create_tool.args_schema), "the schema promises an id assigned on create"
+    body = _graph_thread()
+    del body["id"]
+
+    create = await system_toolset.call(tool_name="create_graph_thread", arguments={"entity": body}, ctx=ADMIN_CALLER)
+
+    assert not create.is_error, create.output
+    assigned = json.loads(create.output)["id"]
+    assert re.fullmatch(r"gt-[0-9a-f]{12}", assigned), assigned
+    stored = await sp.get_storage(GraphThread).get(assigned)
+    assert stored is not None and stored.graph_id == "gph-1"
+
+    given = await system_toolset.call(tool_name="create_graph_thread", arguments={"entity": _graph_thread()}, ctx=ADMIN_CALLER)
+
+    assert not given.is_error, given.output
+    assert json.loads(given.output)["id"] == "gth-1"
+
+
 # ===========================================================================
 # find with predicate dict
 # ===========================================================================
