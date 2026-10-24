@@ -183,6 +183,25 @@ def test_an_odd_stored_size_does_not_block_the_save_of_another_field(ctx):
     assert _calls(ctx, "PUT")[0]["body"] == {**row, "description": "changed"}
 
 
+LOCKED_REASON = ("Read only: a stored item has a line break, is empty or has spaces at its ends, which one item per line cannot show. "
+                 "It is kept as stored.")
+
+
+def test_a_stored_list_one_item_per_line_cannot_show_is_read_only_with_the_reason(ctx):
+    """Round 2 of #886, item 7: ["sh", "-c", "echo a\\necho b", ""] and a heredoc start-up command are shown as stored, read-only, and saved untouched."""
+    row = {**FULL_K8S, "backend": {**FULL_K8S["backend"], "entrypoint": ["sh", "-c", "echo a\necho b", ""]}, "init_commands": ["cat <<EOF > f\nline\nEOF"]}
+    _stored(ctx, row)
+    _mount(ctx, "{ row: " + json.dumps(row) + " }")
+    _open_fold(ctx, "wt-k8s-more")
+    assert js(ctx, "MR.find('wt-command').props.readOnly") is True and js(ctx, "helpUnder('wt-command')") == LOCKED_REASON
+    assert json.loads(js(ctx, "MR.find('wt-command').props.value")) == row["backend"]["entrypoint"]
+    assert js(ctx, "MR.find('wt-init').props.readOnly") is True and js(ctx, "helpUnder('wt-init')") == LOCKED_REASON
+    assert ctx.eval("!MR.find('wt-args').props.readOnly") is True and js(ctx, "helpUnder('wt-args')") == "One item per line"
+    ctx.eval("setValue('ws-template-description', 'changed'); press('wt-save');")
+    settle(ctx)
+    assert _calls(ctx, "PUT")[0]["body"] == {**row, "description": "changed"}
+
+
 def test_the_edit_says_existing_workspaces_keep_their_copy(ctx):
     """Template snapshots (#829): a workspace keeps the template it was made from, so an edit changes only the workspaces made after it."""
     _mount(ctx, "{ row: " + json.dumps(FULL_K8S) + " }")

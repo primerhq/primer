@@ -224,6 +224,36 @@ function WT_lines(value) {
   return String(value == null ? "" : value).split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
 }
 
+// The fields that show a list one item per line, and where each list is stored. A stored list fits when splitting its lines gives it back: an item with a
+// line break (`sh -c` with a script, a heredoc), an empty item or one with spaces at its ends does not, and re-splitting it would change the argv or the
+// commands. Such a field is shown as stored (its JSON) and read-only, and a save never writes it (round 2 of #886).
+var WT_LINE_LISTS = { command: ["backend", "entrypoint"], args: ["backend", "args"], init: ["init_commands"] };
+
+function WT_storedList(t, key) {
+  var path = WT_LINE_LISTS[key];
+  var node = t;
+  for (var i = 0; i < path.length && node != null; i++) node = node[path[i]];
+  return node;
+}
+
+function WT_lineListFits(list) {
+  if (list == null) return true;
+  if (!Array.isArray(list) || list.some(function (item) { return typeof item !== "string"; })) return false;
+  return JSON.stringify(WT_lines(list.join("\n"))) === JSON.stringify(list);
+}
+
+// The line-list keys of a stored template that the form shows read-only, in WT_LINE_LISTS order (Command and Arguments are Kubernetes only).
+function WT_lockedLineKeys(t) {
+  var kubernetes = WT_kindOf(t) === "kubernetes";
+  return Object.keys(WT_LINE_LISTS).filter(function (key) {
+    return (key === "init" || kubernetes) && !WT_lineListFits(WT_storedList(t, key));
+  });
+}
+
+function WT_lineText(list) {
+  return WT_lineListFits(list) ? (list || []).join("\n") : JSON.stringify(list);
+}
+
 function WT_jsonText(value) {
   return Array.isArray(value) && value.length ? JSON.stringify(value, null, 2) : "";
 }
@@ -257,8 +287,8 @@ function WT_formFromTemplate(t) {
     form.gpuResource = b.gpu ? (b.gpu.resource_name || "") : "";
     form.serviceAccount = b.service_account_name || "";
     form.pullPolicy = b.image_pull_policy || "";
-    form.command = (b.entrypoint || []).join("\n");
-    form.args = (b.args || []).join("\n");
+    form.command = WT_lineText(b.entrypoint);
+    form.args = WT_lineText(b.args);
     form.extraVolumesJson = WT_jsonText(b.extra_volumes);
     form.extraVolumeMountsJson = WT_jsonText(b.extra_volume_mounts);
     var pod = b.pod_overrides || {};
@@ -276,7 +306,7 @@ function WT_formFromTemplate(t) {
   form.files = WT_copy(t.files || []);
   var env = t.env || {};
   form.envRows = Object.keys(env).map(function (k) { return { key: k, value: env[k] == null ? "" : String(env[k]) }; });
-  form.init = (t.init_commands || []).join("\n");
+  form.init = WT_lineText(t.init_commands);
   form.statePath = t.state_path || ".state";
   form.tmpPath = t.tmp_path || ".tmp";
   form.strict = t.strict_write_locking ? "on" : "off";
@@ -428,8 +458,10 @@ function WT_templateBody(base, form, initial) {
   body.provider_id = form.provider_id;
   if (!initial && WT_trim(form.id)) body.id = WT_trim(form.id);
   var done = {};
+  var locked = initial ? WT_lockedLineKeys(base || {}) : [];
   WT_formKeys(form.kind || "local").forEach(function (key) {
     if (initial && JSON.stringify(form[key]) === JSON.stringify(initial[key])) return;
+    if (locked.indexOf(key) >= 0) return;
     WT_writeKey(body, form, key, done);
   });
   return body;
@@ -590,7 +622,7 @@ Object.assign(window, {
   WT_LIST_KEY, WT_TEMPLATE_KEYS, WT_RESERVED_IDS, WT_isReserved, WT_KIND_LABELS, WT_KIND_ICONS, WT_K8S_ADMIN_FIELDS, WT_DEFAULT_GPU_RESOURCE,
   WT_K8S_DEFAULT_COMMAND, WT_GIB, WT_MAX_PAGES, WT_quantityToGiB, WT_formatGiB, WT_giBToBytes, WT_diskQuantity, WT_templateSize, WT_sizeText,
   WT_summaryLine, WT_cardFacts, WT_heldAdminFields, WT_emptyForm, WT_formForChoice, WT_formFromTemplate, WT_templateBody, WT_validateForm,
-  WT_FORM_PATHS, WT_fieldKeyForLoc, WT_splitErrors, WT_fetchAllTemplates,
+  WT_FORM_PATHS, WT_fieldKeyForLoc, WT_splitErrors, WT_fetchAllTemplates, WT_lockedLineKeys,
 });
 // ---- end WT pure helpers ----
 
@@ -899,6 +931,14 @@ function WT_TemplateOverlay(props) {
 
   var ro = view || undefined;
   var adminOff = !isAdmin || undefined;
+  var lockedLines = mode === "edit" ? WT_lockedLineKeys(st.base) : [];
+  var LOCKED_LINES = "Read only: a stored item has a line break, is empty or has spaces at its ends, which one item per line cannot show. It is kept as stored.";
+  function lineHelp(key, help) {
+    return lockedLines.indexOf(key) >= 0 ? LOCKED_LINES : help;
+  }
+  function lineLock(key) {
+    return lockedLines.indexOf(key) >= 0 ? { readOnly: true } : {};
+  }
   function input(key, testid, extra) {
     return (
       <input className="input" data-testid={testid} value={form[key]} readOnly={ro} {...(extra || {})}
@@ -967,10 +1007,10 @@ function WT_TemplateOverlay(props) {
             {adminNote}
             <PK_Grid cols={2}>
               <PK_Field label="Command" error={fieldError("command")}
-                help="One item per line. The default starts the primer workspace runtime; keep it unless your image starts it another way.">
-                {area("command", "wt-command")}
+                help={lineHelp("command", "One item per line. The default starts the primer workspace runtime; keep it unless your image starts it another way.")}>
+                {area("command", "wt-command", lineLock("command"))}
               </PK_Field>
-              <PK_Field label="Arguments" help="One item per line" error={fieldError("args")}>{area("args", "wt-args")}</PK_Field>
+              <PK_Field label="Arguments" help={lineHelp("args", "One item per line")} error={fieldError("args")}>{area("args", "wt-args", lineLock("args"))}</PK_Field>
               <PK_Field label="Working directory" error={fieldError("workdir")}>{input("workdir", "wt-workdir", { className: "input mono", placeholder: "/workspace" })}</PK_Field>
             </PK_Grid>
             <PK_Field label="Extra volumes" help="Admin only. A JSON list of emptyDir or configMap volumes only." error={fieldError("extraVolumesJson")}>
@@ -1067,8 +1107,8 @@ function WT_TemplateOverlay(props) {
         columns: [{ key: "key", label: "Name", input: "text" }, { key: "value", label: "Value", input: "secret" }],
         onChange: function (rows) { set("envRows", rows); },
       }} />
-      <PK_Field label="Start-up commands" help="One per line; run once when a workspace is created" error={fieldError("init")}>
-        {area("init", "wt-init", { rows: 4 })}
+      <PK_Field label="Start-up commands" help={lineHelp("init", "One per line; run once when a workspace is created")} error={fieldError("init")}>
+        {area("init", "wt-init", Object.assign({ rows: 4 }, lineLock("init")))}
       </PK_Field>
       <PK_Fold key={"advanced-" + folds.advanced} open={folds.advanced > 0} label="Advanced" testid="wt-advanced">
         <PK_Grid cols={2}>
