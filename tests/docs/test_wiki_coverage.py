@@ -171,14 +171,22 @@ def _registered_ids() -> frozenset[str]:
 
 
 def _known_scoped_id(name: str) -> bool:
-    """True when a page may carry ``name``: the toolset exists and the tool answers to it."""
+    """True when a page may carry ``name``: the toolset exists and the tool answers to it.
+
+    The head/tail split below cannot parse a harness tool's scoped id (``harness__harness__list``): the harness
+    toolset's tools already carry the ``harness__`` prefix in their registered id, so the head lands on the doubled
+    prefix, not a toolset. Such a name is known when it is in the registered set directly (``_registered_ids``
+    holds every registered id and scoped id, so a typo is still refused there).
+    """
+    registered = _registered_ids()
+    if name in registered:
+        return True
     match = _SCOPED_ID_RE.fullmatch(name)
     if match is None:
         return False
     head, tail = match.group("head"), match.group("tail")
     if head not in _known_toolsets():
         return False
-    registered = _registered_ids()
     return tail in registered or f"{head}__{tail}" in registered
 
 
