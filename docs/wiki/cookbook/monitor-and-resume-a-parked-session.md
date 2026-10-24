@@ -13,7 +13,7 @@ Find out why a session that stopped moving is waiting, then choose the move: ste
 
 - A `workspace_id` and a `session_id` to watch, for example from [cookbook/create-and-run-a-session](cookbook/create-and-run-a-session).
 - Run it over MCP or from a session in the default workspace (prime). From a session in any other workspace, the workspace tools reach only that session's own workspace: another one answers `type=not-found`, as an unknown id does.
-- A person or token drives only a session at or below their rank: `workspaces__resume_workspace_session`, `workspaces__interrupt_workspace_session` and `workspaces__cancel_workspace_session` answer `type=forbidden` when the session runs at a higher rank than you (or your run).
+- The rank rule: `workspaces__steer_workspace_session`, `workspaces__resume_workspace_session`, `workspaces__interrupt_workspace_session` and `workspaces__cancel_workspace_session` refuse a session that runs at a higher rank than you (or your run) with `type=forbidden`. An admin is never outranked, a person over MCP may always act on a session they started, and a session may always act on itself.
 
 ## Steps
 
@@ -54,7 +54,7 @@ The last record says what the session waits on. A `yielded` record means it park
 | `status: waiting`, the last `yielded` `event_key` starts with `ask_user:` or `tool_approval:` | a person decides (an answer, an approval) | only a person decides it, in the console; a queued steer is never an answer. Tell the user which session is parked and what it asks |
 | `status: waiting`, the `event_key` starts with `timer:`, `watch:` or `trigger:` | it waits on something that needs no decision | nothing to do: it resumes when the event fires; cancel it if it should not |
 | `status: waiting`, the last record is `done` | the turn completed and the session rests | steer it to start the next turn |
-| `status: paused`, or `waiting` with `pause_requested: true` (a pause that landed mid-turn) | a pause was requested | resume it |
+| `status: paused` (with `pause_requested: true` on the row when a pause landed mid-turn) | a pause was requested | resume it |
 | `status: running` longer than it should | the turn is slow or stuck | stop the turn, then steer |
 | it will not come back | the work is lost | cancel it |
 
@@ -72,7 +72,7 @@ Response:
 {"id": "sess-a1b2", "status": "waiting", "delivery": "queued"}
 ```
 
-An idle or ended session starts its next turn with the instruction (`delivery: woken`). A busy, parked or paused one reads it at its next turn boundary, so the answer is `delivery: queued` until it can. A steer is never the answer to the session's `ask_user`. Over MCP, the caller must rank at least as high as the session's creator, or the steer is refused (`type=forbidden`); a session an operator cancelled is refused (`type=conflict`).
+An idle or ended session starts its next turn with the instruction (`delivery: woken`). A busy, parked or paused one reads it at its next turn boundary, so the answer is `delivery: queued` until it can. A steer is never the answer to the session's `ask_user`, and it does not lift a pause: a paused session holds a steer no person wrote until it is resumed or a person messages it. Over MCP, the caller must rank at least as high as the session's creator, or the steer is refused (`type=forbidden`); a session an operator cancelled is refused (`type=conflict`).
 
 ### 4. Resume a paused session
 
@@ -104,7 +104,7 @@ Response:
 {"id": "sess-a1b2", "interrupt_requested": true}
 ```
 
-`interrupt_requested: true` means the Stop was recorded; the session lands in `waiting` with its history intact, and the next message or steer continues it. `interrupt_requested: false` means nothing was running (the session was idle, paused or not started). It is refused (`type=conflict`) when the session has ended or is parked waiting on an approval, an answer or a timer: cancel it instead.
+`interrupt_requested: true` means the Stop was recorded; the session lands in `waiting` with its history intact (`paused` when a pause is pending, `pause_requested: true`), and the next message or steer continues it. `interrupt_requested: false` means nothing was running (the session was idle, paused or not started). It is refused (`type=conflict`) when the session has ended or is parked waiting on an approval, an answer or a timer: cancel it instead.
 
 ### 6. Cancel the session
 
@@ -128,7 +128,7 @@ Every move is confirmed by the next poll. After a steer or a resume, `status` re
 
 ## Gotchas
 
-- A pause does not cut the running turn short: the turn in flight finishes first, and the session then reads `waiting` with `pause_requested: true`, not `paused`. To stop it now and keep it stopped, interrupt it, then pause it.
+- A pause does not cut the running turn short: the turn in flight finishes first (or a Stop cuts it short), and the session then reads `paused` with `pause_requested: true` still set. To stop it now and keep it stopped, interrupt it, then pause it.
 - A steer to a busy or parked session is queued, not delivered now, and it is never the answer to its `ask_user`: the answer goes through the console.
 - A steer from inside a workspace session is a message from that session: the target sees a user message that starts with `[from session <your session id> (agent <your agent id>)]`, and the limits of `workspaces__message_session` apply (hop limit, rate limit).
 - Deleting the workspace ends every open session in it (`ended_reason: workspace_lost`), so cancel the session before you delete it.
