@@ -103,10 +103,13 @@ LEGACY_TITLES: dict[str, str] = {
     "ssp": "Providers",
 }
 
-# the custom Platform pages (seam I-2) whose component is not shipped yet: ``web`` (Plan 04) and ``templates`` (Plan 08) are ids of the shell's grammar, but their nav row exists only while
-# ``window.WEB_SettingsPage`` / ``window.WT_TemplatesPage`` is loaded, so the sweep has no page to open for them. The plan that ships a page removes its id from this set and adds its
-# ``PLATFORM_FORMS`` and ``FLOORS`` rows in the same PR (``tests/ui/test_a11y_sweep_surfaces.py`` holds the two together).
-PENDING_CUSTOM_PAGES: set[str] = {"web", "templates"}
+# the custom Platform pages (seam I-2) whose component is not shipped yet: ``templates`` (Plan 08) is an id of the shell's grammar, but its nav row exists only while
+# ``window.WT_TemplatesPage`` is loaded, so the sweep has no page to open for it. The plan that ships a page removes its id from this set and adds its
+# ``PLATFORM_FORMS`` and ``FLOORS`` rows in the same PR (``tests/ui/test_a11y_sweep_surfaces.py`` holds the two together); ``web`` (Plan 04) has shipped.
+PENDING_CUSTOM_PAGES: set[str] = {"templates"}
+
+# the custom Platform pages that have shipped: a page of their own, not an ``NV_PLAT_PAGES`` entry, and swept like one
+CUSTOM_PAGES: set[str] = {"web"}
 
 # the Platform VIEW (view=platform:<id>: what every Platform nav row opens), one entry per id of the shell's grammar (ui/foundation/shell-url.js SH_VIEWS.platform) that is not a pending custom page
 PLATFORM_FORMS: dict[str, list[Form]] = {
@@ -122,6 +125,7 @@ PLATFORM_FORMS: dict[str, list[Form]] = {
     "harnesses": [Form("+ Harness", MODAL), Form("Build outbound", MODAL)],
     "services": [Form("+ Service", MODAL)],
     "approvals": [Form("+ Policy", MODAL)],
+    "web": [Form("+ Fetcher", MODAL)],                 # the Web page (Plan 04): "+ Fetcher" opens the Register overlay locked to Web Fetch
 }
 
 # the System VIEWS (view=system:<id>), one entry per id of ui/foundation/shell-url.js SH_VIEWS.system, and the create forms three of them open from their own page
@@ -287,6 +291,9 @@ FLOORS: dict[str, int] = {
     "platform-view services / + Service": 1,
     "platform-view approvals": 5,
     "platform-view approvals / + Policy": 8,
+    "platform-view web": 4,                             # not measured by a run yet: about half of the eight a fresh install draws (two Mode switches of two buttons, two default
+                                                        # selects, the Providers link, the local card's Open); the filter, the pager and "+ Fetcher" are the kit header's chrome
+    "platform-view web / + Fetcher": 2,                 # not measured by a run yet: as Providers › Web Search's register form (Id, Type, API key)
     "system-view dashboard": 1,
     "system-view users": 1,
     "system-view users / Create user": 3,

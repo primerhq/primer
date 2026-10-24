@@ -41,6 +41,13 @@ def _plat_pages() -> dict[str, str]:
     return {m.group(1): body[m.end(): keys[i + 1].start() if i + 1 < len(keys) else len(body)] for i, m in enumerate(keys)}
 
 
+def _custom_pages() -> dict[str, str]:
+    """``NV_PLAT_CUSTOM_PAGES``: the component each custom nav id is drawn by."""
+    block = re.search(r"var NV_PLAT_CUSTOM_PAGES = \{([^}]*)\};", PLATFORM_JSX)
+    assert block, "NV_PLAT_CUSTOM_PAGES not found in nv-platform.jsx"
+    return dict(re.findall(r'(\w+): "(\w+)"', block.group(1)))
+
+
 def _titles(name: str) -> dict[str, str]:
     block = re.search(rf"var {name} = \{{(.*?)\n\}};", OVERLAYS_JSX, re.S)
     assert block, f"{name} not found in nv-overlays.jsx"
@@ -131,13 +138,13 @@ def test_the_artifact_storage_page_is_swept_through_its_register_overlay_and_no_
     assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("+ Register", surfaces.MODAL)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / + Register" in surfaces.expected_surfaces(7)
-    assert len(surfaces.expected_surfaces(7)) == 100
+    assert len(surfaces.expected_surfaces(7)) == 102   # 100, then the Web page and its "+ Fetcher" form (Plan 04)
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:
     """N4: the buttons come from NV_PLAT_PAGES (``createLabel`` and ``extraNav``), not from this table's memory of them."""
     pages = _plat_pages()
-    assert set(pages) | {"providers"} == set(surfaces.PLATFORM_FORMS), "NV_PLAT_PAGES and the table list different pages"
+    assert set(pages) | {"providers"} | surfaces.CUSTOM_PAGES == set(surfaces.PLATFORM_FORMS), "NV_PLAT_PAGES, the shipped custom pages and the table list different pages"
     for nav, source in pages.items():
         buttons = [form.button for form in surfaces.PLATFORM_FORMS[nav]]
         create = re.search(r'createLabel: "([^"]+)"', source)
@@ -151,6 +158,20 @@ def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> No
             assert not buttons, f"{nav}: the console draws no create button"
             assert f"platform-view {nav}" in surfaces.NO_FORM
     assert [form.button for form in surfaces.PLATFORM_FORMS["providers"]] == ["+ Register"]
+
+
+def test_a_shipped_custom_page_is_swept_and_draws_what_the_sweep_waits_for() -> None:
+    """Plan 04 shipped the Web page (``window.WEB_SettingsPage``), so ``web`` left ``PENDING_CUSTOM_PAGES``: the sweep opens ``view=platform:web``, waits for the custom page's frame and a
+    kit card (the built-in ``local`` fetcher is always listed), and presses "+ Fetcher", the page header's action that opens the Register overlay."""
+    assert surfaces.CUSTOM_PAGES == {"web"} and not surfaces.CUSTOM_PAGES & surfaces.PENDING_CUSTOM_PAGES
+    assert set(_custom_pages()) == surfaces.CUSTOM_PAGES | surfaces.PENDING_CUSTOM_PAGES, "every custom page of the sidebar is either swept or pending"
+    web = (ROOT / "ui" / "components" / "web-settings.jsx").read_text(encoding="utf-8")
+    assert "window.WEB_SettingsPage = WEB_SettingsPage;" in web
+    assert surfaces.PLATFORM_FORMS["web"] == [surfaces.Form("+ Fetcher", surfaces.MODAL)]
+    assert 'label: "+ Fetcher"' in web and "<PK_PageHeader" in web and "<PK_Card" in web
+    assert 'data-testid={"nv-plat-page:" + props.nav}' in PLATFORM_JSX, "the frame a custom page is mounted in"
+    assert surfaces.ready_selectors("platform-view", "web") == ['[data-testid="nv-plat-page:web"]', '[data-testid="nv-plat-empty"], [data-testid^="pk-card:"]']
+    assert {"platform-view web", "platform-view web / + Fetcher"} <= set(surfaces.FLOORS)
 
 
 def test_the_legacy_routes_are_the_ones_the_shell_helper_opens() -> None:
