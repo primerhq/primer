@@ -784,9 +784,15 @@ function WT_TemplateOverlay(props) {
     return key === "id" || WT_formKeys(kind).indexOf(key) >= 0 ? key : null;
   }
 
-  var mutation = api.useMutation(function (body) {
-    if (creating) return apiFetch("POST", "/workspace_templates", body);
-    return apiFetch("PUT", "/workspace_templates/" + encodeURIComponent(st.base.id), body);
+  // The server's PUT replaces the whole row, so an edit reads the template again and writes only what this form changed onto what the server holds now:
+  // another person's change to a field this form left alone survives (round 2 of #886). A template deleted meanwhile is the GET's 404, and nothing is written.
+  var mutation = api.useMutation(function (form) {
+    if (creating) return apiFetch("POST", "/workspace_templates", WT_templateBody(null, form, null));
+    var path = "/workspace_templates/" + encodeURIComponent(st.base.id);
+    var initial = st.initial;
+    return apiFetch("GET", path).then(function (fresh) {
+      return apiFetch("PUT", path, WT_templateBody(fresh, form, initial));
+    });
   }, {
     invalidates: WT_TEMPLATE_KEYS.concat(id ? ["ws:template:" + id] : []),
     onSuccess: function (saved) {
@@ -812,7 +818,7 @@ function WT_TemplateOverlay(props) {
       openFoldsFor(Object.keys(errs));
       return;
     }
-    mutation.mutate(WT_templateBody(st.base, st.form, st.initial)).catch(function () { /* onError shows it */ });
+    mutation.mutate(st.form).catch(function () { /* onError shows it */ });
   }
 
   var title = creating ? "New workspace template" : mode === "edit" && st ? "Edit workspace template" : "Workspace template";
