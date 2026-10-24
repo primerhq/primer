@@ -8,6 +8,7 @@ from primer.bootstrap.defaults import (
     RESERVED_OPERATOR_AGENT,
     RESERVED_WORKSPACE_TEMPLATES,
 )
+from primer.bootstrap.prime import shipped_prime_agents_md
 from primer.bootstrap.seed import crud_policy_id, run_ensure_pass
 from primer.model.agent import Agent
 from primer.model.model_profile import ModelProfile
@@ -27,9 +28,34 @@ class _LiveWorkspace:
         )
 
 
+class _Files:
+    """The live handle ``get_workspace`` returns: a root with no files, recording what is written."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, bytes] = {}
+
+    async def file_info(self, path):
+        from primer.model.except_ import NotFoundError
+
+        if path not in self.files:
+            raise NotFoundError(f"{path!r} not found")
+        return path
+
+    async def write_file(self, path, content):
+        self.files[path] = content
+
+
 class _Registry:
+    """Materialises anything; ``get_workspace`` serves one live handle per id (the prime agents.md step asks for it)."""
+
+    def __init__(self) -> None:
+        self.live: dict[str, _Files] = {}
+
     async def materialise(self, *, template, overrides=None, workspace_id=None):
         return _LiveWorkspace(workspace_id)
+
+    async def get_workspace(self, workspace_id):
+        return self.live.setdefault(workspace_id, _Files())
 
 
 async def _prepare(sp):
@@ -57,11 +83,14 @@ async def test_pass_runs_even_when_the_bootstrap_marker_is_stamped(
         datetime.now(timezone.utc)
     )
     await _prepare(fake_storage_provider)
+    registry = _Registry()
     result = await run_ensure_pass(
-        fake_storage_provider, workspace_registry=_Registry(),
+        fake_storage_provider, workspace_registry=registry,
     )
     assert result.errors == []
     assert RESERVED_OPERATOR_AGENT in result.created
+    # The same pass writes prime's shipped agents.md into the workspace it just created.
+    assert registry.live["prime"].files["agents.md"] == shipped_prime_agents_md()
     # A fresh install creates "prime" and records it (the pass reports the id it created).
     assert "prime" in result.created
     assert (await fake_storage_provider.get_system_state()).default_workspace_id == "prime"
@@ -70,12 +99,15 @@ async def test_pass_runs_even_when_the_bootstrap_marker_is_stamped(
 
 async def test_pass_is_idempotent(fake_storage_provider):
     await _prepare(fake_storage_provider)
-    await run_ensure_pass(fake_storage_provider, workspace_registry=_Registry())
+    registry = _Registry()
+    await run_ensure_pass(fake_storage_provider, workspace_registry=registry)
+    registry.live["prime"].files["agents.md"] = b"edited"
     second = await run_ensure_pass(
-        fake_storage_provider, workspace_registry=_Registry(),
+        fake_storage_provider, workspace_registry=registry,
     )
     assert second.created == []
     assert second.errors == []
+    assert registry.live["prime"].files["agents.md"] == b"edited"
 
 
 async def test_a_failing_step_does_not_stop_the_others(fake_storage_provider):
