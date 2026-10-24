@@ -365,6 +365,25 @@ async def ensure_prime_agents_md(storage_provider: Any, *, workspace_registry: A
     return True
 
 
+async def _upper_case_beside(workspace: Any) -> str | None:
+    """``"AGENTS.md"`` when an entry of that name is at the workspace's root, else ``None``.
+
+    An entry the backend refuses to describe (a link out of the root, a socket: ``BadRequestError``) is there too. Any other failure
+    propagates, so a reset that cannot tell writes nothing.
+    """
+    from primer.model.except_ import BadRequestError
+    from primer.workspace.instructions import AGENTS_MD_NAMES
+
+    name = AGENTS_MD_NAMES[1]
+    try:
+        await workspace.file_info(name)
+    except NotFoundError:
+        return None
+    except BadRequestError:
+        return name
+    return name
+
+
 async def reset_prime_agents_md(storage_provider: Any, *, workspace_registry: Any) -> dict[str, object]:
     """Overwrite ``agents.md`` in the default workspace with the shipped instructions: the one path that rewrites an existing file.
 
@@ -376,7 +395,9 @@ async def reset_prime_agents_md(storage_provider: Any, *, workspace_registry: An
     Reaching the workspace and the write are each bounded by :data:`PRIME_AGENTS_MD_CHECK_TIMEOUT_S`; past either bound this raises
     :class:`WorkspaceUnreachableError` (503), and a write given up on may still land afterwards with the same shipped bytes.
 
-    Returns ``{"workspace_id", "path", "bytes"}``. Raises :class:`NotFoundError` ``"no default workspace is recorded"`` when there is
+    Returns ``{"workspace_id", "path", "bytes", "shadows"}``. ``shadows`` is ``"AGENTS.md"`` when an ``AGENTS.md`` is beside the
+    written ``agents.md`` (the loader no longer reads it), else ``None``; it is checked with reaching the workspace, before the write.
+    Raises :class:`NotFoundError` ``"no default workspace is recorded"`` when there is
     no default workspace, :class:`WorkspaceUnreachableError` on its own timeouts (above), and otherwise whatever the registry or the
     backend raises: ``NotFoundError`` for a missing row or a backend that cannot re-attach it, ``BadRequestError`` for a directory
     called ``agents.md``, ``WorkspaceRefusedError`` for a workspace the deployment refuses, and any other exception as it comes (a
@@ -389,6 +410,7 @@ async def reset_prime_agents_md(storage_provider: Any, *, workspace_registry: An
     try:
         async with asyncio.timeout(timeout) as bound:
             workspace = await workspace_registry.get_workspace(workspace_id)
+            shadows = await _upper_case_beside(workspace)
     except TimeoutError:
         if not bound.expired():
             raise
@@ -407,7 +429,7 @@ async def reset_prime_agents_md(storage_provider: Any, *, workspace_registry: An
             "may still land (with the same shipped bytes)"
         ) from None
     logger.info("prime: reset agents.md to the shipped version", extra={"workspace_id": workspace_id})
-    return {"workspace_id": workspace_id, "path": PRIME_AGENTS_MD, "bytes": len(shipped)}
+    return {"workspace_id": workspace_id, "path": PRIME_AGENTS_MD, "bytes": len(shipped), "shadows": shadows}
 
 
 __all__ = [

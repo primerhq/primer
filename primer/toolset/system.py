@@ -1641,13 +1641,13 @@ def build_system_toolset(
                 toolset_id=toolset_id,
                 purpose=(
                     "Rewrite agents.md in the prime workspace with the platform's shipped version. Returns "
-                    "``{workspace_id, path, bytes}``."
+                    "``{workspace_id, path, bytes, shadows}``."
                 ),
                 when=(
                     "Use when prime's instructions were edited into a broken state and the user asked to restore them; "
                     "not for editing them (write the file instead). Overwrites ``agents.md`` in the default workspace, "
                     "whatever it holds, and nothing else (an ``AGENTS.md`` stays, and is not read while ``agents.md`` "
-                    "exists); a symlinked ``agents.md`` is written where it points. From a session outside the default workspace (prime) it returns ``type=forbidden`` and "
+                    "exists: ``shadows`` is ``\"AGENTS.md\"`` then, else null); a symlinked ``agents.md`` is written where it points. From a session outside the default workspace (prime) it returns ``type=forbidden`` and "
                     "writes nothing; with no default workspace yet, ``type=not-found``; when the workspace does not "
                     "answer within 10 seconds (to reach it, then to write), ``type=unavailable`` (a write given up on "
                     "may still land, with the same shipped text); any other failure of the write, ``type=unavailable`` "
@@ -1657,7 +1657,7 @@ def build_system_toolset(
                 examples=[
                     ToolExample(
                         args={},
-                        returns="{workspace_id, path, bytes}",
+                        returns="{workspace_id, path, bytes, shadows}",
                     ),
                 ],
                 yields=False,

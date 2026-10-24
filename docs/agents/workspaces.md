@@ -224,8 +224,9 @@ first and the one the operator works from. All users share it.
   `system::reset_prime_instructions` (no arguments) and
   `POST /v1/setup/reset_prime_instructions` overwrite `agents.md` in
   prime with the shipped version and return `{workspace_id, path,
-  bytes}`. Edits to the file are lost. An `AGENTS.md` is left in place,
-  and is not read while `agents.md` exists. A symlinked `agents.md` is
+  bytes, shadows}`. Edits to the file are lost. An `AGENTS.md` is left
+  in place, and is not read while `agents.md` exists: `shadows` is
+  `"AGENTS.md"` then, else null. A symlinked `agents.md` is
   written where it points: with `agents.md` linked to `AGENTS.md`, the
   reset rewrites `AGENTS.md`. From a session outside
   prime the tool returns `type=forbidden` and writes nothing; with no
