@@ -49,13 +49,17 @@ class DbArtifactConfig(BaseModel):
 
 
 class FilesystemArtifactConfig(BaseModel):
-    """Config for a filesystem-backed artifact store (v1 stub)."""
+    """Config for a filesystem-backed artifact store (``primer.artifact.filesystem``): the artifact files live in one folder that every server
+    process reads and writes."""
 
     model_config = ConfigDict(extra="forbid")
 
     root: str = Field(
         ...,
-        description="Directory under which artifact bytes are written.",
+        description=(
+            "Absolute path of the folder the artifact files are written under. It must be on a volume shared by every API and worker process, "
+            "mounted at this same path in each of them."
+        ),
     )
 
 

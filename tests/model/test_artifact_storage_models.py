@@ -92,3 +92,12 @@ def test_the_default_provider_id_is_one_constant():
 
     assert factory.DEFAULT_ARTIFACT_PROVIDER_ID is DEFAULT_ARTIFACT_PROVIDER_ID is reg.DEFAULT_ARTIFACT_PROVIDER_ID
     assert DEFAULT_ARTIFACT_PROVIDER_ID == "artifact-storage-default"
+
+
+def test_the_filesystem_config_describes_a_shared_absolute_root() -> None:
+    """Review of #890, item 10: the schema an agent or an API client reads said "v1 stub" and "Directory under which artifact bytes are written"."""
+    from primer.model.providers.artifact import FilesystemArtifactConfig
+
+    description = FilesystemArtifactConfig.model_fields["root"].description
+    assert "absolute path" in description.lower() and "every API and worker process" in description, description
+    assert "stub" not in (FilesystemArtifactConfig.__doc__ or "")
