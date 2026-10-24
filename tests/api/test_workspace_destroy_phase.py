@@ -1,18 +1,20 @@
 """A destroy marks the workspace ``terminating`` before it tears anything down, and a failed teardown leaves a phase that tells the truth
 (lead ruling 3 of ticket 01a16d72).
 
-``terminating`` was in the model (the probe skips it, the reply-binding route refuses it, the console greys it), but nothing wrote it: a delete
+``terminating`` was in the model (the probe skips it, the reply-binding route refuses it), but nothing wrote it: a delete
 ran with the row still ``running`` until the row was gone. :meth:`WorkspaceRegistry.destroy` now writes it once the refusals are past (the default
 workspace, an unknown id, the rank scan), before the backend is reached, so a reader sees the delete in progress. If the destroy then fails, the
 row must not stay ``terminating`` (nothing is terminating any more, and the probe never looks at such a row again):
 
-* nothing was torn down yet (the backend could not be reached): the phase goes back to what it was;
+* nothing was torn down yet, because the backend could not be resolved (``get_backend`` raised): the phase the mark replaced goes back;
 * the teardown itself failed, or the row could not be deleted after it: ``failed``, with a ``failure_reason`` that says the delete did not
   finish, and every open session ended ``workspace_lost``, as on every other transition to ``failed`` (the probe brings an intact workspace back
-  to ``running`` after three good probes, and a ``workspace_lost`` session reopens then).
+  to ``running`` after three good probes, and a ``workspace_lost`` session reopens then). An outage during the teardown call itself (a daemon
+  that is down, with the backend resolved and cached) is a failed teardown too: the destroy cannot tell what it removed.
 
 The probe wrote its verdict back as the whole row it had listed before the ping, which put back whatever changed meanwhile: the ``terminating``
-mark, the ``failed`` a failed destroy leaves, a rename. It now writes only its own fields, fenced on the phase it judged.
+mark, the ``failed`` a failed destroy leaves, a rename. It now writes only its own fields, fenced on the phase, the reason and the probe time
+it judged.
 """
 
 from __future__ import annotations
@@ -121,7 +123,7 @@ async def test_a_row_that_cannot_be_deleted_after_the_teardown_is_failed(sp, wsr
 
 
 @pytest.mark.asyncio
-async def test_a_backend_that_cannot_be_reached_puts_the_phase_back(sp, wsr, wid, monkeypatch) -> None:  # noqa: F811
+async def test_a_backend_that_cannot_be_resolved_puts_the_phase_back(sp, wsr, wid, monkeypatch) -> None:  # noqa: F811
     """Nothing was torn down: the workspace is as it was, so its phase is too, and its sessions are untouched."""
 
     async def _unreachable(provider_id):

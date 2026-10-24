@@ -87,7 +87,7 @@ Reference: [`workspaces__delete_workspace`](reference/tools/workspaces/delete_wo
 - A template on a Kubernetes provider whose `variant` is `agent_sandbox` is refused with `not-implemented` (REST answers 501 in the same words), and nothing is created. No backend builds that variant yet: use a provider whose `variant` is `system`.
 - A Docker template's image must contain the primer workspace runtime. If the runtime does not answer within 30 seconds, the create fails with `backend-error`, the message names the image, and nothing is left behind.
 - A delete refused with `forbidden` tore nothing down: the workspace and its sessions are as they were.
-- A delete that fails part way (a `backend-error`) leaves the workspace `failed`, with a `failure_reason` that says the delete did not finish, and its open sessions ended with `workspace_lost`. Delete it again to finish. If the backend could not be reached at all, nothing was torn down and the workspace keeps its phase.
+- A delete that fails part way (a `backend-error`) leaves the workspace `failed`, with a `failure_reason` that says the delete did not finish, and its open sessions ended with `workspace_lost`. Delete it again to finish. That includes a backend that is down during the teardown (a Docker daemon or a cluster API). Only when the platform cannot resolve the workspace's backend at all (its provider is gone, or its backend cannot be built) is nothing torn down for certain, and the workspace gets back the phase it had.
 - While a delete runs, a new session in that workspace is refused.
 - From a session outside prime you can delete your own workspace, and that ends your own session with the rest. Ask the user first, every time.
 
