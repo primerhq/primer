@@ -185,7 +185,7 @@ def test_k1_a_searchable_selector_filters_its_items_by_label_and_value(form) -> 
     form.eval('MR.find("tpl:search").props.onChange({ target: { value: "k-b" } }); MR.rerender();')
     assert _menu_items(form, "tpl") == ["tpl:k-big"], "the value matches too"
     form.eval('MR.find("tpl:search").props.onChange({ target: { value: "zzz" } }); MR.rerender();')
-    assert _menu_items(form, "tpl") == [] and "No match" in form.eval('textOf(MR.find("tpl:menu"))')
+    assert _menu_items(form, "tpl") == [] and "No match" in form.eval('textOf(MR.find("tpl:popup"))')
     form.eval('MR.find("tpl:search").props.onChange({ target: { value: "dev" } }); MR.rerender();')
     form.eval('MR.click("tpl:node-dev")')
     assert js(form, "CALLS") == [["tpl", "node-dev"]] and form.eval('MR.find("tpl:menu") === null')
@@ -199,6 +199,42 @@ def test_k1_enter_in_the_box_picks_the_first_item_left(form) -> None:
     form.eval('var PREVENTED = 0; MR.find("tpl:search").props.onKeyDown({ key: "Enter", preventDefault: function () { PREVENTED++; }, stopPropagation: function () {} }); MR.rerender();')
     assert js(form, "CALLS") == [["tpl", "k-big"]] and form.eval("PREVENTED") == 1
     assert form.eval('MR.find("tpl:menu") === null')
+
+
+def test_k1_the_filter_box_sits_outside_the_menu_so_the_menu_holds_only_its_items(form) -> None:
+    """Round 2 of #886, item 9: a text box is not a menu item, so it sits above the role="menu" list, in the popup that holds both, and names the list it
+    filters (aria-controls). The "No match" line is outside the menu too."""
+    form.eval(f'MR.mount(PK_FormOverlay, {{ title: "T", onClose: rec("close"), testid: "ov", selector: {SEARCHABLE}, footer: {{ right: null }} }})')
+    form.eval('MR.click("tpl")')
+    roles = js(form, 'ALL("tpl:menu").filter(function (n) { return n.props && n.props.role; }).map(function (n) { return n.props.role; })')
+    assert roles == ["menu", "menuitemradio", "menuitemradio", "menuitemradio"]
+    in_menu = js(form, 'ALL("tpl:menu").map(function (n) { return n.props && n.props["data-testid"]; }).filter(Boolean)')
+    assert "tpl:search" not in in_menu
+    assert "tpl:search" in js(form, 'ALL("tpl:popup").map(function (n) { return n.props && n.props["data-testid"]; }).filter(Boolean)')
+    assert js(form, 'MR.find("tpl:search").props["aria-controls"]') == js(form, 'MR.find("tpl:menu").props.id')
+    form.eval('MR.find("tpl:search").props.onChange({ target: { value: "zzz" } }); MR.rerender();')
+    assert "No match" not in form.eval('textOf(MR.find("tpl:menu"))')
+    assert js(form, 'ALL("tpl:menu").filter(function (n) { return n.props && n.props.role; }).map(function (n) { return n.props.role; })') == ["menu"]
+
+
+def test_k1_the_arrow_keys_from_the_box_land_on_the_first_and_the_last_item(form) -> None:
+    """Round 2 of #886, item 9: from the box (not an item), ArrowDown lands on the first item and ArrowUp on the LAST (it landed on the one before it);
+    Home and End stay the box's own. From an item the keys wrap as before."""
+    form.eval(
+        "var FOCUSED = []; function item(n) { return { focus: function () { FOCUSED.push(n); } }; } var ITEMS = [item(0), item(1), item(2)];"
+        " var INPUT = { tagName: 'INPUT' };"
+        " function key(k, target) { var prevented = 0; PK_menuKeys({ key: k, target: target, currentTarget: { querySelectorAll: function () { return ITEMS; } },"
+        " preventDefault: function () { prevented++; } }); return prevented; }"
+    )
+    form.eval("document.activeElement = INPUT;")
+    assert form.eval("key('ArrowUp', INPUT)") == 1 and js(form, "FOCUSED") == [2]
+    assert form.eval("key('ArrowDown', INPUT)") == 1 and js(form, "FOCUSED") == [2, 0]
+    assert form.eval("key('Home', INPUT)") == 0 and form.eval("key('End', INPUT)") == 0 and js(form, "FOCUSED") == [2, 0]
+    form.eval("document.activeElement = ITEMS[0];")
+    form.eval("key('ArrowUp', ITEMS[0])")
+    form.eval("document.activeElement = ITEMS[2];")
+    form.eval("key('ArrowDown', ITEMS[2]); key('End', ITEMS[2]);")
+    assert js(form, "FOCUSED") == [2, 0, 2, 0, 2]
 
 
 def test_k1_a_selector_that_is_not_searchable_has_no_box(form) -> None:
