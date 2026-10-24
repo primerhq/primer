@@ -225,6 +225,18 @@ file I/O tools, and (cross-referenced in [sessions](sessions.md)) the
 session tools. Every tool takes an explicit `workspace_id` because
 it's called from a context with no implicit session.
 
+From a session outside the default workspace (prime), every one of
+these tools that names a workspace reaches only your own workspace:
+`get_workspace`, `delete_workspace`, the file tools
+(`read_workspace_file`, `write_workspace_file`, `list_workspace_files`,
+`get_workspace_file_info`, `delete_workspace_file`),
+`get_workspace_log`, `workspace_tap` and the session tools. Another
+workspace (prime included) answers `type=not-found` exactly as a
+workspace that does not exist, and `list_workspaces` lists only your
+own workspace. A session in prime, and a call with no calling session
+(MCP), reach every workspace. A session outside prime may still call
+`create_workspace`, but cannot reach the new workspace afterwards.
+
 ### Workspace lifecycle
 
 - `workspaces::create_workspace` - arguments are `template_id`
@@ -619,7 +631,8 @@ session is outside the group, so it is not killed.
   name. Find it by the one row with `is_default: true`, in
   `list_workspaces` (or `get_workspace`) as in `GET /v1/workspaces`,
   never by its name: it can be renamed, and any workspace may be
-  called `prime`.
+  called `prime`. (From a session outside prime `list_workspaces`
+  lists only your own workspace, so prime is not among its rows.)
 - **Workspace delete is synchronous.** `DELETE /v1/workspaces/{id}`
   (and `delete_workspace`) answers 204 only after the backend
   teardown has been requested and the row is gone. On k8s that
