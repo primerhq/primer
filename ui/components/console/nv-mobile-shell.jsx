@@ -481,6 +481,38 @@ function NV_Mobile_Pulse(props) {
   return <span className="nv-dot-pulse" title="running" />;
 }
 
+// One open workspace's sessions on the Spaces tab (round 2 of #923): read with SH_api.allSessions and the wid, so the server filters and orders
+// newest first and a workspace whose sessions are all older than the newest 200 of the install still lists them. A LOCAL copy of nv-rail.jsx's
+// NV_Rail_WsSessions (a hook-bearing leaf, as NV_Mobile_Pulse is), on the rail's cache key. While the read is out the install-wide feed's rows
+// stand in; `tick` changes when this tab created a session, and the list is read again at once. A workspace that holds more sessions than the
+// window (200) says so under them.
+function NV_Mobile_WsSessions(props) {
+  var res = window.primerApi.useResource(
+    "nv-rail-ws-sessions:" + props.wid,
+    function (signal) { return SH_api.allSessions(signal, props.wid); },
+    { pollMs: 5000, deps: [] }
+  );
+  var tickRef = React.useRef(props.tick);
+  React.useEffect(function () {
+    if (tickRef.current === props.tick) return;
+    tickRef.current = props.tick;
+    res.refetch();
+  }, [props.tick]);
+  var read = res.data && Array.isArray(res.data.items) ? res.data.items : null;
+  var rows = read || props.fallback || [];
+  var cut = read && read.length >= 200 && typeof props.count === "number" && props.count > read.length;
+  return (
+    <React.Fragment>
+      {props.render(rows)}
+      {cut ? (
+        <div className="pr-paged-note" role="note" data-testid={"nv-mob-ws-more:" + props.wid}>
+          {"Showing the newest " + read.length + " of " + props.count + " sessions."}
+        </div>
+      ) : null}
+    </React.Fragment>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // US-014 M4: Spaces tab - the workspace/session tree (expand -> sessions,
 // pulse/attention dots) + the Create Session FAB.
@@ -521,6 +553,10 @@ function NV_MobileSpaces(props) {
   var expandedState = React.useState({});
   var expanded = expandedState[0];
   var setExpanded = expandedState[1];
+  // Bumped when this tab created a session: the open workspaces read their own lists again.
+  var sessTickState = React.useState(0);
+  var sessTick = sessTickState[0];
+  var setSessTick = sessTickState[1];
   var createOpenState = React.useState(false);
   var createOpen = createOpenState[0];
   var setCreateOpen = createOpenState[1];
@@ -583,6 +619,8 @@ function NV_MobileSpaces(props) {
         {workspaces.map(function (w) {
           var isOpen = !!expanded[w.id];
           var wsSessions = sessionsByWs[w.id] || [];
+          // The exact count the workspace's row carries (session_count, every status); the install-wide feed is the newest 200 only.
+          var sessionCount = typeof w.session_count === "number" ? w.session_count : wsSessions.length;
           var attnCount = Object.keys(attentionSidsByWs[w.id] || {}).length;
           return (
             <div key={w.id} className="nv-mob-ws-group">
@@ -601,8 +639,8 @@ function NV_MobileSpaces(props) {
                   </span>
                   <div className="card-title-wrap">
                     <div className="card-title">{w.name || w.id}</div>
-                    <div className="card-subtitle">
-                      {wsSessions.length} session{wsSessions.length === 1 ? "" : "s"}
+                    <div className="card-subtitle" data-testid={"nv-mob-ws-count:" + w.id}>
+                      {sessionCount} session{sessionCount === 1 ? "" : "s"}
                     </div>
                   </div>
                   {attnCount > 0 ? (
@@ -612,10 +650,12 @@ function NV_MobileSpaces(props) {
               </button>
               {isOpen ? (
                 <div className="nv-mob-ws-sessions">
-                  {!wsSessions.length ? (
+                  <NV_Mobile_WsSessions key={"wss:" + w.id} wid={w.id} tick={sessTick} fallback={wsSessions} count={sessionCount}
+                    render={function (rows) { return (<React.Fragment>
+                  {!rows.length ? (
                     <div className="card-list-empty">No sessions yet.</div>
                   ) : null}
-                  {wsSessions.map(function (s) {
+                  {rows.map(function (s) {
                     var sid = s.session_id;
                     var ident = NV_identity(s.binding);
                     var isAttention = !!(attentionSidsByWs[w.id] && attentionSidsByWs[w.id][sid]);
@@ -646,6 +686,7 @@ function NV_MobileSpaces(props) {
                       </button>
                     );
                   })}
+                  </React.Fragment>); }} />
                 </div>
               ) : null}
             </div>
@@ -659,6 +700,7 @@ function NV_MobileSpaces(props) {
         onClose={function () { setCreateOpen(false); }}
         onCreated={function (row, wid, name, binding) {
           sessRes.refetch();
+          setSessTick(function (n) { return n + 1; });
           var sid = row && (row.session_id || row.id);
           con.toast("Session created" + (sid ? ": " + sid : ""));
           if (!sid) return;

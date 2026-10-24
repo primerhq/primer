@@ -18,12 +18,6 @@ var SH_api = {
       "GET", "/workspaces/" + encodeURIComponent(wid), null, { signal: signal });
   },
 
-  // Every session of one workspace, every page (its rows are keyed by session_id).
-  sessions: function (wid, signal) {
-    return PR_fetchAllPages("/workspaces/" + encodeURIComponent(wid) + "/sessions",
-      { signal: signal, idKey: "session_id" });
-  },
-
   // Cross-workspace (revamp section 3): the rail and palette reach every
   // session. The top-level route's rows differ from the workspace-scoped
   // ones (id vs session_id; last_turn_at vs last_activity_at), so this
@@ -35,7 +29,8 @@ var SH_api = {
   // vanished from its own sidebar on any busy install. Ordering desc
   // makes the cap shed the oldest instead, and an optional wid pushes
   // the workspace filter server-side for the sidebar's feed.
-  // Deliberately a recent window (ticket 01a16dfa): the newest 200 sessions, polled every 5 s, not every page.
+  // Deliberately a recent window (ticket 01a16dfa): the newest 200 sessions, polled every 5 s, not every page. With a wid it is
+  // one workspace's newest 200, which is what an open workspace in the rail and the Spaces tab lists (round 2 of #923).
   allSessions: function (signal, wid) {
     var body = {
       predicate: wid ? {
@@ -191,10 +186,6 @@ var SH_api = {
   fileDownloadUrl: function (wid, path) {
     return "/v1/workspaces/" + encodeURIComponent(wid)
       + "/files/download?path=" + encodeURIComponent(path);
-  },
-
-  collections: function (signal) {
-    return PR_fetchAllPages("/collections", { signal: signal });
   },
 
   // Entity lists for the palette's mixed results (wiring plan P1 T5), and
@@ -451,7 +442,6 @@ var SH_api = {
   // ---- cache keys ---------------------------------------------------------
   keys: {
     workspace: function (wid) { return "shell-workspace:" + wid; },
-    sessions: function (wid) { return "shell-sessions:" + wid; },
     allSessions: function () { return "shell-all-sessions"; },
     session: function (sid) { return "shell-session:" + sid; },
     pending: function (wid) { return "shell-pending:" + wid; },
@@ -459,7 +449,6 @@ var SH_api = {
     sessionPending: function (sid) { return "shell-session-pending:" + sid; },
     tree: function (wid, path) { return "shell-tree:" + wid + ":" + (path || "."); },
     file: function (wid, path) { return "shell-file:" + wid + ":" + path; },
-    collections: function () { return "shell-collections"; },
     document: function (cid, path) { return "shell-document:" + cid + ":" + path; },
     log: function (wid) { return "shell-log:" + wid; },
     commit: function (wid, sha) { return "shell-commit:" + wid + ":" + sha; },

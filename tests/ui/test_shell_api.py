@@ -72,7 +72,7 @@ def test_no_other_shell_file_names_a_v1_url() -> None:
 
 def test_every_read_takes_an_abort_signal() -> None:
     src = _src()
-    for name in ("sessions", "session", "filesTree", "fileRead", "commitLog",
+    for name in ("session", "filesTree", "fileRead", "commitLog",
                  "commit", "pendingYields", "pendingAttention",
                  "approvalRecords", "timeline"):
         m = re.search(name + r":\s*function\s*\(([^)]*)\)", src)

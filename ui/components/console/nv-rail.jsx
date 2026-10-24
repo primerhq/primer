@@ -284,6 +284,47 @@ function NV_anySessionRunning(data, wid) {
   });
 }
 
+// How many sessions a workspace holds: the exact count its GET /v1/workspaces row carries (session_count, every status), else (an older server sends
+// none) the sessions of the install-wide feed. The feed is the newest 200 of the install, so on a busy install it would say 0 for a workspace whose
+// sessions are all older than that (round 2 of #923).
+function NV_Rail_sessionCount(w, feedRows) {
+  return w && typeof w.session_count === "number" ? w.session_count : (feedRows || []).length;
+}
+
+// The rows of ONE workspace's session list the rail reads when the workspace's row is open: SH_api.allSessions with the wid, so the server filters
+// and orders newest first and a workspace whose sessions are all older than the newest 200 of the install still lists them. 200 at most.
+var NV_RAIL_WS_SESSIONS_WINDOW = 200;
+
+// One open workspace's sessions (a hook-bearing leaf, so the rail keeps one per open row; nv-mobile-shell.jsx has its own copy, NV_Mobile_WsSessions,
+// on the same cache key). While the read is out the install-wide feed's rows stand in. `tick` changes when the rail changed a session (rename,
+// stop, delete): the list is read again at once. A workspace that holds more sessions than the window says so under them.
+function NV_Rail_WsSessions(props) {
+  var res = window.primerApi.useResource(
+    "nv-rail-ws-sessions:" + props.wid,
+    function (signal) { return SH_api.allSessions(signal, props.wid); },
+    { pollMs: NV_RAIL_SESSIONS_POLL_MS, deps: [] }
+  );
+  var tickRef = React.useRef(props.tick);
+  React.useEffect(function () {
+    if (tickRef.current === props.tick) return;
+    tickRef.current = props.tick;
+    res.refetch();
+  }, [props.tick]);
+  var read = res.data && Array.isArray(res.data.items) ? res.data.items : null;
+  var rows = read || props.fallback || [];
+  var cut = read && read.length >= NV_RAIL_WS_SESSIONS_WINDOW && typeof props.count === "number" && props.count > read.length;
+  return (
+    <>
+      {props.render(rows)}
+      {cut ? (
+        <div className="pr-paged-note" role="note" data-testid={"nv-rail-ws-more:" + props.wid}>
+          {"Showing the newest " + read.length + " of " + props.count + " sessions."}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function NV_useSessionList() {
   return window.primerApi.useResource(
     "nv-rail-all-sessions",
@@ -391,7 +432,16 @@ function NV_Rail(props) {
     return function () { document.removeEventListener("click", close); };
   }, []);
 
-  function refetchSessions() { sessRes.refetch(); inboxRes.refetch(); }
+  // Bumped when the rail changed a session: the open workspaces read their own lists again, and the workspace list its counts.
+  var sessTickState = React.useState(0);
+  var sessTick = sessTickState[0];
+  var setSessTick = sessTickState[1];
+  function refetchSessions() {
+    sessRes.refetch();
+    inboxRes.refetch();
+    wsRes.refetch();
+    setSessTick(function (n) { return n + 1; });
+  }
 
   var workspaces = (wsRes.data && wsRes.data.items) || [];
   var sessions = (sessRes.data && sessRes.data.items) || [];
@@ -490,6 +540,7 @@ function NV_Rail(props) {
           var isSelected = w.id === props.selectedWorkspaceId;
           var isOpen = !!expanded[w.id];
           var wsSessions = sessionsByWs[w.id] || [];
+          var sessionCount = NV_Rail_sessionCount(w, wsSessions);
           var attnCount = Object.keys(attentionSidsByWs[w.id] || {}).length;
           return (
             <div key={w.id}>
@@ -521,11 +572,12 @@ function NV_Rail(props) {
                 {/* UX reconcile wave 1 (audit A item 17): a bare count read as
                     an unlabeled second number next to the attention count -
                     spell out the unit, same as the reference. */}
-                <span className="nv-rail-session-count">
-                  {wsSessions.length} {wsSessions.length === 1 ? "session" : "sessions"}
+                <span className="nv-rail-session-count" data-testid={"nv-rail-ws-count:" + w.id}>
+                  {sessionCount} {sessionCount === 1 ? "session" : "sessions"}
                 </span>
               </button>
-              {isOpen ? wsSessions.map(function (s) {
+              {isOpen ? <NV_Rail_WsSessions key={"wss:" + w.id} wid={w.id} tick={sessTick} fallback={wsSessions} count={sessionCount}
+                render={function (rows) { return rows.map(function (s) {
                 var sid = s.session_id;
                 var ident = NV_identity(s.binding);
                 var isAttention = !!(attentionSidsByWs[w.id] && attentionSidsByWs[w.id][sid]);
@@ -552,7 +604,7 @@ function NV_Rail(props) {
                     )}
                   </button>
                 );
-              }) : null}
+              }); }} /> : null}
             </div>
           );
         })}
