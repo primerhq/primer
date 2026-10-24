@@ -102,15 +102,17 @@ ADMIN_GATES: Mapping[tuple[str, str], RequiredApprovalConfig | PolicyApprovalCon
 })
 
 
-# What the approval card of each may show (design note 01a11cd3-66b0): what is created, changed or removed. Withheld, as on the crud cards: the
-# free text that can hold a pasted secret or code (a policy's Rego source and judge prompt, a toolset's python source, its stdio command and env,
-# its URL and headers). "Show all" on the card still returns the whole call to whoever may decide it.
+# What the approval card of each may show (design note 01a11cd3-66b0): what is created, changed or removed, and the code a person approves (review
+# of #860, R860-4 and R860-5): a policy's Rego source (code, rarely a secret) and a stdio toolset's command. Withheld, as on the crud cards: the free
+# text that can hold a pasted secret (a judge prompt, a stdio env, a toolset's URL and headers) and a python source, whose card draws its fingerprint
+# instead. "Show all" on the card still returns the whole call to whoever may decide it.
 _POLICY_PREVIEW = (
-    "entity.id", "entity.toolset_id", "entity.tool_name", "entity.enabled", "entity.approval.type", "entity.timeout_seconds", "entity.approvers",
+    "entity.id", "entity.toolset_id", "entity.tool_name", "entity.enabled", "entity.approval.type", "entity.approval.policy", "entity.timeout_seconds",
+    "entity.approvers",
 )
 _TOOLSET_PREVIEW = (
-    "entity.id", "entity.provider", "entity.config.transport", "entity.config.default_timeout_seconds", "entity.config.image",
-    "entity.config.allow_network",
+    "entity.id", "entity.provider", "entity.config.transport", "entity.config.config.command", "entity.config.default_timeout_seconds",
+    "entity.config.image", "entity.config.allow_network",
 )
 PREVIEW_ARGS: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType({
     (_SYSTEM, "create_tool_approval_policy"): _POLICY_PREVIEW,
@@ -124,17 +126,33 @@ PREVIEW_ARGS: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType({
     (_HARNESS, "harness__uninstall"): ("id",),
 })
 
+# What each card draws FIRST (``Tool.preview_lead``), before its one-line preview cuts a long entity: the code itself. The Rego source and the
+# stdio command are drawn (cut at the card's width) with a fingerprint of the text; the python source, which the allowlist withholds, is drawn as
+# its fingerprint alone (``sha256 <12 hex>, <N> lines``), computed when the call parks.
+_POLICY_LEAD = ("entity.approval.policy",)
+_TOOLSET_LEAD = ("entity.config.config.command", "entity.config.source")
+PREVIEW_LEAD: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType({
+    (_SYSTEM, "create_tool_approval_policy"): _POLICY_LEAD,
+    (_SYSTEM, "update_tool_approval_policy"): _POLICY_LEAD,
+    (_SYSTEM, "create_toolset"): _TOOLSET_LEAD,
+    (_SYSTEM, "update_toolset"): _TOOLSET_LEAD,
+    (_HARNESS, "harness__install"): ("overrides",),
+    (_HARNESS, "harness__sync"): ("overrides",),
+})
+
 
 def apply_admin_gate_previews(toolset_id: str, registry: "dict[str, tuple[Tool, ToolHandler]]") -> None:
-    """Give each admin-gated tool of ``toolset_id`` in ``registry`` the approval card :data:`PREVIEW_ARGS` declares, checked against its schema."""
+    """Give each admin-gated tool of ``toolset_id`` in ``registry`` the approval card :data:`PREVIEW_ARGS` and :data:`PREVIEW_LEAD` declare,
+    checked against its schema."""
     for (owner, bare), paths in PREVIEW_ARGS.items():
         if owner != toolset_id or bare not in registry:
             continue
         tool, handler = registry[bare]
-        gone = missing_paths(tool.args_schema, paths)
+        lead = PREVIEW_LEAD.get((owner, bare))
+        gone = missing_paths(tool.args_schema, (*paths, *(lead or ())))
         if gone:
             raise ValueError(f"{toolset_id} tool {bare!r}: preview paths {gone} name no argument of its schema")
-        registry[bare] = (tool.model_copy(update={"preview_args": paths}), handler)
+        registry[bare] = (tool.model_copy(update={"preview_args": paths, "preview_lead": lead}), handler)
 
 
 __all__ = [
@@ -144,5 +162,6 @@ __all__ = [
     "HOST_CODE_TOOLSET_WRITES",
     "POLICY_WRITES",
     "PREVIEW_ARGS",
+    "PREVIEW_LEAD",
     "apply_admin_gate_previews",
 ]

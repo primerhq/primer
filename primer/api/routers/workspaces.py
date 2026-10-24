@@ -80,6 +80,7 @@ from primer.common.preview_allowlist import (
     _allow_only,
     _value_rule,
     scrub_args_for_display,
+    value_at,
 )
 from primer.model.common import preserve_masked_secrets, refuse_served_masks
 from primer.api.routers._references import ReferenceCheck
@@ -3553,6 +3554,30 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
 _NO_ALLOWLIST = object()           # the scrubber alone: what the unit tests of the scrubber call; the API always passes a stamp or None
 
 
+def _lead_parts(args: dict, preview: dict, budget: list[int]) -> list[str]:
+    """The ``path=value`` parts an approval card draws FIRST, for the paths the tool leads with (``Tool.preview_lead``: the code a person
+    approves), before the one-line cut can drop them (review of #860, R860-4 and R860-5).
+
+    ``args`` is the call's arguments AFTER the allowlist (withheld values are ``<hidden>``). A lead path the allowlist shows is drawn as its
+    scrubbed value, cut like any other, followed by the fingerprint the park stamped for text (``sha256 ..., N lines``); a withheld one is drawn
+    as that fingerprint alone, which the park computed, so the card never reads it; one with neither is not drawn.
+    """
+    digests = preview.get("digests") or {}
+    parts: list[str] = []
+    for path in preview.get("lead") or []:
+        found, value = value_at(args, path)
+        digest = digests.get(path)
+        if found and value is not _HIDDEN:
+            shown, _hidden = _redact(value, 0, budget)
+            text = _one_line(shown if isinstance(shown, str) else json.dumps(shown, ensure_ascii=False, default=str))
+            if len(text) > _ATTENTION_ARG_CHARS:
+                text = _cut(text, _ATTENTION_ARG_CHARS)
+            parts.append(f"{path}={text}" + (f" ({digest})" if digest else ""))
+        elif digest:
+            parts.append(f"{path}=<{digest}>")
+    return parts
+
+
 def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[str, Any] | None:
     """``{tool_name, arguments, truncated, argument_keys}`` for the call an ``_approval`` park is waiting on, or ``None`` when the
     park does not say.
@@ -3594,8 +3619,8 @@ def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[
         bulky = sorted(k for k in args if k in _BULKY_ARG_KEYS)
         keys = [_display_name(k) for k in (lead + rest + bulky)[:_ATTENTION_KEY_COUNT]]
         pair_names_a_secret = _pair_names_a_secret(args)       # the arguments may themselves be one name/value pair
-        parts: list[str] = []
-        size = 0
+        parts = _lead_parts(args, preview, budget) if isinstance(preview, dict) else []
+        size = sum(len(part) + 2 for part in parts)
         for key in lead + rest:
             if size > _ATTENTION_TEXT_CHARS:
                 truncated = True

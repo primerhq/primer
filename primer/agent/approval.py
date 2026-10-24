@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.rego import RegoCompileError, RegoEvaluator
+from primer.common.preview_allowlist import lead_digests
 from primer.common.preview_paths import closed_set_names
 from primer.common.toolset_ids import canonical_toolset_id, toolset_id_spellings
 from primer.int.storage import Storage
@@ -175,7 +176,7 @@ def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_
 _RESUME_METADATA_KEYS = frozenset({"policy_id", "approval_type", "gate_reason", "approvers", "original_call", "preview", GATE_ID_KEY})
 
 
-def resolve_preview(*, policy: ToolApprovalPolicy, tool: "Tool | None") -> dict[str, Any]:
+def resolve_preview(*, policy: ToolApprovalPolicy, tool: "Tool | None", arguments: Any = None) -> dict[str, Any]:
     """Which arguments of a gated call its approval card may show, as the stamp ``approval_resume_metadata`` carries
     (``{"paths": [...], "source": "policy" | "tool" | "default"}``; design note 01a11cd3-66b0, rulings D1 and D2).
 
@@ -183,12 +184,23 @@ def resolve_preview(*, policy: ToolApprovalPolicy, tool: "Tool | None") -> dict[
     schema that are a closed set (a boolean, number, enum or const; ``primer/common/preview_paths.py``). An empty list on either layer is a
     declaration (show no value), not an absence. With no descriptor to take a schema from the default shows nothing: a schema that cannot
     be seen cannot be proven closed.
+
+    A tool that declares ``preview_lead`` (the code a person approves: a stdio command, a Rego policy, a python source) adds ``lead``, the
+    paths the card draws first, and ``digests``, the fingerprint of each that holds text in ``arguments`` (the call being parked), computed
+    here so the card never reads a withheld value (review of #860, R860-4 and R860-5).
     """
     if policy.preview_args is not None:
-        return {"paths": list(policy.preview_args), "source": "policy"}
-    if tool is not None and tool.preview_args is not None:
-        return {"paths": list(tool.preview_args), "source": "tool"}
-    return {"paths": closed_set_names(tool.args_schema) if tool is not None else [], "source": "default"}
+        stamp: dict[str, Any] = {"paths": list(policy.preview_args), "source": "policy"}
+    elif tool is not None and tool.preview_args is not None:
+        stamp = {"paths": list(tool.preview_args), "source": "tool"}
+    else:
+        stamp = {"paths": closed_set_names(tool.args_schema) if tool is not None else [], "source": "default"}
+    if tool is not None and tool.preview_lead:
+        stamp["lead"] = list(tool.preview_lead)
+        digests = lead_digests(stamp["lead"], arguments)
+        if digests:
+            stamp["digests"] = digests
+    return stamp
 
 
 def approval_resume_metadata(
