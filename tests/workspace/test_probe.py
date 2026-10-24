@@ -1,8 +1,9 @@
 """Tests for the WorkspaceProbeTask phase-transition driver.
 
-Phase 7 background task pings every ``running`` / ``failed`` workspace at
-~30s intervals and flips ``phase`` after three consecutive misses (running
--> failed) or three consecutive hits (failed -> running).
+The background task pings every ``pending`` / ``running`` / ``failed``
+workspace at ~30s intervals: the first hit promotes ``pending`` to
+``running``, three consecutive misses fail a ``pending`` or ``running``
+one, and three consecutive hits bring a ``failed`` one back to ``running``.
 """
 
 from __future__ import annotations
@@ -226,10 +227,9 @@ async def test_running_to_failed_reconciles_dependent_sessions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pending_stays_pending_when_ping_fails() -> None:
-    """While a pending workspace is unreachable it stays pending — we
-    don't escalate to failed because nothing has confirmed it was ever
-    healthy."""
+async def test_a_pending_workspace_counts_misses_like_a_running_one() -> None:
+    """Lead ruling (round 2 of #917): a pending workspace that never answers is failed after three misses, as a running one is, so its
+    sessions are ended workspace_lost and the console's failed banner shows. One or two misses leave it pending."""
     ws_row = _ws("pending")
     sp, storage = _storage_provider([ws_row])
 
@@ -241,11 +241,34 @@ async def test_pending_stays_pending_when_ping_fails() -> None:
     task = WorkspaceProbeTask(
         storage_provider=sp, registry=registry, interval_seconds=0.01
     )
+    for _ in range(2):
+        await task.tick()
+    assert all("phase" not in update for update in _patches(storage)), "two misses leave it pending"
+
     await task.tick()
 
     last_update = _last_update_kwargs(storage)
-    # phase MUST not change away from pending on a miss.
-    assert "phase" not in last_update or last_update["phase"] == "pending"
+    assert last_update.get("phase") == "failed"
+    assert last_update.get("failure_reason")
+    assert storage.patch_if.await_args.kwargs["where"]["phase"] == ["pending"]
+
+
+@pytest.mark.asyncio
+async def test_a_hit_between_misses_promotes_a_pending_workspace_and_resets_its_misses() -> None:
+    ws_row = _ws("pending")
+    sp, storage = _storage_provider([ws_row])
+
+    registry = MagicMock()
+    handle = MagicMock()
+    handle.ping = AsyncMock(side_effect=[False, False, True])
+    registry.get_workspace = AsyncMock(return_value=handle)
+
+    task = WorkspaceProbeTask(storage_provider=sp, registry=registry, interval_seconds=0.01)
+    for _ in range(3):
+        await task.tick()
+
+    assert _last_update_kwargs(storage).get("phase") == "running"
+    assert task._miss_counts.get("ws-1", 0) == 0  # noqa: SLF001
 
 
 @pytest.mark.asyncio

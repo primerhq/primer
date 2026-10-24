@@ -253,7 +253,8 @@ A workspace row's `phase` is one of:
   (`workspaces::create_workspace`, `POST /v1/workspaces` or the
   console). The workspace is already usable: sessions start and run
   in it. The health probe (about every 30 seconds) turns it `running`
-  at its first good ping, and counts no misses against it.
+  at its first good ping; three missed pings in a row make it
+  `failed`, as for a `running` workspace.
 - `running` - the probe has seen it answer.
 - `failed` - three missed probes in a row; `failure_reason` says why
   and every open session on it has ended `workspace_lost`. Three good
