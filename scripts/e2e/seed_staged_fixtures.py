@@ -628,7 +628,7 @@ async def seed(api: Api) -> dict[str, Any]:
         "provider_id": channel_provider_id,
         "provider": "discord",
         "external_id": "staged-room-1",
-        "config": {"chats": {"enabled": True, "relay_mode": "final"}},
+        "config": {"chats": {"enabled": True}},
     })
     trigger_ids["channel"] = await _ensure_trigger(api, {
         "slug": "staged-channel-trigger",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import Enum
-from typing import Annotated, ClassVar, Literal, Union
+from typing import Annotated, ClassVar, Union
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -246,10 +246,6 @@ class ChatConfig(BaseModel):
             "(session_append) or wake a waiting one, and threads already mapped to a session, are not affected. "
             "It also starts the room's listener when primer starts and when the channel is saved in the console."
         ),
-    )
-    relay_mode: Literal["final", "all"] = Field(
-        default="final",
-        description="Outbound verbosity.",
     )
 
 

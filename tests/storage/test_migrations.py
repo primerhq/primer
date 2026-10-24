@@ -245,9 +245,9 @@ async def test_m003_legacy_channel_loads_through_the_live_model(sp):
 
     row = await sp.get_storage(LiveChannel).get("channel-legacy")
     assert row is not None
-    # The settings that outlived the cutover are still there.
+    # The setting that outlived the cutover is still there. relay_mode outlived it too, until m018 dropped it (it was never read).
     assert row.config.chats.enabled is True
-    assert row.config.chats.relay_mode == "all"
+    assert "relay_mode" not in row.config.chats.model_dump()
 
 
 async def test_m003_legacy_collection_search_moves_under_search(sp):

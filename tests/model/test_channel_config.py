@@ -9,7 +9,7 @@ def test_channel_carries_chat_config():
                  provider=ChannelProviderType.SLACK,
                  config=SlackChannelConfig(chats=ChatConfig(enabled=True)))
     assert ch.config.chats.enabled is True
-    assert ch.config.chats.relay_mode == "final"
+    assert "relay_mode" not in ch.config.chats.model_dump()
 
 
 

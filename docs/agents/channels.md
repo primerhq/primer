@@ -97,13 +97,12 @@ rather than for a primer entity):
   whose listener runs; a message from any other room is dropped. So
   after a restart a room with `enabled: false` is not heard at all until
   a session posts to it (the post starts its listener).
-- `relay_mode` (`"final"` | `"all"`, default `"final"`) - controls
-  which session messages are relayed back to the platform. `"final"`
-  sends only the last assistant turn; `"all"` streams every turn.
 
 The model has no other keys and rejects unknown ones (`extra="forbid"`),
-so a body carrying `default_agent`, `allow_agent_switch` or
-`allowed_agents` returns `422`. **Which agent a thread starts under is
+so a body carrying `default_agent`, `allow_agent_switch`,
+`allowed_agents` or `relay_mode` returns `422`. `relay_mode` was stored
+and never read (how much a conversation hears is the channel trigger's
+`interactive` flag); migration 19 removed it from stored rooms. **Which agent a thread starts under is
 the channel trigger's binding, not the room's config**: one room can
 route to different agents by rule, which a single per-room default could
 not express.
@@ -424,8 +423,7 @@ Slack channel #ops-pager.
          "label": "helpdesk-dm",
          "config": {
            "chats": {
-             "enabled": true,
-             "relay_mode": "final"
+             "enabled": true
            }
          }
        }
@@ -591,9 +589,10 @@ the trigger.
   start sessions. ChannelCorrelation rows keep them separate.
 - **The binding lives on the trigger, not the room.** `config.chats`
   says whether a message in the room may start a session; which agent
-  or graph a thread runs under is the channel trigger's binding. `config` rejects unknown keys, so a body carrying the
-  retired `default_agent`, `allow_agent_switch` or `allowed_agents`
-  returns `422`.
+  or graph a thread runs under is the channel trigger's binding.
+  `config` rejects unknown keys, so a body carrying the retired
+  `default_agent`, `allow_agent_switch`, `allowed_agents` or
+  `relay_mode` returns `422`.
 - **Rebinding is a session operation.** A thread's session can be
   rebound like any other, from the shell or by the agent itself; there
   are no in-thread slash commands for it.

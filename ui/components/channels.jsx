@@ -936,9 +936,6 @@ function NewChannelModal({ providers, providersList, onClose, onCreated, pushToa
   const [chatsEnabled, setChatsEnabled] = React.useState(
     existing?.config?.chats?.enabled ?? false
   );
-  const [chatsRelayMode, setChatsRelayMode] = React.useState(
-    existing?.config?.chats?.relay_mode || "final"
-  );
   const create = useMutation(
     (body) => isEdit
       ? apiFetch("PUT", "/channels/" + encodeURIComponent(existing.id), body)
@@ -977,7 +974,6 @@ function NewChannelModal({ providers, providersList, onClose, onCreated, pushToa
       config: {
         chats: {
           enabled: chatsEnabled,
-          relay_mode: chatsRelayMode,
         },
       },
     };
@@ -1051,21 +1047,6 @@ function NewChannelModal({ providers, providersList, onClose, onCreated, pushToa
             testid="channel-chats-enabled"
           />
         </div>
-        {chatsEnabled && (
-          <>
-            <FormField label="relay mode">
-              <select
-                className="select mono"
-                value={chatsRelayMode}
-                onChange={(e) => setChatsRelayMode(e.target.value)}
-                style={{ width: "100%" }}
-              >
-                <option value="final">final — only relay the last agent message</option>
-                <option value="all">all — relay every agent message</option>
-              </select>
-            </FormField>
-          </>
-        )}
       </div>
     </Modal>
   );

@@ -97,7 +97,7 @@ def test_channel_config_mismatch_rejected():
 def test_chat_config_defaults():
     cfg = ChatConfig()
     assert cfg.enabled is False
-    assert cfg.relay_mode == "final"
+    assert cfg.model_dump() == {"enabled": False}
 
 
 

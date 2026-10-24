@@ -205,6 +205,14 @@ views (`extra="allow"`, so no sealed value is opened and a row of an
 older shape still reads), every row before any delete, and looking the
 toolset up right before each delete. A row whose toolset exists is never
 touched.
+`m019_drop_chat_relay_mode.py` removes one dropped field from stored
+rows, the way `m003_session_cutover` removed the retired agent fields
+from the same block: `ChatConfig` dropped `relay_mode` (stored, never
+read) and forbids extras, so a channel row that still carries it does
+not decode. It removes the key from every stored channel's
+`config.chats` through a migration-local `Channel` view
+(`extra="allow"`, `config` as a plain dict). It reads every row before
+it writes any, and a row without the key is left alone.
 
 ### The `document_content` table
 

@@ -89,9 +89,11 @@ def test_every_control_of_the_channel_form_is_named(page: Page, base_url: str, c
         expect(modal).to_be_visible(timeout=10_000)
         expect(modal.locator("select").first).to_be_visible(timeout=5_000)
         assert _unnamed(modal) == []
-        # the relay settings appear once inbound messages are on: their select is named too
+        # turning inbound messages on adds no control (the relay mode select went with the field, ticket 01a16e37-b98e item 7), and the
+        # toggle's hint says sessions already running in the room still hear it
         modal.get_by_test_id("channel-chats-enabled").click()
-        expect(modal.get_by_label("relay mode", exact=True)).to_have_count(1, timeout=5_000)
+        expect(modal.get_by_label("relay mode", exact=True)).to_have_count(0)
+        expect(modal).to_contain_text("Sessions already running in the room still hear it.")
         assert _unnamed(modal) == []
         # the format note under the external id is the row's help line: drawn, and tied to the input (it vanished when the row component had no help line)
         external = modal.get_by_placeholder("C0123ABC456 / chat-id / snowflake")
