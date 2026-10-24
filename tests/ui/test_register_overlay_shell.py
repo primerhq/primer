@@ -486,12 +486,37 @@ def test_a_web_search_registers_with_the_wire_body(ctx) -> None:
     assert ctx.eval("CLOSED") == 1
 
 
-def test_artifact_storage_offers_no_test_until_its_route_exists(ctx) -> None:
-    """A Test that answers 405 is never offered (design 6.7): the class has no draft ``_test`` route yet (Plan 09 adds it)."""
+def test_artifact_storage_offers_a_draft_test(ctx) -> None:
+    """The class serves a draft ``_test`` route (POST /artifact_storage_providers/_test), so the overlay offers a Test before the save (design
+    6.7: a Test that answers 405 is never offered)."""
     _mount(ctx, initialClass="artifact_storage")
     _serve(ctx, "artifact_storage_providers")
-    assert ctx.eval("MR.find('provider-form-test') === null") is True
+    assert ctx.eval("MR.find('provider-form-test') !== null") is True
     assert js(ctx, "options('pc-field:type')") == ["db", "filesystem", "s3"]
+
+
+def test_artifact_storage_test_posts_the_draft_and_says_what_failed(ctx) -> None:
+    """Test sends the draft (the secrets included: the route builds its adapter from the draft alone) to ``/artifact_storage_providers/_test`` and
+    shows the failure the server answers. The probe's failure carries the step it failed at (``{ok: false, step, error}``,
+    ``primer/artifact/probe.py``); the panel renders the error. The secret typed in the form never appears in what the panel renders."""
+    _mount(ctx, initialClass="artifact_storage")
+    _serve(ctx, "artifact_storage_providers")
+    ctx.eval("setValue('pc-field:type', 's3'); setValue('pc-field:id', 'store-1');")
+    ctx.eval("setValue('pc-field:bucket', 'media'); setValue('pc-field:endpoint_url', 'http://minio:9000');")
+    ctx.eval("setValue('pc-field:secret_key', 'probe-secret-123');")
+    ctx.eval("HANDLER = function () { return Promise.resolve({ ok: false, step: 'put', error: 'S3 PutObject: Forbidden' }); };")
+    ctx.eval("press('provider-form-test')")
+    assert settle(ctx) == "fulfilled"
+    assert js(ctx, "CALLS") == [{
+        "method": "POST", "path": "/artifact_storage_providers/_test",
+        "body": {"id": "store-1", "provider": "s3",
+                 "config": {"bucket": "media", "endpoint_url": "http://minio:9000",
+                            "secret_key": "probe-secret-123"}},
+    }]
+    result = "MR.find('provider-form-test-result')"
+    assert ctx.eval(f"{result}.props.role") == "alert"
+    assert ctx.eval(f"textOf({result})") == "Test failed: S3 PutObject: Forbidden"
+    assert "probe-secret-123" not in js(ctx, "textOf(bodyOf())")
 
 
 def test_edit_mode_offers_no_draft_test(ctx) -> None:
