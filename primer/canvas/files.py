@@ -1,14 +1,17 @@
 """Capability URLs for the workspace files a canvas shows (pivot P5, Task 14; plan Decision 12, design 8.6).
 
-An Image or Audio element may show a workspace file (``file:<path>``). The frame is a sandboxed, cross-origin document and sends no
-cookies, so it cannot use the authenticated file routes: ``GET .../canvas`` mints one URL per referenced file instead,
+An Image or Audio element may show a workspace file (``file:<path>``). The frame is sandboxed into an opaque origin, so the requests it
+makes carry no cookie and cannot use the authenticated file routes: ``GET .../canvas`` mints one URL per referenced file instead,
 ``/canvas/sessions/<session id>/files/<token>``, and the URL is the credential (the lead's ruling 6 on S6):
 
 * **unguessable**: the token is ``itsdangerous.URLSafeTimedSerializer`` over ``{"s": session id, "p": path}``, signed with the
   install's session secret under its own salt (:data:`FILE_TOKEN_SALT`), so a token of another purpose never verifies here;
 * **scoped to one session's workspace file**: the route serves it only under the session the token names, only while an Image or
   Audio element of that session's canvas references the path (:func:`referenced_files`), and only from that session's workspace;
-* **expiring**: a token older than :data:`FILE_URL_TTL_S` (900 s) is refused; the console refetches the canvas for fresh ones;
+* **expiring**: a token is stamped with the start of its :data:`FILE_URL_WINDOW_S` (5-minute) window, not the second it was minted, so
+  every URL of one file minted in one window is the same URL and the browser's cache hits across the console's reads (review of #908,
+  round 2); it is refused :data:`FILE_URL_TTL_S` (900 s) after its window began, so a URL lives 600 to 900 s after it is minted, and
+  the console refetches the canvas for fresh ones. A served file is cached no longer than its URL has left;
 * **never outside the workspace**: a path with an absolute, empty, ``.`` or ``..`` segment is refused before the workspace is asked
   (:func:`safe_relative_path`), the workspace's own resolver refuses an escape (a symlink included), and a path in its reserved trees
   (``.state``, ``.tmp``, the way the backend resolves it) is refused.
@@ -19,14 +22,17 @@ Only the media types of :data:`MEDIA_TYPES` are served, at most :data:`MAX_FILE_
 from __future__ import annotations
 
 import secrets
+import time
 from collections.abc import Mapping
 from typing import Any
 
-from itsdangerous import BadData, URLSafeTimedSerializer
+from itsdangerous import BadData, TimestampSigner, URLSafeTimedSerializer
 
 FILE_TOKEN_SALT = "primer.canvas.file.v1"
-#: How long a minted URL is good for, in seconds.
+#: How long a URL is good for, in seconds, from the start of the window it was minted in (so 600 to 900 s after it was minted).
 FILE_URL_TTL_S = 900
+#: The window a token's time is rounded down to: every URL of one file minted in one window is the same URL.
+FILE_URL_WINDOW_S = 300
 #: The largest file a URL serves (25 MiB).
 MAX_FILE_BYTES = 26_214_400
 #: The media types served, by lowercased extension (the catalog's ``IMAGE_FILE_TYPES`` and ``AUDIO_FILE_TYPES``).
@@ -54,8 +60,21 @@ _FILE_PREFIX = "file:"
 _MAX_TOKEN_CHARS = 2048
 
 
+class _WindowSigner(TimestampSigner):
+    """Signs with the start of the current :data:`FILE_URL_WINDOW_S` window as the time. Used to MINT only: a token is verified against
+    the real time (the default signer), so its age is exact."""
+
+    def get_timestamp(self) -> int:
+        now = int(time.time())
+        return now - now % FILE_URL_WINDOW_S
+
+
 def _serializer(secret: str) -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret, salt=FILE_TOKEN_SALT)
+
+
+def _minting_serializer(secret: str) -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(secret, salt=FILE_TOKEN_SALT, signer=_WindowSigner)
 
 
 def canvas_file_secret(app_state: Any) -> str:
@@ -73,16 +92,22 @@ def canvas_file_secret(app_state: Any) -> str:
 
 def mint_file_url(secret: str, session_id: str, path: str) -> str:
     """The capability URL of the workspace file ``path`` for the canvas of ``session_id``."""
-    return f"/canvas/sessions/{session_id}/files/{_serializer(secret).dumps({'s': session_id, 'p': path})}"
+    return f"/canvas/sessions/{session_id}/files/{_minting_serializer(secret).dumps({'s': session_id, 'p': path})}"
 
 
 def verify_file_token(secret: str, token: str, *, max_age: int = FILE_URL_TTL_S) -> tuple[str, str] | None:
     """``(session id, path)`` of a token this install signed less than ``max_age`` seconds ago, else ``None`` (tampered, made up,
     expired, signed for another purpose, or not of the minted shape)."""
+    verified = verify_file_token_until(secret, token, max_age=max_age)
+    return verified[:2] if verified is not None else None
+
+
+def verify_file_token_until(secret: str, token: str, *, max_age: int = FILE_URL_TTL_S) -> tuple[str, str, int] | None:
+    """:func:`verify_file_token`, and the second (epoch) at which the token stops being honoured, so a served file is cached no longer."""
     if not token or len(token) > _MAX_TOKEN_CHARS:
         return None
     try:
-        payload = _serializer(secret).loads(token, max_age=max_age)
+        payload, signed_at = _serializer(secret).loads(token, max_age=max_age, return_timestamp=True)
     except (BadData, ValueError, TypeError):
         return None
     if not isinstance(payload, dict) or set(payload) != {"s", "p"}:
@@ -90,7 +115,7 @@ def verify_file_token(secret: str, token: str, *, max_age: int = FILE_URL_TTL_S)
     session_id, path = payload["s"], payload["p"]
     if not isinstance(session_id, str) or not isinstance(path, str) or not session_id or not path:
         return None
-    return session_id, path
+    return session_id, path, int(signed_at.timestamp()) + max_age
 
 
 def referenced_files(elements: Mapping[str, Any]) -> set[str]:
@@ -125,6 +150,7 @@ def media_type_of(path: str) -> str | None:
 __all__ = [
     "FILE_TOKEN_SALT",
     "FILE_URL_TTL_S",
+    "FILE_URL_WINDOW_S",
     "MAX_FILE_BYTES",
     "MEDIA_TYPES",
     "canvas_file_secret",
@@ -133,4 +159,5 @@ __all__ = [
     "referenced_files",
     "safe_relative_path",
     "verify_file_token",
+    "verify_file_token_until",
 ]

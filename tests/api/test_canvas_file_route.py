@@ -97,7 +97,8 @@ async def test_a_referenced_file_is_served_cross_origin(world, raw_client):
     assert r.headers["content-type"] == "image/png"
     assert r.headers["cross-origin-resource-policy"] == "cross-origin"
     assert r.headers["content-security-policy"] == "default-src 'none'; sandbox"
-    assert r.headers["cache-control"] == "private, max-age=900"
+    age = int(r.headers["cache-control"].removeprefix("private, max-age="))
+    assert 600 <= age <= 900, "cached no longer than the URL lives"
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["content-disposition"] == "inline"
     assert r.headers["referrer-policy"] == "no-referrer"
@@ -143,6 +144,16 @@ async def test_refusals_are_404(world, raw_client, case):
     assert r.status_code == 404, (case, r.text)
     assert r.json()["detail"] == "This canvas file link is not valid, or it has expired."
     assert b"outside the workspace" not in r.content and b"state" != r.content
+
+
+async def test_a_served_file_is_cached_no_longer_than_its_url_lives(world, raw_client, monkeypatch):
+    """Review of #908, round 2: the URL's time is its window's start, so it has 600 to 900 s left when minted, and the cache gets what is left."""
+    window = 1_700_000_100 - 1_700_000_100 % 300
+    monkeypatch.setattr(time, "time", lambda: window + 120)
+    url = _url(world, "s1", "assets/c.png")
+    monkeypatch.setattr(time, "time", lambda: window + 400)
+    r = await raw_client.get(url)
+    assert r.status_code == 200 and r.headers["cache-control"] == "private, max-age=500"
 
 
 async def test_an_expired_url_is_404(world, raw_client, monkeypatch):
