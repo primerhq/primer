@@ -351,8 +351,14 @@ def create_test_app(
     harness_toolset = build_harness_toolset_provider(
         storage_provider=storage_provider,
     )
+    # An in-memory scheduler: the /workers router depends on it (app.state.scheduler below), and trigger__fire_now dispatches with it and the
+    # workspace registry, as the REST fire_now route does.
+    from primer.scheduler.in_memory import InMemoryScheduler
+    _test_scheduler = InMemoryScheduler(storage_provider=storage_provider)
     trigger_toolset = build_trigger_toolset_provider(
         storage_provider=storage_provider,
+        scheduler=_test_scheduler,
+        workspace_registry=workspace_registry,
     )
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001
@@ -395,10 +401,7 @@ def create_test_app(
     from primer.api.config import AppConfig
     app.state.config = AppConfig()
     app.state.session_secret = "test-session-secret-32-bytes-aaaaaaa"
-    # Attach an in-memory scheduler so the /workers router has something
-    # to depend on.
-    from primer.scheduler.in_memory import InMemoryScheduler
-    _test_scheduler = InMemoryScheduler(storage_provider=storage_provider)
+    # The in-memory scheduler built above, so the /workers router has something to depend on.
     app.state.scheduler = _test_scheduler
     app.state.worker_pool = None
     # Attach an in-memory event bus so yielding-tool endpoints (ask_user,

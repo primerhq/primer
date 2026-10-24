@@ -854,11 +854,15 @@ def _make_lifespan(config: AppConfig):
 
         # Build the always-on ``trigger`` toolset (Phase 8). Like harness
         # it tolerates a None event_bus / claim_engine — the service
-        # layer treats those collaborators as best-effort.
+        # layer treats those collaborators as best-effort. fire_now
+        # dispatches, so it gets what the REST fire_now route reads from
+        # app.state: the scheduler and the workspace registry too.
         trigger_toolset = build_trigger_toolset_provider(
             storage_provider=storage_provider,
             claim_engine=claim_engine,
             event_bus=event_bus,
+            scheduler=scheduler,
+            workspace_registry=workspace_registry,
         )
         provider_registry._trigger_toolset_provider = trigger_toolset  # noqa: SLF001
         app.state.trigger_toolset = trigger_toolset
