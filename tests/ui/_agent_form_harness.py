@@ -1,8 +1,8 @@
 """The agent form (``AG_NewAgentModal``, ``ui/components/agents.jsx``) mounted in V8, for tests that drive it and read what it sends.
 
-``agent_form()`` opens a MiniRacer context with the hook runtime of ``tests/ui/_mini_react.py``, the stubs below, and then the real
-``ui/foundation/escape-stack.js``, ``ui/foundation/use-mutation.js``, ``ui/components/shared/form-field.jsx`` and ``ui/components/agents.jsx`` as the
-server's bundler emits them.
+``agent_form()`` opens a MiniRacer context with the hook runtime of ``tests/ui/_mini_react.py``, the real ``ui/foundation/api.js`` (its
+``ApiError`` and ``readRefusal``), the stubs below, and then the real ``ui/foundation/escape-stack.js``, ``ui/foundation/use-mutation.js``,
+``ui/components/shared/form-field.jsx`` and ``ui/components/agents.jsx`` as the server's bundler emits them.
 It closes the context on exit: an isolate that is never closed stays in memory for the rest of the run.
 
 The stubs stand in for what the console around the form provides:
@@ -15,7 +15,10 @@ The stubs stand in for what the console around the form provides:
   not mount them (the journeys run on the real kit). ``PK_FormOverlay`` registers its ``onClose`` on the real Escape stack, as the ``Modal`` it is built on does.
 * ``window.ToolPicker`` is one button, ``tool-picker-stub``. Its ``data-selected`` is the sorted selection as JSON, and a click selects
   ``web__search`` and ``system__list_files``.
-* ``window.primerApi.useResource`` answers the model profiles (``PROFILES``) and the voices. Any other key has no data.
+* ``window.primerApi.useResource`` answers the model profile choices (``PROFILES``, the shape ``GET /v1/model_profiles/choices`` lists) and the
+  voices. Any other key has no data. It keeps the fetcher of each key, and ``resource_request`` tells which request a key's fetcher makes.
+* ``window.primerApi.ApiError`` and ``readRefusal`` are the real ones. ``reject_with`` and ``fail_resource`` turn a problem envelope (one a real
+  router answered, ``tests/_support/agent_form_server.py``) into the ``ApiError`` the API client throws.
 * ``useCapabilities`` reports text to speech as set up or not (``agent_form(tts_configured=...)``), and ``useRouter`` navigates nowhere.
 * ``apiFetch`` records each call and resolves with the body plus an id. The body is recorded as JSON, which is what the wire carries. ``set_api`` gives
   one ``METHOD path`` another answer, ``reject_next`` makes the next call fail, and ``navigations`` lists what ``useRouter().navigate`` was asked for.
@@ -44,7 +47,17 @@ from typing import Any
 
 from tests.ui._mini_react import ROOT, mini_react_context, transpile
 
-PROFILES = [{"id": "fast", "provider_id": "p1", "model_name": "m1"}, {"id": "slow", "provider_id": "p1", "model_name": "m2"}]
+# The profiles the form offers, as GET /v1/model_profiles/choices lists them, and the stored rows behind them (for agent_form_server).
+PROFILES = [
+    {"id": "fast", "description": "Fast", "kind": "single", "context_length": 8192},
+    {"id": "slow", "description": "Slow", "kind": "single", "context_length": 32768},
+]
+PROFILE_ROWS = [
+    {"id": "fast", "description": "Fast", "provider_id": "p1", "model_name": "m1", "context_length": 8192},
+    {"id": "slow", "description": "Slow", "provider_id": "p1", "model_name": "m2", "context_length": 32768},
+]
+# The useResource key the form reads the profile choices under (the agents list keeps its own key for the admin list).
+PROFILE_CHOICES_KEY = "agents:model-profile-choices"
 STATUS_OK = {"data": {"ok": True, "issues": [], "warnings": []}, "loading": False, "error": None}
 
 # An agent row with every field set, as GET /v1/agents/<id> returns it.
@@ -70,17 +83,18 @@ _FILES = ("foundation/escape-stack.js", "foundation/use-mutation.js", "component
 _KIT_FILE = "components/shared/platform-kit.jsx"
 
 _STUBS = r"""
+var __realApi = window.primerApi;
 var __calls = [];
+var __fetchers = {};
 var __recorded = { closes: 0, created: [], toasts: [], deletes: 0, chats: 0 };
 var __listeners = [];
 var __rejectNext = null;
 var __apiAnswers = {};
 var __navigations = [];
 var __focusTraps = [];
-var __resources = {
-  "agents:model-profiles": { data: { items: PROFILES }, loading: false, error: null },
-  "agents:voices": { data: { voices: ["alloy", "nova"] }, loading: false },
-};
+var __resources = {};
+__resources[PROFILE_CHOICES_KEY] = { data: { items: PROFILES }, loading: false, error: null };
+__resources["agents:voices"] = { data: { voices: ["alloy", "nova"] }, loading: false };
 window.addEventListener = function (type, fn) { __listeners.push({ type: type, fn: fn }); };
 window.removeEventListener = function (type, fn) {
   __listeners = __listeners.filter(function (l) { return !(l.type === type && l.fn === fn); });
@@ -103,7 +117,10 @@ window.ToolPicker = function (p) {
   });
 };
 window.primerApi = {
-  useResource: function (key) {
+  ApiError: __realApi.ApiError,
+  readRefusal: __realApi.readRefusal,
+  useResource: function (key, fetcher) {
+    __fetchers[key] = fetcher;
     if (Object.prototype.hasOwnProperty.call(__resources, key)) return __resources[key];
     return { data: null, loading: false, error: null, refetch: function () {} };
   },
@@ -123,6 +140,14 @@ window.primerApi = {
     return Promise.resolve(Object.assign({ id: "agent-new" }, body));
   },
 };
+// The requests a resource's fetcher makes, taken back out of the recorded calls (they are not the form's own saves).
+function __requestOf(key) {
+  var fetcher = __fetchers[key];
+  if (typeof fetcher !== "function") throw new Error("no fetcher for the resource " + key);
+  var before = __calls.length;
+  fetcher({ aborted: false });
+  return __calls.splice(before);
+}
 function __mount(existing, chatLoading) {
   var props = {
     onClose: function () { __recorded.closes++; },
@@ -306,9 +331,14 @@ def _code(real_kit: bool) -> str:
     return "\n;\n".join(transpile(ROOT / "ui" / rel) for rel in files)
 
 
+_API = (ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
+
+
 def _prelude(tts_configured: bool, real_kit: bool) -> str:
     return (
-        f"var PROFILES = {json.dumps(PROFILES)};\nvar STATUS_OK = {json.dumps(STATUS_OK)};\n"
+        _API + "\n;\n"
+        f"var PROFILES = {json.dumps(PROFILES)};\nvar PROFILE_CHOICES_KEY = {json.dumps(PROFILE_CHOICES_KEY)};\n"
+        f"var STATUS_OK = {json.dumps(STATUS_OK)};\n"
         f"var TTS_CONFIGURED = {json.dumps(tts_configured)};\n" + _STUBS + ("" if real_kit else _KIT_STUBS)
     )
 
@@ -440,8 +470,28 @@ def set_api(ctx: Any, method: str, path: str, answer: dict) -> None:
 
 
 def reject_next(ctx: Any, error: dict) -> None:
-    """Make the next ``apiFetch`` call reject with ``error``, as the API client does (``status``, ``fieldErrors``, ``title``, ``detail``)."""
+    """Make the next ``apiFetch`` call reject with ``error``, a plain object (``status``, ``fieldErrors``, ``title``, ``detail``). A refusal the
+    server sends is made with ``reject_with`` instead, from the envelope a real router answered."""
     ctx.eval(f"__rejectNext = {json.dumps(error)}")
+
+
+def reject_with(ctx: Any, envelope: dict) -> None:
+    """Make the next ``apiFetch`` call reject as the API client does for this problem envelope: ``new ApiError(envelope)``, the real class."""
+    ctx.eval(f"__rejectNext = new window.primerApi.ApiError({json.dumps(envelope)})")
+
+
+def fail_resource(ctx: Any, key: str, envelope: dict) -> None:
+    """Make ``useResource(key)`` answer a failed load, before ``mount``: its ``error`` is ``new ApiError(envelope)``, as ``use-resource.js`` keeps
+    what the fetcher threw."""
+    ctx.eval(
+        f"__resources[{json.dumps(key)}] = {{ data: null, loading: false, error: new window.primerApi.ApiError({json.dumps(envelope)}) }}"
+    )
+
+
+def resource_request(ctx: Any, key: str) -> list[dict]:
+    """The ``apiFetch`` calls the fetcher of ``useResource(key)`` makes (``{"method", "path", "body"}``), after ``mount``. They are not left in
+    ``calls``."""
+    return json.loads(ctx.eval(f"JSON.stringify(__requestOf({json.dumps(key)}))"))
 
 
 def navigations(ctx: Any) -> list[dict]:

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import Field
 
 from primer.api.deps import (
@@ -42,25 +42,29 @@ from primer.api.deps import (
     get_llm_provider_storage,
     get_model_profile_storage,
 )
+from primer.api.errors import common_responses
+from primer.api.pagination import parse_page
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
 from primer.api.routers.providers import _make_invalidator
 from primer.common.entity_checks import EntityCheckError
 from primer.model.agent import Agent
 from primer.model.graph import Graph
-from primer.model.model_profile import ModelProfile
+from primer.model.model_profile import ModelProfile, ModelProfileChoice
 from primer.model.provider import LLMProvider
 from primer.model_profile.checks import (
     check_aggregation_valid,
     check_not_a_member_becoming_aggregated,
     check_provider_exists,
 )
+from primer.model_profile.choices import list_model_profile_choices
 from primer.model.storage import (
     CursorPageResponse,
     FieldRef,
     Op,
     OffsetPage,
     OffsetPageResponse,
+    PageRequest,
     Predicate,
     Value,
 )
@@ -269,4 +273,30 @@ model_profile_router = make_crud_router(
 )
 
 
-__all__ = ["ModelProfileWithUsage", "model_profile_router"]
+# The profile list a non-admin may see (audit G3-02, the lead's ruling). ``model_profile_router`` is admin-only because a profile is provider
+# configuration, but any signed-in user may create an agent and an agent names a profile, so every signed-in user gets the id, description,
+# kind and context length of each profile and nothing else. This router is included BEFORE ``model_profile_router`` (``_app_routes.py``): its
+# literal ``/model_profiles/choices`` would otherwise be read by ``GET /model_profiles/{id}`` as a profile id.
+model_profile_choices_router = APIRouter(tags=["model-profiles"])
+
+
+@model_profile_choices_router.get(
+    "/model_profiles/choices",
+    response_model=OffsetPageResponse[ModelProfileChoice] | CursorPageResponse[ModelProfileChoice],
+    summary="List model profiles by id, description, kind and context length (any signed-in user)",
+    responses=common_responses(400, 422, 500),
+)
+async def list_model_profile_choices_route(
+    page: PageRequest = Depends(parse_page),
+    storage=Depends(get_model_profile_storage),
+) -> OffsetPageResponse[ModelProfileChoice] | CursorPageResponse[ModelProfileChoice]:
+    """One page of model profiles, sorted by id, each as ``{id, description, kind, context_length}``.
+
+    Paged like ``GET /v1/model_profiles``: ``limit`` (1-200, default 20) with ``offset`` or ``cursor``. ``kind`` is ``single`` or
+    ``aggregated``; ``context_length`` is the stored window, null for an aggregated profile. The provider, the model name, the
+    members and the ``config`` are never part of the answer.
+    """
+    return await list_model_profile_choices(storage, page)
+
+
+__all__ = ["ModelProfileWithUsage", "model_profile_choices_router", "model_profile_router"]

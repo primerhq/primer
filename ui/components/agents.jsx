@@ -644,10 +644,14 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   const { useResource, useMutation, apiFetch } = window.primerApi;
   // The agent's model field is a single profile id. A profile already
   // pins the provider, the wire model name and the API-level config, so
-  // the form picks one row rather than a provider+model pair.
+  // the form picks one row rather than a provider+model pair. The rows come
+  // from the CHOICES route (id, description, kind, context_length), which
+  // every signed-in user may read: the full list is admin-only, and a
+  // user-role account may create an agent too (audit G3-02). Its own cache
+  // key, because the agents list reads the full rows under "agents:model-profiles".
   const profiles = useResource(
-    "agents:model-profiles",
-    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
+    "agents:model-profile-choices",
+    (signal) => apiFetch("GET", "/model_profiles/choices?limit=200", null, { signal }),
     { pollMs: null }
   );
   // The Voice fold gates a tts_voice picker on the speech capability
@@ -880,9 +884,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   // option and the save would repoint the agent): it is the first option, marked "(missing)" when the list loaded and plain when the load failed.
   const profilesFailed = !!profiles.error;
   const profileGone = !!profileId && !selectedProfile && !profiles.loading;
-  const profilesLoadError = profilesFailed
-    ? (profiles.error.detail || profiles.error.message || profiles.error.title || "")
-    : "";
+  // Said through the console's one reader of a failed request, so a refusal that carries only a code (forbidden_role) is said in words.
+  const profilesLoadError = profilesFailed ? window.primerApi.readRefusal(profiles.error, "").message : "";
   const profileError = AG_fieldError(fieldErrors, "body.model")
     || (profilesFailed ? "Could not load the model profiles" + (profilesLoadError ? ": " + profilesLoadError : ".") : null)
     || (profileMissing ? "This profile no longer exists. Pick another one." : null);

@@ -158,7 +158,13 @@ def _mount_routers(
     # ModelProfile CRUD. A profile is provider configuration (it names a
     # provider and its API-level tunables) => admin, matching the provider
     # routers above rather than the authoring routers below.
-    from primer.api.routers.model_profiles import model_profile_router
+    # The id/description/kind/context-length list of profiles is the one
+    # profile read a non-admin needs (an agent names its profile, and any
+    # signed-in user may write an agent), so it is user tier, and it MUST be
+    # included before model_profile_router: its literal
+    # /model_profiles/choices would otherwise be read by GET /{id}.
+    from primer.api.routers.model_profiles import model_profile_choices_router, model_profile_router
+    app.include_router(model_profile_choices_router, prefix=prefix, dependencies=user_dep)
     app.include_router(model_profile_router, prefix=prefix, dependencies=admin_dep)
     # Toolsets are an authoring feature (agents/graphs reference them) =>
     # require_user. builtin_toolsets_router MUST be registered before

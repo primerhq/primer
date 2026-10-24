@@ -226,10 +226,34 @@ class ModelProfile(Describeable):
         return self
 
 
+class ModelProfileChoice(BaseModel):
+    """One model profile as ANY signed-in user may see it: enough to pick it for an agent, nothing of how it reaches a model.
+
+    ``GET /v1/model_profiles`` is admin-only because a profile is provider configuration (its provider, its wire model name, its
+    ``config.extended`` knobs). Any signed-in user may create an agent, and an agent must name a profile, so
+    ``GET /v1/model_profiles/choices`` and the ``system::list_model_profile_choices`` tool answer with these four fields and no
+    other field of the row (audit G3-02, the lead's ruling).
+    """
+
+    id: str = Field(..., description="The profile's id: what an agent's ``model.profile_id`` holds.")
+    description: str = Field(..., description="The profile's description.")
+    kind: Literal["single", "aggregated"] = Field(
+        ..., description="``single`` (one model on one provider) or ``aggregated`` (an ordered pool of other profiles).",
+    )
+    context_length: PositiveInt | None = Field(
+        default=None,
+        description=(
+            "The stored context window in tokens. Null for an aggregated profile, whose window is the smallest of its members' "
+            "and is worked out when a turn resolves it."
+        ),
+    )
+
+
 __all__ = [
     "FailoverClasses",
     "FailoverPoint",
     "ModelProfile",
+    "ModelProfileChoice",
     "ModelProfileConfig",
     "ReasoningLevel",
     "RoutingStrategy",
