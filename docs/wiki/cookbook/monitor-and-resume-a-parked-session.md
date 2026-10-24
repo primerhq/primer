@@ -53,7 +53,7 @@ The last record says what the session waits on. A `yielded` record means it park
 | `status: waiting`, the last `yielded` `event_key` starts with `ask_user:` or `tool_approval:` | a person decides (an answer, an approval) | only a person decides it, in the console; a queued steer is never an answer. Tell the user which session is parked and what it asks |
 | `status: waiting`, the `event_key` starts with `timer:`, `watch:` or `trigger:` | it waits on something that needs no decision | nothing to do: it resumes when the event fires; cancel it if it should not |
 | `status: waiting`, the last record is `done` | the turn completed and the session rests | steer it to start the next turn |
-| `status: paused` | a pause was requested | resume it |
+| `status: paused`, or `waiting` with `pause_requested: true` (a pause that landed mid-turn) | a pause was requested | resume it |
 | `status: running` longer than it should | the turn is slow or stuck | stop the turn, then steer |
 | it will not come back | the work is lost | cancel it |
 
@@ -75,7 +75,7 @@ An idle or ended session starts its next turn with the instruction (`delivery: w
 
 ### 4. Resume a paused session
 
-Resume it with `workspaces__resume_workspace_session`, only when the poll read `paused`:
+Resume it with `workspaces__resume_workspace_session`:
 
 ```json
 {"toolset_id": "workspaces", "tool_name": "resume_workspace_session", "arguments": {"workspace_id": "ws-9f2c", "session_id": "sess-a1b2"}}
@@ -84,10 +84,10 @@ Resume it with `workspaces__resume_workspace_session`, only when the poll read `
 Response:
 
 ```json
-{"ok": true, "session_id": "sess-a1b2"}
+{"id": "sess-a1b2", "status": "running", "pause_requested": false}
 ```
 
-In any other state it is refused (`type=conflict`).
+A `paused`, `waiting` or never started session goes `running` and is queued for its next turn; the pause flag is cleared. A session already running is answered as it is, with nothing changed. An ended session is refused (`type=conflict`), and so is one whose status changed under the call: read the session and try again.
 
 ### 5. Stop a running turn
 
@@ -103,7 +103,7 @@ Response:
 {"id": "sess-a1b2", "interrupt_requested": true}
 ```
 
-`interrupt_requested: true` means the Stop was recorded; the session lands in `waiting` with its history intact, and the next message or steer continues it. `interrupt_requested: false` means nothing was running. It is refused (`type=conflict`) when the session has ended or is parked waiting on an approval, an answer or a timer: cancel it instead.
+`interrupt_requested: true` means the Stop was recorded; the session lands in `waiting` with its history intact, and the next message or steer continues it. `interrupt_requested: false` means nothing was running (the session was idle, paused or not started). It is refused (`type=conflict`) when the session has ended or is parked waiting on an approval, an answer or a timer: cancel it instead.
 
 ### 6. Cancel the session
 
@@ -127,6 +127,7 @@ Every move is confirmed by the next poll. After a steer or a resume, `status` re
 
 ## Gotchas
 
+- A pause does not cut the running turn short: the turn in flight finishes first, and the session then reads `waiting` with `pause_requested: true`, not `paused`. To stop it now and keep it stopped, interrupt it, then pause it.
 - A steer to a busy or parked session is queued, not delivered now, and it is never the answer to its `ask_user`: the answer goes through the console.
 - A steer from inside a workspace session is a message from that session: the target sees a user message that starts with `[from session <your session id> (agent <your agent id>)]`, and the limits of `workspaces__message_session` apply (hop limit, rate limit).
 - Deleting the workspace ends every open session in it (`ended_reason: workspace_lost`), so cancel the session before you delete it.
