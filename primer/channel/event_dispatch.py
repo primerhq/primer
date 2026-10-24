@@ -80,16 +80,67 @@ class ChannelRouteOutcome:
     fire_ids: list[str] = field(default_factory=list)
 
 
-def _first_artefact(result) -> str | None:
-    """The first session a fire actually created, if any."""
-    for envelope in result.results:
-        if (
-            envelope.get("ok")
-            and not envelope.get("skipped")
-            and envelope.get("artefact_id")
-        ):
-            return envelope["artefact_id"]
-    return None
+def _artefacts(result) -> list[tuple[str, str | None]]:
+    """``(session id, subscription id)`` of every session a fire started or fed, in the order the subscriptions ran."""
+    return [
+        (envelope["artefact_id"], envelope.get("subscription_id"))
+        for envelope in result.results
+        if envelope.get("ok") and not envelope.get("skipped") and envelope.get("artefact_id")
+    ]
+
+
+#: Subscriptions whose stored ``dm_sender`` has been reported, so the warning is logged once per subscription and process.
+_DM_SENDER_REPORTED: set[str] = set()
+
+
+def outbound_binding(
+    reply_target,
+    *,
+    channel_id: str,
+    thread_anchor: str | None,
+    interactive: bool,
+    maps_conversation: bool,
+    subscription_id: str | None = None,
+) -> dict | None:
+    """The reply binding (``session.metadata`` form) a session started or fed by a binding gets, or None for none at all.
+
+    ``reply_target`` is the binding's (ticket 01a16e37-b98e, ruling 2):
+
+    * ``None`` (the default) is the behaviour from before reply targets were read: the session that maps the conversation (a
+      thread, a DM) answers in it, and any other session gets no binding of its own (a room post: the workspace's reply binding).
+    * ``source_thread``: the thread the message was posted in, else the room it was posted in (``thread_anchor`` None).
+    * ``source_room``: the room it was posted in, with no thread (Slack and Discord open a thread per session there).
+    * ``none``: a silent binding, so nothing is posted (``ReplyBinding.silent``) and the workspace's binding does not answer either.
+    * an explicit ``{channel_id, anchor, quiet}``: that channel and thread (Telegram ignores the anchor).
+    * a stored ``dm_sender`` (refused on save since) acts as ``source_thread``, with one warning per subscription.
+
+    ``quiet`` is the channel trigger's ``interactive`` flag inverted (an explicit target's ``quiet`` adds to it): a quiet binding
+    posts no turn answers, only questions, approval requests and updates.
+    """
+    quiet = not interactive
+    if reply_target is None:
+        if not maps_conversation:
+            return None
+        return {"channel_id": channel_id, "anchor": thread_anchor, "quiet": quiet}
+    if reply_target == "dm_sender":
+        if subscription_id not in _DM_SENDER_REPORTED:
+            _DM_SENDER_REPORTED.add(subscription_id)
+            logger.warning(
+                "channel binding %s has reply_target 'dm_sender', which no channel can post to; its sessions answer in the "
+                "source thread or room instead. Change the binding's reply_target.", subscription_id,
+            )
+        reply_target = "source_thread"
+    if reply_target == "source_thread":
+        return {"channel_id": channel_id, "anchor": thread_anchor, "quiet": quiet}
+    if reply_target == "source_room":
+        return {"channel_id": channel_id, "anchor": None, "quiet": quiet}
+    if reply_target == "none":
+        return {"channel_id": channel_id, "anchor": thread_anchor, "quiet": True, "silent": True}
+    return {
+        "channel_id": reply_target.channel_id,
+        "anchor": reply_target.anchor,
+        "quiet": quiet or bool(reply_target.quiet),
+    }
 
 
 class ChannelEventRouter:
@@ -295,21 +346,34 @@ class ChannelEventRouter:
                 fire_id = getattr(result, "fire_id", None)
                 if fire_id is not None:
                     fire_ids.append(fire_id)
-                # A conversation maps to exactly ONE session, so only the first
-                # created session binds the thread. An unthreaded room post has
-                # no conversation to bind at all.
-                if mapped_session_id is None and anchor and channel_id is not None:
-                    created = _first_artefact(result)
-                    if created is not None:
-                        await self._map_thread(
-                            channel_id=channel_id,
-                            anchor=anchor,
-                            reply_anchor=event.thread_anchor,
-                            session_id=created,
-                            interactive=bool(
-                                getattr(trigger.config, "interactive", True)
-                            ),
-                        )
+                if channel_id is None:
+                    continue
+                by_id = {sub.id: sub for sub in subscriptions.get(trigger.id, [])}
+                interactive = bool(getattr(trigger.config, "interactive", True))
+                for created, sub_id in _artefacts(result):
+                    # A conversation maps to exactly ONE session, so only the
+                    # first session a fire starts or feeds binds the thread. An
+                    # unthreaded room post has no conversation to bind at all.
+                    maps_conversation = mapped_session_id is None and anchor is not None
+                    sub = by_id.get(sub_id) if sub_id is not None else None
+                    binding = outbound_binding(
+                        getattr(sub, "reply_target", None),
+                        channel_id=channel_id,
+                        thread_anchor=event.thread_anchor,
+                        interactive=interactive,
+                        maps_conversation=maps_conversation,
+                        subscription_id=sub_id,
+                    )
+                    if not maps_conversation and binding is None:
+                        continue
+                    await self._map_thread(
+                        channel_id=channel_id,
+                        anchor=anchor if maps_conversation else None,
+                        binding=binding,
+                        session_id=created,
+                        interactive=interactive,
+                    )
+                    if maps_conversation:
                         mapped_session_id = created
         if fire_ids:
             return ChannelRouteOutcome(
@@ -323,26 +387,29 @@ class ChannelEventRouter:
         self,
         *,
         channel_id: str,
-        anchor: str,
-        reply_anchor: str | None,
+        anchor: str | None,
+        binding: dict | None,
         session_id: str,
         interactive: bool,
     ) -> None:
-        """Bind the conversation to the session the fire just created.
+        """Bind the conversation and the replies of a session the fire started or fed.
 
-        Writes the inbound index (anchor -> session) and the outbound one
-        (session.metadata reply binding -> thread), so the 1:1 holds from
-        both directions.
+        With ``anchor`` it writes the inbound index (anchor -> session), so the
+        next message in the conversation goes to this session. With
+        ``binding`` (from :func:`outbound_binding`) it writes the outbound one,
+        the session's reply binding in ``session.metadata``. For a binding
+        with no ``reply_target`` both name the same conversation, so the 1:1
+        holds from both directions; a ``reply_target`` moves only the replies.
 
         ``anchor`` is the MAPPING key from :func:`mapping_anchor` and may be
-        a synthetic ``dm:<sender>``; ``reply_anchor`` is the real platform
+        a synthetic ``dm:<sender>``; the binding's anchor is the real platform
         thread id (None in a DM, where the channel root IS the conversation),
         so the outbound side never tries to resolve a synthetic key as a
         thread.
 
-        ``quiet`` carries the trigger's interactive flag inverted: a
-        non-interactive channel trigger ingests silently (S6 section 4), and
-        ``_post_lifecycle`` already no-ops on a quiet binding.
+        An interactive trigger relays every turn (S6 section 4); a quiet
+        binding (a non-interactive trigger) posts no answers, and
+        ``_post_lifecycle`` already no-ops on it.
         """
         from primer.model.workspace_session import WorkspaceSession
 
@@ -350,21 +417,21 @@ class ChannelEventRouter:
         row = await sessions.get(session_id)
         if row is None:
             return
-        await self._correlation.upsert_thread_session(
-            channel_id=channel_id,
-            anchor=anchor,
-            workspace_id=row.workspace_id,
-            session_id=session_id,
-        )
-        metadata = dict(row.metadata or {})
-        metadata[SESSION_REPLY_BINDING_KEY] = {
-            "channel_id": channel_id,
-            "anchor": reply_anchor,
-            "quiet": not interactive,
-        }
+        if anchor is not None:
+            await self._correlation.upsert_thread_session(
+                channel_id=channel_id,
+                anchor=anchor,
+                workspace_id=row.workspace_id,
+                session_id=session_id,
+            )
+        if binding is None:
+            return
+        # Two metadata leaves, never the whole row read above: the session is live (a fresh one is being claimed, a fed one may be
+        # in a turn), and a whole-document write from that read would undo what its worker wrote since.
+        leaves = {("metadata", SESSION_REPLY_BINDING_KEY): binding}
         if interactive:
-            metadata[RELAY_EVERY_TURN_KEY] = True
-        await sessions.update(row.model_copy(update={"metadata": metadata}))
+            leaves[("metadata", RELAY_EVERY_TURN_KEY)] = True
+        await sessions.patch_if(session_id, None, set_paths=leaves, where={"workspace_id": [row.workspace_id]})
 
     async def _steer_text(
         self,

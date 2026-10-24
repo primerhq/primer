@@ -125,8 +125,7 @@ from primer.model.channel import (
 )
 from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
-from primer.channel.reply_binding import ReplyTarget
-from primer.model.trigger import Parallelism, SubscriptionConfig
+from primer.model.trigger import Parallelism, ReplyTargetInput, SubscriptionConfig
 from primer.trigger.owner import view_for
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE
 from primer.trigger.service import (
@@ -933,11 +932,18 @@ def build_system_toolset(
                 "created via the subscribe_to_trigger yielding tool."
             ),
         )
-        reply_target: ReplyTarget | None = Field(
+        reply_target: ReplyTargetInput | None = Field(
             default=None,
             description=(
-                "Where the action's outbound reply goes; defaults to the "
-                "source thread."
+                "Where the session the binding starts or feeds posts its "
+                "questions, approval requests, updates and answers: "
+                "source_thread (the message's thread, else its room), "
+                "source_room (its room; a new thread per session on Slack and "
+                "Discord), none (nothing is posted) or {channel_id, anchor, "
+                "quiet} (that channel and thread; Telegram ignores the "
+                "anchor). Omit it for the default: a message in a thread or a "
+                "DM is answered there, a room post through the workspace's "
+                "reply binding. dm_sender is refused (validation-error)."
             ),
         )
         payload_template: str | None = None

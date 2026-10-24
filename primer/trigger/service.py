@@ -24,6 +24,7 @@ from primer.model.trigger import (
     Parallelism,
     Subscription,
     Trigger,
+    refuse_retired_reply_target,
 )
 from primer.storage.q import Q
 from primer.trigger.reach import refuse_target_out_of_reach, subscription_in_reach, subscription_reaches_outside
@@ -606,6 +607,8 @@ async def update_subscription(
     # The field is assigned below, which pydantic does not validate: an unchecked value used to be stored as given (ticket 01a16ddb).
     if parallelism is not None and parallelism not in PARALLELISM_VALUES:
         raise ValueError(f"parallelism must be one of {', '.join(PARALLELISM_VALUES)}, not {parallelism!r}")
+    if reply_target is not _UNSET:
+        refuse_retired_reply_target(reply_target)       # the same reason: a retired dm_sender is refused here too (ticket 01a16e37-b98e)
     subs_storage = deps.storage_provider.get_storage(Subscription)
     sub = await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
     sub.owner = owner

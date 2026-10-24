@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import SecretStr
 
+from primer.channel.correlation import CorrelationStore
 from primer.channel.inbox import ChannelInbox
 from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
 from primer.model.agent import Agent, AgentModel
@@ -305,3 +306,102 @@ async def test_discord_posts_every_message_of_a_thread_mapped_session_into_its_t
     results = await _post("inform", "still here", session_id="s-dc2", anchor=THREAD)
     assert all("error" not in r for r in results), results
     assert parent.sent == [":thread: Agent session s-dc2"] and parent.threads[0].sent == ["still here"]
+
+
+# ---------------------------------------------------------------- item 4: the binding's reply_target
+
+
+async def _started_by(world, text: str, *, thread_ts: str | None = THREAD) -> WorkspaceSession:
+    await world.message(text, thread_ts=thread_ts)
+    [session] = await world.sessions()
+    return session
+
+
+async def test_an_explicit_reply_target_takes_every_post_to_its_channel_and_thread(monkeypatch, sp) -> None:
+    """The measurement found the target stored and never read: everything went to the source thread."""
+    world = _World(monkeypatch, sp)
+    await world.seed(subscriptions=[_fresh(reply_target={"channel_id": "ch-other", "anchor": OTHER_ANCHOR})])
+    session = await _started_by(world, "deploy please")
+
+    await _say_everything(world, session)
+
+    assert [thread for thread, _text in world.posts("ch-other")] == [OTHER_ANCHOR] * 4, world.posts("ch-other")
+    assert world.posts("ch-sl") == []
+    # The conversation is still the source thread: the next message there goes to the same session.
+    mapping = await CorrelationStore(sp).lookup("ch-sl", THREAD)
+    assert mapping is not None and mapping.session_id == session.id
+
+
+async def test_source_thread_answers_a_room_post_in_its_room(monkeypatch, sp) -> None:
+    """A room post has no thread, so source_thread falls back to the room: on Slack, a new thread per session there."""
+    world = _World(monkeypatch, sp)
+    await world.seed(subscriptions=[_fresh(reply_target="source_thread")])
+    session = await _started_by(world, "deploy please", thread_ts=None)
+
+    await _say_everything(world, session)
+
+    posts = world.posts("ch-sl")
+    assert posts[0] == (None, f":thread: Agent session {session.id}")
+    assert [thread for thread, _text in posts[1:]] == ["1800000000.000001"] * 4, posts
+
+
+async def test_with_no_reply_target_a_room_post_still_answers_through_the_workspace_binding(monkeypatch, sp) -> None:
+    """The default is unchanged: a room post maps nothing, and its session uses the workspace's reply binding."""
+    world = _World(monkeypatch, sp)
+    await world.seed(ws_binding=WorkspaceChannelLink(channel_id="ch-other", anchor=OTHER_ANCHOR))
+    session = await _started_by(world, "deploy please", thread_ts=None)
+    assert SESSION_REPLY_BINDING_KEY not in session.metadata
+
+    await _say_everything(world, session)
+
+    assert [thread for thread, _text in world.posts("ch-other")] == [OTHER_ANCHOR] * 4
+    assert world.posts("ch-sl") == []
+
+
+async def test_source_room_answers_in_a_thread_of_its_own_in_the_room(monkeypatch, sp) -> None:
+    world = _World(monkeypatch, sp)
+    await world.seed(subscriptions=[_fresh(reply_target="source_room")])
+    session = await _started_by(world, "deploy please")
+
+    await _say_everything(world, session)
+
+    posts = world.posts("ch-sl")
+    assert posts[0] == (None, f":thread: Agent session {session.id}")
+    assert THREAD not in [thread for thread, _text in posts], posts
+    assert (await CorrelationStore(sp).lookup("ch-sl", THREAD)).session_id == session.id
+
+
+async def test_none_posts_nothing_not_even_through_the_workspace_binding(monkeypatch, sp) -> None:
+    world = _World(monkeypatch, sp)
+    await world.seed(subscriptions=[_fresh(reply_target="none")], ws_binding=WorkspaceChannelLink(channel_id="ch-other"))
+    session = await _started_by(world, "deploy please")
+
+    await _say_everything(world, session)
+
+    assert world.posts("ch-sl") == [] and world.posts("ch-other") == []
+    assert session.metadata[SESSION_REPLY_BINDING_KEY]["silent"] is True
+
+
+async def test_a_stored_dm_sender_still_loads_and_answers_in_the_source_thread_with_one_warning(monkeypatch, sp, caplog) -> None:
+    """dm_sender is refused on save now; a row saved before still lists and fires, as source_thread, and says so once."""
+    from primer.model.common import stored_row_context
+
+    stored = Subscription.model_validate({**_fresh().model_dump(mode="json"), "reply_target": "dm_sender"}, context=stored_row_context())
+    world = _World(monkeypatch, sp)
+    await world.seed(subscriptions=[stored])
+    assert (await sp.get_storage(Subscription).get("sb-1")).reply_target == "dm_sender"
+    with pytest.raises(ValueError, match="dm_sender"):
+        _fresh(reply_target="dm_sender")
+
+    from primer.channel import event_dispatch
+
+    monkeypatch.setattr(event_dispatch, "_DM_SENDER_REPORTED", set())
+    caplog.set_level("WARNING", logger="primer.channel.event_dispatch")
+    await world.message("one", thread_ts=THREAD, ts="1700000001.000001")
+    await world.message("two", thread_ts="1700000000.000200", ts="1700000001.000002")
+
+    sessions = await world.sessions()
+    assert sorted(s.metadata[SESSION_REPLY_BINDING_KEY]["anchor"] for s in sessions) == sorted([THREAD, "1700000000.000200"])
+    assert all(s.metadata[SESSION_REPLY_BINDING_KEY]["channel_id"] == "ch-sl" for s in sessions)
+    warnings = [r for r in caplog.records if "dm_sender" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]

@@ -51,12 +51,12 @@ from primer.api.deps import (
     get_event_bus,
     get_storage_provider,
 )
-from primer.channel.reply_binding import ReplyTarget
 from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     SLUG_PATTERN,
     Parallelism,
+    ReplyTargetInput,
     Subscription,
     SubscriptionConfig,
     Trigger,
@@ -118,7 +118,7 @@ class SubscriptionCreateBody(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     enabled: bool = True
     event_matcher: EventMatcher | None = None
-    reply_target: ReplyTarget | None = None
+    reply_target: ReplyTargetInput | None = None
 
 
 class SubscriptionUpdateBody(BaseModel):
@@ -131,7 +131,7 @@ class SubscriptionUpdateBody(BaseModel):
     enabled: bool | None = None
     description: str | None = None
     event_matcher: EventMatcher | None = None
-    reply_target: ReplyTarget | None = None
+    reply_target: ReplyTargetInput | None = None
 
 
 # ---------------------------------------------------------------------------

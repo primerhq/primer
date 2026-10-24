@@ -7,17 +7,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationInfo, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SecretStr, ValidationInfo, field_validator
 
 from primer.model.common import Identifiable, reading_a_stored_row
 from primer.model.event_matcher import EventMatcher
 from primer.model.principal import PrincipalRef
-
-# NOTE: ``Subscription.reply_target`` carries a ``ReplyTarget`` defined in a
-# later part. Pydantic 2.13 rejects an unresolved string forward-ref on import,
-# so the field is typed ``object | None`` for now; the part that defines
-# ``ReplyTarget`` narrows the annotation and calls ``Subscription.model_rebuild()``.
-
 
 # ---------------------------------------------------------------------------
 # Triggers
@@ -235,16 +229,74 @@ Parallelism = Literal["skip", "queue"]
 PARALLELISM_VALUES: tuple[str, ...] = get_args(Parallelism)
 
 
+# ---------------------------------------------------------------------------
+# Reply targets (channel bindings)
+# ---------------------------------------------------------------------------
+
+
+class ExplicitReplyTarget(BaseModel):
+    """A reply target that names the channel, and optionally the thread, a binding's session posts to."""
+
+    channel_id: str = Field(..., description="Channel (``ch-...``) the session's posts go to.")
+    anchor: str | None = Field(
+        default=None,
+        description=(
+            "Optional thread in that channel (a Slack thread ts, a Discord thread id) that every post goes into. "
+            "Telegram has no threads and ignores it. None: the session opens its own thread (Slack, Discord) "
+            "or posts into the room (Telegram)."
+        ),
+    )
+    quiet: bool = Field(
+        default=False,
+        description="When true the answer of each turn is not posted; questions, approval requests and updates still are.",
+    )
+
+
+#: ``dm_sender`` named a destination no channel adapter can post to (an adapter posts only into its own room, and none can open a
+#: direct message with a person), so it is refused on save (ticket 01a16e37-b98e, ruling 2). A stored row that has it still loads and
+#: acts as ``source_thread`` (``primer/channel/event_dispatch.py``).
+RETIRED_REPLY_TARGETS: frozenset[str] = frozenset({"dm_sender"})
+
+_REPLY_TARGET_DESCRIPTION = (
+    "Where the session a channel binding starts or feeds posts its questions, approval requests, updates and answers. "
+    "source_thread: the thread the message was posted in, else the room it was posted in. source_room: the room it was "
+    "posted in (on Slack and Discord a new thread per session). none: nothing is posted. {channel_id, anchor, quiet}: "
+    "that channel, and that thread when anchor is set (Telegram ignores the anchor). Leave it out (null) for the default: "
+    "a message in a thread or a DM is answered there, and a room post through the workspace's reply binding."
+)
+
+#: The value a stored subscription may hold (``dm_sender`` included, so an old row loads).
+ReplyTarget = Annotated[
+    Literal["source_thread", "source_room", "dm_sender", "none"] | ExplicitReplyTarget,
+    Field(description=_REPLY_TARGET_DESCRIPTION),
+]
+
+
+def refuse_retired_reply_target(value: Any) -> Any:
+    """Refuse a retired literal (``dm_sender``) with a message that says why and what to use instead."""
+    if isinstance(value, str) and value in RETIRED_REPLY_TARGETS:
+        raise ValueError(
+            f"reply_target {value!r} is not supported: no channel can post to a person's direct messages. "
+            "Use source_thread, source_room, none or an explicit {channel_id, anchor}"
+        )
+    return value
+
+
+#: The value a request may set: ``ReplyTarget`` without the retired literals. The REST bodies and the binding tool take this type.
+ReplyTargetInput = Annotated[
+    Literal["source_thread", "source_room", "none"] | ExplicitReplyTarget,
+    BeforeValidator(refuse_retired_reply_target),
+    Field(description=_REPLY_TARGET_DESCRIPTION),
+]
+
+
 class Subscription(Identifiable):
     trigger_id: str
     config: SubscriptionConfig
     payload_template: str | None = None  # Jinja2 rendered against fire context
     parallelism: Parallelism = "skip"
     event_matcher: EventMatcher | None = None
-    # ``reply_target`` carries a ``ReplyTarget`` defined in a later part. Until
-    # that part lands (and calls ``Subscription.model_rebuild()``), the field is
-    # typed as ``object | None`` so the model stays fully defined and importable.
-    reply_target: object | None = None
+    reply_target: ReplyTarget | None = None
     enabled: bool = True
     description: str | None = None
     last_fired_at: datetime | None = None
@@ -286,13 +338,29 @@ class Subscription(Identifiable):
             return "skip"
         return value
 
+    @field_validator("reply_target", mode="after")
+    @classmethod
+    def _retired_reply_target_only_on_read(cls, value: Any, info: ValidationInfo) -> Any:
+        """``dm_sender`` reads back from a stored row and is refused on every write (ticket 01a16e37-b98e, ruling 2).
+
+        Read path tolerant, write path strict (:func:`~primer.model.common.reading_a_stored_row`): a row saved before it was retired
+        still lists, gets and fires (as ``source_thread``); a new subscription cannot be made with it.
+        """
+        if reading_a_stored_row(info):
+            return value
+        return refuse_retired_reply_target(value)
+
 
 __all__ = [
     "AgentFreshSubConfig",
     "ChannelTriggerConfig",
     "DelayedTriggerConfig",
+    "ExplicitReplyTarget",
     "GraphFreshSubConfig",
     "ParkedSessionSubConfig",
+    "RETIRED_REPLY_TARGETS",
+    "ReplyTarget",
+    "ReplyTargetInput",
     "ScheduledTriggerConfig",
     "SessionAppendSubConfig",
     "Subscription",

@@ -131,8 +131,9 @@ class ChannelRegistry:
         over the workspace-standing :attr:`Workspace.reply_binding`. The
         binding comes back with the adapters so the dispatcher can put its
         anchor on every post. The adapter list is empty when no binding
-        resolves or the adapter cannot be built (failure is isolated: the
-        binding is still returned).
+        resolves, when the binding is silent (a binding's ``reply_target``
+        ``none``) or when the adapter cannot be built (failure is isolated:
+        the binding is still returned).
         """
         if self._storage_provider is None:
             return None, []
@@ -143,6 +144,8 @@ class ChannelRegistry:
         )
         if binding is None:
             return None, []
+        if binding.silent:
+            return binding, []          # reply_target "none": nothing is posted, and no adapter is built for it
         try:
             adapter = await self.get_adapter(binding.channel_id)
         except Exception as exc:
