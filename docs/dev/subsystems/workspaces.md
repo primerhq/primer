@@ -75,7 +75,7 @@ erDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> pending
-    pending --> running : create handler short-circuits to running, or first probe hit
+    pending --> running : first good probe
     running --> failed : 3 consecutive probe misses
     failed --> running : 3 consecutive probe hits
     running --> terminating : DELETE
@@ -83,7 +83,7 @@ stateDiagram-v2
     terminating --> [*]
 ```
 
-`POST /v1/workspaces` persists the row directly with `phase='running'` because `WorkspaceBackend.create` already returned a live handle; `pending` survives only as the model default and as a recovery promotion path for rows that bypassed the create handler.
+Every create door (`POST /v1/workspaces`, the `create_workspace` tool and the bootstrap seed of the default workspace) builds the row with `new_workspace_row` (`primer/api/registries/workspace_registry.py`), so a new workspace is `NEW_WORKSPACE_PHASE` (`pending`) until the probe's first good ping promotes it to `running` (ticket 01a16d72 ruling 2; REST and the seed used to write `running` and the tool `pending`). REST and the tool share `WorkspaceRegistry.create`: `materialise`, then the row written last, and the live instance torn back down on any failure or cancel after `materialise`. The probe counts misses only against a `running` workspace, so one that never answers stays `pending` and its sessions are not ended `workspace_lost` by the probe. Nothing reads the phase to gate a session start, a wake or a turn, and the console colours `pending` amber; the one `running` check (`refuse_a_reopen_it_may_not_make`, reopening a `workspace_lost` session) concerns a workspace that existed before.
 
 ## 6. Lifecycle
 

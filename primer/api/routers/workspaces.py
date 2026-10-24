@@ -951,74 +951,27 @@ async def create_workspace(
                 f"Workspace with id {body.id!r} already exists"
             )
 
-    overrides = body.overrides or WorkspaceTemplateOverrides()
     # The overrides are kept on the workspace row and served masked (overrides.env): a body that sends a served mask back (the copy-a-workspace move) is a 422 before anything is materialised,
     # because the workspace would start with the mask as the variable's value (01a1212a, round 3 of #711).
-    refuse_served_masks(overrides)
-    # Pin the live instance to the caller-supplied id (same id the row is
-    # keyed by, below) so re-attach after cache eviction resolves the SAME
-    # backend object instead of 404ing. A provider that does not exist is
-    # materialise's 404; a Kubernetes provider with variant=agent_sandbox is
-    # its refusal, answered 501 here in the words the tool answers too
-    # (ticket 01a16d72 ruling 1: the check used to live in this route alone).
+    refuse_served_masks(body.overrides or WorkspaceTemplateOverrides())
+    # The one create path of this route and the create_workspace tool (ticket 01a16d72): the live instance, pinned to the caller-supplied id
+    # (the id the row is keyed by, so re-attach after cache eviction resolves the SAME backend object), then the row, written last with the
+    # first phase every create door writes (pending until the probe's first good ping), and the live instance torn back down if the row
+    # write fails or is cancelled. A provider that does not exist is materialise's 404; a Kubernetes provider with variant=agent_sandbox is
+    # its refusal, answered 501 here in the words the tool answers too (ruling 1: the check used to live in this route alone).
     try:
-        live = await registry.materialise(
-            template=template, overrides=overrides, workspace_id=body.id
+        row = await registry.create(
+            template=template,
+            overrides=body.overrides,
+            workspace_id=body.id,
+            name=body.name,
+            reply_binding=body.reply_binding,
         )
     except WorkspaceNotImplementedError as exc:
         raise HTTPException(
             status_code=501,
             detail={"error": "not_implemented", "message": exc.message},
         ) from exc
-
-    # materialise() has now created a live container/volume, but the durable
-    # WorkspaceRow is written LAST. Any failure in the mount work or the
-    # row-write in between would orphan that live instance: the probe loop is
-    # row-driven and there is no orphan sweep, so it would leak silently
-    # (arch review D-I1). Wrap everything after materialise so a failure best-
-    # effort tears the live workspace back down before re-raising the original
-    # error unchanged.
-    try:
-        row_id = body.id if body.id is not None else live.id
-        # Mark the row "running" immediately - materialise() returned a live
-        # handle, so the workspace IS up. The probe loop transitions from
-        # running <-> failed thereafter; without this initial mark the row
-        # would sit at the default "pending" forever and the probe skips it.
-        row = WorkspaceRow(
-            id=row_id,
-            name=body.name,
-            template_id=body.template_id,
-            template_snapshot=template,
-            provider_id=template.provider_id,
-            overrides=body.overrides,
-            created_at=datetime.now(timezone.utc),
-            phase="running",
-            runtime_meta=live.runtime_meta,
-            reply_binding=body.reply_binding,
-        )
-        await workspace_storage.create(row)
-    except BaseException:
-        # BaseException, not Exception: asyncio.CancelledError has been a
-        # BaseException since 3.8, so `except Exception` would skip the
-        # teardown on the single most likely way this block is entered -- a
-        # client disconnect during the slow materialise()+mount work cancels
-        # the request task, which would orphan the very live instance this
-        # rollback exists to reclaim (arch review D-I1). The bare `raise`
-        # re-raises the original exception with its traceback intact and
-        # preserves CancelledError's cancellation semantics.
-        #
-        # registry.destroy() is row-driven and the row does not exist yet, so
-        # tear down the backend instance directly. Best-effort: never let a
-        # cleanup failure mask the original error.
-        try:
-            backend = await registry.get_backend(template.provider_id)
-            await backend.destroy(live.id)
-        except Exception:
-            logger.exception(
-                "create_workspace: failed to roll back orphaned live "
-                "workspace %s after a post-materialise error", live.id,
-            )
-        raise
 
     from primer.model.principal import PrincipalRef
     from primer.session.default_binding import resolve_initial_binding

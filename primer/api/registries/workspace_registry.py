@@ -21,7 +21,8 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Literal
 
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.model.common import dump_for_storage
@@ -29,6 +30,7 @@ from primer.model.except_ import NotFoundError, ValidationError
 from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceNotImplementedError, WorkspaceRefusedError
 from primer.model.workspace import WORKSPACE_ID_PATTERN, Workspace as WorkspaceRow
 from primer.model.workspace import (
+    WorkspaceChannelLink,
     WorkspaceProvider,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
@@ -56,6 +58,39 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+#: The phase every create door writes a new workspace row with (ticket 01a16d72, ruling 2): ``pending`` until the probe's first good ping
+#: promotes it to ``running`` (:mod:`primer.workspace.probe`). ``POST /v1/workspaces`` and the bootstrap seed used to write ``running`` and the
+#: ``create_workspace`` tool ``pending``, so the same workspace read differently depending on who made it. No reader depends on ``running`` at
+#: create: nothing gates a session start, a wake or a turn on the phase, and the console shows ``pending`` as pending, not as broken.
+NEW_WORKSPACE_PHASE: Literal["pending"] = "pending"
+
+
+def new_workspace_row(
+    *,
+    workspace_id: str,
+    template: WorkspaceTemplate,
+    overrides: WorkspaceTemplateOverrides | None,
+    live: "Workspace",
+    name: str | None = None,
+    reply_binding: WorkspaceChannelLink | None = None,
+) -> WorkspaceRow:
+    """The durable row of a workspace ``materialise`` has just built, as every create door writes it (REST, the ``create_workspace`` tool, the
+    bootstrap seed): the full create-time template snapshot (what re-attach uses), the provider the template names, the live instance's runtime
+    coordinates, and :data:`NEW_WORKSPACE_PHASE`."""
+    return WorkspaceRow(
+        id=workspace_id,
+        name=name,
+        template_id=template.id,
+        template_snapshot=template,
+        provider_id=template.provider_id,
+        overrides=overrides,
+        created_at=datetime.now(timezone.utc),
+        phase=NEW_WORKSPACE_PHASE,
+        runtime_meta=live.runtime_meta,
+        reply_binding=reply_binding,
+    )
 
 
 def _make_default_factory(
@@ -344,6 +379,48 @@ class WorkspaceRegistry:
             workspace_id=workspace_id,
             resolvers=resolvers,
         )
+
+    async def create(
+        self,
+        *,
+        template: WorkspaceTemplate,
+        overrides: WorkspaceTemplateOverrides | None = None,
+        workspace_id: str | None = None,
+        name: str | None = None,
+        reply_binding: WorkspaceChannelLink | None = None,
+    ) -> WorkspaceRow:
+        """Create a workspace: the live instance, then its durable row. The one create path of ``POST /v1/workspaces`` and the ``create_workspace``
+        tool (ticket 01a16d72): every refusal of :meth:`materialise` applies to both, and both write the same row (:func:`new_workspace_row`, so the
+        same first phase, :data:`NEW_WORKSPACE_PHASE`).
+
+        The row is written LAST, so a failure or a cancel after :meth:`materialise` would orphan the live instance: the probe loop is row-driven
+        and nothing sweeps orphans (arch review D-I1). So everything after it tears the instance back down on any failure, ``BaseException``
+        included (a client disconnect or a hard Cancel of a turn is the likeliest way in, and ``asyncio.CancelledError`` is not an
+        ``Exception``), and re-raises the original error unchanged. :meth:`destroy` is row-driven and the row does not exist, so the rollback
+        goes to the backend directly, best effort: a failed rollback is logged and never masks the original error or the cancel.
+
+        What the callers check first stays theirs (the template lookup, an id already in use, the admin-only overrides, served masks, a
+        session's reach), and so does what REST does after (seeding the ``main`` session).
+        """
+        live = await self.materialise(template=template, overrides=overrides, workspace_id=workspace_id)
+        try:
+            row = new_workspace_row(
+                workspace_id=workspace_id if workspace_id is not None else live.id,
+                template=template,
+                overrides=overrides,
+                live=live,
+                name=name,
+                reply_binding=reply_binding,
+            )
+            await self._sp.get_storage(WorkspaceRow).create(row)
+        except BaseException:
+            try:
+                backend = await self.get_backend(template.provider_id)
+                await backend.destroy(live.id)
+            except Exception:
+                logger.exception("create_workspace: failed to roll back orphaned live workspace %s after a post-materialise error", live.id)
+            raise
+        return row
 
     async def destroy(self, workspace_id: str, *, before_teardown: Callable[[], Awaitable[None]] | None = None) -> None:
         """Destroy the live workspace AND drop the persisted row.

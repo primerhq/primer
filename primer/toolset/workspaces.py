@@ -1665,11 +1665,10 @@ def build_workspaces_toolset(
                     error_type="conflict",
                 )
         try:
-            live = await workspace_registry.materialise(
-                template=template,
-                overrides=args.overrides,
-                workspace_id=args.id,
-            )
+            # The one create path of this tool and POST /v1/workspaces (ticket 01a16d72): the live instance, then the row with the first phase
+            # every create door writes (pending until the probe's first good ping), and the instance rolled back if the row write fails or
+            # is cancelled (a hard Cancel of the turn cancels every call whatever its flag).
+            row = await workspace_registry.create(template=template, overrides=args.overrides, workspace_id=args.id)
         except PrimerValidationError as exc:
             # A refusal of the request itself (a size the provider cannot honour, master Review Focus 5): the message
             # names overrides.resources.<field>, and nothing was built.
@@ -1680,33 +1679,6 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-implemented")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="backend-error")
-        # materialise() created a live instance and the durable row is written LAST, so a failure or a cancel before
-        # the row exists would orphan the instance: the probe loop is row-driven and nothing sweeps orphans. Same
-        # rollback as the REST route (primer/api/routers/workspaces.py), and BaseException for the same reason: a
-        # cancel is the likeliest way in (a hard Cancel of the turn cancels every call whatever its flag).
-        try:
-            row_id = args.id if args.id is not None else live.id
-            row = WorkspaceRow(
-                id=row_id,
-                template_id=args.template_id,
-                template_snapshot=template,
-                provider_id=template.provider_id,
-                overrides=args.overrides,
-                created_at=datetime.now(timezone.utc),
-                runtime_meta=live.runtime_meta,
-            )
-            await _workspace_storage().create(row)
-        except BaseException:
-            # registry.destroy() is row-driven and the row does not exist, so tear the instance down on the backend
-            # directly. Best effort: a failed rollback never masks the original error or the cancel.
-            try:
-                backend = await workspace_registry.get_backend(template.provider_id)
-                await backend.destroy(live.id)
-            except Exception:
-                logger.exception(
-                    "create_workspace: failed to roll back orphaned live workspace %s", live.id,
-                )
-            raise
         return _ok(row)
 
     name, entry = _tool(
