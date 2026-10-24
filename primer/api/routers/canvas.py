@@ -1,7 +1,9 @@
 """The canvas HTTP surface (pivot P5, Tasks 13 to 15; design 8.6).
 
-``canvas_public_router`` holds the routes the sandboxed frame loads, mounted OUTSIDE ``/v1`` with no auth dependency (the frame is a
-cross-origin document, so it sends no cookies) and never in WORKER or serve-only mode:
+``canvas_public_router`` holds the routes the sandboxed frame loads, mounted OUTSIDE ``/v1`` with no auth dependency and never in WORKER or
+serve-only mode. The console's navigation of its ``<iframe>`` to ``/canvas/frame`` is same-site and carries the console's Lax session
+cookie, which these routes ignore; the requests made FROM the frame (an opaque origin, by its sandbox), such as an Image loading a file URL,
+carry no cookie at all, so a file URL is its own credential:
 
 * ``GET /canvas/frame``: the static frame shell with its own CSP (``primer.canvas.frame``);
 * ``GET /canvas/sessions/{session_id}/files/{token}``: a workspace file the session's canvas shows, by capability URL
@@ -27,6 +29,7 @@ session that does not exist or is on another workspace than the path names.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -45,7 +48,7 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.canvas import files as canvas_files
 from primer.canvas.decompile import MAX_EVENT_LINES, decompile
-from primer.canvas.frame import build_frame_shell, frame_headers, frame_url, own_origin_of
+from primer.canvas.frame import FrameShell, build_frame_shell, frame_headers, own_origin_of
 from primer.canvas.lang import CanvasLangError, LangError, parse_program
 from primer.canvas.ops import MAX_SOURCE_CHARS, CanvasOp, ensure_ops_fit, ops_errors, ops_to_statements
 from primer.canvas.service import (
@@ -59,6 +62,9 @@ from primer.model.canvas import CANVAS_EVENT_KINDS, CANVAS_SETTINGS_ID, CanvasSe
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.workspace.reserved import reserved_tree_for
+
+logger = logging.getLogger(__name__)
+_FRAME_MISSING_LOGGED: list[bool] = []
 
 canvas_public_router = APIRouter(tags=["canvas"])
 canvas_router = APIRouter(tags=["canvas"])
@@ -75,10 +81,24 @@ def _ui_dir():
     return _app_middleware._UI_DIR
 
 
+def _frame_shell() -> FrameShell | None:
+    """The frame shell, or ``None`` when this install has no frame (no ``ui/`` directory, or a broken ``ui/canvas``): the canvas still reads
+    and writes, and only the console's view of it is missing."""
+    try:
+        return build_frame_shell(_ui_dir())
+    except (OSError, ValueError):
+        if not _FRAME_MISSING_LOGGED:                   # once a process: every canvas read asks
+            _FRAME_MISSING_LOGGED.append(True)
+            logger.warning("the canvas frame shell could not be built from %s", _ui_dir(), exc_info=True)
+        return None
+
+
 @canvas_public_router.get("/canvas/frame", include_in_schema=False)
 async def canvas_frame(request: Request, v: str | None = Query(default=None, max_length=64)) -> Response:
-    """The frame shell. Cached for a year when ``v`` is the current version; never cached otherwise."""
-    shell = build_frame_shell(_ui_dir())
+    """The frame shell. Cached for a year when ``v`` is the current version; never cached otherwise. 404 on an install without it."""
+    shell = _frame_shell()
+    if shell is None:
+        raise HTTPException(status_code=404, detail="This install has no canvas frame.")
     return Response(
         content=shell.body,
         media_type="text/html; charset=utf-8",
@@ -192,7 +212,9 @@ class CanvasView(BaseModel):
     file_urls: dict[str, str] = Field(
         description="A capability URL for each workspace file an Image or Audio element shows, keyed `file:<path>`; each lives 900 s.",
     )
-    frame_url: str = Field(description="Where the console mounts the sandboxed frame (versioned).")
+    frame_url: str | None = Field(
+        description="Where the console mounts the sandboxed frame (versioned); null on an install without the console's ui/ directory.",
+    )
 
 
 class CanvasLangView(BaseModel):
@@ -363,7 +385,7 @@ async def get_canvas(
             media_policy=settings.media_policy, media_allowlist=list(settings.media_allowlist), strict_mode=settings.strict_mode,
         ),
         file_urls=_file_urls(request, session_id, row),
-        frame_url=frame_url(_ui_dir()),
+        frame_url=f"/canvas/frame?v={shell.version}" if (shell := _frame_shell()) is not None else None,
     )
 
 
@@ -523,7 +545,10 @@ async def get_canvas_settings(storage_provider: Any = Depends(get_storage_provid
 
 
 class CanvasSettingsBody(CanvasSettings):
-    """``PUT /v1/canvas_settings``: every setting. A field left out takes its default; the id is always the settings row's."""
+    """``PUT /v1/canvas_settings``: every setting. A field left out takes its default; the id is always the settings row's. A field that
+    is not a setting is refused (422), so a misspelt one is not a silent reset of the setting it meant."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str | None = Field(default=CANVAS_SETTINGS_ID, description="Ignored: there is one settings row.")
 

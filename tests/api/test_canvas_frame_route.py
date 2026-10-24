@@ -1,6 +1,7 @@
 """``GET /canvas/frame``: the static frame shell the console sandboxes the canvas in (pivot P5, Task 13; design 8.6).
 
-Outside ``/v1`` and with no auth dependency: the frame is a sandboxed, cross-origin document, so it is loaded without cookies. It carries
+Outside ``/v1`` and with no auth dependency: the console's navigation of its iframe here is same-site and carries the Lax session cookie,
+which the route ignores (the shell is the same for everyone), and the requests made from the sandboxed, opaque-origin frame carry none. It carries
 its own CSP, which is the canvas's only script control (audit G8-06, the lead's ruling 5 on S6), and it is never mounted in WORKER or
 serve-only mode (the lead's ruling 6 on S6).
 """
@@ -108,3 +109,16 @@ def test_a_serve_only_replica_never_mounts_the_public_canvas_routes(tmp_path, mo
     paths = _paths(app)
     assert any(p.startswith("/svc/") for p in paths), "the serve-only app was built"
     assert not any(p.startswith("/canvas") for p in paths)
+
+
+async def test_an_install_without_the_frame_answers_404(raw_client, tmp_path, monkeypatch):
+    """Review of #908, round 2: no ``ui/`` (or a broken ``ui/canvas``) is a 404 on the frame route, not a 500."""
+    from primer.api import _app_middleware
+
+    monkeypatch.setattr(_app_middleware, "_UI_DIR", tmp_path / "no-ui")
+    r = await raw_client.get("/canvas/frame")
+    assert r.status_code == 404 and r.json()["detail"] == "This install has no canvas frame."
+    (tmp_path / "broken" / "canvas").mkdir(parents=True)
+    (tmp_path / "broken" / "canvas" / "frame.html").write_text("<!doctype html><title>no placeholders</title>", encoding="utf-8")
+    monkeypatch.setattr(_app_middleware, "_UI_DIR", tmp_path / "broken")
+    assert (await raw_client.get("/canvas/frame")).status_code == 404
