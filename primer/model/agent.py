@@ -200,6 +200,15 @@ class Agent(Describeable):
             "carrying external_tools are rejected with 422."
         ),
     )
+    use_workspace_instructions: bool = Field(
+        default=True,
+        description=(
+            "Load the workspace's agents.md (or AGENTS.md) into this agent's "
+            "instructions on every turn it runs in a workspace. Turn off for an "
+            "agent that must not follow workspace instructions. A row stored "
+            "before this field existed reads true."
+        ),
+    )
     response_format: dict[str, Any] | None = Field(
         default=None,
         description=(

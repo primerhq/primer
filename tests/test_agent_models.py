@@ -152,6 +152,19 @@ class TestAgent:
         assert parsed == a
         assert parsed.compaction_prompt == ["Keep the user's stated goal verbatim."]
 
+    def test_use_workspace_instructions_defaults_true_for_old_rows(self) -> None:
+        """A row stored before the field existed has no key for it: it reads as on (pivot P2, Task 16)."""
+        assert Agent.model_validate({"id": "a", "description": "d", "model": {"profile_id": "p"}}).use_workspace_instructions is True
+
+    def test_use_workspace_instructions_off_round_trips_through_json(self) -> None:
+        a = Agent(id="a", description="d", model=AgentModel(profile_id="p"), use_workspace_instructions=False)
+        assert a.model_dump(mode="json")["use_workspace_instructions"] is False
+        assert Agent.model_validate_json(a.model_dump_json()).use_workspace_instructions is False
+
+    def test_use_workspace_instructions_is_a_boolean(self) -> None:
+        with pytest.raises(ValidationError):
+            Agent(id="a", description="d", model=AgentModel(profile_id="p"), use_workspace_instructions="maybe")  # type: ignore[arg-type]
+
     def test_tools_list_accepts_arbitrary_string_ids(self) -> None:
         # The model layer doesn't validate that tools resolve against
         # configured toolsets -- that's the runtime's job.

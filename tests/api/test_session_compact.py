@@ -188,11 +188,12 @@ class _StubLLM:
 
 async def _journey(
     app, fake_storage_provider, monkeypatch, *, lines=None, llm=None, system_prompt=None, agents_md=None,
-    agents_md_name="agents.md",
+    agents_md_name="agents.md", use_workspace_instructions=True,
 ):
     """A session with ``lines`` as its log, an agent, and a stub LLM behind the provider registry.
 
-    ``agents_md`` is the text of the workspace's instructions file, written under ``agents_md_name``."""
+    ``agents_md`` is the text of the workspace's instructions file, written under ``agents_md_name``;
+    ``use_workspace_instructions`` is the agent's flag."""
     from primer.model.agent import Agent, AgentModel
     from primer.model_profile.resolver import ResolvedModel
 
@@ -201,6 +202,7 @@ async def _journey(
         await storage.create(Agent(
             id=AGENT_ID, description="compact journey", model=AgentModel(profile_id="p--m"), tools=[],
             system_prompt=[system_prompt] if system_prompt else [],
+            use_workspace_instructions=use_workspace_instructions,
         ))
     lines = lines if lines is not None else _JOURNEY_LOG
     sid = "j-1"
@@ -361,6 +363,18 @@ async def test_the_fixed_part_counts_the_workspace_instructions(client, app, fak
     fixed = marker["payload"]["fixed_overhead_tokens"]
     assert fixed == _expected_fixed(SYSTEM_PROMPT, AGENTS_MD), "the agent's prompt, the fragment and the file"
     assert fixed - _expected_fixed(SYSTEM_PROMPT) > 500, "the file's own size is in it"
+
+
+@pytest.mark.asyncio
+async def test_an_agent_that_opted_out_is_sized_without_the_file(client, app, fake_storage_provider, monkeypatch):
+    """``use_workspace_instructions`` off (pivot P2, Task 16): the executor leaves the file out of the prompt, so the route does too."""
+    ws, _ = await _journey(
+        app, fake_storage_provider, monkeypatch, system_prompt=SYSTEM_PROMPT, agents_md=AGENTS_MD, use_workspace_instructions=False,
+    )
+    r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
+    assert r.status_code == 200, r.text
+    (marker,) = _marker(ws)
+    assert marker["payload"]["fixed_overhead_tokens"] == _expected_fixed(SYSTEM_PROMPT)
 
 
 @pytest.mark.asyncio

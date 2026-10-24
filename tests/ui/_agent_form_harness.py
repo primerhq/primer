@@ -66,7 +66,7 @@ FULL = {
     "temperature": 0.7, "max_tool_turns": 25, "max_output_tokens": 4096,
     "tools": ["system__list_files", "web__search"],
     "system_prompt": ["You triage refunds.", "Be brief."], "compaction_prompt": ["Keep the cited sources."],
-    "compaction_tool_access": True, "allow_external_tools": True,
+    "compaction_tool_access": True, "allow_external_tools": True, "use_workspace_instructions": False,
     "response_format": {"type": "object", "properties": {"verdict": {"type": "string"}}, "required": ["verdict"]},
     "tts_voice": "alloy", "harness_id": None,
 }
@@ -74,7 +74,7 @@ FULL = {
 DEFAULTS = {
     "id": "plain", "description": "Plain", "model": {"profile_id": "fast"}, "temperature": None, "max_tool_turns": 50,
     "max_output_tokens": None, "tools": [], "system_prompt": [], "compaction_prompt": [], "compaction_tool_access": False,
-    "allow_external_tools": False, "response_format": None, "tts_voice": None, "harness_id": None,
+    "allow_external_tools": False, "use_workspace_instructions": True, "response_format": None, "tts_voice": None, "harness_id": None,
 }
 # A row a harness manages: the form shows a locked summary instead of inputs.
 MANAGED = {**FULL, "harness_id": "h1"}

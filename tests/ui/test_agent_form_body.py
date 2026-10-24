@@ -10,6 +10,9 @@ Two lossy saves the plan found (its open point 1) are fixed on the lead's call, 
 The overlay rebuild (Task 4) keeps every test above the "rebuilt overlay" section UNCHANGED and adds the sections below it: a body built through the new
 controls, a typed 0 or negative turn cap (still 50, never null), a number the browser cannot read (an error, nothing sent) and a system prompt whose
 untouched parts go back exactly as stored.
+
+One field was added to every body since (pivot P2, Task 16): ``use_workspace_instructions``, the agent's opt-out from its workspace's agents.md. The form
+always sends it (a new agent sends true), so the expected bodies above carry it; that is the only change to them. Its section is at the end.
 """
 
 from __future__ import annotations
@@ -43,7 +46,7 @@ def test_a_new_agent_with_only_the_required_fields_posts_this_body(ctx):
     assert call["body"] == {
         "id": "refund-triage", "description": "Triages refunds", "model": {"profile_id": "fast"}, "tools": [],
         "system_prompt": [], "compaction_prompt": [], "compaction_tool_access": False, "allow_external_tools": False,
-        "tts_voice": None, "max_tool_turns": 50,
+        "use_workspace_instructions": True, "tts_voice": None, "max_tool_turns": 50,
     }
 
 
@@ -68,8 +71,8 @@ def test_saving_an_agent_with_default_values_sends_them_back(ctx):
     click(ctx, "agent-form-submit")
     assert body(ctx) == {
         "id": "plain", "description": "Plain", "model": {"profile_id": "fast"}, "tools": [], "system_prompt": [],
-        "compaction_prompt": [], "compaction_tool_access": False, "allow_external_tools": False, "tts_voice": None,
-        "max_tool_turns": 50, "max_output_tokens": None, "response_format": None,
+        "compaction_prompt": [], "compaction_tool_access": False, "allow_external_tools": False, "use_workspace_instructions": True,
+        "tts_voice": None, "max_tool_turns": 50, "max_output_tokens": None, "response_format": None,
     }  # temperature None is left out; the PUT-replace default is None
 
 
@@ -191,6 +194,7 @@ def test_a_new_agent_with_every_field_set_through_the_new_controls_posts_this_bo
     click(ctx, "tool-picker-stub")
     click(ctx, "na-compaction-tool-access")
     click(ctx, "na-allow-external-tools")
+    click(ctx, "na-use-workspace-instructions")
     type_into(ctx, "agent-response-format", '{"type": "object"}')
     type_into(ctx, "agent-tts-voice", "alloy")
     click(ctx, "agent-form-submit")
@@ -198,7 +202,7 @@ def test_a_new_agent_with_every_field_set_through_the_new_controls_posts_this_bo
         "id": "refund-triage", "description": "Triages refunds", "model": {"profile_id": "slow"},
         "tools": ["system__list_files", "web__search"], "system_prompt": ["You triage refunds.", "Be brief."],
         "compaction_prompt": ["Keep the cited sources."], "compaction_tool_access": True, "allow_external_tools": True,
-        "tts_voice": "alloy", "temperature": 0.7, "max_tool_turns": 25, "max_output_tokens": 4096,
+        "use_workspace_instructions": False, "tts_voice": "alloy", "temperature": 0.7, "max_tool_turns": 25, "max_output_tokens": 4096,
         "response_format": {"type": "object"},
     }
 
@@ -467,3 +471,47 @@ def test_an_edited_description_is_trimmed(ctx):
     type_into(ctx, "agent-description", "  Triages refund requests  ")
     click(ctx, "agent-form-submit")
     assert body(ctx)["description"] == "Triages refund requests"
+
+
+# ---- the workspace instructions switch (pivot P2, Task 16) -------------------------------------------------------------------------------------------
+# use_workspace_instructions is the agent's opt-out from its workspace's agents.md. It is on by default, every save sends it, and a stored value goes back
+# unchanged on an edit about something else (FULL holds it off, so the round-trip tests above cover that too).
+
+
+def test_the_toggle_turns_it_off(ctx):
+    mount(ctx, existing=DEFAULTS)
+    click(ctx, "na-use-workspace-instructions")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["use_workspace_instructions"] is False
+
+
+def test_the_toggle_turns_it_back_on(ctx):
+    mount(ctx, existing=FULL)
+    click(ctx, "na-use-workspace-instructions")
+    click(ctx, "agent-form-submit")
+    assert body(ctx) == {**{k: v for k, v in FULL.items() if k != "harness_id"}, "use_workspace_instructions": True}
+
+
+def test_a_new_agent_sends_it_on(ctx):
+    mount(ctx)
+    assert prop(ctx, "na-use-workspace-instructions", "aria-checked") is True
+    type_into(ctx, "agent-id", "refund-triage")
+    type_into(ctx, "agent-description", "Triages refunds")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["use_workspace_instructions"] is True
+
+
+def test_an_agent_that_opted_out_shows_it_off_and_keeps_it_off_on_an_unrelated_edit(ctx):
+    mount(ctx, existing=FULL)
+    assert prop(ctx, "na-use-workspace-instructions", "aria-checked") is False
+    type_into(ctx, "agent-temperature", "0.5")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["use_workspace_instructions"] is False
+
+
+def test_a_row_without_the_field_shows_it_on_and_saves_it_on(ctx):
+    """A row the console got from a server older than the field has no key for it: the model reads such a row as on, and so does the form."""
+    mount(ctx, existing={k: v for k, v in DEFAULTS.items() if k != "use_workspace_instructions"})
+    assert prop(ctx, "na-use-workspace-instructions", "aria-checked") is True
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["use_workspace_instructions"] is True

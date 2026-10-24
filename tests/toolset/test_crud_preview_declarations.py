@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from primer.api.routers.workspaces import _approval_preview
+from primer.common.preview_allowlist import scrub_args_for_display
 from primer.common.preview_paths import missing_paths
 from primer.toolset.crud import CRUD_TOOL_NAMES, build_crud_toolset
 
@@ -93,6 +94,19 @@ def test_an_agent_card_names_the_agent_and_withholds_its_free_text(tools, name: 
     assert card["hidden_keys"] == ["entity.description", "entity.system_prompt", "entity.compaction_prompt", "entity.response_format"]
     assert '"id": "reviewer"' in card["arguments"]
     assert card["truncated"] is True and card["preview"] == "tool"
+
+
+@pytest.mark.parametrize("name", ["create_agent", "update_agent"])
+def test_an_agent_card_shows_whether_the_agent_reads_the_workspace_instructions(tools, name: str) -> None:
+    """An agent that stops reading its workspace's agents.md is a change to approve knowingly (pivot P2, Task 16), and the flag is a boolean,
+    never free text, so the card shows it next to the other switches."""
+    arguments = {"entity": {**AGENT, "use_workspace_instructions": False}, **({"id": "reviewer"} if name == "update_agent" else {})}
+
+    card = _card(tools, name, arguments)
+    shown, _withheld = scrub_args_for_display(arguments, {"paths": list(tools[name].preview_args), "source": "tool"})
+
+    assert card["hidden_keys"] == ["entity.description", "entity.system_prompt", "entity.compaction_prompt", "entity.response_format"]
+    assert shown["entity"]["use_workspace_instructions"] is False
 
 
 # ---- graphs ------------------------------------------------------------------------------------------------------------------------------------------------------

@@ -727,6 +727,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   const [compactionPrompt, setCompactionPrompt] = React.useState(_joinPrompt(existing?.compaction_prompt));
   const [compactionToolAccess, setCompactionToolAccess] = React.useState(existing?.compaction_tool_access ?? false);
   const [allowExternalTools, setAllowExternalTools] = React.useState(existing?.allow_external_tools ?? false);
+  // On unless the stored agent opted out: a row without the key (written before the field existed) reads as on, as the server reads it.
+  const [useWorkspaceInstructions, setUseWorkspaceInstructions] = React.useState(existing?.use_workspace_instructions ?? true);
   const [ttsVoice, setTtsVoice] = React.useState(existing?.tts_voice ?? null);
   // selectedScopedIds is a Set so toggles are O(1); persisted in the
   // stored order at submit time (AG_toolsForSave).
@@ -867,6 +869,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
         : (compactionPrompt ? [compactionPrompt] : []),
       compaction_tool_access: compactionToolAccess,
       allow_external_tools: allowExternalTools,
+      use_workspace_instructions: useWorkspaceInstructions,
       tts_voice: ttsVoice,
     };
     if (temperature !== "" && !Number.isNaN(+temperature)) {
@@ -1147,6 +1150,13 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             testid="na-allow-external-tools"
             label="Allow external tools"
             help="Let API callers attach their own tool definitions when they invoke this agent. When the model calls one, the turn pauses until the caller answers through the invocation API. Leave off to refuse such calls."
+          />
+          <AG_Toggle
+            checked={useWorkspaceInstructions}
+            onChange={setUseWorkspaceInstructions}
+            testid="na-use-workspace-instructions"
+            label="Load workspace instructions (agents.md)"
+            help="Add the workspace's agents.md (or AGENTS.md) to this agent's instructions on every turn it runs in a workspace: in a session, as a graph node or as a subagent. Turn off for an agent that must not follow the instructions a workspace's users write."
           />
           <PK_Field label="Response format" help="A JSON Schema the answer must match. Leave empty to run the agent unconstrained."
             error={responseFormatError ? "JSON parse: " + responseFormatError : AG_fieldError(fieldErrors, "body.response_format")}>

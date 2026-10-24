@@ -232,10 +232,18 @@ def test_picking_a_listed_voice_drops_the_not_offered_one():
         assert body(ctx)["tts_voice"] == "nova"
 
 
-def test_advanced_is_folded_and_holds_the_three_advanced_controls(ctx):
+def test_advanced_is_folded_and_holds_the_four_advanced_controls(ctx):
     mount(ctx)
     assert prop(ctx, "agent-advanced-fold", "data-open") == "false"
-    assert {"na-compaction-tool-access", "na-allow-external-tools", "agent-response-format"} <= set(testids_under(ctx, "agent-advanced-fold"))
+    assert {"na-compaction-tool-access", "na-allow-external-tools", "na-use-workspace-instructions", "agent-response-format"} <= set(
+        testids_under(ctx, "agent-advanced-fold"))
+
+
+def test_the_workspace_instructions_switch_follows_allow_external_tools(ctx):  # pivot P2, Task 16
+    mount(ctx)
+    ids = testids_under(ctx, "agent-advanced-fold")
+    assert ids.index("na-compaction-tool-access") < ids.index("na-allow-external-tools") < ids.index("na-use-workspace-instructions") < ids.index(
+        "agent-response-format")
 
 
 def test_the_toggles_are_one_line_with_their_help_under_them_and_the_8_round_fallback_is_said(ctx):
@@ -247,14 +255,19 @@ def test_the_toggles_are_one_line_with_their_help_under_them_and_the_8_round_fal
     external = (
         "Let API callers attach their own tool definitions when they invoke this agent. When the model calls one, the turn pauses until the "
         "caller answers through the invocation API. Leave off to refuse such calls.")
+    instructions = (
+        "Add the workspace's agents.md (or AGENTS.md) to this agent's instructions on every turn it runs in a workspace: in a session, as a graph "
+        "node or as a subagent. Turn off for an agent that must not follow the instructions a workspace's users write.")
     assert text_of(ctx, "na-compaction-tool-access-help") == tool_access
     assert text_of(ctx, "na-allow-external-tools-help") == external
-    for testid in ("na-compaction-tool-access", "na-allow-external-tools"):
+    assert text_of(ctx, "na-use-workspace-instructions-help") == instructions
+    for testid in ("na-compaction-tool-access", "na-allow-external-tools", "na-use-workspace-instructions"):
         assert prop(ctx, testid, "role") == "switch"
         described = prop(ctx, testid, "aria-describedby")
         assert described and described == prop(ctx, testid + "-help", "id"), "the switch is described by the help under it"
     assert text_of(ctx, "na-compaction-tool-access-label") == "Tool access during compaction"
     assert text_of(ctx, "na-allow-external-tools-label") == "Allow external tools"
+    assert text_of(ctx, "na-use-workspace-instructions-label") == "Load workspace instructions (agents.md)"
 
 
 def test_a_toggle_flips_and_says_so(ctx):
@@ -262,6 +275,13 @@ def test_a_toggle_flips_and_says_so(ctx):
     assert prop(ctx, "na-allow-external-tools", "aria-checked") is False
     click(ctx, "na-allow-external-tools")
     assert prop(ctx, "na-allow-external-tools", "aria-checked") is True
+
+
+def test_the_workspace_instructions_switch_starts_on_and_flips_off(ctx):  # pivot P2, Task 16: on by default
+    mount(ctx)
+    assert prop(ctx, "na-use-workspace-instructions", "aria-checked") is True
+    click(ctx, "na-use-workspace-instructions")
+    assert prop(ctx, "na-use-workspace-instructions", "aria-checked") is False
 
 
 def test_escape_leaves_full_screen_before_it_closes_the_form(ctx):  # Review Focus 4, through the whole form

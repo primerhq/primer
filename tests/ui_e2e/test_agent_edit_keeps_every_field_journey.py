@@ -23,7 +23,7 @@ EVERY_FIELD = {
     "description": "before the journey", "temperature": 0.7, "max_tool_turns": None, "max_output_tokens": 1024,
     "tools": ["system__invoke_agent", "web__web_search"], "system_prompt": ["You triage refunds.", "Be brief."],
     "compaction_prompt": ["Keep the cited sources.", "Keep the file under edit."], "compaction_tool_access": True,
-    "allow_external_tools": True,
+    "allow_external_tools": True, "use_workspace_instructions": False,
     "response_format": {"type": "object", "properties": {"verdict": {"type": "string"}}, "required": ["verdict"]},
     "tts_voice": "alloy",
 }

@@ -133,7 +133,7 @@ def shipped_gate(toolset_id: str, tool_name: str) -> RequiredApprovalConfig | Po
 # "Show all" (the session's own pending-yields route) still returns the whole call to whoever may decide it. Checked against each tool's schema when it is built.
 _AGENT_PREVIEW = (
     "entity.id", "entity.model", "entity.temperature", "entity.max_tool_turns", "entity.max_output_tokens", "entity.tools",
-    "entity.compaction_tool_access", "entity.allow_external_tools", "entity.tts_voice", "entity.harness_id",
+    "entity.compaction_tool_access", "entity.allow_external_tools", "entity.use_workspace_instructions", "entity.tts_voice", "entity.harness_id",
 )
 _GRAPH_PREVIEW = (
     "entity.id", "entity.nodes.kind", "entity.nodes.id", "entity.nodes.agent_id", "entity.nodes.graph_id", "entity.nodes.tool_id", "entity.nodes.profile_id",
