@@ -144,9 +144,10 @@ async def _lease_after_the_fire(pool: "WorkerPool", trigger_id: str) -> tuple[bo
     """How a claim that fired gives its lease back: ``(drop_lease, requeue_after)`` (ticket 01a16ddb, review of #915).
 
     The lease is requeued to the trigger's next tick, the one the release records (``TriggerClaimAdapter.on_release``: the next cron tick
-    after now for a ``scheduled`` trigger), so it is not claimable again before it. Without the requeue the in-memory claim engine, which does
-    not evaluate the adapter's eligibility SQL, re-claimed a released trigger at once, and every scheduled trigger re-fired in a loop on a
-    SQLite deployment. A trigger with no next tick (a ``delayed`` trigger that fired, a disabled or deleted one, an unreadable cron) drops the
+    after now for a ``scheduled`` trigger), so it is not claimable again before it. Without the requeue the in-memory claim engine, which did
+    not evaluate the adapter's eligibility then, re-claimed a released trigger at once, and every scheduled trigger re-fired in a loop on a
+    SQLite deployment; it now applies the trigger's eligibility too (ticket 01a16e79), and the requeue keeps the lease out of each claim's
+    entity reads until its tick. A trigger with no next tick (a ``delayed`` trigger that fired, a disabled or deleted one, an unreadable cron) drops the
     lease: the save that lets it fire again upserts a new one (``primer.trigger.service._upsert_claim_if_eligible``). A row that cannot be
     read leaves the lease as the engine would.
     """
