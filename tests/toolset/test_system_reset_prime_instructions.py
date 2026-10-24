@@ -16,6 +16,7 @@ can already write over with ``workspaces::write_workspace_file``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -226,6 +227,38 @@ async def test_a_directory_in_the_way_is_a_bad_request(provider, ws):
     ws.write_file = _refuse
     result = await _call(provider)
     assert result.is_error and json.loads(result.output)["type"] == "bad-request"
+
+
+async def test_a_reattach_that_hangs_is_unavailable_and_writes_nothing(provider, ws, registry, monkeypatch):
+    """Reaching the workspace (and the AGENTS.md check) is bounded as in the seed: past the bound the tool answers type=unavailable."""
+    from primer.bootstrap import prime as prime_module
+
+    monkeypatch.setattr(prime_module, "PRIME_AGENTS_MD_CHECK_TIMEOUT_S", 0.05)
+
+    async def _hung(workspace_id):
+        await asyncio.Event().wait()
+
+    registry.get_workspace = _hung
+    async with asyncio.timeout(5):
+        result = await _call(provider)
+    assert result.is_error and json.loads(result.output)["type"] == "unavailable"
+    assert ws.writes == []
+
+
+async def test_a_write_that_hangs_is_unavailable(provider, ws, monkeypatch):
+    from primer.bootstrap import prime as prime_module
+
+    monkeypatch.setattr(prime_module, "PRIME_AGENTS_MD_CHECK_TIMEOUT_S", 0.05)
+
+    async def _hung(path, content):
+        await asyncio.Event().wait()
+
+    ws.write_file = _hung
+    async with asyncio.timeout(5):
+        result = await _call(provider)
+    body = json.loads(result.output)
+    assert result.is_error and body["type"] == "unavailable"
+    assert "may still" in body["message"]
 
 
 async def test_an_argument_is_refused(provider, ws):

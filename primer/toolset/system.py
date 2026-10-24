@@ -1646,7 +1646,9 @@ def build_system_toolset(
                     "not for editing them (write the file instead). Overwrites ``agents.md`` in the default workspace, "
                     "whatever it holds, and nothing else (an ``AGENTS.md`` stays, and is not read while ``agents.md`` "
                     "exists). From a session outside the default workspace (prime) it returns ``type=forbidden`` and "
-                    "writes nothing; with no default workspace yet, ``type=not-found``."
+                    "writes nothing; with no default workspace yet, ``type=not-found``; when the workspace does not "
+                    "answer within 10 seconds (to reach it, then to write), ``type=unavailable`` (a write given up on "
+                    "may still land, with the same shipped text)."
                 ),
                 args_schema=_ResetPrimeInstructionsArgs.model_json_schema(),
                 examples=[

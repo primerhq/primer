@@ -316,6 +316,25 @@ async def test_reset_prime_instructions_without_a_default_workspace_is_a_404(cli
     assert r.json()["detail"] == "no default workspace is recorded"
 
 
+async def test_reset_prime_instructions_that_times_out_is_a_503(client, app, monkeypatch):
+    """A backend that does not answer within the bound: 503 (the write, given up on, may still land with the shipped bytes)."""
+    import asyncio
+
+    from primer.bootstrap import prime as prime_module
+
+    monkeypatch.setattr(prime_module, "PRIME_AGENTS_MD_CHECK_TIMEOUT_S", 0.05)
+    registry = await _recorded_prime(app)
+
+    async def _hung(path, content):
+        await asyncio.Event().wait()
+
+    registry.live["prime"].write_file = _hung
+    async with asyncio.timeout(5):
+        r = await client.post("/v1/setup/reset_prime_instructions")
+    assert r.status_code == 503, r.text
+    assert "within" in r.json()["detail"]
+
+
 async def test_reset_prime_instructions_is_in_the_schema_with_its_errors(client, app):
     op = app.openapi()["paths"]["/v1/setup/reset_prime_instructions"]["post"]
     assert op["summary"] == "Rewrite prime's agents.md with the shipped version"
