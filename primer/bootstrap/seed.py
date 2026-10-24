@@ -120,8 +120,10 @@ async def ensure_default_workspace(
 
     If the row for that id exists, nothing is created: the id is recorded when it was not (a workspace a person already
     called ``prime`` is adopted, not duplicated) and ``None`` is returned. Otherwise the workspace is materialised from the
-    deployment's template (``template_id``, else the reserved ``local-default``) and the durable row is written exactly as
-    ``POST /v1/workspaces`` does (phase="running" because materialise returned a live handle).
+    deployment's template (``template_id``, else the reserved ``local-default``) and the durable row is built exactly as
+    ``POST /v1/workspaces`` and the ``create_workspace`` tool build theirs
+    (:func:`~primer.api.registries.workspace_registry.new_workspace_row`: ``phase`` is ``pending`` until the probe's first good ping,
+    ticket 01a16d72 ruling 2).
 
     **The id is recorded BEFORE the backend is materialised and the row written.** The row is written last, so a record made
     after it would leave an instant in which the row exists and :func:`~primer.bootstrap.prime.resolve_default_workspace_id`
@@ -135,8 +137,7 @@ async def ensure_default_workspace(
     ``None``). The workspace's main operator session is not seeded here: it is per user, made on request by
     ``POST /v1/workspaces/{id}/main_session`` (see :func:`ensure_main_operator_session`).
     """
-    from datetime import datetime, timezone
-
+    from primer.api.registries.workspace_registry import new_workspace_row
     from primer.bootstrap.defaults import (
         PRIME_WORKSPACE_ID,
         PRIME_WORKSPACE_NAME,
@@ -176,19 +177,10 @@ async def ensure_default_workspace(
         template=template, workspace_id=workspace_id,
     )
     try:
+        # The row every create door writes (the same first phase too); runtime_meta comes straight off the live handle.
         await workspaces.create(
-            Workspace(
-                id=workspace_id,
-                name=PRIME_WORKSPACE_NAME,
-                template_id=wanted,
-                template_snapshot=template,
-                provider_id=template.provider_id,
-                created_at=datetime.now(timezone.utc),
-                # phase="running" because materialise returned a live
-                # handle; runtime_meta is required and comes straight off
-                # that handle, exactly as POST /v1/workspaces does.
-                phase="running",
-                runtime_meta=live.runtime_meta,
+            new_workspace_row(
+                workspace_id=workspace_id, template=template, overrides=None, live=live, name=PRIME_WORKSPACE_NAME,
             )
         )
     except ConflictError:

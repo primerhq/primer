@@ -1,14 +1,21 @@
-"""The REST create and the ``create_workspace`` tool are one create path (lead ruling 1 of ticket 01a16d72).
+"""The REST create and the ``create_workspace`` tool are one create path (lead rulings 1 and 2 of ticket 01a16d72).
 
 ``POST /v1/workspaces`` refused a Kubernetes provider with ``variant: agent_sandbox`` (501): the variant is accepted on a provider but no backend
 builds it. The tool had no such check, so it built a StatefulSet on that provider as if it were ``system``. The refusal now lives in
 :meth:`WorkspaceRegistry.materialise`, the one point every create passes (both doors and the bootstrap seed), before any backend is built, and
 both doors answer it in the same words: REST 501 ``not_implemented``, the tool ``type=not-implemented``.
+
+The two doors also wrote different first phases: REST ``running`` (``materialise`` returned a live handle), the tool the model's default
+``pending``, which the probe promotes at its first good ping. Both now build the row with :func:`new_workspace_row` (the bootstrap seed too), whose
+phase is :data:`NEW_WORKSPACE_PHASE`: ``pending`` until the first good probe, which is what the probe is built for. No reader depends on
+``running`` at create: no session start, wake or turn reads the workspace's phase, the console colours ``pending`` amber and shows its failure
+banner on ``failed`` only, and the one ``running`` check (reopening a ``workspace_lost`` session) concerns a workspace that existed before.
 """
 
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -142,3 +149,55 @@ async def test_the_tool_says_it_refuses_the_variant(toolset) -> None:
     description = tools["create_workspace"].description
     assert "``variant: agent_sandbox`` is refused (``type=not-implemented``, REST 501)" in description
     assert "nothing is created" in description.split("agent_sandbox", 1)[1]
+
+
+# ---- ruling 2: one first phase -------------------------------------------------------------------------------------------------------------
+
+
+async def _local_template(sp) -> None:  # noqa: F811
+    await sp.get_storage(WorkspaceProvider).create(_provider())
+    await sp.get_storage(WorkspaceTemplate).create(_template())
+
+
+@pytest.mark.asyncio
+async def test_rest_and_the_tool_store_a_new_workspace_pending(client, toolset, sp) -> None:  # noqa: F811
+    await _local_template(sp)
+
+    rest = await client.post("/v1/workspaces", json={"id": "ws-rest", "template_id": "tpl-1"})
+    tool = await toolset.call(tool_name="create_workspace", arguments={"id": "ws-tool", "template_id": "tpl-1"})
+
+    assert rest.status_code == 201, rest.text
+    assert not tool.is_error, tool.output
+    assert rest.json()["phase"] == "pending"
+    assert json.loads(tool.output)["phase"] == "pending"
+    assert {w.id: w.phase for w in await _rows(sp)} == {"ws-rest": "pending", "ws-tool": "pending"}
+
+
+@pytest.mark.asyncio
+async def test_both_doors_build_the_row_through_the_shared_path(client, toolset, sp, wsr) -> None:  # noqa: F811
+    """The one rule is a named one: the shared builder's phase, which every door writes."""
+    from primer.api.registries.workspace_registry import NEW_WORKSPACE_PHASE, new_workspace_row
+
+    await _local_template(sp)
+    template = await sp.get_storage(WorkspaceTemplate).get("tpl-1")
+    row = new_workspace_row(workspace_id="ws-x", template=template, overrides=None, live=await wsr.materialise(template=template, workspace_id="ws-x"))
+
+    assert NEW_WORKSPACE_PHASE == "pending"
+    assert row.phase == NEW_WORKSPACE_PHASE
+    assert (row.template_snapshot, row.provider_id) == (template, "local-1")
+
+
+@pytest.mark.asyncio
+async def test_the_first_good_probe_makes_a_new_workspace_running(client, toolset, sp, wsr) -> None:  # noqa: F811
+    """What ``pending`` waits for: the probe's first good ping promotes the row, whichever door made it."""
+    from primer.workspace.probe import WorkspaceProbeTask
+
+    await _local_template(sp)
+    assert (await client.post("/v1/workspaces", json={"id": "ws-rest", "template_id": "tpl-1"})).status_code == 201
+    assert not (await toolset.call(tool_name="create_workspace", arguments={"id": "ws-tool", "template_id": "tpl-1"})).is_error
+    for wid in ("ws-rest", "ws-tool"):
+        (await wsr.get_workspace(wid)).ping = AsyncMock(return_value=True)
+
+    await WorkspaceProbeTask(storage_provider=sp, registry=wsr, interval_seconds=0.01, start_delay_seconds=0).tick()
+
+    assert {w.id: w.phase for w in await _rows(sp)} == {"ws-rest": "running", "ws-tool": "running"}

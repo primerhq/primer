@@ -244,20 +244,22 @@ first and the one the operator works from. All users share it.
 
 ## Lifecycle and states
 
-A `Workspace.status` is one of:
+A workspace row's `phase` is one of:
 
-- `provisioning` - the backing substrate is being created (cloning
-  a pod, mounting a volume). Transient; can be observed.
-- `ready` - operational. Sessions can be created against it.
-- `error` - provision failed; details in the `error` field.
-- `terminating` - operator-requested teardown; backing substrate
-  being destroyed.
-- `terminated` - substrate is gone. The row stays in storage as an
-  audit record; can be deleted manually.
+- `pending` - every new workspace starts here, whoever created it
+  (`workspaces::create_workspace`, `POST /v1/workspaces` or the
+  console). The workspace is already usable: sessions start and run
+  in it. The health probe (about every 30 seconds) turns it `running`
+  at its first good ping, and counts no misses against it.
+- `running` - the probe has seen it answer.
+- `failed` - three missed probes in a row; `failure_reason` says why
+  and every open session on it has ended `workspace_lost`. Three good
+  probes in a row bring it back to `running`.
+- `terminating` - see the delete below.
 
-Provisioning is async (claim-based, like sessions and harnesses).
-Workspace create returns 202; poll `workspaces::get_workspace` until
-`status=ready`.
+The create is synchronous: it builds the workspace and returns the
+stored row (the REST route answers 201). There is no status to poll
+before you use it.
 
 Sessions run inside a workspace. Destroying a workspace
 (`DELETE /v1/workspaces/{id}`, which answers 204) is synchronous and
@@ -736,7 +738,7 @@ session is outside the group, so it is not killed.
   naming the field, `overrides.resources.<field>` or the template's
   `backend.<field>`, and nothing is left behind.
 - **A failed create leaves nothing behind.** The workspace row is
-  written last, with `phase="running"`, and a failure after the
+  written last, with `phase="pending"`, and a failure after the
   live instance exists tears it down again, so there is no
   half-created workspace to clean up and no `error` status to
   read. A workspace that later stops answering its probe is
