@@ -497,8 +497,8 @@ async def update_subscription(
     The caller becomes the owner, as in :func:`update_trigger`, and its
     reach becomes the row's (as in :func:`create_subscription`): from a
     session outside prime, a subscription whose target is out of the
-    caller's reach is refused with :class:`SubscriptionTargetNotFound` and
-    left as it was.
+    caller's reach is refused with :class:`SubscriptionNotFound`, exactly
+    as an unknown subscription id (review of #874, C1), and left as it was.
 
     Nullable string fields (``payload_template``, ``description``) use
     the ``_UNSET`` sentinel so callers can leave them untouched while
@@ -510,9 +510,8 @@ async def update_subscription(
     sub = await subs_storage.get(subscription_id)
     if sub is None or sub.trigger_id != trigger_id:
         raise SubscriptionNotFound(subscription_id)
-    refusal = await refuse_target_out_of_reach(deps.storage_provider, reach, sub.config)
-    if refusal is not None:
-        raise SubscriptionTargetNotFound(refusal)
+    if await refuse_target_out_of_reach(deps.storage_provider, reach, sub.config) is not None:
+        raise SubscriptionNotFound(subscription_id)
     sub.owner = owner
     sub.reach = reach
     if payload_template is not _UNSET:

@@ -722,15 +722,15 @@ async def _seed_world_for_subscriptions() -> WsWorld:
 @pytest.mark.parametrize(("who", "door"), [(who, door) for who in WS_CALLERS if who != "no session" for door in DOORS] + [("no session", "MCP")])
 async def test_an_update_of_a_subscription_from_a_session_reaches_only_a_target_it_reaches(who, door):
     """F1: updating a subscription saves it as the caller (its owner, and now its reach). From a session outside prime an update of a subscription
-    whose target is out of reach is refused in the words of an unknown target and changes nothing; within reach the row records the caller's
-    reach."""
+    whose target is out of reach answers exactly as a subscription id that does not exist (``subscription_not_found``; review of #874, C1) and
+    changes nothing; within reach the row records the caller's reach."""
     world = await _seed_world_for_subscriptions()
     store = world.sp.get_storage(Subscription)
-    for sid, workspace in (("sb-p", "ws-2"), ("sb-u", "ws-nope")):
-        await store.create(Subscription(
-            id=sid, trigger_id=TRIGGER, config=AgentFreshSubConfig(workspace_id=workspace, agent_id="planner"), created_at=NOW, owner=ADMIN,
-        ))
+    await store.create(Subscription(
+        id="sb-p", trigger_id=TRIGGER, config=AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner"), created_at=NOW, owner=ADMIN,
+    ))
     own, expected = WS_CALLERS[who]
+    expected = "subscription_not_found" if expected == N else expected
     before = await store.get("sb-p")
 
     def _update(sid: str) -> dict:
@@ -744,8 +744,9 @@ async def test_an_update_of_a_subscription_from_a_session_reaches_only_a_target_
         assert (after.payload_template, after.reach) == ("changed", RECORDED[who]), after
         return
     assert after == before, f"a refused update changed the subscription ({who}, {door})"
-    _, unknown = await _call(world, "trigger", "update_subscription", _update("sb-u"), own=own, door=door)
-    assert json.dumps(body).replace("ws-2", "<ws>") == json.dumps(unknown).replace("ws-nope", "<ws>"), (body, unknown)
+    _, unknown = await _call(world, "trigger", "update_subscription", _update("sb-nope"), own=own, door=door)
+    assert body == {"type": "subscription_not_found", "message": "sb-p"}
+    assert json.dumps(body).replace("sb-p", "<id>") == json.dumps(unknown).replace("sb-nope", "<id>"), (body, unknown)
 
 
 # -- the fire ---------------------------------------------------------------------------------------------------------------------------------
