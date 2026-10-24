@@ -1,7 +1,9 @@
 """One MiniRacer harness for the Platform page: the REAL platform kit and ``ui/components/console/nv-platform.jsx``, transpiled the way the server
 bundles them, on the hook runtime of ``tests/ui/_mini_react.py`` (Platform revamp Plan 01; Task 3 builds it, later tasks reuse it). The plain-JS
 helper block of ``ui/components/model-profiles.jsx`` loads first, as ``ui/index.html`` loads that file before the page: the ``profiles`` entry hands
-its card and its list to those helpers (``MP_profileCard``, ``MP_withWindows``; Platform revamp Plan 03, Task 4).
+its card and its list to those helpers (``MP_profileCard``, ``MP_withWindows``; Platform revamp Plan 03, Task 4). Between the kit and the page it
+loads the plain-JS helper block of ``ui/components/toolsets.jsx`` (``TS_BUILTIN_RESERVED_IDS`` up to ``TS_TABS``), as ``ui/index.html`` loads that file
+before the page: the Toolsets card's status is ``TS_toolsetCardStatus(row, con)`` (revamp 06 Task 6).
 
 ``platform_page_context(prelude_extra="")`` returns a fresh context (the caller closes it) holding these stand-ins, set up before the code loads and
 free to change afterwards:
@@ -33,6 +35,7 @@ PLATFORM = ROOT / "ui" / "components" / "console" / "nv-platform.jsx"
 MODEL_PROFILES = ROOT / "ui" / "components" / "model-profiles.jsx"
 MP_START = "// ---- MP helpers: plain JS, no JSX (tests/ui/test_llm_profiles_helpers.py evaluates this block) ----"
 MP_END = "// ---- end MP helpers ----"
+TOOLSETS = ROOT / "ui" / "components" / "toolsets.jsx"
 
 PRELUDE = r"""
 var CALLS = [];
@@ -88,8 +91,11 @@ def _profile_helpers() -> str:
 
 @cache
 def _code() -> str:
-    """The profile helpers, the kit, then the page, in the order of ``ui/index.html`` (the kit and ``model-profiles.jsx`` load before the page)."""
-    return _profile_helpers() + "\n" + transpile(KIT) + "\n" + transpile(PLATFORM)
+    """The profile helpers, the kit, the toolsets helper block, then the page, in the order of ``ui/index.html`` (the kit, ``toolsets.jsx`` and
+    ``model-profiles.jsx`` load before the page)."""
+    toolsets = TOOLSETS.read_text(encoding="utf-8")
+    helpers = toolsets[toolsets.index("const TS_BUILTIN_RESERVED_IDS"):toolsets.index("const TS_TABS")]
+    return _profile_helpers() + "\n" + transpile(KIT) + "\n" + helpers + "\n" + transpile(PLATFORM)
 
 
 def platform_page_context(prelude_extra: str = ""):

@@ -457,14 +457,16 @@ var NV_PLAT_PAGES = {
       return {
         id: row.id, name: row.id, sub: row.tagline || row.description || "",
         badge: row.builtin ? "built in" : (row.kind || "registered"),
-        // notes 3.1: red = unreachable, not amber (amber is in-progress).
+        // An MCP toolset's sign-in state first (mcp-auth.jsx), then toolsets.jsx's status: "unavailable" (red = unreachable, notes 3.1),
+        // the Collections card's "Internal search: off" chip (a button that opens its dialog, for an admin) or "available" (revamp 06).
         status: (window.TS_cardAuthStatus && window.TS_cardAuthStatus(row))
-          || (row.available === false
-            ? { label: "unavailable", tone: "error" }
-            : { label: "available", tone: "ok" }),
+          || window.TS_toolsetCardStatus(row, con),
+        // The phone's fact sheet draws facts, so the reason and the internal-search state are facts too; NV_fact drops an empty one.
         facts: [
           NV_fact("tools", NV_countOf(row.tools)),
           NV_fact("source", row.source || row.transport),
+          NV_fact("reason", row.available === false ? row.unavailable_reason : null),
+          NV_fact("internal search", row.id === "collections" && row.internal_search === false ? "off" : null),
         ],
       };
     },

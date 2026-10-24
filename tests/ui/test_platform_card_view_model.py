@@ -68,8 +68,9 @@ def test_old_chips_become_badges_or_status(page_ctx) -> None:
     ts = card(page_ctx, "toolsets", '{ id: "web", builtin: true, available: false }')
     assert ts["badge"] == "built in" and ts["status"] == {"label": "unavailable", "tone": "error"}
     assert card(page_ctx, "toolsets", '{ id: "gh", kind: "mcp" }')["badge"] == "mcp"
+    # four facts since revamp 06 Task 6 (tools, source, reason, internal search), each null for this row
     assert card(page_ctx, "toolsets", '{ id: "gh" }') == {"id": "gh", "name": "gh", "sub": "", "badge": "registered",
-                                                          "status": {"label": "available", "tone": "ok"}, "facts": [None, None]}
+                                                          "status": {"label": "available", "tone": "ok"}, "facts": [None, None, None, None]}
     tool = card(page_ctx, "tools", '{ id: "web__search", description: "Find" }')
     assert tool["id"] == "web__search" and tool["name"] == "search" and tool["badge"] == "web"
     assert "badge" not in card(page_ctx, "tools", '{ id: "loose" }'), "a tool without a toolset has no badge"
