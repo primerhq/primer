@@ -13,6 +13,8 @@ The sessions subsystem is the seam where four other subsystems meet:
 
 The subsystem's job is to glue those together for exactly one turn at a time: claim a session, build its executor, translate the executor's stream into durable per-session message records, publish ticks so the workspace tap sees new records in real time, park the turn when a yielding tool suspends it, resume it when the event fires, and write a structured per-turn audit log on every boundary. Storage (`messages.jsonl` in the workspace, plus the scheduler-visible `WorkspaceSession` row) is the source of truth; the tap (a read-only SSE stream over those records) is a tail and the event bus is advisory.
 
+**Sessions and their transcripts are a shared read by design (the user's G7-02 decision: one shared install, the risk accepted).** Every user may list, open and follow every session: `GET /v1/sessions` and `/v1/sessions/{id}` (the row, its `parked_state` and its pending messages), the workspace tap and `GET /v1/workspaces/{id}/events` need a signed-in user and scope nothing by who it is. What a person may DO to a session is the rank rule of `primer/api/routers/_session_rank.py`, which is not a scope. The one thing the event log holds back from a non-admin is what a user entered on a canvas (a `canvas.event`'s `value` and `data`; see the triggers subsystem doc, audit G8-08), so a new copy of such input (a transcript record, a queued steer) must not land anywhere this shared read serves.
+
 ## 2. Conceptual model
 
 A session has two persisted faces that are reconciled at turn boundaries:
