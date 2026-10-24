@@ -239,7 +239,7 @@ async def get_active_artifact_storage_config(request: Request) -> ActiveArtifact
 @artifact_storage_active_config_router.put(
     "/artifact_storage_active_config",
     response_model=ActiveArtifactStorageConfig,
-    responses=common_responses(422, 500),
+    responses=common_responses(409, 422, 500),
     summary="Select the artifact store used for new writes.",
 )
 async def put_active_artifact_storage_config(
