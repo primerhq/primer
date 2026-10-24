@@ -10,6 +10,7 @@ A graph runs inside a workspace session, in one of two ways. Start a session bou
 
 ## Concepts
 - A graph session is a session whose binding is `{"kind": "graph", "graph_id": ...}`. It is autonomous: it ends when the run ends, `ended_reason` `completed` or `failed`. It does not rest waiting for more input the way an agent session does.
+- A `profile_id` on the binding is the run's model profile: every `agent` node that names no `profile_id` of its own runs on it, the nodes of a `graph` node's child included. A node's own `profile_id` still wins. The agents themselves are not changed.
 - `graph_input` is the run's input, exactly as you pass it: an object, a string or a list of messages. Templates read it as `initial_input`. When the `begin` node has an `input_schema`, the session create checks `graph_input` against it and refuses a mismatch, or a missing input, with a `validation-error`.
 - `initial_instructions` are not the graph's input. They are only read, as JSON, when the `begin` node has an `input_schema` and no `graph_input` was sent.
 - The output is the `end` node's rendered `output_template`. In the transcript it is the last `assistant_token` record; a failure is an `error` record with `code`, `message` and `node_id`. Records carry the `node_id` of the node that wrote them.

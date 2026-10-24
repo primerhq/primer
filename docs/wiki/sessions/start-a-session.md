@@ -10,7 +10,7 @@ related: [sessions/observe-a-session, graphs/run-a-graph, workspaces/create-and-
 
 ## Concepts
 - **`workspace_id`** names the workspace the session works in. From a session outside the default workspace (prime) you may start sessions only in your own workspace; another one answers `not-found`, as an unknown id does.
-- **`binding`** says what runs: `{"kind": "agent", "agent_id": "..."}` or `{"kind": "graph", "graph_id": "..."}`. Either kind takes an optional `profile_id`, a model profile used for this session instead of the agent's own.
+- **`binding`** says what runs: `{"kind": "agent", "agent_id": "..."}` or `{"kind": "graph", "graph_id": "..."}`. Either kind takes an optional `profile_id`, a model profile used for this session instead of the agent's own; in a graph session, by every agent node that names no `profile_id` of its own.
 - **The brief.** An agent gets `initial_instructions`, its first user message. A graph gets `graph_input`, any JSON; when the graph's begin node has an input schema, `graph_input` is required and is checked against it before the session is created.
 - **`auto_start`** (default `true`) arms the first turn at once, and the answer reads `status` `running`. With `false` the session is created `created` and stays inert: nothing runs it until a message reaches it (`workspaces__steer_workspace_session`) or a person starts it from the console.
 - **`autonomous`** decides how the session ends. Leave it out for an agent session you will keep talking to: after each clean turn it rests (`session_state` `parked`) and waits for the next message. Set `autonomous: true` when the session should end when its agent finishes, so `session.ended` fires and a poll for `ended` works. A graph session ends after its run without it.

@@ -423,10 +423,13 @@ class GraphSessionBinding(BaseModel):
         default=None,
         description=(
             "Optional ModelProfile override for this run, mirroring "
-            ":attr:`AgentSessionBinding.profile_id`. ``None`` leaves each "
-            "agent node to resolve its own profile. Both binding kinds "
-            "carry the override so a switch can change the model and the "
-            "target in one gesture."
+            ":attr:`AgentSessionBinding.profile_id`: every agent node that "
+            "names no ``profile_id`` of its own runs on it, the agent nodes "
+            "of a ``graph`` node's child included; a node's own "
+            "``profile_id`` still wins. ``None`` leaves each agent node to "
+            "resolve its own profile (the node's, else its agent's "
+            "default). Both binding kinds carry the override so a switch "
+            "can change the model and the target in one gesture."
         ),
     )
     graph_snapshot: "Graph | None" = Field(

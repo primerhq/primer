@@ -521,8 +521,13 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
             )
         return row
 
+    # The binding's profile_id is this run's model profile for every agent node that names none; a node's own profile_id still wins (the node
+    # passes it as ``profile_id``). A ``graph`` node's child shares this resolver (``_build_sub_executor``), so its nodes take it too. The agent
+    # rows are unchanged and other sessions are unaffected (lead ruling 2 of ticket 01a16d48).
+    run_profile_id = binding.profile_id
+
     async def llm_resolver(agent, profile_id: str | None = None):
-        return await resolve_llm_and_model(pool, agent, profile_id)
+        return await resolve_llm_and_model(pool, agent, profile_id or run_profile_id)
 
     # (4) Holder AgentSession allocated by POST /workspaces/{id}/sessions
     # (Phase 2). Optional - fall back to None for legacy graph-
