@@ -459,6 +459,85 @@ def test_the_flags_say_which_backends_need_a_record() -> None:
     assert RoutingArtifactStorage.needs_location_record is False, "the router writes the records itself; it is never wrapped in another"
 
 
+# ---- every resolved store is handed back (slice D ruling 6) --------------------------------------------------------------------------------------
+#
+# The registry may resolve a provider to a store it did not cache (one built while an eviction raced the build). Only the caller can say when it is
+# done with it, so the routing store hands back, through ``release``, every store ``resolve`` gave it, once its call is over; the registry closes an
+# uncached one there.
+
+
+def _releasing(world: World, *, broken: bool = False) -> tuple[RoutingArtifactStorage, list[ArtifactStorage]]:
+    released: list[ArtifactStorage] = []
+
+    async def resolve(provider_id: str) -> ArtifactStorage:
+        if provider_id != "mem-1":
+            raise NotFoundError(f"ArtifactStorageProvider {provider_id!r} does not exist")
+        return world.mem
+
+    async def release(store: ArtifactStorage) -> None:
+        released.append(store)
+        if broken:
+            raise OSError("release failed")
+
+    routing = RoutingArtifactStorage(
+        resolve=resolve,
+        release=release,
+        fallback=DbArtifactStorage(world.sp),
+        locations=world.locations,
+        active_config=world.sp.get_storage(ActiveArtifactStorageConfig),
+        providers=world.sp.get_storage(ArtifactStorageProvider),
+    )
+    return routing, released
+
+
+async def test_a_put_a_get_and_a_delete_each_release_the_store_they_resolved_once(world: World) -> None:
+    routing, released = _releasing(world)
+    await _activate(world.sp, "mem-1")
+
+    aid = await routing.put(data=b"x", mime_type="text/plain")
+    assert released == [world.mem]
+    await routing.get(aid)
+    assert released == [world.mem] * 2
+    await routing.delete(aid)
+    assert released == [world.mem] * 3
+
+
+async def test_a_put_that_fails_still_releases_its_store(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    routing, released = _releasing(world)
+    await _activate(world.sp, "mem-1")
+
+    async def failing_create(entity):
+        raise RuntimeError("record write failed")
+
+    monkeypatch.setattr(world.locations, "create", failing_create)
+    with pytest.raises(RuntimeError, match="record write failed"):
+        await routing.put(data=b"x", mime_type="text/plain")
+
+    assert released == [world.mem]
+    assert world.mem.blobs == {}, "the bytes were removed before the store was handed back"
+
+
+async def test_the_database_fallback_is_never_released(world: World) -> None:
+    """The fallback is the routing store's own direct database store, not a store ``resolve`` handed out."""
+    routing, released = _releasing(world)
+
+    aid = await routing.put(data=b"x", mime_type="text/plain")
+    await routing.get(aid)
+    await routing.delete(aid)
+
+    assert released == []
+
+
+async def test_a_failed_release_does_not_fail_the_call(world: World, caplog: pytest.LogCaptureFixture) -> None:
+    routing, released = _releasing(world, broken=True)
+    await _activate(world.sp, "mem-1")
+
+    aid = await routing.put(data=b"x", mime_type="text/plain")
+
+    assert (await routing.get(aid)).data == b"x"
+    assert len(released) == 2 and "release failed" in caplog.text
+
+
 # ---- count_artifacts_held -------------------------------------------------------------------------------------------------------------------------
 
 

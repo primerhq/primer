@@ -12,6 +12,7 @@ from primer.artifact.routing import RoutingArtifactStorage
 from primer.coordinator.in_memory import InMemoryInvalidationBus
 from primer.int.coordinator import InvalidationTopic
 from primer.model.except_ import NotFoundError
+from tests.artifact._stores import MemStore
 from tests.conftest import _FakeStorageProvider
 
 
@@ -399,6 +400,121 @@ async def test_a_get_with_no_eviction_in_flight_is_cached():
     gate.set()
 
     assert await task is await reg.get_provider("asp-a")
+
+
+# ---- a store built during an eviction race is closed after its use (slice D ruling 6; the #784 review note) ---------------------------------------
+#
+# The racing get hands its caller the instance it built (the request completes) but does not cache it. Nothing else holds it, so before slice D
+# nothing ever closed it: harmless for the database and filesystem stores, a leaked aiobotocore client (and its connection pool) for S3.
+
+
+async def _raced(reg_rows=None):
+    gate = asyncio.Event()
+    reg, task = await _start_a_build_in_flight({"asp-a": object()} if reg_rows is None else reg_rows, gate)
+    await reg.invalidate("asp-a")
+    gate.set()
+    return reg, await task
+
+
+@pytest.mark.asyncio
+async def test_a_store_built_during_an_eviction_race_is_closed_once_its_caller_releases_it():
+    reg, raced = await _raced()
+
+    assert not raced.closed, "its caller is still using it"
+    await reg.release_provider(raced)
+
+    assert raced.closed
+    await reg.release_provider(raced)                      # a second release is harmless
+
+
+@pytest.mark.asyncio
+async def test_releasing_a_cached_store_leaves_it_open_and_cached():
+    reg = _registry()
+    cached = await reg.get_provider("asp-a")
+
+    await reg.release_provider(cached)
+
+    assert not cached.closed
+    assert await reg.get_provider("asp-a") is cached
+
+
+@pytest.mark.asyncio
+async def test_a_raced_store_that_is_never_released_is_closed_with_the_registry():
+    reg, raced = await _raced()
+
+    await reg.aclose()
+
+    assert raced.closed
+
+
+@pytest.mark.asyncio
+async def test_a_raced_store_whose_close_fails_is_logged_not_raised(caplog):
+    reg, raced = await _raced()
+
+    async def broken():
+        raise OSError("close failed")
+
+    raced.aclose = broken
+    await reg.release_provider(raced)
+
+    assert "close failed" in caplog.text
+
+
+class _GatedMem(MemStore):
+    """A routing-store backend (it needs a location record) whose ``initialize`` waits on ``gate``."""
+
+    def __init__(self, gate):
+        super().__init__()
+        self._gate = gate
+
+    async def initialize(self):
+        await self._gate.wait()
+
+
+@pytest.mark.asyncio
+async def test_the_routing_store_closes_a_raced_store_after_the_put_that_used_it(tmp_path):
+    """End to end through ``get_default()``: a put resolves the active provider while an edit of that provider evicts it. The put completes on
+    the store it built, which is closed once the put is done; the next put builds a fresh store, which is cached and stays open."""
+    from primer.model.artifact import ArtifactLocation
+    from primer.model.provider import ArtifactStorageProvider, SqliteConfig
+    from primer.model.providers.artifact import ACTIVE_ARTIFACT_STORAGE_CONFIG_ID, ActiveArtifactStorageConfig
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "race.sqlite"))
+    await sp.initialize()
+    try:
+        providers = sp.get_storage(ArtifactStorageProvider)
+        await providers.create(ArtifactStorageProvider(id="mem-1", provider="filesystem", config={"root": str(tmp_path / "unused")}))
+        await sp.get_storage(ActiveArtifactStorageConfig).create(
+            ActiveArtifactStorageConfig(id=ACTIVE_ARTIFACT_STORAGE_CONFIG_ID, provider_id="mem-1"),
+        )
+        gate, built = asyncio.Event(), []
+
+        def factory(row, storage_provider):
+            built.append(_GatedMem(gate))
+            return built[-1]
+
+        reg = ArtifactStorageRegistry(storage=providers, storage_provider=sp, factory=factory)
+        routing = await reg.get_default()
+        put = asyncio.create_task(routing.put(data=b"raced", mime_type="text/plain"))
+        async with asyncio.timeout(5):
+            while not built:
+                await asyncio.sleep(0)
+        await reg.invalidate("mem-1")
+        gate.set()
+        aid = await put
+
+        assert built[0].closed, "the raced store was closed after the put"
+        assert (await sp.get_storage(ArtifactLocation).get(aid)).provider_id == "mem-1"
+
+        second = await routing.put(data=b"cached", mime_type="text/plain")
+        assert len(built) == 2 and not built[1].closed, "a store built with no race is cached and stays open"
+        assert (await routing.get(second)).data == b"cached"
+        assert not built[1].closed
+        await reg.aclose()
+        assert built[1].closed
+    finally:
+        await sp.aclose()
 
 
 @pytest.mark.asyncio
