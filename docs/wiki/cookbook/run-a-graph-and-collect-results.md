@@ -95,7 +95,7 @@ Response:
 {"info": {"session_id": "sess-3f9a1c", "status": "ended", "ended_reason": "completed", "ended_detail": null}, "status": "ended"}
 ```
 
-Poll while `status` is `running`. A clean run ends `completed`; a run that fails ends `failed`. While it is `waiting`, a person has a question or an approval to settle, and only a person answers it: in the console, or over the channel the workspace is bound to.
+Poll while `status` is `running`. A clean run ends `completed`; a run that fails ends `failed`. A park does not move `status`: a run that waits on a question or an approval still reads `running`. When it stops moving, read the transcript tail with `workspaces__read_workspace_session_messages`. A last `yielded` record whose `event_key` starts with `ask_user:` or `tool_approval:` means a person has a question or an approval to settle. The full row, with the park fields, is in `workspaces__find_sessions`. Only a person answers: in the console, or over the channel the workspace is bound to.
 
 ### 6. Read the end node's output
 
