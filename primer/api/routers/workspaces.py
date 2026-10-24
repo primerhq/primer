@@ -139,7 +139,7 @@ from primer.workspace.template_privilege import (
 from primer.workspace.template_secrets import restore_template_secrets
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.model.yield_ import gate_id_of, with_wake_park
-from primer.session.pending_gates import enumerate_pending_gates
+from primer.session.pending_gates import undecided_pending_gates
 from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
 from primer.storage import raw_generation
 from primer.storage.secret_fields import refuse_secret_fields
@@ -3894,6 +3894,13 @@ async def list_session_pending_yields(
     ``primer.session.pending_gates`` resolver, not just the primary one
     the old single-``yielded``-blob read projected. Non-primary gates were
     previously invisible here and therefore unanswerable in the console.
+
+    Ticket 01a16ca6: a gate whose decision is already stamped on the row
+    (a respond landed and no worker has claimed the row yet) is not
+    returned, and a ``resumable`` row is read as well as a ``parked`` one,
+    so the undecided sibling of a graph park with one gate decided stays on
+    offer in that window instead of vanishing until the worker re-parks.
+    A single-event park that is ``resumable`` has nothing left to decide.
     """
     sess = await session_storage.get(session_id)
     if sess is None or sess.workspace_id != workspace_id:
@@ -3902,9 +3909,8 @@ async def list_session_pending_yields(
             f"{workspace_id!r}"
         )
     items: list[dict] = []
-    if sess.parked_status == "parked":
-        blob: dict = sess.parked_state or {}
-        for gate in enumerate_pending_gates(blob):
+    if sess.parked_status in ("parked", "resumable"):
+        for gate in undecided_pending_gates(sess):
             tool_name = gate["kind"]
             metadata: dict = gate["resume_metadata"]
             items.append({

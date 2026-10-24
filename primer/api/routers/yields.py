@@ -53,7 +53,7 @@ from primer.model.except_ import (
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.yield_ import GATE_ID_PATTERN, entry_id_of, gate_id_of, with_wake_entry, with_wake_gate, with_wake_park
 from primer.session.approvers import ADMIN_ONLY_METADATA
-from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
+from primer.session.pending_gates import enumerate_pending_gates, gate_is_decided, resolve_pending_gate
 from primer.session.yields import durably_wake_session
 from primer.worker.yield_runtime import make_cancelled_payload
 
@@ -111,6 +111,7 @@ def _graph_ask_user_dispatch(
     blob: dict[str, Any],
     *,
     tool_call_id: str | None = None,
+    decided: set[tuple[str | None, str | None]] | None = None,
 ) -> dict[str, Any] | None:
     """Return a graph ask_user dispatch entry from a graph checkpoint, or None.
 
@@ -123,16 +124,25 @@ def _graph_ask_user_dispatch(
     answerable over REST exactly like an agent-session ask_user park.
 
     ``tool_call_id`` (POST path) selects a specific pending entry; the GET path
-    omits it and takes the first ask_user entry.
+    omits it and takes the first ask_user entry that is not ``decided``: the
+    ``(node_id, tool_call_id)`` of every pending tool call whose answer is
+    already stamped on the row (ticket 01a16ca6; a dispatch entry from before
+    entries carried a node id is matched by its tool_call_id).
     """
     checkpoint = blob.get("graph_checkpoint")
     if not checkpoint:
         return None
+
+    def _answered(entry: dict[str, Any]) -> bool:
+        node, tcid = entry.get("node_id"), entry.get("tool_call_id")
+        return any(tcid == held_tcid and (node is None or node == held_node) for held_node, held_tcid in decided or ())
+
     matches = [
         entry
         for entry in checkpoint.get("pending_dispatch") or []
         if entry.get("kind") == "ask_user"
         and (tool_call_id is None or entry.get("tool_call_id") == tool_call_id)
+        and not _answered(entry)
     ]
     if len(matches) > 1:
         # 01a0518f: two concurrent fan-out siblings can share a raw
@@ -313,11 +323,17 @@ async def get_ask_user_pending(
             f"Session {session_id!r} has no pending ask_user prompt"
         )
     yielded = blob.get("yielded") or {}
+    # A prompt whose answer is already stamped on the row (a respond landed, no worker has claimed the row yet) is not pending: it can only answer
+    # 409 already_decided, then 404 gate_not_pending once claimed, so a poller that saw it would answer it twice (ticket 01a16ca6). It answers as
+    # "nothing pending" does; a graph park's unanswered sibling is still served.
+    decided = [gate for gate in enumerate_pending_gates(blob) if gate_is_decided(sess, gate)]
     if yielded.get("tool_name") != "ask_user":
         # A graph tool_call ask_user park labels the outer yield ``_approval``;
         # the real ask_user prompt lives in the graph checkpoint. Surface it
         # so the operator-facing panel renders the same way as an agent park.
-        graph_entry = _graph_ask_user_dispatch(blob)
+        graph_entry = _graph_ask_user_dispatch(blob, decided={(gate["node_id"], gate["tool_call_id"]) for gate in decided})
+        if graph_entry is None and _graph_ask_user_dispatch(blob) is not None:
+            raise NotFoundError(f"Session {session_id!r} has no pending ask_user prompt")
         if graph_entry is not None:
             gmeta = graph_entry.get("resume_metadata") or {}
             return AskUserPendingResponse(
@@ -346,6 +362,8 @@ async def get_ask_user_pending(
         raise NotFoundError(
             f"Session {session_id!r} has a malformed ask_user park"
         )
+    if decided:
+        raise NotFoundError(f"Session {session_id!r} has no pending ask_user prompt")
     parked_at_iso = (
         sess.parked_at.isoformat()
         if sess.parked_at is not None

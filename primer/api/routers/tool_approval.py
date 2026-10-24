@@ -37,7 +37,7 @@ from primer.model.except_ import ConflictError, NotFoundError
 from primer.api.approver_guard import enforce_approvers
 from primer.api.routers._session_rank import refuse_outranked
 from primer.api.gate_fence import GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
-from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
+from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate, undecided_pending_gates
 from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
 from primer.session.yields import durably_wake_session
 from primer.model.workspace_session import WorkspaceSession
@@ -235,21 +235,18 @@ def _approval_blob_or_404(sess: Any, id_str: str, *, not_pending: type[NotFoundE
 
 
 def _build_pending_response(
-    blob: dict, sess: Any
+    blob: dict, sess: Any, gate: dict
 ) -> ToolApprovalPendingResponse:
-    """Construct the pending-response envelope for ONE approval gate.
+    """Construct the pending-response envelope for ONE approval gate, ``gate``.
 
     This endpoint's response shape is singular (predates multi-gate
     graph parks), so a session with several pending approval gates at
-    once surfaces only the first found here -- callers that need every
-    pending gate use ``GET .../yields/pending`` (workspaces.py) instead,
-    which returns all of them via the same shared resolver.
+    once surfaces only the first undecided one (the route picks it) --
+    callers that need every pending gate use ``GET .../yields/pending``
+    (workspaces.py) instead, which returns all of them via the same
+    shared resolver.
     """
-    gate = next(
-        (g for g in enumerate_pending_gates(blob) if g["kind"] == "_approval"),
-        None,
-    )
-    metadata: dict = (gate or {}).get("resume_metadata") or {}
+    metadata: dict = gate.get("resume_metadata") or {}
     original: dict = metadata.get("original_call") or {}
     # Graph pending-toolcall entries never carry a timeout (the checkpoint's
     # _PendingToolCall has no such field); this stays None for every graph
@@ -262,7 +259,7 @@ def _build_pending_response(
             sess.parked_at + timedelta(seconds=float(timeout))
         ).isoformat()
     return ToolApprovalPendingResponse(
-        tool_call_id=original.get("id") or (gate or {}).get("tool_call_id") or "",
+        tool_call_id=original.get("id") or gate.get("tool_call_id") or "",
         tool_name=original.get("name", ""),
         arguments=original.get("arguments") or {},
         policy_id=metadata.get("policy_id"),
@@ -472,7 +469,13 @@ def make_tool_approval_ops_router() -> APIRouter:
     ) -> ToolApprovalPendingResponse:
         sess = await session_storage.get(session_id)
         blob = _approval_blob_or_404(sess, session_id)
-        return _build_pending_response(blob, sess)
+        # A gate whose decision is already stamped on the row (a respond landed, no worker has claimed the row yet) is not pending: it can only
+        # answer 409 already_decided, then 404 gate_not_pending once claimed, so a poller that saw it would answer it twice (ticket 01a16ca6). It
+        # answers as "nothing pending" does; a graph park's undecided sibling is still served.
+        gate = next((g for g in undecided_pending_gates(sess) if g["kind"] == "_approval"), None)
+        if gate is None:
+            raise NotFoundError(f"{session_id!r} has no pending tool_approval")
+        return _build_pending_response(blob, sess, gate)
 
     @router.post(
         "/sessions/{session_id}/tool_approval/respond",
