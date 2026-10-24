@@ -226,10 +226,8 @@ function _emptyForm(provider) {
     k_entrypoint: [],
     k_args: [],
     k_workdir: "/workspace",
-    k_cpu_request: "",
-    k_cpu_limit: "",
-    k_memory_request: "",
-    k_memory_limit: "",
+    k_cpu_cores: "",
+    k_memory_bytes: "",
     k_pvc_size: "10Gi",
     k_pvc_access_modes: ["ReadWriteOnce"],
     k_storage_class: "",
@@ -276,10 +274,8 @@ function _fromTemplate(t, providers) {
     k_entrypoint: isK ? (backend.entrypoint || []) : [],
     k_args: isK ? (backend.args || []) : [],
     k_workdir: isK ? (backend.workdir || "/workspace") : "/workspace",
-    k_cpu_request: isK ? (backend.cpu_request || "") : "",
-    k_cpu_limit: isK ? (backend.cpu_limit || "") : "",
-    k_memory_request: isK ? (backend.memory_request || "") : "",
-    k_memory_limit: isK ? (backend.memory_limit || "") : "",
+    k_cpu_cores: isK && t.resources && t.resources.cpu_cores != null ? String(t.resources.cpu_cores) : "",
+    k_memory_bytes: isK && t.resources && t.resources.memory_bytes != null ? String(t.resources.memory_bytes) : "",
     k_pvc_size: isK ? (backend.pvc_size || "10Gi") : "10Gi",
     k_pvc_access_modes: isK ? (backend.pvc_access_modes || ["ReadWriteOnce"]) : ["ReadWriteOnce"],
     k_storage_class: isK ? (backend.storage_class || "") : "",
@@ -398,10 +394,6 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
       };
       if ((form.k_entrypoint || []).length > 0) backend.entrypoint = form.k_entrypoint;
       if ((form.k_args || []).length > 0) backend.args = form.k_args;
-      if (form.k_cpu_request) backend.cpu_request = form.k_cpu_request;
-      if (form.k_cpu_limit) backend.cpu_limit = form.k_cpu_limit;
-      if (form.k_memory_request) backend.memory_request = form.k_memory_request;
-      if (form.k_memory_limit) backend.memory_limit = form.k_memory_limit;
       if (form.k_storage_class) backend.storage_class = form.k_storage_class;
       if (Array.isArray(form.k_extra_volumes) && form.k_extra_volumes.length > 0) backend.extra_volumes = form.k_extra_volumes;
       if (Array.isArray(form.k_extra_volume_mounts) && form.k_extra_volume_mounts.length > 0) backend.extra_volume_mounts = form.k_extra_volume_mounts;
@@ -414,7 +406,7 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
 
     const initCmds = (form.init_commands || "").split("\n").map((s) => s.trim()).filter(Boolean);
 
-    const body = {
+    const edited = {
       ...(form.id ? { id: form.id } : {}),
       description: form.description || null,
       provider_id: form.provider_id,
@@ -426,6 +418,18 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
       tmp_path: form.tmp_path || ".tmp",
       strict_write_locking: !!form.strict_write_locking,
     };
+    if (form.backend_kind === "kubernetes") {
+      const resources = { ...((isEdit && existing.resources) || {}) };
+      resources.cpu_cores = form.k_cpu_cores !== "" && form.k_cpu_cores != null ? Number(form.k_cpu_cores) : null;
+      resources.memory_bytes = form.k_memory_bytes !== "" && form.k_memory_bytes != null ? Math.trunc(Number(form.k_memory_bytes)) : null;
+      edited.resources = resources;
+    }
+    const body = isEdit ? {
+      ...existing,
+      ...edited,
+      backend: { ...(existing.backend || {}), ...backend },
+      ...(edited.resources ? { resources: { ...(existing.resources || {}), ...edited.resources } } : {}),
+    } : edited;
     mutation.mutate(body).catch(() => { /* onError handled */ });
   };
 
@@ -436,6 +440,7 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
   return (
     <Modal
       title={isEdit ? `Edit ${existing.id}` : "New workspace template"}
+      testid="ws-template-modal"
       onClose={onClose}
       footer={
         <>
@@ -531,17 +536,11 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
           <input className="input mono" value={form.k_workdir} onChange={(e) => update("k_workdir", e.target.value)} style={{ width: "100%" }} />
         </WS_FieldRow>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <WS_FieldRow label="cpu_request" hint="e.g. 500m">
-            <input className="input mono" value={form.k_cpu_request} onChange={(e) => update("k_cpu_request", e.target.value)} placeholder="500m" style={{ width: "100%" }} />
+          <WS_FieldRow label="cpu_cores" hint="optional · requests and limits">
+            <input className="input mono" type="number" step="0.1" min="0" value={form.k_cpu_cores} onChange={(e) => update("k_cpu_cores", e.target.value)} placeholder="2" style={{ width: "100%" }} data-testid="ws-template-cpu-cores" />
           </WS_FieldRow>
-          <WS_FieldRow label="cpu_limit" hint="e.g. 2">
-            <input className="input mono" value={form.k_cpu_limit} onChange={(e) => update("k_cpu_limit", e.target.value)} placeholder="2" style={{ width: "100%" }} />
-          </WS_FieldRow>
-          <WS_FieldRow label="memory_request" hint="e.g. 1Gi">
-            <input className="input mono" value={form.k_memory_request} onChange={(e) => update("k_memory_request", e.target.value)} placeholder="1Gi" style={{ width: "100%" }} />
-          </WS_FieldRow>
-          <WS_FieldRow label="memory_limit" hint="e.g. 4Gi">
-            <input className="input mono" value={form.k_memory_limit} onChange={(e) => update("k_memory_limit", e.target.value)} placeholder="4Gi" style={{ width: "100%" }} />
+          <WS_FieldRow label="memory_bytes" hint="optional · requests and limits">
+            <input className="input mono" type="number" step="1" min="0" value={form.k_memory_bytes} onChange={(e) => update("k_memory_bytes", e.target.value)} placeholder="2147483648" style={{ width: "100%" }} data-testid="ws-template-memory-bytes" />
           </WS_FieldRow>
         </div>
         <WS_FieldRow label="pvc_size">
