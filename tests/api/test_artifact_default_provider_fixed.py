@@ -22,7 +22,9 @@ from primer.model.provider import ArtifactStorageProvider
 
 COLLECTION = "/v1/artifact_storage_providers"
 URL = f"{COLLECTION}/{DEFAULT_ARTIFACT_PROVIDER_ID}"
-FILESYSTEM = {"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "filesystem", "config": {"root": "/tmp/artifacts"}}
+# A root no test may write to: since the filesystem store ships, a create or an update prepares its root (last, after the reserved-row check).
+# Were the order wrong, preparing this root would fail as artifact_root_unusable instead of writing to a shared folder.
+FILESYSTEM = {"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "filesystem", "config": {"root": "/nonexistent/primer-artifacts"}}
 S3 = {"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "s3", "config": {"bucket": "b"}}
 DB = {"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "db", "config": {}}
 
