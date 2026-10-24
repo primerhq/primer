@@ -7,7 +7,8 @@ elements with children, attributes, properties, styles and listeners; text nodes
 iframe has a ``contentWindow`` that records what was posted to it, so a test can see a media element was NOT reloaded and which port an
 Html frame was given.
 
-``canvas_dom_context()`` returns a MiniRacer context with the fake DOM, the renderer, and ``CV.boot`` already run (its handle is ``R``); ``FD`` is the fake, and the helpers ``FD.connect()``, ``FD.state(...)``,
+``canvas_dom_context(prelude)`` returns a MiniRacer context with the fake DOM, the Html bootstrap source as ``CV_BOOTSTRAP``, the
+renderer, and ``CV.boot`` already run (its handle is ``R``); ``FD`` is the fake, and the helpers ``FD.connect()``, ``FD.state(...)``,
 ``FD.sent()`` and ``FD.find(...)`` drive it.
 """
 
@@ -20,6 +21,7 @@ import pytest
 
 UI = Path(__file__).resolve().parents[2] / "ui"
 RENDERER = UI / "canvas" / "renderer.js"
+BOOTSTRAP = UI / "canvas" / "html-bootstrap.js"
 
 FAKE_DOM = r"""
 var FD = (function () {
@@ -207,11 +209,12 @@ var FD = (function () {
 
 
 def canvas_dom_context():
-    """A MiniRacer context with the fake DOM, the renderer and ``CV.boot`` run (``R`` is its handle)."""
+    """A MiniRacer context with the fake DOM, the bootstrap source, the renderer and ``CV.boot`` run (``R`` is its handle)."""
     py_mini_racer = pytest.importorskip("py_mini_racer")
     ctx = py_mini_racer.MiniRacer()
     ctx.eval(FAKE_DOM)
     ctx.eval("var window = FD.window; var document = FD.document;")
+    ctx.eval("window.CV_BOOTSTRAP = " + json.dumps(BOOTSTRAP.read_text(encoding="utf-8")) + ";")
     ctx.eval(RENDERER.read_text(encoding="utf-8"))
     ctx.eval("var CV = window.CV; var R = CV.boot(FD.document, FD.window);")
     return ctx

@@ -1,22 +1,42 @@
-/* The canvas frame's trusted renderer (pivot P5, Task 16; design 8.6, plan Decision 6).
+/* The canvas frame's trusted renderer (pivot P5, Tasks 16 and 17; design 8.6, plan Decisions 6 and 10).
  *
  * This file runs in the canvas frame: the static page of GET /canvas/frame, served with its own CSP header (primer/canvas/frame.py)
  * and sandboxed into an opaque origin (no frame of the canvas is ever given its origin). It draws the agent's elements with real
- * controls and TEXT NODES ONLY: no string from the console or the agent is ever parsed as HTML here. Html elements are Task 17's.
+ * controls and TEXT NODES ONLY: no string from the console or the agent is ever parsed as HTML here. Agent HTML exists only as the
+ * srcdoc of a nested frame (an Html element); an about:srcdoc document clones its creator's policy container, so the header's policy
+ * binds it too, and the one <meta> policy the renderer writes into it (CV.metaCsp, before any agent content) can only narrow its media
+ * (a second policy is enforced alongside the first, never instead of it). The header is the only script control (audit G8-06).
  *
  * The bridge. Both sides validate every message and drop what does not fit.
  *  - Handshake: the console posts {type: "primer.canvas.connect", protocol: 1} to this window with targetOrigin "*" and ONE transferred
  *    MessagePort. The renderer takes the first such message whose event.source is window.parent, and drops every later one and every
- *    other window message.
+ *    other window message (an Html frame's parent.postMessage included: it is open, so it is never trusted).
  *  - Console to frame, on that port: {type: "state", rev, elements, values, settings: {media_policy, media_allowlist, strict_mode},
- *    file_urls, own_origin, theme} (at most 2 MiB as JSON); {type: "busy", element, on}; {type: "theme", theme}.
+ *    file_urls, own_origin, theme, run_html} (at most 2 MiB as JSON); {type: "busy", element, on}; {type: "theme", theme}.
+ *    run_html (the lead's ruling 5 on S7): the console's word that THIS viewer may run the canvas's Html at once (S8 sets it true only
+ *    for the session's creator). Absent or anything but true renders every Html element inert behind a Run button; strict_mode renders
+ *    it inert whatever run_html says. A Run click holds for that element and that body for the page load: a changed body asks again.
  *  - Frame to console: {type: "ready", protocol: 1}; {type: "event", element, kind, value?, name?, data?, position?};
- *    {type: "open_link", element?, url}; {type: "copy", element, text} (at most 10000 characters); {type: "error", message} (at most
- *    500 characters). At most 16 KiB each and 20 a second (a token bucket); the rest are dropped. Errors also go out at most 3 at
- *    once and then one a second, so a burst of them cannot crowd out a person's clicks.
+ *    {type: "open_link", element?, url} (element names a Link element; an Html element's openLink carries none, as Html sends no
+ *    "open" event); {type: "copy", element, text} (at most 10000 characters); {type: "error", message} (at most 500 characters).
+ *    At most 16 KiB each and 20 a second (a token bucket); the rest are dropped. Errors also go out at most 3 at once and then one
+ *    a second, so an element that throws in a loop cannot crowd out a person's clicks.
+ *  - Renderer to an Html frame: {type: "primer.html.connect", element} with one transferred port on each load of the frame (its
+ *    bootstrap takes the first offer whose event.source is its parent), then {type: "value", value} and {type: "theme", theme} on it.
+ *  - Html frame to renderer, on the port it was given: {type: "emit", name, data}, {type: "set_value", value}, {type: "copy", text},
+ *    {type: "open_link", url}, {type: "size", height}, {type: "error", message} (CV.validateHtmlMessage). A message on an element's port
+ *    speaks for that element only, and a port the renderer has replaced is no longer heard.
  *
- * The pure part (CV.validateHostMessage, CV.mediaDecision, CV.inlineMarkup, CV.linkTarget, CV.themeCss, CV.selectOptions and the
- * outgoing bucket) needs no DOM; tests/ui/test_canvas_renderer.py runs it in MiniRacer. CV.boot(document, window) is the DOM side.
+ * The click gate (audit G8-05, the lead's ruling 1 on S7). Agent code shares its frame's realm with the bootstrap and can take the
+ * port, so the bootstrap's own check is advisory. The renderer forwards an Html emit, copy or open_link only while THIS document's
+ * navigator.userActivation.isActive holds (a click or key press inside an Html frame activates its ancestors, this frame among them,
+ * for a few seconds), the element's frame is this document's activeElement, the page is visible, and at most EMIT_BUDGET of them per
+ * activation. A browser without navigator.userActivation forwards none. An Html setValue needs no activation: it is sent at most once
+ * a second across the canvas, the latest value of each element kept, so a looping element cannot spend the session's silent budget.
+ *
+ * The pure part (CV.validateHostMessage, CV.mediaDecision, CV.inlineMarkup, CV.linkTarget, CV.themeCss, CV.selectOptions,
+ * CV.metaCsp, CV.htmlSrcdoc and the small machines below) needs no DOM; tests/ui/test_canvas_renderer.py runs it in MiniRacer.
+ * CV.boot(document, window) is the DOM side.
  */
 (function (root) {
   "use strict";
@@ -40,18 +60,30 @@
   var MAX_STATE_NODES = 400000;
   var MAX_THEME_PAIRS = 40;
   var MAX_OUT_BYTES = 16 * 1024;
+  var MAX_HTML_MESSAGE_BYTES = 16 * 1024;
   var OUT_PER_SECOND = 20;
-  //: Error reports have their own, smaller budget, so a burst of them cannot spend the bucket a person's clicks go out on.
+  //: Error reports (the renderer's own and an Html element's) have their own, smaller budget, so an element that throws in a loop
+  //: cannot spend the bucket a person's clicks go out on.
   var ERRORS_PER_SECOND = 1;
   var ERROR_BURST = 3;
+  var EMIT_BUDGET = 3;
+  var EMIT_NAME_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+  var MAX_EMIT_DATA_BYTES = 4096;
+  var MAX_VALUE_CHARS = 1000;
+  var MAX_COPY_CHARS = 10000;
   var MAX_ERROR_CHARS = 500;
   var MAX_URL_CHARS = 2048;
   var MAX_JSON_DEPTH = 32;
   //: A float of this magnitude or more does not round-trip through the canvas row (primer.canvas.lang.MAX_FLOAT).
   var MAX_NUMBER = 1e15;
   var MAX_POSITION_SECONDS = 86400;
+  var SET_VALUE_INTERVAL_MS = 1000;
   var BUSY_TIMEOUT_MS = 30000;
   var PENDING_CHOICE_MS = 10000;
+  var ACTIVATION_POLL_MS = 100;
+  var HTML_AUTO_MIN = 40;
+  var HTML_AUTO_MAX = 1200;
+  var HTML_FIRST_HEIGHT = 150;
   //: Bounds of the strings the renderer reads, in UTF-16 units: twice the catalog's characters (an astral character is two units).
   var MAX_LABEL = 160;
   var MAX_TITLE = 400;
@@ -62,12 +94,14 @@
   var MAX_OPTION_VALUE = 400;
   var MAX_OPTIONS = 100;
 
-  //: The exact copy of the placeholders (plan Task 16).
+  //: The exact copy of the placeholders (plan Task 16) and of strict mode (Task 17).
   var COPY = {
     loadImage: "Load image from {host}",
     loadAudio: "Load audio from {host}",
     blocked: "Media from {host} is blocked by this install's canvas policy",
     missing: "This file is not available",
+    inert: "This element runs code the agent wrote.",
+    run: "Run",
     choose: "Choose an option",
     badLink: "This link is not valid"
   };
@@ -85,12 +119,16 @@
   var URL_BAD_CHARS = /[\s\\\u0000-\u001f\u007f]/;
   //: A NUL, or a lone surrogate: neither can be stored (primer.canvas.catalog.has_unstorable_char).
   var UNSTORABLE = /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?:^|[^\ud800-\udbff])[\udc00-\udfff]/;
+  var SCRIPT_BREAK_RE = /<\/script|<!--/i;
 
   var THEME_NAME_RE = /^--cv-[a-z0-9-]{1,40}$/;
   var THEME_VALUE_RE = /^[^;{}<>\\\r\n]{0,200}$/;
   //: The CSS functions a theme value may call: colours and arithmetic, nothing that loads anything.
   var CSS_FUNCTIONS = {"": 1, rgb: 1, rgba: 1, hsl: 1, hsla: 1, hwb: 1, lab: 1, lch: 1, oklab: 1, oklch: 1, color: 1, "color-mix": 1,
     calc: 1, "var": 1, min: 1, max: 1, clamp: 1};
+  //: The base style of an Html frame, before the theme.
+  var HTML_BASE_CSS = "html,body{margin:0;padding:0;background:transparent}" +
+    "body{font:14px/1.45 var(--cv-font,system-ui,sans-serif);color:var(--cv-fg,inherit)}";
 
   function has(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); }
 
@@ -460,7 +498,8 @@
       settings: settings,
       file_urls: fileUrls,
       own_origin: own,
-      theme: isPlainObject(msg.theme) ? themeObject(msg.theme) : null
+      theme: isPlainObject(msg.theme) ? themeObject(msg.theme) : null,
+      run_html: msg.run_html === true
     };
   }
 
@@ -486,9 +525,112 @@
     return !!ports && ports.length === 1 && !!ports[0];
   }
 
+  function emitProblem(name, data) {
+    if (typeof name !== "string" || !EMIT_NAME_RE.test(name)) {
+      return "an emit name is 1 to 64 letters, digits, _ . : or -, and does not start with /";
+    }
+    if (data === undefined || data === null) return null;
+    if (!isJsonData(data, MAX_JSON_DEPTH, 5000)) return "emit data must be JSON";
+    var size = jsonBytes(data);
+    return size >= 0 && size <= MAX_EMIT_DATA_BYTES ? null : "emit data is at most " + MAX_EMIT_DATA_BYTES + " bytes of JSON";
+  }
+
+  //: A message from an Html frame (on the port the renderer gave it), checked and copied, or null.
+  function validateHtmlMessage(msg) {
+    if (!isPlainObject(msg) || typeof msg.type !== "string") return null;
+    if (!isJsonData(msg, MAX_JSON_DEPTH + 2, 5000)) return null;
+    var size = jsonBytes(msg);
+    if (size < 0 || size > MAX_HTML_MESSAGE_BYTES) return null;
+    var keys = Object.keys(msg);
+    function only(allowed) {
+      for (var i = 0; i < keys.length; i++) if (allowed.indexOf(keys[i]) < 0) return false;
+      return true;
+    }
+    if (msg.type === "emit") {
+      if (!only(["type", "name", "data"]) || emitProblem(msg.name, msg.data)) return null;
+      return {type: "emit", name: msg.name, data: msg.data === undefined ? null : msg.data};
+    }
+    if (msg.type === "set_value") {
+      if (!only(["type", "value"]) || msg.value === undefined) return null;
+      var length = JSON.stringify(msg.value).length;
+      return length <= MAX_VALUE_CHARS ? {type: "set_value", value: msg.value} : null;
+    }
+    if (msg.type === "copy") {
+      if (!only(["type", "text"]) || typeof msg.text !== "string" || msg.text.length > MAX_COPY_CHARS) return null;
+      return {type: "copy", text: msg.text};
+    }
+    if (msg.type === "open_link") {
+      var target = only(["type", "url"]) ? linkTarget(msg.url) : null;
+      return target ? {type: "open_link", url: target.url} : null;
+    }
+    if (msg.type === "size") {
+      if (!only(["type", "height"]) || typeof msg.height !== "number" || !isFinite(msg.height) || msg.height < 0) return null;
+      return {type: "size", height: msg.height};
+    }
+    if (msg.type === "error") {
+      if (!only(["type", "message"]) || typeof msg.message !== "string") return null;
+      return {type: "error", message: clip(msg.message, MAX_ERROR_CHARS)};
+    }
+    return null;
+  }
+
   // ---------------------------------------------------------------------------------------------------------------------------------
-  // The outgoing bucket
+  // Html elements: the narrowing media policy and the srcdoc
   // ---------------------------------------------------------------------------------------------------------------------------------
+
+  //: The <meta> policy an Html frame adds under the media policy (Decision 10): null under any-https (the header's own media rule
+  //: holds); under allowlist, only data:, blob:, the minted-URL origin and the listed hosts; under none (and any policy this renderer
+  //: does not know), only data:, blob: and the minted-URL origin. It names only img-src, media-src and font-src, each a subset of the
+  //: header's, and a second policy is enforced with the first, so it can only narrow.
+  function metaCsp(settings, ownOrigin) {
+    var policy = settings && settings.media_policy;
+    if (policy === "any-https") return null;
+    var own = typeof ownOrigin === "string" && ORIGIN_RE.test(ownOrigin) ? " " + ownOrigin.toLowerCase() : "";
+    if (policy === "allowlist") {
+      var hosts = "";
+      var list = cleanAllowlist(settings.media_allowlist);
+      for (var i = 0; i < list.length; i++) hosts += " https://" + list[i];
+      return "img-src data: blob:" + own + hosts + "; media-src data: blob:" + own + hosts + "; font-src data:" + hosts;
+    }
+    return "img-src data: blob:" + own + "; media-src data: blob:" + own + "; font-src data:";
+  }
+
+  //: The srcdoc of an Html element: the charset, the narrowing media policy, the theme, the bootstrap, and only then the agent's HTML,
+  //: so nothing the agent wrote comes before the policy. null when the bootstrap could end its own <script>.
+  function htmlSrcdoc(html, opts) {
+    var o = opts || {};
+    if (typeof html !== "string" || typeof o.bootstrap !== "string" || SCRIPT_BREAK_RE.test(o.bootstrap)) return null;
+    var csp = metaCsp(o.settings, o.ownOrigin);
+    return '<!doctype html><html><head><meta charset="utf-8">' +
+      (csp ? '<meta http-equiv="Content-Security-Policy" content="' + csp + '">' : "") +
+      "<style>" + HTML_BASE_CSS + themeCss(o.theme) + "</style>" +
+      "<script>" + o.bootstrap + "</script></head><body>" + html + "</body></html>";
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------------------------
+  // Small machines: the click gate, the outgoing bucket and the setValue throttle
+  // ---------------------------------------------------------------------------------------------------------------------------------
+
+  //: The renderer's click gate (audit G8-05). allow() passes only while activation.isActive is true, at most `budget` times per
+  //: activation. An activation is new once the gate has seen isActive false since its last pass (allow() and observe() both look; the
+  //: renderer calls observe() every ACTIVATION_POLL_MS while an activation is open), so a later click gets a fresh budget and a loop
+  //: after one click gets `budget` passes in all.
+  function makeEmitGate(activation, budget) {
+    var spent = 0;
+    var open = false;
+    function active() { return !!activation && activation.isActive === true; }
+    return {
+      allow: function () {
+        if (!active()) { open = false; return false; }
+        if (!open) { open = true; spent = 0; }
+        if (spent >= budget) return false;
+        spent += 1;
+        return true;
+      },
+      observe: function () { if (!active()) open = false; return open; },
+      isOpen: function () { return open; }
+    };
+  }
 
   //: A token bucket of `capacity` tokens refilled at `perSecond`: take() is true while a token is left.
   function makeBucket(perSecond, capacity, now) {
@@ -505,6 +647,37 @@
     };
   }
 
+  //: Sends at most one value every intervalMs across all elements, the latest value of each element kept until its turn.
+  function makeValueThrottle(opts) {
+    var pending = [];
+    var timer = null;
+    var lastSent = -Infinity;
+    function flush() {
+      timer = null;
+      var entry = pending.shift();
+      if (!entry) return;
+      lastSent = opts.now();
+      opts.send(entry.element, entry.value);
+      if (pending.length) timer = opts.setTimer(flush, opts.intervalMs);
+    }
+    return {
+      push: function (element, value) {
+        for (var i = 0; i < pending.length; i++) {
+          if (pending[i].element === element) { pending[i].value = value; return; }
+        }
+        pending.push({element: element, value: value});
+        if (timer === null) timer = opts.setTimer(flush, Math.max(0, lastSent + opts.intervalMs - opts.now()));
+      },
+      drop: function (element) {
+        pending = pending.filter(function (entry) { return entry.element !== element; });
+      },
+      pending: function (element) {
+        for (var i = 0; i < pending.length; i++) if (pending[i].element === element) return true;
+        return false;
+      }
+    };
+  }
+
   // ---------------------------------------------------------------------------------------------------------------------------------
   // The DOM side
   // ---------------------------------------------------------------------------------------------------------------------------------
@@ -514,6 +687,10 @@
     if (!rootNode || !win) return null;
 
     var now = function () { return win.Date.now(); };
+    var bootstrap = typeof win.CV_BOOTSTRAP === "string" ? win.CV_BOOTSTRAP : "";
+    var activation = win.navigator ? win.navigator.userActivation : undefined;
+    var gate = makeEmitGate(activation, EMIT_BUDGET);
+    var gatePoll = null;
     var bucket = makeBucket(OUT_PER_SECOND, OUT_PER_SECOND, now);
     var errorBucket = makeBucket(ERRORS_PER_SECOND, ERROR_BURST, now);
     var host = null;
@@ -521,8 +698,21 @@
     var records = Object.create(null);
     var consoleBusy = Object.create(null);
     var localBusy = Object.create(null);
+    var approved = Object.create(null);
     var clickedToLoad = Object.create(null);
+    var knownValue = Object.create(null);
     var themeNow = Object.create(null);
+    var throttle = makeValueThrottle({
+      intervalMs: SET_VALUE_INTERVAL_MS,
+      now: now,
+      setTimer: function (fn, ms) { return win.setTimeout(fn, ms); },
+      send: function (id, value) {
+        var rec = records[id];
+        if (!rec || rec.type !== "Html" || rec.unavailable) return;
+        knownValue[id] = value;
+        send({type: "event", element: id, kind: "set_value", value: value});
+      }
+    });
 
     function send(msg) {
       if (!host) return false;
@@ -596,6 +786,11 @@
       for (var i = 0; i < before.length; i++) if (names.indexOf(before[i]) < 0) style.removeProperty(before[i]);
       for (i = 0; i < names.length; i++) style.setProperty(names[i], theme[names[i]]);
       themeNow = theme;
+      var ids = Object.keys(records);
+      for (i = 0; i < ids.length; i++) {
+        var rec = records[ids[i]];
+        if (rec.type === "Html" && rec.port) postToHtml(rec, {type: "theme", theme: theme});
+      }
     }
 
     // --- busy controls ---------------------------------------------------------------------------------------------------------------
@@ -691,9 +886,14 @@
 
     function destroy(rec) {
       if (records[rec.id] === rec) delete records[rec.id];
+      if (rec.port) {
+        try { rec.port.close(); } catch (e) { /* already closed */ }
+        rec.port = null;
+      }
       if (rec.media && rec.type === "Audio" && typeof rec.media.pause === "function") {
         try { rec.media.pause(); } catch (e) { /* not playing */ }
       }
+      throttle.drop(rec.id);
       clearLocalBusy(rec.id);
       detach(rec.node);
     }
@@ -779,7 +979,7 @@
       Image: updateImage,
       Audio: updateAudio,
       Link: updateLink,
-      Html: function () {}   // Task 17 draws Html elements
+      Html: updateHtml
     };
 
     var JUSTIFY = {start: "flex-start", center: "center", end: "flex-end", stretch: "stretch"};
@@ -1089,6 +1289,152 @@
       send({type: "open_link", element: rec.id, url: rec.target.url});
     }
 
+    // --- Html ------------------------------------------------------------------------------------------------------------------------
+
+    function htmlKey(el) { return el.props.html + "\u0000" + (metaCsp(current.settings, current.own_origin) || ""); }
+
+    function mayRun(rec, key) {
+      if (current.run_html === true && current.settings.strict_mode !== true) return true;
+      return approved[rec.id] === key;
+    }
+
+    function updateHtml(rec, el) {
+      var key = htmlKey(el);
+      var run = mayRun(rec, key);
+      var sig = (run ? "run" : "inert") + "\u0000" + key;
+      if (rec.sig !== sig) {
+        rec.sig = sig;
+        closeHtml(rec);
+        empty(rec.node);
+        if (run) buildFrame(rec, el);
+        else buildInert(rec, key);
+      }
+      if (el.props.disabled) rec.node.setAttribute("inert", "");
+      else rec.node.removeAttribute("inert");
+      if (rec.frame) {
+        if (el.props.height !== null) rec.frame.style.setProperty("height", el.props.height + "px");
+        else if (!rec.autoHeight) rec.frame.style.setProperty("height", HTML_FIRST_HEIGHT + "px");
+        pushValue(rec);
+      }
+    }
+
+    function closeHtml(rec) {
+      if (rec.port) {
+        try { rec.port.close(); } catch (e) { /* already closed */ }
+      }
+      rec.port = null;
+      rec.frame = null;
+      rec.autoHeight = false;
+      rec.sentValue = undefined;
+      throttle.drop(rec.id);
+    }
+
+    function buildInert(rec, key) {
+      var box = element("div", "cv-html-inert");
+      var text = element("p", "cv-html-inert-text");
+      text.textContent = COPY.inert;
+      var run = element("button", "cv-btn cv-btn-secondary");
+      run.setAttribute("type", "button");
+      run.setAttribute("data-cv", "html-run");
+      run.textContent = COPY.run;
+      run.addEventListener("click", function (ev) {
+        if (!ev || ev.isTrusted !== true || !live(rec) || rec.unavailable) return;
+        approved[rec.id] = key;
+        UPDATE.Html(rec, rec.el);
+      });
+      box.appendChild(text);
+      box.appendChild(run);
+      rec.node.appendChild(box);
+    }
+
+    function buildFrame(rec, el) {
+      var doc0 = htmlSrcdoc(el.props.html, {
+        settings: current.settings, ownOrigin: current.own_origin, theme: themeNow, bootstrap: bootstrap
+      });
+      if (doc0 === null) {
+        note(rec, COPY.missing);
+        return;
+      }
+      var frame = element("iframe", "cv-html-frame");
+      frame.setAttribute("sandbox", "allow-scripts allow-forms");
+      frame.setAttribute("title", "Html element " + rec.id);
+      frame.addEventListener("load", function () { offerPort(rec, frame); });
+      frame.srcdoc = doc0;
+      rec.frame = frame;
+      rec.node.appendChild(frame);
+    }
+
+    //: Each load of an Html frame gets a fresh port; the one before is closed, so only the frame's current document speaks.
+    function offerPort(rec, frame) {
+      if (rec.frame !== frame || !live(rec) || !frame.contentWindow) return;
+      if (rec.port) {
+        try { rec.port.close(); } catch (e) { /* already closed */ }
+      }
+      var channel = new win.MessageChannel();
+      var port = channel.port1;
+      rec.port = port;
+      rec.sentValue = undefined;
+      port.onmessage = function (ev) { onHtmlMessage(rec, port, ev); };
+      frame.contentWindow.postMessage({type: "primer.html.connect", element: rec.id}, "*", [channel.port2]);
+      pushValue(rec);
+    }
+
+    function postToHtml(rec, msg) {
+      try { rec.port.postMessage(msg); } catch (e) { /* the frame is gone */ }
+    }
+
+    function pushValue(rec) {
+      if (!rec.port) return;
+      var value = has(current.values, rec.id) ? current.values[rec.id] : null;
+      if (!throttle.pending(rec.id)) knownValue[rec.id] = value;
+      if (rec.sentValue !== undefined && jsonEqual(rec.sentValue, value)) return;
+      rec.sentValue = value;
+      postToHtml(rec, {type: "value", value: value});
+    }
+
+    //: Whether this activation lets the Html element `rec` speak (see the header comment, "The click gate").
+    function htmlMayAct(rec) {
+      if (!rec.frame || doc.activeElement !== rec.frame || doc.visibilityState !== "visible") return false;
+      if (!gate.allow()) return false;
+      if (gatePoll === null && gate.isOpen()) {
+        gatePoll = win.setInterval(function () {
+          if (!gate.observe()) {
+            win.clearInterval(gatePoll);
+            gatePoll = null;
+          }
+        }, ACTIVATION_POLL_MS);
+      }
+      return true;
+    }
+
+    function onHtmlMessage(rec, port, ev) {
+      if (rec.port !== port || !live(rec)) return;
+      var msg = validateHtmlMessage(ev ? ev.data : null);
+      if (!msg) return;
+      if (msg.type === "size") {
+        if (rec.el.props.height === null && rec.frame) {
+          rec.autoHeight = true;
+          var h = Math.round(Math.min(HTML_AUTO_MAX, Math.max(HTML_AUTO_MIN, msg.height)));
+          rec.frame.style.setProperty("height", h + "px");
+        }
+        return;
+      }
+      if (msg.type === "error") {
+        reportError(rec.id + ": " + msg.message);
+        return;
+      }
+      if (rec.unavailable) return;
+      if (msg.type === "set_value") {
+        if (!throttle.pending(rec.id) && has(knownValue, rec.id) && jsonEqual(knownValue[rec.id], msg.value)) return;
+        throttle.push(rec.id, msg.value);
+        return;
+      }
+      if (!htmlMayAct(rec)) return;
+      if (msg.type === "emit") send({type: "event", element: rec.id, kind: "emit", name: msg.name, data: msg.data});
+      else if (msg.type === "copy") send({type: "copy", element: rec.id, text: msg.text});
+      else if (msg.type === "open_link") send({type: "open_link", url: msg.url});
+    }
+
     return {
       // For the tests: what the renderer holds.
       connected: function () { return host !== null; },
@@ -1099,8 +1445,10 @@
   root.CV = {
     version: 2,
     PROTOCOL: PROTOCOL,
+    EMIT_BUDGET: EMIT_BUDGET,
     COPY: COPY,
     validateHostMessage: validateHostMessage,
+    validateHtmlMessage: validateHtmlMessage,
     acceptsHandshake: acceptsHandshake,
     mediaDecision: mediaDecision,
     mediaKey: mediaKey,
@@ -1109,7 +1457,11 @@
     themeCss: themeCss,
     themePairs: themePairs,
     selectOptions: selectOptions,
+    metaCsp: metaCsp,
+    htmlSrcdoc: htmlSrcdoc,
+    makeEmitGate: makeEmitGate,
     makeBucket: makeBucket,
+    makeValueThrottle: makeValueThrottle,
     utf8Length: utf8Length,
     boot: boot
   };

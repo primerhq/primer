@@ -1,7 +1,8 @@
 """The canvas frame's trusted renderer, its pure part (pivot P5, Task 16; design 8.6, plan Decisions 6 and 10).
 
 Every assertion runs ``ui/canvas/renderer.js`` itself in MiniRacer (``var window = globalThis;`` then the file): the media policy, the
-inline markup, links, the theme, Select options, the console's messages and the outgoing bucket. The DOM side (``CV.boot``) is
+inline markup, links, the theme, Select options, the console's messages and the Html frames' messages, and the small machines behind the
+click gate (audit G8-05), the outgoing bucket and the setValue throttle. The DOM side (``CV.boot``) is
 ``tests/ui/test_canvas_renderer_dom.py``.
 """
 
@@ -52,7 +53,7 @@ def call(ctx, fn: str, *args):
 
 def test_the_file_publishes_the_renderer_on_window(ctx):
     assert js(ctx, "typeof window.CV.boot") == "function"
-    assert js(ctx, "CV.PROTOCOL") == 1
+    assert js(ctx, "CV.PROTOCOL") == 1 and js(ctx, "CV.EMIT_BUDGET") == 3
 
 
 # --- the media policy ---------------------------------------------------------------------------------------------------------------
@@ -173,7 +174,7 @@ def test_select_options(ctx):
 
 def test_host_messages_are_validated(ctx):
     state = call(ctx, "validateHostMessage", STATE)
-    assert state["type"] == "state" and state["rev"] == 3
+    assert state["type"] == "state" and state["rev"] == 3 and state["run_html"] is False
     assert state["elements"]["play"] == {"type": "Button", "props": {"hidden": False, "disabled": False, "label": "Play", "style": "primary"}, "children": []}
     assert call(ctx, "validateHostMessage", {"type": "busy", "element": "play", "on": True}) == {"type": "busy", "element": "play", "on": True}
     assert call(ctx, "validateHostMessage", {"type": "theme", "theme": {"--cv-bg": "#fff", "--cv-x": "url(y)"}}) == {
@@ -224,6 +225,7 @@ def test_the_state_keeps_only_what_the_renderer_reads(ctx):
         "values": {"pic": 1, "Bad": 2},
         "file_urls": {"file:a.png": "/canvas/sessions/s/files/t", "file:b.png": "https://evil.example/x", "a.png": "/canvas/sessions/s/files/t"},
         "own_origin": "http://h:9000; script-src *",
+        "run_html": "yes",
         "settings": {"media_policy": "allowlist", "media_allowlist": ["A.example.com", "bad host", "*.ok.example"], "strict_mode": True},
     }
     out = call(ctx, "validateHostMessage", msg)
@@ -231,8 +233,15 @@ def test_the_state_keeps_only_what_the_renderer_reads(ctx):
     assert out["elements"]["pic"]["props"] == {"hidden": False, "disabled": False, "src": "file:a.png", "alt": "A", "fit": "contain", "height": None}
     assert out["values"] == {"pic": 1}
     assert out["file_urls"] == {"file:a.png": "/canvas/sessions/s/files/t"}
-    assert out["own_origin"] == ""
+    assert out["own_origin"] == "" and out["run_html"] is False
     assert out["settings"] == {"media_policy": "allowlist", "media_allowlist": ["a.example.com", "*.ok.example"], "strict_mode": True}
+
+
+def test_run_html_is_true_only_when_the_console_says_so(ctx):
+    """The lead's ruling 5 on S7: ``run_html`` (the protocol field S8 sets) is read as true only when it is exactly true."""
+    assert call(ctx, "validateHostMessage", {**STATE, "run_html": True})["run_html"] is True
+    for value in (False, None, 1, "true"):
+        assert call(ctx, "validateHostMessage", {**STATE, "run_html": value})["run_html"] is False
 
 
 def test_only_the_parents_handshake_is_accepted(ctx):
@@ -249,7 +258,49 @@ def test_only_the_parents_handshake_is_accepted(ctx):
     assert js(ctx, 'CV.acceptsHandshake({type: "primer.html.connect", protocol: 1}, P, P, SELF, [PORT])') is False
 
 
-# --- the outgoing bucket -----------------------------------------------------------------------------------------------------------
+# --- the Html frames' messages ---------------------------------------------------------------------------------------------------------
+
+
+def test_html_messages_are_validated(ctx):
+    v = lambda m: call(ctx, "validateHtmlMessage", m)  # noqa: E731
+    assert v({"type": "emit", "name": "picked", "data": {"n": 1}}) == {"type": "emit", "name": "picked", "data": {"n": 1}}
+    assert v({"type": "emit", "name": "picked"}) == {"type": "emit", "name": "picked", "data": None}
+    assert v({"type": "set_value", "value": [1, "a"]}) == {"type": "set_value", "value": [1, "a"]}
+    assert v({"type": "copy", "text": "hello"}) == {"type": "copy", "text": "hello"}
+    assert v({"type": "open_link", "url": "https://a.example/x"}) == {"type": "open_link", "url": "https://a.example/x"}
+    assert v({"type": "size", "height": 321.5}) == {"type": "size", "height": 321.5}
+    assert v({"type": "error", "message": "x" * 900})["message"] == "x" * 500
+    for bad in (
+        {"type": "emit", "name": "/cmd"}, {"type": "emit", "name": ""}, {"type": "emit", "name": "x" * 65},
+        {"type": "emit", "name": "ok", "data": "x" * 5000}, {"type": "emit", "name": "ok", "element": "other"},
+        {"type": "event", "element": "other", "kind": "click"}, {"type": "set_value"}, {"type": "set_value", "value": "x" * 1001},
+        {"type": "copy", "text": "x" * 10001}, {"type": "copy", "text": 5}, {"type": "open_link", "url": "javascript:alert(1)"},
+        {"type": "size", "height": -1}, {"type": "size", "height": "10"}, {"type": "error", "message": 1}, {"type": "ready"}, None, [],
+        {"type": "emit", "name": "ok", "data": {"pad": "x" * 17000}},
+    ):
+        assert v(bad) is None, bad
+
+
+# --- the machines --------------------------------------------------------------------------------------------------------------------
+
+
+def test_the_click_gate_passes_three_per_activation_and_none_without_one(ctx):
+    """Audit G8-05, the lead's ruling 1 on S7, the gate itself (a stubbed userActivation; the wiring is in the DOM tests)."""
+    ctx.eval("var act = {isActive: false}; var g = CV.makeEmitGate(act, 3);")
+    assert js(ctx, "[g.allow(), g.allow()]") == [False, False]
+    ctx.eval("act.isActive = true;")
+    assert js(ctx, "[g.allow(), g.allow(), g.allow(), g.allow(), g.allow()]") == [True, True, True, False, False]
+    assert js(ctx, "g.observe()") is True, "still the same activation"
+    assert js(ctx, "g.allow()") is False
+    ctx.eval("act.isActive = false;")
+    assert js(ctx, "[g.observe(), g.allow()]") == [False, False]
+    ctx.eval("act.isActive = true;")
+    assert js(ctx, "[g.allow(), g.allow(), g.allow(), g.allow()]") == [True, True, True, False], "a new click, a new budget"
+
+
+def test_the_click_gate_fails_closed_without_the_activation_api(ctx):
+    assert js(ctx, "(function () { var g = CV.makeEmitGate(undefined, 3); return [g.allow(), g.allow()]; })()") == [False, False]
+    assert js(ctx, '(function () { var g = CV.makeEmitGate({isActive: "yes"}, 3); return g.allow(); })()') is False
 
 
 def test_the_bucket_lets_twenty_a_second_through(ctx):
@@ -258,3 +309,22 @@ def test_the_bucket_lets_twenty_a_second_through(ctx):
     ctx.eval("t = 500;")
     assert js(ctx, "(function () { var n = 0; for (var i = 0; i < 50; i++) if (b.take()) n++; return n; })()") == 10
 
+
+def test_set_value_goes_out_once_a_second_with_the_latest_value(ctx):
+    ctx.eval("""
+      var now = 0, timers = [], out = [];
+      var th = CV.makeValueThrottle({intervalMs: 1000, now: function () { return now; },
+        setTimer: function (fn, ms) { timers.push({at: now + ms, fn: fn}); return timers.length; },
+        send: function (id, v) { out.push([now, id, v]); }});
+      function run(until) {
+        for (;;) { timers.sort(function (a, b) { return a.at - b.at; }); var t = timers[0];
+          if (!t || t.at > until) break; timers.shift(); now = t.at; t.fn(); }
+        now = until;
+      }
+    """)
+    ctx.eval("for (var i = 0; i < 50; i++) th.push('slider', i); th.push('other', 'x'); run(0);")
+    assert js(ctx, "out") == [[0, "slider", 49]]
+    ctx.eval("th.push('slider', 50); run(999);")
+    assert js(ctx, "out.length") == 1, "nothing more within the second"
+    ctx.eval("run(5000);")
+    assert js(ctx, "out") == [[0, "slider", 49], [1000, "other", "x"], [2000, "slider", 50]]
