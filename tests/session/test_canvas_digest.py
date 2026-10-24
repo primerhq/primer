@@ -383,3 +383,22 @@ async def test_a_queued_click_waits_out_a_pause_with_its_event(pause: str) -> No
     assert (still.id, still.attribution) == (queued.id, queued.attribution)
     assert queued.attribution[CANVAS_EVENT_PAYLOAD_KEY]["id"] == "e1"
     assert w.records("s1", "user_input") == [] and await _unread(w) == ["e1"]
+
+
+@pytest.mark.parametrize("pause", ["pause_requested", "paused"])
+async def test_the_pause_hold_keeps_a_held_click_s_event(pause: str) -> None:
+    """The lead's ruling 8 on #892 round 2: a routed wake carrying a canvas click that no person stands behind now (a replay) is held by a
+    pause; the message the hold queues keeps the click in its attribution, so the realize hands it back and marks it read then."""
+    fields = {"pause_requested": True, "turn_status": "running"} if pause == "pause_requested" else {"status": SessionStatus.PAUSED}
+    w = await _world(**fields)
+    click = await _click(w)
+    carried = {CANVAS_EVENT_PAYLOAD_KEY: event_attribution(click)}
+    receipt = SessionWakeReceipt()
+
+    await wake_session(workspace_id="ws-1", session_id="s1", instruction="<canvas_event ...>", deps=_deps(w), human_intent=False,
+                       by_a_person=True, extra_payload=carried, receipt=receipt)
+
+    assert receipt.outcome == "queued"
+    [queued] = w.sp.get_storage(PendingSessionMessage)._data.values()
+    assert queued.attribution == carried and w.records("s1", "user_input") == []
+    assert await _unread(w) == ["e1"]

@@ -538,8 +538,9 @@ async def wake_session(
                             event_bus=deps.event_bus,
                             # The sender and hop count ride the queue (pivot P3): realize_next_pending hands them back to the wake that
                             # delivers this message, or a reply chain would restart at hop 1 each time a pause held it. So does whether a person
-                            # wrote it (G7 ruling 1): a held trigger message must not reopen a session cancelled before it is realized.
-                            attribution=queued_attribution(peer, by_a_person=sent_by_a_person),
+                            # wrote it (G7 ruling 1): a held trigger message must not reopen a session cancelled before it is realized. And so
+                            # does the canvas click it is (pivot P5; the lead's ruling 8 on #892 round 2), marked read only when it is realized.
+                            attribution=_attribution_to_queue(peer, by_a_person=sent_by_a_person, extra_payload=extra_payload),
                         )
                         pending_id = pending.id
                     await _record_pause_superseded(
