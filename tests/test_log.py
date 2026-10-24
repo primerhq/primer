@@ -65,6 +65,20 @@ class TestConfigureLogging:
         configure_logging(level=logging.DEBUG)
         assert logging.getLogger().level == logging.DEBUG
 
+    def test_botocore_is_kept_at_info_even_at_debug(self):
+        """Review of #899, item 4: botocore's DEBUG lines carry every S3 request's signature, the access key id (SigV4 ``Credential=``) and
+        the metadata headers (an artifact's filename). Like httpx, botocore and aiobotocore stay at INFO whatever the application level."""
+        names = ("botocore", "aiobotocore")
+        saved = [logging.getLogger(n).level for n in names]
+        try:
+            configure_logging(level=logging.DEBUG)
+            assert [logging.getLogger(n).level for n in names] == [logging.INFO, logging.INFO]
+            configure_logging(level=logging.WARNING)
+            assert [logging.getLogger(n).level for n in names] == [logging.WARNING, logging.WARNING]
+        finally:
+            for name, level in zip(names, saved, strict=True):
+                logging.getLogger(name).setLevel(level)
+
     def test_json_format_default_uses_json_formatter(self):
         configure_logging()
         root_handler = logging.getLogger().handlers[0]

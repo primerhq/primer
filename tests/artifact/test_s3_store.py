@@ -483,10 +483,11 @@ async def test_the_secret_is_never_logged(
 ) -> None:
     """Ruling 7: every logger, at DEBUG, through a working round trip, a failed put and a failed probe. The secret appears in no record.
 
-    botocore logs every request at DEBUG (about a hundred records a round trip), and those records are captured here, so the check reads them.
-    The access key id does appear in them (the SigV4 ``Authorization`` header names it as ``Credential=``); the secret key never does: SigV4
-    sends only a signature derived from it."""
+    primer keeps botocore and aiobotocore at INFO (``configure_logging``, the next test), so this test turns their DEBUG on itself: even then,
+    with about a hundred records a round trip captured, the secret key is in none (SigV4 sends only a signature derived from it)."""
     caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="botocore")
+    caplog.set_level(logging.DEBUG, logger="aiobotocore")
     s3 = S3ArtifactStorage(_config(s3_endpoint, s3_prefix, access_key=ACCESS_KEY, secret_key=SECRET))
     try:
         aid = await s3.put(data=b"x", mime_type="text/plain", filename="x.txt")
@@ -512,6 +513,51 @@ async def test_the_secret_is_never_logged(
     assert not [r for r in caplog.records if SECRET in r.getMessage() or SECRET in str(r.args)]
     assert SECRET not in result.error and ACCESS_KEY not in result.error
     assert SECRET not in repr(s3) and SECRET not in repr(s3.config)
+
+
+@pytest.fixture
+def primer_logging_to(tmp_path: Path):
+    """primer's own logging setup (``configure_logging``) at DEBUG, written to a file; the root and library logger state is put back after."""
+    from primer.common.log import configure_logging
+
+    root = logging.getLogger()
+    names = ("botocore", "aiobotocore", "aiosqlite", "asyncio", "httpcore", "httpx")
+    saved_handlers, saved_level = list(root.handlers), root.level
+    saved_levels = [logging.getLogger(n).level for n in names]
+    path = tmp_path / "primer.log"
+    configure_logging(level=logging.DEBUG, json_format=False, file_path=path)
+    try:
+        yield path
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            handler.close()
+        for handler in saved_handlers:
+            root.addHandler(handler)
+        root.setLevel(saved_level)
+        for name, level in zip(names, saved_levels, strict=True):
+            logging.getLogger(name).setLevel(level)
+
+
+async def test_primer_at_debug_writes_no_signature_key_id_or_filename_header(
+    primer_logging_to: Path, s3_endpoint: str, s3_prefix: str, isolated_aws_env: None,
+) -> None:
+    """Review of #899, item 4: with the application logging at DEBUG, a put and a get write no SigV4 signature, no access key id and no
+    ``x-amz-meta-filename`` header (botocore's per-request DEBUG lines), and no secret."""
+    s3 = S3ArtifactStorage(_config(s3_endpoint, s3_prefix, access_key=ACCESS_KEY, secret_key=SECRET))
+    try:
+        aid = await s3.put(data=b"x", mime_type="text/plain", filename="secret-report.pdf")
+        await s3.get(aid)
+        logging.getLogger("primer.test").debug("primer DEBUG lines are written")
+    finally:
+        await s3.aclose()
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    text = primer_logging_to.read_text(encoding="utf-8")
+
+    assert "primer DEBUG lines are written" in text, "the file is the DEBUG output, so the checks below read it"
+    for leaked in ("Signature=", ACCESS_KEY, "x-amz-meta-filename", "secret-report.pdf", SECRET):
+        assert leaked not in text, leaked
 
 
 # ---- through the routing store (the #869 rules hold for S3) ------------------------------------------------------------------------------------
