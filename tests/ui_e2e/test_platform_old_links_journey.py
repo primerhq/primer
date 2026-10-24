@@ -7,7 +7,8 @@
   and its current sidebar row, never what the stand-in draws.
 * ``view=system:setup`` opens the System dashboard (the grammar has no setup nav; Plan 10 Task 8 takes the Setup page out of the System view), and the address reads ``view=system:dashboard``.
 * ``overlay=providers:tts``, the old provider-class link, still opens the Providers overlay at that class, and ``overlay=workspaces::<id>`` still opens the workspace's settings.
-* ``view=platform:web`` before Plan 04 ships opens Providers (every type) with no blank page and no error (Review Focus 5).
+* ``view=platform:templates`` before Plan 08 ships opens Providers (every type) with no blank page and no error (Review Focus 5). ``view=platform:web`` left this case when Plan 04 shipped
+  the Web page: ``tests/ui_e2e/test_web_settings_journey.py`` covers its link.
 """
 
 from __future__ import annotations
@@ -98,13 +99,13 @@ def test_an_old_workspace_settings_link_still_opens_the_workspace(page: Page, co
     expect(page).to_have_url(re.compile(r"overlay=workspaces::" + re.escape(wid)))
 
 
-@pytest.mark.parametrize("view", ["platform:web", "platform:templates"])
+@pytest.mark.parametrize("view", ["platform:templates"])
 def test_a_custom_page_link_with_no_component_opens_providers(page: Page, console_url: str, view: str) -> None:
-    """The bundle of this checkout ships neither page yet; once a plan ships one, its own journey covers the page and this case is dropped for it."""
+    """A custom page whose component is not loaded. Once a plan ships one, its own journey covers the page and this case is dropped for it (Plan 04 shipped Web)."""
     raised: list[str] = []
     page.on("pageerror", lambda e: raised.append(str(e)))
     expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
-    component = {"platform:web": "WEB_SettingsPage", "platform:templates": "WT_TemplatesPage"}[view]
+    component = {"platform:templates": "WT_TemplatesPage"}[view]
     if page.evaluate("(name) => typeof window[name] === 'function'", component):
         pytest.skip(f"{component} has shipped; its own journey covers its link")
 
