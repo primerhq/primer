@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -122,11 +123,11 @@ def _too_large() -> HTTPException:
     )
 
 
-def _file_headers(media_type: str) -> dict[str, str]:
-    """A served file: for the sandboxed frame (another origin), kept private and for as long as its URL lives, never run as a page."""
+def _file_headers(media_type: str, *, expires_at: int) -> dict[str, str]:
+    """A served file: for the sandboxed frame (another origin), kept private and no longer than its URL lives, never run as a page."""
     return {
         "Content-Type": media_type,
-        "Cache-Control": f"private, max-age={canvas_files.FILE_URL_TTL_S}",
+        "Cache-Control": f"private, max-age={max(0, expires_at - int(time.time()))}",
         "Cross-Origin-Resource-Policy": "cross-origin",
         "Content-Security-Policy": "default-src 'none'; sandbox",
         "X-Content-Type-Options": "nosniff",
@@ -144,12 +145,12 @@ async def canvas_file(
     registry: Any = Depends(get_workspace_registry),
 ) -> Response:
     """The workspace file a capability URL names (see ``primer.canvas.files`` for the checks, in this order)."""
-    verified = canvas_files.verify_file_token(
+    verified = canvas_files.verify_file_token_until(
         canvas_files.canvas_file_secret(request.app.state), token, max_age=canvas_files.FILE_URL_TTL_S,
     )
     if verified is None or verified[0] != session_id:
         raise _file_refused()
-    path = verified[1]
+    path, expires_at = verified[1], verified[2]
     media_type = canvas_files.media_type_of(path)
     if media_type is None or not canvas_files.safe_relative_path(path):
         raise _file_refused()
@@ -171,7 +172,7 @@ async def canvas_file(
         raise _file_refused() from None
     if len(raw) > canvas_files.MAX_FILE_BYTES:
         raise _too_large()
-    return Response(content=raw, media_type=media_type, headers=_file_headers(media_type))
+    return Response(content=raw, media_type=media_type, headers=_file_headers(media_type, expires_at=expires_at))
 
 
 # ===========================================================================

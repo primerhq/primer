@@ -10,6 +10,7 @@ import pytest
 from primer.canvas.files import (
     FILE_TOKEN_SALT,
     FILE_URL_TTL_S,
+    FILE_URL_WINDOW_S,
     MEDIA_TYPES,
     canvas_file_secret,
     media_type_of,
@@ -17,6 +18,7 @@ from primer.canvas.files import (
     referenced_files,
     safe_relative_path,
     verify_file_token,
+    verify_file_token_until,
 )
 
 
@@ -32,16 +34,36 @@ def test_a_token_round_trips_and_expires():
     assert verify_file_token("other", token) is None and verify_file_token("s3cret", token, max_age=-1) is None
 
 
-def test_a_token_lives_fifteen_minutes(monkeypatch):
-    assert (FILE_TOKEN_SALT, FILE_URL_TTL_S) == ("primer.canvas.file.v1", 900)
-    real = time.time
-    monkeypatch.setattr(time, "time", lambda: real() - FILE_URL_TTL_S - 5)
-    old = _token(mint_file_url("s3cret", "s1", "assets/c.png"))
-    monkeypatch.setattr(time, "time", lambda: real() - FILE_URL_TTL_S + 30)
-    fresh = _token(mint_file_url("s3cret", "s1", "assets/c.png"))
-    monkeypatch.setattr(time, "time", real)
-    assert verify_file_token("s3cret", old) is None, "a URL older than 900 s is refused"
-    assert verify_file_token("s3cret", fresh) == ("s1", "assets/c.png")
+#: The start of a 5-minute window, well in the past (so the real clock never decides a test).
+W = 1_700_000_100 - 1_700_000_100 % FILE_URL_WINDOW_S
+
+
+def _at(monkeypatch, second: float) -> None:
+    monkeypatch.setattr(time, "time", lambda: second)
+
+
+def test_a_token_lives_fifteen_minutes_from_its_window(monkeypatch):
+    """Review of #908, round 2: the token's time is the start of its 5-minute window, and it is honoured 900 s from there, so a URL lives
+    600 to 900 s after it is minted."""
+    assert (FILE_TOKEN_SALT, FILE_URL_TTL_S, FILE_URL_WINDOW_S) == ("primer.canvas.file.v1", 900, 300)
+    _at(monkeypatch, W + 299)
+    late = _token(mint_file_url("s3cret", "s1", "assets/c.png"))
+    _at(monkeypatch, W + 900)
+    assert verify_file_token("s3cret", late) == ("s1", "assets/c.png"), "900 s after the window began it still serves"
+    assert verify_file_token_until("s3cret", late) == ("s1", "assets/c.png", W + 900)
+    _at(monkeypatch, W + 901)
+    assert verify_file_token("s3cret", late) is None, "601 s after it was minted, and 901 s after its window began, it is refused"
+
+
+def test_urls_minted_in_one_window_are_one_url(monkeypatch):
+    """The browser's cache hits across the console's reads: a URL re-minted in the same window is the same string."""
+    _at(monkeypatch, W)
+    first = mint_file_url("s3cret", "s1", "assets/c.png")
+    _at(monkeypatch, W + 299)
+    assert mint_file_url("s3cret", "s1", "assets/c.png") == first
+    _at(monkeypatch, W + 300)
+    assert mint_file_url("s3cret", "s1", "assets/c.png") != first
+    assert mint_file_url("s3cret", "s1", "assets/d.png") != first
 
 
 @pytest.mark.parametrize("token", ["", "x", "not.a.token", "a" * 400, "eyJzIjoiczEiLCJwIjoiYS5wbmcifQ.AAAA.BBBB"])
