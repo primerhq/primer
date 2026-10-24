@@ -18,8 +18,14 @@ SRC = (UI / "components" / "workspaces" / "templates.jsx").read_text("utf-8")
 
 def test_the_admin_only_note_is_shown_on_both_groups() -> None:
     assert "const WT_ADMIN_ONLY_NOTE =" in SRC
-    assert SRC.count('data-testid="ws-template-admin-only-note"') == 2
-    assert SRC.count("{WT_ADMIN_ONLY_NOTE}") == 2
+    # Two in the old form's groups, and one in the new template overlay (platform revamp Plan 08, Task 10), which draws it at the top of each More fold,
+    # for admins (tests/ui/test_wt_template_overlay.py renders it). Plan 08 Task 15 removes the old form and moves this pin to the overlay alone.
+    old_form = SRC[SRC.index("function WorkspaceTemplateCreateModal("):]
+    assert old_form.count('data-testid="ws-template-admin-only-note"') == 2
+    assert old_form.count("{WT_ADMIN_ONLY_NOTE}") == 2
+    overlay = SRC[SRC.index("function WT_TemplateOverlay("):SRC.index("window.WT_TemplateOverlay = WT_TemplateOverlay;")]
+    assert overlay.count('data-testid="ws-template-admin-only-note"') == 1 and overlay.count("{WT_ADMIN_ONLY_NOTE}") == 1
+    assert overlay.count("{adminNote}") == 2, "the overlay's note sits in the Kubernetes and the Docker More folds"
     # Lead review of #473: a template that holds any of them is admin-only to edit at all.
     assert "only an admin can edit or delete a template that has any of them set" in SRC
     # Lead re-review: the held rule does not stop instantiation, so the note warns the admin. Lead ruling 16 of plan 08 (from the
