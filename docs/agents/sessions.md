@@ -244,7 +244,8 @@ can run an agent or graph headlessly end to end.
   [workspaces](workspaces.md)). Another workspace answers
   `type=not-found` exactly as an unknown id does. Cancel, resume, pause
   and interrupt are also refused (`type=forbidden`) when the session runs
-  at a higher rank than your run. With no calling session (MCP) the caller
+  at a higher rank than your run, except on your own session: a session
+  may always stop, pause, cancel or resume itself. With no calling session (MCP) the caller
   keeps its reach, and cancel, resume, pause and interrupt follow the same
   rank rule (a person may always act on a session they started; an API
   token ranks as its owner). Their REST routes follow it too (403
