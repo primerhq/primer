@@ -78,12 +78,18 @@ stateDiagram-v2
     pending --> running : first good probe
     running --> failed : 3 consecutive probe misses
     failed --> running : 3 consecutive probe hits
+    pending --> terminating : DELETE
     running --> terminating : DELETE
     failed --> terminating : DELETE
-    terminating --> [*]
+    terminating --> [*] : row deleted
+    terminating --> failed : teardown failed
+    terminating --> pending : backend unreachable, phase put back
+    terminating --> running : backend unreachable, phase put back
 ```
 
 Every create door (`POST /v1/workspaces`, the `create_workspace` tool and the bootstrap seed of the default workspace) builds the row with `new_workspace_row` (`primer/api/registries/workspace_registry.py`), so a new workspace is `NEW_WORKSPACE_PHASE` (`pending`) until the probe's first good ping promotes it to `running` (ticket 01a16d72 ruling 2; REST and the seed used to write `running` and the tool `pending`). REST and the tool share `WorkspaceRegistry.create`: `materialise`, then the row written last, and the live instance torn back down on any failure or cancel after `materialise`. The probe counts misses only against a `running` workspace, so one that never answers stays `pending` and its sessions are not ended `workspace_lost` by the probe. Nothing reads the phase to gate a session start, a wake or a turn, and the console colours `pending` amber; the one `running` check (`refuse_a_reopen_it_may_not_make`, reopening a `workspace_lost` session) concerns a workspace that existed before.
+
+`WorkspaceRegistry.destroy` writes `phase = terminating` once its refusals are past (the default workspace, an unknown id, the `before_teardown` rank scan) and before the backend is reached, with one field-scoped `patch_if` (ticket 01a16d72 ruling 3; nothing wrote `terminating` before, so a delete ran with the row still `running`). A reader sees the delete in progress: the probe skips the row, the reply-binding route refuses it (409 `workspace_terminating`), the console greys it. A destroy that then fails (or is cancelled) must not leave the row `terminating`, which nothing would ever move again (`_after_a_failed_destroy`, both writes fenced on the row still reading `terminating`, best effort): when the backend could not be reached nothing was torn down, so the phase goes back to what it was and the sessions are left alone; when `backend.destroy` or the row delete failed the runtime may be partly or wholly gone, so the row reads `failed` with a `failure_reason` that says the delete did not finish and why, and every open session is ended `workspace_lost`, as on the probe's own transition to `failed` (an intact workspace comes back to `running` after three good probes, a `workspace_lost` session reopens then, and asking for the delete again finishes it). A destroy whose process dies between the mark and the row delete leaves the row `terminating` until the delete is asked again. The probe writes its verdict with one `patch_if` of its own fields (`last_probe_at`, `last_probe_ok`, and `phase` / `failure_reason` on a transition) fenced on the phase it judged: it used to write back the whole row it had listed before the ping, which put back a `terminating` mark, a failed destroy's `failed` and `failure_reason`, or a rename that landed while it pinged. A verdict whose phase moved meanwhile is dropped, and the next tick judges the row as it is then.
 
 ## 6. Lifecycle
 

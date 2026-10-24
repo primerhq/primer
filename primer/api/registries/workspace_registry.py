@@ -457,6 +457,11 @@ class WorkspaceRegistry:
         rank scan of a delete (every open session in the workspace must be one the caller may act on) runs here, so a session started from now on
         is refused instead of being ended unranked. If it raises, nothing is torn down and the error propagates. The fence is process-local
         (like :meth:`is_being_destroyed`), and a start already past its check when the mark is set can still write its row after the scan.
+
+        Once ``before_teardown`` has passed, and before the backend is reached, the row's ``phase`` is written ``terminating`` (ticket 01a16d72
+        ruling 3; nothing wrote it before), so a reader sees the delete in progress: the probe skips the row, the reply-binding route refuses it,
+        the console greys it. A refused delete (the default workspace, an unknown id, the rank scan) never writes it. If the destroy then fails,
+        the row must not stay ``terminating``, which nothing would ever move again (:meth:`_after_a_failed_destroy`).
         """
         if workspace_id == await resolve_default_workspace_id(self._sp):
             raise ReservedWorkspaceError(workspace_id)
@@ -466,29 +471,37 @@ class WorkspaceRegistry:
         try:
             if before_teardown is not None:
                 await before_teardown()
+            await self._mark_terminating(workspace_id)
+            teardown_started = False
             try:
-                backend = await self.get_backend(row.provider_id)
-            except WorkspaceRefusedError:
-                # An explicit destroy is how an operator abandons a workspace this deployment refuses
-                # (ticket 01a1072f). The backend is not reachable by policy, so only the row goes (and its
-                # sessions, below): whatever the workspace left on the provider's disk stays for the operator.
-                logger.warning(
-                    "WorkspaceRegistry: destroying workspace %s on the refused local provider %s drops "
-                    "its row only; its files are left in place",
-                    workspace_id, row.provider_id,
-                )
-                backend = None
-            try:
-                if backend is not None:
-                    await backend.destroy(workspace_id)
-            except NotFoundError:
-                # Row exists but backend has no live instance; still drop
-                # the row so callers can re-materialise without a stale
-                # collision.
-                pass
+                try:
+                    backend = await self.get_backend(row.provider_id)
+                except WorkspaceRefusedError:
+                    # An explicit destroy is how an operator abandons a workspace this deployment refuses
+                    # (ticket 01a1072f). The backend is not reachable by policy, so only the row goes (and its
+                    # sessions, below): whatever the workspace left on the provider's disk stays for the operator.
+                    logger.warning(
+                        "WorkspaceRegistry: destroying workspace %s on the refused local provider %s drops "
+                        "its row only; its files are left in place",
+                        workspace_id, row.provider_id,
+                    )
+                    backend = None
+                teardown_started = True
+                try:
+                    if backend is not None:
+                        await backend.destroy(workspace_id)
+                except NotFoundError:
+                    # Row exists but backend has no live instance; still drop
+                    # the row so callers can re-materialise without a stale
+                    # collision.
+                    pass
 
-            await reconcile_sessions_to_workspace_lost(self._sp, workspace_id)
-            await self._sp.get_storage(WorkspaceRow).delete(workspace_id)
+                await reconcile_sessions_to_workspace_lost(self._sp, workspace_id)
+                await self._sp.get_storage(WorkspaceRow).delete(workspace_id)
+            except BaseException as exc:
+                # BaseException: a cancel (a client disconnect on REST) leaves the teardown as unfinished as an error does.
+                await self._after_a_failed_destroy(workspace_id, exc, teardown_started=teardown_started, previous_phase=row.phase)
+                raise
         finally:
             left = self._destroying[workspace_id] - 1
             if left > 0:
@@ -496,5 +509,48 @@ class WorkspaceRegistry:
             else:
                 del self._destroying[workspace_id]
 
+    async def _mark_terminating(self, workspace_id: str) -> None:
+        """Write ``phase = terminating``: one field-scoped write, so a concurrent writer's other fields (a rename, the probe's
+        ``last_probe_at``) survive. A row already ``terminating`` (a destroy of the same id in another process) is left as it is."""
+        await self._sp.get_storage(WorkspaceRow).patch_if(
+            workspace_id, {"phase": "terminating"}, where={"phase": ["pending", "running", "failed"]},
+        )
 
-__all__ = ["WorkspaceRegistry"]
+    async def _after_a_failed_destroy(
+        self, workspace_id: str, exc: BaseException, *, teardown_started: bool, previous_phase: str,
+    ) -> None:
+        """Leave a phase that tells the truth after a destroy failed (or was cancelled) past its ``terminating`` mark.
+
+        * Nothing was torn down (the backend could not be reached): the workspace is as it was, so the phase goes back to what it was
+          and its sessions are left alone.
+        * The teardown itself failed, or the row could not be deleted after it: the runtime may be partly or wholly gone. The row reads
+          ``failed``, with a ``failure_reason`` that says the delete did not finish and why, and every open session is ended
+          ``workspace_lost``, as on every other transition to ``failed`` (the probe's): a failed workspace has ended its open sessions. The
+          probe brings an intact workspace back to ``running`` after three good probes, and a ``workspace_lost`` session reopens then
+          (:func:`primer.session.reset.refuse_a_reopen_it_may_not_make`). Asking for the delete again finishes it.
+
+        Both writes are fenced on the row still reading ``terminating`` (this destroy's own mark), and best effort: the database may be what
+        failed. A write that fails is logged and leaves the row ``terminating``; the original error is never masked.
+        """
+        storage = self._sp.get_storage(WorkspaceRow)
+        try:
+            if not teardown_started:
+                await storage.patch_if(workspace_id, {"phase": previous_phase}, where={"phase": ["terminating"]})
+                return
+            cause = " ".join(str(exc).split()) or type(exc).__name__
+            reason = f"the delete did not finish ({type(exc).__name__}: {cause[:300]}); the runtime may be partly torn down: delete it again"
+            written = await storage.patch_if(
+                workspace_id, {"phase": "failed", "failure_reason": reason}, where={"phase": ["terminating"]},
+            )
+            if written is not None:
+                await reconcile_sessions_to_workspace_lost(self._sp, workspace_id)
+        except NotFoundError:
+            return      # the row is gone after all: nothing is left to describe
+        except Exception:  # noqa: BLE001 - best effort, never masks the destroy's own error
+            logger.warning(
+                "WorkspaceRegistry: destroy of %s failed and its phase could not be corrected; the row stays terminating",
+                workspace_id, exc_info=True,
+            )
+
+
+__all__ = ["NEW_WORKSPACE_PHASE", "WorkspaceRegistry", "new_workspace_row"]

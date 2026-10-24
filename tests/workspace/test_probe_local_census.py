@@ -30,7 +30,7 @@ def _probe(rows: list, providers: list) -> WorkspaceProbeTask:
     def storage_for(model):
         storage = MagicMock()
         storage.list = AsyncMock(return_value=MagicMock(items=rows if model is WorkspaceRow else providers))
-        storage.update = AsyncMock()
+        storage.patch_if = AsyncMock(return_value=MagicMock())
         return storage
 
     sp = MagicMock()

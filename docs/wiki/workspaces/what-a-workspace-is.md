@@ -18,7 +18,7 @@ A workspace is a filesystem plus a git repository of state, and every session in
   - Every new workspace starts `pending`, however it was created, and becomes `running` at its first good health probe (the probe runs about every 30 seconds). A `pending` workspace is usable: sessions start and run in it. The probe counts no misses against a `pending` workspace, so one that never answers stays `pending`.
   - Three missed probes in a row turn `running` into `failed`, fill `failure_reason`, and end every open session in it with `workspace_lost`, which is permanent.
   - Three good probes in a row bring a `failed` workspace back to `running`. The sessions it lost stay ended.
-  - `terminating` is in the model, but nothing writes it today: a delete is synchronous.
+  - `terminating` means a delete is running: the delete writes it before it tears anything down, and the row is gone when the delete ends. A delete that fails before it reaches the backend puts the phase back as it was. One that fails during or after the teardown leaves the workspace `failed`, with a `failure_reason` that says the delete did not finish, and ends its open sessions with `workspace_lost`: delete it again.
 - A failed create leaves nothing behind. The row is written last, and a failure after the live instance exists tears that instance down again. There is no half-built workspace to clean up.
 - The layout under the workspace root:
   - The root holds your files, in any layout. One name is special: `agents.md`, the standing instructions of every agent there ([agents.md](workspaces/agents-md)).
