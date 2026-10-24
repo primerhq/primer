@@ -1014,3 +1014,15 @@ async def test_ws_connect_max_msg_size_receives_large_message() -> None:
             await ws_big.close()
     finally:
         await runner.cleanup()
+
+
+def test_a_stat_answer_without_a_mode_still_says_what_the_entry_is() -> None:
+    """The runtime always sends the full st_mode; a stand-in for a missing one carries the type bits, or SandboxWorkspace.read_file, which
+    reads only a regular file, would refuse a plain file (the review of #869, F5)."""
+    import stat as stat_mod
+
+    from primer.workspace.runtime.runtime_client import _parse_file_stat
+
+    assert stat_mod.S_ISREG(_parse_file_stat({"path": "/workspace/a.txt", "is_dir": False}).mode)
+    assert stat_mod.S_ISDIR(_parse_file_stat({"path": "/workspace/src", "is_dir": True}).mode)
+    assert stat_mod.S_ISFIFO(_parse_file_stat({"path": "/workspace/p", "is_dir": False, "mode": stat_mod.S_IFIFO | 0o644}).mode)

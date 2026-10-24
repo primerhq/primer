@@ -449,8 +449,12 @@ class SandboxWorkspace(Workspace):
             raise NotFoundError(f"{path!r} not found")
         if info.kind != "file":
             raise BadRequestError(f"{path!r} is not a file")
-        if stat.S_ISFIFO(info.mode):
-            raise BadRequestError(f"{path!r} is a FIFO and cannot be read")
+        # Only a regular file is read: a FIFO would block the runtime's read, and a socket or a device is no file content (the review of
+        # #869, F5: a socket or a device used to reach the runtime, whose refusal came back as a raw runtime error, a 500). The runtime
+        # checks again on the descriptor it opened, for a file swapped in between.
+        if not stat.S_ISREG(info.mode):
+            kind = "a FIFO" if stat.S_ISFIFO(info.mode) else "not a regular file (a socket or a device)"
+            raise BadRequestError(f"{path!r} is {kind} and cannot be read")
         return await self._sandbox.read_file(target)
 
     async def write_file(self, path: str, content: bytes) -> None:

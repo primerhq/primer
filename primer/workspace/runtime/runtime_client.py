@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import stat
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -85,7 +86,9 @@ def _parse_file_stat(raw: dict[str, Any]) -> FileStat:
         path=raw["path"],
         kind="dir" if is_dir else "file",
         size_bytes=int(raw.get("size", 0)),
-        mode=int(raw.get("mode", 0o644)),
+        # The runtime always sends the full st_mode. Were it missing, the stand-in carries the type bits too: a mode without them
+        # reads as "not a regular file" to SandboxWorkspace.read_file, which refuses those (the review of #869, F5).
+        mode=int(raw.get("mode", (stat.S_IFDIR | 0o755) if is_dir else (stat.S_IFREG | 0o644))),
         modified_at=modified_at,
     )
 
