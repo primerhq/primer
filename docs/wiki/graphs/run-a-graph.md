@@ -22,7 +22,7 @@ A graph runs inside a workspace session, in one of two ways. Start a session bou
 ## How to
 1. Check the graph's input contract: read the `begin` node's `input_schema` and the templates that read `initial_input`.
 2. Start a graph session in your workspace, with `graph_input` in the shape the templates read.
-3. Poll the session until `status` is `ended`. While it is `waiting`, a person has a question or an approval to settle.
+3. Poll the session with `workspaces__get_workspace_session` until `status` is `ended`. While it is `waiting`, a person has a question or an approval to settle.
 4. Read the transcript: the last `assistant_token` is the output; an `error` record says which node failed and why.
 5. From inside a session, to use a graph as one step instead, call `workspace_ext__invoke_graph` and read `output` from the result.
 
