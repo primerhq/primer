@@ -177,6 +177,51 @@ def _rank_label(ref: PrincipalRef | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Who may fire a trigger by hand (ticket 01a16e65-12d1)
+# ---------------------------------------------------------------------------
+
+#: What a run (a tool call from a session) reads when it may not fire a trigger: the words a refused message to a session uses
+#: (:data:`primer.session.peer_messages.REFUSE_RANK`), said of the trigger. A trigger "runs at" its owner's rank: that is the most its fires run at.
+REFUSE_FIRE_RANK = (
+    "trigger {trigger_id!r} runs at a higher rank ({owner_rank}) than this session ({caller_rank}); "
+    "a session may fire only triggers at or below its own rank"
+)
+#: What a person (a REST call, or an MCP call with no calling session) reads when they may not fire a trigger. A person, unlike a run, may always
+#: fire a trigger they own. Naming the owner's rank tells nobody anything new: every read of a trigger shows its owner's rank (:func:`view_for`).
+REFUSE_FIRE_RANK_REQUEST = (
+    "trigger {trigger_id!r} runs at a higher rank ({owner_rank}) than you ({caller_rank}); "
+    "you may fire only your own triggers and triggers at or below your rank"
+)
+
+
+async def refuse_fire_now(trigger: Trigger, caller: Any, storage_provider: Any, *, from_run: bool) -> str | None:
+    """A reason to refuse ``caller``'s manual fire of ``trigger`` (``fire_now``), else ``None`` (ticket 01a16e65-12d1).
+
+    A fire runs as the trigger's owners (:func:`principal_for_fire`), so whoever fires a trigger by hand drives its owner's automation: a
+    ``session_append`` subscription of an admin's trigger steers at the admin's rank. The caller must therefore rank at least as high as the owner,
+    the rank rule of every path that drives another's run (:func:`primer.authz.may_drive`; an admin is never outranked). The owner's rank is the role
+    recorded on the trigger, the ceiling its fires run at; a trigger saved before owners were recorded has none and ranks as an ordinary user
+    (:func:`primer.authz.principal_rank` of ``None``), as its fires do (:func:`_current_role`).
+
+    ``caller`` is a live request's principal (a person's REST call, an MCP call with no calling session) when ``from_run`` is False, else the calling
+    run's principal. A token ranks as its owner does (the request's principal carries its user's role). A live request may also always fire a trigger
+    its own account owns, a token counting as its user (:func:`same_owner`): the request carries the account's current role and every fire of the
+    trigger runs at most at it, so a demoted admin is not locked out of their own trigger. A run never gets that rule: a trigger-capped run carries an
+    admin's identity at a lower rank, and that admin's own triggers still fire at admin.
+
+    Only the manual fire doors ask: a clock fire (scheduled or delayed), a webhook and a channel event have no caller to rank.
+    """
+    if may_drive(caller, trigger.owner):
+        return None
+    if not from_run and caller is not None and await same_owner(caller, trigger.owner, storage_provider):
+        return None
+    template = REFUSE_FIRE_RANK if from_run else REFUSE_FIRE_RANK_REQUEST
+    reason = template.format(trigger_id=trigger.id, owner_rank=rank_label(trigger.owner), caller_rank=rank_label(caller))
+    logger.info("trigger %s: a manual fire was refused: %s", trigger.id, reason)
+    return reason
+
+
+# ---------------------------------------------------------------------------
 # Who may see or change a webhook trigger's token (lead review of #491, round 2)
 # ---------------------------------------------------------------------------
 
@@ -262,7 +307,10 @@ async def same_owner(a: PrincipalRef | None, b: PrincipalRef | None, storage_pro
 
 __all__ = [
     "OWNER_UNRESOLVABLE",
+    "REFUSE_FIRE_RANK",
+    "REFUSE_FIRE_RANK_REQUEST",
     "WEBHOOK_TOKEN_MASK",
+    "refuse_fire_now",
     "unresolvable_subscription_owner",
     "resolve_current_role",
     "may_manage_trigger",
