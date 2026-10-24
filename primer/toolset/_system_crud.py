@@ -1391,6 +1391,10 @@ def _describe_tool_tool(
             return _err(f"no toolset {args.toolset_id!r}", error_type="not-found")
         except AuthRequiredError:
             raise  # the consent URL is for the person: the run parks for it, exactly as for list_toolset_tools
+        except McpSignInRequiredError as exc:
+            # As ``list_toolset_tools`` and ``call_tool`` answer it (ticket 01a16f1d ruling 6): it is a PrimerError, so it used to fall through
+            # to ``provider-error`` below, with the same message.
+            return _err(str(exc), error_type="sign-in-required")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="provider-error")
         entry = next((e for e in entries if e.tool.id == args.tool_name), None)
@@ -1414,7 +1418,8 @@ def _describe_tool_tool(
                 "(toolset ``client``), which ``call_tool`` cannot reach. ``approval`` is the gate on the tool now. ``reference`` is the path of the "
                 "tool's page in the platform wiki; the page exists once the wiki is built, so until then it may be absent. Describing a tool "
                 "does not mean this run may call it: ``required_role`` is the role it needs, and ``call_tool`` refuses a tool above this run's "
-                "role with ``type=forbidden``. An unknown toolset or tool returns ``type=not-found``, naming the toolset's tools."
+                "role with ``type=forbidden``. An unknown toolset or tool returns ``type=not-found``, naming the toolset's tools. An MCP "
+                "toolset that needs a sign-in returns ``type=sign-in-required``, as ``list_toolset_tools`` and ``call_tool`` do."
             ),
             args_schema=_DescribeToolArgs.model_json_schema(),
             examples=[
