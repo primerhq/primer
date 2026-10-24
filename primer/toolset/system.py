@@ -175,6 +175,7 @@ from primer.toolset.toolset_checks import (
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.toolset.trigger import _caller
 from primer.workspace.instructions import load_workspace_instructions
+from primer.workspace.row_writes import write_workspace_fields
 
 # Re-exported helpers / argument models / parsers (shared surface).
 from primer.toolset._system_common import (
@@ -796,16 +797,13 @@ def build_system_toolset(
                 f"Channel {args.channel_id!r} does not exist",
                 error_type="not-found",
             )
-        updated = ws.model_copy(
-            update={
-                "reply_binding": WorkspaceChannelLink(
-                    channel_id=args.channel_id,
-                    anchor=args.anchor,
-                )
-            }
-        )
         try:
-            await _workspace_storage.update(updated)
+            # The binding only (round 2 of #917): a whole-row write of the row as read put back a phase another writer had moved since.
+            await write_workspace_fields(
+                _workspace_storage, ws, {"reply_binding": WorkspaceChannelLink(channel_id=args.channel_id, anchor=args.anchor)},
+            )
+        except NotFoundError:
+            return _err(f"Workspace {args.workspace_id!r} does not exist", error_type="not-found")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
         return _ok(
@@ -866,9 +864,11 @@ def build_system_toolset(
                 f"Workspace {args.workspace_id!r} does not exist",
                 error_type="not-found",
             )
-        updated = ws.model_copy(update={"reply_binding": None})
         try:
-            await _workspace_storage.update(updated)
+            # The binding only (round 2 of #917): a whole-row write of the row as read put back a phase another writer had moved since.
+            await write_workspace_fields(_workspace_storage, ws, {"reply_binding": None})
+        except NotFoundError:
+            return _err(f"Workspace {args.workspace_id!r} does not exist", error_type="not-found")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
         return _ok({"ok": True, "workspace_id": args.workspace_id})

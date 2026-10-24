@@ -120,6 +120,7 @@ from primer.model.workspace import (
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.state_helpers import has_unsafe_commit_chars
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
+from primer.workspace.row_writes import WORKSPACE_PHASES, write_workspace_fields
 from primer.workspace.session_reconcile import open_sessions_on
 from primer.workspace.diagnostic import (
     DIAGNOSTIC_COMMANDS,
@@ -874,9 +875,8 @@ async def set_workspace_events(
     row = await storage.get(workspace_id)
     if row is None:
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
-    return await storage.update(
-        row.model_copy(update={"events": body.config})
-    )
+    # The field only (round 2 of #917): a whole-row write of the row as read put back a phase another writer had moved since.
+    return await write_workspace_fields(storage, row, {"events": body.config})
 
 
 class WorkspaceEventsBody(BaseModel):
@@ -909,9 +909,8 @@ async def set_workspace_terminal_access(
     row = await storage.get(workspace_id)
     if row is None:
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
-    return await storage.update(
-        row.model_copy(update={"terminal_user_access": body.enabled})
-    )
+    # The field only (round 2 of #917): a whole-row write of the row as read put back a phase another writer had moved since.
+    return await write_workspace_fields(storage, row, {"terminal_user_access": body.enabled})
 
 
 class WorkspaceTerminalAccessBody(BaseModel):
@@ -1074,9 +1073,9 @@ async def rename_workspace(
     if row is None:
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
     new_name = (body.name or "").strip() or None
-    updated = row.model_copy(update={"name": new_name})
-    await storage.update(updated)
-    return updated
+    # The name only (round 2 of #917): a whole-row write of the row as read put back a phase another writer had moved since, so a
+    # rename that read the row while a delete had it terminating left it terminating for ever after the delete failed.
+    return await write_workspace_fields(storage, row, {"name": new_name})
 
 
 class _ReplyBindingBody(BaseModel):
@@ -1130,10 +1129,23 @@ async def set_workspace_reply_binding(
                 "message": f"Channel {body.channel_id!r} does not exist.",
             },
         )
-    updated = row.model_copy(
-        update={"reply_binding": WorkspaceChannelLink(channel_id=body.channel_id)}
+    # The binding only, and only while the workspace is not terminating (round 2 of #917): the check above read the row, and a delete
+    # may have marked it since, so the write itself is fenced on the phase.
+    updated = await write_workspace_fields(
+        workspace_storage, row, {"reply_binding": WorkspaceChannelLink(channel_id=body.channel_id)},
+        phases=[phase for phase in WORKSPACE_PHASES if phase != "terminating"],
     )
-    await workspace_storage.update(updated)
+    if updated is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "workspace_terminating",
+                "message": (
+                    f"Workspace {workspace_id!r} is terminating and "
+                    "cannot have its reply binding changed."
+                ),
+            },
+        )
     return updated
 
 
@@ -1156,8 +1168,8 @@ async def clear_workspace_reply_binding(
     row = await workspace_storage.get(workspace_id)
     if row is None:
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
-    updated = row.model_copy(update={"reply_binding": None})
-    await workspace_storage.update(updated)
+    # The binding only (round 2 of #917): a whole-row write of the row as read put back a phase another writer had moved since.
+    await write_workspace_fields(workspace_storage, row, {"reply_binding": None})
 
 
 @workspace_router.delete(
