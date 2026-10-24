@@ -1,6 +1,578 @@
 /* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, WS_FieldRow, WS_Section */
 
-const WT_LIST_KEY = "ws:templates";
+// ---- WT pure helpers: no JSX, no React (tests/ui/test_wt_helpers.py runs them in MiniRacer) ----
+// The Workspace templates page and its template overlay (platform revamp Plan 08, Tasks 9 to 11; design 14.2) are built on these. They decide the units
+// (memory and disk are GiB here and bytes or a Kubernetes quantity on the wire), what a card says, which admin-only settings a template holds (the
+// server's own rule), the body a save sends (only what the person changed, written onto a copy of the row the form loaded, so a field the form does not
+// show is never dropped), where a refusal is shown, and every template past the 200 of one page.
+
+// The list key of the page, and every list a template write must refresh (the page's and the new-workspace dialog's).
+var WT_LIST_KEY = "ws:templates";
+var WT_TEMPLATE_KEYS = ["ws:templates", "nv-ov:workspace-templates"];
+
+// The templates primer ships (primer/bootstrap/defaults.py RESERVED_WORKSPACE_TEMPLATES): the server refuses to change or delete them.
+var WT_RESERVED_IDS = ["local-default"];
+
+function WT_isReserved(t) {
+  return !!t && WT_RESERVED_IDS.indexOf(t.id) >= 0;
+}
+
+var WT_KIND_LABELS = { local: "Local", container: "Docker", kubernetes: "Kubernetes" };
+var WT_KIND_ICONS = {
+  local: "M2 3h10v8H2Z M2 6h10",
+  container: "M2 4.5 7 2l5 2.5v5L7 12 2 9.5Z M7 7v5 M2 4.5 7 7l5-2.5",
+  kubernetes: "M7 1.5 12 4.5v5L7 12.5 2 9.5v-5Z M7 4.5v5 M4.5 6l5 2 M9.5 6l-5 2",
+};
+
+// The Kubernetes backend fields only an admin may set (primer/workspace/template_privilege.py _K8S_FIELDS, in its order).
+var WT_K8S_ADMIN_FIELDS = [
+  "extra_volumes", "extra_volume_mounts", "pod_overrides", "container_security_context_overrides", "service_account_name", "tolerations",
+];
+// The GPU resource a user may name; any other is admin-only (lead ruling 15 of plan 08).
+var WT_DEFAULT_GPU_RESOURCE = "nvidia.com/gpu";
+// With no command the Kubernetes backend runs `sleep infinity`, and the runtime never starts, so a new Kubernetes template is given this one.
+var WT_K8S_DEFAULT_COMMAND = ["python", "-m", "primer_runtime.server"];
+
+var WT_GIB = 1073741824;
+var WT_MIB = 1048576;
+// The most one workspace may have (primer/model/workspace.py MAX_WORKSPACE_*, MAX_GPU_COUNT): a template above them stores, but no workspace can be made from it.
+var WT_MAX_CPU = 1024;
+var WT_MAX_GIB = 65536;
+var WT_MAX_GPUS = 64;
+// The most pages of 200 one listing asks for (20,000 templates), so a server that always answers a full page cannot keep the page asking.
+var WT_MAX_PAGES = 100;
+
+function WT_trim(value) {
+  return value == null ? "" : String(value).trim();
+}
+
+function WT_has(obj, key) {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function WT_copy(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+// A Kubernetes quantity, as the server reads one (primer/model/workspace.py parse_k8s_quantity): a number and at most one suffix, with no space.
+var WT_QUANTITY = /^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(Ki|Mi|Gi|Ti|Pi|Ei|[eE][+-]?[0-9]{1,4}|[mkMGTPE])?$/;
+var WT_QUANTITY_SCALE = {
+  "": 1, m: 0.001, k: 1e3, M: 1e6, G: 1e9, T: 1e12, P: 1e15, E: 1e18,
+  Ki: 1024, Mi: 1048576, Gi: 1073741824, Ti: 1099511627776, Pi: 1125899906842624, Ei: 1152921504606846976,
+};
+
+// GiB in a Kubernetes quantity ("500Mi" is 0.48828125), or null when it is not one.
+function WT_quantityToGiB(q) {
+  if (q == null) return null;
+  var m = WT_QUANTITY.exec(String(q));
+  if (!m) return null;
+  var suffix = m[2] || "";
+  var bytes = WT_has(WT_QUANTITY_SCALE, suffix) ? Number(m[1]) * WT_QUANTITY_SCALE[suffix] : Number(m[1]) * Math.pow(10, Number(suffix.slice(1)));
+  var gib = bytes / WT_GIB;
+  return isFinite(gib) ? gib : null;
+}
+
+// At most two decimals, trailing zeros trimmed: 0.49, 1.5, 10.
+function WT_formatGiB(g) {
+  if (g == null || !isFinite(g)) return "";
+  return String(Math.round(g * 100) / 100);
+}
+
+// A plain decimal number above zero ("2", "1.5"), or null: "1e3", "0x10" and "" are not what a person typed into a size.
+var WT_DECIMAL = /^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/;
+
+function WT_positiveNumber(text) {
+  var s = WT_trim(text);
+  if (!WT_DECIMAL.test(s)) return null;
+  var n = Number(s);
+  return isFinite(n) && n > 0 ? n : null;
+}
+
+// GiB typed into a field, as whole bytes; null when it is not a positive number or is less than one byte.
+function WT_giBToBytes(text) {
+  var n = WT_positiveNumber(text);
+  if (n == null) return null;
+  var bytes = Math.round(n * WT_GIB);
+  return bytes >= 1 ? bytes : null;
+}
+
+// A disk typed in GiB as the quantity the template stores: <n>Gi when whole GiB, <n>Mi when whole MiB, else plain bytes.
+function WT_diskQuantity(text) {
+  var bytes = WT_giBToBytes(text);
+  if (bytes == null) return null;
+  if (bytes % WT_GIB === 0) return bytes / WT_GIB + "Gi";
+  if (bytes % WT_MIB === 0) return bytes / WT_MIB + "Mi";
+  return String(bytes);
+}
+
+function WT_kindOf(t) {
+  return (t && t.backend && t.backend.kind) || "local";
+}
+
+function WT_label(t, choice) {
+  var kind = WT_kindOf(t);
+  return (choice && choice.label) || WT_KIND_LABELS[kind] || kind;
+}
+
+// The size a template gives its workspaces, where each backend reads it: Kubernetes from resources and backend.pvc_size, Docker from its backend.
+function WT_templateSize(t) {
+  var kind = WT_kindOf(t);
+  var b = (t && t.backend) || {};
+  var r = (t && t.resources) || {};
+  var out = { cpu: null, memoryGiB: null, diskGiB: null, diskRaw: null };
+  var src = kind === "kubernetes" ? r : kind === "container" ? b : null;
+  if (!src) return out;
+  out.cpu = src.cpu_cores != null ? Number(src.cpu_cores) : null;
+  out.memoryGiB = src.memory_bytes != null ? Number(src.memory_bytes) / WT_GIB : null;
+  if (kind === "kubernetes" && b.pvc_size != null) {
+    out.diskRaw = String(b.pvc_size);
+    out.diskGiB = WT_quantityToGiB(out.diskRaw);
+  }
+  return out;
+}
+
+// "2 CPU · 4 GiB · 10 GiB disk", the parts there are; a disk that is not a quantity is shown as stored.
+function WT_sizeText(size) {
+  var parts = [];
+  if (size.cpu != null) parts.push(WT_formatGiB(size.cpu) + " CPU");
+  if (size.memoryGiB != null) parts.push(WT_formatGiB(size.memoryGiB) + " GiB");
+  if (size.diskGiB != null) parts.push(WT_formatGiB(size.diskGiB) + " GiB disk");
+  else if (size.diskRaw) parts.push(size.diskRaw + " disk");
+  return parts.join(" · ");
+}
+
+// description · <Label> on <provider> · the size.
+function WT_summaryLine(t, choice) {
+  var parts = [];
+  if (t.description) parts.push(t.description);
+  parts.push(WT_label(t, choice) + " on " + t.provider_id);
+  var size = WT_sizeText(WT_templateSize(t));
+  if (size) parts.push(size);
+  return parts.join(" · ");
+}
+
+// A card's facts: the provider, then the image and the size when there are any (one to three lines; design 14.2 and the kit's three-fact card).
+function WT_cardFacts(t, choice) {
+  var facts = [["Provider", t.provider_id + " · " + WT_label(t, choice)]];
+  var image = WT_kindOf(t) !== "local" && t.backend ? t.backend.image : null;
+  if (image) facts.push(["Image", image]);
+  var size = WT_sizeText(WT_templateSize(t));
+  if (size) facts.push(["Size", size]);
+  return facts;
+}
+
+// Python's `value or None` for a served value: null, "", [] and {} hold nothing.
+function WT_holds(value) {
+  if (value == null || value === "" || value === false) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+// The admin-only settings a template holds, in the server's order (primer/workspace/template_privilege.py admin_only_settings_held). A non-admin may
+// neither change nor delete such a template, so the console opens it read-only for them.
+function WT_heldAdminFields(t) {
+  var out = [];
+  var kind = WT_kindOf(t);
+  var b = (t && t.backend) || {};
+  if (kind === "container" && WT_holds(b.extra_mounts)) out.push("backend.extra_mounts");
+  var files = (t && t.files) || [];
+  if (files.some(function (f) { return f && f.source && f.source.kind === "secret"; })) out.push("files.secret");
+  if (kind === "kubernetes") {
+    WT_K8S_ADMIN_FIELDS.forEach(function (f) { if (WT_holds(b[f])) out.push("backend." + f); });
+    var gpu = b.gpu;
+    if (gpu && (gpu.resource_name || WT_DEFAULT_GPU_RESOURCE) !== WT_DEFAULT_GPU_RESOURCE) out.push("backend.gpu.resource_name");
+  }
+  return out;
+}
+
+// The flat form: a string per input (the key decides the body path), rows for the tables, FileMount objects for the files.
+function WT_blankForm() {
+  return {
+    id: "", description: "", provider_id: "", kind: "local",
+    image: "", cpu: "", memoryGiB: "",
+    diskGiB: "", storageClass: "", diskAccess: "one", nodeSelectorRows: [], tolerationRows: [], gpuCount: "", gpuResource: "",
+    serviceAccount: "", pullPolicy: "", command: "", args: "", workdir: "/workspace", extraVolumesJson: "", extraVolumeMountsJson: "",
+    podSharePid: "", podDns: "", podRestart: "", podGrace: "",
+    user: "", extraMountRows: [],
+    files: [], envRows: [], init: "", statePath: ".state", tmpPath: ".tmp", strict: "off",
+  };
+}
+
+// A new template's form on a provider: the provider's runtime image for Docker, the runtime command for Kubernetes, a 10 GiB disk.
+function WT_emptyForm(choice) {
+  var form = WT_blankForm();
+  return WT_formForChoice(form, choice, null);
+}
+
+// The form moved to another provider: its kind, and the prefills that come with it, replacing a prefill of the old provider nobody changed.
+function WT_formForChoice(form, choice, previous) {
+  var next = Object.assign({}, form);
+  var kind = (choice && choice.kind) || "local";
+  next.provider_id = (choice && choice.id) || "";
+  next.kind = kind;
+  var oldImage = (previous && previous.default_image) || "";
+  if (WT_trim(next.image) === "" || next.image === oldImage) next.image = kind === "container" ? (choice.default_image || "") : "";
+  var defaultCommand = WT_K8S_DEFAULT_COMMAND.join("\n");
+  if (kind === "kubernetes" && WT_trim(next.command) === "") next.command = defaultCommand;
+  if (kind !== "kubernetes" && next.command === defaultCommand) next.command = "";
+  if (WT_trim(next.diskGiB) === "") next.diskGiB = "10";
+  return next;
+}
+
+function WT_lines(value) {
+  return String(value == null ? "" : value).split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
+}
+
+function WT_jsonText(value) {
+  return Array.isArray(value) && value.length ? JSON.stringify(value, null, 2) : "";
+}
+
+// The form of a stored template. A value the form shows in other units (500Mi as 0.49 GiB) is only rewritten if the person edits that field.
+function WT_formFromTemplate(t) {
+  var form = WT_blankForm();
+  var kind = WT_kindOf(t);
+  var b = t.backend || {};
+  var size = WT_templateSize(t);
+  form.id = t.id || "";
+  form.description = t.description || "";
+  form.provider_id = t.provider_id || "";
+  form.kind = kind;
+  if (kind !== "local") {
+    form.image = b.image || "";
+    form.cpu = size.cpu != null ? String(size.cpu) : "";
+    form.memoryGiB = size.memoryGiB != null ? WT_formatGiB(size.memoryGiB) : "";
+    form.workdir = b.workdir || "/workspace";
+  }
+  if (kind === "kubernetes") {
+    form.diskGiB = size.diskGiB != null ? WT_formatGiB(size.diskGiB) : (size.diskRaw || "");
+    form.storageClass = b.storage_class || "";
+    form.diskAccess = (b.pvc_access_modes || []).indexOf("ReadWriteMany") >= 0 ? "many" : "one";
+    var selector = b.node_selector || {};
+    form.nodeSelectorRows = Object.keys(selector).map(function (k) { return { key: k, value: selector[k] == null ? "" : String(selector[k]) }; });
+    form.tolerationRows = (b.tolerations || []).map(function (tol) {
+      return { key: tol.key || "", operator: tol.operator || "Equal", value: tol.value || "", effect: tol.effect || "Any" };
+    });
+    form.gpuCount = b.gpu ? String(b.gpu.count) : "";
+    form.gpuResource = b.gpu ? (b.gpu.resource_name || "") : "";
+    form.serviceAccount = b.service_account_name || "";
+    form.pullPolicy = b.image_pull_policy || "";
+    form.command = (b.entrypoint || []).join("\n");
+    form.args = (b.args || []).join("\n");
+    form.extraVolumesJson = WT_jsonText(b.extra_volumes);
+    form.extraVolumeMountsJson = WT_jsonText(b.extra_volume_mounts);
+    var pod = b.pod_overrides || {};
+    form.podSharePid = pod.shareProcessNamespace === true ? "on" : pod.shareProcessNamespace === false ? "off" : "";
+    form.podDns = pod.dnsPolicy || "";
+    form.podRestart = pod.restartPolicy || "";
+    form.podGrace = pod.terminationGracePeriodSeconds != null ? String(pod.terminationGracePeriodSeconds) : "";
+  }
+  if (kind === "container") {
+    form.user = b.user || "";
+    form.extraMountRows = (b.extra_mounts || []).map(function (m) {
+      return { host: m.host || "", container: m.container || "", readonly: m.readonly ? "yes" : "no" };
+    });
+  }
+  form.files = WT_copy(t.files || []);
+  var env = t.env || {};
+  form.envRows = Object.keys(env).map(function (k) { return { key: k, value: env[k] == null ? "" : String(env[k]) }; });
+  form.init = (t.init_commands || []).join("\n");
+  form.statePath = t.state_path || ".state";
+  form.tmpPath = t.tmp_path || ".tmp";
+  form.strict = t.strict_write_locking ? "on" : "off";
+  return form;
+}
+
+// The form keys each kind shows (and so may write): the shared recipe, then the backend's own.
+var WT_SHARED_KEYS = ["description", "files", "envRows", "init", "statePath", "tmpPath", "strict"];
+var WT_KIND_KEYS = {
+  local: [],
+  container: ["image", "cpu", "memoryGiB", "user", "workdir", "extraMountRows"],
+  kubernetes: [
+    "image", "cpu", "memoryGiB", "diskGiB", "storageClass", "diskAccess", "nodeSelectorRows", "tolerationRows", "gpuCount", "gpuResource",
+    "serviceAccount", "pullPolicy", "command", "args", "workdir", "extraVolumesJson", "extraVolumeMountsJson",
+    "podSharePid", "podDns", "podRestart", "podGrace",
+  ],
+};
+
+function WT_formKeys(kind) {
+  return WT_SHARED_KEYS.concat(WT_KIND_KEYS[kind] || []);
+}
+
+function WT_orNull(value) {
+  var s = WT_trim(value);
+  return s ? s : null;
+}
+
+// A JSON list typed into a field, or null when it is not one ("" is the empty list).
+function WT_jsonList(text) {
+  if (!WT_trim(text)) return [];
+  try {
+    var value = JSON.parse(text);
+    return Array.isArray(value) ? value : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Toleration rows as the model takes them: a blank cell is null, "Any" effect is every effect, and an untouched blank row is dropped.
+function WT_tolerations(rows) {
+  return (rows || []).filter(function (r) {
+    return WT_trim(r.key) || WT_trim(r.value) || (r.operator && r.operator !== "Equal") || (r.effect && r.effect !== "Any");
+  }).map(function (r) {
+    return {
+      key: WT_orNull(r.key), operator: r.operator || "Equal", value: WT_orNull(r.value),
+      effect: !r.effect || r.effect === "Any" ? null : r.effect,
+    };
+  });
+}
+
+// The stored pod_overrides with the four pod settings the form shows set or removed; any other key it holds is kept. Null when nothing is left.
+function WT_podOverrides(stored, form) {
+  var pod = stored && typeof stored === "object" ? WT_copy(stored) : {};
+  function put(key, value) {
+    if (value === null) delete pod[key];
+    else pod[key] = value;
+  }
+  put("shareProcessNamespace", form.podSharePid === "on" ? true : form.podSharePid === "off" ? false : null);
+  put("dnsPolicy", form.podDns || null);
+  put("restartPolicy", form.podRestart || null);
+  put("terminationGracePeriodSeconds", WT_trim(form.podGrace) ? Number(WT_trim(form.podGrace)) : null);
+  return Object.keys(pod).length ? pod : null;
+}
+
+function WT_resources(body) {
+  if (!body.resources || typeof body.resources !== "object") body.resources = {};
+  return body.resources;
+}
+
+// One form key onto the body, at its path. The GPU pair and the four pod settings are written as one value each, once.
+function WT_writeKey(body, form, key, done) {
+  var b = body.backend;
+  var kubernetes = form.kind === "kubernetes";
+  if (key === "gpuCount" || key === "gpuResource") {
+    if (done.gpu) return;
+    done.gpu = true;
+    b.gpu = WT_trim(form.gpuCount) ? { count: Number(WT_trim(form.gpuCount)), resource_name: WT_trim(form.gpuResource) || WT_DEFAULT_GPU_RESOURCE } : null;
+    return;
+  }
+  if (key === "podSharePid" || key === "podDns" || key === "podRestart" || key === "podGrace") {
+    if (done.pod) return;
+    done.pod = true;
+    b.pod_overrides = WT_podOverrides(b.pod_overrides, form);
+    return;
+  }
+  switch (key) {
+    case "description": body.description = WT_trim(form.description); return;
+    case "image": b.image = WT_trim(form.image); return;
+    case "cpu":
+      if (kubernetes) WT_resources(body).cpu_cores = WT_positiveNumber(form.cpu);
+      else b.cpu_cores = WT_positiveNumber(form.cpu);
+      return;
+    case "memoryGiB":
+      if (kubernetes) WT_resources(body).memory_bytes = WT_giBToBytes(form.memoryGiB);
+      else b.memory_bytes = WT_giBToBytes(form.memoryGiB);
+      return;
+    case "diskGiB": {
+      var disk = WT_diskQuantity(form.diskGiB);
+      if (disk == null) delete b.pvc_size;
+      else b.pvc_size = disk;
+      return;
+    }
+    case "storageClass": b.storage_class = WT_orNull(form.storageClass); return;
+    case "diskAccess": b.pvc_access_modes = [form.diskAccess === "many" ? "ReadWriteMany" : "ReadWriteOnce"]; return;
+    case "nodeSelectorRows": {
+      var selector = {};
+      (form.nodeSelectorRows || []).forEach(function (r) { if (WT_trim(r.key)) selector[WT_trim(r.key)] = WT_trim(r.value); });
+      b.node_selector = selector;
+      return;
+    }
+    case "tolerationRows": b.tolerations = WT_tolerations(form.tolerationRows); return;
+    case "serviceAccount": b.service_account_name = WT_orNull(form.serviceAccount); return;
+    case "pullPolicy": b.image_pull_policy = form.pullPolicy || null; return;
+    case "command": b.entrypoint = WT_lines(form.command).length ? WT_lines(form.command) : null; return;
+    case "args": b.args = WT_lines(form.args).length ? WT_lines(form.args) : null; return;
+    case "workdir": b.workdir = WT_trim(form.workdir) || "/workspace"; return;
+    case "extraVolumesJson": b.extra_volumes = WT_jsonList(form.extraVolumesJson) || []; return;
+    case "extraVolumeMountsJson": b.extra_volume_mounts = WT_jsonList(form.extraVolumeMountsJson) || []; return;
+    case "user": b.user = WT_orNull(form.user); return;
+    case "extraMountRows":
+      b.extra_mounts = (form.extraMountRows || []).filter(function (r) { return WT_trim(r.host) || WT_trim(r.container); }).map(function (r) {
+        return { host: WT_trim(r.host), container: WT_trim(r.container), readonly: r.readonly === "yes" };
+      });
+      return;
+    case "files":
+      body.files = (form.files || []).filter(function (f) { return f && WT_trim(f.path); }).map(WT_copy);
+      return;
+    case "envRows": {
+      var env = {};
+      (form.envRows || []).forEach(function (r) { if (WT_trim(r.key)) env[WT_trim(r.key)] = r.value == null ? "" : String(r.value); });
+      body.env = env;
+      return;
+    }
+    case "init": body.init_commands = WT_lines(form.init); return;
+    case "statePath": body.state_path = WT_trim(form.statePath) || ".state"; return;
+    case "tmpPath": body.tmp_path = WT_trim(form.tmpPath) || ".tmp"; return;
+    case "strict": body.strict_write_locking = form.strict === "on"; return;
+    default: return;
+  }
+}
+
+// The body a save sends. An edit (initial is the form as it was opened) writes every key whose value the person changed onto a copy of the row it
+// loaded, so every field the form does not show, a masked secret and a key from a later version included, goes back as it was served (the server
+// restores a masked value it is sent). A create (initial null) writes every key of the form's kind onto a new object. Both name the provider and the kind.
+function WT_templateBody(base, form, initial) {
+  var body = initial ? WT_copy(base || {}) : {};
+  if (!body.backend || typeof body.backend !== "object") body.backend = {};
+  body.backend.kind = form.kind || "local";
+  body.provider_id = form.provider_id;
+  if (!initial && WT_trim(form.id)) body.id = WT_trim(form.id);
+  var done = {};
+  WT_formKeys(form.kind || "local").forEach(function (key) {
+    if (initial && JSON.stringify(form[key]) === JSON.stringify(initial[key])) return;
+    WT_writeKey(body, form, key, done);
+  });
+  return body;
+}
+
+function WT_sizeError(text, max, tooMuch) {
+  var n = WT_positiveNumber(text);
+  if (n == null) return "Enter a positive number";
+  return n > max ? tooMuch : null;
+}
+
+function WT_twice(rows) {
+  var seen = {};
+  return (rows || []).some(function (r) {
+    var k = WT_trim(r.key);
+    if (!k) return false;
+    if (seen[k]) return true;
+    seen[k] = true;
+    return false;
+  });
+}
+
+// The form's own errors, by form key (an empty object when it may be sent). Sizes are checked against what a workspace may have, so the form never
+// stores a template no workspace can be made from.
+function WT_validateForm(form, opts) {
+  var isAdmin = !!(opts && opts.isAdmin);
+  var errs = {};
+  var kind = form.kind;
+  function size(key, max, tooMuch, bytes) {
+    if (!WT_trim(form[key])) return;
+    var problem = bytes && WT_giBToBytes(form[key]) == null ? "Enter a positive number" : WT_sizeError(form[key], max, tooMuch);
+    if (problem) errs[key] = problem;
+  }
+  if (!WT_trim(form.description)) errs.description = "Enter a description";
+  if (kind === "kubernetes" || kind === "container") {
+    if (!WT_trim(form.image)) errs.image = "Enter an image";
+    size("cpu", WT_MAX_CPU, "At most 1024 CPU cores", false);
+    size("memoryGiB", WT_MAX_GIB, "At most 65536 GiB (64 TiB)", true);
+  }
+  if (kind === "kubernetes") {
+    size("diskGiB", WT_MAX_GIB, "At most 65536 GiB (64 TiB)", true);
+    if (WT_trim(form.gpuCount)) {
+      var gpus = /^[0-9]+$/.test(WT_trim(form.gpuCount)) ? Number(WT_trim(form.gpuCount)) : 0;
+      if (gpus < 1) errs.gpuCount = "Enter a whole number of at least 1";
+      else if (gpus > WT_MAX_GPUS) errs.gpuCount = "At most 64 GPUs";
+      if (!isAdmin && WT_trim(form.gpuResource) && WT_trim(form.gpuResource) !== WT_DEFAULT_GPU_RESOURCE) {
+        errs.gpuResource = "Only an admin may name another GPU resource";
+      }
+    }
+    if (WT_jsonList(form.extraVolumesJson) === null) errs.extraVolumesJson = "Enter a JSON list";
+    if (WT_jsonList(form.extraVolumeMountsJson) === null) errs.extraVolumeMountsJson = "Enter a JSON list";
+    if (WT_trim(form.podGrace) && !/^[0-9]+$/.test(WT_trim(form.podGrace))) errs.podGrace = "Enter a whole number of seconds";
+    if (WT_twice(form.nodeSelectorRows)) errs.nodeSelectorRows = "Each name once";
+  }
+  if ((form.files || []).some(function (f) { return f && WT_trim(f.mode) && !/^[0-7]{3,4}$/.test(WT_trim(f.mode)); })) {
+    errs.files = "Use an octal mode such as 0644";
+  }
+  if (WT_twice(form.envRows)) errs.envRows = "Each name once";
+  return errs;
+}
+
+// Where each body path is shown: the form key whose control writes it.
+var WT_FORM_PATHS = [
+  ["id", "id"], ["description", "description"], ["backend.image", "image"],
+  ["resources.cpu_cores", "cpu"], ["backend.cpu_cores", "cpu"], ["resources.memory_bytes", "memoryGiB"], ["backend.memory_bytes", "memoryGiB"],
+  ["backend.pvc_size", "diskGiB"], ["backend.storage_class", "storageClass"], ["backend.pvc_access_modes", "diskAccess"],
+  ["backend.node_selector", "nodeSelectorRows"], ["backend.tolerations", "tolerationRows"],
+  ["backend.gpu", "gpuCount"], ["backend.gpu.count", "gpuCount"], ["backend.gpu.resource_name", "gpuResource"],
+  ["backend.service_account_name", "serviceAccount"], ["backend.image_pull_policy", "pullPolicy"],
+  ["backend.entrypoint", "command"], ["backend.args", "args"], ["backend.workdir", "workdir"],
+  ["backend.extra_volumes", "extraVolumesJson"], ["backend.extra_volume_mounts", "extraVolumeMountsJson"],
+  ["backend.pod_overrides.shareProcessNamespace", "podSharePid"], ["backend.pod_overrides.dnsPolicy", "podDns"],
+  ["backend.pod_overrides.restartPolicy", "podRestart"], ["backend.pod_overrides.terminationGracePeriodSeconds", "podGrace"],
+  ["backend.user", "user"], ["backend.extra_mounts", "extraMountRows"],
+  ["files", "files"], ["env", "envRows"], ["init_commands", "init"], ["state_path", "statePath"], ["tmp_path", "tmpPath"],
+  ["strict_write_locking", "strict"],
+];
+
+// A refusal's loc as a body path: without "body", and without the backend's kind tag ("backend.kubernetes.pvc_size" is backend.pvc_size).
+function WT_cleanLoc(loc) {
+  var parts = Array.isArray(loc) ? loc.map(String) : [];
+  if (parts[0] === "body") parts.shift();
+  if (parts[0] === "backend" && WT_has(WT_KIND_LABELS, parts[1])) parts.splice(1, 1);
+  return parts;
+}
+
+// The form key a refusal's loc names (the longest path of WT_FORM_PATHS it starts with), or null.
+function WT_fieldKeyForLoc(loc) {
+  var parts = WT_cleanLoc(loc);
+  var best = null;
+  var bestLength = 0;
+  WT_FORM_PATHS.forEach(function (entry) {
+    var path = entry[0].split(".");
+    if (path.length <= bestLength || path.length > parts.length) return;
+    for (var i = 0; i < path.length; i++) if (path[i] !== parts[i]) return;
+    best = entry[1];
+    bestLength = path.length;
+  });
+  return best;
+}
+
+// A refused save, split: each field error under the key keyForLoc names (several on one key are joined), and what no field shows in one line. A
+// refusal with no field errors is said through the one reader (window.primerApi.readRefusal). opts.withPath puts each unplaced error's field in front.
+function WT_splitErrors(err, keyForLoc, opts) {
+  var fields = {};
+  var rest = [];
+  var entries = err && Array.isArray(err.fieldErrors) ? err.fieldErrors : [];
+  entries.forEach(function (fe) {
+    var msg = fe && typeof fe.msg === "string" ? fe.msg : "";
+    var key = keyForLoc(fe ? fe.loc : null);
+    if (key) {
+      fields[key] = fields[key] ? fields[key] + "; " + msg : msg;
+      return;
+    }
+    var path = WT_cleanLoc(fe ? fe.loc : null).join(".");
+    rest.push(opts && opts.withPath && path ? path + ": " + msg : msg);
+  });
+  if (!entries.length) return { fields: fields, general: window.primerApi.readRefusal(err).message };
+  return { fields: fields, general: rest.length ? rest.join("; ") : null };
+}
+
+// Every template, a page of 200 at a time in id order, until a short page says the list has ended (or WT_MAX_PAGES pages were read).
+function WT_fetchAllTemplates(apiFetch, signal) {
+  var items = [];
+  function page(n) {
+    var path = "/workspace_templates?limit=200&offset=" + n * 200 + "&order_by=id:asc";
+    return apiFetch("GET", path, null, { signal: signal }).then(function (answer) {
+      var rows = (answer && answer.items) || [];
+      items = items.concat(rows);
+      if (rows.length < 200 || n + 1 >= WT_MAX_PAGES) return { items: items, total: items.length };
+      return page(n + 1);
+    });
+  }
+  return page(0);
+}
+
+Object.assign(window, {
+  WT_LIST_KEY, WT_TEMPLATE_KEYS, WT_RESERVED_IDS, WT_isReserved, WT_KIND_LABELS, WT_KIND_ICONS, WT_K8S_ADMIN_FIELDS, WT_DEFAULT_GPU_RESOURCE,
+  WT_K8S_DEFAULT_COMMAND, WT_GIB, WT_MAX_PAGES, WT_quantityToGiB, WT_formatGiB, WT_giBToBytes, WT_diskQuantity, WT_templateSize, WT_sizeText,
+  WT_summaryLine, WT_cardFacts, WT_heldAdminFields, WT_emptyForm, WT_formForChoice, WT_formFromTemplate, WT_templateBody, WT_validateForm,
+  WT_FORM_PATHS, WT_fieldKeyForLoc, WT_splitErrors, WT_fetchAllTemplates,
+});
+// ---- end WT pure helpers ----
 
 // Security review 2026-10-08: host mounts, Kubernetes overlays and secret file sources reach the host, the cluster or
 // operator secrets, so only an admin may set or change them; the server answers a non-admin with 403 forbidden_role.
