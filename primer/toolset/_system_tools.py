@@ -245,24 +245,22 @@ async def _ask_user_handler(
 
 
 # ===========================================================================
-# read_doc_content - workspace-only tool. Reads a workspace-relative file,
-# runs it through the Docling loader (an OPTIONAL extra), and returns the
-# extracted plain-text/markdown. requires_workspace=True keeps it out of
-# chat context and off the MCP surface. The Docling import is GUARDED so
-# the tool degrades gracefully when the extra is not installed, rather than
-# crashing at dispatch time.
+# read_doc_content - workspace-only tool. Reads a workspace-relative UTF-8
+# text file and returns its content. requires_workspace=True keeps it out of
+# chat context and off the MCP surface. A binary file is refused with a bad
+# request: document conversion went with the ingest package in v2.
 # ===========================================================================
 
 
 class _ReadDocContentArgs(BaseModel):
-    """Workspace-relative path of the document to convert to text."""
+    """Workspace-relative path of a UTF-8 text file to read."""
 
     path: str = Field(
         ...,
         min_length=1,
         description=(
-            "Workspace-relative path of the document (PDF/DOCX/PPTX/HTML/"
-            "...) to convert. Must not escape the workspace."
+            "Workspace-relative path of a UTF-8 text file to read. Must not "
+            "escape the workspace."
         ),
     )
 

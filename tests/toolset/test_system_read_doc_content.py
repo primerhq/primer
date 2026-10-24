@@ -10,8 +10,10 @@ import json
 
 import pytest
 
+from primer.api.registries import ProviderRegistry
 from primer.model.yield_ import ToolContext
 from primer.toolset._system_tools import make_read_doc_content_handler
+from primer.toolset.system import build_system_toolset
 
 
 class _FakeWorkspace:
@@ -54,3 +56,27 @@ async def test_binary_file_is_a_clear_bad_request() -> None:
     body = json.loads(res.output)
     assert body["type"] == "bad-request"
     assert "UTF-8 text files only" in body["message"]
+
+
+def test_the_descriptor_promises_text_only_not_document_conversion(
+    fake_storage_provider,
+) -> None:
+    """The descriptor an agent reads (rendered description plus the argument
+    schema) must not repeat the pre-v2 conversion promise: the handler decodes
+    UTF-8 and refuses everything else."""
+    registry = ProviderRegistry(
+        fake_storage_provider,
+        llm_factory=lambda p: object(),  # type: ignore[arg-type]
+        embedder_factory=lambda p: object(),  # type: ignore[arg-type]
+        cross_encoder_factory=lambda p: object(),  # type: ignore[arg-type]
+        toolset_factory=lambda p: object(),  # type: ignore[arg-type]
+    )
+    provider = build_system_toolset(
+        storage_provider=fake_storage_provider,
+        provider_registry=registry,
+        workspace_registry=_FakeWorkspaceRegistry(b"# Title\n\nbody"),
+    )
+    tool, _ = provider._registry["read_doc_content"]  # noqa: SLF001
+    descriptor = tool.description + "\n" + json.dumps(tool.args_schema)
+    for stale in ("PDF", "DOCX", "PPTX", "HTML"):
+        assert stale not in descriptor

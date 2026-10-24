@@ -1595,19 +1595,20 @@ def build_system_toolset(
                 id="read_doc_content",
                 toolset_id=toolset_id,
                 purpose=(
-                    "Convert a document in the workspace "
-                    "(PDF/DOCX/PPTX/HTML/...) to plain text."
+                    "Read a UTF-8 text file in the session's workspace and "
+                    "return its content."
                 ),
                 when=(
-                    "Use when you need the text content of a binary/rich "
-                    "document at a workspace path; not for plain-text files "
-                    "(read those directly). Workspace only."
+                    "Use when you need the content of a text file at a "
+                    "workspace path. It reads UTF-8 only and refuses a "
+                    "binary file with a bad request, so it is not a document "
+                    "converter. Workspace only."
                 ),
                 args_schema=_ReadDocContentArgs.model_json_schema(),
                 examples=[
                     ToolExample(
-                        args={"path": "reports/q3.pdf"},
-                        returns="``{text: <document text as markdown>}``",
+                        args={"path": "notes/plan.md"},
+                        returns="``{text: <file content>}``",
                     ),
                 ],
                 yields=False,
