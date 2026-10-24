@@ -51,7 +51,7 @@ Reference: [`harness__harness__get`](reference/tools/harness/harness__get)
 - A managed row is locked to its harness: the agent and graph update and delete tools refuse it with `type=conflict`, and REST PUT or DELETE answers 409. Change the bundle and sync instead.
 - `git_token` and a URL credential are masked on every read: you cannot read a secret back, and registering a harness from a masked URL is refused.
 - An `outbound` harness refuses `fetch`, `install` and `sync` with `type=direction-mismatch`, and its uninstall keeps the objects it tracks.
-- The ids it installs carry the slug, `my-harness__lint` rather than `lint`: two harnesses cannot ship the same slug.
+- The ids it installs carry the slug, `ops-suite__lint` rather than `lint`: two harnesses cannot ship the same slug.
 
 ## Related
 [install and sync a harness](harnesses/install-and-sync), [create and edit an agent](agents/create-and-edit).
