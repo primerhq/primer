@@ -37,6 +37,9 @@ def _utc_now() -> datetime:
 class InMemoryClaimEngine(ClaimEngine):
     """A single-process ``ClaimEngine`` over a dict of lease rows (no row locks, no transactions).
 
+    ``claim_due`` applies the same rule as the Postgres claim query: a lease is claimed only when it is due AND its kind's
+    adapter says the entity is eligible (``ClaimAdapter.is_eligible``, the in-process twin of ``eligibility_sql``).
+
     ``clock`` is what every lease timestamp is read from (claim, heartbeat and expiry stamps, the expiry
     checks, ``next_attempt_at``); it defaults to the wall clock, ``datetime.now(UTC)``. A test that drives
     the pool on a virtual-time event loop passes a clock derived from that loop's time, so a lease's expiry
@@ -113,24 +116,65 @@ class InMemoryClaimEngine(ClaimEngine):
             return False
         return row.expires_at > self._clock()
 
+    @staticmethod
+    def _due(row: _LeaseRow, now: datetime) -> bool:
+        """The lease half of the claim query: unclaimed or expired, and ``next_attempt_at`` reached."""
+        return (
+            (row.claimed_by is None or (row.expires_at is not None and row.expires_at < now))
+            and row.next_attempt_at <= now
+        )
+
+    async def _eligible(self, row: _LeaseRow, now: datetime) -> bool:
+        """The entity half of the claim query: the kind's :meth:`~primer.int.claim.ClaimAdapter.is_eligible`.
+
+        A kind with no adapter stays claimable (this engine never required one). An adapter whose read fails is logged and
+        its lease skipped for this claim only: one unreadable entity must not stop every other lease from being claimed,
+        and the next poll asks again.
+        """
+        adapter = self._adapters.get(row.kind)
+        if adapter is None:
+            return True
+        try:
+            return await adapter.is_eligible(row.entity_id, now)
+        except Exception as exc:  # noqa: BLE001 - one entity's read must not fail the whole claim
+            logger.warning(
+                "claim_due: could not read %s/%s to decide its eligibility; not claimed this time: %s: %s",
+                row.kind.value, row.entity_id, type(exc).__name__, exc,
+            )
+            return False
+
     async def claim_due(
         self, worker_id: str, *, max_count: int, kinds: list[ClaimKind] | None = None,
     ) -> list[Lease]:
+        """Claim up to ``max_count`` leases that are due AND whose kind says their entity is eligible.
+
+        The same rule as the Postgres claim query (``primer.claim.sql``): a lease row must be unclaimed or expired with
+        ``next_attempt_at`` reached, and its entity must pass the kind's eligibility (here
+        :meth:`~primer.int.claim.ClaimAdapter.is_eligible`, the twin of the ``eligibility_sql`` the query joins in), so a
+        released lease whose entity is not due (a parked session, a finished harness operation, a trigger before its tick,
+        a finished tool call) is not claimed again. Eligibility is decided before ``max_count`` is applied, in
+        ``(priority_score, next_attempt_at)`` order, as the query's per-kind filter runs before its ``LIMIT``.
+
+        Reading an entity awaits, and another claim or a release can run meanwhile, so each row is checked again after its
+        read, with no await between that check and the stamp: it must still be this engine's row and still due.
+        """
         _tracer = _tracing.get_tracer("primer.claim")
         with _tracer.start_as_current_span("claim.due") as _span:
             now = self._clock()
             kind_set = None if kinds is None else set(kinds)
-            eligible = [
+            candidates = [
                 row for row in self._leases.values()
-                if (row.claimed_by is None
-                    or (row.expires_at is not None and row.expires_at < now))
-                and row.next_attempt_at <= now
-                and (kind_set is None or row.kind in kind_set)
+                if self._due(row, now) and (kind_set is None or row.kind in kind_set)
             ]
-            eligible.sort(key=lambda r: (r.priority_score, r.next_attempt_at))
-            chosen = eligible[:max_count]
+            candidates.sort(key=lambda r: (r.priority_score, r.next_attempt_at))
             out: list[Lease] = []
-            for row in chosen:
+            for row in candidates:
+                if len(out) >= max_count:
+                    break
+                if not await self._eligible(row, now):
+                    continue
+                if self._leases.get((row.kind, row.entity_id)) is not row or not self._due(row, now):
+                    continue                              # claimed, released or dropped while its entity was read
                 wait = max(0.0, (now - row.next_attempt_at).total_seconds())
                 row.claimed_by = worker_id
                 row.claimed_at = now
