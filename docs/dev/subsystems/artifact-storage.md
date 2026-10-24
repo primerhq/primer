@@ -179,8 +179,9 @@ memory by the registry and rebuilt from the rows. The reserved default row is se
   nothing is stored. A half pair is never completed from the server's ambient credentials: a row stored before the rule fails at build
   (`ConfigError`), so its probe stops at `build`. With neither key, botocore's ambient chain is used (environment, shared config files,
   the instance or pod role). The keys are masked in every answer, restored on an update that sends the masks, and never logged by primer;
-  probe errors pass through `probe_failure_text`. botocore's own DEBUG log of a signed request names the access key id (SigV4's
-  `Credential=`), never the secret key.
+  probe errors pass through `probe_failure_text`. primer keeps botocore and aiobotocore at INFO even when it logs at DEBUG
+  (`configure_logging` in `primer/common/log.py`), so their per-request DEBUG lines (the SigV4 signature, the access key id in
+  `Credential=`, the `x-amz-meta-filename` header) are never written; the secret key is in none of them anyway.
 - **Where a store writes** (`ArtifactStorage.serves`): a filesystem store compares the row's kind and `root`; an S3 store compares the
   row's kind, `bucket`, `prefix`, `endpoint_url` and `region`. New keys or another addressing style reach the same objects.
 - **Delete refusal** (`check_artifact_provider_delete`): the active store cannot be deleted (409 `cascade_blocked`), nor can a store

@@ -334,6 +334,9 @@ def configure_logging(
     # the primer-level signal that operators actually use. Pin them at
     # INFO regardless of the application level. Override by setting the
     # logger explicitly elsewhere if you really want the firehose.
-    _noisy_loggers = ("aiosqlite", "asyncio", "httpcore", "httpx")
+    # botocore and aiobotocore (the S3 artifact store) also write, at DEBUG,
+    # every request's SigV4 signature, the access key id (Credential=) and
+    # the metadata headers, an artifact's filename among them.
+    _noisy_loggers = ("aiosqlite", "asyncio", "httpcore", "httpx", "botocore", "aiobotocore")
     for name in _noisy_loggers:
         logging.getLogger(name).setLevel(max(level, logging.INFO))
