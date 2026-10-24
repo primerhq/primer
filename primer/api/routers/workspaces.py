@@ -3747,6 +3747,8 @@ async def list_pending_attention(
                     "session_name": str | None,
                     "kind": "approval" | "ask" | "parked",
                     "agent_binding": dict,
+                    "initiated_by": dict | null,  # creator projection for
+                                                  # rank-aware console controls
                     "created_at": str,   # ISO-8601; parked_at, falling back
                                          # to the session's created_at
                     "tool_call_id": str | None,   # the parked call a decision names
@@ -3829,6 +3831,12 @@ async def list_pending_attention(
             "session_name": sess.name,
             "kind": kind,
             "agent_binding": sess.binding.model_dump(mode="json"),
+            # The console mirrors the rank floor before offering a human-input
+            # control. The server remains authoritative on the mutation.
+            "initiated_by": (
+                sess.initiated_by.model_dump(mode="json")
+                if sess.initiated_by is not None else None
+            ),
             "created_at": created_at.isoformat(),
             "tool_call_id": _tool_call_id_from_blob(blob),
         }
