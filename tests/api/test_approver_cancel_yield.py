@@ -69,7 +69,8 @@ async def test_an_unrestricted_approval_gate_can_still_be_cancelled_by_any_user(
 
 @pytest.mark.asyncio
 async def test_cancelling_a_yield_that_is_not_an_approval_is_unchanged(client, app) -> None:
-    """An ask_user park has no approver routing: any user can cancel it, as before."""
+    """An ask_user park has no approver routing: any user the rank rule admits can cancel it, as before (this session records no creator, so
+    it runs as a user; a session above the caller's rank is pinned in ``tests/api/test_session_steer_restart_rank.py``)."""
     await _register_admin(client)
     now = datetime.now(UTC)
     event_key = "ask_user:cy-3:tc-3"

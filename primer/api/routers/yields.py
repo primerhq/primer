@@ -626,12 +626,15 @@ async def post_cancel_yielded_tool(
 
     An ``_approval`` gate is the exception to "tool-agnostic": its cancel payload is classified as a REJECTION, so cancelling it IS
     deciding it. It is therefore judged by the same approver check as the respond route (403 ``approver_mismatch`` for a user the gate's
-    stamped spec does not admit), over the rank floor of every approval decision (403 ``forbidden_rank`` when the session's creator outranks the
-    caller and the session is not the caller's own, whatever the spec admits), before anything is published. The spec is read from the pending
-    entry resolved by ``tool_call_id`` (the one that carries the stamp), NOT from the top-level ``yielded`` projection, which for a graph park
-    whose primary is a ToolCall node's approval holds ``original_call`` only. A graph park's top-level ``tool_name`` is ``"_approval"``
-    whatever its primary is, so only an entry whose own kind is ``_approval`` is judged (an agent's ``ask_user`` yield or an external wait
-    is cancelled by its owner as before). A park that claims to be an approval but resolves to no entry is admin-only.
+    stamped spec does not admit), before anything is published. The spec is read from the pending entry resolved by ``tool_call_id`` (the one
+    that carries the stamp), NOT from the top-level ``yielded`` projection, which for a graph park whose primary is a ToolCall node's
+    approval holds ``original_call`` only. A graph park's top-level ``tool_name`` is ``"_approval"`` whatever its primary is, so only an
+    entry whose own kind is ``_approval`` is judged (an agent's ``ask_user`` yield or an external wait is cancelled by its owner as
+    before). A park that claims to be an approval but resolves to no entry is admin-only.
+
+    Every cancel, of any yield, first passes the rank rule (ticket 01a16a35): 403 ``forbidden_rank`` when the session's creator outranks the
+    caller and the session is not the caller's own, whatever an approval's spec admits. A cancel is the person's input into the run: the
+    tool's result carries their ``reason`` and the turn goes on, so a Skip of an ``ask_user`` answers it and a Skip of an approval rejects it.
 
     Distinct from cancel-session (§9.2 of the spec): the tool's
     resume hook IS called with a :class:`YieldCancelled` payload and
@@ -641,6 +644,10 @@ async def post_cancel_yielded_tool(
     continue when the session is about to die anyway.
     """
     sess = await _load_session_or_404(session_storage, session_id)
+    # Every cancel puts the person's input into the run (the tool's result carries their reason, and the turn goes on; a cancelled ask_user is
+    # its answer, a cancelled approval its rejection), so it follows the rank rule of the REST resume (ticket 01a16a35): 403 ``forbidden_rank``
+    # unless the caller ranks at least as high as the session's creator or the session is their own, before the park is read.
+    refuse_outranked(request, sess)
     blob = _parked_blob(sess)
     if blob is None:
         raise NotFoundError(
@@ -685,11 +692,11 @@ async def post_cancel_yielded_tool(
             )
         ),
     )
-    if yielded.get("tool_name") == "_approval" and (gate is None or gate["kind"] == "_approval"):
-        # Cancelling an approval decides it, so the rank floor of every approval decision applies (ticket 01a16a35, lead ruling 2), and the
-        # gate's approver spec on top of it (admin-only when the gate cannot be resolved).
-        refuse_outranked(request, sess)
-        enforce_approvers(ADMIN_ONLY_METADATA if gate is None else gate["resume_metadata"], user)
+    if yielded.get("tool_name") == "_approval":
+        if gate is None:
+            enforce_approvers(ADMIN_ONLY_METADATA, user)
+        elif gate["kind"] == "_approval":
+            enforce_approvers(gate["resume_metadata"], user)
     _count_cancel(session_id=session_id, gate_id=body.gate_id, tool_name=resolved_tool)
     # A cancel of a human gate names it too: it is a decision (an approval cancel is classified as a rejection), delivered by key alone and at least once.
     payload = with_wake_gate(
