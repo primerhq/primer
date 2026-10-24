@@ -145,6 +145,11 @@ class _Registry:
             self.adapters[channel_id] = adapter
         return adapter
 
+    async def route_for_session(self, session):
+        from primer.api.registries.channel_registry import ChannelRegistry
+
+        return await ChannelRegistry.route_for_session(self, session)
+
     async def for_session(self, session):
         from primer.api.registries.channel_registry import ChannelRegistry
 

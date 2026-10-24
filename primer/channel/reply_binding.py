@@ -39,8 +39,10 @@ class ReplyBinding(BaseModel):
     anchor: str | None = Field(
         default=None,
         description=(
-            "Optional thread/message anchor inside the channel (e.g. a Slack "
-            "thread ts) the reply attaches to. None posts to the channel root."
+            "Optional thread inside the channel (a Slack thread ts, a Discord "
+            "thread id) that every post goes into. None: the adapter opens or "
+            "reuses the session's own thread (Slack, Discord) or posts into "
+            "the room (Telegram, which ignores an anchor)."
         ),
     )
     quiet: bool = Field(
@@ -119,7 +121,9 @@ async def resolve_reply_binding(
         return None
     if ws is not None and ws.reply_binding is not None:
         metrics.reply_binding_resolutions_total.labels(scope="workspace").inc()
-        return ReplyBinding(channel_id=ws.reply_binding.channel_id)
+        # The anchor comes with it: the dispatcher puts it on every post, so a workspace bound with an anchor posts into that
+        # thread (ticket 01a16e37-b98e item 5; it used to be dropped here and every session opened its own thread).
+        return ReplyBinding(channel_id=ws.reply_binding.channel_id, anchor=ws.reply_binding.anchor)
     metrics.reply_binding_resolutions_total.labels(scope="none").inc()
     return None
 

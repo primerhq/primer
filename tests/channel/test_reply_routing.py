@@ -1,0 +1,307 @@
+"""Where a channel session's posts go, and which room messages start sessions (ticket 01a16e37-b98e, items 4 to 7).
+
+The tests began as the measurement probes of the ticket (ruling 1) and were turned into red-first tests where the item changes.
+A fake Slack message event drives the real Slack factory handler, the real (never connected) adapter, the real inbound router
+and the real ``fire_trigger`` on real SQLite. The outbound side runs the real dispatcher, registry, relay and adapter
+``post_prompt`` against a fake Slack web client that records each post with the room and the thread it went to.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from pydantic import SecretStr
+
+from primer.channel.inbox import ChannelInbox
+from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
+from primer.model.agent import Agent, AgentModel
+from primer.model.channel import (
+    Channel,
+    ChannelProvider,
+    ChannelProviderType,
+    DiscordChannelProviderConfig,
+    SlackChannelConfig,
+    SlackChannelProviderConfig,
+)
+from primer.model.principal import PrincipalRef
+from primer.model.provider import SqliteConfig
+from primer.model.storage import OffsetPage
+from primer.model.trigger import AgentFreshSubConfig, ChannelTriggerConfig, Subscription, Trigger
+from primer.model.workspace import Workspace, WorkspaceChannelLink, WorkspaceRuntimeMeta
+from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.storage.sqlite import SqliteStorageProvider
+from tests.trigger.conftest import _FakeClaimEngine, _FakeWorkspaceRegistry
+
+ADMIN = PrincipalRef(type="user", id="u-root", display="root", role="admin", source="local")
+THREAD = "1700000000.000100"          # the platform thread the inbound message was posted in
+OTHER_ANCHOR = "1700000000.999999"    # a thread an explicit target or a workspace binding names
+
+
+class _BoltApp:
+    """Records the handlers ``_install_handlers`` registers, as slack_bolt's decorators would."""
+
+    def __init__(self) -> None:
+        self.events: dict = {}
+
+    def _keep(self, into: dict, name: str):
+        def deco(fn):
+            into[name] = fn
+            return fn
+        return deco
+
+    def event(self, name):
+        return self._keep(self.events, name)
+
+    def action(self, name):
+        return self._keep({}, name)
+
+    def view(self, name):
+        return self._keep({}, name)
+
+
+class _SlackWeb:
+    """A fake Slack web client: every chat_postMessage is recorded with the room it went to."""
+
+    def __init__(self) -> None:
+        self.posts: list[dict] = []
+
+    async def chat_postMessage(self, **kw):
+        self.posts.append(kw)
+        return {"ts": f"1800000000.{len(self.posts):06d}", "channel": kw.get("channel")}
+
+
+@pytest.fixture
+async def sp(tmp_path):
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "routing.sqlite"))
+    await provider.initialize()
+    yield provider
+    await provider.aclose()
+
+
+def _fresh(sub_id: str = "sb-1", **fields) -> Subscription:
+    """A binding that starts a fresh ``ag-1`` session in ``ws-1`` with the message text."""
+    return Subscription(
+        id=sub_id, trigger_id="tr-1", config=AgentFreshSubConfig(workspace_id="ws-1", agent_id="ag-1"),
+        payload_template="{{ event.text }}", parallelism="queue", created_at=datetime.now(UTC), **fields,
+    )
+
+
+class _World:
+    """Two Slack rooms (ch-sl is C01, ch-other is C02) on one provider, a workspace, an agent and a channel trigger on ch-sl."""
+
+    def __init__(self, monkeypatch, sp) -> None:
+        pytest.importorskip("slack_bolt")
+        self.sp = sp
+        self.monkeypatch = monkeypatch
+        self.provider = ChannelProvider(
+            id="cp-sl", provider=ChannelProviderType.SLACK,
+            config=SlackChannelProviderConfig(app_token=SecretStr("xapp-1-test"), bot_token=SecretStr("xoxb-test")),
+        )
+        self.web = {"ch-sl": _SlackWeb(), "ch-other": _SlackWeb()}
+        self.adapters: dict = {}
+
+    async def seed(self, *, chats_enabled: bool = True, interactive: bool = True, subscriptions=None,
+                   ws_binding: WorkspaceChannelLink | None = None) -> None:
+        from primer.channel.slack import factory
+        from primer.channel.slack.adapter import SlackChannelAdapter
+
+        sp = self.sp
+        await sp.get_storage(ChannelProvider).create(self.provider)
+        for cid, room in (("ch-sl", "C01"), ("ch-other", "C02")):
+            channel = Channel(
+                id=cid, provider_id="cp-sl", provider=ChannelProviderType.SLACK, external_id=room,
+                config=SlackChannelConfig.model_validate({"chats": {"enabled": chats_enabled}}),
+            )
+            await sp.get_storage(Channel).create(channel)
+            adapter = SlackChannelAdapter(
+                provider=self.provider, channel=channel, inbox=ChannelInbox(event_bus=None, storage_provider=sp),
+                storage_provider=sp, event_bus=None, claim_engine=_FakeClaimEngine(), workspace_registry=_FakeWorkspaceRegistry(),
+            )
+            adapter._conn = SimpleNamespace(app=SimpleNamespace(client=self.web[cid]))
+            self.adapters[cid] = adapter
+        entry = SimpleNamespace(adapters_by_channel_id={"C01": self.adapters["ch-sl"], "C02": self.adapters["ch-other"]})
+        self.monkeypatch.setattr(factory, "SLACK_CONNECTIONS", SimpleNamespace(entry=lambda _pid: entry))
+        self.monkeypatch.setattr(factory, "_HANDLERS_INSTALLED", set())
+        self.app = _BoltApp()
+        factory._install_handlers("cp-sl", self.app)
+
+        await sp.get_storage(Workspace).create(Workspace(
+            id="ws-1", description="w", template_id="t-1", provider_id="p-1", created_at=datetime.now(UTC),
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959/", token=SecretStr("t")), reply_binding=ws_binding,
+        ))
+        await sp.get_storage(Agent).create(Agent(id="ag-1", description="a", model=AgentModel(profile_id="p--m")))
+        await sp.get_storage(Trigger).create(Trigger(
+            id="tr-1", slug="ch-trigger", name="Channel", created_at=datetime.now(UTC),
+            config=ChannelTriggerConfig(provider_id="cp-sl", channel_id="ch-sl", interactive=interactive),
+        ))
+        for sub in (subscriptions if subscriptions is not None else [_fresh()]):
+            await sp.get_storage(Subscription).create(sub)
+
+    async def message(self, text: str, *, thread_ts: str | None = THREAD, ts: str = "1700000001.000001") -> None:
+        """A person posts ``text`` in C01: in the thread ``thread_ts``, or as a room post when it is None."""
+        event = {"channel": "C01", "ts": ts, "user": "U7", "text": text}
+        if thread_ts is not None:
+            event["thread_ts"] = thread_ts
+        await self.app.events["message"](event, SimpleNamespace(chat_postEphemeral=AsyncMock()))
+
+    async def sessions(self) -> list[WorkspaceSession]:
+        return list((await self.sp.get_storage(WorkspaceSession).list(OffsetPage(offset=0, length=50))).items)
+
+    def dispatcher(self):
+        from primer.api.registries.channel_registry import ChannelRegistry
+        from primer.channel.dispatcher import ChannelDispatcher
+
+        reg = ChannelRegistry(
+            channel_storage=self.sp.get_storage(Channel), channel_provider_storage=self.sp.get_storage(ChannelProvider),
+            inbox=None, storage_provider=self.sp,
+        )
+        reg._adapters.update(self.adapters)
+        return ChannelDispatcher(registry=reg)
+
+    def posts(self, cid: str) -> list[tuple[str | None, str]]:
+        """(thread_ts, text) of every post into the room of ``cid``, in order."""
+        return [(p.get("thread_ts"), p.get("text", "")) for p in self.web[cid].posts]
+
+
+async def _say_everything(world, session) -> None:
+    """Every kind of post a session makes: a question, an approval request, an ``inform`` and the final result."""
+    from primer.agent.inform import SessionInformSink
+    from primer.channel.session_relay import post_session_final_result
+    from primer.worker.yield_runtime import _dispatch_to_channels
+
+    for tool_name, metadata in (
+        ("ask_user", {"prompt": "Which currency?", "tool_call_id": "tc-1"}),
+        ("_approval", {"original_call": {"id": "tc-2", "name": "deploy", "arguments": {}}}),
+    ):
+        yielded = SimpleNamespace(tool_name=tool_name, event_key=f"x:{session.id}:tc", resume_metadata=metadata)
+        await _dispatch_to_channels(dispatcher=world.dispatcher(), session=session, yielded=yielded)
+    sink = SessionInformSink(dispatcher=world.dispatcher(), workspace_id=session.workspace_id, session_id=session.id, session=session)
+    await sink("half way there")
+    await post_session_final_result(dispatcher=world.dispatcher(), session=session, storage_provider=world.sp, text="DONE")
+
+
+def _a_session(**metadata) -> WorkspaceSession:
+    return WorkspaceSession(
+        id="s-ws", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"), status=SessionStatus.RUNNING,
+        created_at=datetime.now(UTC), initiated_by=ADMIN, metadata=metadata,
+    )
+
+
+# ---------------------------------------------------------------- items 4 and 5: the anchor goes on every post
+
+
+async def test_a_session_started_from_a_thread_keeps_its_whole_conversation_in_that_thread(monkeypatch, sp) -> None:
+    """The measurement found that the question, the approval request and the inform opened a NEW thread (a ``:thread:`` root
+    post) and only the final result came back to the thread the person wrote in."""
+    world = _World(monkeypatch, sp)
+    await world.seed()
+    await world.message("deploy please")
+    [session] = await world.sessions()
+
+    await _say_everything(world, session)
+
+    posts = world.posts("ch-sl")
+    assert [thread for thread, _text in posts] == [THREAD] * 4, posts
+    assert not any(text.startswith(":thread:") for _thread, text in posts), "a new thread was opened"
+    assert world.posts("ch-other") == []
+
+
+async def test_a_workspace_reply_binding_with_an_anchor_posts_into_that_thread(monkeypatch, sp) -> None:
+    """Item 5: ``system__set_reply_binding``'s anchor was dropped when the binding was resolved, so every session opened its own thread."""
+    world = _World(monkeypatch, sp)
+    await world.seed(ws_binding=WorkspaceChannelLink(channel_id="ch-other", anchor=OTHER_ANCHOR))
+    session = _a_session()          # not started by a channel message: the workspace's binding answers for it
+    await sp.get_storage(WorkspaceSession).create(session)
+
+    await _say_everything(world, session)
+
+    posts = world.posts("ch-other")
+    assert [thread for thread, _text in posts] == [OTHER_ANCHOR] * 4, posts
+    assert world.posts("ch-sl") == []
+
+
+async def test_a_workspace_reply_binding_without_an_anchor_still_opens_one_thread_per_session(monkeypatch, sp) -> None:
+    world = _World(monkeypatch, sp)
+    await world.seed(ws_binding=WorkspaceChannelLink(channel_id="ch-other"))
+    session = _a_session()
+    await sp.get_storage(WorkspaceSession).create(session)
+
+    await _say_everything(world, session)
+
+    posts = world.posts("ch-other")
+    root_thread, root_text = posts[0]
+    assert root_thread is None and root_text == f":thread: Agent session {session.id}"
+    session_thread = "1800000000.000001"
+    assert [thread for thread, _text in posts[1:]] == [session_thread] * 4, posts
+
+
+async def test_discord_posts_every_message_of_a_thread_mapped_session_into_its_thread() -> None:
+    """The same path on Discord, with a fake client: the binding's anchor is the thread id, and no thread of the session's own is opened.
+    An anchor that is not a Discord id (a Slack thread ts) no longer fails the post: the session's own thread is used."""
+    pytest.importorskip("discord")
+    from primer.api.registries.channel_registry import ChannelRegistry
+    from primer.channel.dispatcher import ChannelDispatcher
+    from primer.channel.discord.adapter import DiscordChannelAdapter
+
+    class _Room:
+        def __init__(self, room_id: int) -> None:
+            self.id = room_id
+            self.sent: list[str] = []
+            self.threads: list[_Room] = []
+
+        async def send(self, content=None, **_kw):
+            self.sent.append(content)
+            return SimpleNamespace(id=len(self.sent), create_thread=self._open_thread)
+
+        async def _open_thread(self, *, name, **_kw):
+            thread = _Room(9000 + len(self.threads))
+            self.threads.append(thread)
+            return thread
+
+    parent, thread = _Room(500), _Room(777)
+    rooms = {500: parent, 777: thread}
+    client = SimpleNamespace(get_channel=lambda room_id: rooms.get(room_id), fetch_channel=AsyncMock(return_value=None))
+    provider = ChannelProvider(id="cp-dc", provider=ChannelProviderType.DISCORD, config=DiscordChannelProviderConfig(bot_token=SecretStr("x" * 60)))
+    channel = Channel(id="ch-dc", provider_id="cp-dc", provider=ChannelProviderType.DISCORD, external_id="500")
+    adapter = DiscordChannelAdapter(provider=provider, channel=channel, inbox=None)
+    adapter._client = client
+
+    class _Registry:
+        """The real binding resolution over a session's own binding, handing out the one adapter."""
+
+        def __init__(self) -> None:
+            self._storage_provider = SimpleNamespace(get_storage=lambda _model: SimpleNamespace(get=AsyncMock(return_value=None)))
+
+        async def get_adapter(self, _channel_id):
+            return adapter
+
+        async def route_for_session(self, session):
+            return await ChannelRegistry.route_for_session(self, session)
+
+        async def for_session(self, session):
+            return await ChannelRegistry.for_session(self, session)
+
+    from primer.model.envelope import PromptEnvelope
+
+    def _post(kind: str, text: str, *, session_id: str, anchor: str):
+        session = SimpleNamespace(
+            id=session_id, workspace_id="ws-1", metadata={SESSION_REPLY_BINDING_KEY: {"channel_id": "ch-dc", "anchor": anchor}},
+        )
+        envelope = PromptEnvelope(
+            kind=kind, workspace_id="ws-1", session_id=session_id, tool_call_id="tc-1", prompt=text,
+            response_schema=None, choices=None, timeout_at_iso=None,
+        )
+        return ChannelDispatcher(registry=_Registry()).dispatch_prompt(envelope=envelope, session=session)
+
+    for kind, text in (("ask_user", "Which currency?"), ("inform", "half way there")):
+        results = await _post(kind, text, session_id="s-dc", anchor="777")
+        assert all("error" not in r for r in results), results
+    assert thread.sent == ["Which currency?", "half way there"]
+    assert parent.sent == [] and parent.threads == []
+
+    results = await _post("inform", "still here", session_id="s-dc2", anchor=THREAD)
+    assert all("error" not in r for r in results), results
+    assert parent.sent == [":thread: Agent session s-dc2"] and parent.threads[0].sent == ["still here"]

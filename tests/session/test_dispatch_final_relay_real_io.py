@@ -306,8 +306,8 @@ class TestTheRelayReadsThroughTheWorkspaceTheWayProductionIsWired:
                     raise
 
         class _AdapterRegistry:
-            async def for_session(self, session):
-                return [_HungAdapter()]
+            async def route_for_session(self, session):
+                return None, [_HungAdapter()]
 
         dispatcher = ChannelDispatcher(registry=_AdapterRegistry())
         run = await _run_with_the_pools_io(

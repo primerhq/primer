@@ -97,10 +97,13 @@ route to different agents by rule, which a single per-room default could
 not express.
 
 Workspace:
-- `reply_binding: {channel_id} | null` - the single Channel this
+- `reply_binding: {channel_id, anchor} | null` - the single Channel this
   workspace's session traffic forwards to (the standing outbound
   binding). Set at create time or mutated via `set_reply_binding` /
-  `clear_reply_binding`.
+  `clear_reply_binding`. With an `anchor` (a Slack thread ts or a
+  Discord thread id) every post goes into that thread; without one each
+  session opens its own thread (Slack, Discord) or posts into the room
+  (Telegram, which ignores an anchor).
 
 ChannelEvent (normalized inbound envelope):
 - `type` - `message.posted` or `command.invoked` (v1 core).
