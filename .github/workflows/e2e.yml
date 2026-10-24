@@ -67,6 +67,17 @@ jobs:
         run: |
           uv sync --all-extras --dev --group docs
           uv pip install --no-deps ./runtime
+      - name: Enable container workspace e2e
+        # The runner has Docker and the runtime image is built below. Keep the
+        # Kubernetes capability off: this job has no cluster.
+        run: |
+          cat > tests/testconfig.yaml <<'YAML'
+          workspace_backends:
+            container:
+              enabled: true
+            kubernetes:
+              enabled: false
+          YAML
       - name: Pull Docker Hub images through mirror.gcr.io
         # Docker Hub rate-limits unauthenticated pulls ("toomanyrequests: You
         # have reached your unauthenticated pull rate limit") and a shared
