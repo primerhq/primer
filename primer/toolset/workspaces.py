@@ -2384,8 +2384,9 @@ def build_workspaces_toolset(
             "a turn in flight finish, after which it rests ``waiting`` with "
             "``pause_requested: true`` (not ``paused``), its messages from "
             "triggers, agents and other sessions held until it is resumed or "
-            "a person messages it. ``type=conflict`` "
-            "when the session has ended. " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
+            "a person messages it. ``type=conflict`` when the session has "
+            "ended, or when its status changed under the call twice (try "
+            "again). " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
         ),
         _WorkspaceSessionArgs,
         _pause_workspace_session,
@@ -2410,7 +2411,8 @@ def build_workspaces_toolset(
             "/v1/workspaces/{workspace_id}/sessions/{session_id}/resume``. "
             "The answer is the session row; a session already running is "
             "answered as it is, with nothing changed. ``type=conflict`` "
-            "when the session has ended. " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
+            "when the session has ended, or when its status changed under "
+            "the call twice (try again). " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
         ),
         _WorkspaceSessionArgs,
         _resume_workspace_session,
