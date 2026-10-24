@@ -167,6 +167,22 @@ def test_the_card_menu_runs_the_delete(ctx):
     assert js(ctx, "TOASTS") == [["Deleted python-dev", None]] and js(ctx, "RES['ws:templates'].refetched") == 1
 
 
+def test_a_second_delete_while_one_is_out_does_nothing(ctx):
+    """Round 2 of #886, item 8 (the reviewer's probe): a second Delete of the same card while the first one's prompt or request is out sends nothing;
+    once it has ended, Delete works again."""
+    _mount(ctx, [PYTHON_DEV])
+    ctx.eval("var FINISH = null; HANDLER = function (m, p, b) {"
+             " return m === 'DELETE' ? new Promise(function (resolve) { FINISH = resolve; }) : Promise.resolve(b); };")
+    ctx.eval("CARDS['python-dev'].menu[0].onClick(); CARDS['python-dev'].menu[0].onClick();")
+    settle(ctx)
+    assert len(js(ctx, "CONFIRMS")) == 1 and len([c for c in js(ctx, "CALLS") if c["method"] == "DELETE"]) == 1
+    ctx.eval("FINISH(null);")
+    settle(ctx)
+    ctx.eval("CARDS['python-dev'].menu[0].onClick();")
+    settle(ctx)
+    assert len(js(ctx, "CONFIRMS")) == 2 and len([c for c in js(ctx, "CALLS") if c["method"] == "DELETE"]) == 2
+
+
 # ---- every template, the count and the filter -----------------------------------------------------------------------------------------------------------
 
 
