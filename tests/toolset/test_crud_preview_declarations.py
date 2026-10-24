@@ -1,7 +1,7 @@
 """What an approval card for each DEFAULT-GATED ``crud`` tool may show (design note 01a11cd3-66b0, slice 1).
 
-``bootstrap/seed.py`` seeds a ``required`` approval policy for each tool of ``CRUD_TOOL_NAMES`` (the builder agent's platform mutations), so these nine are the tools whose cards a
-fresh install actually shows. Each takes ONE nested body (``entity``) or a few flat arguments, so the default rule (only a boolean, number or enum is shown) would leave the card
+``bootstrap/seed.py`` seeds a ``required`` approval policy for each write of ``CRUD_TOOL_NAMES`` (the builder agent's platform mutations), so these eight are the tools whose cards a
+fresh install actually shows; the read ``list_python_tools`` ships ungated (ticket 01a16f1d), but an operator may gate it, so it declares its card too. Each takes ONE nested body (``entity``) or a few flat arguments, so the default rule (only a boolean, number or enum is shown) would leave the card
 with nothing a person can decide on. Each declares the paths that name WHAT is being created or changed, and withholds the free text that can hold a pasted secret: an agent's
 system and compaction prompts, a graph node's templates and arguments, a webhook trigger's token and HMAC secret, a Python toolset's source.
 

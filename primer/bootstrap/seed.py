@@ -59,7 +59,8 @@ async def ensure_crud_approval_policies(storage_provider) -> list[str]:
 
     Platform mutations are approval-gated by default; the approval system
     is the safety net that makes a user-editable builder agent safe. The
-    gated tools are the crud tools AND their twins (``CRUD_TWINS``: the
+    gated tools are the crud writes (every crud tool but the read
+    ``list_python_tools``, ``CRUD_GATED_TOOL_NAMES``) AND their twins (``CRUD_TWINS``: the
     system and trigger tools that make the same writes, and delete
     agents, graphs and triggers), because ``system__call_tool`` reaches
     every one of them (audit G6-1), and the admin-tier writes a run at an

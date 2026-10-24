@@ -92,7 +92,7 @@ gate comes back at the next start; a disabled one stays disabled.
 
 | Tools | Gate | Decided by | Why |
 |---|---|---|---|
-| `crud::create_` / `update_agent`, `_graph`, `_trigger`, and the Python toolset tools | `required` | anyone who may decide the session's gates | the builder's platform writes |
+| `crud::create_` / `update_agent`, `_graph`, `_trigger`, `crud::create_python_toolset`, `update_python_toolset_source` | `required` | anyone who may decide the session's gates | the builder's platform writes (`crud::list_python_tools` only reads, so it is not gated) |
 | `system::create_` / `update_` / `delete_agent` and `_graph`; `trigger::create`, `update`, `delete` | `required` | anyone who may decide the session's gates | the other doors to the same writes |
 | `system::create_tool_approval_policy`, `update_tool_approval_policy`, `delete_tool_approval_policy` | `required` | an admin | a run must not remove or relax the gate that protects a write |
 | `system::create_toolset`, `update_toolset` | `policy` (Rego) | an admin | a Python toolset runs its source and a stdio MCP toolset launches a command on the server host |

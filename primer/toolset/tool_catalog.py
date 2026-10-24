@@ -120,7 +120,7 @@ def default_gate(toolset_id: str, tool_name: str) -> str | None:
     every other.
 
     ``ensure_crud_approval_policies`` (``primer/bootstrap/seed.py``) writes one policy per tool of ``DEFAULT_GATED_TOOLS``, the gate ``crud.shipped_gate`` names: an
-    unconditional one for the ``crud`` tools, the other doors to the same writes (``CRUD_TWINS``: the system tools that create, update and delete agents and graphs,
+    unconditional one for the ``crud`` writes (the read ``list_python_tools`` ships ungated), the other doors to the same writes (``CRUD_TWINS``: the system tools that create, update and delete agents and graphs,
     and the trigger toolset's create, update and delete), the tool approval policy writes and the harness install, sync and uninstall; a Rego one for the system
     toolset's ``create_toolset`` and ``update_toolset``, which gates a body that runs code on the server host (``admin_gates``). Nothing else is gated by default.
     An operator can disable or retune any of them, add others, and gate any tool, so this is what a fresh install does and not what a running one does: the live
