@@ -100,6 +100,17 @@ def _canvas_payload(attribution: dict | None) -> dict | None:
     return {CANVAS_EVENT_PAYLOAD_KEY: found} if isinstance(found, dict) else None
 
 
+def _dropped_text(row: PendingSessionMessage) -> str:
+    """What the record of a dropped queued message says it was: its text, or, for a queued canvas click (pivot P5), a summary of the event
+    (``canvas event e1 (emit on viz)``), never its ``<canvas_event>`` block, whose text holds what the user entered (the lead's ruling 3 on
+    #892 round 2: the record is a structured copy)."""
+    canvas = _canvas_payload(row.attribution)
+    if canvas is None:
+        return _text_of(row)
+    event = canvas[CANVAS_EVENT_PAYLOAD_KEY]
+    return f"canvas event {event.get('id')} ({event.get('kind')} on {event.get('element')})"
+
+
 def _queued_for(session_id: str) -> Predicate:
     return Predicate(left=FieldRef(name="session_id"), op=Op.EQ, right=Value(value=session_id))
 
@@ -235,7 +246,7 @@ async def _enforce_pending_cap(
             storage_provider=storage_provider,
             workspace_id=session.workspace_id,
             session_id=session.id,
-            dropped_text=_text_of(row),
+            dropped_text=_dropped_text(row),
             enqueued_at=row.enqueued_at,
             reason=_REASON_CAP,
         )
@@ -416,7 +427,7 @@ async def _realize_oldest(
             storage_provider=storage_provider,
             workspace_id=workspace_id,
             session_id=session_id,
-            dropped_text=text,
+            dropped_text=_dropped_text(row),
             enqueued_at=row.enqueued_at,
             reason=_REASON_CANCELLED,
         )
