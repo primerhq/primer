@@ -152,6 +152,15 @@ PHONE_TABS = ["Inbox", "Spaces", "Files", "More"]
 OVERLAYS = ["new-session", "new-workspace", "activity"]
 
 
+def overlay_ready(name: str) -> list[str]:
+    """What a studio overlay shows once it has drawn: a panel overlay's body; the new-workspace dialog (a kit form overlay since Plan 08 Task 13, with no
+    panel body) its template dropdown, or the empty state of an install with no template."""
+    root = f'[data-testid="nv-overlay:{name}"]'
+    if name == "new-workspace":
+        return [f'{root} [data-testid="nv-nw-template"], {root} [data-testid="nv-nw-empty"]']
+    return [f'{root} [data-testid="nv-overlay-body"]']
+
+
 def form_surface(kind: str, page: str, button: str) -> str:
     return f"{kind} {page} / {button}"
 

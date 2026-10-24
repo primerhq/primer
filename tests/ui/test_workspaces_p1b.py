@@ -1,12 +1,12 @@
-"""Platform wave P1b item 6/7: workspaces.jsx create modal (verb chip,
-Template row picker with real-field descriptors, Label copy, Overrides
-section) and the list's card anatomy (Rename-not-Delete footer).
+"""Platform wave P1b item 6/7: the new-workspace dialog and the Workspaces list's card anatomy (Rename-not-Delete footer).
 
-Static-source checks only (the tests/ui suite convention). Sister of
-test_workspaces_mobile.py (grid-vs-table mechanism, already retargeted)
-and test_workspace_create_loading_state.py (loading affordance,
-unaffected by this wave) - this file covers the rest of the new P1b
-surface those files don't.
+Static-source checks only (the tests/ui suite convention).
+
+Item 6 pinned the create modal of the Workspaces page (``WS_NewWorkspaceModal``: template ROWS, a "Label" field, an env "Overrides" box). Platform
+revamp 08, Task 13 (design 14.3) replaced it with ONE dialog, the console's ``NV_CreateWorkspaceOverlay`` rebuilt on the platform kit, so the
+item 6 pins below read that dialog now and pin its design instead: the template choice is the kit's searchable dropdown over every template, not rows
+and not a native select; the extra environment is a kit row table whose values are secret-typed; and the body is built by ``NV_nwBody``. The
+dialog's behaviour is pinned by ``tests/ui/test_new_workspace_dialog.py`` and ``tests/ui/test_nv_new_workspace_helpers.py``.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 SRC = UI / "components" / "workspaces.jsx"
+OVERLAYS = UI / "components" / "console" / "nv-overlays.jsx"
 
 
 def _src() -> str:
@@ -23,9 +24,10 @@ def _src() -> str:
 
 
 def _modal_src() -> str:
-    src = _src()
-    start = src.index("function WS_NewWorkspaceModal(")
-    end = src.index("\nfunction ", start + 1)
+    """The new-workspace dialog, from its helper block to the end of the component."""
+    src = OVERLAYS.read_text(encoding="utf-8")
+    start = src.index("// ---- NV_nw pure helpers")
+    end = src.index("// The management-surface mount table", src.index("function NV_CreateWorkspaceOverlay("))
     return src[start:end]
 
 
@@ -36,7 +38,7 @@ def _list_src() -> str:
     return src[start:end]
 
 
-# ---- Item 6: create modal -------------------------------------------------
+# ---- Item 6: the create dialog --------------------------------------------
 
 
 def test_modal_has_no_verb_chip() -> None:
@@ -45,69 +47,53 @@ def test_modal_has_no_verb_chip() -> None:
     assert "verb-chip" not in modal and "verb:" not in modal
 
 
-def test_template_picker_is_rows_not_a_select() -> None:
+def test_template_picker_is_the_kit_dropdown_not_rows_or_a_select() -> None:
+    """Design 14.3: the template is picked from the kit's searchable selector at the top of the dialog, over every template (not the first 200)."""
     modal = _modal_src()
-    assert 'data-testid="workspace-template-picker"' in modal
-    assert 'data-testid={`workspace-template-row-${t.id}`}' in modal
-    assert 'data-selected={t.id === templateId ? "true" : "false"}' in modal
-    assert "<select" not in modal
+    assert "<PK_FormOverlay" in modal
+    for piece in ('prefix: "From template"', "searchable: true", 'testid: "nv-nw-template"', "WT_fetchAllTemplates(apiFetch, signal)"):
+        assert piece in modal, piece
+    for gone in ("nv-nw-tpl:", "nv-pick-row", "<select", "?limit=200", "workspace-template-picker"):
+        assert gone not in modal, gone
 
 
-def test_template_row_descriptor_uses_only_real_served_fields() -> None:
-    """No invented descriptors: every part composed for the row comes
-    from a field confirmed present on GET /workspace_templates list
-    items (backend.kind, resources.network, files.length, env,
-    strict_write_locking)."""
+def test_the_summary_line_is_the_templates_own() -> None:
+    """The rows' hand-composed descriptors are gone: the line under the dropdown is the one the templates page uses (WT_summaryLine: description,
+    provider and size)."""
     modal = _modal_src()
-    parts_start = modal.index("const parts = [")
-    parts_end = modal.index("];", parts_start)
-    parts_src = modal[parts_start:parts_end]
-    for field in (
-        "t.backend", "t.resources", "t.files", "t.env",
-        "t.strict_write_locking",
-    ):
-        assert field in parts_src, f"{field} missing from the row descriptor"
+    assert 'data-testid="nv-nw-summary"' in modal and "WT_summaryLine(template)" in modal
+    assert "const parts = [" not in modal
 
 
-def test_label_copy_is_verbatim() -> None:
+def test_name_copy_is_verbatim() -> None:
     modal = _modal_src()
-    assert "Label" in modal
-    assert "shows in the selector" in modal
+    assert 'label="Name"' in modal
+    assert "Shown in the workspace menu in place of the id" in modal
 
 
-def test_overrides_section_has_add_and_remove() -> None:
+def test_overrides_section_is_the_kit_row_table() -> None:
     modal = _modal_src()
-    assert 'data-testid="workspace-override-add"' in modal
-    assert 'data-testid={`workspace-override-remove-${i}`}' in modal
-    assert 'data-testid={`workspace-override-key-${i}`}' in modal
-    assert 'data-testid={`workspace-override-value-${i}`}' in modal
+    assert 'title: "EXTRA ENVIRONMENT"' in modal and 'testid: "nv-nw-env"' in modal and 'addLabel: "+ Add"' in modal
 
 
 def test_overrides_value_input_is_secret_typed() -> None:
     modal = _modal_src()
-    key_idx = modal.index('data-testid={`workspace-override-value-${i}`}')
-    row_start = modal.rindex("<input", 0, key_idx)
-    row_src = modal[row_start:key_idx]
-    assert 'type="password"' in row_src
+    assert '{ key: "value", label: "Value", input: "secret" }' in modal
 
 
-def test_overrides_footnote_is_the_full_confirmed_sentence() -> None:
-    """The brief hedged this might not exist server-side (#33
-    report-first fallback: 'mounts-apply-first spirit without the env
-    values clause'), but WorkspaceTemplateOverrides.env and
-    WorkspaceCreate.overrides are both real and wired end-to-end - so
-    the FULL sentence renders, not the fallback partial."""
+def test_overrides_footnote_is_the_designs_sentence() -> None:
+    """Design 14.3's line under the extra environment (the old footnote spoke of mounts and a network policy the dialog no longer shows)."""
     modal = _modal_src()
-    assert 'data-testid="workspace-overrides-footnote"' in modal
-    assert "Env values are secret-typed" in modal
-    assert "mounts, network" in modal
-    assert "init commands still apply first" in modal
+    assert "Added to the template's; values are hidden" in modal
+    assert "Env values are secret-typed" not in modal
 
 
 def test_overrides_are_only_sent_when_a_key_is_present() -> None:
+    """NV_nwBody builds the body: an env row with no name is left out, and so is an empty overrides (tests/ui/test_nv_new_workspace_helpers.py runs it)."""
     modal = _modal_src()
-    assert "if (row.key.trim()) env[row.key.trim()] = row.value;" in modal
-    assert "if (Object.keys(env).length > 0) body.overrides = { env };" in modal
+    assert "mutation.mutate(NV_nwBody(state))" in modal
+    assert "if (named) overrides.env = env;" in modal
+    assert "if (Object.keys(overrides).length) body.overrides = overrides;" in modal
 
 
 # ---- Item 7: card anatomy --------------------------------------------------

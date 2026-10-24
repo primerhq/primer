@@ -294,3 +294,19 @@ def test_every_surface_has_a_floor_on_its_body_and_none_that_is_not_visited() ->
 
 def test_the_phone_has_its_four_tabs() -> None:
     assert surfaces.PHONE_TABS == ["Inbox", "Spaces", "Files", "More"]
+
+
+def test_each_studio_overlay_waits_for_what_it_draws() -> None:
+    """The new-workspace dialog is a kit form overlay since Plan 08 Task 13: it has no panel body (``nv-overlay-body``), so the sweep waits for its template
+    dropdown (or, on an install with no template, its empty state); the other overlays are panels and wait for their body."""
+    assert 'data-testid="nv-overlay-body"' in OVERLAYS_JSX
+    assert 'testid: "nv-nw-template"' in OVERLAYS_JSX and 'data-testid="nv-nw-empty"' in OVERLAYS_JSX
+    assert 'testid="nv-overlay:new-workspace"' in OVERLAYS_JSX
+    for name in surfaces.OVERLAYS:
+        root = f'[data-testid="nv-overlay:{name}"]'
+        markers = surfaces.overlay_ready(name)
+        assert markers and all(m.startswith(root) for m in markers), (name, markers)
+    assert surfaces.overlay_ready("new-workspace") == [
+        '[data-testid="nv-overlay:new-workspace"] [data-testid="nv-nw-template"], [data-testid="nv-overlay:new-workspace"] [data-testid="nv-nw-empty"]'
+    ]
+    assert surfaces.overlay_ready("activity") == ['[data-testid="nv-overlay:activity"] [data-testid="nv-overlay-body"]']

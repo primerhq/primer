@@ -57,6 +57,7 @@ from tests.ui_e2e._a11y_surfaces import (
     Form,
     expected_surfaces,
     form_surface,
+    overlay_ready,
 )
 from tests.ui_e2e._a11y_sweep import Sweep
 from tests.ui_e2e._session_seed import delete_paths, delete_seeded, seed_session
@@ -247,7 +248,7 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
         for name in OVERLAYS:
             if not sweep.reach(f"overlay {name}", lambda name=name: open_overlay(page, console_url, wid, name, timeout=sweep.budget.wait_ms(20_000))):
                 continue
-            sweep.at(f"overlay {name}", f'[data-testid="nv-overlay:{name}"]', ready=[f'[data-testid="nv-overlay:{name}"] [data-testid="nv-overlay-body"]'])
+            sweep.at(f"overlay {name}", f'[data-testid="nv-overlay:{name}"]', ready=overlay_ready(name))
 
         # every Platform page as an overlay (its legacy route), and the forms it opens
         for route, forms in LEGACY_FORMS.items():

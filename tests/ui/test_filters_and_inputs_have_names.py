@@ -41,7 +41,6 @@ SITES = [
     ("shell/sh-activity.jsx", 'data-testid={"activity-filter:" + key}', 0, "aria-label={"),
     ("knowledge.jsx", 'placeholder="id (optional)"', 0, 'aria-label="Collection id"'),
     ("knowledge.jsx", 'placeholder="Description"', 0, 'aria-label="Collection description"'),
-    ("console/nv-overlays.jsx", 'placeholder="extra init command"', 0, 'aria-label="Extra init command"'),
     ("console/nv-platform.jsx", 'data-testid="nv-audit-sort-by"', 0, 'aria-label="Sort decisions"'),
     ("shared/tool-picker.jsx", 'data-testid="tool-picker-filter"', 0, 'aria-label="Search the tool catalog"'),
     ("shared/tool-picker.jsx", "data-testid={`tool-picker-group-${entry.id}`}", 0, "aria-label={"),
