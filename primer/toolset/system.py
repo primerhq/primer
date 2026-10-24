@@ -829,7 +829,8 @@ def build_system_toolset(
             toolset_id=SYSTEM_TOOLSET_ID,
             purpose=(
                 "Set the standing workspace reply binding so that session "
-                "traffic (gates / inform / lifecycle / final result) replies "
+                "traffic (questions, approval requests, inform and final "
+                "results; there is no start acknowledgement) replies "
                 "to a channel."
             ),
             when=(
