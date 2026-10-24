@@ -10,9 +10,10 @@ Also here: :func:`toolset_admin_reason`, the one rule for which toolset writes o
 security sweep AUTHZ-01, SSRF-02, SEC-02). Both writers apply it: the router's pre-write hooks (``require_admin``) and the system CRUD tools (the caller's
 ``ToolContext``), so the two surfaces cannot disagree about it.
 
-Deliberately NOT here: the router's reachability probe for http / sse MCP toolsets (an 8 s outbound call, bypassed by
-``?allow_unreachable``). A tool runs inside an agent turn, so it does not probe; the difference is documented in rest-api.md and in
-the tool descriptions, and pinned by a test.
+Deliberately NOT here: the router's reachability probe for http / sse MCP toolsets, which runs on create only (``POST``; an 8 s
+outbound call, bypassed by ``?allow_unreachable``; a ``PUT`` does not probe). A tool runs inside an agent turn, so it does not probe;
+the difference is documented in rest-api.md and in the ``create_toolset`` / ``update_toolset`` descriptions (the toolset write note in
+``primer/toolset/system.py``), and pinned by ``tests/toolset/test_system_validators.py``.
 """
 
 from __future__ import annotations
