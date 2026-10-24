@@ -221,6 +221,9 @@ function WEB_ActiveConfigSection(props) {
 
   var [saving, setSaving] = React.useState(false);
   var [fieldError, setFieldError] = React.useState(null);
+  // Which field the error is under: "mode" when a switch of Mode was refused, else "value" (the default, or the ordered list). A refused save says why
+  // under the field that changed.
+  var [errorAt, setErrorAt] = React.useState("value");
   var [remembered, setRemembered] = React.useState([]);
   var savingRef = React.useRef(false);
 
@@ -279,7 +282,7 @@ function WEB_ActiveConfigSection(props) {
     );
   }
 
-  function doSave(nextConfig) {
+  function doSave(nextConfig, at) {
     if (savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
@@ -304,6 +307,7 @@ function WEB_ActiveConfigSection(props) {
         setSaving(false);
         var text = WEB_refusalText(err, info.notSaved);
         setFieldError(text);
+        setErrorAt(at === "mode" ? "mode" : "value");
         if (window.primerApi && typeof window.primerApi.toastPush === "function") {
           window.primerApi.toastPush({
             kind: "error",
@@ -327,27 +331,29 @@ function WEB_ActiveConfigSection(props) {
       }
     }
     var nextCfg = WEB_switchMode(cfg, newMode, validRemembered);
-    doSave(nextCfg);
+    doSave(nextCfg, "mode");
   }
 
   function handleDefaultChange(e) {
     var val = e.target.value;
-    doSave({ mode: "single", provider_id: val });
+    doSave({ mode: "single", provider_id: val }, "value");
   }
 
   function handleToggle(id) {
     var next = WEB_toggleMember(cfg, id);
     if (!next) {
       setFieldError("Keep at least one " + info.noun + ". Switch to Single to use one " + info.noun + ".");
+      setErrorAt("value");
       return;
     }
     setFieldError(null);
-    doSave(next);
+    doSave(next, "value");
   }
 
   function handleToggleAll(checked, keys) {
     if (!checked) {
       setFieldError("Keep at least one " + info.noun + ". Switch to Single to use one " + info.noun + ".");
+      setErrorAt("value");
       return;
     }
     var nextIds = (cfg && Array.isArray(cfg.provider_ids)) ? cfg.provider_ids.slice() : [];
@@ -357,13 +363,15 @@ function WEB_ActiveConfigSection(props) {
       }
     }
     setFieldError(null);
-    doSave({ mode: "aggregated", provider_ids: nextIds });
+    doSave({ mode: "aggregated", provider_ids: nextIds }, "value");
   }
 
   var sortedProviders = WEB_sortProviders(kind, providerRows);
   var currentSingleId = cfg ? (cfg.provider_id || "") : "";
   var isCurrentMissing = currentSingleId !== "" && !providerRows.some(function (r) { return r.id === currentSingleId; });
-  var defaultError = fieldError || (isCurrentMissing ? (currentSingleId + " no longer exists. Pick another " + info.noun + ".") : null);
+  var modeError = errorAt === "mode" ? fieldError : null;
+  var valueError = errorAt === "mode" ? null : fieldError;
+  var defaultError = valueError || (isCurrentMissing ? (currentSingleId + " no longer exists. Pick another " + info.noun + ".") : null);
 
   var baseChainRows = WEB_chainRows(kind, cfg, providerRows);
   var memberIds = (cfg && Array.isArray(cfg.provider_ids)) ? cfg.provider_ids : [];
@@ -398,7 +406,7 @@ function WEB_ActiveConfigSection(props) {
           blocked={saving}
           onClick={function () {
             var next = WEB_moveMember(cfg, r.key, -1);
-            if (next) doSave(next);
+            if (next) doSave(next, "value");
           }}
         >
           {"\u2191"}
@@ -412,7 +420,7 @@ function WEB_ActiveConfigSection(props) {
           blocked={saving}
           onClick={function () {
             var next = WEB_moveMember(cfg, r.key, 1);
-            if (next) doSave(next);
+            if (next) doSave(next, "value");
           }}
         >
           {"\u2193"}
@@ -432,7 +440,7 @@ function WEB_ActiveConfigSection(props) {
   return (
     <PK_Section title={info.title} testid={t + "-section"}>
       <PK_Grid cols={cols}>
-        <PK_Field label="Mode">
+        <PK_Field label="Mode" error={modeError}>
           <PK_Segmented
             options={[
               { value: "single", label: "Single" },
@@ -445,7 +453,7 @@ function WEB_ActiveConfigSection(props) {
           />
         </PK_Field>
         {cfg && cfg.mode === "aggregated" ? (
-          <PK_Field label={info.orderLabel} help={info.orderHelp} error={fieldError}>
+          <PK_Field label={info.orderLabel} help={info.orderHelp} error={valueError}>
             <PK_CheckTable
               rows={checkTableRows}
               onToggle={handleToggle}

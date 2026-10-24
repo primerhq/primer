@@ -258,6 +258,32 @@ def test_a_refused_save_shows_why_under_the_field_and_reloads_both_lists(web_ui)
     assert ref.get("web:search:providers") == 1
 
 
+def test_a_refused_mode_switch_says_why_under_mode(web_ui) -> None:
+    """The reason of a refused save goes under the field that changed: a switch of Mode is refused under Mode, not under the default it did not touch, and the next
+    save that is answered clears it."""
+    env = real_unknown_ids_envelope(["tavily-a"])
+    ui = web_ui()
+    ui.set_resource("web:search:active", data={"id": "active", "config": {"mode": "single", "provider_id": "tavily-a"}})
+    ui.set_resource("web:search:providers", data=[DDG, TAV])
+    ui.answer("PUT /web_search_active_config", envelope=env)
+    ui.mount(
+        "WEB_ActiveConfigSection",
+        "{kind: 'search', active: __resource('web:search:active'), providers: __resource('web:search:providers'), cols: 2}",
+    )
+
+    ui.call("PK_Segmented", "web-search-mode", "onChange", "aggregated")
+
+    expected_msg = "No longer exists: tavily-a. The list has been reloaded."
+    assert ui.calls() == [["PUT", "/web_search_active_config", {"config": {"mode": "aggregated", "provider_ids": ["tavily-a"]}}]]
+    assert ui.kit("PK_Field", "Mode").get("error") == expected_msg
+    assert ui.kit("PK_Field", "Default provider").get("error") is None
+    assert [t["title"] for t in ui.toasts()] == ["Web search not saved"]
+
+    ui.answer("PUT /web_search_active_config", body={})
+    ui.change("web-search-default", "DuckDuckGo")
+    assert ui.kit("PK_Field", "Mode").get("error") is None
+
+
 def test_a_change_while_a_save_is_out_is_ignored(web_ui) -> None:
     ui = web_ui()
     ui.set_resource("web:search:active", data={"id": "active", "config": {"mode": "single", "provider_id": "DuckDuckGo"}})
