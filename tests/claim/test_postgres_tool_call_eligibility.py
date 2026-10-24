@@ -1,8 +1,8 @@
 """The TOOL_CALL claim query, executed against a real Postgres (Phase 3 stage 7a, slice S1-D).
 
 `ToolCallClaimAdapter.eligibility_sql` is a SQL fragment joined into the claim CTE; the unit test of its
-text cannot tell whether it selects the right ROWS. The in-memory engine has no eligibility filter at all (it
-would claim a gated task and let the pool drop it), so only Postgres can show that a GATED task, which
+text cannot tell whether it selects the right ROWS. The in-memory engine applies its Python twin
+(``is_eligible``, held to this SQL by ``test_eligibility_parity.py``), so only Postgres can show that a GATED task, which
 task-granular gating exists to keep out of its batch siblings' way, is never claimed, and that a RUNNING row
 whose worker died is. Mutation M2: add 'gated' to the fragment.
 

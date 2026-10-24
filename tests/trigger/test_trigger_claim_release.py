@@ -4,8 +4,8 @@
   (``entity_noop``: the release would advance a scheduled trigger past the tick, or disable a delayed one, as if it had fired), requeued to
   the tick.
 * A claim that fired is released requeued to the trigger's next tick; a trigger with no next tick (a delayed one that fired) drops its lease.
-  Without that, the in-memory claim engine, which does not evaluate the adapter's eligibility SQL, could claim a released trigger again at
-  once: on a SQLite deployment every scheduled trigger re-fired in a loop, firing its future ticks early.
+  Without that, the in-memory claim engine, which did not evaluate the adapter's eligibility then (it does since ticket 01a16e79), claimed
+  a released trigger again at once: on a SQLite deployment every scheduled trigger re-fired in a loop, firing its future ticks early.
 """
 
 from __future__ import annotations
@@ -117,7 +117,8 @@ async def sp(tmp_path):
         await provider.aclose()
 
 
-def _on_a_fake_clock(monkeypatch, sp, start: datetime):
+def _on_a_fake_clock(monkeypatch, sp, start: datetime, *, engine_ahead: timedelta = timedelta(0)):
+    """``engine_ahead``: how far the claimer's clock (the engine's; on Postgres, the database's) runs ahead of the worker's."""
     clock = {"now": start}
 
     class _Clock(datetime):
@@ -128,7 +129,9 @@ def _on_a_fake_clock(monkeypatch, sp, start: datetime):
     # Every clock the claim reads: the engine's, the handler's and the release's (TriggerClaimAdapter.on_release).
     monkeypatch.setattr(adapter_mod, "datetime", _Clock)
     monkeypatch.setattr("primer.worker.engine_handlers._now", lambda: clock["now"])
-    engine = InMemoryClaimEngine(adapters={ClaimKind.TRIGGER: TriggerClaimAdapter(storage=sp.get_storage(Trigger))}, clock=lambda: clock["now"])
+    engine = InMemoryClaimEngine(
+        adapters={ClaimKind.TRIGGER: TriggerClaimAdapter(storage=sp.get_storage(Trigger))}, clock=lambda: clock["now"] + engine_ahead,
+    )
 
     async def _release(lease, outcome) -> None:
         await engine.release(lease, outcome=outcome)
@@ -182,8 +185,13 @@ async def test_on_sqlite_a_delayed_trigger_fires_once_and_leaves_no_lease(sp, mo
 
 
 async def test_on_sqlite_an_early_claim_is_requeued_to_its_tick(sp, monkeypatch):
-    """A lease that comes due before its trigger's tick (here: upserted due now) fires nothing and is not claimable again until the tick."""
-    clock, engine, pool = _on_a_fake_clock(monkeypatch, sp, TICK - timedelta(minutes=10))
+    """An early claim fires nothing and is not claimable again until the tick.
+
+    The claim is early because the claimer's clock runs ahead of the worker's by more than ``CLOCK_SKEW``: the engine finds the trigger due
+    at its tick while the worker's clock reads ten minutes before it. That is how an early claim happens on Postgres (the query reads the
+    database's ``now()``). Before ticket 01a16e79 the in-memory engine also claimed a lease upserted due now ahead of its tick, because it
+    applied no eligibility; it now refuses that lease, as Postgres does."""
+    clock, engine, pool = _on_a_fake_clock(monkeypatch, sp, TICK - timedelta(minutes=10), engine_ahead=timedelta(minutes=10))
     await sp.get_storage(Trigger).create(_trigger("scheduled", next_fire_at=TICK))
     await engine.upsert(ClaimKind.TRIGGER, "tr-c")
     [lease] = await engine.claim_due("w", max_count=5)

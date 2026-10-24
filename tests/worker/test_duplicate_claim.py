@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from primer.claim.in_memory import InMemoryClaimEngine
-from primer.int.claim import ClaimKind, Lease as ClaimLease
+from primer.int.claim import ClaimAdapter, ClaimKind, Lease as ClaimLease
 from primer.model.scheduler import WorkerConfig
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.worker.pool import WorkerPool
@@ -31,7 +31,7 @@ from primer.worker.turn import _CancelScope
 from tests.worker._duplicate_claim_scenario import run_reclaim_scenario
 
 
-class _SpyAdapter:
+class _SpyAdapter(ClaimAdapter):
     """Records every ``on_release`` so a skipped release is visible."""
 
     entity_table = "spy"

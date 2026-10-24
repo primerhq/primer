@@ -122,11 +122,17 @@ async def test_prune_deletes_leases_of_finished_and_missing_tasks_and_keeps_the_
 @pytest.mark.asyncio
 async def test_prune_never_deletes_a_lease_a_worker_holds():
     """A held lease of a finished task is its holder's to release (the release is fenced on claimed_by);
-    deleting it from under them would turn that release into a silent no-op."""
-    engine = await _engine_with(_task("held", ToolCallTaskState.DONE), _task("lapsed", ToolCallTaskState.DONE))
+    deleting it from under them would turn that release into a silent no-op.
+
+    The tasks are claimed while running and finished under the claim (a done task is not claimable, on either engine
+    since ticket 01a16e79): the window between the handler finishing the task and its release."""
+    engine = await _engine_with(_task("held", ToolCallTaskState.RUNNING), _task("lapsed", ToolCallTaskState.RUNNING))
     await engine.upsert(ClaimKind.TOOL_CALL, "held")
     await engine.upsert(ClaimKind.TOOL_CALL, "lapsed")
-    await engine.claim_due("w", max_count=10, kinds=[ClaimKind.TOOL_CALL])
+    assert len(await engine.claim_due("w", max_count=10, kinds=[ClaimKind.TOOL_CALL])) == 2
+    storage = engine._adapters[ClaimKind.TOOL_CALL]._storage
+    for tid in ("held", "lapsed"):
+        await storage.update(_task(tid, ToolCallTaskState.DONE))
     engine._leases[(ClaimKind.TOOL_CALL, "lapsed")].expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
     assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 1
@@ -178,13 +184,23 @@ async def test_a_finished_release_drops_its_own_lease_so_there_is_nothing_to_pru
 @pytest.mark.asyncio
 async def test_a_lease_claimed_while_prune_awaits_the_entity_is_not_deleted():
     """`is_dead` awaits, and `claim_due` mutates a lease row in place meanwhile: the held check must be repeated after
-    the await, with nothing awaited between it and the delete (mutation: decide held-ness once, before the await)."""
+    the await, with nothing awaited between it and the delete (mutation: decide held-ness once, before the await).
+
+    The prune reads the task under its own snapshot (done) and is suspended; meanwhile a writer resets the task to
+    queued (the window the Postgres prune's docstring names) and a claim, which reads the task as it is now, takes the
+    lease. Since ticket 01a16e79 ``claim_due`` reads the entity too, so a done task's lease is not claimable at all."""
     import asyncio
 
     class _Storage(_InMemoryStorage):
+        slow_reads = 1                        # the prune's read: taken, then suspended while other tasks run
+
         async def get(self, id, *, conn=None):
-            await asyncio.sleep(0)            # suspend: another task runs here
-            return await super().get(id, conn=conn)
+            row = await super().get(id, conn=conn)
+            if self.slow_reads:
+                self.slow_reads -= 1
+                for _ in range(3):
+                    await asyncio.sleep(0)
+            return row
 
     storage = _Storage(ToolCallTask)
     await storage.create(_task("t1", ToolCallTaskState.DONE))
@@ -193,6 +209,7 @@ async def test_a_lease_claimed_while_prune_awaits_the_entity_is_not_deleted():
 
     pruning = asyncio.create_task(engine.prune_dead_leases(ClaimKind.TOOL_CALL))
     await asyncio.sleep(0)                    # prune has decided the lease is unheld and is awaiting the entity
+    await storage.update(_task("t1", ToolCallTaskState.QUEUED))
     (claimed,) = await engine.claim_due("w", max_count=1, kinds=[ClaimKind.TOOL_CALL])
     assert await pruning == 0
 

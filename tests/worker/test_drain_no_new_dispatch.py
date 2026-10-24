@@ -28,7 +28,7 @@ import pytest
 from primer.claim.in_memory import InMemoryClaimEngine
 import logging
 
-from primer.int.claim import ClaimKind, Lease as ClaimLease, ReleaseOutcome
+from primer.int.claim import ClaimAdapter, ClaimKind, Lease as ClaimLease, ReleaseOutcome
 from primer.model.scheduler import WorkerConfig
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.worker.pool import WorkerPool
@@ -36,7 +36,7 @@ from primer.worker.pool import WorkerPool
 KIND = ClaimKind.HARNESS
 
 
-class _SpyAdapter:
+class _SpyAdapter(ClaimAdapter):
     entity_table = "spy"
     kind = KIND
 

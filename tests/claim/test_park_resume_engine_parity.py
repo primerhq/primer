@@ -4,8 +4,8 @@ These tests PIN the exact failure modes the prior approach missed:
 
 - No-lease-while-parked: after a park release on the IN-MEMORY engine,
   claim_due returns nothing for that session.  The no-loop guarantee comes
-  from the dropped lease, NOT from eligibility_sql which the in-memory
-  engine ignores.
+  from the dropped lease; the engine's eligibility twin (``is_eligible``,
+  ticket 01a16e79) would also refuse a lease left on the parked row.
 
 - Re-arm bridge: after the listener-style flip + engine.mark_resumable,
   claim_due returns the session.
@@ -96,8 +96,8 @@ async def test_no_lease_while_parked_inmemory() -> None:
     """After a park release, claim_due must return nothing for that session.
 
     This pins the core F10c invariant on the in-memory engine: the no-loop
-    guarantee comes from the dropped lease (drop_lease=True), not from
-    eligibility_sql (which the in-memory engine does not evaluate).
+    guarantee comes from the dropped lease (drop_lease=True); the engine's
+    ``is_eligible`` check would refuse a lease left on the parked row too.
     """
     storage = _FakeStorage(_make_session(_SID))
     engine = _make_engine(storage)
@@ -199,6 +199,11 @@ async def test_mark_resumable_idempotent_inmemory() -> None:
     await engine.upsert(ClaimKind.SESSION, _SID)
     [lease] = await engine.claim_due("wrk-1", max_count=5)
     await engine.release(lease, outcome=_make_park_outcome())
+
+    # The resume event flips the row first (a still-parked session is not claimable, on either engine
+    # since ticket 01a16e79), then re-arms.
+    row = await storage.get(_SID)
+    await storage.update(row.model_copy(update={"parked_status": "resumable"}))
 
     # Double re-arm.
     await engine.mark_resumable(ClaimKind.SESSION, _SID)
