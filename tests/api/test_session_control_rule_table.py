@@ -14,7 +14,8 @@ tap, its log and its files. They follow the same reach rule and are driven throu
 
 The last section holds the follow-ups of #870 (tickets 01a16ba1-da9b and 01a16ba1-e2d1): a trigger subscription or a channel binding (created,
 updated, and fired by the worker's trigger handler), the reply-binding tools, ``delete_workspace``'s rank rule, ``create_workspace`` from a session
-outside prime, and the tools of a graph session that has no holder slot.
+outside prime, and the tools of a graph session that has no holder slot. Then the subscription reads and the single-subscription deletes (ticket
+01a16c22): a session outside prime lists, gets and deletes only the subscriptions whose target it reaches.
 """
 
 from __future__ import annotations
@@ -72,6 +73,7 @@ from primer.session.peer_messages import REFUSE_RANK
 from primer.toolset.system import build_system_toolset
 from primer.toolset.trigger import build_trigger_toolset_provider
 from primer.toolset.workspaces import WORKSPACES_TOOLSET_ID, build_workspaces_toolset
+from primer.trigger.service import _LIST_PAGE_SIZE
 from primer.worker.engine_handlers import run_engine_trigger
 from primer.worker.pool import WorkerPool
 from primer.workspace.local.state import LocalStateRepo
@@ -1189,6 +1191,194 @@ async def test_update_from_outside_prime_cannot_re_enable_a_trigger_that_starts_
     await asyncio.wait_for(run_engine_trigger(pool, SimpleNamespace(entity_id="tr-off")), 30)  # type: ignore[arg-type]
     assert world.registry.workspace("ws-prime").started == [] and world.registry.workspace("ws-2").started == []
     assert (await world.sessions.get("ses-t")).model_dump(mode="json") == before
+
+
+# -- the subscription reads and the single-subscription deletes (ticket 01a16c22) -------------------------------------------------------------
+#
+# A subscription is in the workspace of its target: the workspace a fresh session starts in, or the workspace of the session it steers or wakes.
+# From a session outside prime the tools that read subscriptions serve only those whose target is in reach, and the tools that delete one answer an
+# out-of-reach one exactly as an unknown subscription id and delete nothing. A target is classified as the save check classifies it
+# (``refuse_target_out_of_reach``): a target session that no longer exists is in no workspace, so out of reach. From prime, with no session (MCP) and
+# over REST (a person) nothing changes.
+
+#: door -> (toolset, tool, the trigger it is asked on): the tools that list a trigger's subscriptions.
+LIST_DOORS: dict[str, tuple[str, str, str]] = {
+    "trigger::list_subscriptions": ("trigger", "list_subscriptions", TRIGGER),
+    "system::list_channel_bindings": ("system", "list_channel_bindings", CHANNEL_TRIGGER),
+}
+#: door -> (toolset, tool, the trigger it is asked on): the tools that name one subscription.
+ONE_DOORS: dict[str, tuple[str, str, str]] = {
+    "trigger::get_subscription": ("trigger", "get_subscription", TRIGGER),
+    "trigger::delete_subscription": ("trigger", "delete_subscription", TRIGGER),
+    "system::delete_channel_binding": ("system", "delete_channel_binding", CHANNEL_TRIGGER),
+}
+#: name -> the config of a subscription seeded on each trigger, saved by a person (no recorded reach). ``ses-a`` is in ws-1, ``ses-t`` in ws-2.
+TARGETS: dict[str, object] = {
+    "fresh-ws1": AgentFreshSubConfig(workspace_id="ws-1", agent_id="planner"),
+    "append-ws1": SessionAppendSubConfig(session_id="ses-a"),
+    "fresh-ws2": AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner"),
+    "graph-ws2": GraphFreshSubConfig(workspace_id="ws-2", graph_id="g-1"),
+    "append-ws2": SessionAppendSubConfig(session_id="ses-t"),
+    "parked-ws2": ParkedSessionSubConfig(session_id="ses-t", tool_call_id="tc-1", parked_at=NOW),
+    "fresh-prime": AgentFreshSubConfig(workspace_id="ws-prime", agent_id="planner"),
+    "append-gone": SessionAppendSubConfig(session_id="ses-gone"),
+}
+#: the calling session's workspace (None: no calling session) -> the subscriptions it reaches.
+VISIBLE: dict[str | None, set[str]] = {
+    "ws-1": {"fresh-ws1", "append-ws1"},
+    "ws-2": {"fresh-ws2", "graph-ws2", "append-ws2", "parked-ws2"},
+    "ws-prime": set(TARGETS),
+    None: set(TARGETS),
+}
+
+
+def _sid(trigger_id: str, name: str) -> str:
+    return f"{trigger_id}.{name}"
+
+
+async def _subscription_world() -> WsWorld:
+    """The rule-table world, its two triggers, and every subscription of ``TARGETS`` on each."""
+    world = await _seed_world_for_subscriptions()
+    store = world.sp.get_storage(Subscription)
+    for trigger_id in (TRIGGER, CHANNEL_TRIGGER):
+        for name, config in TARGETS.items():
+            await store.create(Subscription(id=_sid(trigger_id, name), trigger_id=trigger_id, config=config, created_at=NOW, owner=USER))
+    return world
+
+
+@pytest.mark.parametrize(("door_name", "who", "door"), _rows(LIST_DOORS))
+async def test_the_subscription_lists_serve_only_what_the_caller_reaches(door_name, who, door):
+    """Ruling 1: from ws-1 a ws-2 (or prime) subscription is absent from the list; ws-2 lists its own; prime and MCP list every one. A list
+    changes nothing."""
+    world = await _subscription_world()
+    toolset, tool, trigger_id = LIST_DOORS[door_name]
+    own, _ = WS_CALLERS[who]
+    before = await _subscriptions(world)
+
+    outcome, body = await asyncio.wait_for(_call(world, toolset, tool, {"trigger_id": trigger_id}, own=own, door=door), 30)
+
+    assert outcome == D, (door_name, who, door, body)
+    assert sorted(item["id"] for item in body) == sorted(_sid(trigger_id, name) for name in VISIBLE[own]), (door_name, who, door)
+    assert await _subscriptions(world) == before
+
+
+_ONE_ROWS = [(d, who, door, name) for d, who, door in _rows(ONE_DOORS) for name in ("fresh-ws2", "append-ws2", "parked-ws2")]
+
+
+@pytest.mark.parametrize(("door_name", "who", "door", "name"), _ONE_ROWS)
+async def test_get_and_delete_of_one_subscription_reach_only_what_the_caller_reaches(door_name, who, door, name):
+    """Rulings 1 and 2: the subscription targets ws-2. From ws-1, get and delete answer exactly as an unknown subscription id
+    (``subscription_not_found``, the id) and nothing is deleted; from ws-2, from prime and with no session the tool acts."""
+    world = await _subscription_world()
+    toolset, tool, trigger_id = ONE_DOORS[door_name]
+    own, expected = WS_CALLERS[who]
+    expected = "subscription_not_found" if expected == N else expected
+    sid = _sid(trigger_id, name)
+    before = await _subscriptions(world)
+
+    outcome, body = await asyncio.wait_for(
+        _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": sid}, own=own, door=door), 30,
+    )
+
+    assert outcome == expected, (door_name, who, door, name, body)
+    after = await _subscriptions(world)
+    if outcome == D:
+        if tool == "get_subscription":
+            assert body["id"] == sid and after == before, body
+        else:
+            assert body == {"ok": True} and set(before) - set(after) == {sid} and len(after) == len(before) - 1
+        return
+    assert after == before, f"{door_name} changed the subscriptions on a refusal ({who}, {door}, {name})"
+    assert body == {"type": "subscription_not_found", "message": sid}
+    _, unknown = await _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": "sb-nope"}, own=own, door=door)
+    assert json.dumps(body).replace(sid, "<id>") == json.dumps(unknown).replace("sb-nope", "<id>"), (body, unknown)
+
+
+@pytest.mark.parametrize("door_name", list(ONE_DOORS))
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", ["fresh-ws1", "append-ws1"])
+async def test_get_and_delete_from_outside_prime_act_on_a_subscription_in_its_own_workspace(door_name, door, name):
+    world = await _subscription_world()
+    toolset, tool, trigger_id = ONE_DOORS[door_name]
+    sid = _sid(trigger_id, name)
+
+    outcome, body = await asyncio.wait_for(
+        _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": sid}, own="ws-1", door=door), 30,
+    )
+
+    assert outcome == D, body
+    present = sid in await _subscriptions(world)
+    assert (body["id"] == sid and present) if tool == "get_subscription" else (body == {"ok": True} and not present), body
+
+
+@pytest.mark.parametrize("door_name", list(ONE_DOORS))
+@pytest.mark.parametrize("own", ["ws-1", "ws-2"])
+async def test_a_subscription_whose_target_session_is_gone_is_out_of_reach_from_outside_prime(door_name, own):
+    """The save check's classification: a session that does not exist is in no workspace, so get and delete answer as an unknown id from a
+    session outside prime, and act from prime."""
+    world = await _subscription_world()
+    toolset, tool, trigger_id = ONE_DOORS[door_name]
+    sid = _sid(trigger_id, "append-gone")
+
+    refused = await _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": sid}, own=own, door="tool manager")
+    acted = await _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": sid}, own="ws-prime", door="tool manager")
+
+    assert refused == ("subscription_not_found", {"type": "subscription_not_found", "message": sid})
+    assert acted[0] == D, acted
+
+
+@pytest.mark.parametrize("door_name", list(LIST_DOORS))
+@pytest.mark.parametrize(("own", "door"), [("ws-1", "tool manager"), ("ws-1", "system__call_tool"), ("ws-prime", "tool manager"), (None, "MCP")])
+async def test_a_filtered_list_of_more_than_two_pages_skips_and_repeats_no_subscription(door_name, own, door):
+    """Ruling 5: the service reads a trigger's subscriptions in pages of ``_LIST_PAGE_SIZE``. With more than two pages of rows in and out of
+    ws-1's reach, interleaved, a session in ws-1 gets every row it reaches, once, in storage order (no page short of in-reach rows ends the read,
+    and none is skipped); prime and MCP get every row."""
+    world = await _seed_world_for_subscriptions()
+    toolset, tool, trigger_id = LIST_DOORS[door_name]
+    cycle = [
+        ("in", AgentFreshSubConfig(workspace_id="ws-1", agent_id="planner")),
+        ("out", AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner")),
+        ("out", SessionAppendSubConfig(session_id="ses-t")),
+        ("in", SessionAppendSubConfig(session_id="ses-a")),
+        ("out", AgentFreshSubConfig(workspace_id="ws-prime", agent_id="planner")),
+    ]
+    store = world.sp.get_storage(Subscription)
+    seeded: list[tuple[str, str]] = []
+    for i in range(2 * _LIST_PAGE_SIZE + 7):
+        where, config = cycle[i % len(cycle)]
+        sid = f"sb-{i:04d}"
+        await store.create(Subscription(id=sid, trigger_id=trigger_id, config=config, created_at=NOW, owner=USER))
+        seeded.append((sid, where))
+
+    outcome, body = await asyncio.wait_for(_call(world, toolset, tool, {"trigger_id": trigger_id}, own=own, door=door), 60)
+
+    assert outcome == D, body
+    wanted = [sid for sid, where in seeded if own is None or own == "ws-prime" or where == "in"]
+    assert [item["id"] for item in body] == wanted
+
+
+async def test_the_rest_subscription_routes_serve_and_delete_whatever_the_target(app, client, fake_storage_provider):
+    """Ruling 4: a person over REST reaches every workspace, so the REST subscription routes pass no reach and list, get and delete a subscription
+    whatever its target (here a user-role account)."""
+    store = fake_storage_provider.get_storage(Subscription)
+    await fake_storage_provider.get_storage(Trigger).create(Trigger(
+        id=TRIGGER, slug="tr-one", name="t", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
+    ))
+    for name in ("fresh-ws1", "fresh-ws2", "fresh-prime"):
+        await store.create(Subscription(id=_sid(TRIGGER, name), trigger_id=TRIGGER, config=TARGETS[name], created_at=NOW, owner=USER))
+    r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
+    assert r.status_code == 201, r.text
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
+        assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
+        listed = await carol.get(f"/v1/triggers/{TRIGGER}/subscriptions")
+        got = await carol.get(f"/v1/triggers/{TRIGGER}/subscriptions/{_sid(TRIGGER, 'fresh-ws2')}")
+        deleted = await carol.delete(f"/v1/triggers/{TRIGGER}/subscriptions/{_sid(TRIGGER, 'fresh-prime')}")
+
+    assert listed.status_code == 200, listed.text
+    assert sorted(item["id"] for item in listed.json()["items"]) == sorted(_sid(TRIGGER, n) for n in ("fresh-ws1", "fresh-ws2", "fresh-prime"))
+    assert (got.status_code, got.json()["id"]) == (200, _sid(TRIGGER, "fresh-ws2"))
+    assert deleted.status_code == 204, deleted.text
+    assert await store.get(_sid(TRIGGER, "fresh-prime")) is None
 
 
 # -- the rank scan of a delete is fenced against a session started meanwhile (review of #874, D1) ---------------------------------------------

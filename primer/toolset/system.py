@@ -126,6 +126,7 @@ from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.channel.reply_binding import ReplyTarget
 from primer.model.trigger import SubscriptionConfig
+from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE
 from primer.trigger.service import (
     ServiceDeps,
     SubscriptionNotFound,
@@ -1011,7 +1012,7 @@ def build_system_toolset(
         )
 
     async def _list_channel_bindings_handler(
-        arguments: dict[str, Any],
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
     ) -> ToolCallResult:
         try:
             args = _ListChannelBindingsArgs.model_validate(arguments)
@@ -1022,7 +1023,8 @@ def build_system_toolset(
             await get_trigger(trigger_id=args.trigger_id, deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
-        items = await list_subscriptions(trigger_id=args.trigger_id, deps=deps)
+        # From a session outside prime, a binding whose action targets another workspace is left out (ticket 01a16c22).
+        items = await list_subscriptions(trigger_id=args.trigger_id, reach=await caller_reach(storage_provider, ctx), deps=deps)
         return _ok(items)
 
     registry["list_channel_bindings"] = (
@@ -1034,7 +1036,7 @@ def build_system_toolset(
                 "Use when you need every binding (matcher -> action "
                 "subscription) for a given ``trigger_id``; returns an array "
                 "of Subscription rows, or ``type=trigger_not_found`` if the "
-                "trigger does not exist."
+                "trigger does not exist." + SUBSCRIPTION_LIST_REACH_NOTE
             ),
             args_schema=_ListChannelBindingsArgs.model_json_schema(),
             examples=[
@@ -1057,7 +1059,7 @@ def build_system_toolset(
         )
 
     async def _delete_channel_binding_handler(
-        arguments: dict[str, Any],
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
     ) -> ToolCallResult:
         try:
             args = _DeleteChannelBindingArgs.model_validate(arguments)
@@ -1067,6 +1069,8 @@ def build_system_toolset(
             await delete_subscription(
                 trigger_id=args.trigger_id,
                 subscription_id=args.subscription_id,
+                # Out of the caller's reach answers as an unknown binding and deletes nothing (ticket 01a16c22).
+                reach=await caller_reach(storage_provider, ctx),
                 deps=_binding_deps(),
             )
         except SubscriptionNotFound as exc:
@@ -1081,7 +1085,7 @@ def build_system_toolset(
             when=(
                 "Use when removing a single binding (Subscription) while "
                 "keeping the trigger and its other bindings. Returns "
-                "``{ok: true}`` or ``type=subscription_not_found``."
+                "``{ok: true}`` or ``type=subscription_not_found``." + SUBSCRIPTION_REACH_NOTE
             ),
             args_schema=_DeleteChannelBindingArgs.model_json_schema(),
             examples=[
