@@ -107,9 +107,9 @@ finishes, a cleanup task removes both files (the module holds the task until it 
 and standard retries (three retries). A get answers `None` only for a missing key (`NoSuchKey`, `404`, `NotFound`); any other error, a
 missing bucket or a refused read, is raised, because it is an outage, not an absent file. An id that is not a backend id is never turned
 into a key: a get answers `None` and a delete does nothing, without a request. A put that does not complete (cancelled while its request
-is in flight, or failed in a way that may have come after the server stored the object, such as a read timeout) never hands out its id,
-and the object it may have left is removed in the background once the request settles; a put the server refused leaves nothing to
-remove. `aclose` waits for those removals (at most 30 s) before it closes the client, and a closed store refuses every later call rather
+is in flight, or failed in any way but one raised before a request was sent) never hands out its id, and the object it may have left is
+removed in the background once the request settles. Only no credentials, partial credentials or a parameter botocore refused prove that
+nothing was stored: even a `ClientError` may follow a retried attempt that stored the object. `aclose` waits for those removals (at most 30 s) before it closes the client, and a closed store refuses every later call rather
 than open a client that nothing would close.
 
 **Leases: a store is never closed under a call.** Every `ArtifactStorageRegistry.get_provider` takes a lease on the store it returns, and
