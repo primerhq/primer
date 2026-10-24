@@ -119,7 +119,7 @@ async def check_filesystem_artifact_stores(
     """Name every filesystem artifact store this process cannot use, and return their ids.
 
     For each filesystem provider row (found with a ``provider == "filesystem"`` predicate, page after page until the rows run out) it resolves the
-    store through ``registry.get_provider``, whose ``initialize`` checks the root
+    store through ``registry.get_provider`` (and returns the lease once it is checked), whose ``initialize`` checks the root
     and its marker in a thread. A pod that lacks the shared volume (no folder, or an empty one on its own disk) is named at boot, with its root,
     instead of failing on the first upload. A store that fails is not cached by the registry, so every later use checks it again and refuses
     with the same message; a store that passes is cached, warm.
@@ -146,7 +146,8 @@ async def check_filesystem_artifact_stores(
             if row.provider is not ArtifactStorageProviderType.FILESYSTEM:
                 continue
             try:
-                await asyncio.wait_for(registry.get_provider(row.id), timeout)
+                store = await asyncio.wait_for(registry.get_provider(row.id), timeout)
+                await registry.release_provider(store)      # the check is over; a cached store stays open, a retired one is closed
             except TimeoutError:
                 reason = f"the check did not answer within {timeout:g}s (is the volume mounted and reachable?)"
             except Exception as exc:  # noqa: BLE001 - the check reports every failure and never fails the boot

@@ -112,10 +112,14 @@ and the object it may have left is removed in the background once the request se
 remove. `aclose` waits for those removals (at most 30 s) before it closes the client, and a closed store refuses every later call rather
 than open a client that nothing would close.
 
-**A store built during an eviction race.** The registry returns uncached a store it built while an eviction or a flush raced the build,
-so the request completes on it. The routing store hands back every store the registry resolved once its call is over
-(`ArtifactStorageRegistry.release_provider`), also after a failure or a cancel, and the registry closes an uncached store there; one never
-handed back is closed with the registry. A cached store stays open until an eviction closes it.
+**Leases: a store is never closed under a call.** Every `ArtifactStorageRegistry.get_provider` takes a lease on the store it returns, and
+`release_provider` returns it. The routing store holds the lease for the WHOLE put, get or delete (a put's record write, re-read and the
+removal of its bytes after a failure included) and returns it also after a failure or a cancel; the boot check returns its lease after the
+check. An edit's eviction or a bus reconnect's flush closes an idle store at once (the flush in a task, since its hook cannot await) and
+retires a leased one: it stays open for the calls holding it and is closed when its last lease returns. A store built while an eviction
+raced its build is retired from birth, so the request that built it completes on it and its release closes it. The registry's `aclose`
+closes every cached and retired store and waits for the closes a flush started. So an edit that moves nothing never fails a read or a write
+in flight, and a put whose row was moved meanwhile still removes its object before it answers 409 (the review of #899).
 
 **Preparing a filesystem root** (`prepare_artifact_provider`, run LAST by the REST create and update hooks and the system tool pre-create
 and pre-update, and by the draft `_test` as its `prepare` step). Only a NEW root is prepared (`filesystem_root_is_new`: a create, or an
