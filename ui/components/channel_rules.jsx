@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, Card, CardList, Fab */
+/* global React, Icon, Btn, Modal, Banner, Card, CardList, Fab, PR_fetchAllPages, PR_PagedNote */
 
 // Channel rule-editor page: a capability-aware event -> action binding
 // editor. Lists channel triggers per provider/room and lets an operator
@@ -154,7 +154,8 @@ function CR_replyLabel(rt) {
 // "New rule" button whose modal selects the provider.
 function ChannelRulesPage({ pushToast }) {
   const { isMobile } = useViewport();
-  const providers = useResource("cr-providers", (signal) => apiFetch("GET", "/channel_providers?limit=200", null, { signal }), {});
+  // Every channel provider, every page (PR_fetchAllPages): they fill the provider filter and the rule dialog's provider select.
+  const providers = useResource("cr-providers", (signal) => PR_fetchAllPages("/channel_providers", { signal, apiFetch }), {});
   // Channel triggers are ordinary triggers with config.kind == "channel".
   // The list endpoint filters by kind server-side; we keep the client-side
   // config.kind guard as a belt-and-braces check.
@@ -207,6 +208,7 @@ function ChannelRulesPage({ pushToast }) {
           <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowNew(true)}>New rule</Btn>
         </div>
       </div>
+      <PR_PagedNote list={providers.data} noun="channel providers" testid="cr-providers-note" />
 
       <div className="tbl-wrap">
         <table className="tbl" data-testid="channel-rules-table">

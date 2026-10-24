@@ -1,9 +1,9 @@
-/* global React, Icon, FormField, Btn, Modal, Banner, CardList, Card, relativeTime, fmtDate */
+/* global React, Icon, FormField, Btn, Modal, Banner, CardList, Card, relativeTime, fmtDate, PR_fetchAllPages, PR_PagedNote */
 
 // Semantic-Search Provider (SSP) pages — wired to the real API.
 //
 // Endpoints (CLAUDE.md §3.2):
-//   GET    /v1/ssp?limit=200          — list (5s poll)
+//   GET    /v1/ssp?limit=&offset=     - list (server-side pages)
 //   GET    /v1/ssp/{id}               — detail
 //   POST   /v1/ssp                    — create (422 → inline fieldErrors)
 //   POST   /v1/ssp/{id}/invalidate    — drop cached adapter
@@ -757,12 +757,13 @@ function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
 
   // Collections that reference this SSP — used by the "Collections" tab
   // and the delete-confirmation 409 preview. /v1/collections is a CRUD
-  // list endpoint; we pull up to 500 and filter client-side. (Server
-  // returns the 409 if we still try to delete, so this is just the UX
-  // preview — the source of truth is the backend cascade-block hook.)
+  // list endpoint; we read every page (PR_fetchAllPages) and filter
+  // client-side. (Server returns the 409 if we still try to delete, so this
+  // is just the UX preview; the source of truth is the backend
+  // cascade-block hook.) A read cut short never claims "Deletion is safe".
   const collections = useResource(
     `ssp-detail:${sspId}:collections`,
-    (signal) => apiFetch("GET", "/collections?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/collections", { signal, apiFetch }),
     { deps: [sspId] }
   );
   // "ready" means the fetch genuinely completed at least once, so an
@@ -942,6 +943,7 @@ function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
           </PK_Section>
           <PK_Section title="COLLECTIONS" testid="ssp-section-collections" cols={1}>
             <SSPCollections collections={referencingCollections} sspId={sspId} state={collectionsState} error={collections.error} onRetry={collections.refetch} />
+            <PR_PagedNote list={collections.data} noun="collections" testid="ssp-collections-note" />
           </PK_Section>
         </div>
       </div>
@@ -990,6 +992,11 @@ function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
               </ul>
               Reassign or delete those collections first.
             </>
+          ) : collections.data?.truncated ? (
+            <div data-testid="ssp-delete-collections-partial">
+              <PR_PagedNote list={collections.data} noun="collections" testid="ssp-delete-collections-note" />
+              None of these reference this provider. The rest were not checked here; the server refuses the delete if one of them does.
+            </div>
           ) : (
             <>
               No collections reference this provider. Deletion is safe.

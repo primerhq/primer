@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, FormField */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, FormField, PR_fetchAllPages, PR_PagedNote */
 
 // Top-level scope is shared with the babel-standalone IIFE; prefix all
 // consts with CH_ to avoid clashes with other components (notably the
@@ -84,9 +84,10 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
     pageSize: 50,
     resetKey: filter + "|" + platform,
   });
+  // Every channel, every page (PR_fetchAllPages): each provider's row counts its channels.
   const channels = useResource(
     CH_LIST_CHANNELS,
-    (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/channels", { signal, apiFetch }),
     {},
   );
 
@@ -136,6 +137,7 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
           actions={<Btn size="sm" icon="refresh" onClick={providers.refetch}>Retry</Btn>}
         />
       )}
+      <PR_PagedNote list={channels.data} noun="channels" testid="ch-provider-channels-note" />
 
       {isMobile ? (
         <CardList
@@ -455,7 +457,7 @@ function ChannelProviderDetail({ providerId, pushToast, onBack = null, onDeleted
   // filtered client-side (no per-provider sub-route on the server).
   const channels = useResource(
     CH_LIST_CHANNELS,
-    (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/channels", { signal, apiFetch }),
     {},
   );
   const channelsState = window.primerApi.resourceState(channels);
@@ -597,6 +599,7 @@ function ChannelProviderDetail({ providerId, pushToast, onBack = null, onDeleted
                 </tbody>
               </table>
             )}
+            <PR_PagedNote list={channels.data} noun="channels" testid="ch-detail-channels-note" />
           </PK_Section>
         </div>
       </div>
@@ -672,12 +675,12 @@ function ChannelsPage({ onNavigate, pushToast }) {
   const [filter, setFilter] = React.useState("");
   const [providerFilter, setProviderFilter] = React.useState("");
 
-  // Providers back the dropdown + row badges — a small, bounded lookup, so it
-  // stays a full fetch. Only the channels table is offset-paginated (bug #19);
+  // Providers back the dropdown + row badges, so they are a full fetch: every
+  // page (PR_fetchAllPages). Only the channels table is offset-paginated (bug #19);
   // the text + provider filters narrow the current page and reset to page 0.
   const providers = useResource(
     CH_LIST_PROVIDERS,
-    (signal) => apiFetch("GET", "/channel_providers?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/channel_providers", { signal, apiFetch }),
     {},
   );
   const channels = usePagedList({
@@ -746,6 +749,7 @@ function ChannelsPage({ onNavigate, pushToast }) {
           </Btn>
         </div>
       </div>
+      <PR_PagedNote list={providers.data} noun="channel providers" testid="ch-providers-note" />
 
       {channels.error && !channels.data && (
         <Banner

@@ -1,4 +1,4 @@
-/* global React, window, Btn, Banner, PK_PageHeader, PK_CardGrid, PK_Card, PK_usePagedFilter, PK_Fold, PK_cardFacts */
+/* global React, window, Btn, Banner, PK_PageHeader, PK_CardGrid, PK_Card, PK_usePagedFilter, PK_Fold, PK_cardFacts, PR_fetchAllPages, PR_PagedNote */
 // ============================================================================
 // Unified provider catalog (Plan 01 kit switch-over, Plan 02 Task 20).
 //
@@ -124,7 +124,10 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   const [loading, setLoading] = React.useState(true);
   const [classData, setClassData] = React.useState({});
   const [classErrors, setClassErrors] = React.useState({});
+  // What each class's read answered (PR_fetchAllPages): its note says when it was cut short.
+  const [classLists, setClassLists] = React.useState({});
   const [profileCounts, setProfileCounts] = React.useState({});
+  const [profilesList, setProfilesList] = React.useState(null);
 
   const [overlayState, setOverlayState] = React.useState({
     open: false,
@@ -161,26 +164,29 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     let cancelled = false;
     setLoading(true);
 
+    // Every provider of each class and every profile, every page of each (PR_fetchAllPages, ui/foundation/api.js).
     const fetches = classesToFetch.map(async (c) => {
       try {
-        const res = await apiFetch("GET", `/${c.plural}?limit=200`);
-        return { key: c.key, items: (res && res.items) || [], error: null };
+        const res = await PR_fetchAllPages(`/${c.plural}`, { apiFetch });
+        return { key: c.key, items: (res && res.items) || [], list: res, error: null };
       } catch (err) {
-        return { key: c.key, items: [], error: err };
+        return { key: c.key, items: [], list: null, error: err };
       }
     });
 
     const hasLlm = classesToFetch.some((c) => c.key === "llm");
     const profilesPromise = hasLlm
-      ? apiFetch("GET", "/model_profiles?limit=200").catch(() => ({ items: [] }))
+      ? PR_fetchAllPages("/model_profiles", { apiFetch }).catch(() => ({ items: [] }))
       : Promise.resolve({ items: [] });
 
     Promise.all([Promise.all(fetches), profilesPromise]).then(([results, profRes]) => {
       if (cancelled) return;
       const nextData = {};
       const nextErrors = {};
+      const nextLists = {};
       results.forEach((r) => {
         nextData[r.key] = r.items;
+        nextLists[r.key] = r.list;
         if (r.error) nextErrors[r.key] = r.error;
       });
       const counts = {};
@@ -191,7 +197,9 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
       });
       setClassData(nextData);
       setClassErrors(nextErrors);
+      setClassLists(nextLists);
       setProfileCounts(counts);
+      setProfilesList(profRes || null);
       setLoading(false);
     });
 
@@ -422,15 +430,13 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
           );
         })}
 
-        {classesToFetch.map((c) => {
-          const items = classData[c.key] || [];
-          if (items.length < 200) return null;
-          return (
-            <div key={`trunc-${c.key}`} className="pc-truncated text-sm muted" data-testid={`pc-truncated:${c.key}`} style={{ marginBottom: 8 }}>
-              Showing the first 200 {c.label} providers
-            </div>
-          );
-        })}
+        {/* A class read cut short (the page cap, or a later page that failed) says so; a whole list says nothing (PR_PagedNote). */}
+        {classesToFetch.map((c) => (
+          <PR_PagedNote key={`trunc-${c.key}`} list={classLists[c.key]} noun={`${c.label} providers`} testid={`pc-truncated:${c.key}`} />
+        ))}
+        {classesToFetch.some((c) => c.key === "llm") ? (
+          <PR_PagedNote list={profilesList} noun="LLM profiles" testid="pc-truncated:profiles" />
+        ) : null}
 
         {loading && totalCount === 0 && Object.keys(classErrors).length === 0 ? (
           <div className="pc-loading" role="status" data-testid="pc-loading">

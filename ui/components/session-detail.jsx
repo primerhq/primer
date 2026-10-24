@@ -578,6 +578,7 @@ const SD_NODE_KIND_HINT = {
 function SD_NodeTurnLog({ gid, rid, nodeId, nodeStatus }) {
   const { useResource, apiFetch } = window.primerApi;
   const terminal = nodeStatus === "ended" || nodeStatus === "failed";
+  // Deliberately a recent window (ticket 01a16dfa): one page of the node's turn log, not every page.
   const log = useResource(
     `run-node-turnlog:${rid}:${nodeId}`,
     (s) => apiFetch(
@@ -1224,6 +1225,7 @@ function TurnLogRow({ e }) {
   );
 }
 
+// Deliberately a recent window (ticket 01a16dfa): one page of a session's turn log, like its messages, not every page.
 function _turnLogEndpoint({ sessionId, binding, scope }) {
   // For agent sessions: /sessions/{sid}/turn_log
   // For graph sessions: /graphs/{gid}/runs/{sid}/turn_log (scope=graph)
@@ -1484,6 +1486,7 @@ window.SD_AgentStatusLine = SD_AgentStatusLine;
 function SD_AgentTurnTimeline({ sid, session }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = SESSION_TERMINAL.has(session?.status);
+  // Deliberately a recent window (ticket 01a16dfa): one page of the turn log, not every page.
   const log = useResource(
     `agent-turn-timeline:${sid}`,
     (s) => apiFetch("GET", `/sessions/${encodeURIComponent(sid)}/turn_log?limit=200`, null, { signal: s }),

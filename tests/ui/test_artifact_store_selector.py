@@ -1,6 +1,6 @@
 """Providers > Artifact Store: the "Store new files in" selector (plan 09, Task 11; seam I-4), ``ui/components/artifact-store-selector.jsx``.
 
-It reads ``GET /artifact_storage_active_config`` and ``GET /artifact_storage_providers?limit=200`` and writes ``PUT /artifact_storage_active_config``,
+It reads ``GET /artifact_storage_active_config`` and every page of ``GET /artifact_storage_providers`` and writes ``PUT /artifact_storage_active_config``,
 three admin-only routes. The lead's rulings (2026-10-24) it is held to:
 
 1. Admin only: an admin gets the selector, anyone else nothing (no control and no request).
@@ -235,7 +235,7 @@ def test_the_fetchers_read_the_active_store_and_the_store_list(ctx, served) -> N
     ctx.eval(f"RES[{json.dumps(ACTIVE_KEY)}].fetcher(null); RES[{json.dumps(STORES_KEY)}].fetcher(null);")
     assert js(ctx, "CALLS.map(function (c) { return [c.method, c.path]; })") == [
         ["GET", "/artifact_storage_active_config"],
-        ["GET", "/artifact_storage_providers?limit=200"],
+        ["GET", "/artifact_storage_providers?limit=200&offset=0"],
     ]
 
 

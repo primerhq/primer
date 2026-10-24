@@ -1,4 +1,4 @@
-/* global React, Btn, Banner, Icon */
+/* global React, Btn, Banner, Icon, PR_fetchAllPages */
 // First-run bootstrap wizard (S5 spec section 3).
 //
 // Two steps and nothing more: one LLM provider, one default model profile.
@@ -98,10 +98,11 @@ function SW_saveProfile(apiFetch, body) {
 // so replaying the stored row to the draft probe could not authenticate. A saved provider that does not answer sends the operator
 // to step 1, prefilled, with a notice that says which one and why. The same probe tells the operator why the gate sent them here
 // when every provider already has its profile. Never blocks the wizard: any failure reading the state is "start at step 1".
+// Every provider and every profile, every page of each (PR_fetchAllPages): a provider past the 200th still finds its profile.
 function SW_loadResume(apiFetch) {
   return Promise.all([
-    apiFetch("GET", "/llm_providers?limit=200", null, {}),
-    apiFetch("GET", "/model_profiles?limit=200", null, {}),
+    PR_fetchAllPages("/llm_providers", { apiFetch: apiFetch }),
+    PR_fetchAllPages("/model_profiles", { apiFetch: apiFetch }),
   ]).then(function (res) {
     var providers = (res[0] && res[0].items) || [];
     var plan = SW_resumePlan(providers, (res[1] && res[1].items) || []);

@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner */
+/* global React, Icon, Btn, Modal, Banner, PR_fetchAllPages, PR_PagedNote */
 // HarnessOutboundBuilder — four-step wizard for building an outbound harness
 // from local entities. Spec B §11.2 / Plan B Phase 8.
 //
@@ -434,12 +434,12 @@ function HOB_Step1Metadata({
 function HOB_Step2Entities({ tracked, onTrackedChange, dupTemplate }) {
   const { useResource, apiFetch } = window.primerApi;
 
-  // Parallel fetches for the four entity kinds.
+  // Parallel fetches for the four entity kinds, every page of each (PR_fetchAllPages, ui/foundation/api.js).
   const results = HOB_ENTITY_KINDS.map(({ kind, label, list }) => {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const res = useResource(
       "hob-list:" + kind,
-      (signal) => apiFetch("GET", list + "?limit=200", null, { signal }),
+      (signal) => PR_fetchAllPages(list, { signal, apiFetch }),
       { pollMs: null }
     );
     return { kind, label, list, res };
@@ -545,6 +545,7 @@ function HOB_Step2Entities({ tracked, onTrackedChange, dupTemplate }) {
                   </div>
                 );
               })}
+              <PR_PagedNote list={res.data} noun={label.toLowerCase()} testid={"hob-entity-note-" + kind} />
             </div>
           </div>
         );

@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, StatusPill, CardList, Card, Fab, JsonSchemaForm, validateSchema */
+/* global React, Icon, Btn, Modal, Banner, StatusPill, CardList, Card, Fab, JsonSchemaForm, validateSchema, PR_fetchAllPages, PR_PagedNote */
 // Harnesses list + detail + registration wizard.
 // Prefix HR_ to avoid global name collisions.
 
@@ -107,7 +107,7 @@ function HarnessList() {
   const HR_PAGE_SIZE = 20;
 
   // Server-side offset pagination (bug #19), replacing the client-side slice
-  // over a hard limit=200 fetch. The direction pill filter is a server-side
+  // over a hard one-page fetch. The direction pill filter is a server-side
   // query param; changing it resets to the first page via resetKey.
   const list = usePagedList({
     key: "harnesses:list",
@@ -856,14 +856,17 @@ function HR_DependenciesPanel({ harness }) {
   // same cross-query but only use it for an informational count badge.
   // Hooks must run unconditionally before any early return, so we always
   // call them regardless of whether deps is empty.
+  // Every page of each endpoint (PR_fetchAllPages, ui/foundation/api.js); a list cut short is said under the tree, so a count is never short in silence.
   const entityCounts = {};
-  HR_MANAGED_ENDPOINTS.forEach(({ path }) => {
+  const countLists = [];
+  HR_MANAGED_ENDPOINTS.forEach(({ label, path }) => {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const res = useResource(
       `harness-managed-depcount:${harness?.id || "none"}:${path}`,
-      (signal) => apiFetch("GET", path + "?limit=200", null, { signal }),
+      (signal) => PR_fetchAllPages(path, { signal, apiFetch }),
       { pollMs: null, deps: [harness?.id] }
     );
+    countLists.push({ label, path, list: res.data });
     const rows = (res.data?.items ?? []).filter((row) => row.harness_id === harness?.id);
     rows.forEach((row) => {
       const src = row.source_dependency;
@@ -939,6 +942,9 @@ function HR_DependenciesPanel({ harness }) {
             </div>
           );
         })}
+        {countLists.map(({ label, path, list }) => (
+          <PR_PagedNote key={path} list={list} noun={label.toLowerCase()} testid={"dep-count-note:" + path} />
+        ))}
       </div>
     </div>
   );
@@ -955,9 +961,10 @@ function HR_ManagedObjects({ harnessId, slug }) {
     // Rules of Hooks require a fixed number of hooks per render, so we
     // call useResource for each endpoint unconditionally.
     // eslint-disable-next-line react-hooks/rules-of-hooks
+    // Every page (PR_fetchAllPages): an entity past the 200th of its kind is still listed.
     const res = useResource(
       `harness-managed:${harnessId}:${path}`,
-      (signal) => apiFetch("GET", path + "?limit=200", null, { signal }),
+      (signal) => PR_fetchAllPages(path, { signal, apiFetch }),
       { pollMs: null, deps: [harnessId] }
     );
     const filtered = (res.data?.items ?? []).filter((row) => row.harness_id === harnessId);
@@ -997,6 +1004,7 @@ function HR_ManagedObjects({ harnessId, slug }) {
                 ))}
               </div>
             )}
+            <PR_PagedNote list={res.data} noun={label.toLowerCase()} testid={"managed-note:" + path} />
           </div>
         ))}
       </div>

@@ -1,4 +1,4 @@
-/* global React, Btn, Banner, PK_FormOverlay, PK_Field, PK_Grid, PK_Section, PK_Fold, PK_Segmented, PK_CheckTable */
+/* global React, Btn, Banner, PK_FormOverlay, PK_Field, PK_Grid, PK_Section, PK_Fold, PK_Segmented, PK_CheckTable, PR_fetchAllPages, PR_PagedNote */
 // LLM profiles: a "single" profile is one (provider, model) pair plus its API-level config; an "aggregated" one (kind="aggregated", 01a067c4) is an
 // ORDERED chain of single profiles with a routing and failover policy, and has no provider of its own.
 //
@@ -516,9 +516,10 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
+  // Every profile, every page (PR_fetchAllPages, ui/foundation/api.js): a profile past the 200th can be a member.
   const list = window.primerApi.useResource(
     "mp-aggregate:profiles",
-    (signal) => window.primerApi.apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/model_profiles", { signal }),
     { pollMs: null },
   );
 
@@ -614,6 +615,7 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
           </div>
         ) : null}
       </PK_Field>
+      <PR_PagedNote list={list.data} noun="profiles" testid="mp-aggregate-note" />
       <PK_Field label="Routing" help={MP_ROUTING_HELP[strategy]}>
         <PK_Segmented testid="mp-aggregate-routing" ariaLabel="Routing" options={MP_ROUTING_OPTIONS} value={strategy}
           onChange={(v) => setStrategy(v)} />

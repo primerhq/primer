@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, StatusPill, Modal, Banner, CardList, Card, Fab, relativeTime */
+/* global React, Icon, Btn, StatusPill, Modal, Banner, CardList, Card, Fab, relativeTime, PR_fetchAllPages, PR_PagedNote */
 // ============================================================================
 // Collections (v2): a collection is a wiki of text documents arranged as a
 // slug-path tree. Grep and read work with no embedder configured; semantic
@@ -667,6 +667,7 @@ function KN_IndexingStrip({ collection, status, embedProviders, sspProviders, pu
             <option value="">Embedding provider…</option>
             {embedRows.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
           </select>
+          <PR_PagedNote list={embedProviders?.data} noun="embedding providers" testid="kn-embed-note" />
           <input
             className="input mono"
             placeholder="Embedding model"
@@ -677,6 +678,7 @@ function KN_IndexingStrip({ collection, status, embedProviders, sspProviders, pu
             <option value="">Vector store…</option>
             {sspRows.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
           </select>
+          <PR_PagedNote list={sspProviders?.data} noun="vector stores" testid="kn-ssp-note" />
           {selectedSspMissing ? (
             <div className="field-help" style={{ color: "var(--amber)" }}
               data-capability-hint="lance">
@@ -931,19 +933,20 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
   const { useResource, useRouter, useViewport, apiFetch, usePagedList, Pager } = window.primerApi;
   const { isMobile } = useViewport();
 
+  // Every provider and every collection, every page of each (PR_fetchAllPages, ui/foundation/api.js).
   const embedProviders = useResource(
     "collections:embedding-providers",
-    (signal) => apiFetch("GET", "/embedding_providers?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/embedding_providers", { signal, apiFetch }),
     { pollMs: null },
   );
   const sspProviders = useResource(
     "collections:ssp",
-    (signal) => apiFetch("GET", "/ssp?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/ssp", { signal, apiFetch }),
     { pollMs: null },
   );
   const cerProviders = useResource(
     "collections:cer-providers",
-    (signal) => apiFetch("GET", "/cross_encoder_providers?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/cross_encoder_providers", { signal, apiFetch }),
     { pollMs: null },
   );
 
@@ -952,7 +955,7 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
 
   const list = useResource(
     `collections:list:${reloadKey}`,
-    (signal) => apiFetch("GET", "/collections?limit=200", null, { signal }),
+    (signal) => PR_fetchAllPages("/collections", { signal, apiFetch }),
     { pollMs: null },
   );
   const rows = list.data?.items ?? [];
@@ -1037,6 +1040,7 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
           {String(list.error.detail || list.error.message || list.error)}
         </Banner>
       ) : null}
+      <PR_PagedNote list={list.data} noun="collections" testid="kn-collections-note" />
 
       {isMobile ? (
         <>

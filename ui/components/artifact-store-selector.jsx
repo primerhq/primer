@@ -1,4 +1,4 @@
-/* global React, window, Btn, PK_Field, PK_Section, NV_useConsole */
+/* global React, window, Btn, PK_Field, PK_Section, NV_useConsole, PR_fetchAllPages, PR_PagedNote */
 // artifact-store-selector.jsx - "Store new files in": which artifact store NEW files are written to (plan 09, Task 11; seam I-4). Providers >
 // Artifact Store draws it above the cards through window.PC_TYPE_EXTRAS.artifact_storage. It reads GET /artifact_storage_active_config and
 // GET /artifact_storage_providers and writes PUT /artifact_storage_active_config; files stored earlier stay where they are and are still read.
@@ -42,7 +42,8 @@ function AS_options(items, activeId) {
 function AS_ActiveStoreField() {
   const api = window.primerApi;
   const active = api.useResource(AS_ACTIVE_KEY, (signal) => api.apiFetch("GET", "/artifact_storage_active_config", null, { signal }), { pollMs: 0 });
-  const stores = api.useResource(AS_STORES_KEY, (signal) => api.apiFetch("GET", "/artifact_storage_providers?limit=200", null, { signal }), { pollMs: 0 });
+  // Every store, every page (PR_fetchAllPages, ui/foundation/api.js); a list cut short says so under the field.
+  const stores = api.useResource(AS_STORES_KEY, (signal) => PR_fetchAllPages("/artifact_storage_providers", { signal, apiFetch: api.apiFetch }), { pollMs: 0 });
   // `local` is the server's answer to this page's last successful switch, shown until the active row is read again; `pending` is the
   // choice being saved; `refusal` is the server's words for the last refused one.
   const [local, setLocal] = React.useState(null);
@@ -124,6 +125,7 @@ function AS_ActiveStoreField() {
         </select>
         {retryButton}
       </PK_Field>
+      <PR_PagedNote list={stores.data} noun="artifact stores" testid="as-stores-note" />
     </PK_Section>
   );
 }

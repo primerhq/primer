@@ -243,6 +243,7 @@ function WorkspaceTap({ wid, sessionId, fillHeight }) {
     if (!wid) { setHistory([]); return undefined; }
     var alive = true;
     setHistory([]);
+    // Deliberately a recent window (ticket 01a16dfa): one page of the workspace's events backfills the live tap, not every page.
     window.primerApi.apiFetch(
       "GET",
       "/workspaces/" + encodeURIComponent(wid) + "/events?limit=200"

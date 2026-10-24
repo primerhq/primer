@@ -754,7 +754,7 @@ def test_the_overlay_asks_for_the_list_itself_once_and_does_not_poll(ctx) -> Non
     asked = js(ctx, "ASKED.filter(function (a) { return a.key === 'mp-aggregate:profiles'; }).map(function (a) { return a.opts; })")
     assert asked and all(opts == {"pollMs": None} for opts in asked), "a dialog does not poll"
     ctx.eval("CALLS.length = 0; ASKED.filter(function (a) { return a.key === 'mp-aggregate:profiles'; })[0].fetcher('the-signal');")
-    assert calls(ctx) == [["GET", "/model_profiles?limit=200", None]]
+    assert calls(ctx) == [["GET", "/model_profiles?limit=200&offset=0", None]]
 
 
 # ---- the dispatcher ------------------------------------------------------------------------------------------------------------------------------------

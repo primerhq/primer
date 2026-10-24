@@ -55,7 +55,8 @@ def _stub_gate(page: Page) -> None:
 
     page.route(re.compile(r".*/v1/auth/status$"), auth_status)
     page.route(re.compile(r".*/v1/setup/state$"), setup_state)
-    page.route(re.compile(r".*/v1/(llm_providers|model_profiles)\?limit=200$"), empty_list)
+    # The wizard reads every page of each list (PR_fetchAllPages): an empty first page ends the read.
+    page.route(re.compile(r".*/v1/(llm_providers|model_profiles)\?limit=200&offset=\d+$"), empty_list)
 
 
 def _open_step_one(page: Page, console_url: str) -> None:

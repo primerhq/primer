@@ -17,6 +17,9 @@ from tests.ui._mini_react import mini_react_context, transpile
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACES = ROOT / "ui" / "components" / "workspaces.jsx"
+# The real paged-list helpers the page reads a workspace's sessions with (PR_usePagedResource; ticket 01a16dfa), loaded before the stand-ins: they read
+# window.primerApi when they are called, so they reach the stand-ins, which replace the namespace api.js makes.
+API = (ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
 
 _PRELUDE = r"""
 var window = globalThis;
@@ -60,7 +63,7 @@ def code() -> str:
 
 @pytest.fixture
 def ctx(code):
-    c = mini_react_context(code, _PRELUDE)
+    c = mini_react_context(code, "var window = globalThis;\n" + API + "\n" + _PRELUDE)
     try:
         yield c
     finally:

@@ -5,7 +5,7 @@ var WEB_KINDS = {
     noun: "provider",
     builtinId: "DuckDuckGo",
     activePath: "/web_search_active_config",
-    listPath: "/web_search_providers?limit=200",
+    listPath: "/web_search_providers",
     types: { duckduckgo: "DuckDuckGo", tavily: "Tavily", firecrawl: "Firecrawl", exa: "Exa" },
     defaultLabel: "Default provider",
     defaultHelp: "Every web search goes to this provider.",
@@ -22,7 +22,7 @@ var WEB_KINDS = {
     noun: "fetcher",
     builtinId: "local",
     activePath: "/web_fetch_active_config",
-    listPath: "/web_fetch_providers?limit=200",
+    listPath: "/web_fetch_providers",
     types: { local: "Local", jina: "Jina Reader", firecrawl: "Firecrawl", exa: "Exa" },
     defaultLabel: "Default fetcher",
     defaultHelp: "Every page fetch goes to this fetcher.",
@@ -500,6 +500,7 @@ function WEB_ActiveConfigSection(props) {
         </div>
       ) : null}
       {children}
+      <PR_PagedNote list={props.providers && props.providers.data} noun={WEB_KINDS[kind].noun + "s"} testid={WEB_KINDS[kind].testid + "-providers-note"} />
     </PK_Section>
   );
 }
@@ -511,8 +512,9 @@ function WEB_useKind(kind, enabled) {
   var activeFetcher = function () {
     return window.primerApi.apiFetch("GET", k.activePath);
   };
-  var listFetcher = function () {
-    return window.primerApi.apiFetch("GET", k.listPath);
+  // Every provider, every page (PR_fetchAllPages, ui/foundation/api.js).
+  var listFetcher = function (signal) {
+    return PR_fetchAllPages(k.listPath, { signal: signal });
   };
   var activeRes = window.primerApi.useResource(activeKey, activeFetcher, { pollMs: 0 });
   var providersRes = window.primerApi.useResource(listKey, listFetcher, { pollMs: 0 });
