@@ -1897,6 +1897,178 @@ async def test_an_owner_saved_between_the_rank_check_and_the_fire_is_ranked_agai
     assert all(s.last_fired_at is None for s in (await _subscriptions(world)).values()), "a subscription was dispatched"
 
 
+# -- who may change or delete a trigger (ticket 01a16ee4) --------------------------------------------------------------------------------------
+#
+# A save re-arms the trigger's claim under the saver's timing, and a delete ends it: both act on every subscription the trigger drives, so
+# ``update_trigger`` and ``delete_trigger`` follow the rank rule of a manual fire (``primer.trigger.owner.refuse_trigger_change``, the same rule
+# as ``refuse_fire_now``): the caller (the REST principal, the MCP person, or the calling run's principal) must rank at least as high as the
+# trigger's owner. An admin is never outranked; a person (over REST or MCP, never a run) may always change or delete a trigger they own.
+# Otherwise 403 ``forbidden_rank`` (REST) or ``type=forbidden`` (a tool), and nothing changes: the row, its owner and its subscriptions stay as
+# they were, and a refused change adopts no owner (the caller does not become the owner of a trigger they may not save). The reach rule (#874)
+# is asked first, as for a fire. A tool call with no context, the MCP endpoint's own, records the MCP principal as the owner of what it saves.
+
+_CHANGE_WORDS_REQUEST = (
+    "trigger 'tr-r' runs at a higher rank ({owner}) than you ({caller}); you may change or delete only your own triggers and triggers at or below your rank"
+)
+_CHANGE_WORDS_RUN = "trigger 'tr-r' runs at a higher rank ({owner}) than this session ({caller}); a session may change or delete only triggers at or below its own rank"
+
+
+def _change_args(verb: str) -> dict:
+    return {"id": FIRE_TRIGGER, "name": "edited"} if verb == "update" else {"id": FIRE_TRIGGER}
+
+
+async def _change_rows(sp) -> tuple:
+    """What a refused change or delete must leave as it was: the trigger row (its owner, its timing) and every subscription row."""
+    row = await sp.get_storage(Trigger).get(FIRE_TRIGGER)
+    subs = (await sp.get_storage(Subscription).list(OffsetPage(offset=0, length=100))).items
+    return (None if row is None else row.model_dump(mode="json"), sorted(s.model_dump_json() for s in subs))
+
+
+@pytest.mark.parametrize(
+    ("who", "door", "verb"),
+    [(who, door, verb) for who in FIRE_CALLERS for door in (("MCP",) if who.startswith("MCP: ") else DOORS) for verb in ("update", "delete")],
+)
+async def test_update_and_delete_touch_a_trigger_only_when_the_caller_ranks_with_its_owner(who, door, verb):
+    """The same rule as a manual fire: the rows of ``FIRE_CALLERS`` on the ``trigger::update`` / ``trigger::delete`` doors (and the crud twins
+    that share their handlers). A refused change or delete leaves the row, its owner and its subscriptions exactly as they were; an accepted
+    update makes its caller the owner."""
+    owner, caller, accepted = FIRE_CALLERS[who]
+    world = await _rank_world(owner)
+    before = await _change_rows(world.sp)
+
+    if isinstance(caller, Principal):
+        outcome, body = await asyncio.wait_for(
+            _call(world, "trigger", verb, _change_args(verb), own=None, door=door, actor=caller), 30,
+        )
+    else:
+        outcome, body = await asyncio.wait_for(
+            _call(world, "trigger", verb, _change_args(verb), own="ws-2", door=door, run_as=caller), 30,
+        )
+
+    if not accepted:
+        words = (_CHANGE_WORDS_REQUEST if isinstance(caller, Principal) else _CHANGE_WORDS_RUN).format(
+            owner="system" if owner.type == "system" else owner.role, caller="user",
+        )
+        assert (outcome, body) == (F, {"type": F, "message": words}), (who, door, verb, body)
+        assert await _change_rows(world.sp) == before, f"a refused {verb} changed the trigger ({who}, {door})"
+        return
+    assert outcome == D, (who, door, verb, body)
+    row = await world.sp.get_storage(Trigger).get(FIRE_TRIGGER)
+    if verb == "delete":
+        assert row is None, body
+        assert (await world.sp.get_storage(Subscription).list(OffsetPage(offset=0, length=100))).items == [], body
+    else:
+        assert row.name == "edited", body
+        assert row.owner is not None and row.owner.id == caller.id, (who, door, row.owner)
+
+
+async def test_a_create_over_mcp_records_the_mcp_principal_as_owner():
+    """Ticket 01a16ee4: a tool call with no context (the MCP endpoint's own) used to record no owner, so what it saved fired as an ordinary user
+    whatever the person's rank. It records the MCP principal: a row it saves fires at most at the person's rank, and a later save by a lower
+    rank is refused by the rank rule."""
+    world = await _ws_world()
+
+    _outcome, _body = await asyncio.wait_for(_call(
+        world, "trigger", "create",
+        {"slug": "mcp-made", "name": "made", "config": {"kind": "delayed", "fire_at": (NOW + timedelta(days=1)).isoformat()}},
+        own=None, door="MCP", actor=MCP_USER,
+    ), 30)
+
+    rows = (await world.sp.get_storage(Trigger).list(OffsetPage(offset=0, length=10))).items
+    [row] = [t for t in rows if t.slug == "mcp-made"]
+    assert (row.owner.type, row.owner.id, row.owner.role) == ("user", MCP_USER.id, "user"), row.owner
+
+
+@pytest.mark.parametrize(
+    "actor",
+    [
+        pytest.param(MCP_USER, id="a user's MCP request"),
+        pytest.param(Principal(type="user", id="u-root", display="root", role="admin", source="local"), id="an admin's MCP request"),
+    ],
+)
+async def test_an_update_over_mcp_records_the_mcp_principal_as_owner(actor):
+    world = await _rank_world(None)  # the trigger has no recorded owner: any rank may save it, and the saver becomes the owner
+
+    _outcome, _body = await asyncio.wait_for(
+        _call(world, "trigger", "update", {"id": FIRE_TRIGGER, "name": "edited"}, own=None, door="MCP", actor=actor), 30,
+    )
+
+    row = await world.sp.get_storage(Trigger).get(FIRE_TRIGGER)
+    assert row.name == "edited"
+    assert (row.owner.type, row.owner.id, row.owner.role) == ("user", actor.id, actor.role), row.owner
+
+
+@pytest.mark.parametrize(("who", "verb"), [(who, verb) for who in REST_FIRERS for verb in ("update", "delete")])
+async def test_the_rest_update_and_delete_touch_a_trigger_only_when_the_caller_ranks_with_its_owner(app, client, fake_storage_provider, who, verb):
+    """Over HTTP, through the auth middleware: ``PUT /v1/triggers/{id}`` and ``DELETE /v1/triggers/{id}``, the rows of ``REST_FIRERS``. A
+    refused change or delete is a 403 ``forbidden_rank`` and leaves the row, its owner and its subscriptions exactly as they were; an accepted
+    update makes its asker the owner."""
+    owner_name, asker, accepted = REST_FIRERS[who]
+    sp = fake_storage_provider
+    r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
+    assert r.status_code == 201, r.text
+    carol_id, admin_id = await _user_id(app, "carol"), await _user_id(app, "testuser")
+    carol_token = await _token_client(app, carol_id)  # creates the token row ``at-<carol>`` (the owner of one row below)
+    owner = {
+        None: None,
+        "system": PrincipalRef.system(),
+        "admin": PrincipalRef(type="user", id=admin_id, display="testuser", role="admin", source="local"),
+        "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
+        "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
+        "carol's token then admin": PrincipalRef(type="api_token", id=f"at-{carol_id}", display="automation", role="admin", source="internal"),
+    }[owner_name]
+    await sp.get_storage(Trigger).create(Trigger(
+        id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
+    ))
+    await sp.get_storage(Subscription).create(Subscription(
+        id="sb-r", trigger_id=FIRE_TRIGGER, config=AgentFreshSubConfig(workspace_id="ws-x", agent_id="planner"), created_at=NOW, owner=owner,
+    ))
+    before = await _change_rows(sp)
+    route = f"/v1/triggers/{FIRE_TRIGGER}"
+
+    async def _ask():
+        if asker == "carol's token":
+            async with carol_token:
+                return await carol_token.put(route, json={"name": "edited"}) if verb == "update" else await carol_token.delete(route)
+        if asker == "admin's token":
+            async with await _token_client(app, admin_id) as tok:
+                return await tok.put(route, json={"name": "edited"}) if verb == "update" else await tok.delete(route)
+        if asker == "carol":
+            async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
+                assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
+                return await carol.put(route, json={"name": "edited"}) if verb == "update" else await carol.delete(route)
+        return await client.put(route, json={"name": "edited"}) if verb == "update" else await client.delete(route)
+
+    r = await _ask()
+
+    if not accepted:
+        words = _CHANGE_WORDS_REQUEST.format(owner="system" if owner.type == "system" else owner.role, caller="user")
+        assert r.status_code == 403, f"{who} could {verb}: {r.text}"
+        assert (r.json()["detail"], r.json()["extensions"]["code"]) == (words, "forbidden_rank"), r.json()
+        assert await _change_rows(sp) == before, f"a refused {verb} changed the trigger ({who})"
+        return
+    assert r.status_code == (200 if verb == "update" else 204), f"{who} could not {verb}: {r.text}"
+    row = await sp.get_storage(Trigger).get(FIRE_TRIGGER)
+    if verb == "delete":
+        assert row is None
+        assert (await sp.get_storage(Subscription).list(OffsetPage(offset=0, length=100))).items == []
+    else:
+        assert r.json()["name"] == "edited"
+        expected_owner_id = {"carol": carol_id, "admin": admin_id, "carol's token": f"at-{carol_id}", "admin's token": f"at-{admin_id}"}[asker]
+        assert row.owner is not None and row.owner.id == expected_owner_id, (who, row.owner)
+
+
+def test_the_update_and_delete_descriptors_say_the_rank_rule_and_what_a_refusal_answers():
+    from primer.toolset.trigger import TOOL_CREATE, TOOL_DELETE, TOOL_UPDATE
+
+    for tool in (TOOL_UPDATE, TOOL_DELETE):
+        flat = " ".join(tool.description.split())
+        assert "rank at least as high as its owner" in flat, tool.id
+        assert "``type=forbidden``" in flat, tool.id
+    flat = " ".join(TOOL_CREATE.description.split())
+    assert "records you as the trigger's ``owner``" in flat, flat
+
+
 # -- the subscription reads and the single-subscription deletes (ticket 01a16c22) -------------------------------------------------------------
 #
 # A subscription is in the workspace of its target: the workspace a fresh session starts in, or the workspace of the session it steers or wakes.

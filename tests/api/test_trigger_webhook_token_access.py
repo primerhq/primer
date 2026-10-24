@@ -5,8 +5,9 @@ trigger's subscriptions start, at the owners' rank. Before this, any ``role=user
 ``GET /v1/triggers`` (or mint a fresh one with ``rotate_token``) and inject a payload into an admin-ranked run. Now:
 
 * list / get show everyone else the mask;
-* ``rotate_token`` and ``PUT`` on a webhook trigger answer 403 ``forbidden_role`` unless the caller owns it or is an admin, and
-  the caller becomes the owner;
+* ``rotate_token`` answers 403 ``forbidden_role`` unless the caller owns it or is an admin, and ``PUT`` answers 403
+  ``forbidden_rank`` for a caller the owner outranks (the rank rule of a manual fire, ticket 01a16ee4, asked first) and
+  ``forbidden_role`` for a same-rank caller who is not the owner; an accepted ``PUT`` makes the caller the owner;
 * a ``PUT`` that hands a webhook trigger to a different owner mints a new token, so nobody who knew the old one rides along;
 * the mask sent back in a ``PUT`` body keeps the stored token.
 """
@@ -119,7 +120,9 @@ async def test_a_user_cannot_put_an_admin_webhook_trigger(client, app):
 
     for resp in (renamed, chosen):
         assert resp.status_code == 403, resp.text
-        assert _code(resp) == "forbidden_role"
+        # The rank rule of a manual fire is asked before the webhook manage rule (ticket 01a16ee4): a caller the owner
+        # outranks is refused as outranked, as a fire of the same trigger would be.
+        assert _code(resp) == "forbidden_rank"
         assert token not in resp.text
     after = await _stored(app, tid)
     assert (after.name, after.config.token, after.owner) == (before.name, token, before.owner)

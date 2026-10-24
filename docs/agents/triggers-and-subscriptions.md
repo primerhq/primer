@@ -477,15 +477,16 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   than the trigger owner's rank.** Each trigger and subscription
   records an `owner`: the caller that last created or updated it (the
   logged-in user over REST, your own run's identity when you use the
-  `trigger__*` tools or `system__create_channel_binding`). A
+  `trigger__*` tools, the person making the call when the `trigger__*`
+  tools are used straight over MCP, nobody when you start a subagent
+  over MCP with `system__invoke_agent` and its tools save a row). A
   fresh-session run is attributed to the subscription's owner and
   ranked by the lower of the two owners' CURRENT roles, so it can only
   call the tools those people could. An admin-only tool such as
   `system__create_toolset` with a stdio command is refused
   (`type=forbidden`, or "access denied ... requires the 'admin' role")
   unless both owners are admins. A trigger or subscription saved before
-  owners were recorded, or saved over MCP (which carries no run
-  identity to the tool), fires as an ordinary user; an admin re-saving
+  owners were recorded fires as an ordinary user; an admin re-saving
   both rows restores admin rank. Saving a row makes you its owner, so
   editing someone else's subscription hands it your rank, not theirs,
   and a row you save from inside a run is capped at that run's rank
@@ -513,6 +514,20 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   both ranks, and nothing fires: no `trigger.fired` event, no
   subscription dispatched, `last_fired_at` unchanged. Scheduled and
   delayed fires, webhook calls and channel events are not ranked.
+- **You may change or delete a trigger only at or above its owner's
+  rank.** A save re-arms the trigger's claim and hands it to the saver,
+  and a delete ends its subscriptions' automation, so `trigger__update`
+  / `trigger__delete` (and `PUT` / `DELETE /v1/triggers/{id}`) follow
+  the rank rule of a manual fire, after the reach rule. You may act
+  when you rank at least as high as the trigger's `owner`: an admin may
+  change or delete any trigger, a user may change or delete a user's
+  trigger, and a trigger saved before owners were recorded (no `owner`)
+  ranks as an ordinary user. Over MCP or REST you may also always
+  change or delete a trigger your own account owns, even after a
+  demotion; from inside a run you may not. Otherwise the tool answers
+  `type=forbidden` (REST: 403 `forbidden_rank`) naming the trigger and
+  both ranks, and nothing changes: the row keeps its stored owner (a
+  refused change adopts none), its subscriptions and its timing.
 - **A fresh-session subscription whose owner is gone does not fire.**
   When the account that saved the subscription is deleted or disabled,
   or the API token it was saved with is revoked or has expired, an
