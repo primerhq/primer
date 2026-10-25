@@ -584,7 +584,13 @@ def _skipped_room_disabled() -> float:
     return counter.labels(reason="room_disabled")._value.get() if counter is not None else 0.0
 
 
-async def test_a_room_with_chats_disabled_starts_no_session_but_a_session_append_binding_still_feeds(monkeypatch, sp) -> None:
+def _room_disabled_warnings(caplog) -> list[str]:
+    """The once-per-room warnings the router logs when it drops session-starting bindings (round 2 of #932, item 4)."""
+    records = [r for r in caplog.records if r.name == "primer.channel.event_dispatch" and r.levelno >= 30]
+    return [r.getMessage() for r in records]
+
+
+async def test_a_room_with_chats_disabled_starts_no_session_but_a_session_append_binding_still_feeds(monkeypatch, sp, caplog) -> None:
     """The measurement found a disabled room starting sessions like any other. Now the bindings that start a session do not fire there,
     and a binding that feeds a running session still does."""
     world = _World(monkeypatch, sp)
@@ -599,6 +605,10 @@ async def test_a_room_with_chats_disabled_starts_no_session_but_a_session_append
     )
     await sp.get_storage(WorkspaceSession).create(running)
     before = _skipped_room_disabled()
+    import primer.channel.event_dispatch as event_dispatch
+
+    event_dispatch._ROOM_DISABLED_REPORTED.clear()
+    caplog.clear()
 
     await world.message("a room post", thread_ts=None, ts="1700000001.000001")
     await world.message("in a thread", thread_ts=THREAD, ts="1700000001.000002")
@@ -608,6 +618,11 @@ async def test_a_room_with_chats_disabled_starts_no_session_but_a_session_append
     assert _skipped_room_disabled() == before + 2
     fresh = await sp.get_storage(Subscription).get("sb-1")
     assert fresh.last_fired_at is None, "the dropped binding was dispatched"
+    # The first drop says the room and the trigger (so an operator who sees no session start can find the switch); the second event
+    # in the same room adds no second warning (once per room and process).
+    warnings = _room_disabled_warnings(caplog)
+    assert len(warnings) == 1, warnings
+    assert "ch-sl" in warnings[0] and "tr-1" in warnings[0] and "chats.enabled" in warnings[0], warnings[0]
 
 
 async def test_a_room_with_chats_disabled_still_feeds_the_session_its_thread_is_mapped_to(monkeypatch, sp) -> None:
