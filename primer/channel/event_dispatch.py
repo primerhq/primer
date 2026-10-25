@@ -173,6 +173,9 @@ def outbound_binding(
         "channel_id": reply_target.channel_id,
         "anchor": reply_target.anchor,
         "quiet": quiet or bool(reply_target.quiet),
+        # The target's anchor is a SHARED one (round 2, finding 1): every session of this binding posts into the same thread,
+        # so an ask_user question opens the session's own thread and the anchor carries no thread-to-session row.
+        "shared_anchor": True,
     }
 
 

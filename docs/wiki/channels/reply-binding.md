@@ -17,7 +17,7 @@ A workspace's reply binding is the [channel](channels/channels) its sessions use
 - **Who may answer.** Anyone in the room. Channel answers and decisions are not ranked, by design: a person chose to bind the room. A gate whose policy names its approvers (specific users, roles, or admins only) is the exception. A platform user is not a primer user, so such a gate cannot be decided from the room: the clicker is told to decide it in the console. The gates primer ships on admin-only writes are of this kind. See [approval policies](approvals/policies).
 - **What an approval request shows.** Only the arguments the gate's preview allows (the policy's `preview_args`, else a default rule). Every other value reads `<hidden>`. The decision still acts on the real arguments.
 - **One binding per workspace.** Setting it again replaces it. Read it with `workspaces__get_workspace`: `reply_binding` is `{channel_id, anchor}`, or `null`.
-- **`anchor`** names one thread in the channel: a Slack thread ts or a Discord thread id. Every post of every session in the workspace goes into it: questions, approval requests, updates and answers. Telegram has no threads and ignores it. On Discord, an anchor that is not a thread id is ignored too.
+- **`anchor`** names one thread in the channel: a Slack thread ts or a Discord thread id. Every approval request, update and answer of every session in the workspace goes into it, except an `system__ask_user` question, which opens the session's own thread in that channel with its own mapping: several sessions share the anchor's thread, and a question posted there would leave the thread mapped to the last asker. Telegram has no threads and ignores it. On Discord, an anchor that is not a thread id is ignored too.
 - **Reach.** From a session outside the default workspace (prime), both tools reach only your own workspace. Another workspace answers `not-found`, exactly as an unknown one, whatever channel you name. From prime, and with no calling session, every workspace is in reach.
 
 ## How to
@@ -53,6 +53,7 @@ Reference: [`system__clear_reply_binding`](reference/tools/system/clear_reply_bi
 - A Telegram approval button stops working after a restart, and says so: decide that request in the console.
 - The binding covers every session in the workspace, graph and background sessions too. Bind a room that expects that traffic.
 - Deleting the channel does not clear the binding, and posts then go nowhere. Clear it first.
+- A plain reply typed in the anchor's thread steers nothing: no thread-to-session row names that thread, so it is an ordinary channel message for the channel's [inbound bindings](channels/bindings). The question's own thread (and a thread a session was started in) is the one that steers.
 
 ## Related
 [channels](channels/channels), [inbound bindings](channels/bindings), [ask the user](human-in-the-loop/ask-user), [inform the user](human-in-the-loop/inform-user), [approval policies](approvals/policies).

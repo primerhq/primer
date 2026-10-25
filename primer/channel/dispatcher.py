@@ -33,6 +33,12 @@ class ChannelDispatcher:
         reply binding set with an anchor posts there (ticket 01a16e37-b98e items 4 and 5). Before, only the final result
         carried it, and every other post opened a thread of its own. With no anchor the adapter opens or reuses its
         per-session thread (Slack, Discord) or posts into the room (Telegram, which has no threads and ignores an anchor).
+
+        One exception (round 2, finding 1): an ``ask_user`` question on a SHARED anchor (the workspace's standing binding, or a
+        binding's explicit reply target) is posted into the session's own thread instead, with its own thread-to-session row.
+        Several sessions share the anchor's thread; if the question went there, every one of them would write the same
+        thread-to-session row and a reply would reach the last writer, not the asker. The answer buttons of an approval post
+        carry the session id and tool-call id, so approvals may stay in the shared thread.
         """
         if session is not None:
             binding, adapters = await self._registry.route_for_session(session)
@@ -41,7 +47,8 @@ class ChannelDispatcher:
         if not adapters:
             return []
         anchor = getattr(binding, "anchor", None)
-        if anchor and not envelope.thread_anchor:
+        shared = bool(getattr(binding, "shared_anchor", False))
+        if anchor and not envelope.thread_anchor and not (shared and envelope.kind == "ask_user"):
             envelope = replace(envelope, thread_anchor=anchor)
 
         async def _one(adapter) -> dict:

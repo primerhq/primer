@@ -63,6 +63,19 @@ class ReplyBinding(BaseModel):
             "binding is quiet too."
         ),
     )
+    shared_anchor: bool = Field(
+        default=False,
+        description=(
+            "True when the anchor is a destination several sessions post "
+            "into: the workspace's standing reply binding, or a binding's "
+            "explicit reply target. The session's own conversation (a "
+            "thread-started session's mapped thread, a source_thread "
+            "target) is not shared. An ask_user question on a shared anchor "
+            "opens the session's own thread in the channel instead, and no "
+            "thread-to-session row is written for the shared anchor, so a "
+            "reply typed there steers nothing."
+        ),
+    )
 
 
 async def resolve_reply_binding(
@@ -99,8 +112,10 @@ async def resolve_reply_binding(
     if ws is not None and ws.reply_binding is not None:
         metrics.reply_binding_resolutions_total.labels(scope="workspace").inc()
         # The anchor comes with it: the dispatcher puts it on every post, so a workspace bound with an anchor posts into that
-        # thread (ticket 01a16e37-b98e item 5; it used to be dropped here and every session opened its own thread).
-        return ReplyBinding(channel_id=ws.reply_binding.channel_id, anchor=ws.reply_binding.anchor)
+        # thread (ticket 01a16e37-b98e item 5; it used to be dropped here and every session opened its own thread). The anchor is a
+        # SHARED one (round 2, finding 1): several sessions post into it, so an ask_user question opens the session's own thread and
+        # the anchor carries no thread-to-session row.
+        return ReplyBinding(channel_id=ws.reply_binding.channel_id, anchor=ws.reply_binding.anchor, shared_anchor=True)
     metrics.reply_binding_resolutions_total.labels(scope="none").inc()
     return None
 
