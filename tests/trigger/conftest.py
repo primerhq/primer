@@ -33,10 +33,14 @@ class _FakeScheduler:
 
 
 class _FakeClaimEngine:
-    """Captures every ``upsert(kind, id, priority)`` call."""
+    """Captures every ``upsert(kind, id, priority)`` and ``delete_lease(kind, id)`` call."""
 
     def __init__(self) -> None:
         self.upserts: list[tuple[ClaimKind, str, int]] = []
+        self.deleted: list[tuple[ClaimKind, str]] = []
+
+    async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
+        self.deleted.append((kind, entity_id))
 
     async def upsert(
         self,

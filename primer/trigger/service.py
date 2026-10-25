@@ -95,7 +95,7 @@ class ServiceDeps:
     """Bundle passed through to every service function.
 
     ``claim_engine`` and ``event_bus`` may be None — the service then
-    treats lease upserts / bus pulses as no-ops. The REST surface in
+    treats lease upserts and deletions / bus pulses as no-ops. The REST surface in
     tests does not wire a claim engine; production lifespan does.
 
     ``scheduler`` and ``workspace_registry`` are only consumed by
@@ -161,12 +161,27 @@ async def _upsert_claim_if_eligible(
             next_attempt_at=trigger.next_fire_at,
         )
     except TypeError:
-        # Older engine signatures don't accept next_attempt_at kwarg —
+        # Older engine signatures don't accept next_attempt_at kwarg -
         # fall back to the basic upsert (still correct; the next_fire_at
         # is also persisted on the trigger row itself).
         await deps.claim_engine.upsert(
             ClaimKind.TRIGGER, trigger.id, priority=CLAIM_PRIORITY_OPERATOR,
         )
+
+
+async def _delete_claim_lease(trigger_id: str, *, deps: ServiceDeps) -> None:
+    """Claim lease deletion on the way out (ticket 01a16ede).
+
+    No-op when ``deps.claim_engine`` is None; both engines answer a missing lease with a no-op, so it is safe to
+    ask unconditionally. The claim loop reads the stored row of every armed lease on every poll: a disabled
+    trigger's lease is ineligible forever, and a deleted trigger's lease outlives its row, so neither may keep
+    paying that cost.
+    """
+    if deps.claim_engine is None:
+        return
+    from primer.int.claim import ClaimKind
+
+    await deps.claim_engine.delete_lease(ClaimKind.TRIGGER, trigger_id)
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +313,11 @@ async def update_trigger(
     ``reach`` is the calling session's: a trigger with a subscription that
     starts or feeds a session outside it answers :class:`TriggerNotFound`
     (re-enabling or re-timing it would fire that subscription).
+
+    The claim lease follows the enabled state (ticket 01a16ede): a save that
+    leaves the trigger enabled re-arms or refreshes it (:func:`_upsert_claim_if_eligible`),
+    and a save that disables it drops it (:func:`_delete_claim_lease`), so a
+    disabled trigger is not read, and found ineligible, on every poll.
     """
     storage = deps.storage_provider.get_storage(Trigger)
     trigger = await storage.get(trigger_id)
@@ -369,7 +389,12 @@ async def update_trigger(
         if trigger.enabled else None
     )
     await storage.update(trigger)
-    await _upsert_claim_if_eligible(trigger, deps=deps)
+    if trigger.enabled:
+        await _upsert_claim_if_eligible(trigger, deps=deps)
+    else:
+        # A save that turns the trigger off drops its lease: it would be read, and found ineligible, on every poll (ticket 01a16ede).
+        # A re-enable re-arms it via the upsert above.
+        await _delete_claim_lease(trigger.id, deps=deps)
     return trigger
 
 
@@ -387,6 +412,9 @@ async def delete_trigger(
     were.
 
     ``reach`` is the calling session's: a trigger with a subscription that starts or feeds a session outside it answers :class:`TriggerNotFound`.
+
+    The trigger's claim lease goes with its row (:func:`_delete_claim_lease`, ticket 01a16ede): a deleted trigger's
+    lease would be read, and found gone, on every poll until it is dropped.
     """
     storage = deps.storage_provider.get_storage(Trigger)
     subs_storage = deps.storage_provider.get_storage(Subscription)
@@ -413,6 +441,8 @@ async def delete_trigger(
             # delete can be retried while the trigger is still there.
             pass
     await storage.delete(trigger_id)
+    # The lease goes with the row: a deleted trigger's lease is read, and found gone, on every poll until it is dropped (ticket 01a16ede).
+    await _delete_claim_lease(trigger_id, deps=deps)
 
 
 async def fire_now(
