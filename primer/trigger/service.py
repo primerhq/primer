@@ -21,6 +21,7 @@ from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage, Op
 from primer.model.trigger import (
     PARALLELISM_VALUES,
+    ExplicitReplyTarget,
     Parallelism,
     Subscription,
     Trigger,
@@ -67,6 +68,39 @@ class TriggerSlugConflict(Exception):
 class SubscriptionTargetNotFound(Exception):
     """A subscription saved from a workspace session names a target outside that session's reach, or one that does not exist: answered as a
     ``not-found`` in the words of a target that does not exist (:func:`primer.trigger.reach.refuse_target_out_of_reach`). Nothing is stored."""
+
+
+class ReplyTargetChannelNotFound(Exception):
+    """An explicit reply_target ``{channel_id, anchor}`` names a channel that does not exist (round 2 of #932, item 3): refused the same way
+    ``set_reply_binding`` refuses an unknown channel, nothing is stored."""
+
+
+class ReplyTargetAnchorInvalid(Exception):
+    """An explicit reply_target's anchor is not a thread id the channel's platform can post into (a Discord anchor must be a numeric id,
+    round 2 of #932, item 3). Nothing is stored."""
+
+
+async def _validate_explicit_reply_target(reply_target: Any, deps: "ServiceDeps") -> None:
+    """Validate an explicit ``{channel_id, anchor}`` reply target at save time (round 2 of #932, item 3).
+
+    A relative literal names no channel, so it validates as is. An explicit target must name a stored channel (refused with
+    :class:`ReplyTargetChannelNotFound`, a not-found the same way ``set_reply_binding`` refuses one), and a Discord anchor must be a
+    numeric thread id (:class:`ReplyTargetAnchorInvalid`). A dict is coerced through the model first, so a malformed target is a
+    validation error, not a channel lookup. ``None`` (no target) and a relative literal are returned as is.
+    """
+    if reply_target is None or isinstance(reply_target, str):
+        return
+    if not isinstance(reply_target, ExplicitReplyTarget):
+        reply_target = ExplicitReplyTarget.model_validate(reply_target)
+    from primer.model.channel import Channel, ChannelProviderType
+
+    channel = await deps.storage_provider.get_storage(Channel).get(reply_target.channel_id)
+    if channel is None:
+        raise ReplyTargetChannelNotFound(f"reply_target: channel {reply_target.channel_id!r} does not exist")
+    if channel.provider == ChannelProviderType.DISCORD and reply_target.anchor is not None and not reply_target.anchor.isdigit():
+        raise ReplyTargetAnchorInvalid(
+            f"reply_target: a Discord anchor must be a numeric thread id, not {reply_target.anchor!r}"
+        )
 
 
 #: How pydantic serialises a set ``SecretStr`` (``hmac_secret``) in a read; a PUT that echoes it keeps the stored secret.
@@ -522,6 +556,7 @@ async def create_subscription(
     refusal = await refuse_target_out_of_reach(deps.storage_provider, reach, config)
     if refusal is not None:
         raise SubscriptionTargetNotFound(refusal)
+    await _validate_explicit_reply_target(reply_target, deps)
     subs_storage = deps.storage_provider.get_storage(Subscription)
     sub = Subscription(
         id=f"sb-{uuid.uuid4().hex[:12]}",
@@ -579,6 +614,7 @@ async def update_subscription(
         raise ValueError(f"parallelism must be one of {', '.join(PARALLELISM_VALUES)}, not {parallelism!r}")
     if reply_target is not _UNSET:
         refuse_retired_reply_target(reply_target)       # the same reason: a retired dm_sender is refused here too (ticket 01a16e37-b98e)
+        await _validate_explicit_reply_target(reply_target, deps)    # round 2 of #932, item 3: an explicit target names a real channel
     subs_storage = deps.storage_provider.get_storage(Subscription)
     sub = await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
     sub.owner = owner

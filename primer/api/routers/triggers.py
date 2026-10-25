@@ -66,6 +66,8 @@ from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.owner import view_for
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
+    ReplyTargetAnchorInvalid,
+    ReplyTargetChannelNotFound,
     ServiceDeps,
     SubscriptionNotFound,
     TriggerForbidden,
@@ -427,6 +429,10 @@ async def create_subscription_endpoint(
         _raise_code(422, "parked_session_only_from_yield", str(exc))
     except EventMatcherPatternError as exc:
         _raise_code(422, "text_pattern_unsafe", str(exc))
+    except ReplyTargetChannelNotFound as exc:
+        _raise_code(422, "reply_target_channel_not_found", str(exc))
+    except ReplyTargetAnchorInvalid as exc:
+        _raise_code(422, "reply_target_anchor_invalid", str(exc))
     return JSONResponse(
         status_code=201,
         content=sub.model_dump(mode="json"),
@@ -529,6 +535,10 @@ async def update_subscription_endpoint(
         _raise_code(404, "subscription_not_found", str(exc))
     except EventMatcherPatternError as exc:
         _raise_code(422, "text_pattern_unsafe", str(exc))
+    except ReplyTargetChannelNotFound as exc:
+        _raise_code(422, "reply_target_channel_not_found", str(exc))
+    except ReplyTargetAnchorInvalid as exc:
+        _raise_code(422, "reply_target_anchor_invalid", str(exc))
     return JSONResponse(
         status_code=200,
         content=sub.model_dump(mode="json"),

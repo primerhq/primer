@@ -22,8 +22,11 @@ from primer.model.workspace import (
 def test_reply_binding_model_defaults_and_roundtrip():
     assert ReplyBinding(channel_id="ch-1").anchor is None
     assert ReplyBinding(channel_id="ch-1").quiet is False
+    assert ReplyBinding(channel_id="ch-1").shared_anchor is False
     dumped = ReplyBinding(channel_id="ch-1", anchor="ts-9").model_dump()
-    assert dumped == {"channel_id": "ch-1", "anchor": "ts-9", "quiet": False, "silent": False}
+    # shared_anchor is round 2 of #932 (finding 1): True for the workspace's standing binding and an explicit reply_target, whose
+    # thread several sessions post into; False for a session-owned binding.
+    assert dumped == {"channel_id": "ch-1", "anchor": "ts-9", "quiet": False, "silent": False, "shared_anchor": False}
     assert ReplyBinding.model_validate(dumped) == ReplyBinding(
         channel_id="ch-1", anchor="ts-9"
     )
@@ -100,10 +103,11 @@ async def test_resolve_precedence_session_over_workspace_over_none():
     resolved = await resolve_reply_binding(session, storage_provider=sp)
     assert resolved == ReplyBinding(channel_id="ch-sess", anchor="ts-1")
 
-    # Clear the session metadata -> fall back to workspace-standing binding.
+    # Clear the session metadata -> fall back to the workspace-standing binding, whose anchor is a SHARED one (round 2 of #932,
+    # finding 1): several sessions post into it, so an ask_user question opens the session's own thread.
     session.metadata = {}
     resolved = await resolve_reply_binding(session, storage_provider=sp)
-    assert resolved == ReplyBinding(channel_id="ch-ws", anchor=None)
+    assert resolved == ReplyBinding(channel_id="ch-ws", anchor=None, shared_anchor=True)
 
     # Clear the workspace binding -> None.
     sp.get_storage(Workspace).put(_make_workspace(channel_id=None))
