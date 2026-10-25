@@ -163,13 +163,19 @@ PLAYLIST = (
 # Eight Text elements (the root not counted), so the phone chip reads "Canvas \u00b7 8".
 EIGHT = "root = Column([a, b, c, d, e, f, g, h])\n" + "".join(f"{x} = Text(\"{x}\")\n" for x in "abcdefgh")
 
-# One Html element: a script that emits on load (no user activation, so refused) and a button whose click emits (allowed).
+# One Html element, a NON-ROOT child (so its data-cv-id is its own variable, "viz", not the root's "root"): a script that
+# emits on load (no user activation, so refused) and a button whose click emits (allowed).
 _HTML_BODY = (
     "<button id=go style='width:200px;height:60px' "
     "onclick=\"primer.emit('clicked', {n: 1})\">Go</button>"
     "<script>primer.emit('auto', {});</script>"
 )
-HTML_SOURCE = 'root = Html("""' + _HTML_BODY + '""")\n'
+HTML_SOURCE = 'root = Column([viz])\nviz = Html("""' + _HTML_BODY + '""")\n'
+
+# The plan's G8-06 ruling pin (plan lines 30-32, binding on Tasks 12-27): an Html element whose srcdoc loads a script from a
+# host that is NOT in the frame's script-src (primer/canvas/frame.py: the four CDNs). The host is evil.example (an RFC 2606
+# reserved domain), never an allowed source, so the frame's CSP blocks the script and the console logs the violation.
+CSP_SCRIPT_SOURCE = 'root = Column([viz])\nviz = Html("""<script src="https://evil.example/ping.js"></script>""")\n'
 
 
 def _canvas_frame(page: Page):
@@ -436,3 +442,34 @@ def test_the_phone_uses_a_chip_and_a_top_sheet(page: Page, base_url: str, consol
     page.get_by_test_id("nv-canvas-sheet-close").click()
     expect(page.get_by_test_id("nv-canvas-sheet")).to_be_hidden(timeout=20_000)
     assert "canvas=" not in page.url, page.url
+
+
+@pytest.mark.ui_e2e
+def test_a_disallowed_host_script_trips_the_frame_csp(
+    page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path,
+    console_messages,
+):
+    """An Html element whose srcdoc loads a script from a host not in script-src trips the frame's CSP (the G8-06 pin).
+
+    The plan's G8-06 ruling (plan lines 30-32, binding on Tasks 12-27): pin that every Html srcdoc frame inherits the CSP
+    by a journey step that loads a script from a host that is not allowed and asserts a CSP violation. This is the
+    ENFORCEMENT pin (the frame actually refuses the script); the string pin (tests/canvas/test_frame.py) and the header pin
+    (the e2e header journey) are not sufficient. The console's CSP-violation message names the disallowed host.
+    """
+    registry, mock_base_url = mock_llm_lan
+    ids = seed_scripted_agent(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path, prefix="cvn8")
+    registry.register(ids["model_name"], [Rule(emit_text="ok")])
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        sid = start_session(client, ids, "Draw the widget", auto_start=False)
+        _draw(client, ids["workspace"], sid, CSP_SCRIPT_SOURCE)
+    open_session_in_studio(page, console_url, ids["workspace"], sid)
+    frame = page.frame_locator('[data-testid="nv-canvas-frame"]')
+    expect(frame.locator('[data-cv-id="viz"]')).to_be_visible(timeout=20_000)
+    # The srcdoc frame parses the disallowed <script> and the CSP check logs the refusal; poll the console for it.
+    deadline = time.time() + 10.0
+    csp = []
+    while time.time() < deadline and not csp:
+        csp = [m for m in console_messages if "Content Security Policy" in m["text"] and "evil.example" in m["text"]]
+        if not csp:
+            page.wait_for_timeout(200)
+    assert csp, f"no CSP violation for the disallowed host; console was {[m['text'] for m in console_messages]}"
