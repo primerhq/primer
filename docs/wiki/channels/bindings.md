@@ -12,7 +12,7 @@ An inbound binding routes messages from a room to work: it starts an agent or a 
 - **The route of one message.** The bot hears a message in a room that has a [channel](channels/channels) and turns it into a channel event. Then:
   1. A reply to an open question or approval answers it ([reply binding](channels/reply-binding)).
   2. A message in a conversation already mapped to a session goes to that session as a new message. A session in a turn gets it after the turn; an ended one reopens.
-  3. Anything else fires every enabled `channel` trigger of the provider whose `channel_id` is unset or names this channel. Each enabled binding of those triggers tests its `event_matcher`, and each match runs its action. In a room with `chats.enabled: false`, the bindings that start a session (`agent_fresh_session`, `graph_fresh_session`) are left out.
+  3. Anything else fires every enabled `channel` trigger of the provider whose `channel_id` is unset or names this channel. Each enabled binding of those triggers tests its `event_matcher`, and each match runs its action. In a room with `chats.enabled: false`, session-starting bindings are left out.
 - **The channel event.** `type`, `surface` (`dm`, `channel` or `thread`), `text`, `command` (`name` and `args`), `sender` (`external_id`, `display_name`, `roles`, `is_bot`), `mentions_bot`, `room_external_id` (the platform's room id) and `thread_anchor`. What each platform sends today:
   - Slack: `message.posted`, surface `channel` or `thread` (a Slack DM is `channel`). Slack slash commands are not received.
   - Discord: `message.posted`, surface `channel`, `thread` or `dm`. Discord slash commands are not received.
@@ -28,22 +28,23 @@ An inbound binding routes messages from a room to work: it starts an agent or a 
   - `session_append` (`session_id`) sends the message into an existing session.
   - `parked_session` belongs to `workspace_ext__subscribe_to_channel_event` ([waiting for events](triggers/waiting-for-events)). Never send it.
 - **`payload_template`** is the Jinja template of the session's message. A channel fire adds `event` (the channel event) to the fire context, so `{{ event.text }}` sends the text alone. With no template, the message is the whole fire context as JSON. See [subscriptions](triggers/subscriptions) for `parallelism`: a fresh-session binding never skips a channel event.
-- **Conversations.** The first session a fire starts or feeds is mapped to the message's conversation: its platform thread (Slack, Discord) or, for a DM, its sender (Telegram, Discord). Later messages there go to that session (step 2), and its questions and answers come back there. A message outside a thread or a DM (a room post, any Slack DM) maps nothing: each one fires again, and its session answers through its workspace's [reply binding](channels/reply-binding), if it has one. A `reply_target` changes where a session answers, not which session a message goes to.
+- **Conversations.** The first session a fire starts or feeds is mapped to the message's conversation: its platform thread (Slack, Discord) or, for a DM, its sender (Telegram, Discord). Later messages there go to that session (step 2), and its questions and answers come back there. A message outside a thread or a DM (a room post, any Slack DM) maps nothing: each one fires again, and its session answers through its workspace's [reply binding](channels/reply-binding), if it has one.
 - **How much a conversation hears** is the trigger's `interactive` flag (default `true`): each turn's answer is posted back. With `interactive: false` only the session's questions and approvals are.
 - **Sessions a binding starts are autonomous.** Each ends when its turn finishes cleanly. A later message in its conversation reopens it.
 - **`reply_target`** says where the session a binding starts or feeds posts its questions, approval requests, updates and answers:
   - Left out (`null`, the default): as the two points above say.
   - `source_thread`: the message's thread. A message outside a thread is answered in its room.
   - `source_room`: the message's room. On Slack and Discord each session opens its own thread there.
-  - `none`: nothing is posted. Answer the session's questions in the console. A binding saved with `none` earlier is silent now.
+  - `none`: nothing is posted. Answer the session's questions in the console.
   - `{channel_id, anchor, quiet}`: that channel, and that thread when you set `anchor` (Telegram ignores it). `quiet: true` posts no answers.
   - `dm_sender` is refused (`validation-error`): no channel can post to a person's DMs. A binding saved with it earlier acts as `source_thread`.
+  - A saved `source_thread` was never read before #932. Now a room post answers in the room (a new thread per session on Slack/Discord), not through the workspace binding.
 - **Owner and rank.** Saving a binding makes you its owner. A session it starts runs as you, at no more than the lower of your role and the trigger owner's. A `session_append` fire into a session that runs above that rank fails (`steer_outranks_fire`). A caller who does not manage a binding (not its owner, not an admin) sees only the owner's name and role in the list.
 - **Reach.** From a session outside the default workspace (prime), `config` may name only your own workspace or a session in it: another answers `not-found`, as an unknown id does, and every fire checks it again (`target_out_of_reach`). The list leaves out other bindings, and delete answers `subscription_not_found` for them. From prime, and with no calling session, every workspace is in reach.
 - **The room is trusted.** Anyone in the room can make a binding act, and its session runs at the owner's rank. A reply in a mapped conversation is not ranked at all. Bind only rooms whose members may do that.
 
 ## How to
-1. An admin registers the [provider](channels/providers). Add the [channel](channels/channels) with `chats.enabled: true`. Without it a binding that starts a session does not fire for the room.
+1. An admin registers the [provider](channels/providers). Add the [channel](channels/channels) with `chats.enabled: true`.
 2. Create the `channel` trigger with `trigger__create` ([triggers](triggers/triggers)) and keep its `id` (`tr-` and 12 hex digits). The trigger is approval-gated by default.
 3. Create the binding with `system__create_channel_binding`.
 4. Post a matching message in the room. Read `last_fired_at` and `last_fire_error` on the trigger with `trigger__get`, and on the binding with `system__list_channel_bindings`.
