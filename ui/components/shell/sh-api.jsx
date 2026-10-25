@@ -439,6 +439,41 @@ var SH_api = {
       "POST", "/sessions/" + encodeURIComponent(sid) + "/ask_user/respond", body);
   },
 
+  // ---- canvas (pivot P5 S8, Task 19) ---------------------------------------
+  // The session's canvas (S6, #908; primer/api/routers/canvas.py). The read is the
+  // snapshot the panel draws; the tap's canvas frame (class:"canvas", {rev, event_seq})
+  // is a REFRESH signal, not data (the session store's canvas channel), so canvas()
+  // is refetched when that channel moves. ops/ are the operator's batch, clear is the
+  // DELETE, and events/ records a person's click or choice (a 202).
+  canvas: function (wid, sid, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/workspaces/" + encodeURIComponent(wid) +
+        "/sessions/" + encodeURIComponent(sid) + "/canvas", null, { signal: signal });
+  },
+  canvasOps: function (wid, sid, body) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) +
+        "/sessions/" + encodeURIComponent(sid) + "/canvas/ops", body);
+  },
+  canvasClear: function (wid, sid) {
+    return window.primerApi.apiFetch(
+      "DELETE", "/workspaces/" + encodeURIComponent(wid) +
+        "/sessions/" + encodeURIComponent(sid) + "/canvas");
+  },
+  canvasEvent: function (wid, sid, body) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) +
+        "/sessions/" + encodeURIComponent(sid) + "/canvas/events", body);
+  },
+  // The canvas settings (admin's GET/PUT /v1/canvas_settings): the strict-mode gate
+  // the panel's Run button asks (ruling 1), read once per session.
+  canvasSettings: function (signal) {
+    return window.primerApi.apiFetch("GET", "/canvas_settings", null, { signal: signal });
+  },
+  putCanvasSettings: function (body) {
+    return window.primerApi.apiFetch("PUT", "/canvas_settings", body);
+  },
+
   // ---- cache keys ---------------------------------------------------------
   keys: {
     workspace: function (wid) { return "shell-workspace:" + wid; },
@@ -458,6 +493,9 @@ var SH_api = {
     timeline: function (sid, turnNo) {
       return "shell-timeline:" + sid + ":" + turnNo;
     },
+    // The canvas read's cache key (pivot P5 S8, Task 19): one per session; the panel
+    // refetches when the session store's canvas channel moves.
+    canvas: function (sid) { return "nv-canvas:" + sid; },
   },
 };
 

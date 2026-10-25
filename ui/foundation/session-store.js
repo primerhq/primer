@@ -75,12 +75,19 @@ function SS_getStore(wid, sid) {
     // frame). turnNo fences a reader against a delayed frame from a turn
     // that already ended, mirroring the row field's own fencing.
     agentPhase: null,      // { phase, turnNo } | null
+    // Pivot P5 (Task 19): the live half of the session's canvas. Written only by a
+    // CanvasFrame tap delta (class:"canvas" - primer/tap/delta.py), which says WHICH
+    // state the canvas is in (rev, event_seq) and nothing else: the panel (Task 20)
+    // refetches the snapshot when this channel moves, so a lost or repeated frame
+    // costs nothing. The channel keeps the HIGHEST values (rev, eventSeq), so a late
+    // frame from a state the canvas already passed cannot un-move it.
+    canvas: null,          // { rev, eventSeq } | null
     connState: (window.WTAP_hubConnState
       && window.WTAP_hubConnState(wid)) || "connecting",
     refs: 0,
-    _snap: { transcript: null, status: null, gates: null, phase: null },
-    _dirty: { transcript: false, status: false, gates: false, phase: false },
-    _sub: { transcript: [], status: [], gates: [], phase: [] },
+    _snap: { transcript: null, status: null, gates: null, phase: null, canvas: null },
+    _dirty: { transcript: false, status: false, gates: false, phase: false, canvas: false },
+    _sub: { transcript: [], status: [], gates: [], phase: [], canvas: [] },
     _lastTranscriptCommit: 0,
     _flushScheduled: false,
     _catchUpInFlight: false,
@@ -291,6 +298,19 @@ function SS_apply(store, frame) {
     SS_markDirty(store, "phase");
     return;
   }
+  // Pivot P5 (Task 19): a CanvasFrame tap delta (primer/tap/delta.py's
+  // CanvasFrame, class:"canvas"): which state the canvas is in ({rev, event_seq}),
+  // nothing else - the consumer refetches the snapshot when the channel moves. The
+  // channel keeps the highest values, so a late or repeated frame cannot un-move it.
+  if (kind === "canvas") {
+    var cur = store.canvas;
+    store.canvas = {
+      rev: Math.max(typeof frame.rev === "number" ? frame.rev : 0, cur ? cur.rev : 0),
+      eventSeq: Math.max(typeof frame.event_seq === "number" ? frame.event_seq : 0, cur ? cur.eventSeq : 0),
+    };
+    SS_markDirty(store, "canvas");
+    return;
+  }
 
   // A durable record (has a numeric seq). Insert by seq, deduped + sorted.
   if (typeof frame.seq === "number") {
@@ -390,6 +410,10 @@ function SS_commit(store, channel) {
   } else if (channel === "phase") {
     if (store._dirty.phase) {
       store._snap.phase = store.agentPhase;
+    }
+  } else if (channel === "canvas") {
+    if (store._dirty.canvas) {
+      store._snap.canvas = store.canvas;
     }
   }
   if (store._dirty[channel]) {
