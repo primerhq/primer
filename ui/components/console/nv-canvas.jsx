@@ -535,6 +535,166 @@ function NV_CanvasChip(props) {
   );
 }
 
+// --- the admin's settings dialog (pivot P5, Task 23) ------------------------------------------
+
+// The five limits (Task 5) and their bounds, from the CanvasSettings model.
+function NV_canvasSettingsBounds() {
+  return [
+    { key: "max_elements", label: "Most elements", min: 1, max: 1000 },
+    { key: "max_html_bytes", label: "Most bytes of one Html body", min: 1024, max: 262144 },
+    { key: "max_canvas_bytes", label: "Most bytes of a whole canvas", min: 16384, max: 4194304 },
+    { key: "max_events", label: "Events kept for the agent", min: 10, max: 1000 },
+    { key: "max_waking_events_per_minute", label: "Waking events per minute", min: 1, max: 120 },
+  ];
+}
+
+// The field errors of a 422, keyed by field name: the thrown ApiError's fieldErrors (the
+// RFC 7807 envelope's extensions.errors), read off the error - never off err.envelope (the
+// one-reader rule). Each entry's loc's last named segment (after the body/query/path
+// prefix) is the field.
+function NV_canvasSettingsFieldErrors(err) {
+  var errors = err && Array.isArray(err.fieldErrors) ? err.fieldErrors : [];
+  var out = {};
+  for (var i = 0; i < errors.length; i++) {
+    var e = errors[i];
+    var loc = e && Array.isArray(e.loc) ? e.loc : [];
+    var field = null;
+    for (var j = loc.length - 1; j >= 0; j--) {
+      var seg = loc[j];
+      if (typeof seg === "string" && seg !== "body" && seg !== "query" && seg !== "path") { field = seg; break; }
+    }
+    if (field && e && typeof e.msg === "string") out[field] = e.msg;
+  }
+  return out;
+}
+
+// The admin's canvas settings dialog (pivot P5, Task 23): the media policy, the media
+// allowlist, strict mode and the limits, on the platform kit. Save sends the WHOLE row
+// (every field round-trips - the master's Review Focus 1); a 422 shows each field's error
+// under its own control.
+function NV_CanvasSettingsDialog(props) {
+  var con = NV_useConsole();
+  var res = window.primerApi.useResource(
+    "nv-canvas-settings",
+    function (signal) { return SH_api.canvasSettings(signal); },
+    { deps: [] }
+  );
+  var loaded = res && res.data;
+  var formState = React.useState(null);
+  var form = formState[0], setForm = formState[1];
+  var feState = React.useState(null);
+  var fieldErrors = feState[0], setFieldErrors = feState[1];
+  var svState = React.useState(false);
+  var saving = svState[0], setSaving = svState[1];
+
+  // Initialise the form when the settings arrive: the allowlist becomes the textarea's
+  // one-host-per-line text (split back into hosts on save).
+  React.useEffect(function () {
+    if (loaded) setForm(Object.assign({}, loaded, { media_allowlist: (loaded.media_allowlist || []).join("\n") }));
+  }, [loaded]);
+
+  function patch(part) {
+    setForm(function (f) { return f ? Object.assign({}, f, part) : f; });
+  }
+
+  function save() {
+    if (!form) return;
+    var allowlist = String(form.media_allowlist || "").split("\n")
+      .map(function (s) { return s.trim(); }).filter(Boolean);
+    var body = {
+      agent_tools_enabled: !!form.agent_tools_enabled,
+      media_policy: form.media_policy,
+      media_allowlist: allowlist,
+      strict_mode: !!form.strict_mode,
+      max_elements: Math.round(Number(form.max_elements)),
+      max_html_bytes: Math.round(Number(form.max_html_bytes)),
+      max_canvas_bytes: Math.round(Number(form.max_canvas_bytes)),
+      max_events: Math.round(Number(form.max_events)),
+      max_waking_events_per_minute: Math.round(Number(form.max_waking_events_per_minute)),
+    };
+    setSaving(true);
+    SH_api.putCanvasSettings(body).then(
+      function () { con.toast("Canvas settings saved"); props.onClose(); },
+      function (err) { setSaving(false); setFieldErrors(NV_canvasSettingsFieldErrors(err)); }
+    );
+  }
+
+  // loading and error states inside the overlay: the form is null until the settings
+  // arrive, so neither a loaded form nor (with an error) a retry is drawn until then.
+  if (!form) {
+    return (
+      <window.PK_FormOverlay title="Canvas settings" onClose={props.onClose} testid="canvas-settings">
+        {res && res.error ? (
+          <div className="nv-canvas-settings-state" data-testid="canvas-settings-error">
+            <span>{window.NV_canvasProblemText(res.error, "The canvas settings could not load.")}</span>
+            <button type="button" className="nv-btn-secondary" data-testid="canvas-settings-retry"
+              onClick={function () { if (res.refetch) res.refetch(); }}>Try again</button>
+          </div>
+        ) : (
+          <div className="nv-canvas-settings-state" data-testid="canvas-settings-loading">Loading the canvas settings…</div>
+        )}
+      </window.PK_FormOverlay>
+    );
+  }
+
+  var mediaOptions = [
+    { value: "any-https", label: "Any https" },
+    { value: "allowlist", label: "Listed hosts" },
+    { value: "none", label: "No external media" },
+  ];
+  var bounds = NV_canvasSettingsBounds();
+
+  return (
+    <window.PK_FormOverlay title="Canvas settings" onClose={props.onClose} testid="canvas-settings"
+      footer={{ right: (
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="nv-btn-secondary" data-testid="canvas-settings-cancel"
+            onClick={props.onClose}>Cancel</button>
+          <Btn kind="primary" data-testid="canvas-settings-save" busy={saving} onClick={save}>
+            {saving ? "Saving…" : "Save"}
+          </Btn>
+        </div>
+      ) }}>
+      <window.PK_Field label="Media policy" help="Where a canvas may load external images and audio from."
+        error={fieldErrors && fieldErrors.media_policy ? fieldErrors.media_policy : null}>
+        <window.PK_Segmented testid="canvas-settings-media" ariaLabel="Media policy"
+          options={mediaOptions} value={form.media_policy}
+          onChange={function (v) { patch({ media_policy: v }); }} />
+      </window.PK_Field>
+      {form.media_policy === "allowlist" ? (
+        <window.PK_Field label="Allowed hosts" span="full" help="One host per line (a host name or *.domain)."
+          error={fieldErrors && fieldErrors.media_allowlist ? fieldErrors.media_allowlist : null}>
+          <textarea className="nv-canvas-settings-allowlist" data-testid="canvas-settings-allowlist"
+            value={form.media_allowlist} rows={3}
+            onChange={function (ev) { patch({ media_allowlist: ev.target.value }); }} />
+        </window.PK_Field>
+      ) : null}
+      <window.PK_Field label="Strict mode"
+        error={fieldErrors && fieldErrors.strict_mode ? fieldErrors.strict_mode : null}>
+        <label className="nv-canvas-settings-strict">
+          <input type="checkbox" data-testid="canvas-settings-strict"
+            checked={!!form.strict_mode}
+            onChange={function (ev) { patch({ strict_mode: ev.target.checked }); }} />
+          <span>Run Html only after a click</span>
+        </label>
+      </window.PK_Field>
+      <window.PK_Section title="LIMITS" testid="canvas-settings-limits" cols={2}>
+        {bounds.map(function (b) {
+          return (
+            <window.PK_Field key={b.key} label={b.label}
+              error={fieldErrors && fieldErrors[b.key] ? fieldErrors[b.key] : null}>
+              <input type="number" className={"nv-canvas-settings-limit nv-canvas-settings-limit-" + b.key}
+                data-testid={"canvas-settings-limit:" + b.key}
+                min={b.min} max={b.max} value={form[b.key]}
+                onChange={function (ev) { patch({ [b.key]: ev.target.value }); }} />
+            </window.PK_Field>
+          );
+        })}
+      </window.PK_Section>
+    </window.PK_FormOverlay>
+  );
+}
+
 // --- window exports --------------------------------------------------------------
 window.NV_canvasVisibility = NV_canvasVisibility;
 window.NV_canvasClampSplit = NV_canvasClampSplit;
@@ -554,6 +714,7 @@ window.NV_registerCanvasVerbs = NV_registerCanvasVerbs;
 window.NV_CanvasPanel = NV_CanvasPanel;
 window.NV_CanvasFrame = NV_CanvasFrame;
 window.NV_CanvasChip = NV_CanvasChip;
+window.NV_CanvasSettingsDialog = NV_CanvasSettingsDialog;
 // The docs' local open/closed state (exported so the session header's phone chip
 // can set it when the doc is not the focused one; the focused doc's state lives
 // in the URL).
