@@ -142,9 +142,9 @@ class _World:
         for sub in (subscriptions if subscriptions is not None else [_fresh()]):
             await sp.get_storage(Subscription).create(sub)
 
-    async def message(self, text: str, *, thread_ts: str | None = THREAD, ts: str = "1700000001.000001") -> None:
-        """A person posts ``text`` in C01: in the thread ``thread_ts``, or as a room post when it is None."""
-        event = {"channel": "C01", "ts": ts, "user": "U7", "text": text}
+    async def message(self, text: str, *, thread_ts: str | None = THREAD, ts: str = "1700000001.000001", room: str = "C01") -> None:
+        """A person posts ``text`` in ``room`` (C01): in the thread ``thread_ts``, or as a room post when it is None."""
+        event = {"channel": room, "ts": ts, "user": "U7", "text": text}
         if thread_ts is not None:
             event["thread_ts"] = thread_ts
         await self.app.events["message"](event, SimpleNamespace(chat_postEphemeral=AsyncMock()))
@@ -185,9 +185,9 @@ async def _say_everything(world, session) -> None:
     await post_session_final_result(dispatcher=world.dispatcher(), session=session, storage_provider=world.sp, text="DONE")
 
 
-def _a_session(**metadata) -> WorkspaceSession:
+def _a_session(sid: str = "s-ws", **metadata) -> WorkspaceSession:
     return WorkspaceSession(
-        id="s-ws", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"), status=SessionStatus.RUNNING,
+        id=sid, workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"), status=SessionStatus.RUNNING,
         created_at=datetime.now(UTC), initiated_by=ADMIN, metadata=metadata,
     )
 
@@ -212,7 +212,9 @@ async def test_a_session_started_from_a_thread_keeps_its_whole_conversation_in_t
 
 
 async def test_a_workspace_reply_binding_with_an_anchor_posts_into_that_thread(monkeypatch, sp) -> None:
-    """Item 5: ``system__set_reply_binding``'s anchor was dropped when the binding was resolved, so every session opened its own thread."""
+    """Item 5: ``system__set_reply_binding``'s anchor was dropped when the binding was resolved, so every session opened its own thread.
+    Round 2, finding 1: the anchor is a SHARED one, so an ask_user question opens the session's own thread (with its own row) and only the
+    other posts go into the anchor."""
     world = _World(monkeypatch, sp)
     await world.seed(ws_binding=WorkspaceChannelLink(channel_id="ch-other", anchor=OTHER_ANCHOR))
     session = _a_session()          # not started by a channel message: the workspace's binding answers for it
@@ -221,7 +223,14 @@ async def test_a_workspace_reply_binding_with_an_anchor_posts_into_that_thread(m
     await _say_everything(world, session)
 
     posts = world.posts("ch-other")
-    assert [thread for thread, _text in posts] == [OTHER_ANCHOR] * 4, posts
+    assert [thread for thread, _text in posts if thread == OTHER_ANCHOR] == [OTHER_ANCHOR] * 3, posts
+    roots = [text for _thread, text in posts if text.startswith(":thread:")]
+    assert roots == [f":thread: Agent session {session.id}"], posts
+    # The question is answerable: its own thread is mapped to the session, and the shared anchor is mapped to nothing.
+    question_thread = next(t for t, _x in posts if t is not None and t != OTHER_ANCHOR)
+    record = await CorrelationStore(sp).lookup("ch-other", question_thread)
+    assert record is not None and record.session_id == session.id
+    assert await CorrelationStore(sp).lookup("ch-other", OTHER_ANCHOR) is None
     assert world.posts("ch-sl") == []
 
 
@@ -309,6 +318,112 @@ async def test_discord_posts_every_message_of_a_thread_mapped_session_into_its_t
     assert parent.sent == [":thread: Agent session s-dc2"] and parent.threads[0].sent == ["still here"]
 
 
+async def test_discord_a_shared_anchor_question_opens_the_sessions_own_thread() -> None:
+    """Round 2, finding 1, on Discord: an ask_user on a shared anchor (an explicit reply target) opens the session's own thread;
+    every other post goes into the shared anchor."""
+    pytest.importorskip("discord")
+    from primer.api.registries.channel_registry import ChannelRegistry
+    from primer.channel.dispatcher import ChannelDispatcher
+    from primer.channel.discord.adapter import DiscordChannelAdapter
+
+    class _Room:
+        def __init__(self, room_id: int) -> None:
+            self.id = room_id
+            self.sent: list[str] = []
+            self.threads: list[_Room] = []
+
+        async def send(self, content=None, **_kw):
+            self.sent.append(content)
+            return SimpleNamespace(id=len(self.sent), create_thread=self._open_thread)
+
+        async def _open_thread(self, *, name, **_kw):
+            thread = _Room(9000 + len(self.threads))
+            self.threads.append(thread)
+            return thread
+
+    parent, shared = _Room(500), _Room(777)
+    rooms = {500: parent, 777: shared}
+    client = SimpleNamespace(get_channel=lambda room_id: rooms.get(room_id), fetch_channel=AsyncMock(return_value=None))
+    provider = ChannelProvider(id="cp-dc", provider=ChannelProviderType.DISCORD, config=DiscordChannelProviderConfig(bot_token=SecretStr("x" * 60)))
+    channel = Channel(id="ch-dc", provider_id="cp-dc", provider=ChannelProviderType.DISCORD, external_id="500")
+    adapter = DiscordChannelAdapter(provider=provider, channel=channel, inbox=None)
+    adapter._client = client
+
+    class _Registry:
+        _storage_provider = SimpleNamespace(get_storage=lambda _model: SimpleNamespace(get=AsyncMock(return_value=None)))
+
+        async def get_adapter(self, _channel_id):
+            return adapter
+
+        async def route_for_session(self, session):
+            return await ChannelRegistry.route_for_session(self, session)
+
+    from primer.model.envelope import PromptEnvelope
+
+    def _session(session_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=session_id, workspace_id="ws-1",
+            metadata={SESSION_REPLY_BINDING_KEY: {"channel_id": "ch-dc", "anchor": "777", "shared_anchor": True}},
+        )
+
+    def _envelope(kind: str, text: str, session_id: str) -> PromptEnvelope:
+        return PromptEnvelope(
+            kind=kind, workspace_id="ws-1", session_id=session_id, tool_call_id="tc-1", prompt=text,
+            response_schema=None, choices=None, timeout_at_iso=None,
+        )
+
+    dispatcher = ChannelDispatcher(registry=_Registry())
+    # The question opens the session's own thread off the room, not the shared one.
+    results = await dispatcher.dispatch_prompt(envelope=_envelope("ask_user", "Which currency?", "s-sh"), session=_session("s-sh"))
+    assert all("error" not in r for r in results), results
+    assert parent.threads and parent.threads[0].sent == ["Which currency?"]
+    assert shared.sent == []
+    # The inform goes into the shared anchor.
+    results = await dispatcher.dispatch_prompt(envelope=_envelope("inform", "half way there", "s-sh"), session=_session("s-sh"))
+    assert all("error" not in r for r in results), results
+    assert shared.sent == ["half way there"]
+
+
+# ---------------------------------------------------------------- round 2, finding 1: a shared anchor is not a conversation
+
+
+async def test_a_shared_anchor_keeps_each_sessions_questions_in_its_own_thread(monkeypatch, sp) -> None:
+    """Two sessions on the workspace binding's anchor: the round 1 dispatcher put the anchor on every post, so both questions went
+    into the same thread and the second ask_user's correlation row overwrote the first - a reply to the first question would steer
+    the second session. An ask_user on a shared anchor now opens the session's own thread, with its own row; the shared anchor
+    carries no thread-to-session row at all, so a plain reply typed there steers nothing (it is an ordinary channel message for
+    that channel's bindings)."""
+    from primer.worker.yield_runtime import _dispatch_to_channels
+
+    world = _World(monkeypatch, sp)
+    await world.seed(ws_binding=WorkspaceChannelLink(channel_id="ch-other", anchor=OTHER_ANCHOR))
+    storage = sp.get_storage(WorkspaceSession)
+    first, second = _a_session("s-first"), _a_session("s-second")
+    await storage.create(first)
+    await storage.create(second)
+
+    for session in (first, second):
+        yielded = SimpleNamespace(tool_name="ask_user", event_key=f"x:{session.id}:tc", resume_metadata={"prompt": "Which currency?", "tool_call_id": "tc-1"})
+        await _dispatch_to_channels(dispatcher=world.dispatcher(), session=session, yielded=yielded)
+
+    posts = world.posts("ch-other")
+    assert [thread for thread, _text in posts if thread == OTHER_ANCHOR] == [], posts
+    roots = [text for _thread, text in posts if text.startswith(":thread:")]
+    assert roots == [":thread: Agent session s-first", ":thread: Agent session s-second"], posts
+    # Both questions are answerable from their own threads: the question threads, in order, are mapped to first and second.
+    store = CorrelationStore(sp)
+    question_threads = [t for t, _x in posts if t is not None]
+    assert len(question_threads) == 2 and question_threads[0] != question_threads[1], posts
+    for session, thread in ((first, question_threads[0]), (second, question_threads[1])):
+        record = await store.lookup("ch-other", thread)
+        assert record is not None and record.session_id == session.id, (session.id, record)
+    # The shared anchor is mapped to nothing, and a later message there starts or feeds no session.
+    assert await store.lookup("ch-other", OTHER_ANCHOR) is None
+    before = [s.id for s in await world.sessions()]
+    await world.message("a plain reply in the shared thread", thread_ts=OTHER_ANCHOR, room="C02")
+    assert [s.id for s in await world.sessions()] == before
+
+
 # ---------------------------------------------------------------- item 4: the binding's reply_target
 
 
@@ -319,15 +434,21 @@ async def _started_by(world, text: str, *, thread_ts: str | None = THREAD) -> Wo
 
 
 async def test_an_explicit_reply_target_takes_every_post_to_its_channel_and_thread(monkeypatch, sp) -> None:
-    """The measurement found the target stored and never read: everything went to the source thread."""
+    """The measurement found the target stored and never read: everything went to the source thread.
+    Round 2, finding 1: the target's anchor is a SHARED one, so the question opens the session's own thread in the target's channel."""
     world = _World(monkeypatch, sp)
     await world.seed(subscriptions=[_fresh(reply_target={"channel_id": "ch-other", "anchor": OTHER_ANCHOR})])
     session = await _started_by(world, "deploy please")
 
     await _say_everything(world, session)
 
-    assert [thread for thread, _text in world.posts("ch-other")] == [OTHER_ANCHOR] * 4, world.posts("ch-other")
+    assert [thread for thread, _text in world.posts("ch-other") if thread == OTHER_ANCHOR] == [OTHER_ANCHOR] * 3, world.posts("ch-other")
     assert world.posts("ch-sl") == []
+    # The question opened the session's own thread in the target's channel, mapped to the session; the shared anchor maps nothing.
+    question_thread = next(t for t, _x in world.posts("ch-other") if t is not None and t != OTHER_ANCHOR)
+    record = await CorrelationStore(sp).lookup("ch-other", question_thread)
+    assert record is not None and record.session_id == session.id
+    assert await CorrelationStore(sp).lookup("ch-other", OTHER_ANCHOR) is None
     # The conversation is still the source thread: the next message there goes to the same session.
     mapping = await CorrelationStore(sp).lookup("ch-sl", THREAD)
     assert mapping is not None and mapping.session_id == session.id
@@ -347,7 +468,8 @@ async def test_source_thread_answers_a_room_post_in_its_room(monkeypatch, sp) ->
 
 
 async def test_with_no_reply_target_a_room_post_still_answers_through_the_workspace_binding(monkeypatch, sp) -> None:
-    """The default is unchanged: a room post maps nothing, and its session uses the workspace's reply binding."""
+    """The default is unchanged: a room post maps nothing, and its session uses the workspace's reply binding. The binding's anchor is a
+    SHARED one (round 2, finding 1), so the question opens the session's own thread and the other posts go into the anchor."""
     world = _World(monkeypatch, sp)
     await world.seed(ws_binding=WorkspaceChannelLink(channel_id="ch-other", anchor=OTHER_ANCHOR))
     session = await _started_by(world, "deploy please", thread_ts=None)
@@ -355,7 +477,12 @@ async def test_with_no_reply_target_a_room_post_still_answers_through_the_worksp
 
     await _say_everything(world, session)
 
-    assert [thread for thread, _text in world.posts("ch-other")] == [OTHER_ANCHOR] * 4
+    posts = world.posts("ch-other")
+    assert [thread for thread, _text in posts if thread == OTHER_ANCHOR] == [OTHER_ANCHOR] * 3, posts
+    question_thread = next(t for t, _x in posts if t is not None and t != OTHER_ANCHOR)
+    record = await CorrelationStore(sp).lookup("ch-other", question_thread)
+    assert record is not None and record.session_id == session.id
+    assert await CorrelationStore(sp).lookup("ch-other", OTHER_ANCHOR) is None
     assert world.posts("ch-sl") == []
 
 

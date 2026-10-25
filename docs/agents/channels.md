@@ -112,9 +112,14 @@ Workspace:
   workspace's session traffic forwards to (the standing outbound
   binding). Set at create time or mutated via `set_reply_binding` /
   `clear_reply_binding`. With an `anchor` (a Slack thread ts or a
-  Discord thread id) every post goes into that thread; without one each
-  session opens its own thread (Slack, Discord) or posts into the room
-  (Telegram, which ignores an anchor).
+  Discord thread id) every approval request, update and answer goes into
+  that thread; without one each session opens its own thread (Slack,
+  Discord) or posts into the room (Telegram, which ignores an anchor).
+  The anchor is a SHARED destination: an `ask_user` question opens the
+  session's own thread in the channel with its own mapping, and no
+  thread-to-session row is written for the anchor itself, so a plain
+  reply typed in the anchor's thread steers nothing (it is an ordinary
+  channel message for that channel's bindings).
 
 ChannelEvent (normalized inbound envelope):
 - `type` - `message.posted` or `command.invoked` (v1 core).
