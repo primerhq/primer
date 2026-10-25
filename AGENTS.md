@@ -55,7 +55,7 @@ files a task touches (never `git add -A`).
   instance is expected to stay healthy on `:9000` between tasks.
 - **Layout:**
   - `primer/<subsystem>/` - the backend, one package per subsystem: `api`,
-    `model`, `agent`, `session`, `knowledge`, `speech`, `worker`, `claim`,
+    `model`, `agent`, `session`, `canvas`, `knowledge`, `speech`, `worker`, `claim`,
     `graph`, `workspace`, `channel`, `toolset`, `llm`, `embedder`, `vector`,
     `trigger`, `bus`, `mcp`, `harness`, `storage`, `bootstrap`, and more.
   - `ui/` - the workspace shell (JSX components, `window`-exported

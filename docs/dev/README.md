@@ -40,6 +40,7 @@ flowchart TD
         harness[Harness]
         triggers[Triggers]
         exttools[External Tools]
+        canvas[Canvas]
     end
 
     subgraph Integration["Integration subsystems"]
@@ -88,6 +89,10 @@ flowchart TD
     exttools --> worker
     exttools --> storage
     exttools --> rest
+
+    canvas --> storage
+    canvas --> rest
+    canvas --> worker
 
     channels --> provider
     channels --> worker
@@ -160,6 +165,9 @@ flowchart TD
 - [graphs](subsystems/graphs.md) - the Pregel-style executor for declarative directed
   graphs of agent nodes, with templated inputs, conditional routing, map-reduce
   fan-out/fan-in, and a tool-approval checkpoint protocol.
+- [canvas](subsystems/canvas.md) - the panel above the session the agent draws on: Canvas Lang,
+  the element table, the atomic batch, the user's clicks delivered by the session's state,
+  and the sandboxed frame that renders it.
 - [bootstrap-operator](subsystems/bootstrap-operator.md) - first-run setup and the
   marker-independent ensure pass that seeds the default workspace, the operator and
   builder agents, and the system collection at every startup.

@@ -55,6 +55,7 @@ SUBSYSTEM_DOCS = [
     "python-runner-toolset",
     "services",
     "artifact-storage",
+    "canvas",
 ]
 
 ARCH_HEADINGS = [
