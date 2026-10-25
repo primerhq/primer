@@ -761,6 +761,12 @@ function NV_SessionHeader(props) {
   var isMobile = window.primerApi.useViewport().isMobile;
   var isGraph = session && session.binding
     && session.binding.kind === "graph";
+  // The focused canvas panel's view (pivot P5, Task 20): whether it is shown and
+  // how many elements it holds, so the menu offers only the verbs that would do
+  // something (show when hidden, hide when shown, clear when it has elements).
+  var canvasView = (typeof window.NV_canvasViewFor === "function")
+    ? window.NV_canvasViewFor(sid)
+    : { shown: false, count: 0 };
 
   function saveTitle() {
     var name = draft;
@@ -882,6 +888,39 @@ function NV_SessionHeader(props) {
                 setOvf(false);
                 props.onExport();
               }}>Export transcript</button>
+            <div className="nv-menu-sep" />
+            {/* The session's canvas (pivot P5, Task 20): the pointer affordances of the
+                canvas.show / canvas.hide / canvas.clear verbs. Desktop only (the phone
+                gets a chip + sheet in Task 21). Each row is offered only while its verb's
+                `available` predicate holds, so the menu never offers a no-op. */}
+            {!isMobile ? (
+              canvasView.shown ? (
+                <button type="button" className="nv-menu-row"
+                  data-testid="nv-canvas-menu-hide" data-verb="canvas.hide"
+                  onClick={function () {
+                    setOvf(false);
+                    var verb = con.registry.get("canvas.hide");
+                    if (verb) verb.run();
+                  }}>Hide canvas</button>
+              ) : (
+                <button type="button" className="nv-menu-row"
+                  data-testid="nv-canvas-menu-show" data-verb="canvas.show"
+                  onClick={function () {
+                    setOvf(false);
+                    var verb = con.registry.get("canvas.show");
+                    if (verb) verb.run();
+                  }}>Show canvas</button>
+              )
+            ) : null}
+            {!isMobile && canvasView.count > 0 ? (
+              <button type="button" className="nv-menu-row" data-danger="true"
+                data-testid="nv-canvas-menu-clear" data-verb="canvas.clear"
+                onClick={function () {
+                  setOvf(false);
+                  var verb = con.registry.get("canvas.clear");
+                  if (verb) verb.run();
+                }}>Clear canvas…</button>
+            ) : null}
             <div className="nv-menu-sep" />
             {NV_canPark(session) ? (
               <button type="button" className="nv-menu-row"
@@ -2725,6 +2764,13 @@ function NV_SessionDoc(props) {
         NV_doCompact(f.wid, f.sid, f.refetchAll, f.con.toast);
       },
     });
+    // The canvas verbs (pivot P5, Task 20): show/hide/clear the focused session's
+    // canvas. They resolve the focused session the same way the session verbs do
+    // (the `focused` closure above), and their `available` predicates read the
+    // panel's view (NV_CANVAS_VIEWS). Guarded like the other window-mounted seam.
+    if (typeof window.NV_registerCanvasVerbs === "function") {
+      window.NV_registerCanvasVerbs(registry, focused);
+    }
   }, [con.registry]);
 
   React.useEffect(function () { if (live) setOptimistic(null); }, [!!live]);
@@ -3385,6 +3431,15 @@ function NV_SessionDoc(props) {
             title="Show the full transcript (all nodes)"
             onClick={function () { setNodeFilter(null); }}>All nodes</button>
         </div>
+      ) : null}
+      {/* The session's live canvas (pivot P5, Task 20): a split above the chat. It is
+          shown/hidden by the URL canvas state (this doc when focused) or by its own
+          elements; loading, error and empty states and the frame bridge live in
+          nv-canvas.jsx. The panel is optional to the rest of the doc, so it is guarded
+          the way the other window-mounted surfaces are. */}
+      {typeof window.NV_CanvasPanel === "function" ? (
+        <window.NV_CanvasPanel sid={sid} wid={con.wid} session={session}
+          focused={!!(con.doc && con.doc.kind === "session" && con.doc.ref === sid)} />
       ) : null}
       <div className="nv-transcript-split">
         <div className="nv-transcript" ref={scrollRef}

@@ -369,6 +369,12 @@ class _CachingStaticFiles(StaticFiles):
     """
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
+        # The canvas frame's source (ui/canvas/*) is served ONLY via GET /canvas/frame,
+        # which sets the frame's CSP - the canvas's only script control. The raw static
+        # copy under the console origin must not be reachable, so /console/canvas/*
+        # answers 404 (the lead's ruling 3 on S8).
+        if path == "canvas" or path.startswith("canvas/") or path.startswith("canvas" + os.sep):
+            return Response(status_code=404)
         response = await super().get_response(path, scope)
         if response.status_code != 200:
             return response
