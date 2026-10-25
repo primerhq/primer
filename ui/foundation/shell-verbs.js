@@ -23,6 +23,7 @@ var SH_VERB_WORDS = [
   "Reject", "Snooze", "Mute", "Resolve", "Create", "Delete", "Rename",
   "Copy", "Show", "Hide", "Run", "Stop", "Interrupt", "Rewind",
   "Compact", "Send", "Toggle", "Pin", "Unpin", "Focus", "Search",
+  "Clear",
   "Jump", "Attach", "Detach", "Speak", "Record", "Reset", "Install",
   "Refresh", "Edit", "Save", "Move", "Add", "Remove", "Enable",
   "Disable", "Invoke", "Steer",
