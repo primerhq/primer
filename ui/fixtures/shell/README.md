@@ -21,6 +21,11 @@ Four doc kinds, addressed by wire id:
 - `wiki` : a collection document addressed by its slug path. Fixture:
   `wiki-document.json`.
 
+The session doc also carries the canvas state in the URL
+(`?doc=session:<id>&canvas=open|closed`, `canvas_states` in the manifest):
+the panel is open or closed, read and written only while a session doc is
+focused.
+
 The trace and inbox are not separate document kinds on the split-view
 console: the trace opens as a SPLIT inside the session doc (still the
 only place raw tool arguments are shown; fixture `turn-timeline.json`),

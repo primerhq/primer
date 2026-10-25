@@ -77,6 +77,10 @@
     "diff",
     "wiki"
   ],
+  "canvas_states": [
+    "open",
+    "closed"
+  ],
   "overlays": [
     "providers",
     "collections",

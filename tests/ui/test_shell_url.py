@@ -153,6 +153,8 @@ def test_bare_workspace_url_round_trips() -> None:
         "view": {"name": "studio", "nav": None, "sub": None},
         "doc": None,
         "overlay": None,
+        # The canvas state (pivot P5 Task 18): absent from the address, and the address carries no session doc, so it parses to null.
+        "canvas": None,
         "anchor": None,
     }
 
@@ -481,3 +483,49 @@ def test_the_builder_never_writes_a_view_named_like_an_inherited_property(name: 
 def test_a_nav_or_a_type_named_like_an_inherited_property_is_dropped(raw: str, view: dict) -> None:
     """These held already (a nav and a type are looked up in lists, and the redirect and type tables by ``<view>:<nav>``, a key no object inherits); pinned so a change of representation keeps them."""
     assert json.loads(_ctx().eval(f"JSON.stringify(SH_parseUrl({json.dumps('#/?view=' + raw)}).view)")) == view
+
+
+# --- The canvas state (pivot P5 Task 18) -----------------------------------
+# The session doc's canvas is "open" or "closed": it is read and written only
+# while a session doc is focused, written right after doc=, and a value the
+# list does not name - or a canvas state on any other doc - is dropped on
+# parse and never written, so a pasted link with one is rewritten without it.
+
+
+def test_the_canvas_state_round_trips_with_a_session_doc() -> None:
+    ctx = _ctx()
+    out = json.loads(ctx.eval('JSON.stringify(SH_parseUrl("#/w/ws-1?doc=session:s1&canvas=closed"))'))
+    assert out["canvas"] == "closed"
+    assert out["doc"] == {"kind": "session", "ref": "s1"}
+    assert ctx.eval(
+        'SH_buildUrl({wid: "ws-1", doc: {kind: "session", ref: "s1"}, canvas: "open"})'
+    ) == "#/w/ws-1?doc=session:s1&canvas=open"
+    # The parser and the builder are each other's inverse with the canvas on.
+    assert json.loads(ctx.eval(
+        'JSON.stringify(SH_parseUrl(SH_buildUrl({wid: "ws-1", doc: {kind: "session", ref: "s1"}, canvas: "closed"})))'
+    ))["canvas"] == "closed"
+
+
+def test_a_canvas_state_without_a_session_doc_is_dropped() -> None:
+    ctx = _ctx()
+    out = json.loads(ctx.eval('JSON.stringify(SH_parseUrl("#/w/ws-1?doc=file:a.txt&canvas=open"))'))
+    assert out["canvas"] is None
+    assert out["doc"] == {"kind": "file", "ref": "a.txt"}
+    assert ctx.eval('SH_buildUrl({wid: "ws-1", doc: {kind: "file", ref: "a.txt"}, canvas: "open"})') == "#/w/ws-1?doc=file:a.txt"
+    # No doc at all: the canvas has nowhere to live.
+    assert json.loads(ctx.eval('JSON.stringify(SH_parseUrl("#/w/ws-1?canvas=open"))'))["canvas"] is None
+
+
+def test_a_canvas_value_the_list_does_not_name_is_dropped_not_rendered() -> None:
+    ctx = _ctx()
+    assert json.loads(ctx.eval('JSON.stringify(SH_parseUrl("#/w/ws-1?doc=session:s1&canvas=bogus"))'))["canvas"] is None
+    assert ctx.eval('SH_buildUrl({wid: "ws-1", doc: {kind: "session", ref: "s1"}, canvas: "bogus"})') == "#/w/ws-1?doc=session:s1"
+    # An old link with a bogus canvas is rewritten to its canonical form, the rest of the address kept.
+    assert ctx.eval("SH_buildUrl(SH_parseUrl('#/w/ws-1?doc=session:s1&canvas=bogus&overlay=agents#turn-3'))") == "#/w/ws-1?doc=session:s1&overlay=agents#turn-3"
+
+
+def test_canvas_states_match_the_manifest() -> None:
+    ctx = _ctx()
+    man = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert json.loads(ctx.eval("JSON.stringify(SH_CANVAS_STATES)")) == man["canvas_states"]
+    assert json.loads(ctx.eval("JSON.stringify(SH_CANVAS_STATES)")) == ["open", "closed"]

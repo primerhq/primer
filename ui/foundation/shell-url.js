@@ -25,6 +25,15 @@
 // the system dashboard, so neither is a document kind.
 var SH_DOC_KINDS = ["session", "file", "diff", "wiki"];
 
+// The canvas state of the session doc (pivot P5 Task 18): "open" or "closed",
+// the desktop panel's split being local to the doc and not addressable here.
+// Read and written only while a session doc is focused (a canvas state on any
+// other doc, or with no doc, has nowhere to live and is dropped on parse);
+// written right after doc=. A value the list does not name is dropped on
+// parse and never written, so a pasted link with one opens the doc and the
+// address bar is rewritten without it.
+var SH_CANVAS_STATES = ["open", "closed"];
+
 // "admin" died on the flag day: users/sso/mcp/setup are the System
 // view's navs now, so an overlay=admin address drops on parse.
 var SH_OVERLAYS = [
@@ -188,11 +197,18 @@ function SH_parseUrl(hash) {
   var wid = null;
   var m = /^\/w\/([^/?#]+)/.exec(path);
   if (m) wid = SH_decode(m[1]);
+  var doc = SH_parseDoc(params.doc);
+  // The canvas state lives on the session doc: absent, off-list or on a doc
+  // that is not a session, it parses to null (never to the raw value).
+  var canvas = doc && doc.kind === "session"
+    && SH_indexOfIn(SH_CANVAS_STATES, params.canvas) >= 0
+      ? params.canvas : null;
   return {
     wid: wid,
     view: SH_parseView(params.view),
-    doc: SH_parseDoc(params.doc),
+    doc: doc,
     overlay: SH_parseOverlay(params.overlay),
+    canvas: canvas,
     anchor: anchor,
   };
 }
@@ -229,6 +245,13 @@ function SH_buildUrl(state) {
   if (s.doc && s.doc.kind && s.doc.ref
       && SH_indexOfIn(SH_DOC_KINDS, s.doc.kind) >= 0) {
     query.push("doc=" + s.doc.kind + ":" + SH_encodeRef(s.doc.ref));
+    // The canvas state is the session doc's: written right after doc= and only
+    // for a session doc, a value the list names (the parser's own rule), so a
+    // canvas state can never ride the URL onto another kind of doc.
+    if (s.doc.kind === "session" && s.canvas
+        && SH_indexOfIn(SH_CANVAS_STATES, s.canvas) >= 0) {
+      query.push("canvas=" + s.canvas);
+    }
   }
   if (s.overlay && s.overlay.name
       && SH_indexOfIn(SH_OVERLAYS, s.overlay.name) >= 0) {
@@ -283,6 +306,7 @@ function SH_urlIsAhead(parsed, wid) {
 
 window.SH_urlIsAhead = SH_urlIsAhead;
 window.SH_DOC_KINDS = SH_DOC_KINDS;
+window.SH_CANVAS_STATES = SH_CANVAS_STATES;
 window.SH_OVERLAYS = SH_OVERLAYS;
 window.SH_encodeRef = SH_encodeRef;
 window.SH_parseUrl = SH_parseUrl;

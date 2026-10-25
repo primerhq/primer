@@ -272,6 +272,18 @@ function NV_Shell() {
   var anchorState = React.useState(initial.anchor);
   var anchor = anchorState[0];
   var setAnchor = anchorState[1];
+  // The canvas state (pivot P5 Task 18): the focused session doc's panel, open or
+  // closed, kept in the URL as canvas= (the grammar writes it only for a session doc).
+  var canvasState = React.useState(initial.canvas);
+  var canvas = canvasState[0];
+  var setCanvas = canvasState[1];
+  // The mark of a doc change MADE BY THE URL (the navigation listener sets it right before
+  // applying the URL's doc): the reset effect below distinguishes it from a doc change made
+  // by the console (a tab opened or selected, a promote, the last tab closed), which resets
+  // the canvas state so a stale value never rides the URL write onto another document.
+  var docFromUrlRef = React.useRef(true);
+  var activeDocRef = React.useRef(doc);
+  activeDocRef.current = doc;
   var menuState = React.useState(null);
   var openMenu = menuState[0];
   var setOpenMenu = menuState[1];
@@ -405,11 +417,17 @@ function NV_Shell() {
       // naming no doc means "names nothing," not "close everything," so
       // a null parsed.doc leaves tgModel untouched. A named doc opens as
       // preview, matching the load-time seed above.
+      var curDoc = activeDocRef.current;
+      if (parsed.doc && (!curDoc || parsed.doc.kind !== curDoc.kind
+          || parsed.doc.ref !== curDoc.ref)) {
+        docFromUrlRef.current = true;   // this doc change is made by the URL: the canvas state below is its own
+      }
       if (parsed.doc) {
         setTgModel(function (m) { return window.TG_openTab(m, parsed.doc, {}); });
       }
       setOverlay(parsed.overlay);
       setAnchor(parsed.anchor);
+      setCanvas(parsed.canvas);
       // The address bar shows what was APPLIED (console review C-025). The write effect below only runs when a state value moved, so an
       // unknown part that parsed to the state the console was already in (?overlay=bogus, ?view=bogus, ?foo=bar) changed nothing and
       // stayed in the bar, and a shared link carried a parameter that meant nothing. A valid link is its own canonical form and is
@@ -431,9 +449,20 @@ function NV_Shell() {
   }, []);
 
   // --- URL sync: write when our state moved ------------------------------
+  // The canvas state belongs to the focused session doc: the mark above set by the
+  // navigation listener names a doc change the URL made (it carries its own canvas=),
+  // and every other doc change resets the state (a value the URL never carried must
+  // not be written onto another document).
+  React.useEffect(function () {
+    if (docFromUrlRef.current) {
+      docFromUrlRef.current = false;
+      return;
+    }
+    setCanvas(null);
+  }, [doc && doc.kind, doc && doc.ref]);
   React.useEffect(function () {
     var url = SH_buildUrl({
-      wid: wid, view: view, doc: doc, overlay: overlay, anchor: anchor,
+      wid: wid, view: view, doc: doc, overlay: overlay, anchor: anchor, canvas: canvas,
     });
     var current = window.location.hash || "";
     if (current !== url) {
@@ -458,7 +487,7 @@ function NV_Shell() {
   }, [wid, view && view.name, view && view.nav, view && view.sub,
     doc && doc.kind, doc && doc.ref,
     overlay && overlay.name, overlay && overlay.section,
-    overlay && overlay.id, anchor]);
+    overlay && overlay.id, anchor, canvas]);
 
   // The working set survives a reload (console review C-023). Desktop only: the phone's shell shows any open document full screen and its Back closes the tab, so a
   // restored desktop set would take the phone over and a phone's Back would delete what the desktop stored. The key names the signed-in user (NV_tabsStoreKey: none
@@ -761,6 +790,9 @@ function NV_Shell() {
       doc: doc,
       overlay: overlay,
       anchor: anchor,
+      // The canvas state (pivot P5 Task 18): the focused session doc's panel,
+      // open or closed (the panel of Task 20 reads it).
+      canvas: canvas,
       panels: panels,
       openMenu: openMenu,
       toggleMenu: function (name) {
@@ -851,6 +883,9 @@ function NV_Shell() {
         setOverlay({ name: name, section: section || null, id: id || null });
       },
       closeOverlay: function () { markPush(); setOverlay(null); },
+      // The canvas state (pivot P5 Task 18): a REPLACE, not a history push -
+      // no markPush, so the write effect replaces the address.
+      setCanvas: setCanvas,
       bump: function () { setTick(function (v) { return v + 1; }); },
       // extra (optional): { kind, requestId } - an error toast that came
       // from an ApiError should pass the error so the request id renders
@@ -862,7 +897,7 @@ function NV_Shell() {
         }
       },
     };
-  }, [wid, view, doc, overlay, anchor, panels, openMenu, registry,
+  }, [wid, view, doc, overlay, anchor, canvas, panels, openMenu, registry,
     frecency, wsItems, workspaces.data, status, caps, voiceRef, paletteRef, goView, replaceView, clearView,
     closeOverlayTo, openSessionInStudio,
     tgModel, setTgModel, resolveSessionMeta, stampSessionMeta, setOpenMenu,
