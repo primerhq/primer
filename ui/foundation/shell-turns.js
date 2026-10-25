@@ -34,6 +34,12 @@ var SH_TOOL_VERBS = {
   switch_binding: { verb: "switched to", tone: "other" },
   open_file: { verb: "opened", tone: "other" },
   ask_user: { verb: "asked", tone: "other" },
+  // The canvas tools (pivot P5): the verb is the chip's plain-language base.
+  // canvas_apply's result carries the batch's change counts (the canvas op
+  // shape), which SH_toolChipLabel appends - "updated the canvas +2 ~3 -0".
+  canvas_get: { verb: "read the canvas", tone: "read" },
+  canvas_apply: { verb: "updated the canvas", tone: "other" },
+  canvas_wait: { verb: "waiting on the canvas", tone: "other" },
 };
 
 // One argument, chosen by name, never the argument object.
@@ -49,6 +55,23 @@ function SH_chipObject(args) {
     }
   }
   return "";
+}
+
+// A canvas_apply result's change counts (pivot P5): the result's output is the
+// apply outcome JSON ({rev, changed: {added, updated, removed}, warnings}), so
+// the counts are read from there, never the call's arguments.
+function SH_canvasChanged(resultRow) {
+  var output = resultRow && resultRow.payload ? resultRow.payload.output : null;
+  if (typeof output !== "string") return null;
+  var body = null;
+  try { body = JSON.parse(output); } catch (_e) { return null; }
+  var changed = body && body.changed;
+  if (!changed) return null;
+  return {
+    added: changed.added ? changed.added.length : 0,
+    updated: changed.updated ? changed.updated.length : 0,
+    removed: changed.removed ? changed.removed.length : 0,
+  };
 }
 
 // UX reconcile wave 7 (audit A items 4/6, render half): resultRow is the
@@ -86,6 +109,13 @@ function SH_toolChipLabel(row, resultRow) {
       var stat = window.SA_diffStatOfResult(resultRow);
       if (stat) {
         resultLabel = argForm + " +" + stat.additions + " -" + stat.deletions;
+      } else if (bare === "canvas_apply") {
+        // A canvas_apply result carries the batch's change counts (the canvas
+        // op shape, not a file diff): "updated the canvas +2 ~3 -0".
+        var applied = SH_canvasChanged(resultRow);
+        if (applied) {
+          resultLabel = argForm + " +" + applied.added + " ~" + applied.updated + " -" + applied.removed;
+        }
       }
     }
   }
