@@ -147,7 +147,9 @@ class _World:
         event = {"channel": room, "ts": ts, "user": "U7", "text": text}
         if thread_ts is not None:
             event["thread_ts"] = thread_ts
-        await self.app.events["message"](event, SimpleNamespace(chat_postEphemeral=AsyncMock()))
+        # The bolt context carries the bot user id (the authorization middleware's cached auth.test); the harness passes one so the
+        # handler never falls back to the adapter's own auth.test call.
+        await self.app.events["message"](event, SimpleNamespace(chat_postEphemeral=AsyncMock()), SimpleNamespace(bot_user_id="U-bot"))
 
     async def sessions(self) -> list[WorkspaceSession]:
         return list((await self.sp.get_storage(WorkspaceSession).list(OffsetPage(offset=0, length=50))).items)
@@ -642,7 +644,7 @@ async def test_a_room_with_no_listener_is_not_heard_on_the_providers_shared_conn
     await world.seed()
     event = {"channel": "C03", "ts": "1700000001.000001", "user": "U7", "text": "anyone?"}
 
-    await world.app.events["message"](event, SimpleNamespace(chat_postEphemeral=AsyncMock()))
+    await world.app.events["message"](event, SimpleNamespace(chat_postEphemeral=AsyncMock()), SimpleNamespace(bot_user_id="U-bot"))
 
     assert await world.sessions() == []
 
