@@ -19,14 +19,30 @@ nothing (an activation reaches ancestors, never the frames below). So each step:
   could fire while a setup activation is still alive;
 * measures with real ``page.mouse`` / ``page.keyboard`` input at coordinates read during setup, and reads the bridge's messages, which
   the TOP stand-in keeps, with an evaluate on the top page only.
+
+S10 (Task 26) adds the PANEL's own steps below, drawn through ``POST .../canvas/ops`` (no model needed; the install runs with auth
+disabled, so ``by`` is ``system``): the panel shows a session's canvas and a click reaches the server; Hide/Show live in the URL; the
+split resizes by the keyboard arrows (the handle has no pointer drag); the frame is an opaque origin with no ``allow-same-origin``
+anywhere; an Html element's load-time emit is refused until a real click, and the page's only console error is the accepted WebRTC
+residual; strict mode holds an Html element behind a Run button; and a phone uses a header chip and a top sheet instead of the split.
 """
 
 from __future__ import annotations
 
 import json
+import time
 import uuid
+from pathlib import Path
 
-from playwright.sync_api import Page
+import httpx
+import pytest
+
+from playwright.sync_api import Page, expect
+
+from tests._support.mock_llm import Rule
+from tests.ui_e2e._scripted_session import seed_scripted_agent, start_session
+from tests.ui_e2e._shell_helpers import boot_mobile_shell, run_verb
+from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 #: How long a step waits, calling nothing, after its last in-frame call: past Chromium's 5 s transient activation.
 SETTLE_MS = 6_500
@@ -130,6 +146,61 @@ def _emits(page: Page) -> list[tuple[str, str]]:
     return [(m["element"], m["name"]) for m in _received(page) if m.get("type") == "event" and m.get("kind") == "emit"]
 
 
+# ---------------------------------------------------------------------------
+# The panel's own steps (S10, Task 26): the canvas drawn through POST .../canvas/ops (no model
+# needed) and the session opened in its studio. These run against the real console panel, not the
+# stand-in page above, so they need no measured window: the only gate they assert is an Html element's.
+# ---------------------------------------------------------------------------
+
+PHONE = {"width": 390, "height": 844}
+
+PLAYLIST = (
+    "root = Column([genre, play])\n"
+    'genre = Select("Genre", ["Jazz", "Lo-fi", "Classical"], "Jazz")\n'
+    'play = Button("Play", "primary")\n'
+)
+
+# Eight Text elements (the root not counted), so the phone chip reads "Canvas \u00b7 8".
+EIGHT = "root = Column([a, b, c, d, e, f, g, h])\n" + "".join(f"{x} = Text(\"{x}\")\n" for x in "abcdefgh")
+
+# One Html element: a script that emits on load (no user activation, so refused) and a button whose click emits (allowed).
+_HTML_BODY = (
+    "<button id=go style='width:200px;height:60px' "
+    "onclick=\"primer.emit('clicked', {n: 1})\">Go</button>"
+    "<script>primer.emit('auto', {});</script>"
+)
+HTML_SOURCE = 'root = Html("""' + _HTML_BODY + '""")\n'
+
+
+def _canvas_frame(page: Page):
+    """The canvas frame (the ``nv-canvas-frame`` iframe), found by its URL."""
+    for f in page.frames:
+        if "/canvas/frame" in f.url:
+            return f
+    raise AssertionError(f"no canvas frame among {[f.url for f in page.frames]}")
+
+
+def _draw(client: httpx.Client, wid: str, sid: str, source: str) -> str:
+    canvas = f"/v1/workspaces/{wid}/sessions/{sid}/canvas"
+    r = client.post(f"{canvas}/ops", json={"source": source})
+    assert r.status_code == 200, r.text
+    return canvas
+
+
+def _view(client: httpx.Client, canvas: str) -> dict:
+    return client.get(canvas).json()
+
+
+def _wait_event_seq(client: httpx.Client, canvas: str, n: int, *, timeout_s: float = 30.0) -> dict:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        view = _view(client, canvas)
+        if view["event_seq"] >= n:
+            return view
+        time.sleep(0.5)
+    pytest.fail(f"event_seq never reached {n}: {_view(client, canvas)}")
+
+
 def test_a_looping_element_cannot_emit_after_its_activation_expires(page: Page, base_url: str) -> None:
     """G8-05: one click starts a loop that emits every 200 ms; at most 3 emits go out, however long it runs."""
     _mount(page, base_url, {"w": _html(LOOPER)}, "w")
@@ -186,3 +257,182 @@ def test_one_click_gives_its_activation_to_one_frame_only(page: Page, base_url: 
     owners = {element for element, _ in emits}
     assert len(owners) == 1, f"exactly one of A and B emits from the click's activation: {emits}"
     assert 1 <= len(emits) <= 3, f"the owner emits at most 3 times: {emits}"
+
+
+# ---------------------------------------------------------------------------
+# The panel's own journeys (S10, Task 26): the real console panel, drawn through ops.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.ui_e2e
+def test_the_panel_shows_itself_and_a_click_reaches_the_server(
+    page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path,
+):
+    """The panel shows a session's canvas; a click on its Play button reaches the server and the transcript shows the chip."""
+    registry, mock_base_url = mock_llm_lan
+    ids = seed_scripted_agent(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path, prefix="cvn1")
+    registry.register(ids["model_name"], [Rule(emit_text="ok")])
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        sid = start_session(client, ids, "Draw the playlist", auto_start=False)
+        canvas = _draw(client, ids["workspace"], sid, PLAYLIST)
+    open_session_in_studio(page, console_url, ids["workspace"], sid)
+    expect(page.get_by_test_id("nv-canvas")).to_be_visible(timeout=20_000)
+    frame = page.frame_locator('[data-testid="nv-canvas-frame"]')
+    play = frame.locator('[data-cv-id="play"]')
+    expect(play).to_be_visible(timeout=20_000)
+    play.click()
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        _wait_event_seq(client, canvas, 1)
+    expect(page.get_by_text("system clicked Play", exact=True)).to_be_visible(timeout=20_000)
+
+
+@pytest.mark.ui_e2e
+def test_hide_and_show_live_in_the_url(page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path):
+    """Hide Canvas and Show Canvas move the ``canvas=`` key in the URL, and a reload keeps the state."""
+    registry, mock_base_url = mock_llm_lan
+    ids = seed_scripted_agent(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path, prefix="cvn2")
+    registry.register(ids["model_name"], [Rule(emit_text="ok")])
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        sid = start_session(client, ids, "Draw the playlist", auto_start=False)
+        _draw(client, ids["workspace"], sid, PLAYLIST)
+    open_session_in_studio(page, console_url, ids["workspace"], sid)
+    expect(page.get_by_test_id("nv-canvas")).to_be_visible(timeout=20_000)
+    run_verb(page, "Hide Canvas")
+    expect(page.get_by_test_id("nv-canvas")).to_be_hidden(timeout=20_000)
+    assert "canvas=closed" in page.url, page.url
+    page.reload(wait_until="domcontentloaded")
+    expect(page.get_by_test_id(f"nv-session-doc:{sid}")).to_be_visible(timeout=20_000)
+    expect(page.get_by_test_id("nv-canvas")).to_be_hidden(timeout=20_000)
+    run_verb(page, "Show Canvas")
+    expect(page.get_by_test_id("nv-canvas")).to_be_visible(timeout=20_000)
+    assert "canvas=open" in page.url, page.url
+
+
+@pytest.mark.ui_e2e
+def test_the_split_resizes(page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path):
+    """The canvas/transcript split resizes by the keyboard arrows (5% each) and a double-click resets it to 50.
+
+    The resize handle (``nv-canvas-resize``) has no pointer drag; the plan's "dragging" step is the keyboard path the handle implements.
+    """
+    registry, mock_base_url = mock_llm_lan
+    ids = seed_scripted_agent(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path, prefix="cvn3")
+    registry.register(ids["model_name"], [Rule(emit_text="ok")])
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        sid = start_session(client, ids, "Draw the playlist", auto_start=False)
+        _draw(client, ids["workspace"], sid, PLAYLIST)
+    open_session_in_studio(page, console_url, ids["workspace"], sid)
+    handle = page.get_by_test_id("nv-canvas-resize")
+    expect(handle).to_be_visible(timeout=20_000)
+    start = int(handle.get_attribute("aria-valuenow"))
+    handle.click()  # focus the handle (tabIndex=0); it has no onClick, so a single click only focuses it
+    page.keyboard.press("ArrowDown")
+    assert int(page.get_by_test_id("nv-canvas-resize").get_attribute("aria-valuenow")) == start - 5
+    page.get_by_test_id("nv-canvas-resize").dblclick()
+    assert int(page.get_by_test_id("nv-canvas-resize").get_attribute("aria-valuenow")) == 50
+
+
+@pytest.mark.ui_e2e
+def test_isolation(page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path):
+    """The canvas frame is an opaque origin (origin ``null``, no readable cookie) and no iframe in the page is ``allow-same-origin``."""
+    registry, mock_base_url = mock_llm_lan
+    ids = seed_scripted_agent(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path, prefix="cvn4")
+    registry.register(ids["model_name"], [Rule(emit_text="ok")])
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        sid = start_session(client, ids, "Draw the playlist", auto_start=False)
+        _draw(client, ids["workspace"], sid, PLAYLIST)
+    open_session_in_studio(page, console_url, ids["workspace"], sid)
+    expect(page.get_by_test_id("nv-canvas-frame")).to_be_visible(timeout=20_000)
+    cv = _canvas_frame(page)
+    origin = None
+    for _ in range(40):
+        try:
+            origin = cv.evaluate("window.origin")
+            break
+        except Exception:  # noqa: BLE001 - the frame is still loading
+            page.wait_for_timeout(250)
+    assert origin == "null", f"the canvas frame is an opaque origin, got origin {origin!r}"
+    cookie = cv.evaluate("() => { try { return document.cookie; } catch (e) { return 'threw:' + (e && e.name); } }")
+    assert cookie == "" or cookie.startswith("threw:"), f"document.cookie should be empty or throw, got {cookie!r}"
+    sandboxes = page.evaluate("Array.from(document.querySelectorAll('iframe')).map((f) => f.getAttribute('sandbox') || '')")
+    assert not any("allow-same-origin" in s for s in sandboxes), sandboxes
+
+
+@pytest.mark.ui_e2e
+def test_html_emits_need_a_click(
+    page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path,
+    console_messages, assert_no_console_errors_fn,
+):
+    """An Html element's load-time emit is refused (no user activation); a click on its button records the emit.
+
+    G8-05: the page's only console error is the accepted WebRTC residual (Chromium logs the unrecognized ``webrtc`` directive),
+    which is the single line passed to ``ignore_patterns``.
+    """
+    registry, mock_base_url = mock_llm_lan
+    ids = seed_scripted_agent(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path, prefix="cvn5")
+    registry.register(ids["model_name"], [Rule(emit_text="ok")])
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        sid = start_session(client, ids, "Draw the widget", auto_start=False)
+        canvas = _draw(client, ids["workspace"], sid, HTML_SOURCE)
+    open_session_in_studio(page, console_url, ids["workspace"], sid)
+    frame = page.frame_locator('[data-testid="nv-canvas-frame"]')
+    html_frame = frame.frame_locator('[data-cv-id="viz"] iframe')
+    expect(html_frame.locator("#go")).to_be_visible(timeout=20_000)
+    page.wait_for_timeout(3_000)  # the load-time emit had no user activation
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        assert _view(client, canvas)["event_seq"] == 0, "the load-time emit was refused (no user activation)"
+    html_frame.locator("#go").click()
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        view = _wait_event_seq(client, canvas, 1)
+    assert any(e["kind"] == "emit" and e.get("name") == "clicked" for e in view["events"]), view["events"]
+    assert_no_console_errors_fn(
+        console_messages, ignore_patterns=[r"Unrecognized Content-Security-Policy directive 'webrtc'"],
+    )
+
+
+@pytest.mark.ui_e2e
+def test_strict_mode_needs_run(page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path):
+    """With ``strict_mode`` on, an Html element stays inert behind a Run button; a click on it runs the content."""
+    registry, mock_base_url = mock_llm_lan
+    ids = seed_scripted_agent(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path, prefix="cvn6")
+    registry.register(ids["model_name"], [Rule(emit_text="ok")])
+    settings = None
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        sid = start_session(client, ids, "Draw the widget", auto_start=False)
+        canvas = _draw(client, ids["workspace"], sid, HTML_SOURCE)
+        settings = client.get("/v1/canvas_settings").json()
+        r = client.put("/v1/canvas_settings", json={**settings, "strict_mode": True})
+        assert r.status_code == 200, r.text
+    try:
+        open_session_in_studio(page, console_url, ids["workspace"], sid)
+        frame = page.frame_locator('[data-testid="nv-canvas-frame"]')
+        run_btn = frame.locator('[data-cv="html-run"]')
+        expect(run_btn).to_be_visible(timeout=20_000)
+        run_btn.click()
+        html_frame = frame.frame_locator('[data-cv-id="viz"] iframe')
+        expect(html_frame.locator("#go")).to_be_visible(timeout=20_000)
+    finally:
+        with httpx.Client(base_url=base_url, timeout=30.0) as client:
+            r = client.put("/v1/canvas_settings", json=settings)
+            assert r.status_code == 200, r.text
+
+
+@pytest.mark.ui_e2e
+def test_the_phone_uses_a_chip_and_a_top_sheet(page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path):
+    """At 390x844 the session header shows a chip naming the element count; a tap opens the top sheet; closing it drops ``canvas=``."""
+    registry, mock_base_url = mock_llm_lan
+    ids = seed_scripted_agent(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path, prefix="cvn7")
+    registry.register(ids["model_name"], [Rule(emit_text="ok")])
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        sid = start_session(client, ids, "Draw the list", auto_start=False)
+        _draw(client, ids["workspace"], sid, EIGHT)
+    page.set_viewport_size(PHONE)
+    boot_mobile_shell(page, f"{console_url}#/w/{ids['workspace']}?doc=session:{sid}")
+    chip = page.get_by_test_id("nv-canvas-chip")
+    expect(chip).to_be_visible(timeout=20_000)
+    expect(chip).to_have_text("Canvas \u00b7 8", timeout=20_000)
+    chip.click()
+    expect(page.get_by_test_id("nv-canvas-sheet")).to_be_visible(timeout=20_000)
+    expect(page.get_by_test_id("nv-canvas-frame")).to_be_visible(timeout=20_000)
+    page.get_by_test_id("nv-canvas-sheet-close").click()
+    expect(page.get_by_test_id("nv-canvas-sheet")).to_be_hidden(timeout=20_000)
+    assert "canvas=" not in page.url, page.url
