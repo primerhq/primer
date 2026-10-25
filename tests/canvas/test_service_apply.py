@@ -615,19 +615,18 @@ async def test_the_script_check_is_the_real_one_by_default():
     assert CanvasService(_FakeStorageProvider())._script_check is check_html_scripts
     w = make_world()
     await seed_session(w)
-    with pytest.raises(CanvasApplyRefused) as exc:
-        await _apply(w, 'root = Column([v])\nv = Html("<script>var b = ;</script>")')
-    assert exc.value.errors[0].render().startswith("line 2: v: script 1 does not parse")
-    assert (await _apply(w, 'root = Column([v])\nv = Html("<script>var b = 1;</script>")')).rev == 1
+    # The problem is a warning, never a refusal (ruling G8-06): the batch applies and carries the warning.
+    out = await _apply(w, 'root = Column([v])\nv = Html("<script>var b = ;</script>")')
+    assert out.rev == 1 and len(out.warnings) == 1 and out.warnings[0].startswith("v: script 1 does not parse")
+    assert (await _apply(w, 'root = Column([v])\nv = Html("<script>var b = 1;</script>")')).rev == 2
 
 
-async def test_a_script_problem_refuses_the_batch():
+async def test_a_script_problem_warns_and_the_batch_applies():
     w = make_world(script_check=lambda html: ["script 1 does not parse: Unexpected token ';'"])
     await seed_session(w)
-    with pytest.raises(CanvasApplyRefused) as exc:
-        await _apply(w, 'root = Column([v])\nv = Html("<script>x</script>")')
-    assert [e.render() for e in exc.value.errors] == ["line 2: v: script 1 does not parse: Unexpected token ';'"]
-    assert await w.canvas("s1") is None
+    out = await _apply(w, 'root = Column([v])\nv = Html("<script>x</script>")')
+    assert out.warnings == ("v: script 1 does not parse: Unexpected token ';'",)
+    assert await w.canvas("s1") is not None
 
 
 async def test_the_script_check_runs_off_the_event_loop():

@@ -239,10 +239,21 @@ def open_palette(page: Page) -> None:
     expect(page.get_by_test_id("nv-palette")).to_be_visible(timeout=10_000)
 
 
-def run_verb(page: Page, label: str) -> None:
+def run_verb(page: Page, label: str, *, row_key: str | None = None) -> None:
+    """Fill the palette and click the narrowed row.
+
+    ``row_key`` clicks the EXACT row by its ``data-row-key`` handle (nv-palette.jsx
+    documents the per-row key as the remedy for the shared-testid flake: the
+    narrowed set can reorder or swap nodes while the palette re-renders as its
+    polled state settles, and ``.first`` on the shared testid can race that).
+    Omit it to keep the historical ``.first`` behavior for every other caller.
+    """
     open_palette(page)
     page.get_by_test_id("nv-palette-input").fill(label)
-    page.get_by_test_id("nv-palette-row").first.click()
+    if row_key is not None:
+        page.locator(f'button.nv-palette-row[data-row-key="{row_key}"]').click()
+    else:
+        page.get_by_test_id("nv-palette-row").first.click()
 
 
 def session_row(page: Page, sid: str, wid: str, *, timeout: int = 10_000):

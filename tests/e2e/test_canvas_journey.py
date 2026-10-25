@@ -45,7 +45,7 @@ play = Button("Play", "primary")
 
 # Two Buttons (journey 2): the agent waits only for ``ok``; a click on ``cancel`` is not the answer, so it is queued.
 OK_CANCEL = """
-root = Row([ok, cancel])
+root = Column([ok, cancel])
 ok = Button("OK", "primary")
 cancel = Button("Cancel")
 """
@@ -162,7 +162,9 @@ async def test_an_agent_draws_and_a_click_wakes_it(client: httpx.AsyncClient, mo
         [
             Rule(when_tool_result=False, when_last_user_contains=steer, emit_tool="canvas__canvas_apply", emit_args={"source": DRAWING}),
             Rule(when_tool_result=True, when_last_user_contains=steer, emit_text=drawn),
-            Rule(when_last_tool_result_contains='genre.value = "Lo-fi"  # user', emit_text=saw),
+            # The tool result is the JSON-dumped ``canvas_get`` result, so the decompiled line's quotes are escaped in
+            # the content the mock matches; the needle must carry the backslashes.
+            Rule(when_last_tool_result_contains='genre.value = \\"Lo-fi\\"  # user', emit_text=saw),
             Rule(when_last_user_contains="<canvas_event", emit_tool="canvas__canvas_get"),
         ],
         tools=["canvas__canvas_apply", "canvas__canvas_get", "canvas__canvas_wait"],

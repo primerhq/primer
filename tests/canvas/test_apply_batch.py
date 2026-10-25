@@ -362,13 +362,14 @@ def test_unknown_property_names_the_common_props():
     assert ok.elements["t"]["props"] == {"text": "x", "hidden": True, "disabled": True}
 
 
-def test_script_problems_become_line_errors():
+def test_script_problems_become_line_warnings_and_the_batch_applies():
     r = apply_batch(S, parse_program('root = Column([v])\nv = Html("<script>x</script>")'), limits=L,
                     script_check=lambda html: ["script 1 does not parse: Unexpected token ';'"])
-    assert [e.render() for e in r.errors] == ["line 2: v: script 1 does not parse: Unexpected token ';'"]
+    assert r.errors == () and r.state is not None, "the check is an early warning, never a gate (ruling G8-06)"
+    assert r.warnings == ("v: script 1 does not parse: Unexpected token ';'",)
 
 
-def test_the_script_check_runs_on_new_html_only_and_every_problem_is_an_error():
+def test_the_script_check_runs_on_new_html_only_and_every_problem_is_a_warning():
     seen = []
 
     def check(html):
@@ -382,11 +383,12 @@ def test_the_script_check_runs_on_new_html_only_and_every_problem_is_an_error():
     apply_batch(s, parse_program('v.html = "<i>new</i>"'), limits=L, script_check=check)
     assert seen == ["<b>ok</b>", "<i>new</i>"]
     r = apply_batch(s, parse_program('v.html = "bad"\nw = Html("bad too")\nroot += [w]'), limits=L, script_check=check)
-    assert [e.render() for e in r.errors] == ["line 1: v: first", "line 1: v: second", "line 2: w: first", "line 2: w: second"]
+    assert r.errors == () and r.state is not None
+    assert r.warnings == ("v: first", "v: second", "w: first", "w: second")
     # an overwritten Html body in the same batch is not checked; only the surviving one is
     seen.clear()
     overwritten = apply_batch(s, parse_program('v.html = "bad"\nv = Html("<b>survives</b>")'), limits=L, script_check=check)
-    assert overwritten.errors == () and seen == ["<b>survives</b>"]
+    assert overwritten.errors == () and overwritten.warnings == () and seen == ["<b>survives</b>"]
     # an oversized body is refused before it is checked
     seen.clear()
     big = apply_batch(S, parse_program('root = Column([v])\nv = Html("' + "x" * 70000 + '")'), limits=L, script_check=check)

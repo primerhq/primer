@@ -338,15 +338,16 @@ def test_it_works_under_asyncio_run():
 
 
 async def test_apply_batch_with_the_check_works_inside_a_running_loop():
-    refused = apply_batch(
+    # The problem is a warning, never an error (ruling G8-06): the batch applies and carries the warning.
+    warned = apply_batch(
         CanvasState.empty(), parse_program('root = Column([v])\nv = Html("<script>var = ;</script>")'), limits=Limits(), script_check=check_html_scripts
     )
-    assert refused.state is None
-    assert [e.render() for e in refused.errors] == ["line 2: v: script 1 does not parse: Unexpected token '='"]
+    assert warned.state is not None and warned.errors == ()
+    assert warned.warnings == ("v: script 1 does not parse: Unexpected token '='",)
     fine = apply_batch(
         CanvasState.empty(), parse_program('root = Column([v])\nv = Html("<script>ok()</script>")'), limits=Limits(), script_check=check_html_scripts
     )
-    assert fine.errors == () and fine.state is not None
+    assert fine.errors == () and fine.state is not None and fine.warnings == ()
 
 
 def test_with_no_loop_running_the_engine_lives_on_the_callers_thread(spy):
@@ -511,10 +512,13 @@ def test_well_formed_scripts_are_not_counted_as_hidden():
     assert check_html_scripts("<script>a()</script>\n<SCRIPT src='https://unpkg.com/x.js'></SCRIPT><p>scripts</p>") == []
 
 
-def test_a_hidden_script_is_an_error_of_its_html_element():
+def test_a_hidden_script_is_a_warning_of_its_html_element():
+    # An early warning for the agent, never a gate (the lead's ruling on audit G8-06):
+    # the batch applies, and the frame's CSP is the control that holds the script in the browser.
     r = apply_batch(CanvasState.empty(), parse_program(f'root = Column([v])\nv = Html("""{SVG_TITLE_EXT}""")'), limits=Limits(),
                     script_check=check_html_scripts)
-    assert r.state is None and len(r.errors) == 1 and r.errors[0].line == 2 and r.errors[0].message.startswith("v: 1 of the 1 '<script'")
+    assert r.state is not None and r.errors == ()
+    assert len(r.warnings) == 1 and r.warnings[0].startswith("v: 1 of the 1 '<script'")
 
 
 # --- known limits: what the check cannot see. The frame's CSP (Task 13) is the only control in the browser. -----

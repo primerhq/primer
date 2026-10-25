@@ -178,11 +178,20 @@ HTML_SOURCE = 'root = Column([viz])\nviz = Html("""' + _HTML_BODY + '""")\n'
 CSP_SCRIPT_SOURCE = 'root = Column([viz])\nviz = Html("""<script src="https://evil.example/ping.js"></script>""")\n'
 
 
-def _canvas_frame(page: Page):
-    """The canvas frame (the ``nv-canvas-frame`` iframe), found by its URL."""
-    for f in page.frames:
-        if "/canvas/frame" in f.url:
-            return f
+def _canvas_frame(page: Page, *, timeout: int = 20_000):
+    """The canvas frame (the ``nv-canvas-frame`` iframe), found by its URL.
+
+    The iframe element renders before the frame's document has navigated (the
+    frame shell is a fresh page load; the frame reads as an empty URL until the
+    navigation commits), so poll until the frame shows up with its URL rather
+    than reading ``page.frames`` once.
+    """
+    deadline = time.time() + timeout / 1000
+    while time.time() < deadline:
+        for f in page.frames:
+            if "/canvas/frame" in f.url:
+                return f
+        page.wait_for_timeout(250)
     raise AssertionError(f"no canvas frame among {[f.url for f in page.frames]}")
 
 
@@ -294,7 +303,13 @@ def test_the_panel_shows_itself_and_a_click_reaches_the_server(
 
 @pytest.mark.ui_e2e
 def test_hide_and_show_live_in_the_url(page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path):
-    """Hide Canvas and Show Canvas move the ``canvas=`` key in the URL, and a reload keeps the state."""
+    """Hide Canvas and Show Canvas move the ``canvas=`` key in the URL, and a reload keeps the state.
+
+    The verb rows are clicked by their exact ``data-row-key`` (``v:canvas.hide`` /
+    ``v:canvas.show``), not ``run_verb``'s ``.first``: after the reload the palette
+    re-renders as its polled state settles and the shared-testid ``.first`` can race
+    that (the known palette2 flake family); the per-row handle is the stable target.
+    """
     registry, mock_base_url = mock_llm_lan
     ids = seed_scripted_agent(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path, prefix="cvn2")
     registry.register(ids["model_name"], [Rule(emit_text="ok")])
@@ -303,13 +318,13 @@ def test_hide_and_show_live_in_the_url(page: Page, base_url: str, console_url: s
         _draw(client, ids["workspace"], sid, PLAYLIST)
     open_session_in_studio(page, console_url, ids["workspace"], sid)
     expect(page.get_by_test_id("nv-canvas")).to_be_visible(timeout=20_000)
-    run_verb(page, "Hide Canvas")
+    run_verb(page, "Hide Canvas", row_key="v:canvas.hide")
     expect(page.get_by_test_id("nv-canvas")).to_be_hidden(timeout=20_000)
     assert "canvas=closed" in page.url, page.url
     page.reload(wait_until="domcontentloaded")
     expect(page.get_by_test_id(f"nv-session-doc:{sid}")).to_be_visible(timeout=20_000)
     expect(page.get_by_test_id("nv-canvas")).to_be_hidden(timeout=20_000)
-    run_verb(page, "Show Canvas")
+    run_verb(page, "Show Canvas", row_key="v:canvas.show")
     expect(page.get_by_test_id("nv-canvas")).to_be_visible(timeout=20_000)
     assert "canvas=open" in page.url, page.url
 
@@ -370,8 +385,10 @@ def test_html_emits_need_a_click(
 ):
     """An Html element's load-time emit is refused (no user activation); a click on its button records the emit.
 
-    G8-05: the page's only console error is the accepted WebRTC residual (Chromium logs the unrecognized ``webrtc`` directive),
-    which is the single line passed to ``ignore_patterns``.
+    G8-05: the page's only console errors are the accepted WebRTC residual (Chromium logs the unrecognized ``webrtc``
+    directive) and the refused load-time emit itself: the host's ``primer.emit`` throws in the agent's srcdoc, and the
+    uncaught exception is the refusal's observable (the assertion on ``event_seq == 0`` is the pin). Both lines are
+    passed to ``ignore_patterns``.
     """
     registry, mock_base_url = mock_llm_lan
     ids = seed_scripted_agent(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path, prefix="cvn5")
@@ -391,7 +408,11 @@ def test_html_emits_need_a_click(
         view = _wait_event_seq(client, canvas, 1)
     assert any(e["kind"] == "emit" and e.get("name") == "clicked" for e in view["events"]), view["events"]
     assert_no_console_errors_fn(
-        console_messages, ignore_patterns=[r"Unrecognized Content-Security-Policy directive 'webrtc'"],
+        console_messages,
+        ignore_patterns=[
+            r"Unrecognized Content-Security-Policy directive 'webrtc'",
+            r"primer\.emit needs a click or a key press first",
+        ],
     )
 
 
