@@ -173,12 +173,15 @@ rows.
 username), whether it `wake`s, its `value` and `name`/`data`/`position`/`label`, and a client
 retry key. Its `public()` form is the event as the platform event and the record carry it.
 
-`CanvasSettings` is the single operator row (`_canvas_settings`): the media policy
-(`any-https`, `allowlist` or `none`), the media allowlist, `strict_mode`, and the five limits
-(`max_elements`, `max_html_bytes`, `max_canvas_bytes`, `max_events`,
-`max_waking_events_per_minute`). The defaults are 200 elements, 65536 bytes of one Html body,
-524288 bytes of a whole canvas, 100 retained events and 10 waking events per minute. The canvas
-GET embeds the effective media policy and strict mode for the renderer.
+`CanvasSettings` is the single operator row (`_canvas_settings`): `agent_tools_enabled`, the media
+policy (`any-https`, `allowlist` or `none`), the media allowlist, `strict_mode`, and the five
+limits (`max_elements`, `max_html_bytes`, `max_canvas_bytes`, `max_events`,
+`max_waking_events_per_minute`). `agent_tools_enabled` defaults to true (since S8 shipped the
+canvas panel); while off, the canvas toolset is hidden from the tool catalogue and from
+`call_tool`, so an agent cannot draw or read the canvas, and the admin settings dialog edits the
+row. The defaults are 200 elements, 65536 bytes of one Html body, 524288 bytes of a whole canvas,
+100 retained events and 10 waking events per minute. The canvas GET embeds the effective media
+policy and strict mode for the renderer.
 
 ## Lifecycle
 
@@ -236,7 +239,14 @@ CDNs, and connects nowhere. The header ends `form-action 'none'; base-uri 'none'
 the request's own origin is added to `img-src` and `media-src`, so a workspace file's capability
 URL loads on an http install. Every Html element is a `srcdoc` frame of this page, so the header
 binds every Html frame too; each Html frame may only add its own stricter media policy (a `<meta>`
-CSP that names only `img-src`, `media-src` and `font-src`, each a subset of the header's).
+CSP that names only `img-src`, `media-src` and `font-src`, each a subset of the header's). On top
+of that script-source control the renderer runs an emit gate (audit G8-05): it forwards an Html
+element's `emit`, `copy` and `open_link` only while that frame's `navigator.userActivation.isActive`
+holds (a click or key press inside the frame, the element's frame the document's active element,
+the page visible), at most three calls per owning frame per activation (one continuous `isActive`
+window, a few seconds after the last input, not one click), and a dropped call is answered
+`{type: "error"}` on the element's port and counted to the console; a browser without
+`navigator.userActivation` forwards none.
 
 **The media policy and strict mode.** The media policy is `any-https` (the default: agents can
 already reach the web through tools), `allowlist` (only the listed hosts, click to load) or `none`.
