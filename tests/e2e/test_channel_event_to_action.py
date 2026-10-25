@@ -387,8 +387,8 @@ async def test_command_event_starts_session_with_reply_binding(
     sub = await p.get_storage(Subscription).get("sub-e2a-sess")
     binding = await resolve_reply_binding(session, storage_provider=p)
     assert binding is not None, "session must resolve a reply binding"
-    assert binding.channel_id == sub.reply_target["channel_id"], (
+    assert binding.channel_id == sub.reply_target.channel_id, (
         "the session's reply binding must name the subscription's "
         f"reply_target channel; got {binding.channel_id!r} vs "
-        f"{sub.reply_target['channel_id']!r}"
+        f"{sub.reply_target.channel_id!r}"
     )
