@@ -105,26 +105,18 @@ function NV_canvasValidateFrameMessage(msg) {
 // The server's words for a refused canvas event, the way a person reads them.
 // 409 and 429 say it plainly (the server's message); a 422 unknown_element is
 // the canvas having changed under the click; everything else is a generic
-// "couldn't send that".
+// "couldn't send that". Both read the refusal through the foundation's one
+// reader (window.primerApi.readRefusal, ui/foundation/api.js): the server's
+// words and the code come from there, never out of the envelope directly.
 function NV_canvasProblemText(err, fallback) {
-  fallback = fallback || "the request failed";
-  var env = (err && err.envelope) || {};
-  var ext = env.extensions || {};
-  var msg = "";
-  if (typeof env.detail === "string" && env.detail) msg = env.detail;
-  else if (typeof ext.message === "string" && ext.message) msg = ext.message;
-  if (!msg && err && typeof err.detail === "string" && err.detail) msg = err.detail;
-  if (!msg && err && typeof err.message === "string" && err.message) msg = err.message;
-  return msg || fallback;
+  return window.primerApi.readRefusal(err, fallback || "the request failed").message;
 }
 function NV_canvasEventErrorText(err) {
+  var refusal = window.primerApi.readRefusal(err, "the request failed");
   var status = err && err.status;
-  var ext = ((err && err.envelope) || {}).extensions || {};
-  var code = (typeof ext.code === "string" && ext.code) || (typeof ext.error === "string" && ext.error) || null;
-  var message = NV_canvasProblemText(err);
-  if (status === 409 || status === 429) return message;
-  if (status === 422 && code === "unknown_element") return "That control is gone: the canvas changed.";
-  return "Couldn't send that to the agent: " + message;
+  if (status === 409 || status === 429) return refusal.message;
+  if (status === 422 && refusal.code === "unknown_element") return "That control is gone: the canvas changed.";
+  return "Couldn't send that to the agent: " + refusal.message;
 }
 
 // Ruling 1 (inert HTML): run_html is true ONLY when the viewer created the
