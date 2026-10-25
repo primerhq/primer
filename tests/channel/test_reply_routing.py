@@ -424,6 +424,31 @@ async def test_a_shared_anchor_keeps_each_sessions_questions_in_its_own_thread(m
     assert [s.id for s in await world.sessions()] == before
 
 
+# ---------------------------------------------------------------- round 2, finding 2: the binding written after the turn loaded the row
+
+
+async def test_a_binding_written_after_the_turn_loaded_the_row_still_mutes_the_first_turn(monkeypatch, sp) -> None:
+    """The turn loads the session row once; the inbound router writes the session's reply binding only after fire_trigger returns. On the
+    first turn of a session the event started, the in-memory row therefore misses the binding, and a silent reply_target leaked
+    through the workspace's standing binding. resolve_reply_binding re-reads the leaf from storage, so nothing posts."""
+    world = _World(monkeypatch, sp)
+    await world.seed(ws_binding=WorkspaceChannelLink(channel_id="ch-other", anchor=OTHER_ANCHOR))
+    session = _a_session("s-stale")
+    storage = sp.get_storage(WorkspaceSession)
+    await storage.create(session)
+    # The turn's copy of the row (``session`` above) was loaded before this write: it carries no binding.
+    await storage.patch_if(
+        session.id, None,
+        set_paths={("metadata", SESSION_REPLY_BINDING_KEY): {"channel_id": "ch-sl", "anchor": THREAD, "quiet": True, "silent": True}},
+        where={"workspace_id": ["ws-1"]},
+    )
+
+    await _say_everything(world, session)
+
+    assert world.posts("ch-other") == [], "the silent binding leaked through the workspace's binding"
+    assert world.posts("ch-sl") == []
+
+
 # ---------------------------------------------------------------- item 4: the binding's reply_target
 
 

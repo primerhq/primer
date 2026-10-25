@@ -95,6 +95,22 @@ async def resolve_reply_binding(
 
     meta = getattr(session, "metadata", None) or {}
     session_binding = meta.get(SESSION_REPLY_BINDING_KEY)
+    if not (isinstance(session_binding, dict) and session_binding.get("channel_id")):
+        # The turn loaded the session row BEFORE the inbound router wrote the binding (the router maps the conversation only after
+        # fire_trigger returns, round 2 of #932, finding 2), so the in-memory metadata can miss it on the first turn of a session the
+        # event started: a silent reply_target then leaked through the workspace's binding. Re-read the one leaf from storage.
+        session_id = getattr(session, "id", None)
+        if session_id is not None:
+            try:
+                from primer.model.workspace_session import WorkspaceSession
+
+                fresh = await storage_provider.get_storage(WorkspaceSession).get(session_id)
+                fresh_meta = (getattr(fresh, "metadata", None) or {}) if fresh is not None else {}
+                fresh_binding = fresh_meta.get(SESSION_REPLY_BINDING_KEY)
+                if isinstance(fresh_binding, dict) and fresh_binding.get("channel_id"):
+                    session_binding = fresh_binding
+            except Exception as exc:  # never raise into the dispatcher
+                _log.warning("resolve_reply_binding: session re-read failed: %s", exc)
     if isinstance(session_binding, dict) and session_binding.get("channel_id"):
         metrics.reply_binding_resolutions_total.labels(scope="session").inc()
         return ReplyBinding.model_validate(session_binding)
