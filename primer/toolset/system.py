@@ -130,6 +130,8 @@ from primer.trigger.owner import view_for
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
+    ReplyTargetAnchorInvalid,
+    ReplyTargetChannelNotFound,
     ServiceDeps,
     SubscriptionNotFound,
     SubscriptionTargetNotFound,
@@ -1004,6 +1006,11 @@ def build_system_toolset(
             return _err(f"config: {exc}", error_type="validation-error")
         except SubscriptionTargetNotFound as exc:
             return _err(str(exc), error_type="not-found")
+        except ReplyTargetChannelNotFound as exc:
+            # An explicit reply_target that names no channel: the same not-found as set_reply_binding (round 2 of #932, item 3).
+            return _err(str(exc), error_type="not-found")
+        except ReplyTargetAnchorInvalid as exc:
+            return _err(str(exc), error_type="validation-error")
         return _ok(sub)
 
     registry["create_channel_binding"] = (

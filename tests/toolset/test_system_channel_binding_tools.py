@@ -259,6 +259,63 @@ async def test_create_channel_binding_refuses_dm_sender(sp: _SP, system_toolset)
 
 
 @pytest.mark.asyncio
+async def test_create_channel_binding_explicit_target_validates_the_channel(sp: _SP, system_toolset):
+    """Round 2 of #932, item 3: an explicit ``{channel_id, anchor}`` target names a real channel, and a Discord anchor is a numeric id."""
+    from primer.model.channel import ChannelProviderType
+
+    await _seed_channel_trigger(sp)
+    await sp.get_storage(Channel).create(_make_channel("chan-x"))
+    discord = Channel(
+        id="chan-dc",
+        provider_id="cp-dc",
+        provider=ChannelProviderType.DISCORD,
+        external_id="500",
+    )
+    await sp.get_storage(Channel).create(discord)
+
+    result = await system_toolset.call(
+        tool_name="create_channel_binding",
+        arguments={
+            "trigger_id": "trg-ch-1",
+            "config": {"kind": "session_append", "session_id": "sess-1"},
+            "reply_target": {"channel_id": "chan-missing", "anchor": "1700000000.000100"},
+        },
+    )
+    assert result.is_error
+    payload = json.loads(result.output)
+    assert payload["type"] == "not-found"
+    assert "reply_target" in payload["message"] and "chan-missing" in payload["message"]
+    assert not sp.get_storage(Subscription)._data
+
+    result = await system_toolset.call(
+        tool_name="create_channel_binding",
+        arguments={
+            "trigger_id": "trg-ch-1",
+            "config": {"kind": "session_append", "session_id": "sess-1"},
+            "reply_target": {"channel_id": "chan-dc", "anchor": "not-a-snowflake"},
+        },
+    )
+    assert result.is_error
+    payload = json.loads(result.output)
+    assert payload["type"] == "validation-error"
+    assert "reply_target" in payload["message"] and "numeric" in payload["message"]
+    assert not sp.get_storage(Subscription)._data
+
+    result = await system_toolset.call(
+        tool_name="create_channel_binding",
+        arguments={
+            "trigger_id": "trg-ch-1",
+            "config": {"kind": "session_append", "session_id": "sess-1"},
+            "reply_target": {"channel_id": "chan-dc", "anchor": "1234567890123"},
+        },
+    )
+    assert not result.is_error, result.output
+    subs = list(sp.get_storage(Subscription)._data.values())
+    assert len(subs) == 1
+    assert subs[0].reply_target is not None and subs[0].reply_target.channel_id == "chan-dc"
+
+
+@pytest.mark.asyncio
 async def test_create_channel_binding_unknown_trigger_returns_trigger_not_found(
     sp: _SP, system_toolset
 ):
