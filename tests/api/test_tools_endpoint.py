@@ -90,12 +90,13 @@ async def test_the_flat_catalogue_lists_every_tool_the_grouped_catalogue_lists(c
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("canvas_on", [False, True], ids=["canvas tools off (default)", "canvas tools on"])
+@pytest.mark.parametrize("canvas_on", [True, False], ids=["canvas tools on (default)", "canvas tools off"])
 async def test_the_flat_catalogue_asks_the_registry_for_every_built_in_toolset(client, monkeypatch, fake_storage_provider, canvas_on) -> None:
     """The fake test app's registry has no ``trigger`` / ``harness`` / ``collections`` provider, so the route cannot be seen listing
     their tools there. A spy registry answers every toolset with one tool and records what was asked.
 
-    ``canvas`` is asked for only while ``canvas.agent_tools_enabled`` is on (audit G8-02); off, it is never enumerated."""
+    ``canvas`` is enumerated while ``canvas.agent_tools_enabled`` is on - its default now that the canvas panel ships;
+    switched off explicitly, it is never enumerated."""
     from types import SimpleNamespace
 
     from primer.canvas.settings import write_canvas_settings
@@ -115,8 +116,9 @@ async def test_the_flat_catalogue_asks_the_registry_for_every_built_in_toolset(c
         return _OneTool()
 
     monkeypatch.setattr(ProviderRegistry, "get_toolset", _spy)
-    if canvas_on:
-        await write_canvas_settings(fake_storage_provider, CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=True))
+    if not canvas_on:
+        # The default is on; switch it off explicitly to exercise the off path.
+        await write_canvas_settings(fake_storage_provider, CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=False))
 
     resp = await client.get("/v1/tools/catalogue")
 

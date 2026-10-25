@@ -88,8 +88,8 @@ An `Agent` row carries:
   toolset (`system`, `workspaces`, `workspace_ext`, `misc`, `web`,
   `harness`, `trigger`, `collections`, `crud`, `canvas`) or a stored `Toolset` row
   (`search` is a stored row). `canvas` resolves only while the canvas setting
-  `agent_tools_enabled` is on; it ships off until the canvas panel does, and while
-  it is off `canvas` is refused like a toolset that does not exist. A tool id with no `__` is checked as its own
+  `agent_tools_enabled` is on, which it is by default now that the canvas panel
+  ships; while it is off `canvas` is refused like a toolset that does not exist. A tool id with no `__` is checked as its own
   toolset at create and in `/status`, but the runtime skips such an id when it
   resolves an agent's toolsets, so it never provides a tool: always write
   `<toolset_id>__<tool_name>`. A create naming a toolset

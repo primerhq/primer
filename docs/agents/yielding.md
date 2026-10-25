@@ -358,9 +358,9 @@ session.
   needs one.
 - **`canvas_wait` ends only on an event that wakes you, unless you name
   `kinds`, and it returns at once when that event already happened.**
-  The `canvas` tools exist only while the canvas setting
-  `agent_tools_enabled` is on (it ships off until the canvas panel does;
-  an admin reads and changes the canvas settings with
+  The `canvas` tools exist while the canvas setting
+  `agent_tools_enabled` is on, which it is by default now that the canvas panel
+  ships (an admin reads and changes the canvas settings with
   `system__get_canvas_settings` and `system__update_canvas_settings`);
   while it is off `call_tool` and `describe_tool` answer `not-found` for
   them. Without `kinds`, a Button click or an Html emit ends the wait; a

@@ -88,8 +88,8 @@ class CanvasSettings(Identifiable):
     """What an operator can tune about every canvas, stored as one row at ``CANVAS_SETTINGS_ID``."""
 
     agent_tools_enabled: bool = Field(
-        default=False,
-        description="Whether the canvas toolset is exposed to agents and the tool catalogue.",
+        default=True,
+        description="Whether the canvas toolset is exposed to agents and the tool catalogue. On by default now that the canvas panel ships (the setting still lets an operator switch the canvas tools off).",
     )
     media_policy: MediaPolicy = Field(
         default="any-https",
