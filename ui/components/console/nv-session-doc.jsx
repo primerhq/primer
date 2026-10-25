@@ -972,6 +972,14 @@ function NV_SessionHeader(props) {
                   if (verb) verb.run();
                 }}>Clear canvas…</button>
             ) : null}
+            {con.role === "admin" ? (
+              <button type="button" className="nv-menu-row"
+                data-testid="nv-canvas-menu-settings"
+                onClick={function () {
+                  setOvf(false);
+                  props.onOpenCanvasSettings();
+                }}>Canvas settings…</button>
+            ) : null}
             <div className="nv-menu-sep" />
             {NV_canPark(session) ? (
               <button type="button" className="nv-menu-row"
@@ -2576,6 +2584,11 @@ function NV_SessionDoc(props) {
   var calmState = React.useState(false);
   var calm = calmState[0];
   var setCalm = calmState[1];
+  // The admin canvas settings dialog (pivot P5, Task 23): opened from the
+  // session header's overflow menu (admins only).
+  var canvasSettingsOpenState = React.useState(false);
+  var canvasSettingsOpen = canvasSettingsOpenState[0];
+  var setCanvasSettingsOpen = canvasSettingsOpenState[1];
   var detail = window.primerApi.useResource(
     SH_api.keys.session(sid),
     function (signal) { return SH_api.session(sid, signal); },
@@ -3485,7 +3498,11 @@ function NV_SessionDoc(props) {
         onExport={exportTranscript}
         onCompact={function () {
           NV_doCompact(con.wid, sid, refetchAll, con.toast);
-        }} />
+        }}
+        onOpenCanvasSettings={function () { setCanvasSettingsOpen(true); }} />
+      {canvasSettingsOpen && typeof window.NV_CanvasSettingsDialog === "function" ? (
+        <window.NV_CanvasSettingsDialog onClose={function () { setCanvasSettingsOpen(false); }} />
+      ) : null}
       {historyProblem ? (
         <div className="nv-doc-problem" role="alert"
           data-testid="nv-history-problem" data-kind={historyProblem.kind}>
