@@ -679,3 +679,56 @@ def test_expire_status_never_drops_the_sending_leg_of_a_send_in_flight() -> None
         """
     ))
     assert out == {"changed": False, "verb": "sending"}
+
+
+# --- The canvas channel (pivot P5, Task 19) ---------------------------------
+
+def test_a_canvas_frame_updates_the_canvas_channel_only() -> None:
+    """Pivot P5 (Task 19): a CanvasFrame tap delta (primer/tap/delta.py,
+    class:"canvas") rides its own channel so the panel (Task 20) can
+    subscribe without re-rendering on every token. It says WHICH state the
+    canvas is in ({rev, event_seq}) and nothing else - the panel refetches the
+    snapshot when the channel moves - and it touches nothing else: no records,
+    no transcript row."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          var s = SS_getStore("w14", "s14");
+          SS_apply(s, {"class": "canvas", session_id: "s14", rev: 3, event_seq: 5});
+          SS_apply(s, {"class": "canvas", session_id: "s14", rev: 2, event_seq: 4});
+          return JSON.stringify({
+            store: s.canvas,
+            snap: SS_getSnapshot(s, "canvas"),
+            records: s.recordsBySeq.length,
+            transcript: SS_getSnapshot(s, "transcript") || null
+          });
+        })()
+        """
+    ))
+    assert out["store"] == {"rev": 3, "eventSeq": 5}
+    assert out["snap"] == {"rev": 3, "eventSeq": 5}
+    assert out["records"] == 0
+    assert out["transcript"] in (None, [])
+
+
+def test_the_canvas_channel_keeps_the_highest_values() -> None:
+    """A late frame from a state the canvas already passed cannot un-move the
+    channel: rev and event_seq each keep their highest value (a lost or
+    repeated frame costs nothing, and the panel that is already at a value
+    ignores the frame)."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          var s = SS_getStore("w14b", "s14b");
+          SS_apply(s, {"class": "canvas", session_id: "s14b", rev: 5, event_seq: 9});
+          SS_apply(s, {"class": "canvas", session_id: "s14b", rev: 5, event_seq: 9});
+          SS_apply(s, {"class": "canvas", session_id: "s14b", rev: 2, event_seq: 1});
+          SS_apply(s, {"class": "canvas", session_id: "s14b", rev: 7, event_seq: 9});
+          return JSON.stringify({ store: s.canvas, snap: SS_getSnapshot(s, "canvas") });
+        })()
+        """
+    ))
+    assert out["store"] == {"rev": 7, "eventSeq": 9}
+    assert out["snap"] == {"rev": 7, "eventSeq": 9}
