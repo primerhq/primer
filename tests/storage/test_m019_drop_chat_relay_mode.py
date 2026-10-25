@@ -77,6 +77,22 @@ async def test_the_step_is_idempotent_and_leaves_a_row_without_the_key_alone(sp)
     assert await views.get("ch-new") == untouched
 
 
+async def test_a_row_with_a_null_config_is_read_and_left_alone(sp) -> None:
+    """A channel row stored with ``config: null`` reads through the view (round 2 of #932, item 7: the view's config is nullable) and the
+    step leaves it alone: there is no chats block to strip, and the live model normalizes a null config to its empty default on read."""
+    views = sp.get_storage(ChannelView)
+    await views.create(
+        ChannelView(id="ch-null", provider_id="cp-sl", provider="slack", external_id="room-ch-null", config=None)
+    )
+    untouched = await views.get("ch-null")
+
+    await M019DropChatRelayMode().apply(sp)
+
+    assert await views.get("ch-null") == untouched
+    loaded = await sp.get_storage(Channel).get("ch-null")
+    assert loaded is not None and loaded.config is not None, "the live model answers a null config with its empty default"
+
+
 def test_relay_mode_is_refused_on_write() -> None:
     """extra="forbid" stays: a request that still sends the key is a validation error, not silently dropped."""
     with pytest.raises(ValidationError, match="relay_mode"):
