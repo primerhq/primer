@@ -82,14 +82,19 @@ def test_compaction_note_is_hidden_by_both_renderers() -> None:
     assert guard < body.index("Unknown / future frame kinds") and "return null" in body[guard : guard + 80]
 
 
-def test_the_canvas_record_kinds_are_hidden_by_both_renderers() -> None:
-    """Pivot P5 Task 5: ``canvas_op`` and ``canvas_event`` are display-only records the canvas chips will render (Task 22); until
-    then neither renderer may show them as the generic lifecycle bubble or the dim unknown-kind line."""
+def test_the_canvas_record_kinds_are_chips_in_the_adapter_and_hidden_in_the_frame() -> None:
+    """Pivot P5 Task 22: the adapter renders ``canvas_op`` and ``canvas_event`` as
+    chips (SA_KIND_TO_TRANSCRIPT -> canvas_chip), never the generic lifecycle
+    bubble. The studio frame (session-frame.jsx) is a separate secondary surface
+    that is not where canvas chips render, so it still hides them (the dim
+    unknown-kind line), as it did while they awaited Task 22."""
     adapter = SRC.read_text(encoding="utf-8")
-    table = adapter[adapter.index("var SA_SKIP_IN_TRANSCRIPT = ") :]
-    table = table[: table.index("};")]
-    assert "canvas_op: true" in table and "canvas_event: true" in table
-    assert "rendered as chips by pivot P5 Task 22" in table
+    skip = adapter[adapter.index("var SA_SKIP_IN_TRANSCRIPT = ") :]
+    skip = skip[: skip.index("};")]
+    # no longer skipped by the adapter: they map to chips, not the skip table
+    assert "canvas_op" not in skip and "canvas_event" not in skip
+    render = adapter.split("SA_KIND_TO_TRANSCRIPT = {")[1].split("};")[0]
+    assert 'canvas_op: "canvas_chip"' in render and 'canvas_event: "canvas_chip"' in render
     frame = FRAME.read_text(encoding="utf-8")
     body = frame[frame.index("function _SLS_Frame") :]
     body = body[: body.index("\n}\n")]

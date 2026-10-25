@@ -64,11 +64,6 @@ var SA_SKIP_IN_TRANSCRIPT = {
   // (primer/agent/compaction.py): session-record visibility for operators
   // and the paged /messages read; not conversation.
   compaction_note: true,
-  // The agent canvas records (pivot P5): an applied batch and a user interaction. Display
-  // only, never history. Skipped until they are rendered as chips by pivot P5 Task 22, so
-  // neither falls through to the generic lifecycle bubble the mapper gives every unmapped kind.
-  canvas_op: true,
-  canvas_event: true,
 };
 
 var SA_KIND_TO_TRANSCRIPT = {
@@ -112,6 +107,13 @@ var SA_KIND_TO_TRANSCRIPT = {
   done: "done",
   cancelled: "cancelled",
   error: "error",
+  // The agent canvas records (pivot P5, Task 22): an applied batch and a user
+  // interaction render as a slim chip (SA_canvasChipLabel), never a raw record
+  // and never the generic lifecycle bubble. A canvas_op that carries a call_id
+  // is the agent's own batch (its tool_call + tool_result already show it, the
+  // tool chip), so it is skipped in SA_toTranscript's loop, not mapped here.
+  canvas_op: "canvas_chip",
+  canvas_event: "canvas_chip",
 };
 
 // UX reconcile wave 3 (audit A item 6): the live/done "editing {file}
@@ -274,6 +276,83 @@ function SA_dividerLabel(rec) {
   return (p.node_id || "node") + " · " + (p.phase || "");
 }
 
+// A canvas_chip row's label (pivot P5, Task 22). A user interaction (a
+// canvas_event record, or a user_input carrying the click's attribution) reads
+// as who did what; an operator batch (a canvas_op with no call_id) reads as who
+// changed the canvas by how much.
+//
+// What the user ENTERED is never here: the S5 strip (the privacy ruling of
+// #872) removes a canvas.event's value and data from every structured copy the
+// transcript reads, and the transcript is a shared read. A change therefore
+// names only the control - the element's label, or its id when the element has
+// none - never the value (the lead's ruling after S9 dispatch).
+function SA_canvasChipLabel(rec) {
+  var p = (rec && rec.payload) || {};
+  if (rec && rec.kind === "canvas_op") {
+    var who = p.by || "someone";
+    if (SA_canvasIsClear(p.ops)) return who + " cleared the canvas";
+    var ch = p.changed || {};
+    var added = ch.added ? ch.added.length : 0;
+    var updated = ch.updated ? ch.updated.length : 0;
+    var removed = ch.removed ? ch.removed.length : 0;
+    return who + " updated the canvas +" + added + " ~" + updated + " -" + removed;
+  }
+  var ev = p.canvas_event || (rec && rec.kind === "canvas_event" ? p : null);
+  if (!ev) return "";
+  var by = ev.by || "someone";
+  var control = ev.label || ev.element || "the canvas";
+  switch (ev.kind) {
+    case "click": return by + " clicked " + control;
+    case "change": return by + " changed " + control;
+    case "set_value": return by + " set " + control;
+    case "emit": return by + " sent " + (ev.name || "a message") + " from " + control;
+    case "play": return by + " played " + control;
+    case "pause": return by + " paused " + control;
+    case "ended": return by + " finished " + control;
+    case "open": return by + " opened " + control;
+    default: return by + " interacted with " + control;
+  }
+}
+
+// Whether a batch's ops are a clear (the clear batch is [Clear], which the
+// normalizer writes as {"op": "clear"}).
+function SA_canvasIsClear(ops) {
+  if (!Array.isArray(ops)) return false;
+  for (var i = 0; i < ops.length; i++) {
+    if (ops[i] && ops[i].op === "clear") return true;
+  }
+  return false;
+}
+
+// The digest line a wake adds to a user message (payload.canvas_digest =
+// {rev, events: [attribution ...]}): at most three items, then the rest are
+// counted (they stay unread, read with canvas_get). A change item is the
+// control's label alone (the value is stripped); an audio event carries its
+// past-tense verb.
+function SA_canvasDigestLine(digest) {
+  var events = (digest && digest.events) || [];
+  if (!events.length) return "canvas changes: (none)";
+  var shown = events.slice(0, 3);
+  var parts = [];
+  for (var i = 0; i < shown.length; i++) parts.push(SA_canvasDigestItem(shown[i]));
+  var text = "canvas changes: " + parts.join(", ");
+  if (events.length > 3) text += ", and " + (events.length - 3) + " more";
+  return text;
+}
+
+function SA_canvasDigestItem(ev) {
+  var control = ev.label || ev.element || "the canvas";
+  switch (ev.kind) {
+    case "change": return control;
+    case "play": return control + " played";
+    case "pause": return control + " paused";
+    case "ended": return control + " finished";
+    case "open": return control + " opened";
+    case "set_value": return control + " set";
+    default: return control;
+  }
+}
+
 // The read path is visible=false (primer/api/routers/sessions.py's own
 // comment: the console needs the raw stream for audit/trace), so a
 // rewind's discarded rows arrive here same as anything else - nothing
@@ -398,6 +477,11 @@ function SA_toTranscript(records, session) {
   for (var i = 0; i < visible.length; i++) {
     var rec = visible[i];
     if (SA_SKIP_IN_TRANSCRIPT[rec.kind]) continue;
+    // An agent batch (pivot P5, Task 22) carries its tool call's id: its
+    // tool_call + tool_result already show the change (the tool chip), so the
+    // canvas_op record is a duplicate and is skipped. An operator batch has no
+    // tool rows and shows as a chip of its own.
+    if (rec.kind === "canvas_op" && (rec.payload || {}).call_id) continue;
     if (rec.kind === "user_input") { turnCauses = []; turnMarkers = {}; turnNotices = []; }
     var bare = SA_isBareTerminalError(rec);
     var scope = SA_failureScope(rec);
@@ -452,7 +536,13 @@ function SA_toTranscript(records, session) {
     // many (live finding 2026-08-26).
     if (rec.kind === "done"
         && ((rec.payload || {}).stop_reason === "tool_use")) continue;
-    var kind = notice ? "retry_notice" : (SA_KIND_TO_TRANSCRIPT[rec.kind] || "lifecycle");
+    // A waking click reaches the reader as a user_input that carries the
+    // click's attribution (payload.canvas_event): it reads as a chip, not as a
+    // block of text (the block is the session's own input and holds what the
+    // user entered - the privacy ruling keeps it out of the shared transcript).
+    var kind = notice ? "retry_notice"
+      : (rec.kind === "user_input" && (rec.payload || {}).canvas_event) ? "canvas_chip"
+      : (SA_KIND_TO_TRANSCRIPT[rec.kind] || "lifecycle");
     var row = {
       seq: rec.seq,
       kind: kind,
@@ -465,7 +555,9 @@ function SA_toTranscript(records, session) {
       // and persistence.py), which is the one place it lives.
       label: kind === "divider"
         ? SA_dividerLabel(rec)
-        : SA_rowText(rec),
+        : kind === "canvas_chip"
+          ? SA_canvasChipLabel(rec)
+          : SA_rowText(rec),
       payload: rec.payload || {},
       createdAt: rec.created_at,
       bare: bare,
@@ -491,3 +583,5 @@ window.SA_SKIP_IN_TRANSCRIPT = SA_SKIP_IN_TRANSCRIPT;
 window.SA_toTranscript = SA_toTranscript;
 window.SA_KIND_TO_TRANSCRIPT = SA_KIND_TO_TRANSCRIPT;
 window.SA_visibleRecords = SA_visibleRecords;
+window.SA_canvasChipLabel = SA_canvasChipLabel;
+window.SA_canvasDigestLine = SA_canvasDigestLine;

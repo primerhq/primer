@@ -3264,7 +3264,31 @@ function NV_SessionDoc(props) {
               ) : null}
             </div>
             <div className="nv-turn-text">{row.label}</div>
+            {row.payload && row.payload.canvas_digest ? (
+              <div className="nv-canvas-digest" data-testid={"nv-canvas-digest:" + row.seq}>
+                {window.SA_canvasDigestLine(row.payload.canvas_digest)}
+              </div>
+            ) : null}
           </div>
+        </div>
+      );
+    }
+    // A canvas click, change or operator edit (pivot P5, Task 22): a slim chip
+    // row, never a raw record. A waking click reaches here as a user_input that
+    // carries the click's attribution (SA_toTranscript maps it to canvas_chip);
+    // a silent change or a wait's answer is the canvas_event record itself. The
+    // digest a wake added (payload.canvas_digest) reads under it.
+    if (row.kind === "canvas_chip") {
+      return (
+        <div key={row.seq} className="nv-canvas-chip-row"
+          data-testid={"nv-canvas-chip:" + row.seq}>
+          <span className="nv-canvas-chip-mark">·</span>
+          <span className="nv-canvas-chip-text">{row.label}</span>
+          {row.payload && row.payload.canvas_digest ? (
+            <div className="nv-canvas-digest" data-testid={"nv-canvas-digest:" + row.seq}>
+              {window.SA_canvasDigestLine(row.payload.canvas_digest)}
+            </div>
+          ) : null}
         </div>
       );
     }
@@ -3527,9 +3551,15 @@ function NV_SessionDoc(props) {
               );
             })}
             {pending.map(function (row) {
-              var text = (row.parts || [])
-                .filter(function (p) { return p && p.type === "text"; })
-                .map(function (p) { return p.text; }).join("\n");
+              // A queued canvas click (pivot P5, Task 22) shows its chip label,
+              // not its raw block text: the block is the session's own input and
+              // holds what the user entered, which the shared reader must not see.
+              var canvasEvent = row.attribution && row.attribution.canvas_event;
+              var text = canvasEvent
+                ? window.SA_canvasChipLabel({ kind: "user_input", payload: { canvas_event: canvasEvent } })
+                : (row.parts || [])
+                    .filter(function (p) { return p && p.type === "text"; })
+                    .map(function (p) { return p.text; }).join("\n");
               return (
                 <div key={row.id} className="nv-steer-chip-wrap">
                   <div className="nv-steer-chip"
