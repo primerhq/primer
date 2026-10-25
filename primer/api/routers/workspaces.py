@@ -1082,6 +1082,13 @@ class _ReplyBindingBody(BaseModel):
     """Body of ``PUT /v1/workspaces/{id}/reply_binding``."""
 
     channel_id: str = Field(..., min_length=1, description="Channel id to bind.")
+    anchor: str | None = Field(
+        default=None,
+        description=(
+            "Optional thread in that channel every post of the workspace's sessions goes into. Omit it to keep the stored anchor "
+            "(a re-save of the same binding), or send null to clear it (round 2 of #932, item 8)."
+        ),
+    )
 
 
 @workspace_router.put(
@@ -1129,10 +1136,16 @@ async def set_workspace_reply_binding(
                 "message": f"Channel {body.channel_id!r} does not exist.",
             },
         )
+    # An anchor a tool set is kept when the body omits it: the console's re-save sends the channel only (round 2 of #932, item 8, it used
+    # to drop the stored anchor here and the workspace answered in the room again). An explicit null clears it.
+    if "anchor" in body.model_fields_set:
+        anchor = body.anchor
+    else:
+        anchor = row.reply_binding.anchor if row.reply_binding is not None else None
     # The binding only, and only while the workspace is not terminating (round 2 of #917): the check above read the row, and a delete
     # may have marked it since, so the write itself is fenced on the phase.
     updated = await write_workspace_fields(
-        workspace_storage, row, {"reply_binding": WorkspaceChannelLink(channel_id=body.channel_id)},
+        workspace_storage, row, {"reply_binding": WorkspaceChannelLink(channel_id=body.channel_id, anchor=anchor)},
         phases=[phase for phase in WORKSPACE_PHASES if phase != "terminating"],
     )
     if updated is None:
