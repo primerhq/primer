@@ -211,7 +211,7 @@ from the same block: `ChatConfig` dropped `relay_mode` (stored, never
 read) and forbids extras, so a channel row that still carries it does
 not decode. It removes the key from every stored channel's
 `config.chats` through a migration-local `Channel` view
-(`extra="allow"`, `config` as a plain dict). It reads every row before
+(`extra="allow"`, `config` as a plain dict or null, so a row stored before the live model's default reads). It reads every row before
 it writes any, and a row without the key is left alone.
 
 ### The `document_content` table

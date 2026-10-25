@@ -36,11 +36,15 @@ _RETIRED_KEY = "relay_mode"
 
 
 class Channel(Identifiable):  # noqa: N801 - name selects the storage table
-    """Migration-local view of a channel row, with an untyped config block."""
+    """Migration-local view of a channel row, with an untyped config block.
+
+    ``config`` may be ``None``: a row stored before the live model's default was written (or by a tool that omits it) carries
+    ``config: null``, and the step must read such a row to keep paging, leaving it alone (round 2 of #932, item 7).
+    """
 
     model_config = ConfigDict(extra="allow")
 
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, Any] | None = Field(default_factory=dict)
 
 
 class M019DropChatRelayMode:
