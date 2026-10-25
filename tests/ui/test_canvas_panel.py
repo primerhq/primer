@@ -319,3 +319,60 @@ def test_the_window_listener_accepts_only_the_readiness(ctx) -> None:
     # after the handshake: the port owns everything; even a ready from the frame is dropped on window
     after = js(ctx, "NV_canvasWindowMessage({source: 'FW', data: {type: 'ready', protocol: 1}}, 'FW', true)")
     assert after is None
+
+
+# --- the phone: a chip in the header, a top sheet instead of a split -----------
+
+
+def test_a_phone_shows_a_chip_not_a_split(ctx) -> None:
+    """Mobile, count 3, state null: the header's chip reads 'Canvas · 3' and the
+    panel draws neither the split (nv-canvas) nor the sheet (nv-canvas-sheet) - a
+    phone shows the chip only until the person opens it."""
+    ctx.eval("window.__mobile = true;")
+    ctx.eval("window.__con.canvas = null;")
+    ctx.eval("window.__resources['nv-canvas:s1'] = " + PLAYLIST_VIEW + ";")
+    ctx.eval("MR.mount(window.NV_CanvasChip, {count: 3, onOpen: function () { window.__chipOpened = true; }});")
+    chip = js(ctx, 'MR.find("nv-canvas-chip")')
+    assert chip is not None
+    assert js(ctx, 'MR.find("nv-canvas-chip").props["data-verb"]') == "canvas.show"
+    assert any("Canvas · 3" in t for t in js(ctx, "MR.texts()"))
+    # the panel on a phone, not opened: no split, no sheet
+    ctx.eval("MR.mount(window.NV_CanvasPanel, {sid: 's1', wid: 'w1', session: " + SESSION + ", focused: true});")
+    assert js(ctx, 'MR.find("nv-canvas")') is None
+    assert js(ctx, 'MR.find("nv-canvas-sheet")') is None
+
+
+def test_the_chip_opens_the_top_sheet(ctx) -> None:
+    """Clicking the chip sets the canvas state to 'open'; on a phone with state
+    'open' the sheet holds the frame and carries a close affordance."""
+    ctx.eval("window.__mobile = true;")
+    ctx.eval("window.__con.canvas = null;")
+    ctx.eval("window.__resources['nv-canvas:s1'] = {data: " + PLAYLIST_VIEW + ", error: null, loading: false, degraded: false, refetch: function(){}};")
+    ctx.eval("MR.mount(window.NV_CanvasChip, {count: 3, onOpen: function () { window.__con.setCanvas('open'); }});")
+    ctx.eval('MR.click("nv-canvas-chip")')
+    assert js(ctx, "window.__setCanvas") == "open"
+    # with state 'open' the sheet (not the split) holds the frame
+    ctx.eval("window.__con.canvas = 'open';")
+    ctx.eval("MR.mount(window.NV_CanvasPanel, {sid: 's1', wid: 'w1', session: " + SESSION + ", focused: true});")
+    assert js(ctx, '!!MR.find("nv-canvas-sheet")') is True
+    assert js(ctx, 'MR.find("nv-canvas")') is None
+    assert js(ctx, '!!MR.find("nv-canvas-frame")') is True
+    close = js(ctx, 'MR.find("nv-canvas-sheet-close")')
+    assert close is not None
+    assert js(ctx, 'MR.find("nv-canvas-sheet-close").props["data-verb"]') == "canvas.hide"
+
+
+def test_closing_the_sheet_returns_to_automatic(ctx) -> None:
+    """The sheet's close button sets the canvas state back to null, so the phone
+    falls back to automatic (hidden until the person opens it again)."""
+    ctx.eval("window.__mobile = true;")
+    ctx.eval("window.__con.canvas = 'open';")
+    ctx.eval("window.__resources['nv-canvas:s1'] = {data: " + PLAYLIST_VIEW + ", error: null, loading: false, degraded: false, refetch: function(){}};")
+    ctx.eval("MR.mount(window.NV_CanvasPanel, {sid: 's1', wid: 'w1', session: " + SESSION + ", focused: true});")
+    assert js(ctx, '!!MR.find("nv-canvas-sheet")') is True
+    ctx.eval('MR.click("nv-canvas-sheet-close")')
+    assert js(ctx, "window.__setCanvas") is None
+    # a not-opened phone again draws no sheet
+    ctx.eval("window.__con.canvas = null;")
+    ctx.eval("MR.rerender({sid: 's1', wid: 'w1', session: " + SESSION + ", focused: true});")
+    assert js(ctx, 'MR.find("nv-canvas-sheet")') is None

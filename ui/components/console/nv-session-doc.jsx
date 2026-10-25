@@ -876,6 +876,21 @@ function NV_SessionHeader(props) {
           </svg>
         </button>
       ) : null}
+      {/* The session's canvas on a phone (pivot P5, Task 21): a chip in the header
+          that opens the top sheet (the desktop gets the split + the overflow menu
+          instead). Shown only while the canvas has elements or is open. The chip
+          sets the doc's local state always, and the URL state when this doc is the
+          focused one (the URL belongs to the focused doc only). */}
+      {isMobile && (canvasView.count > 0 || canvasView.shown)
+        && typeof window.NV_CanvasChip === "function" ? (
+          <window.NV_CanvasChip count={canvasView.count}
+            onOpen={function () {
+              window.NV_CANVAS_LOCAL[sid] = "open";
+              if (con.doc && con.doc.kind === "session" && con.doc.ref === sid && con.setCanvas) {
+                con.setCanvas("open");
+              }
+            }} />
+        ) : null}
       <div className="nv-bind-wrap">
         <button type="button" className="nv-head-iconbtn"
           data-testid="nv-session-overflow"

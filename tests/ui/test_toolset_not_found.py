@@ -103,13 +103,12 @@ def test_the_not_found_copy_has_no_em_dash() -> None:
     assert "\u2014" not in ctx.eval("__text(MR.find('toolset-not-found'))")
 
 
-CANVAS_REASON = ("The canvas toolset is off. It stays out of the catalogue, and agents cannot bind its tools, until the canvas panel ships "
-                 "(canvas.agent_tools_enabled).")
+CANVAS_REASON = ("The canvas toolset is off. An operator switched it off (canvas.agent_tools_enabled); it stays out of the catalogue, and agents cannot bind its tools, until it is switched back on.")
 
 
 def test_a_canvas_link_says_canvas_is_off_not_that_it_was_deleted() -> None:  # audit G3-08
-    """While canvas.agent_tools_enabled is off (the default until the canvas panel ships) the server answers 404 for the canvas toolset: it is off
-    by design, not deleted, and an agent's References row or an old bookmark still links to it."""
+    """When canvas.agent_tools_enabled is off (an operator choice now that the canvas panel ships and it is on by default) the server
+    answers 404 for the canvas toolset: it is off by design, not deleted, and an agent's References row or an old bookmark still links to it."""
     ctx = _mount("canvas", {"status": 404, "title": "Not Found", "detail": "Toolset 'canvas' does not exist"})
     reason = ctx.eval("__text(MR.find('toolset-not-found-reason'))")
     assert reason == CANVAS_REASON

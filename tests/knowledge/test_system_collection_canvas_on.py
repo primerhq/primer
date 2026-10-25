@@ -1,8 +1,9 @@
-"""The boot wiki with the canvas toolset off by design (audit G8-02; review B1 on #856).
+"""The boot wiki with the canvas toolset on by default (pivot P5, S8: the canvas panel ships).
 
-``canvas.agent_tools_enabled`` ships off, so the seed leaves the canvas out of the built-in providers. The wiki build expects every
-reserved toolset, and used to read the missing canvas as a skipped one: every boot then left the wiki as stored ("degraded: skipped
-toolset(s): canvas"), and a fresh install never got one. A toolset that is off BY DESIGN is not expected.
+``canvas.agent_tools_enabled`` now ships on, so the seed holds the canvas in the built-in providers and the wiki build writes the
+canvas reference pages on every install. The setting still lets an operator switch the canvas tools off; a build with it off prunes
+the canvas pages it no longer holds. A toolset that is on is expected, so a build that is missing the hand-written pages is the only
+one that is degraded (the canvas is never "off by design" again).
 
 These run the boot path for real: the real ``RESERVED_TOOLSET_IDS``, the real hand-written wiki and agent docs, the default settings
 and a registry that holds every built-in provider, through ``builtin_toolset_providers`` as the lifespan calls it. Nothing is
@@ -57,9 +58,9 @@ async def _paths(sp) -> set[str]:
     return {node.path for node in nodes}
 
 
-async def test_the_wiki_is_written_while_the_canvas_toolset_is_off(sp, caplog):
+async def test_the_wiki_is_written_with_the_canvas_toolset_on(sp, caplog):
     providers = await builtin_toolset_providers(_registry(sp))
-    assert "canvas" not in providers and {"system", "misc", "crud"} <= set(providers)
+    assert "canvas" in providers and {"system", "misc", "crud"} <= set(providers)
     with caplog.at_level(logging.INFO, logger="primer.knowledge.system_collection"):
         await regenerate_system_collection(sp, toolset_providers=providers, app_version=_VERSION)
     assert "degraded" not in caplog.text, caplog.text
@@ -67,18 +68,20 @@ async def test_the_wiki_is_written_while_the_canvas_toolset_is_off(sp, caplog):
     assert stamp is not None and stamp.app_version == _VERSION, "the build claimed the stamp"
     paths = await _paths(sp)
     assert "reference/tools/misc/get_datetime" in paths and "start-here/calling-tools" in paths
-    assert not [path for path in paths if path.startswith(_CANVAS_PAGES)]
+    # the canvas reference pages are written: the toolset is on by default
+    assert {f"{_CANVAS_PAGES}/canvas_get", f"{_CANVAS_PAGES}/canvas_apply", f"{_CANVAS_PAGES}/canvas_wait"} <= paths
 
 
-async def test_an_installs_stale_canvas_pages_are_pruned_on_the_next_build(sp):
-    """An install that wrote the canvas reference pages (the toolset was on) loses them on the first build with it off."""
+async def test_a_switched_off_canvas_prunes_its_pages_on_the_next_build(sp):
+    """An install that wrote the canvas reference pages (the toolset is on by default) loses them on the first build with it switched off."""
     registry = _registry(sp)
-    await write_canvas_settings(sp, CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=True))
+    # the default is on: the canvas pages are written
     await regenerate_system_collection(sp, toolset_providers=await builtin_toolset_providers(registry), app_version=_VERSION)
     assert {f"{_CANVAS_PAGES}/canvas_get", f"{_CANVAS_PAGES}/canvas_apply", f"{_CANVAS_PAGES}/canvas_wait"} <= await _paths(sp)
     with_canvas = (await read_stamp(sp)).content_hash
 
-    await write_canvas_settings(sp, CanvasSettings(id=CANVAS_SETTINGS_ID))
+    # switch the canvas tools off: the stale canvas pages are pruned on the next build
+    await write_canvas_settings(sp, CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=False))
     await regenerate_system_collection(sp, toolset_providers=await builtin_toolset_providers(registry), app_version=_VERSION)
     paths = await _paths(sp)
     assert not [path for path in paths if path.startswith(_CANVAS_PAGES)], "the stale canvas pages were pruned"

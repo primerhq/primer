@@ -2,9 +2,9 @@
 
 LEAD-SCHEDULED: never run locally (AGENTS.md section 5); the implementer only collects and lints this file.
 
-The canvas toolset stays off until the canvas panel ships (S8), so these journeys draw as an operator (``POST .../canvas/ops``) and click as a
-person (``POST .../canvas/events``); the agent needs no canvas tool to be woken by a click. The journeys of an agent that draws and waits
-(plan Task 25, journeys 1 and 2) join this file with S10, once the toolset is on by default.
+The canvas toolset is on by default now that the canvas panel ships (S8), so an agent can draw it. These journeys still draw as an
+operator (``POST .../canvas/ops``) and click as a person (``POST .../canvas/events``): the agent needs no canvas tool to be woken by a
+click. The journeys of an agent that draws and waits (plan Task 25, journeys 1 and 2) join this file with S10.
 
 1. An operator draws, a Select change is only recorded, and a click wakes the idle session: the agent's next instruction is the
    ``<canvas_event>`` block, which carries the user's current values, and the event feed lists both events.

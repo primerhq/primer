@@ -12,7 +12,7 @@ The agent's `tools` list is the model's whole tool surface: each entry is a scop
 
 ### Scoped ids
 
-A tool is granted as `<toolset_id>__<tool_name>` (for example `system__list_agents`). The toolset is either a built-in one (`system`, `workspaces`, `workspace_ext`, `workspace`, `misc`, `web`, `harness`, `trigger`, `collections`, `crud`, `canvas`) or a stored `Toolset` row (an MCP toolset, or the `search` row). A tool id with no `__` is checked as a toolset name but matches no tool, so it never provides one. The `canvas` toolset resolves only while the canvas setting `agent_tools_enabled` is on; the setting ships off until the canvas panel does, so a `canvas` grant is refused today.
+A tool is granted as `<toolset_id>__<tool_name>` (for example `system__list_agents`). The toolset is either a built-in one (`system`, `workspaces`, `workspace_ext`, `workspace`, `misc`, `web`, `harness`, `trigger`, `collections`, `crud`, `canvas`) or a stored `Toolset` row (an MCP toolset, or the `search` row). A tool id with no `__` is checked as a toolset name but matches no tool, so it never provides one. The `canvas` toolset resolves while the canvas setting `agent_tools_enabled` is on, which it is by default now that the canvas panel ships; switched off, a `canvas` grant is refused like a toolset that does not exist.
 
 ### What the session adds
 

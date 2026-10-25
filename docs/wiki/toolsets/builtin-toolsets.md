@@ -21,7 +21,7 @@ The ten built-in toolsets:
 | `web` | Web search, page fetch, HTTP requests and downloads. | [search and fetch](web/search-and-fetch), [HTTP and downloads](web/http-and-downloads) | `web__download` | none |
 | `misc` | The time, UUIDs, hashes, arithmetic and `misc__inform_user`. | [time, ids, hashes and math](utilities/time-ids-hashes-math), [inform the user](human-in-the-loop/inform-user) | none | none |
 | `crud` | Create and update agents, graphs, triggers and Python toolsets. Every tool in it is approval-gated by default. | [agents](agents/create-and-edit), [graphs](graphs/create-and-edit), [triggers](triggers/triggers), [Python toolsets](toolsets/python-toolsets) | none | none |
-| `canvas` | The session canvas toolset is off by default until the canvas panel ships (the setting `canvas.agent_tools_enabled`). | [the canvas](human-in-the-loop/canvas) | every tool | `canvas__canvas_wait` |
+| `canvas` | The session canvas toolset, on by default now that the canvas panel ships (an operator can switch it off with the setting `canvas.agent_tools_enabled`). | [the canvas](human-in-the-loop/canvas) | every tool | `canvas__canvas_wait` |
 
 Three more ids are scopes, not toolsets. You cannot reach them through `system__call_tool`:
 - `workspace`: the seven session file tools (`workspace__ls` to `workspace__exec`). They are always on in a workspace session and you call them directly. See [in-session file tools](workspaces/in-session-file-tools).

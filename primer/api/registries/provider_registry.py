@@ -209,7 +209,7 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
 async def toolsets_off_by_design(storage_provider: "StorageProvider") -> frozenset[str]:
     """The reserved toolsets this install has switched off on purpose, not through a failure.
 
-    ``canvas`` while ``CanvasSettings.agent_tools_enabled`` is off (audit G8-02: the toolset stays off until the canvas panel ships).
+    ``canvas`` while ``CanvasSettings.agent_tools_enabled`` is off (an operator choice now that the canvas panel ships and the toolset is on by default).
     ``get_toolset`` answers such an id as unknown; a reader that expects every reserved toolset (the boot wiki build, the seed, the MCP
     catalogue) leaves these out instead of reporting them missing. Raises what ``read_canvas_settings`` raises for an undecodable row.
     """

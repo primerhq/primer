@@ -587,6 +587,14 @@ async def _enable_canvas_tools(storage_provider) -> None:
     await write_canvas_settings(storage_provider, CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=True))
 
 
+async def _disable_canvas_tools(storage_provider) -> None:
+    """The canvas tools are ON by default; an operator switches them off with this."""
+    from primer.canvas.settings import write_canvas_settings
+    from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
+
+    await write_canvas_settings(storage_provider, CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=False))
+
+
 async def test_canvas_is_a_reserved_builtin_resolved_when_enabled(fake_storage_provider):
     from primer.model.except_ import NotFoundError
 
@@ -598,69 +606,76 @@ async def test_canvas_is_a_reserved_builtin_resolved_when_enabled(fake_storage_p
         cross_encoder_factory=lambda p: object(), toolset_factory=lambda t: object(),
         canvas_toolset_provider=p,
     )
+    # canvas is ON by default now that the canvas panel ships, so it resolves at once
+    assert await reg.get_toolset("canvas") is p
+    # switched off explicitly, it is unresolvable again
+    await _disable_canvas_tools(fake_storage_provider)
     with pytest.raises(NotFoundError):
         await reg.get_toolset("canvas")
-    await _enable_canvas_tools(fake_storage_provider)
-    assert await reg.get_toolset("canvas") is p
 
 
 @pytest.mark.asyncio
-async def test_canvas_toolset_is_hidden_and_unresolvable_by_default(client, app, fake_storage_provider):
+async def test_canvas_toolset_is_visible_and_resolvable_by_default(client, app, fake_storage_provider):
+    """The canvas toolset is ON by default now that the canvas panel ships: it is listed, resolvable, and its tools are reachable - not reported deleted."""
     from primer.agent.agent_checks import missing_toolset_ids
-    from primer.model.except_ import NotFoundError
     from primer.model.provider import Toolset
     from primer.toolset.system import build_system_toolset
 
     ids = [it["id"] for it in (await client.get("/v1/toolsets/builtin")).json()["items"]]
-    assert "canvas" not in ids
-    assert (await client.get("/v1/toolsets/canvas")).status_code == 404
+    assert "canvas" in ids
+    assert (await client.get("/v1/toolsets/canvas")).status_code == 200
     grouped = {it["id"]: it for it in (await client.get("/v1/tools")).json()["items"]}
-    assert "canvas" not in grouped
+    assert "canvas" in grouped
     flat = {item["id"] for item in (await client.get("/v1/tools/catalogue")).json()["items"]}
-    assert not any(tid.startswith("canvas__") for tid in flat)
-    with pytest.raises(NotFoundError):
-        await app.state.provider_registry.get_toolset("canvas")
+    assert any(tid.startswith("canvas__") for tid in flat)
+    assert await app.state.provider_registry.get_toolset("canvas") is not None
 
     sys_ts = build_system_toolset(storage_provider=fake_storage_provider, provider_registry=app.state.provider_registry)
     desc = await sys_ts.call(tool_name="describe_tool", arguments={"toolset_id": "canvas", "tool_name": "canvas_get"})
-    assert desc.is_error and json.loads(desc.output)["type"] == "not-found"
+    assert not desc.is_error, "canvas_get is described: the toolset is on"
     called = await sys_ts.call(tool_name="call_tool", arguments={"toolset_id": "canvas", "tool_name": "canvas_get", "arguments": {}})
-    assert called.is_error and json.loads(called.output)["type"] == "not-found"
+    assert not (called.is_error and json.loads(called.output).get("type") == "not-found"), "a canvas tool is reached, not reported deleted"
 
     missing = await missing_toolset_ids(
         ["canvas__canvas_get", "system__call_tool"],
         toolsets=fake_storage_provider.get_storage(Toolset),
         storage_provider=fake_storage_provider,
     )
-    assert missing == ["canvas"]
+    assert missing == []
 
 
-async def test_a_canvas_toolset_that_is_off_is_left_out_of_the_seed_without_a_warning(app, caplog):
-    """The boot ensure pass and the internal collections take every built-in from the registry: the canvas is left out while it is
-    off, which is the design, not a failure to warn about on every boot."""
+async def test_a_canvas_toolset_that_is_off_is_left_out_of_the_seed_without_a_warning(app, fake_storage_provider, caplog):
+    """The canvas toolset is ON by default, so the boot ensure pass and the internal collections take it from the registry. Switching it
+    off (an operator choice) leaves it out quietly at INFO - a setting, not a failure to warn about on every boot."""
     import logging
 
     from primer.bootstrap.seed import builtin_toolset_providers
 
+    # the default is on: the seed holds the canvas
+    assert "canvas" in await builtin_toolset_providers(app.state.provider_registry)
+    # switched off: left out of the seed, at INFO, not a warning
+    await _disable_canvas_tools(fake_storage_provider)
     with caplog.at_level(logging.INFO, logger="primer.bootstrap.seed"):
         providers = await builtin_toolset_providers(app.state.provider_registry)
     assert "canvas" not in providers and "system" in providers
     assert [r.levelname for r in caplog.records if "canvas" in r.getMessage()] == ["INFO"]
 
 
-async def test_the_mcp_catalogue_leaves_an_off_canvas_toolset_out_without_a_warning(app, fake_storage_provider, caplog):
-    """Review N3 on #856: every MCP tools/list walks the built-ins; the canvas that is off by design is skipped quietly, and listed
-    once it is on."""
+async def test_the_mcp_catalogue_lists_the_canvas_and_skips_an_off_one_without_a_warning(app, fake_storage_provider, caplog):
+    """Every MCP tools/list walks the built-ins: the canvas is listed by default (on); switched off, it is skipped quietly, with no warning."""
     import logging
 
     from primer.mcp.exposure import ExposureDeps, _iter_catalogue
 
     deps = ExposureDeps(storage_provider=fake_storage_provider, provider_registry=app.state.provider_registry)
+    # the default is on: the canvas is listed
+    on = [tool.toolset_id async for tool, _provider in _iter_catalogue(deps)]
+    assert on and "canvas" in on
+    # switched off: skipped quietly, no warning logged
+    await _disable_canvas_tools(fake_storage_provider)
     with caplog.at_level(logging.WARNING, logger="primer.mcp.exposure"):
         off = [tool.toolset_id async for tool, _provider in _iter_catalogue(deps)]
     assert off and "canvas" not in off and "canvas" not in caplog.text
-    await _enable_canvas_tools(fake_storage_provider)
-    assert "canvas" in [tool.toolset_id async for tool, _provider in _iter_catalogue(deps)]
 
 
 @pytest.mark.asyncio

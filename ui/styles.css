@@ -4052,6 +4052,17 @@ input, textarea, select { font: inherit; color: inherit; }
 .nv-canvas-state-error { color: var(--danger, #d96441); }
 .nv-canvas-resize { flex: 0 0 auto; height: 9px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; color: var(--text-4); font-size: 10px; background: var(--bg-2); border-top: 1px solid var(--border); }
 .nv-canvas-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* The phone: a chip in the session header, and a top sheet (70vh, pinned at the
+   top) in place of the split. */
+.nv-canvas-chip { flex: 0 0 auto; border: 1px solid var(--border); background: var(--bg-2); color: var(--text); border-radius: 999px; padding: 3px 10px; font-size: 12px; line-height: 1.4; cursor: pointer; }
+.nv-canvas-chip:hover { background: var(--bg-3, var(--bg-2)); border-color: var(--accent); }
+.nv-canvas-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nv-canvas-sheet { position: fixed; top: 0; left: 0; right: 0; height: 70vh; z-index: 40; display: flex; flex-direction: column; background: var(--bg-1); border-bottom: 1px solid var(--border); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2); }
+.nv-canvas-sheet-head { display: flex; align-items: center; gap: 8px; padding: 6px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-3); flex: 0 0 auto; }
+.nv-canvas-sheet-close { border: none; background: none; color: var(--text-4); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: var(--r-4, 4px); }
+.nv-canvas-sheet-close:hover { color: var(--text); background: var(--bg-2); }
+.nv-canvas-sheet-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.nv-canvas-sheet-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .nv-transcript { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; position: relative; }
 .nv-transcript-inner {
   /* Full-width: the doc pane is the operator's working surface, and a

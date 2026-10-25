@@ -438,7 +438,63 @@ function NV_CanvasPanel(props) {
     setTick(function (t) { return t + 1; });
   }
 
+  // The sheet's close: back to null (automatic), not "closed" - the phone falls
+  // back to the chip-driven flow rather than pinning itself shut.
+  function closeSheet() {
+    NV_CANVAS_LOCAL[sid] = null;
+    if (focused && con.setCanvas) con.setCanvas(null);
+    setTick(function (t) { return t + 1; });
+  }
+
+  // The body the split and the sheet both hold: loading, error, empty, or the
+  // frame (with the bridge).
+  function body() {
+    if (loading) {
+      return (
+        <div className="nv-canvas-state" data-testid="nv-canvas-loading">Loading canvas…</div>
+      );
+    }
+    if (errored) {
+      return (
+        <div className="nv-canvas-state nv-canvas-state-error" data-testid="nv-canvas-error">
+          <span>The canvas could not load: {NV_canvasProblemText(res.error)}</span>
+          <button type="button" className="nv-btn-secondary"
+            data-testid="nv-canvas-error-retry"
+            onClick={function () { if (res.refetch) res.refetch(); }}>Try again</button>
+        </div>
+      );
+    }
+    if (count === 0) {
+      return (
+        <div className="nv-canvas-state" data-testid="nv-canvas-empty">
+          Nothing on the canvas yet. An agent draws here with canvas_apply.
+        </div>
+      );
+    }
+    return (
+      <NV_CanvasFrame sid={sid} wid={wid} session={props.session} data={data}
+        onEvent={function () { if (res.refetch) res.refetch(); }} />
+    );
+  }
+
   if (!shown) return null;
+  if (mobile) {
+    // A phone gets a top sheet (70vh, pinned at the top) instead of the split:
+    // the chip in the header opens it, its close button returns to automatic.
+    return (
+      <div className="nv-canvas-sheet" data-testid="nv-canvas-sheet">
+        <div className="nv-canvas-sheet-head">
+          <span className="nv-canvas-title">Canvas</span>
+          {data ? <span className="nv-canvas-rev">rev {data.rev}</span> : null}
+          <span style={{ flex: 1 }} />
+          <button type="button" className="nv-canvas-sheet-close"
+            data-testid="nv-canvas-sheet-close" data-verb="canvas.hide"
+            aria-label="Close canvas" onClick={closeSheet}>×</button>
+        </div>
+        <div className="nv-canvas-sheet-body">{body()}</div>
+      </div>
+    );
+  }
   return (
     <div className="nv-canvas" data-testid="nv-canvas" style={{ height: split + "%" }}>
       <div className="nv-canvas-head">
@@ -449,25 +505,7 @@ function NV_CanvasPanel(props) {
           data-testid="nv-canvas-hide" data-verb="canvas.hide"
           aria-label="Hide canvas" onClick={toggle}>×</button>
       </div>
-      <div className="nv-canvas-body">
-      {loading ? (
-        <div className="nv-canvas-state" data-testid="nv-canvas-loading">Loading canvas…</div>
-      ) : errored ? (
-        <div className="nv-canvas-state nv-canvas-state-error" data-testid="nv-canvas-error">
-          <span>The canvas could not load: {NV_canvasProblemText(res.error)}</span>
-          <button type="button" className="nv-btn-secondary"
-            data-testid="nv-canvas-error-retry"
-            onClick={function () { if (res.refetch) res.refetch(); }}>Try again</button>
-        </div>
-      ) : (count === 0) ? (
-        <div className="nv-canvas-state" data-testid="nv-canvas-empty">
-          Nothing on the canvas yet. An agent draws here with canvas_apply.
-        </div>
-      ) : (
-        <NV_CanvasFrame sid={sid} wid={wid} session={props.session} data={data}
-          onEvent={function () { if (res.refetch) res.refetch(); }} />
-      )}
-      </div>
+      <div className="nv-canvas-body">{body()}</div>
       <div className="nv-canvas-resize" data-testid="nv-canvas-resize"
         role="separator" aria-orientation="horizontal"
         aria-valuemin={20} aria-valuemax={80} aria-valuenow={split}
@@ -478,6 +516,22 @@ function NV_CanvasPanel(props) {
         <span aria-hidden="true">⋯</span>
       </div>
     </div>
+  );
+}
+
+// --- the phone chip -------------------------------------------------------------
+
+// The affordance a phone gets in the session header (the desktop gets the split
+// and the overflow menu): a button that names the canvas and its element count,
+// and opens the top sheet. Shown by the header only while the canvas has
+// elements or is open.
+function NV_CanvasChip(props) {
+  return (
+    <button type="button" className="nv-canvas-chip"
+      data-testid="nv-canvas-chip" data-verb="canvas.show"
+      onClick={props.onOpen}>
+      {"Canvas · " + props.count}
+    </button>
   );
 }
 
@@ -499,3 +553,8 @@ window.NV_canvasViewFor = NV_canvasViewFor;
 window.NV_registerCanvasVerbs = NV_registerCanvasVerbs;
 window.NV_CanvasPanel = NV_CanvasPanel;
 window.NV_CanvasFrame = NV_CanvasFrame;
+window.NV_CanvasChip = NV_CanvasChip;
+// The docs' local open/closed state (exported so the session header's phone chip
+// can set it when the doc is not the focused one; the focused doc's state lives
+// in the URL).
+window.NV_CANVAS_LOCAL = NV_CANVAS_LOCAL;

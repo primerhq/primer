@@ -129,7 +129,7 @@ Reference: [`system__find_agents`](reference/tools/system/find_agents).
 - The id is immutable, and the pattern is checked on create only. A row stored under an older id keeps working.
 - `agent_description_blank` fires on create and on an update that MAKES the description blank: other agents find an agent by its description, so an empty one is refused.
 - A tool id with no `__` is checked as a toolset name but matches no tool, so it never provides one. Always write `<toolset_id>__<tool_name>`.
-- A tool id naming the `canvas` toolset resolves only while the canvas setting `agent_tools_enabled` is on; the setting ships off until the canvas panel does, so a `canvas` grant is refused today like a toolset that does not exist.
+- A tool id naming the `canvas` toolset resolves while the canvas setting `agent_tools_enabled` is on, which it is by default now that the canvas panel ships; switched off, a `canvas` grant is refused like a toolset that does not exist.
 - Deleting an agent that a graph agent node, an open session or a trigger subscription still targets is refused with `type=conflict` and the `in_use_by` list. Detach them first.
 - Deleting the seeded `operator` or `builder` marks the install as not set up: admins see the Finish setup screen from their next page load and every other user waits on a setup screen until the agent is back. `POST /v1/setup/seed` (or the next boot) re-seeds.
 - A `harness_id` row is managed by its harness: create with `harness_id` set is refused (`managed_field_set`), and update and delete are refused with `managed_entity`. Sync the harness instead of editing the row.
