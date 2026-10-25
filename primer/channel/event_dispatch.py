@@ -94,6 +94,11 @@ def _artefacts(result) -> list[tuple[str, str | None]]:
 SESSION_STARTING_KINDS: frozenset[str] = frozenset({"agent_fresh_session", "graph_fresh_session"})
 
 
+#: Rooms whose session-starting bindings were dropped by :func:`_without_session_starts` and reported: the warning fires once per
+#: room and process, not once per event (round 2 of #932, item 4).
+_ROOM_DISABLED_REPORTED: set[str] = set()
+
+
 def _without_session_starts(triggers: list, subscriptions: dict, *, event: ChannelEvent, channel_id: str | None) -> tuple[list, dict]:
     """Drop the bindings that would start a session in a room whose ``chats.enabled`` is false.
 
@@ -106,19 +111,29 @@ def _without_session_starts(triggers: list, subscriptions: dict, *, event: Chann
     kept_triggers: list = []
     kept: dict = {}
     dropped = 0
+    dropped_triggers: list[str] = []
     for trigger in triggers:
         subs = subscriptions.get(trigger.id, [])
         remaining = [sub for sub in subs if sub.config.kind not in SESSION_STARTING_KINDS]
-        dropped += len(subs) - len(remaining)
+        gone = len(subs) - len(remaining)
+        if gone:
+            dropped_triggers.append(trigger.id)
+        dropped += gone
         kept[trigger.id] = remaining
         if remaining or not subs:
             kept_triggers.append(trigger)
     if dropped:
         metrics.channel_events_skipped_total.labels(reason="room_disabled").inc()
-        logger.debug(
-            "channel event %s: room %s has chats.enabled false; %d binding(s) that start a session were not fired",
-            event.event_id, channel_id, dropped,
-        )
+        # Once per room and process (round 2 of #932, item 4): the steady-state drop is expected, but the FIRST one must say the room
+        # and its triggers, so an operator who sees no session start can find the switch that stopped it.
+        room_key = channel_id or (event.room_external_id or "?")
+        if room_key not in _ROOM_DISABLED_REPORTED:
+            _ROOM_DISABLED_REPORTED.add(room_key)
+            logger.warning(
+                "channel event %s: room %s has chats.enabled false; %d binding(s) that start a session were not fired (triggers %s); "
+                "the room will not start sessions until the channel is re-enabled",
+                event.event_id, room_key, dropped, ", ".join(dropped_triggers),
+            )
     return kept_triggers, kept
 
 

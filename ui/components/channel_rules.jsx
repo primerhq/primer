@@ -159,6 +159,9 @@ function ChannelRulesPage({ pushToast }) {
   const { isMobile } = useViewport();
   // Every channel provider, every page (PR_fetchAllPages): they fill the provider filter and the rule dialog's provider select.
   const providers = useResource("cr-providers", (signal) => PR_fetchAllPages("/channel_providers", { signal, apiFetch }), {});
+  // Every room, every page: maps a room's channel id to its config.chats.enabled so a binding that starts a session can be
+  // flagged when its room has "Start sessions from inbound messages" off (the backend gate is chats.enabled === true).
+  const channels = useResource("cr-channels", (signal) => PR_fetchAllPages("/channels", { signal, apiFetch }), {});
   // Channel triggers are ordinary triggers with config.kind == "channel".
   // The list endpoint filters by kind server-side; we keep the client-side
   // config.kind guard as a belt-and-braces check.
@@ -175,6 +178,13 @@ function ChannelRulesPage({ pushToast }) {
   }
   const provs = (providers.data && providers.data.items) || [];
   const trigs = ((triggers.data && triggers.data.items) || []).filter((t) => t.config && t.config.kind === "channel");
+  // A room starts sessions only when config.chats.enabled is true (a missing block answers false, like the backend gate).
+  const roomStartsSessions = {};
+  ((channels.data && channels.data.items) || []).forEach((c) => {
+    const chats = c.config && c.config.chats;
+    roomStartsSessions[c.id] = !!(chats && chats.enabled);
+  });
+  const roomStartsSessionsById = (roomId) => (roomId ? roomStartsSessions[roomId] !== false : true);
   // empty state
   if (provs.length === 0) {
     return <Banner kind="info" title="No channel providers yet" detail="Register a Slack, Telegram, or Discord provider under Channels first, then add rules here." />;
@@ -208,7 +218,7 @@ function ChannelRulesPage({ pushToast }) {
         </select>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
           <Btn size="sm" kind="ghost" icon="refresh" onClick={() => triggers.refetch()}>Refresh</Btn>
-          <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowNew(true)}>New rule</Btn>
+          <Btn size="sm" kind="primary" icon="plus" testid="cr-new-rule" onClick={() => setShowNew(true)}>New rule</Btn>
         </div>
       </div>
       <PR_PagedNote list={providers.data} noun="channel providers" testid="cr-providers-note" />
@@ -230,7 +240,7 @@ function ChannelRulesPage({ pushToast }) {
             {shownTrigs.length === 0 ? (
               <tr><td colSpan={7} className="muted text-sm" style={{ textAlign: "center", padding: 18 }}>No rules yet. Add one to route a channel event to an action.</td></tr>
             ) : shownTrigs.map((t) => (
-              <CR_TriggerRows key={t.id} trigger={t} provider={provById[(t.config && t.config.provider_id)]} pushToast={pushToast} onChanged={() => { triggers.refetch(); }} />
+              <CR_TriggerRows key={t.id} trigger={t} provider={provById[(t.config && t.config.provider_id)]} pushToast={pushToast} roomStartsSessions={roomStartsSessionsById((t.config && t.config.channel_id) || null)} onChanged={() => { triggers.refetch(); }} />
             ))}
           </tbody>
         </table>
@@ -240,6 +250,7 @@ function ChannelRulesPage({ pushToast }) {
         <CR_RuleModal
           providers={provs}
           allTriggers={trigs}
+          roomStartsSessionsById={roomStartsSessionsById}
           initialProviderId={provFilter || (provs[0] && provs[0].id)}
           onClose={() => setShowNew(false)}
           onChanged={() => { triggers.refetch(); }}
@@ -257,13 +268,23 @@ window.ChannelRulesPage = ChannelRulesPage;
 // reply_target plus a delete button. A trigger with no bindings still renders
 // one placeholder row so its room stays visible. Returns a fragment of <tr>
 // so the rows live directly inside the shared table's <tbody>.
-function CR_TriggerRows({ trigger, provider, pushToast, onChanged }) {
+function CR_TriggerRows({ trigger, provider, pushToast, onChanged, roomStartsSessions }) {
   const subsKey = "cr-subs-" + trigger.id;
   const subs = useResource(subsKey, (signal) => apiFetch("GET", "/triggers/" + encodeURIComponent(trigger.id) + "/subscriptions", null, { signal }), {});
   const room = (trigger.config && trigger.config.channel_id) || "(all rooms)";
   const items = (subs.data && subs.data.items) || [];
   const provId = (trigger.config && trigger.config.provider_id) || "";
   const provType = (provider && provider.provider) || "unknown";
+  // The room's "Start sessions from inbound messages" switch, off: the session-starting bindings below it do not fire.
+  const disabledRoom = roomStartsSessions === false;
+
+  const disabledHint = disabledRoom ? (
+    <tr data-testid={"channel-rule-room-disabled-hint-" + trigger.id}>
+      <td colSpan={7} className="muted text-sm" style={{ padding: "4px 10px" }}>
+        This room has "Start sessions from inbound messages" off, so the bindings that start a session do not fire; session_append and parked_session bindings still do.
+      </td>
+    </tr>
+  ) : null;
 
   const del = useMutation(
     (subscription_id) => apiFetch("DELETE", "/triggers/" + encodeURIComponent(trigger.id) + "/subscriptions/" + encodeURIComponent(subscription_id)),
@@ -279,15 +300,19 @@ function CR_TriggerRows({ trigger, provider, pushToast, onChanged }) {
 
   if (items.length === 0) {
     return (
-      <tr data-testid={`channel-rule-empty-${trigger.id}`}>
-        <td>{providerCell}</td>
-        <td className="mono muted">{room}</td>
-        <td className="muted text-sm" colSpan={5}>no bindings</td>
-      </tr>
+      <React.Fragment>
+        {disabledHint}
+        <tr data-testid={`channel-rule-empty-${trigger.id}`}>
+          <td>{providerCell}</td>
+          <td className="mono muted">{room}</td>
+          <td className="muted text-sm" colSpan={5}>no bindings</td>
+        </tr>
+      </React.Fragment>
     );
   }
   return (
     <React.Fragment>
+      {disabledHint}
       {items.map((s) => (
         <tr key={s.id} data-testid={`channel-rule-row-${s.id}`}>
           <td>{providerCell}</td>
@@ -318,7 +343,7 @@ function CR_TriggerRows({ trigger, provider, pushToast, onChanged }) {
 // per-provider taxonomy), the matcher predicate fields, the action select with
 // its per-action config fields, and the ReplyTarget select. Creates the
 // binding (creating the channel trigger first if the room has none yet).
-function CR_RuleModal({ providers, allTriggers, initialProviderId, onClose, onChanged, pushToast }) {
+function CR_RuleModal({ providers, allTriggers, roomStartsSessionsById, initialProviderId, onClose, onChanged, pushToast }) {
   const provList = providers || [];
   const [providerId, setProviderId] = React.useState(initialProviderId || (provList[0] && provList[0].id) || "");
   const provider = provList.find((p) => p.id === providerId) || provList[0] || { id: providerId };
@@ -414,6 +439,10 @@ function CR_RuleModal({ providers, allTriggers, initialProviderId, onClose, onCh
           <span className="lbl">Room / channel id</span>
           <input className="input mono" placeholder="(blank = all rooms)" value={channelId} onChange={(e) => setChannelId(e.target.value)} />
         </label>
+
+        {channelId && roomStartsSessionsById && roomStartsSessionsById(channelId) === false && (action === "agent_fresh_session" || action === "graph_fresh_session") && (
+          <Banner kind="warning" title="Room does not start sessions" detail={"This room has \"Start sessions from inbound messages\" off: this rule would start a session, which it will not do until the switch is turned on."} />
+        )}
 
         <label className="field">
           <span className="lbl">Event type</span>
