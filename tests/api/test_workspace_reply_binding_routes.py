@@ -77,6 +77,35 @@ async def test_put_reply_binding_sets_and_get_reflects(client, app):
 
 
 @pytest.mark.asyncio
+async def test_put_reply_binding_omitting_anchor_keeps_the_stored_anchor(client, app):
+    """Round 2 of #932, item 8: a re-save of the binding (the console's PUT sends the channel only) keeps the anchor a tool set;
+    an explicit null clears it; an explicit value replaces it."""
+    sp = app.state.storage_provider
+    ws = _make_workspace("ws-t5")
+    ws = ws.model_copy(
+        update={"reply_binding": WorkspaceChannelLink(channel_id="ch-t5", anchor="1700000000.00042")}
+    )
+    await sp.get_storage(Workspace).create(ws)
+    await _seed_channel(app, channel_id="ch-t5")
+
+    re_saved = await client.put(f"/v1/workspaces/{ws.id}/reply_binding", json={"channel_id": "ch-t5"})
+    assert re_saved.status_code == 200, re_saved.text
+    assert re_saved.json()["reply_binding"]["anchor"] == "1700000000.00042", "the re-save dropped the anchor a tool set"
+
+    cleared = await client.put(
+        f"/v1/workspaces/{ws.id}/reply_binding", json={"channel_id": "ch-t5", "anchor": None}
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["reply_binding"]["anchor"] is None
+
+    set_again = await client.put(
+        f"/v1/workspaces/{ws.id}/reply_binding", json={"channel_id": "ch-t5", "anchor": "1700000000.00043"}
+    )
+    assert set_again.status_code == 200, set_again.text
+    assert set_again.json()["reply_binding"]["anchor"] == "1700000000.00043"
+
+
+@pytest.mark.asyncio
 async def test_delete_reply_binding_clears_it(client, app):
     sp = app.state.storage_provider
     ws = _make_workspace("ws-t2")

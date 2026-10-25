@@ -1289,6 +1289,8 @@ function WS_ChannelsTab({ wid, ws, pushToast }) {
           wid={wid}
           channels={channels}
           channelsList={channelsList.data}
+          boundChannelId={linkedChannelId}
+          boundAnchor={boundAnchor}
           onClose={() => setShowLink(false)}
           onLinked={() => { ws.refetch && ws.refetch(); }}
           pushToast={pushToast}
@@ -1298,10 +1300,20 @@ function WS_ChannelsTab({ wid, ws, pushToast }) {
   );
 }
 
-function WS_LinkChannelModal({ wid, channels, channelsList, onClose, onLinked, pushToast }) {
+function WS_LinkChannelModal({ wid, channels, channelsList, boundChannelId, boundAnchor, onClose, onLinked, pushToast }) {
   const { useMutation, apiFetch } = window.primerApi;
-  const [channelId, setChannelId] = React.useState(channels[0]?.id || "");
-  const [anchor, setAnchor] = React.useState("");
+  // A re-save starts from the binding the workspace already has: its channel, and the anchor a tool set (round 2 of #932, item 8:
+  // the modal used to start blank and send the stored anchor back as null, dropping it). Picking another channel blanks the
+  // anchor: a thread id belongs to one room.
+  const [channelId, setChannelId] = React.useState(
+    boundChannelId && channels.some((c) => c.id === boundChannelId) ? boundChannelId : ((channels[0] && channels[0].id) || "")
+  );
+  const [anchor, setAnchor] = React.useState(boundAnchor || "");
+
+  const pickChannel = (id) => {
+    setChannelId(id);
+    if (id !== boundChannelId) setAnchor("");
+  };
 
   const link = useMutation(
     (body) => apiFetch("PUT", `/workspaces/${encodeURIComponent(wid)}/reply_binding`, body),
@@ -1349,7 +1361,7 @@ function WS_LinkChannelModal({ wid, channels, channelsList, onClose, onLinked, p
             className="select mono"
             style={{ width: "100%" }}
             value={channelId}
-            onChange={(e) => setChannelId(e.target.value)}
+            onChange={(e) => pickChannel(e.target.value)}
           >
             {channels.map((c) => (
               <option key={c.id} value={c.id}>
