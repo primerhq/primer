@@ -176,6 +176,8 @@ var TR_REMEDIES = {
   cron_invalid: "{message}. Check each field's range (minute 0-59, hour 0-23, day of month 1-31, month 1-12, weekday 0-6).",
   text_pattern_unsafe: "{message}. Use a pattern without nested unbounded repetition, for example (a+)+, then save it again.",
   timezone_invalid: "{message}. Pick a timezone from the list.",
+  reply_target_channel_not_found: "{message}. Name a channel that exists (or use a relative target), then save again.",
+  reply_target_anchor_invalid: "{message}. Copy a thread id from that channel, then save again.",
 };
 
 // The code, the field and the server's own sentence of a failed write are read by the ONE reader in ui/foundation/api.js (window.primerApi.readRefusal,

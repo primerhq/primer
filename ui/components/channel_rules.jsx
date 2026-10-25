@@ -426,14 +426,17 @@ function CR_RuleModal({ providers, allTriggers, roomStartsSessionsById, initialP
   );
 
   return (
-    <Modal title="New rule" onClose={onClose} footer={footer}>
+    <Modal title="New rule" testid="cr-rule-modal" onClose={onClose} footer={footer}>
       <div className="col" style={{ gap: 12 }}>
-        <label className="field">
-          <span className="lbl">Provider</span>
-          <select className="select mono" value={providerId} onChange={(e) => setProviderId(e.target.value)}>
+        {/* Every select gets an explicit label association (id + htmlFor), not a wrapping <label>: a wrapping label's text
+            carries the select's option text, so the label a screen reader (or get_by_label with exact) sees is the option list,
+            and the journey's get_by_label("Reply target", exact=True) resolves to nothing (CI 2026-10-25, round 2 of #932). */}
+        <div className="field">
+          <label className="lbl" htmlFor="cr-provider">Provider</label>
+          <select id="cr-provider" className="select mono" value={providerId} onChange={(e) => setProviderId(e.target.value)}>
             {provList.map((p) => <option key={p.id} value={p.id}>{p.id} ({p.provider || "unknown"})</option>)}
           </select>
-        </label>
+        </div>
 
         <label className="field">
           <span className="lbl">Room / channel id</span>
@@ -444,14 +447,14 @@ function CR_RuleModal({ providers, allTriggers, roomStartsSessionsById, initialP
           <Banner kind="warning" title="Room does not start sessions" detail={"This room has \"Start sessions from inbound messages\" off: this rule would start a session, which it will not do until the switch is turned on."} />
         )}
 
-        <label className="field">
-          <span className="lbl">Event type</span>
-          <select className="select mono" value={eventType} onChange={(e) => setEventType(e.target.value)}>
+        <div className="field">
+          <label className="lbl" htmlFor="cr-event-type">Event type</label>
+          <select id="cr-event-type" className="select mono" value={eventType} onChange={(e) => setEventType(e.target.value)}>
             {capEvents.map((ev) => (
               <option key={ev.type} value={ev.type}>{ev.type}{ev.supported === false ? " (unsupported)" : ""}</option>
             ))}
           </select>
-        </label>
+        </div>
 
         {unsupported && (
           <Banner kind="warning" title="Unsupported" detail={"The " + (provider.provider || "this") + " provider does not emit " + eventType + " events."} />
@@ -494,12 +497,12 @@ function CR_RuleModal({ providers, allTriggers, roomStartsSessionsById, initialP
           <input className="input mono" placeholder="optional" value={senderRoles} onChange={(e) => setSenderRoles(e.target.value)} />
         </label>
 
-        <label className="field">
-          <span className="lbl">Action</span>
-          <select className="select mono" value={action} onChange={(e) => { setAction(e.target.value); setActionFields({}); }}>
+        <div className="field">
+          <label className="lbl" htmlFor="cr-action">Action</label>
+          <select id="cr-action" className="select mono" value={action} onChange={(e) => { setAction(e.target.value); setActionFields({}); }}>
             {CR_ACTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
           </select>
-        </label>
+        </div>
 
         {(actionDef.fields || []).map((f) => (
           <label key={f.key} className="field">
@@ -508,12 +511,12 @@ function CR_RuleModal({ providers, allTriggers, roomStartsSessionsById, initialP
           </label>
         ))}
 
-        <label className="field">
-          <span className="lbl">Reply target</span>
-          <select className="select mono" value={replyTarget} onChange={(e) => setReplyTarget(e.target.value)}>
+        <div className="field">
+          <label className="lbl" htmlFor="cr-reply-target">Reply target</label>
+          <select id="cr-reply-target" className="select mono" value={replyTarget} onChange={(e) => setReplyTarget(e.target.value)}>
             {CR_REPLY_TARGETS.map((rt) => <option key={rt.value} value={rt.value}>{rt.label}</option>)}
           </select>
-        </label>
+        </div>
       </div>
     </Modal>
   );
