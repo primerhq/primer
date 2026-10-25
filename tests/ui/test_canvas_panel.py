@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[2]
 NV_CANVAS = ROOT / "ui" / "components" / "console" / "nv-canvas.jsx"
 NV_SESSION_DOC = ROOT / "ui" / "components" / "console" / "nv-session-doc.jsx"
 SHELL_VERBS = ROOT / "ui" / "foundation" / "shell-verbs.js"
+# The canvas helpers read a refusal through the foundation's one reader (window.primerApi.readRefusal), so the context loads the real api.js (it merges into the prelude's primerApi).
+API_JS = (ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
 
 PLAYLIST_VIEW = json.dumps(
     {
@@ -93,6 +95,8 @@ def ctx():
     # so the verb labels/surfaces/availability are the real lint + ranking gates.
     code = transpile(NV_CANVAS) + "\n" + SHELL_VERBS.read_text(encoding="utf-8")
     c = mini_react_context(code, PRELUDE)
+    # the real foundation reader (readRefusal): the canvas helpers read a refusal through it.
+    c.eval(API_JS)
     try:
         yield c
     finally:
