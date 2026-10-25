@@ -789,7 +789,7 @@ class _Batch:
             if distinct:
                 many = getattr(self.script_check, "many", None)
                 by_body = many(distinct) if callable(many) else {html: self.script_check(html) for html in distinct}
-                for eid, line, html in surviving:
+                for eid, _line, html in surviving:
                     for text in by_body.get(html, ()):
                         # An early warning for the agent, never a gate (the lead's ruling on audit G8-06): the batch still
                         # applies, and the frame's CSP is the control that holds the script in the browser.
