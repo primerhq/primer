@@ -341,6 +341,16 @@ function NV_CanvasFrame(props) {
     }
   }
 
+  // The frame's load count. The handshake post must reach the frame's document
+  // once the renderer's own `message` listener is registered, and it is not
+  // safe to post at the moment frame_url first appears (the frame document is
+  // mid-load; the post lands where the renderer is not listening and is lost,
+  // and the renderer waits forever for the handshake). The bridge is re-run on
+  // every load of the frame: the load event fires after the frame's scripts ran,
+  // so the post lands with the renderer listening.
+  var loadState = React.useState(0);
+  function onFrameLoad() { loadState[1](function (t) { return t + 1; }); }
+
   // The bridge: a fresh MessageChannel per load, the handshake posted to the
   // renderer frame's window (port1 transferred), then everything over the port.
   React.useEffect(function () {
@@ -358,7 +368,7 @@ function NV_CanvasFrame(props) {
       window.removeEventListener("message", onWindowMessage);
       try { port.close(); } catch (e) { /* already closed */ }
     };
-  }, [props.data && props.data.frame_url]);
+  }, [props.data && props.data.frame_url, loadState[0]]);
 
   // Re-post state whenever the snapshot the frame draws changes.
   React.useEffect(function () {
@@ -377,6 +387,7 @@ function NV_CanvasFrame(props) {
       data-testid="nv-canvas-frame"
       title="Agent canvas"
       src={props.data ? props.data.frame_url : ""}
+      onLoad={onFrameLoad}
       sandbox="allow-scripts allow-forms"
       allow="autoplay"
       referrerPolicy="no-referrer" />

@@ -791,7 +791,9 @@ class _Batch:
                 by_body = many(distinct) if callable(many) else {html: self.script_check(html) for html in distinct}
                 for eid, line, html in surviving:
                     for text in by_body.get(html, ()):
-                        self.err(line, f"{eid}: {text}")
+                        # An early warning for the agent, never a gate (the lead's ruling on audit G8-06): the batch still
+                        # applies, and the frame's CSP is the control that holds the script in the browser.
+                        self.warnings.append(f"{eid}: {text}")
 
     def _find_cycles(self, found: list[tuple[int, str]]) -> set[tuple[str, str]]:
         """Depth-first search for containers that end up inside themselves.
@@ -856,7 +858,9 @@ def apply_batch(
     for a batch whose statements were all sound, so one bad line does not drown
     the agent in follow-on errors. ``state`` is never mutated and ``rev`` is left
     to the caller. ``script_check(html)`` returns problems with an Html body's
-    scripts; each becomes an error on the Html statement's line.
+    scripts; each becomes a warning on the Html statement's line (the check is an
+    early warning for the agent, never a gate: the frame's CSP is the control, the
+    lead's ruling on audit G8-06).
 
     A batch of more than ``MAX_BATCH_STATEMENTS`` statements is refused before any
     of them is looked at (the parser and the ops validator refuse it earlier still;
