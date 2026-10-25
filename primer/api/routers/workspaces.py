@@ -1713,10 +1713,11 @@ class BindingSwitchBody(BaseModel):
     "/workspaces/{workspace_id}/sessions/{session_id}/binding",
     response_model=WorkspaceSession,
     summary="Switch which agent or graph runs this session's next turn",
-    responses=common_responses(404, 409, 422, 500),
+    responses=common_responses(403, 404, 409, 422, 500),
 )
 async def switch_session_binding(
     body: BindingSwitchBody,
+    request: Request,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
@@ -1727,6 +1728,16 @@ async def switch_session_binding(
     An idle session switches immediately. A busy one queues the request
     and the drain checkpoint applies it before the next turn, so the
     running turn finishes under the binding it started with.
+
+    Ranked like a steer (G3-01 / ticket 01a16a35-a788): the switch
+    re-points what the session's next turn runs, so the caller drives
+    the creator's automation. The request's actor at or above the
+    session's creator (or its own session; an admin is never outranked)
+    acts, a lower rank gets 403 ``forbidden_rank`` with the fixed
+    message (``primer.api.routers._session_rank``), before anything is
+    written. The workspace the URL names is the scope the route reads
+    in: a session in another workspace, and a session that is not there
+    at all, both answer 404 as an unknown id.
     """
     from primer.model.agent import Agent
     from primer.model.graph import Graph
@@ -1737,6 +1748,9 @@ async def switch_session_binding(
     row = await sessions.get(session_id)
     if row is None or row.workspace_id != workspace_id:
         raise NotFoundError(f"Session {session_id!r} does not exist")
+    # The rank rule of a steer, before anything is written: a lower rank re-pointing the session's next turn would drive the
+    # creator's automation (G3-01 / ticket 01a16a35-a788); the creator is exempt (own_session) and an admin is never outranked.
+    refuse_outranked(request, row)
     if row.status is SessionStatus.ENDED:
         raise ConflictError(
             f"session {session_id!r} has ended; reopen it before switching"

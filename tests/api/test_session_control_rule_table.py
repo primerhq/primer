@@ -119,6 +119,10 @@ TABLE: dict[str, tuple[SessionStatus, dict[str, str]]] = {
     "interrupt tool, in a session":     (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": N, P: D}),
     "interrupt tool, no session":       (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
     "REST interrupt":                   (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    # The binding switch (G3-01 / ticket 01a16a35-a788): a switch re-points what the session's next turn runs, so the caller drives the
+    # creator's automation like a steer: the REST steer's rank rule. The URL's workspace is the scope this route reads in (a person's door,
+    # like the REST steer): a session in another workspace, and one that is not there at all, both answer as an unknown id.
+    "REST binding switch":              (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
     # The session canvas (pivot P5 S6, the lead's ruling 1): a click drives the session like a steer, and an operator's batch or clear puts
     # input its agent reads into it, so all three follow the REST steer's rank rule; people keep their reach over every workspace.
     "REST canvas click":                (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
@@ -185,6 +189,11 @@ async def _seed(world: World, path: str, scenario: str) -> str:
         initiated_by=ADMIN if scenario == "outranked" else USER,
     )
     world.registry.remove("ws-nope")
+    if path == "REST binding switch":
+        # the switch's target must exist (the route 404s a missing target before it writes): the idle session switches to it at once
+        await world.sp.get_storage(Agent).create(Agent(
+            id="operator2", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[],
+        ))
     if path.startswith("REST canvas"):
         await world.sp.get_storage(SessionCanvas).create(SessionCanvas(
             id="ses-t", workspace_id=workspace, rev=1,
@@ -241,6 +250,12 @@ async def _drive(env: Env, path: str) -> tuple[str, dict]:
         query = {"force": "true"} if path.endswith("forced") else None
         r = await env.rest.delete(f"/v1/workspaces/{env.target_workspace}/sessions/ses-t", params=query)
         return {204: D, 403: F, 404: N}[r.status_code], (r.json() if r.content else {})
+    if path == "REST binding switch":
+        r = await env.rest.post(
+            f"/v1/workspaces/{env.target_workspace}/sessions/ses-t/binding",
+            json={"kind": "agent", "agent_id": "operator2"},
+        )
+        return {200: D, 403: F, 404: N}[r.status_code], r.json()
     if path.startswith("REST"):
         verb = path.removeprefix("REST ")
         r = await env.rest.post(f"/v1/workspaces/{env.target_workspace}/sessions/ses-t/{verb}", json={})
@@ -269,6 +284,10 @@ async def _delivered(env: Env, path: str) -> bool:
         return row.status == SessionStatus.PAUSED  # the target waits, so it pauses at once
     if path.startswith(("interrupt", "REST interrupt")):
         return row.interrupt_requested is True  # the target runs a turn, so the Stop is recorded
+    if path == "REST binding switch":
+        # the target waits idle, so a delivered switch is applied at once: the binding moved (with its snapshot), the epoch bumped, no
+        # pending request left
+        return (row.binding.kind, row.binding.agent_id) == ("agent", "operator2") and row.binding_epoch == 1 and row.pending_binding_switch is None
     return True  # get, read: the answer is the delivery
 
 
@@ -497,6 +516,89 @@ async def test_a_persons_delete_over_rest_reaches_a_session_only_at_or_below_the
     assert (await calls.get("etool-p")).status == "cancelled"
     if query:
         assert "session:ses-p:cancel" in spy.keys, "the forced delete of a running session published no cancel"
+
+
+# ---- The binding switch follows the steer rank rule, person by person (G3-01 / ticket 01a16a35-a788) ------------------------------------------------
+#
+# ``POST /v1/workspaces/{wid}/sessions/{sid}/binding`` re-points what the session's next turn runs, so the caller drives the creator's
+# automation the way a steer does: the request's actor at or above the session's creator (or the session's own account; an admin is never
+# outranked) acts, a lower rank gets the 403 ``forbidden_rank`` refusal with the fixed message and nothing moves. The route's door is a
+# person's (the auth middleware; it has no tool form), and the workspace the URL names is the scope it reads in: a session in another
+# workspace, and a session that is not there at all, both answer exactly like an unknown id. The in-session door (``system__switch_binding``)
+# acts on the calling session itself only, so it is in reach and in rank by construction.
+
+
+@pytest.mark.parametrize("who", list(PERSONS))
+async def test_a_persons_binding_switch_over_rest_reaches_a_session_only_at_or_below_their_rank(app, client, fake_storage_provider, who):
+    started_by, asker, accepted = PERSONS[who]
+    r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
+    assert r.status_code == 201, r.text
+    carol_id = await _user_id(app, "carol")
+    creator = {
+        "admin": ADMIN,
+        "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
+        "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
+    }[started_by]
+    world = _world(fake_storage_provider)
+    app.state.workspace_registry.get_workspace = world.registry.get_workspace  # type: ignore[method-assign]
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    await sessions.create(WorkspaceSession(
+        id="ses-b", workspace_id="ws-b", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.WAITING, turn_no=1,
+        created_at=NOW, initiated_by=creator,
+    ))
+    await fake_storage_provider.get_storage(Agent).create(Agent(
+        id="operator2", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[],
+    ))
+    before = (await sessions.get("ses-b")).model_dump(mode="json")
+    spy = _Spy(app.state.event_bus)
+    route = "/v1/workspaces/ws-b/sessions/ses-b/binding"
+    body = {"kind": "agent", "agent_id": "operator2"}
+
+    if asker.endswith("token"):
+        async with await _token_client(app, carol_id if asker.startswith("carol") else await _user_id(app, "testuser")) as tok:
+            r = await tok.post(route, json=body)
+    elif asker == "carol":
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
+            assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
+            r = await carol.post(route, json=body)
+    else:
+        r = await client.post(route, json=body)
+
+    if not accepted:
+        assert r.status_code == 403, f"{who} could switch the binding: {r.text}"
+        assert (r.json()["detail"], r.json()["extensions"]["error"]) == (OUTRANKED_MESSAGE, "forbidden_rank")
+        assert (await sessions.get("ses-b")).model_dump(mode="json") == before, "a refused switch wrote to the session"
+        assert spy.keys == [], "a refused switch reached the event bus"
+        return
+    assert r.status_code == 200, f"{who} could not switch the binding: {r.text}"
+    row = await sessions.get("ses-b")
+    assert (row.binding.kind, row.binding.agent_id) == ("agent", "operator2")
+    assert row.binding_epoch == 1
+    assert row.pending_binding_switch is None
+
+
+async def test_a_binding_switch_out_of_its_workspaces_url_scope_answers_as_an_unknown_id(app, client, fake_storage_provider):
+    """The route's reach is the workspace the URL names (it has no calling session): a session that lives in another workspace is answered
+    exactly like a session id that is not there at all - asked by its own creator, so rank would let her through, and the answer changes
+    nothing either way."""
+    r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
+    assert r.status_code == 201, r.text
+    carol_id = await _user_id(app, "carol")
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    await sessions.create(WorkspaceSession(
+        id="ses-b", workspace_id="ws-2", binding=AgentSessionBinding(agent_id="planner"), status=SessionStatus.WAITING,
+        created_at=NOW, initiated_by=PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
+    ))
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
+        assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
+        body = {"kind": "agent", "agent_id": "planner"}
+        r_out = await carol.post("/v1/workspaces/ws-1/sessions/ses-b/binding", json=body)
+        r_unknown = await carol.post("/v1/workspaces/ws-1/sessions/ses-nobody/binding", json=body)
+        assert r_out.status_code == r_unknown.status_code == 404, (r_out.status_code, r_unknown.status_code)
+        assert r_out.json()["detail"].replace("ses-b", "<id>") == r_unknown.json()["detail"].replace("ses-nobody", "<id>")
+        assert r_out.json()["status"] == 404
+        row = await sessions.get("ses-b")
+        assert (row.binding.kind, row.binding.agent_id) == ("agent", "planner") and row.binding_epoch == 0, "a refused switch wrote to the session"
 
 
 #: who -> (the session's creator, the caller: a request's actor over MCP, or a run's principal from another session, or, for ``SELF``, from the

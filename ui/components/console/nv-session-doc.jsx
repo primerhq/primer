@@ -584,6 +584,30 @@ function NV_rewindCandidates(records) {
 // Header: binding chip + picker, inline rename, usage, graph view,
 // voice replies, overflow.
 // ---------------------------------------------------------------------------
+
+// The rank rule of the binding switch (G3-01 / ticket 01a16a35-a788) mirrored on the chip, like the trigger row buttons
+// (TR_rankBlockedReason in triggers.jsx): the server decides it (403 forbidden_rank, before anything is written), so this only
+// removes the dead click and fails open (null) whenever it cannot decide (no principal served, unknown role). The session's
+// creator is the row's initiated_by; one's own session (type and id) is never blocked, a row with no recorded creator ranks as
+// an ordinary user, and an admin ranks with the system principal.
+function NV_bindingRoleRank(role, type) {
+  if (type === "system" || role === "system" || role === "admin") return 3;
+  if (role === "user") return 1;
+  if (role === "restricted") return 0;
+  return -1;
+}
+
+// null when the viewer may switch this session's binding, else the reason the chip is disabled.
+function NV_bindingBlockedReason(session, principal) {
+  if (!principal || !principal.role || !principal.id) return null;
+  var creator = session && session.initiated_by;
+  if (creator && creator.id && creator.type === principal.type && creator.id === principal.id) return null; // one's own session
+  var mine = NV_bindingRoleRank(principal.role, principal.type);
+  var theirs = creator ? NV_bindingRoleRank(creator.role, creator.type) : 1;
+  if (mine >= theirs) return null;
+  return "You rank below this session's creator (" + ((creator && creator.role) || "user") + "). Ask the creator or an administrator to switch it.";
+}
+
 function NV_BindingChip(props) {
   var con = NV_useConsole();
   var openState = React.useState(false);
@@ -602,6 +626,15 @@ function NV_BindingChip(props) {
     function (signal) { return SH_api.graphs(signal); },
     { pollMs: 0 }
   );
+  // The viewer's principal (the shell's cached /auth/status read, one fetch, not two): the chip's rank gate. The server answers
+  // the same refusal (403 forbidden_rank), which the switch's error toast surfaces as the backstop.
+  var auth = window.primerApi.useResource(
+    "nv-shell:auth-status",
+    function (signal) { return window.primerApi.apiFetch("GET", "/auth/status", null, { signal: signal }); },
+    { retryMs: 2000 }
+  );
+  var principal = auth.data && auth.data.principal;
+  var blocked = NV_bindingBlockedReason(props.session, principal);
   var binding = props.binding || {};
   var ident = NV_identity(binding);
   var name = binding.kind === "graph"
@@ -636,7 +669,9 @@ function NV_BindingChip(props) {
     <div className="nv-bind-wrap">
       <button type="button" className="nv-bind-chip"
         data-testid="nv-binding-chip"
-        title="Switch binding — takes effect at the turn boundary"
+        disabled={!!blocked}
+        data-rank-blocked={blocked ? "true" : undefined}
+        title={blocked || "Switch binding - takes effect at the turn boundary"}
         onClick={function (ev) { ev.stopPropagation(); setOpen(!open); }}>
         <svg width="11" height="11" viewBox="0 0 12 12"
           style={{ color: ident.color }}>
@@ -776,6 +811,7 @@ function NV_SessionHeader(props) {
     <div className="nv-session-head" data-testid="nv-session-head">
       <NV_BindingChip sid={sid}
         binding={session && session.binding}
+        session={session}
         onChanged={props.onChanged} />
       <NV_SessionStateChip session={session} />
       {draft != null ? (
