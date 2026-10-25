@@ -1,0 +1,128 @@
+[
+  {
+    "id": "c01",
+    "band": "simple",
+    "prompt": "Add a heading that says 'Playlist' on the canvas.",
+    "expect": {"types_at_least": {"Text": 1}}
+  },
+  {
+    "id": "c02",
+    "band": "simple",
+    "prompt": "Add a 'Genre' label and a 'Play' button.",
+    "expect": {"types_at_least": {"Text": 1, "Button": 1}}
+  },
+  {
+    "id": "c03",
+    "band": "simple",
+    "prompt": "Add a divider, a caption 'Ready', and a 'Start' button.",
+    "expect": {"types_at_least": {"Divider": 1, "Text": 1, "Button": 1}, "max_elements": 3}
+  },
+  {
+    "id": "c04",
+    "band": "simple",
+    "prompt": "Add a genre picker with the options Jazz, Lo-fi and Classical.",
+    "expect": {"types_at_least": {"Select": 1}}
+  },
+  {
+    "id": "c05",
+    "band": "simple",
+    "prompt": "Add a 'Pause' button and a 'Stop' button.",
+    "expect": {"types_at_least": {"Button": 2}, "max_elements": 2}
+  },
+  {
+    "id": "c06",
+    "band": "simple",
+    "prompt": "Add a link labelled 'Source' that points to https://example.com.",
+    "expect": {"types_at_least": {"Link": 1}}
+  },
+  {
+    "id": "c07",
+    "band": "simple",
+    "prompt": "Add a title and a two-button row with Play and Pause.",
+    "expect": {"types_at_least": {"Text": 1, "Row": 1, "Button": 2}}
+  },
+  {
+    "id": "c08",
+    "band": "medium",
+    "prompt": "Build a playlist panel: a title, a genre picker, a divider, and a Play button.",
+    "expect": {"types_at_least": {"Text": 1, "Select": 1, "Divider": 1, "Button": 1}}
+  },
+  {
+    "id": "c09",
+    "band": "medium",
+    "prompt": "Build a card with a heading, a caption, a genre Select and two buttons.",
+    "expect": {"types_at_least": {"Card": 1, "Text": 2, "Select": 1, "Button": 2}, "max_elements": 8}
+  },
+  {
+    "id": "c10",
+    "band": "medium",
+    "prompt": "Build a two-column layout: the left has a title and a caption, the right has two buttons.",
+    "expect": {"types_at_least": {"Column": 1, "Row": 1, "Text": 2, "Button": 2}}
+  },
+  {
+    "id": "c11",
+    "band": "medium",
+    "prompt": "Build a settings panel with a strict-mode note, a media-policy Select and a Save button.",
+    "expect": {"types_at_least": {"Card": 1, "Select": 1, "Button": 1}, "max_elements": 8}
+  },
+  {
+    "id": "c12",
+    "band": "medium",
+    "prompt": "Build a nested layout: a column holding a row of two buttons under a title and a divider.",
+    "expect": {"types_at_least": {"Column": 2, "Row": 1, "Text": 1, "Divider": 1, "Button": 2}, "max_elements": 8}
+  },
+  {
+    "id": "c13",
+    "band": "medium",
+    "prompt": "Build a media row: an image, a caption and a Play button.",
+    "expect": {"types_at_least": {"Image": 1, "Text": 1, "Button": 1}}
+  },
+  {
+    "id": "c14",
+    "band": "medium",
+    "prompt": "Build a panel with a title, an image, a caption, a genre Select and a Play button.",
+    "expect": {"types_at_least": {"Text": 2, "Image": 1, "Select": 1, "Button": 1}, "max_elements": 8}
+  },
+  {
+    "id": "c15",
+    "band": "complex",
+    "prompt": "Build a full player: a title, an album image, a caption, a track Select, Play and Pause buttons, and an audio element.",
+    "update_prompt": "Add a Stop button next to Pause.",
+    "expect": {"types_at_least": {"Text": 2, "Image": 1, "Select": 1, "Button": 2, "Audio": 1}}
+  },
+  {
+    "id": "c16",
+    "band": "complex",
+    "prompt": "Build a dashboard with a title, two cards (each with a caption and a button), a divider and an audio element.",
+    "update_prompt": "Add a Select for the theme.",
+    "expect": {"types_at_least": {"Text": 3, "Card": 2, "Button": 2, "Divider": 1, "Audio": 1}}
+  },
+  {
+    "id": "c17",
+    "band": "complex",
+    "prompt": "Build a rich panel with a title, an image, a caption, a genre Select, two buttons, a link and an Html note.",
+    "update_prompt": "Change the caption to 'Updated'.",
+    "expect": {"types_at_least": {"Text": 2, "Image": 1, "Select": 1, "Button": 2, "Link": 1, "Html": 1}}
+  },
+  {
+    "id": "c18",
+    "band": "complex",
+    "prompt": "Build a nine-element layout: a title, a divider, an image, a caption, a genre Select, two buttons, an audio and an Html widget.",
+    "update_prompt": "Add a link labelled 'Docs'.",
+    "expect": {"types_at_least": {"Text": 2, "Divider": 1, "Image": 1, "Select": 1, "Button": 2, "Audio": 1, "Html": 1}}
+  },
+  {
+    "id": "c19",
+    "band": "complex",
+    "prompt": "Build a nested nine-element player: a column with a title, an image, a caption, a genre Select, a row of Play, Pause and Stop buttons, and an Html status widget.",
+    "update_prompt": "Add a divider under the caption.",
+    "expect": {"types_at_least": {"Column": 1, "Row": 1, "Text": 2, "Image": 1, "Select": 1, "Button": 3, "Html": 1}}
+  },
+  {
+    "id": "c20",
+    "band": "complex",
+    "prompt": "Build a ten-element media console: a title, an image, a caption, a genre Select, Play, Pause and Stop buttons, an audio element and an Html visualization.",
+    "update_prompt": "Add a Link labelled 'About'.",
+    "expect": {"types_at_least": {"Text": 2, "Image": 1, "Select": 1, "Button": 3, "Audio": 1, "Html": 1}}
+  }
+]
