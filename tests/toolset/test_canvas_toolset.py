@@ -322,16 +322,22 @@ async def test_a_batch_at_the_cap_checks_only_the_surviving_html_body(provider, 
 
 
 async def test_many_html_elements_share_one_v8_engine(provider, ctx, world, engines):
-    """150 Html elements with 150 different scripts: one engine compiles all of them, and one bad script is still named."""
+    """150 Html elements with 150 different scripts: one engine compiles all of them, and one bad script is still named.
+
+    Advisory contract (ruling G8-06): the script problem is a warning in the
+    successful apply, never a refusal - the frame's CSP is the control.
+    """
     ids = [f"h{i}" for i in range(150)]
     lines = [f"root = Column([{', '.join(ids)}])", *[f'h{i} = Html("<script>var x = {i};</script>")' for i in range(149)]]
     lines.append('h149 = Html("<script>var = ;</script>")')
     is_error, body = await call(provider, "canvas_apply", {"source": "\n".join(lines)}, ctx)
-    assert is_error and [(e["line"], e["message"].split(":")[0]) for e in body["errors"]] == [(151, "h149")]
+    # The batch applies (rev 1) and names the problem as a warning, never a refusal.
+    assert not is_error and body["rev"] == 1
+    assert len(body["warnings"]) == 1 and body["warnings"][0].startswith("h149: script 1 does not parse")
     assert len(engines) == 1 and len(engines[0].evals) == 150 and engines[0].closed
     lines[-1] = 'h149 = Html("<script>var x = 149;</script>")'
     is_error, body = await call(provider, "canvas_apply", {"source": "\n".join(lines)}, ctx)
-    assert not is_error and body["rev"] == 1 and len(engines) == 2, "a second batch is a second engine; never one per statement"
+    assert not is_error and body["rev"] == 2 and body["warnings"] == [] and len(engines) == 2, "a second batch is a second engine; never one per statement"
 
 
 # ---- base_rev ------------------------------------------------------------------------------------------------------------------------
