@@ -196,9 +196,14 @@ reason rather than skipping it silently.
 
   Never run two e2e runs at once. Bring the environment up with
   `scripts/e2e/bringup.sh` (it reuses the shared dev Postgres on a separate
-  `primer_e2e` database). Do NOT run `scripts/e2e/teardown.sh` with volume
-  removal: it shares the Postgres container with the dogfood instance and will
-  wipe it. Run targeted e2e with `-n0` and `PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765`.
+  `primer_e2e` database). The default `scripts/e2e/teardown.sh` is
+  NON-DESTRUCTIVE: it stops only the e2e host server and leaves the shared
+  Postgres container, compose network and the `primer-pgdata` volume running.
+  The separately named destructive path (`scripts/e2e/teardown.sh --destructive`
+  with `PRIMER_E2E_DELETE_VOLUMES=1`) runs `compose down -v`, but it REFUSES
+  when the resolved container/volume is the shared dogfood environment
+  (`primer-postgres` / `primer-pgdata`), so it can only drop an ISOLATED e2e
+  Postgres. Run targeted e2e with `-n0` and `PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765`.
 
 - Some tests are environment-gated: real-LLM tests need a reachable LM Studio
   (`LMSTUDIO_API_KEY` set; the provider must use `max_concurrency: 1` for a
