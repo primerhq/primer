@@ -762,6 +762,10 @@
     var localBusy = Object.create(null);
     var approved = Object.create(null);
     var clickedToLoad = Object.create(null);
+    //: round 4b instrumentation: the bridge handshake trace. Whether the renderer sent `ready`, how many `state`
+    //: messages it got, the run_html of the last one, and the last state's rev/time. Behavior-neutral (it only records).
+    //: If a still-red run shows state:0 or runHtml:undefined, the ready->state exchange is the remaining mechanism.
+    var bridge = {ready: 0, state: 0, runHtml: null, lastStateRev: null, lastStateAt: 0};
     var knownValue = Object.create(null);
     var themeNow = Object.create(null);
     var throttle = makeValueThrottle({
@@ -814,6 +818,8 @@
       host = ev.ports[0];
       host.onmessage = function (portEvent) { onHostMessage(host, portEvent); };
       send({type: "ready", protocol: PROTOCOL});
+      bridge.ready += 1;
+      bridge.lastStateAt = now();
     });
 
     win.addEventListener("error", function (ev) {
@@ -835,6 +841,10 @@
       if (!msg) return;
       try {
         if (msg.type === "state") {
+          bridge.state += 1;
+          bridge.runHtml = msg.run_html === true;
+          bridge.lastStateRev = msg.rev;
+          bridge.lastStateAt = now();
           if (msg.theme) applyTheme(msg.theme);
           render(msg);
         } else if (msg.type === "busy") {
@@ -1401,6 +1411,9 @@
     }
 
     function buildInert(rec, key) {
+      //: round 4b instrumentation: record that buildInert ran and why, so a still-red run yields the exact remaining mechanism.
+      rec.diag = rec.diag || {buildFrame: 0, buildInert: 0, srcdocSet: false, srcdocLen: 0, innerReady: null, innerLen: 0, handshake: []};
+      rec.diag.buildInert += 1;
       var box = element("div", "cv-html-inert");
       var text = element("p", "cv-html-inert-text");
       text.textContent = COPY.inert;
@@ -1419,6 +1432,9 @@
     }
 
     function buildFrame(rec, el) {
+      //: round 4b instrumentation: record that buildFrame ran and the srcdoc it set.
+      rec.diag = rec.diag || {buildFrame: 0, buildInert: 0, srcdocSet: false, srcdocLen: 0, innerReady: null, innerLen: 0, handshake: []};
+      rec.diag.buildFrame += 1;
       var doc0 = htmlSrcdoc(el.props.html, {
         settings: current.settings, ownOrigin: current.own_origin, theme: themeNow, bootstrap: bootstrap
       });
@@ -1429,8 +1445,17 @@
       var frame = element("iframe", "cv-html-frame");
       frame.setAttribute("sandbox", "allow-scripts allow-forms");
       frame.setAttribute("title", "Html element " + rec.id);
-      frame.addEventListener("load", function () { offerPort(rec, frame); });
+      frame.addEventListener("load", function () {
+        rec.diag.srcdocSet = true;
+        try {
+          var d = frame.contentDocument;
+          rec.diag.innerReady = d ? d.readyState : "no-doc";
+          rec.diag.innerLen = d && d.documentElement ? d.documentElement.outerHTML.length : 0;
+        } catch (e) { rec.diag.innerReady = "err:" + (e && e.message ? e.message : "?" ); }
+        offerPort(rec, frame);
+      });
       frame.srcdoc = doc0;
+      rec.diag.srcdocLen = doc0.length;
       rec.frame = frame;
       rec.node.appendChild(frame);
     }

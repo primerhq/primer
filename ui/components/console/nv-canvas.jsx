@@ -370,7 +370,11 @@ function NV_CanvasFrame(props) {
     };
   }, [props.data && props.data.frame_url, loadState[0]]);
 
-  // Re-post state whenever the snapshot the frame draws changes.
+  // Re-post state whenever the snapshot the frame draws changes. round 4c: the identity the first pushState (fired on the
+  // frame's "ready") reads - the viewer and the session's initiated_by - must also be in the deps, because that first
+  // pushState can land BEFORE the identity resolves (under runner load), so run_html is computed false and no later re-post
+  // corrects it (the old deps never changed). When the identity resolves the effect re-fires and re-posts the state with
+  // run_html true, and the renderer transitions inert->frame.
   React.useEffect(function () {
     if (readyRef.current) pushState();
   }, [
@@ -378,6 +382,10 @@ function NV_CanvasFrame(props) {
     props.data && props.data.event_seq,
     props.data && JSON.stringify(props.data.settings),
     props.data && JSON.stringify(props.data.file_urls),
+    con.viewer && con.viewer.type,
+    con.viewer && con.viewer.id,
+    props.session && props.session.initiated_by && props.session.initiated_by.type,
+    props.session && props.session.initiated_by && props.session.initiated_by.id,
   ]);
 
   return (
