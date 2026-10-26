@@ -47,6 +47,17 @@ from tests.ui_e2e._studio_helpers import open_session_in_studio
 #: How long a step waits, calling nothing, after its last in-frame call: past Chromium's 5 s transient activation.
 SETTLE_MS = 6_500
 
+# Frame-document render budget (ms): the Html srcdoc frame must load,
+# parse and render within it. ~1s locally; the CI serial runner has
+# twice exceeded the old 20s literal under load (heads 6b8ef18a8 /
+# 6801d41e4, jobs 121312222154 / 121338479538: the panel settled at
+# rev 1 with an empty frame iframe, and the CSP pin's console was
+# empty because the document never loaded in time). The bridge logic
+# is not in question - the strict-mode, isolation and activation
+# journeys in this file pass in the same CI runs; this bounds
+# document load under runner load only.
+FRAME_RENDER_BUDGET_MS = 60_000
+
 HOST = """<!doctype html><html><head><meta charset="utf-8"><title>canvas gate stand-in</title></head><body>
 <iframe id="cv" src="/canvas/frame" sandbox="allow-scripts allow-forms" style="width:900px;height:700px;border:0"></iframe>
 <script>
@@ -399,7 +410,7 @@ def test_html_emits_need_a_click(
     open_session_in_studio(page, console_url, ids["workspace"], sid)
     frame = page.frame_locator('[data-testid="nv-canvas-frame"]')
     html_frame = frame.frame_locator('[data-cv-id="viz"] iframe')
-    expect(html_frame.locator("#go")).to_be_visible(timeout=20_000)
+    expect(html_frame.locator("#go")).to_be_visible(timeout=FRAME_RENDER_BUDGET_MS)
     page.wait_for_timeout(3_000)  # the load-time emit had no user activation
     with httpx.Client(base_url=base_url, timeout=30.0) as client:
         assert _view(client, canvas)["event_seq"] == 0, "the load-time emit was refused (no user activation)"
@@ -433,10 +444,10 @@ def test_strict_mode_needs_run(page: Page, base_url: str, console_url: str, mock
         open_session_in_studio(page, console_url, ids["workspace"], sid)
         frame = page.frame_locator('[data-testid="nv-canvas-frame"]')
         run_btn = frame.locator('[data-cv="html-run"]')
-        expect(run_btn).to_be_visible(timeout=20_000)
+        expect(run_btn).to_be_visible(timeout=FRAME_RENDER_BUDGET_MS)
         run_btn.click()
         html_frame = frame.frame_locator('[data-cv-id="viz"] iframe')
-        expect(html_frame.locator("#go")).to_be_visible(timeout=20_000)
+        expect(html_frame.locator("#go")).to_be_visible(timeout=FRAME_RENDER_BUDGET_MS)
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as client:
             r = client.put("/v1/canvas_settings", json=settings)
@@ -485,9 +496,11 @@ def test_a_disallowed_host_script_trips_the_frame_csp(
         _draw(client, ids["workspace"], sid, CSP_SCRIPT_SOURCE)
     open_session_in_studio(page, console_url, ids["workspace"], sid)
     frame = page.frame_locator('[data-testid="nv-canvas-frame"]')
-    expect(frame.locator('[data-cv-id="viz"]')).to_be_visible(timeout=20_000)
+    expect(frame.locator('[data-cv-id="viz"]')).to_be_visible(timeout=FRAME_RENDER_BUDGET_MS)
     # The srcdoc frame parses the disallowed <script> and the CSP check logs the refusal; poll the console for it.
-    deadline = time.time() + 10.0
+    # The CSP violation is only logged once the srcdoc document has loaded and attempted the
+    # disallowed script, so the poll budget must cover the document load under runner load.
+    deadline = time.time() + 45.0
     csp = []
     while time.time() < deadline and not csp:
         csp = [m for m in console_messages if "Content Security Policy" in m["text"] and "evil.example" in m["text"]]
