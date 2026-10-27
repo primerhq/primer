@@ -266,8 +266,8 @@ Four rules make that safe:
   receipt writes `claimable` over another wake's `arming` (N8); N10 and N11 of
   that review; and the remaining whole-row writers of the session row
   (`interrupt_session`, `_transition_session_status`,
-  `_write_agent_phase`, `_clear_interrupt_requested`, the busy branch of
-  `switch_session_binding`, `abandon_session_gate`, `ChannelEventRouter._map_thread`,
+  `_write_agent_phase`, `_clear_interrupt_requested`, `abandon_session_gate`,
+  `ChannelEventRouter._map_thread`,
   the resume coordinators). The Cancel route writes its own fields only now (N5).
 - **Queued messages are not stranded (audit G7-14).** A session can come to
   rest with messages still queued and no turn boundary to come: the worker
