@@ -266,7 +266,7 @@ Four rules make that safe:
   never drains, leaves a message queued behind its row (N7); a wake without a
   receipt writes `claimable` over another wake's `arming` (N8); N10 and N11 of
   that review; and the remaining whole-row writers of the session row
-  (`interrupt_session`, rewind, compact, `_transition_session_status`,
+  (`interrupt_session`, `_transition_session_status`,
   `_write_agent_phase`, `_clear_interrupt_requested`, the busy branch of
   `switch_session_binding`, `abandon_session_gate`, `ChannelEventRouter._map_thread`,
   the resume coordinators). The Cancel route writes its own fields only now (N5).
@@ -311,7 +311,17 @@ Four rules make that safe:
 
 The message log stays append-only under all of this. Compaction appends a
 `compaction_marker` carrying its summary, the span it replaced and the tail it kept verbatim (`kept_tail_messages`, read back by `reconstruct_compacted_history` right after the summary) its verdict (`outcome`, `unreducible`, `trigger_tokens`, `fixed_overhead_tokens`) and where the summary sits among the kept messages (`summary_after`, absent or 0 meaning in front); a compaction that could not reduce the prompt, or deliberately skipped, and wrote no marker leaves a `compaction_note` record instead (display and derivation only, never history; a verdict that repeats (skipped or unreducible) is noted once per run, and the reader that tells the executor so, `last_compaction_state`, reports the newest note's outcome and reason since the newest marker, and also the newest marker's `tokens_after`, which the strategy uses to avoid summarising a summary it just wrote); rewind
-appends a `rewind_marker` naming the seq to keep. Neither deletes a line,
+appends a `rewind_marker` naming the seq to keep. Both markers reserve their
+seq with a guarded `patch_if` under the session's lifecycle lock, from a row
+re-read after the route's I/O (the summariser call, the log read): a steer
+that ran a turn and parked in that window rejects the fence (the route's own
+idle-unparked guard plus `last_seq ==` the row just re-read; `reserve_seq`),
+so nothing is written and the route answers 409 instead of the marker
+reusing the steer's seq and a whole-row write of the stale row erasing the
+park (S2a PR-5b, D-A1-02); the reservation is the row's `last_seq` write, so
+no whole-row write follows, and the probes in
+`tests/api/test_session_compact_rewind_races.py` pin both. Neither deletes a
+line,
 so the read-time replay walk (`primer/session/replay.py`) computes what a
 reader currently sees by folding markers in order. That is why rewind is
 auditable but not undoable, and why a rewind whose target lies inside a

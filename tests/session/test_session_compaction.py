@@ -42,6 +42,21 @@ class _IO:
         self.lines.append(line)
 
 
+class _Sessions:
+    """A session-row storage whose ``patch_if`` honours its predicate, like the real backends (the fence is the guarantee)."""
+
+    def __init__(self, row: WorkspaceSession):
+        self.row = row
+
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        del set_paths, conn
+        for key, wanted in where.items():
+            if getattr(self.row, key) not in wanted:
+                return None
+        self.row = self.row.model_copy(update=dict(patch or {}))
+        return self.row
+
+
 async def _fake_compaction(history):
     class _R:
         summary_text = "rolled up"
@@ -75,9 +90,10 @@ class TestGuard:
 class TestCompactSession:
     async def test_appends_a_marker_after_last_seq(self):
         io = _IO()
+        row = _row()
         result = await compact_session(
-            row=_row(), workspace_io=io, history=[],
-            run_compaction=_fake_compaction,
+            row=row, workspace_io=io, history=[],
+            run_compaction=_fake_compaction, sessions=_Sessions(row),
         )
         assert result.compaction_marker_seq == 7  # last_seq 6 + 1
         written = json.loads(io.lines[0].decode())
@@ -89,9 +105,10 @@ class TestCompactSession:
     async def test_marker_payload_carries_the_documented_shape(self):
         """The reader and the UI both key off these fields."""
         io = _IO()
+        row = _row()
         await compact_session(
-            row=_row(), workspace_io=io, history=[],
-            run_compaction=_fake_compaction,
+            row=row, workspace_io=io, history=[],
+            run_compaction=_fake_compaction, sessions=_Sessions(row),
         )
         payload = json.loads(io.lines[0].decode())["payload"]
         for key in (
@@ -102,30 +119,79 @@ class TestCompactSession:
 
     async def test_first_compaction_replaces_from_one(self):
         io = _IO()
+        row = _row(next_unprocessed_seq=0)
         await compact_session(
-            row=_row(next_unprocessed_seq=0), workspace_io=io, history=[],
-            run_compaction=_fake_compaction,
+            row=row, workspace_io=io, history=[],
+            run_compaction=_fake_compaction, sessions=_Sessions(row),
         )
         payload = json.loads(io.lines[0].decode())["payload"]
         assert payload["replaced_from_seq"] == 1
 
     async def test_later_compaction_starts_at_the_drain_cursor(self):
         io = _IO()
+        row = _row(next_unprocessed_seq=4)
         await compact_session(
-            row=_row(next_unprocessed_seq=4), workspace_io=io, history=[],
-            run_compaction=_fake_compaction,
+            row=row, workspace_io=io, history=[],
+            run_compaction=_fake_compaction, sessions=_Sessions(row),
         )
         payload = json.loads(io.lines[0].decode())["payload"]
         assert payload["replaced_from_seq"] == 4
 
     async def test_returns_the_token_counts_for_the_ui(self):
         io = _IO()
+        row = _row()
         result = await compact_session(
-            row=_row(), workspace_io=io, history=[],
-            run_compaction=_fake_compaction,
+            row=row, workspace_io=io, history=[],
+            run_compaction=_fake_compaction, sessions=_Sessions(row),
         )
         assert (result.tokens_before, result.tokens_after) == (100, 10)
         assert result.summary == "rolled up"
+
+
+class TestFencedReservation:
+    """The marker's seq is RESERVED, not seeded from a read (S2a PR-5b, D-A1-02): the reservation is the row's
+    ``last_seq`` write, and a row that moved since the caller read it rejects the fence and writes nothing."""
+
+    async def test_the_reservation_is_the_rows_last_seq_write(self):
+        io = _IO()
+        row = _row()
+        sessions = _Sessions(row)
+        outcome = await compact_session(
+            row=row, workspace_io=io, history=[],
+            run_compaction=_fake_compaction, sessions=sessions,
+        )
+        assert outcome.compaction_marker_seq == 7
+        assert sessions.row.last_seq == 7, "the reservation is the row's last_seq write"
+
+    async def test_a_row_that_parked_while_the_summariser_ran_rejects_the_reservation_and_writes_nothing(self):
+        """The row the route re-reads under the lock already holds the park: the fence (idle-unparked plus
+        last_seq == the row just read) rejects it, so no marker and no row write."""
+        io = _IO()
+        moved = _row(last_seq=7, parked_status="parked", parked_state={"kind": "ask_user"})
+        sessions = _Sessions(moved)
+
+        with pytest.raises(ConflictError, match="no longer idle"):
+            await compact_session(
+                row=moved, workspace_io=io, history=[],
+                run_compaction=_fake_compaction, sessions=sessions,
+            )
+        assert io.lines == [], "a rejected reservation writes no marker"
+        assert (sessions.row.parked_status, sessions.row.last_seq) == ("parked", 7), "the park is not written over"
+
+    async def test_a_row_whose_last_seq_moved_rejects_the_reservation_and_writes_nothing(self):
+        """The fence also carries last_seq == the row the caller read: a concurrent writer that only moved
+        the cursor rejects it too."""
+        io = _IO()
+        stale = _row()
+        sessions = _Sessions(_row(last_seq=7))
+
+        with pytest.raises(ConflictError, match="no longer idle"):
+            await compact_session(
+                row=stale, workspace_io=io, history=[],
+                run_compaction=_fake_compaction, sessions=sessions,
+            )
+        assert io.lines == [], "a rejected reservation writes no marker"
+        assert sessions.row.last_seq == 7
 
 
 class TestKeptTail:
@@ -151,7 +217,9 @@ class TestKeptTail:
         async def run(_history):
             return self._result("rolled up", kept)
 
-        await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
+        row = _row()
+        await compact_session(row=row, workspace_io=io, history=[], run_compaction=run,
+                              sessions=_Sessions(row))
         payload = json.loads(io.lines[0])["payload"]
         assert [m["parts"][0]["text"] for m in payload["kept_tail_messages"]] == ["the unanswered question"]
 
@@ -172,7 +240,9 @@ class TestKeptTail:
             r.summary_after = 1
             return r
 
-        await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
+        row = _row()
+        await compact_session(row=row, workspace_io=io, history=[], run_compaction=run,
+                              sessions=_Sessions(row))
         assert json.loads(io.lines[0])["payload"]["summary_after"] == 1
         shown = reconstruct_compacted_history([line.decode() for line in io.lines])
         assert [(m.role, m.parts[0].text) for m in shown] == [
@@ -185,7 +255,9 @@ class TestKeptTail:
         async def run(_history):
             return self._result("rolled up", [])
 
-        await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
+        row = _row()
+        await compact_session(row=row, workspace_io=io, history=[], run_compaction=run,
+                              sessions=_Sessions(row))
         assert "kept_tail_messages" not in json.loads(io.lines[0])["payload"]
 
     async def test_a_line_written_while_the_summariser_ran_is_carried_into_the_marker(self):
@@ -202,7 +274,11 @@ class TestKeptTail:
         async def reload():
             return [*old, steer]
 
-        await compact_session(row=_row(), workspace_io=io, history=old, run_compaction=run, reload_history=reload)
+        row = _row()
+        await compact_session(
+            row=row, workspace_io=io, history=old, run_compaction=run,
+            reload_history=reload, sessions=_Sessions(row),
+        )
         shown = reconstruct_compacted_history([line.decode() for line in io.lines])
         assert [(m.role, m.parts[0].text) for m in shown] == [
             ("assistant", "rolled up"), ("user", "A STEER WRITTEN DURING THE SUMMARISER CALL"),
@@ -219,7 +295,11 @@ class TestKeptTail:
             return [Message(role="assistant", parts=[TextPart(text="a different summary")]),
                     Message(role="user", parts=[TextPart(text="x")]), Message(role="user", parts=[TextPart(text="y")])]
 
-        await compact_session(row=_row(), workspace_io=io, history=old, run_compaction=run, reload_history=reload)
+        row = _row()
+        await compact_session(
+            row=row, workspace_io=io, history=old, run_compaction=run,
+            reload_history=reload, sessions=_Sessions(row),
+        )
         assert "kept_tail_messages" not in json.loads(io.lines[0])["payload"]
 
     async def test_the_marker_records_the_verdict(self):
@@ -230,7 +310,9 @@ class TestKeptTail:
             r.outcome, r.unreducible, r.trigger_tokens = "insufficient", "over_trigger", 82_627
             return r
 
-        await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
+        row = _row()
+        await compact_session(row=row, workspace_io=io, history=[], run_compaction=run,
+                              sessions=_Sessions(row))
         payload = json.loads(io.lines[0])["payload"]
         assert (payload["outcome"], payload["unreducible"], payload["trigger_tokens"]) == ("insufficient", "over_trigger", 82_627)
 
@@ -243,7 +325,9 @@ class TestKeptTail:
             r.summary_input_reduced = reduced
             return r
 
-        outcome = await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
+        row = _row()
+        outcome = await compact_session(row=row, workspace_io=io, history=[], run_compaction=run,
+                                        sessions=_Sessions(row))
         assert outcome.summary_input_reduced == reduced
         assert json.loads(io.lines[0])["payload"]["summary_input_reduced"] == reduced
 
@@ -253,7 +337,9 @@ class TestKeptTail:
         async def run(_history):
             return self._result("rolled up", [])
 
-        outcome = await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
+        row = _row()
+        outcome = await compact_session(row=row, workspace_io=io, history=[], run_compaction=run,
+                                        sessions=_Sessions(row))
         assert outcome.summary_input_reduced is None
         assert "summary_input_reduced" not in json.loads(io.lines[0])["payload"]
 
@@ -265,7 +351,9 @@ class TestKeptTail:
             return self._result("", [])
 
         with pytest.raises(ValidationError, match="nothing to compact"):
-            await compact_session(row=_row(), workspace_io=io, history=[], run_compaction=run)
+            row = _row()
+            await compact_session(row=row, workspace_io=io, history=[], run_compaction=run,
+                                  sessions=_Sessions(row))
         assert io.lines == []
 
     async def test_the_refusal_names_the_strategys_reason_and_carries_it_as_a_problem_extension(self):
@@ -277,7 +365,9 @@ class TestKeptTail:
             return r
 
         with pytest.raises(NothingToCompact) as refused:
-            await compact_session(row=_row(), workspace_io=_IO(), history=[], run_compaction=run)
+            row = _row()
+            await compact_session(row=row, workspace_io=_IO(), history=[], run_compaction=run,
+                                  sessions=_Sessions(row))
         assert refused.value.reason == "protected_over_budget"
         assert refused.value.problem_extensions == {"reason": "protected_over_budget"}
         assert "fills the context window" in str(refused.value) and "no earlier history" not in str(refused.value)
@@ -294,5 +384,7 @@ class TestKeptTail:
             return [Message(role="assistant", parts=[TextPart(text="x")]), Message(role="user", parts=[TextPart(text="y")])]
 
         with caplog.at_level(logging.WARNING, logger="primer.session.compaction"):
-            await compact_session(row=_row(), workspace_io=_IO(), history=old, run_compaction=run, reload_history=reload)
+            row = _row()
+            await compact_session(row=row, workspace_io=_IO(), history=old, run_compaction=run,
+                                  reload_history=reload, sessions=_Sessions(row))
         assert any("history changed under a manual compaction" in r.getMessage() for r in caplog.records)

@@ -1540,9 +1540,15 @@ async def compact_session_endpoint(
 ) -> CompactSessionResponse:
     """Summarise the visible history and append the fold marker.
 
-    The summarising call takes seconds, so the session row is re-read
-    afterwards: a concurrent write may have moved last_seq while the
-    model was working, and the marker has to land after it.
+    The summarising call takes seconds and runs OUTSIDE the session's
+    lifecycle lock; the marker's seq is reserved under it, from a row
+    re-read afterwards (S2a PR-5b). A steer that ran a turn and parked
+    while the model was working moves ``last_seq`` and sets the park
+    columns, so the reservation's fence (the route's own idle-unparked
+    guard plus ``last_seq ==`` the row just re-read) rejects it, nothing
+    is written, and the answer is 409 (a retry re-summarises) instead of
+    the marker reusing the steer's seq and a whole-row write erasing its
+    park.
     """
     from primer.agent.compaction import CompactionStrategy
     from primer.agent.compaction_mixin import force_compact
@@ -1552,7 +1558,11 @@ async def compact_session_endpoint(
     from primer.model.chat import Message, TextPart
     from primer.model.graph import build_execution_context
     from primer.model_profile import resolve_llm
-    from primer.session.compaction import compact_session, guard_compactable
+    from primer.session.compaction import (
+        append_compaction_marker,
+        guard_compactable,
+        summarise_session_history,
+    )
     from primer.workspace.instructions import load_workspace_instructions, workspace_instructions_parts
     from primer.workspace.session import reconstruct_compacted_history, workspace_system_prompt_fragment
     from primer.worker.io_shim import _WorkspaceIOShim
@@ -1659,14 +1669,34 @@ async def compact_session_endpoint(
 
     io_shim = _WorkspaceIOShim(workspace_registry=registry)
     io_shim.register_session(session_id, workspace_id)
-    fresh = await sessions.get(session_id) or row
-    outcome = await compact_session(
-        row=fresh, workspace_io=io_shim, history=history, run_compaction=_run,
-        reload_history=_reload,
-    )
-    await sessions.update(
-        fresh.model_copy(update={"last_seq": outcome.compaction_marker_seq})
-    )
+    # Phase 1, OUTSIDE the session's lifecycle lock: the summarising call takes seconds, and
+    # holding the lock that long would queue every Cancel, Stop, steer, pause and switch of the
+    # session behind it.
+    result = await summarise_session_history(history=history, run_compaction=_run)
+    # Phase 2, under the lock: re-read the row and RESERVE the marker's seq instead of seeding it
+    # from a read (S2a PR-5b). A steer that ran a turn and parked while the summariser worked moved
+    # last_seq and set the park columns, so the reservation's fence (the route's own idle-unparked
+    # guard plus last_seq == the row just re-read) rejects it and NOTHING is written; the answer is
+    # 409 and a retry re-summarises. The reservation is the row's last_seq write, so no whole-row
+    # write follows (the old one, of the row read before the summariser, erased the steer's park).
+    import asyncio
+
+    from primer.session import mutation_lock
+
+    async with session_lifecycle_lock().acquire(session_id):
+        fresh = await sessions.get(session_id)
+        if fresh is None:
+            raise NotFoundError(f"Session {session_id!r} does not exist")
+        try:
+            async with asyncio.timeout(mutation_lock.IN_LOCK_IO_TIMEOUT_S):
+                outcome = await append_compaction_marker(
+                    sessions=sessions, row=fresh, workspace_io=io_shim, result=result,
+                    history=history, reload_history=_reload,
+                )
+        except TimeoutError:
+            raise ConflictError(
+                "the workspace did not answer in time; the marker was not written, retry the compaction"
+            ) from None
     try:
         await event_bus.publish(
             f"session:{session_id}:tick",
@@ -1961,7 +1991,15 @@ async def rewind_session(
 
     Rejects unless the session is fully idle: rewinding under a running
     or parked turn would race the writer that turn is still using, and
-    the seq the marker names could move underneath it.
+    the seq the marker names could move underneath it. The marker's seq
+    is RESERVED under the session's lifecycle lock, from a row re-read
+    after the log read (S2a PR-5b): a steer that ran a turn and parked
+    in that window moves ``last_seq`` and sets the park columns, so the
+    reservation's fence (the route's own idle-unparked guard plus
+    ``last_seq ==`` the row just re-read) rejects it, nothing is written,
+    and the answer is 409 (a retry re-reads the log) instead of the
+    marker reusing the steer's seq and a whole-row write erasing its
+    park.
     """
     from primer.session.rewind import append_rewind_marker, check_rewind_target
     from primer.worker.io_shim import _WorkspaceIOShim
@@ -1995,14 +2033,30 @@ async def rewind_session(
 
     io_shim = _WorkspaceIOShim(workspace_registry=registry)
     io_shim.register_session(session_id, workspace_id)
-    marker_seq = await append_rewind_marker(
-        workspace_io=io_shim,
-        session_id=session_id,
-        start_seq=row.last_seq,
-        to_seq=body.to_seq,
-        actor="user",
-    )
-    await sessions.update(row.model_copy(update={"last_seq": marker_seq}))
+    # The marker's seq is RESERVED, not seeded from row.last_seq read before the log read (S2a PR-5b):
+    # a steer that ran a turn and parked during that read moved last_seq and set the park columns, so
+    # the reservation's fence (the route's own idle-unparked guard plus last_seq == the row just
+    # re-read) rejects it and NOTHING is written; the answer is 409 and a retry re-reads the log. The
+    # reservation is the row's last_seq write, so no whole-row write follows (the old one, of the row
+    # read before the log read, erased the steer's park).
+    import asyncio
+
+    from primer.session import mutation_lock
+
+    async with session_lifecycle_lock().acquire(session_id):
+        fresh = await sessions.get(session_id)
+        if fresh is None:
+            raise NotFoundError(f"Session {session_id!r} does not exist")
+        try:
+            async with asyncio.timeout(mutation_lock.IN_LOCK_IO_TIMEOUT_S):
+                marker_seq = await append_rewind_marker(
+                    sessions=sessions, row=fresh, workspace_io=io_shim,
+                    to_seq=body.to_seq, actor="user",
+                )
+        except TimeoutError:
+            raise ConflictError(
+                "the workspace did not answer in time; the marker was not written, retry the rewind"
+            ) from None
     return {
         "session_id": session_id,
         "to_seq": body.to_seq,

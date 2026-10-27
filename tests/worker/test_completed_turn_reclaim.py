@@ -519,13 +519,15 @@ async def test_a_marker_record_after_the_rolled_back_completion_makes_no_model_c
         async def run(_history):
             return _Summary()
 
-        outcome = await compact_session(row=row, workspace_io=world.ws, history=[], run_compaction=run)
+        outcome = await compact_session(
+            row=row, workspace_io=world.ws, history=[], run_compaction=run, sessions=world.sessions,
+        )
         marker_seq = outcome.compaction_marker_seq
     else:
         marker_seq = await append_rewind_marker(
-            workspace_io=world.ws, session_id=SID, start_seq=row.last_seq, to_seq=1, actor="user",
+            sessions=world.sessions, row=row, workspace_io=world.ws, to_seq=1, actor="user",
         )
-    await world.sessions.update(row.model_copy(update={"last_seq": marker_seq}))   # what the route writes
+    # the reservation is the route's last_seq write: there is no whole-row write to simulate
     row = await world.row()
     assert row.next_unprocessed_seq <= row.last_seq
 

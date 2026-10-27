@@ -3,7 +3,7 @@
 ``compact_session_endpoint`` and ``rewind_session`` refuse a non-idle or parked session up front, then do I/O that takes time
 (the summariser call, a workspace read) and finish with a WHOLE-ROW ``sessions.update(row.model_copy(update={"last_seq": ...}))``
 of a row read BEFORE that I/O, and a marker whose seq is seeded from that same stale ``last_seq``. A steer that lands in the
-window, runs a turn and parks leaves, on ``main`` today:
+window, runs a turn and parks left, before the fix (S2a PR-5b):
 
 * the HTTP answer is 200 (the guard ran once, before the window);
 * the park is ERASED (``parked_status``/``parked_state`` back to None: the human's question is never answered, the session
@@ -13,10 +13,10 @@ window, runs a turn and parks leaves, on ``main`` today:
   ``last_seq``, mints the next duplicate.
 
 Each reproduction has a plain SCENARIO test (the injected steer and park really landed in the window and the route really
-answered; so a broken harness cannot hide behind an expected failure) and a strict-xfail BEHAVIOUR test, restricted to
+answered; so a broken harness cannot hide behind an expected failure) and a BEHAVIOUR test, restricted to
 ``AssertionError``, asserting only the invariants any correct fix must hold whichever way it answers (409 or not): the park
 is intact, the log's seqs are unique, ``last_seq`` is the log's highest seq. The fix (PR-5b: reserve the seq with a guarded
-``patch_if`` under ``session_lifecycle_lock``) must delete the markers.
+``patch_if`` under ``session_lifecycle_lock``) has landed, so both are plain tests now.
 """
 
 from __future__ import annotations
@@ -105,10 +105,6 @@ async def test_scenario_a_steer_and_park_landed_in_the_compaction_window(client,
     assert seen["status_code"] in (200, 409), f"the route answered {seen['status_code']}"
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="PR-5b: compact's whole-row write erases a park that committed while the summariser ran and reuses the steer's seq",
-)
 @pytest.mark.asyncio
 async def test_a_park_committed_during_the_summariser_survives_compact_and_no_seq_repeats(
     client, app, fake_storage_provider, monkeypatch,
@@ -159,10 +155,6 @@ async def test_scenario_a_steer_and_park_landed_in_the_rewind_window(client, app
     assert seen["status_code"] in (200, 409), f"the route answered {seen['status_code']}"
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="PR-5b: rewind's whole-row write erases a park that committed after its guard and reuses the steer's seq",
-)
 @pytest.mark.asyncio
 async def test_a_park_committed_during_the_rewind_survives_it_and_no_seq_repeats(client, app, fake_storage_provider):
     seen = await _rewind_with_a_park_committed_during_the_log_read(client, app, fake_storage_provider)
