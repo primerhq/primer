@@ -13,10 +13,11 @@ being QUEUED or RUNNING and still carrying the releaser's per-claim ``claim_toke
 whose claim was cancelled, deleted or taken over underneath it writes nothing and wakes nothing,
 and a release with no token never matches.
 
-NOT BUILT: nothing claims and runs a task. ``WorkerPool`` registers no
-TOOL_CALL handler, so on main only tests ever release a TOOL_CALL lease
-and the transitions below are exercised by hand. See "Tool-call claims:
-built and not built" in docs/dev/architecture/claim-machine.md.
+BUILT: ``run_engine_tool_call`` (``primer/worker/engine_handlers.py``,
+registered unconditionally as ``WorkerPool._run_engine_tool_call``) claims
+and runs a task; the transitions below are what its releases drive (the
+decisions side - a ``gated -> queued`` flip on a decision - is the separate
+follow-up). See "Tool-call claims" in docs/dev/architecture/claim-machine.md.
 """
 
 from __future__ import annotations
