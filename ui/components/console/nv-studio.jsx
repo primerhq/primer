@@ -215,14 +215,19 @@ function NV_Studio() {
   );
 }
 
-// Usage summary for the session header's mini meter. The session row
-// carries usage when the backend provides it; absent data renders an
-// empty meter rather than a lie.
+// Usage summary for the session header's mini meter. The numerator is the CURRENT prompt size:
+// the latest model call's actual input (usage.last_input_tokens), so the meter warns
+// "near overflow, compact or start fresh" instead of pinning at 100% after a few moderate
+// turns (audit G9-3). Only when no call has reported usage yet (last_input_tokens absent
+// or 0) does it fall back to the session-lifetime sum. The session row carries usage when
+// the backend provides it; absent data renders an empty meter rather than a lie.
 function NV_usageOf(session) {
   var u = session && session.usage;
   if (!u || !u.total_input_tokens) return { pct: 0, label: "" };
   var ctx = session.context_length || 0;
-  var used = (u.total_input_tokens || 0) + (u.total_output_tokens || 0);
+  var used = u.last_input_tokens > 0
+    ? u.last_input_tokens
+    : (u.total_input_tokens || 0) + (u.total_output_tokens || 0);
   var pct = ctx ? Math.min(100, Math.round((used / ctx) * 100)) : 0;
   var usedLabel = Math.round(used / 1000) + "k";
   // UX reconcile wave 1 (audit A item 13): used ALONE ("38k") answered

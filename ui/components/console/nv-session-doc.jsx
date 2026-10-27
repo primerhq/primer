@@ -1855,6 +1855,7 @@ function NV_TraceSplit(props) {
           data-testid="nv-trace-maximize-open"
           onClick={function () { setMaximized(true); }}>⤢</button>
         <button type="button" className="nv-rail-iconbtn"
+          title="Close"
           data-testid="nv-trace-close"
           onClick={props.onClose}>×</button>
       </div>
@@ -1903,6 +1904,7 @@ function NV_TraceMaximize(props) {
           </h3>
           <span style={{ flex: 1 }} />
           <button type="button" className="nv-rail-iconbtn"
+            title="Close"
             data-testid="nv-trace-maximize-close"
             onClick={props.onClose}>×</button>
         </div>
@@ -3760,6 +3762,8 @@ function NV_SessionDoc(props) {
                 <span>graph view</span>
                 <span style={{ flex: 1 }} />
                 <button type="button" className="nv-rail-iconbtn"
+                  title="Close"
+                  data-testid="nv-graph-view-close"
                   onClick={function () { setGraphView(false); }}>×</button>
               </div>
               <window.SD_GraphRunView gid={graphId} rid={sid} wid={con.wid}

@@ -221,6 +221,7 @@ function NV_Terminal() {
         ) : null}
         <span style={{ flex: 1 }} />
         <button type="button" className="nv-rail-iconbtn"
+          title="Close"
           data-testid="nv-terminal-close"
           onClick={function () {
             var verb = con.registry.get("terminal.toggle");
