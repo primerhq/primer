@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from primer.common.optional import has_extra
-from primer.model.except_ import ConflictError
+from primer.model.except_ import ConfigError, ConflictError
 from primer.bootstrap.defaults import (
     RESERVED_CROSS_ENCODERS,
     RESERVED_EMBEDDERS,
@@ -44,6 +44,7 @@ from primer.bootstrap.defaults import (
     RESERVED_LANCE_SSP,
     RESERVED_LOCAL_WORKSPACE_PROVIDER,
     RESERVED_LOCAL_WORKSPACE_TEMPLATE,
+    RESERVED_PGVECTOR_SSP,
     RESERVED_SSPS,
     RESERVED_WORKSPACE_PROVIDERS,
     RESERVED_WORKSPACE_TEMPLATES,
@@ -52,7 +53,10 @@ from primer.model.provider import (
     CrossEncoderProvider,
     EmbeddingProvider,
     SemanticSearchProvider,
+    StorageProviderType,
 )
+from primer.model.providers.storage import PostgresConfig, StorageProviderConfig
+from primer.model.providers.vector import PgVectorConfig
 from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
 
 if TYPE_CHECKING:
@@ -112,6 +116,17 @@ class BootstrapRunner:
         specs (e.g. ``~/.primer/workspaces`` → ``root_dir / "workspaces"``).
         The directory is NOT created here; providers create sub-dirs on
         first use.
+    db_config:
+        The app's storage backend config (``AppConfig.db``). When the app
+        runs against Postgres, the reserved pgvector SSP is seeded from
+        the app's own connection settings (the deterministic default
+        vector backend in Postgres mode, C2 ruling A); on embedded
+        SQLite there is no Postgres to point at and the step is a no-op.
+    legacy_vector_store:
+        The legacy top-level ``vector_store`` config block, if the config
+        file still carries one (``AppConfig.legacy_vector_store``). When
+        present it is migrated into the reserved pgvector SSP and a
+        deprecation WARNING is logged.
     """
 
     def __init__(
@@ -124,6 +139,8 @@ class BootstrapRunner:
         workspace_provider_storage: "Storage[WorkspaceProvider]",
         workspace_template_storage: "Storage[WorkspaceTemplate]",
         root_dir: Path,
+        db_config: StorageProviderConfig | None = None,
+        legacy_vector_store: dict[str, Any] | None = None,
     ) -> None:
         self._storage = storage
         self._embedder_storage = embedder_storage
@@ -132,6 +149,8 @@ class BootstrapRunner:
         self._wp_storage = workspace_provider_storage
         self._wt_storage = workspace_template_storage
         self._root_dir = root_dir
+        self._db_config = db_config
+        self._legacy_vector_store = legacy_vector_store
 
     # ------------------------------------------------------------------
     # Public API
@@ -167,6 +186,7 @@ class BootstrapRunner:
         await self._ensure_local_workspace_provider(result)
         await self._ensure_local_workspace_template(result)
         await self._ensure_huggingface_embedder(result)
+        await self._ensure_pgvector_ssp(result)
         await self._ensure_lance_ssp(result)
         await self._ensure_huggingface_cross_encoder(result)
 
@@ -300,6 +320,111 @@ class BootstrapRunner:
                 "bootstrap: _ensure_huggingface_embedder failed: %s", exc
             )
             result.errors.append((reserved_id, repr(exc)))
+
+    async def _ensure_pgvector_ssp(
+        self, result: BootstrapResult
+    ) -> None:
+        """Seed the reserved pgvector SSP (the authoritative vector default).
+
+        Deterministic selection (C2 ruling A): when the app runs against
+        Postgres, the reserved pgvector provider is created from the app's
+        own connection settings, so a fresh Postgres-mode install has a
+        working pgvector semantic backend out of the box. A legacy
+        top-level ``vector_store`` config block (if the config file still
+        carries one) is migrated into the same row and a deprecation
+        WARNING is logged. Embedded-SQLite mode has no Postgres to point a
+        pgvector provider at, so the step is a no-op there and Lance
+        (extra-gated) remains the default. When the selected pgvector
+        backend is unavailable the step raises an actionable error --
+        there is no silent fallback to Lance.
+        """
+        reserved_id = RESERVED_PGVECTOR_SSP
+        legacy = self._legacy_vector_store
+        migrated = legacy is not None
+
+        if migrated:
+            provider = legacy.get("provider")
+            if provider != "pgvector":
+                raise ConfigError(
+                    "legacy 'vector_store' config block: the migration "
+                    f"supports only provider 'pgvector', got "
+                    f"{provider!r}. Register the backend via POST /v1/ssp "
+                    "and remove the 'vector_store' block from your config."
+                )
+            from pydantic import ValidationError
+
+            try:
+                cfg = PgVectorConfig(**(legacy.get("config") or {}))
+            except ValidationError as exc:
+                raise ConfigError(
+                    "legacy 'vector_store' config block: the nested "
+                    f"'config' is not a valid pgvector connection config: "
+                    f"{exc}"
+                ) from exc
+            source = "the legacy 'vector_store' config block"
+        elif (
+            self._db_config is not None
+            and self._db_config.provider == StorageProviderType.POSTGRES
+            and isinstance(self._db_config.config, PostgresConfig)
+        ):
+            pg = self._db_config.config
+            cfg = PgVectorConfig(
+                hostname=pg.hostname,
+                port=pg.port,
+                database=pg.database,
+                username=pg.username,
+                password=pg.password,
+            )
+            source = "the app's Postgres storage settings"
+        else:
+            # Embedded-SQLite mode: no Postgres to point a pgvector
+            # provider at; Lance (extra-gated) is the default there.
+            result.skipped.append(reserved_id)
+            return
+
+        try:
+            existing = await self._ssp_storage.get(reserved_id)
+            if existing is not None:
+                result.skipped.append(reserved_id)
+            else:
+                # No silent fallback: if the selected pgvector backend is
+                # unreachable, fail loudly with an actionable error.
+                from primer.vector.pgvector import probe_postgres_reachable
+
+                await probe_postgres_reachable(cfg)
+                entity = SemanticSearchProvider(
+                    id=reserved_id,
+                    provider="pgvector",
+                    config=cfg,
+                )
+                await self._ssp_storage.create(entity)
+                result.created.append(reserved_id)
+                logger.debug("bootstrap: created SSP %r", reserved_id)
+        except ConfigError:
+            raise
+        except ConflictError:
+            # Another boot won the create between the miss above and here.
+            result.skipped.append(reserved_id)
+        except Exception as exc:  # noqa: BLE001 - re-raised with detail
+            raise ConfigError(
+                f"pgvector bootstrap: the selected pgvector backend "
+                f"({source}) is unreachable (host={cfg.hostname}, "
+                f"port={cfg.port}, database={cfg.database}): check the "
+                "connection settings and make sure the 'vector' extension "
+                "can be created on that database "
+                "(CREATE EXTENSION IF NOT EXISTS vector). No silent "
+                f"fallback to Lance is performed. ({exc})"
+            ) from exc
+
+        if migrated:
+            logger.warning(
+                "DEPRECATION: legacy top-level 'vector_store' config key: "
+                "translated into the pgvector semantic-search provider "
+                "row %r (the replacement is a persisted provider, "
+                "registered via POST /v1/ssp); remove the 'vector_store' "
+                "block from your config.",
+                reserved_id,
+            )
 
     async def _ensure_lance_ssp(
         self, result: BootstrapResult

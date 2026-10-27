@@ -38,12 +38,14 @@ log_json: true        # JSON lines (true) or human-readable (false)
 
 # --- Vector store ---------------------------------------------------------
 # There is deliberately no `vector_store:` key here. That top-level key is
-# legacy: AppConfig has no such field, so the block parsed into nothing and
-# the loader now warns loudly when it finds one. Vector backends are
-# persisted semantic-search provider rows (SemanticSearchProvider): bootstrap
-# seeds a Lance provider when the 'lance' extra is installed, and other
-# backends (pgvector, pgvectorscale) are registered at runtime (an admin
-# creates the provider row; a collection's `search` block then names it).
+# legacy: it used to parse into nothing (AppConfig silently dropped it), and
+# a config file that still carries it is migrated into the reserved
+# pgvector provider row at first boot with a deprecation warning. Vector
+# backends are persisted semantic-search provider rows (SemanticSearchProvider):
+# bootstrap seeds the pgvector provider when the app runs against Postgres
+# and a Lance provider when the 'lance' extra is installed; other backends
+# are registered at runtime (POST /v1/ssp) and named by a collection's
+# `search.vector_store_provider_id`.
 
 # --- Scheduler (required when running a worker; CLI overrides runtime_mode)
 scheduler:

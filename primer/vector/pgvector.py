@@ -58,6 +58,33 @@ from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_op
 logger = logging.getLogger(__name__)
 
 
+# ---------- Reachability probe --------------------------------------------
+
+
+async def probe_postgres_reachable(config: PgVectorConfig) -> None:
+    """Open a bare asyncpg connection and run a trivial query.
+
+    No CREATE SCHEMA, no CREATE EXTENSION -- those are
+    ``VectorStoreProvider.initialize()``'s job when the operator actually
+    saves and uses the provider. Used by the ``/v1/ssp`` probe endpoint
+    and by bootstrap (the pgvector provider seed and the legacy
+    ``vector_store`` migration) to turn "the backend is unavailable" into
+    an actionable error instead of a silently broken row.
+    """
+    conn = await asyncpg.connect(
+        host=config.hostname,
+        port=config.port,
+        user=config.username,
+        password=config.password.get_secret_value(),
+        database=config.database,
+        timeout=10.0,
+    )
+    try:
+        await conn.fetchval("SELECT 1")
+    finally:
+        await conn.close()
+
+
 # ---------- Identifier helpers --------------------------------------------
 
 

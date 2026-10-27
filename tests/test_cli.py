@@ -135,25 +135,30 @@ class TestLegacyVectorStoreKey:
         legacy = tmp_path / "legacy.yaml"
         legacy.write_text(_LEGACY_VECTOR_STORE_YAML, encoding="utf-8")
         cfg = cli_mod._load_config(legacy, RuntimeMode.API)
-        # The warning is advisory: the block is still dropped, the app
-        # still boots (old configs must not be bricked).
+        # The notice is advisory: the block is captured (not bricked) and
+        # the app still loads; bootstrap then migrates it.
         assert isinstance(cfg, AppConfig)
+        # Observable at runtime: the loader captured the block into the
+        # narrow legacy field instead of letting AppConfig drop it.
+        assert cfg.legacy_vector_store is not None
+        assert cfg.legacy_vector_store["provider"] == "pgvector"
         err = capsys.readouterr().err
         assert "vector_store" in err
-        # Loud means it names the key and points at the current contract.
+        # Loud + actionable: names the key and says it is migrated into the
+        # pgvector semantic-search provider row.
         assert "semantic-search" in err.lower()
+        assert "pgvector" in err
 
     def test_no_vector_store_key_emits_no_warning(
         self, base_config_file: Path, capsys: pytest.CaptureFixture[str],
     ):
         cfg = cli_mod._load_config(base_config_file, RuntimeMode.API)
         assert isinstance(cfg, AppConfig)
+        assert cfg.legacy_vector_store is None
         assert "vector_store" not in capsys.readouterr().err
 
-    # -----------------------------------------------------------------------
-    # New: auto-discovery tests
-    # -----------------------------------------------------------------------
 
+class TestLoadConfigAutoDiscovery:
     def test_load_config_no_path_no_default_file_returns_all_defaults(
         self,
         tmp_path: Path,

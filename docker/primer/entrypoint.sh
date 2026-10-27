@@ -49,8 +49,9 @@ log_level: ${PRIMER_LOG_LEVEL}
 log_json: ${PRIMER_LOG_JSON}
 
 # (No `vector_store:` block on purpose: it is a legacy key that AppConfig
-# silently dropped. Vector backends are semantic-search provider rows; the
-# bootstrap seeds a Lance provider when the 'lance' extra is installed.)
+# used to silently drop. Vector backends are semantic-search provider rows;
+# bootstrap seeds the pgvector provider in this Postgres mode and the Lance
+# provider when the 'lance' extra is installed.)
 
 scheduler:
   provider: postgres

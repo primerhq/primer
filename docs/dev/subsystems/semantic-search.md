@@ -286,12 +286,34 @@ through the generic `Storage[T]` interface with no special semantics.
 `AppConfig.vector_store` no longer exists; operators configure backends at runtime
 via `POST /v1/ssp`. The legacy top-level `vector_store:` YAML key that shipped in
 `config.example.yaml`, the docker entrypoint, the release workflow and the e2e
-bring-up script is gone as well: `AppConfig` parses with `extra="ignore"`, so the
-block used to parse into nothing and was silently dead. The loader
-(`primer/cli.py::_load_config`) now prints a loud yellow warning to stderr when a
-config file still carries the key, so an old config can no longer fail silently;
-vector backends come from the persisted provider rows (bootstrap seeds the Lance
-SSP when the `lance` extra is installed).
+bring-up script is gone as well: `AppConfig` used to parse it with
+`extra="ignore"`, so the block parsed into nothing and was silently dead.
+
+**The vector default (C2 ruling A).** Selection is deterministic:
+when the app runs against Postgres (`db.provider: postgres`), first-boot
+bootstrap seeds the reserved pgvector semantic provider row
+(`primer.bootstrap.defaults.RESERVED_PGVECTOR_SSP`, id `pgvector`) from the
+app's own connection settings, so a fresh Postgres-mode install has the
+authoritative pgvector backend out of the box. Embedded-SQLite mode has no
+Postgres to point at, so the step is a no-op there and the Lance SSP (id
+`lance`, extra-gated on `lance`) remains the default. Both reserved rows are
+skipped, never clobbered, when they already exist. If the selected pgvector
+backend is unreachable the bootstrap step raises an actionable
+`ConfigError` naming the host/port/database and the `CREATE EXTENSION`
+remediation; there is no silent fallback to Lance. The release workflow's
+boot smoke asserts the active provider type (the reserved `pgvector` row
+exists with `provider == "pgvector"`), not merely a healthy process.
+
+**Legacy `vector_store` migration.** A config file that still carries the
+top-level `vector_store:` block is captured by the loader
+(`primer/cli.py::_load_config`, into `AppConfig.legacy_vector_store`, with a
+loud stderr notice) and migrated at first boot:
+`BootstrapRunner._ensure_pgvector_ssp` translates the block's pgvector
+connection settings into the reserved pgvector row (the only supported
+legacy `provider` value; anything else, and an unreachable target, raise an
+actionable `ConfigError`) and logs a one-line deprecation WARNING naming the
+legacy key and the replacement. Operators should remove the block and
+register providers via `POST /v1/ssp` instead.
 
 ## 8. Public surfaces
 

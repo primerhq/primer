@@ -251,7 +251,7 @@ RESERVED_TOOLSET_ROW_IDS: frozenset[str] = RESERVED_TOOLSET_IDS | RESERVED_TOOLS
 RESERVED_EMBEDDER_IDS: frozenset[str] = frozenset({"huggingface"})
 
 # Semantic-search providers: id "lance" is the local LanceDB backend.
-RESERVED_SSP_IDS: frozenset[str] = frozenset({"lance"})
+RESERVED_SSP_IDS: frozenset[str] = frozenset({"lance", "pgvector"})
 
 # Cross-encoder providers: id "huggingface-ce" is the local reranker.
 RESERVED_CROSS_ENCODER_IDS: frozenset[str] = frozenset({"huggingface-ce"})

@@ -23,6 +23,7 @@ from primer.bootstrap.defaults import (
     RESERVED_LANCE_SSP,
     RESERVED_LOCAL_WORKSPACE_PROVIDER,
     RESERVED_LOCAL_WORKSPACE_TEMPLATE,
+    RESERVED_PGVECTOR_SSP,
     RESERVED_SSPS,
     RESERVED_WORKSPACE_PROVIDERS,
     RESERVED_WORKSPACE_TEMPLATES,
@@ -50,13 +51,14 @@ def test_reserved_ids_constants():
     assert RESERVED_LOCAL_WORKSPACE_TEMPLATE == "local-default"
 
 
-def test_all_reserved_ids_contains_all_four():
+def test_all_reserved_ids_contains_every_reserved_id():
     assert RESERVED_LOCAL_WORKSPACE_PROVIDER in ALL_RESERVED_IDS
     assert RESERVED_HUGGINGFACE_EMBEDDER in ALL_RESERVED_IDS
     assert RESERVED_LANCE_SSP in ALL_RESERVED_IDS
+    assert RESERVED_PGVECTOR_SSP in ALL_RESERVED_IDS
     assert RESERVED_HUGGINGFACE_CROSS_ENCODER in ALL_RESERVED_IDS
     assert RESERVED_LOCAL_WORKSPACE_TEMPLATE in ALL_RESERVED_IDS
-    assert len(ALL_RESERVED_IDS) == 5
+    assert len(ALL_RESERVED_IDS) == 6
 
 
 # ---------------------------------------------------------------------------

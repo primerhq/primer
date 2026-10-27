@@ -17,6 +17,7 @@ from primer.bootstrap.defaults import (
     RESERVED_HUGGINGFACE_CROSS_ENCODER,
     RESERVED_HUGGINGFACE_EMBEDDER,
     RESERVED_LANCE_SSP,
+    RESERVED_PGVECTOR_SSP,
     RESERVED_LOCAL_WORKSPACE_PROVIDER,
     RESERVED_LOCAL_WORKSPACE_TEMPLATE,
 )
@@ -140,7 +141,7 @@ async def test_run_creates_all_four_providers(
         RESERVED_LANCE_SSP,
         RESERVED_HUGGINGFACE_CROSS_ENCODER,
     }
-    assert result.skipped == []
+    assert result.skipped == [RESERVED_PGVECTOR_SSP]  # SQLite-mode: no Postgres to seed
     assert result.errors == []
 
     state = await storage_provider.get_system_state()
@@ -160,6 +161,10 @@ async def test_run_idempotent_skips_existing(
 
     second = await runner.run()
     assert second.created == []
+    # Marker-set no-op path reports only the rows that exist; in this
+    # SQLite-mode runner no pgvector row was created (no Postgres to seed
+    # from), so it is absent here (unlike the force=True runs below, which
+    # re-run the ensure steps and report it as skipped).
     assert set(second.skipped) == {
         RESERVED_LOCAL_WORKSPACE_PROVIDER,
         RESERVED_LOCAL_WORKSPACE_TEMPLATE,
@@ -248,6 +253,7 @@ async def test_run_with_force_reruns_after_completion(
         RESERVED_LOCAL_WORKSPACE_TEMPLATE,
         RESERVED_HUGGINGFACE_EMBEDDER,
         RESERVED_LANCE_SSP,
+        RESERVED_PGVECTOR_SSP,
         RESERVED_HUGGINGFACE_CROSS_ENCODER,
     }
     assert second.errors == []

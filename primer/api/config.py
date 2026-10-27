@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
@@ -190,6 +190,18 @@ class AppConfig(BaseSettings):
             "SQLite (which has no schema concept). Intended for test "
             "isolation: set PRIMER_DB_SCHEMA=<name> to place all tables "
             "in a dedicated schema so concurrent test runs don't collide."
+        ),
+    )
+    # --- Legacy config migration -----------------------------------------
+    legacy_vector_store: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The legacy top-level 'vector_store' config block, captured by "
+            "the loader (primer.cli._load_config) BEFORE AppConfig would "
+            "silently drop it. NOT a live setting: bootstrap translates it "
+            "into a persisted pgvector semantic-search provider row and "
+            "logs a deprecation warning. Operators should remove the block "
+            "and register providers via POST /v1/ssp instead."
         ),
     )
 

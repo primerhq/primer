@@ -222,26 +222,15 @@ async def _run_ssp_probe(row: SemanticSearchProvider) -> dict[str, Any]:
 
 
 async def _probe_postgres_reachable(config: PgVectorConfig | PgVectorScaleConfig) -> None:
-    """Open a bare asyncpg connection and run a trivial query.
-
-    No CREATE SCHEMA, no CREATE EXTENSION -- those are
+    """Thin wrapper over the shared reachability probe
+    (:func:`primer.vector.pgvector.probe_postgres_reachable`, also used by
+    bootstrap). No CREATE SCHEMA, no CREATE EXTENSION -- those are
     VectorStoreProvider.initialize()'s job when the operator actually
     saves and uses the provider, not this probe's.
     """
-    import asyncpg
+    from primer.vector.pgvector import probe_postgres_reachable
 
-    conn = await asyncpg.connect(
-        host=config.hostname,
-        port=config.port,
-        user=config.username,
-        password=config.password.get_secret_value(),
-        database=config.database,
-        timeout=10.0,
-    )
-    try:
-        await conn.fetchval("SELECT 1")
-    finally:
-        await conn.close()
+    await probe_postgres_reachable(config)
 
 
 def _probe_lance_path(config: LanceConfig) -> None:

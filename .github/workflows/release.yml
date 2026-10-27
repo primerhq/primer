@@ -109,6 +109,19 @@ jobs:
             tail -n 80 tests/.e2e/logs/server.log >&2 || true
             exit 1
           fi
+      # Release validation asserts the ACTIVE provider type, not merely a
+      # successful process start (C2): the boot-smoke config runs in
+      # Postgres mode, so first-boot bootstrap must have seeded the
+      # reserved pgvector semantic provider row (the authoritative vector
+      # default). A healthy boot without it is a release failure.
+      - name: Assert the active semantic provider type (pgvector)
+        run: |
+          provider="$(PGPASSWORD=primer psql -h localhost -U primer -d primer_e2e -t -A -c \
+            "SELECT data->>'provider' FROM semanticsearchprovider WHERE id = 'pgvector'")"
+          if [ "$provider" != "pgvector" ]; then
+            echo "release validation: the reserved pgvector provider row is missing or has type ${provider:-<absent>} - the active semantic backend is not the authoritative pgvector provider" >&2
+            exit 1
+          fi
 
   release:
     needs: test

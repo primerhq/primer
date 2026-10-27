@@ -34,6 +34,14 @@ from __future__ import annotations
 RESERVED_LOCAL_WORKSPACE_PROVIDER: str = "local"
 RESERVED_HUGGINGFACE_EMBEDDER: str = "huggingface"
 RESERVED_LANCE_SSP: str = "lance"
+# The authoritative pgvector semantic provider (C2 ruling A): bootstrap
+# creates it when the app runs against Postgres (deterministic selection:
+# pgvector is the default vector backend in Postgres mode; Lance remains
+# the default for embedded-SQLite mode and is extra-gated). Its config is
+# derived at run time from the app's own Postgres connection (or from a
+# legacy 'vector_store' config block being migrated), so unlike the Lance
+# spec it is NOT a static entry in RESERVED_SSPS.
+RESERVED_PGVECTOR_SSP: str = "pgvector"
 RESERVED_HUGGINGFACE_CROSS_ENCODER: str = "huggingface-ce"
 RESERVED_LOCAL_WORKSPACE_TEMPLATE: str = "local-default"
 
@@ -64,6 +72,7 @@ ALL_RESERVED_IDS: frozenset[str] = frozenset({
     RESERVED_LOCAL_WORKSPACE_PROVIDER,
     RESERVED_HUGGINGFACE_EMBEDDER,
     RESERVED_LANCE_SSP,
+    RESERVED_PGVECTOR_SSP,
     RESERVED_HUGGINGFACE_CROSS_ENCODER,
     RESERVED_LOCAL_WORKSPACE_TEMPLATE,
 })

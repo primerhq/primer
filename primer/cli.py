@@ -104,22 +104,22 @@ def _load_config(
             raise typer.BadParameter(
                 f"config file {resolved} must contain a YAML mapping at the root"
             )
+    # The legacy top-level 'vector_store' block, if the file still carries
+    # it. Captured here (into the narrow legacy_vector_store field) so
+    # bootstrap can translate it into a persisted pgvector provider row and
+    # warn, instead of AppConfig silently dropping it. Vector backends are
+    # persisted SemanticSearchProvider rows: bootstrap seeds the reserved
+    # pgvector provider when the app runs against Postgres and a Lance
+    # provider when the 'lance' extra is installed.
     if "vector_store" in data:
-        # Legacy top-level key. AppConfig has no vector_store field and
-        # parses with extra="ignore", so this block would otherwise be
-        # silently dropped (it shipped in config.example.yaml, the docker
-        # entrypoint and the release workflow until it was removed). Vector
-        # backends are persisted SemanticSearchProvider rows: bootstrap
-        # seeds a Lance provider when the 'lance' extra is installed and
-        # other backends (pgvector, ...) are registered at runtime.
+        data["legacy_vector_store"] = data.pop("vector_store")
         typer.secho(
             f"config file {resolved}: the top-level `vector_store` key is "
-            "legacy and has NO effect (AppConfig has no such field; the "
-            "block is silently ignored). Vector backends are now "
-            "semantic-search provider rows (SemanticSearchProvider): "
-            "bootstrap seeds a Lance provider when the 'lance' extra is "
-            "installed, and other backends (pgvector, ...) are registered "
-            "at runtime. Remove the block from your config.",
+            "legacy. It is being migrated: at startup bootstrap translates "
+            "it into the pgvector semantic-search provider row (and logs a "
+            "deprecation WARNING). Vector backends are now persisted "
+            "provider rows (SemanticSearchProvider); remove the block from "
+            "your config and register providers via POST /v1/ssp instead.",
             err=True,
             fg=typer.colors.YELLOW,
         )
@@ -246,6 +246,8 @@ def run_init(
                     WorkspaceTemplate
                 ),
                 root_dir=root_dir,
+                db_config=cfg.db,
+                legacy_vector_store=cfg.legacy_vector_store,
             )
             result = await runner.run(force=force)
         finally:

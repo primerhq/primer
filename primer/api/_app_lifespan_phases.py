@@ -55,6 +55,8 @@ async def run_first_boot_bootstrap(
                 WorkspaceTemplate
             ),
             root_dir=Path("~/.primer").expanduser(),
+            db_config=config.db,
+            legacy_vector_store=config.legacy_vector_store,
         )
         if await _runner.needs_bootstrap():
             logger.info("first boot detected; running auto-bootstrap")

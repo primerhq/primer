@@ -99,7 +99,7 @@ function PC_classByKey(key) {
 // The local workspace provider also refuses a PUT (403, primer/api/routers/workspaces.py), so it never offers Edit either.
 const PC_BUILTIN_IDS = {
   embedding: ["huggingface"],
-  ssp: ["lance"],
+  ssp: ["lance", "pgvector"],
   cross_encoder: ["huggingface-ce"],
   workspace: ["local"],
   web_search: ["DuckDuckGo"],
