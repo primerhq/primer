@@ -30,6 +30,7 @@ from primer.api._app_lifespan_phases import (
     run_first_boot_bootstrap,
     sample_claim_gauges,
     seed_default_artifact_provider,
+    sweep_orphaned_tool_call_tasks,
     warm_chat_channels,
 )
 from primer.api._app_mcp import _start_mcp_mount
@@ -791,6 +792,12 @@ def _make_lifespan(config: AppConfig):
         # — the diagnostic-report Bug 1.
         if claim_engine is not None:
             await recover_sessions(claim_engine, scheduler, storage_provider)
+            # The executor's boot sweep (BPF wave 1, its step 9): void the
+            # orphaned ToolCallTask rows and delete their leases BEFORE the
+            # pool starts, so a reclaimed task is never an orphan and the
+            # pool's first claim cycle sees a clean task table. Shares the
+            # executor's own liveness predicate, so the two cannot drift.
+            await sweep_orphaned_tool_call_tasks(claim_engine, storage_provider)
 
         # --- Chat recovery on startup --------------------------------------
         # Same shape as session recovery above but for the chat surface.

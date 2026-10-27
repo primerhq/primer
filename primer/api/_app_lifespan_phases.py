@@ -263,6 +263,117 @@ async def recover_sessions(claim_engine, scheduler, storage_provider) -> None:
         logger.exception("lifespan: session recovery failed")
 
 
+async def sweep_orphaned_tool_call_tasks(claim_engine, storage_provider) -> None:
+    """Tool-call task recovery on startup (BPF wave 1, the executor's step 9).
+
+    Runs in the lifespan recovery phase, BEFORE the pool starts, alongside
+    :func:`recover_sessions`. The executor's per-claim liveness check catches
+    an orphan the moment it is claimed; this sweep is the boot-time backstop
+    for the rows whose lease will never be claimed again (the in-memory engine
+    forgets its leases on restart, so a surviving row sits unclaimed): the
+    pre-S1b leftovers, the crash-retry orphans (a non-byte-identical replay
+    whose new park references different ids, D-A2-06), and the rows of a turn
+    the invariant ended (D-A2-07).
+
+    For every non-terminal ``ToolCallTask`` row the SAME liveness rule the
+    executor applies is re-checked (``task_is_live_for_session`` - one shared
+    predicate, so the two cannot drift): a row the rule voids is written
+    terminal FAILED (orphaned, never queued again) and its ``TOOL_CALL`` lease
+    deleted. A row the rule keeps (a live park references it, or it belongs
+    to a running session's current turn - the byte-identical crash-retry
+    replay whose park has not applied yet) is left exactly as-is, lease
+    included.
+
+    The void is a direct fenced ``patch_if`` (not the adapter's terminal
+    branch, which fences on a claim token the sweep does not hold); the fence
+    names the row's current state, so a row that moved between the page read
+    and the write (nothing else runs before the pool starts, but the fence is
+    the contract either way) is refused and skipped. ``GATED`` rows are
+    included: a gate on a dead session or an unreferenced park can never be
+    decided, and the decisions slice (separate) owns their live fate.
+    """
+    try:
+        from datetime import datetime, timezone as _timezone
+
+        from pydantic_core import to_jsonable_python
+
+        from primer.int.claim import ClaimKind as _ClaimKind
+        from primer.model.storage import OffsetPage as _OffsetPage
+        from primer.model.tool_call_task import (
+            ToolCallTask as _ToolCallTask,
+            ToolCallTaskState as _ToolCallTaskState,
+        )
+        from primer.model.workspace_session import (
+            WorkspaceSession as _WorkspaceSession,
+        )
+        from primer.session.tool_wait_batches import (
+            task_is_live_for_session as _liveness,
+        )
+        from primer.storage.q import Q as _Q
+
+        _task_storage = storage_provider.get_storage(_ToolCallTask)
+        _session_storage = storage_provider.get_storage(_WorkspaceSession)
+        _non_terminal_q = _Q(_ToolCallTask).where_in("state", [
+            _ToolCallTaskState.QUEUED.value,
+            _ToolCallTaskState.RUNNING.value,
+            _ToolCallTaskState.GATED.value,
+        ])
+        _swept = 0
+        _kept = 0
+        # The predicate is over the states the sweep MOVES rows out of (voids
+        # write `failed`), so the result set shrinks as it is scanned: the
+        # offset advances past the rows KEPT (they survive in the result set) and
+        # not past the rows voided (they drop out, shifting the rows behind
+        # them down). Advancing a flat page length would skip the survivors of
+        # a voided page's neighbours; re-scanning from zero would loop forever
+        # over a first page of all-live rows. Neither is correct; this is.
+        _offset = 0
+        while True:
+            _page = await _task_storage.find(
+                _non_terminal_q.build(),
+                _OffsetPage(offset=_offset, length=200),
+            )
+            _items = list(_page.items)
+            if not _items:
+                break
+            for _task in _items:
+                _session = await _session_storage.get(_task.session_id)
+                _live, _reason = _liveness(_task, _session)
+                if _live:
+                    _kept += 1
+                    _offset += 1
+                    continue
+                _patch = to_jsonable_python({
+                    "state": _ToolCallTaskState.FAILED.value,
+                    "finished_at": datetime.now(_timezone.utc),
+                    "last_error": _reason[:300],
+                    "gate_state": None,
+                })
+                _updated = await _task_storage.patch_if(
+                    _task.id,
+                    _patch,
+                    where={"state": [_task.state.value]},
+                )
+                if _updated is None:
+                    # The row moved between the page read and the write: it
+                    # still matches the predicate, so advance past it and let
+                    # the next boot, or the executor's own claim, re-check it.
+                    _offset += 1
+                    continue
+                await claim_engine.delete_lease(_ClaimKind.TOOL_CALL, _task.id)
+                _swept += 1
+            if len(_items) < 200:
+                break
+        if _swept or _kept:
+            logger.info(
+                "lifespan: tool-call task sweep - voided %d orphaned row(s), "
+                "kept %d live row(s)",
+                _swept, _kept,
+            )
+    except Exception:  # noqa: BLE001 -- never break startup
+        logger.exception("lifespan: tool-call task sweep failed")
+
+
 # Grace window: only pending rows OLDER than this are re-fired. It is the only
 # thing separating a re-fire from a live sibling's in-flight dispatch.
 #
