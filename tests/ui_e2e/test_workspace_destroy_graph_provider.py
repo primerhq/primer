@@ -269,7 +269,25 @@ def test_u0091_llm_provider_invalidate_toasts_and_preserves_row(
     cleanup_urls = [f"/v1/llm_providers/{pid}"]
     try:
         open_provider_catalog(page, console_url, cls="llm")
-        page.click(f'[data-testid="pk-card-open:llm:{pid}"]')
+        # STABILITY FIX (u0091 flake, red twice on the #952 heads 99810f629
+        # and 948886e5d): the catalog is a paged list (12 per page,
+        # unsorted; provider-catalog.jsx PK_usePagedFilter pageSize: 12)
+        # and the shared e2e database accumulates the LLM providers seeded
+        # by the journeys that run before this file (pytest orders files
+        # alphabetically; this one sorts last). On the failing runs the
+        # catalog held 52 LLM providers and the seeded card sorted after
+        # the cvn*/errd*/fw* ids, so it sat on page 2+ and the blind click
+        # waited 30s for an element that never entered the DOM (CI
+        # screenshot: header "52 providers", pager "1-12 of 52", the card
+        # absent). Filter by the unique seeded id first (the operator's
+        # own path; PK_usePagedFilter isolates the row and resets to page
+        # 1), then wait for the SPECIFIC card before clicking it.
+        filter_box = page.get_by_test_id("pc-filter")
+        filter_box.wait_for(state="visible", timeout=15_000)
+        filter_box.fill(pid)
+        open_card = page.get_by_test_id(f"pk-card-open:llm:{pid}")
+        open_card.wait_for(state="visible", timeout=15_000)
+        open_card.click()
         overlay = page.get_by_test_id("pc-register")
         overlay.wait_for(state="visible", timeout=15_000)
 
