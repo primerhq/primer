@@ -109,13 +109,12 @@ Four rules make that safe:
   second marker of the same epoch on the next attempt (declared; the retry's
   orphan detection is the next change). A rejected closing write leaves
   the marker in the log unapplied. A park committed by another process does
-  that, and so does, in ONE process, the busy-queue branch of
-  `switch_session_binding`, which still writes the WHOLE row outside the lock
-  from a row it read earlier (S2a PR-12b makes it a `patch_if` of
-  `pending_binding_switch` alone): a stale write landing after the reservation,
-  or after the closing write, puts `last_seq` back below the marker, so the
-  next record any writer appends takes the marker's seq. It is pinned as a
-  strict xfail in `tests/api/test_session_binding_reservation.py`. Also
+  that. The in-process whole-row write that also used to do it (the busy-queue
+  branch of `switch_session_binding` writing the WHOLE row outside the lock
+  from a pre-read snapshot) is fixed: it is now a field-scoped `patch_if` of
+  `pending_binding_switch` alone under the lifecycle lock, so it can no longer
+  put `last_seq` back below the marker; it is pinned as a plain test in
+  `tests/api/test_session_binding_reservation.py`. Also
   declared, and older than this change: the closing write sets
   `next_unprocessed_seq` to `seq + 1` unconditionally, so when a steer's
   USER_INPUT at `seq - 1` is still unprocessed the drain cursor passes it.

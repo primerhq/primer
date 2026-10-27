@@ -196,18 +196,15 @@ async def test_a_timeout_after_the_gate_was_closed_says_the_gate_is_closed(clien
     assert stored.binding.agent_id == "agent-a" and stored.binding_epoch == 0
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="S2a PR-12b: the busy-queue branch of switch_session_binding still writes the WHOLE row, outside the lifecycle lock, "
-           "from a row read before it, so it can regress last_seq below a marker the checkpoint just wrote",
-)
 @pytest.mark.asyncio
 async def test_the_busy_queue_write_does_not_regress_last_seq_below_a_marker_the_checkpoint_wrote(client, app):
-    """The declared residual of PR-12a, as an executable witness (it flips when PR-12b makes the queue write a patch_if).
+    """The busy-queue write of switch_session_binding is a field-scoped patch_if (PR-12b).
 
     A busy session (a turn claimable or running) with a switch A queued. POST /binding B reads the row, then the checkpoint applies A
-    under the lock (reserves seq 7, writes the marker at 7, closes with last_seq 7), then the route writes its stale row back whole:
-    last_seq is 6 again and A's binding and epoch are erased. The next record any writer appends takes seq 7, the marker's seq.
+    under the lock (reserves seq 7, writes the marker at 7, closes with last_seq 7). The route's queue write writes ONLY the queued
+    switch (pending_binding_switch), fenced under the lifecycle lock - never last_seq, the binding, or the park columns back from the
+    pre-read snapshot - so it must not regress last_seq below the marker the checkpoint just wrote (the next record any writer appends
+    would otherwise take the marker's seq).
     """
     from primer.session.dispatch import apply_queued_binding_switch
 

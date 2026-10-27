@@ -1839,9 +1839,28 @@ async def switch_session_binding(
             )
 
     if row.turn_status in ("claimable", "running"):
-        queued = row.model_copy(update={"pending_binding_switch": request})
-        await sessions.update(queued)
-        return queued
+        # PR-12b: the queue write is a field-scoped patch_if of pending_binding_switch ALONE,
+        # under the lifecycle lock. Re-read the row under the lock, then write ONLY the queued
+        # switch, fenced on the guard the route just read (still busy) and the re-read last_seq
+        # (the shape reserve_seq uses). It never writes last_seq, the binding, or the park
+        # columns back from the pre-read snapshot, so a checkpoint that applied the
+        # previously-queued switch in between (reserving seq, writing its marker, closing with
+        # a higher last_seq) is not written back over and no longer regresses last_seq below
+        # the marker. If the row moved, the fence is refused -> 409, nothing written.
+        async with session_lifecycle_lock().acquire(session_id):
+            fresh = await sessions.get(session_id)
+            if fresh is None:
+                raise NotFoundError(f"Session {session_id!r} does not exist")
+            written = await sessions.patch_if(
+                session_id,
+                to_jsonable_python({"pending_binding_switch": request}),
+                where={"turn_status": ["claimable", "running"], "last_seq": [fresh.last_seq]},
+            )
+            if written is None:
+                raise ConflictError(
+                    f"session {session_id!r} changed while the switch was being queued; nothing was changed, retry"
+                )
+            return written
 
     # An idle session switches under the lifecycle lock, from a row read INSIDE it, by the shared protocol (reserve the
     # marker's seq, append, one fenced write): a steer that took the next seq or armed a turn since the read above

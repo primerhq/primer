@@ -128,14 +128,13 @@ async def apply_binding_switch(
     Returns the row as written, or ``None`` when the switch was NOT applied:
     the reservation was rejected (the row changed since it was read; NOTHING
     was written) or the closing write was (the row changed after the
-    reservation, and the marker stays in the log unapplied). Two things can do
-    that: a park committed by another process, and, in ONE process, the
-    busy-queue branch of ``switch_session_binding``, which still writes the
-    WHOLE row outside the lock from a row it read earlier (S2a PR-12b makes
-    it a ``patch_if`` of ``pending_binding_switch`` alone): a stale write
-    landing after the reservation puts ``last_seq`` back below the marker, so
-    the next record any writer appends takes the marker's seq
-    (``tests/api/test_session_binding_reservation.py``, the strict xfail).
+    reservation, and the marker stays in the log unapplied). A park committed
+    by another process does that. The in-process whole-row write that also used
+    to do it (the busy-queue branch of ``switch_session_binding`` writing the
+    WHOLE row outside the lock from a pre-read snapshot) is fixed: it is now a
+    field-scoped ``patch_if`` of ``pending_binding_switch`` alone under the
+    lifecycle lock, so it can no longer put ``last_seq`` back below the marker;
+    it is pinned in ``tests/api/test_session_binding_reservation.py``.
 
     An ADVISORY record that reserves its seq between this reservation and the closing write (a ``PAUSE_SUPERSEDED`` record of
     ``wake_session`` or the pending-steer cap, a failed release's marker: ``reserve_next_seq``, ticket 01a11cd8) moves ``last_seq``
