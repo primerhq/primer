@@ -194,6 +194,27 @@ function MP_editBody(existing, edits) {
   return body;
 }
 
+// The starting id of a duplicate (plan 03 Task 8): the original's id with "-copy". The form starts on it; a person may change it before the Create.
+function MP_copyId(id) {
+  return String(id == null ? "" : id) + "-copy";
+}
+
+// The body of a duplicate (plan 03 Task 8, design 20 Q3): a FRESH single profile for the same provider and model, differing in the settings its calls apply.
+// EXACTLY these keys and no more: `kind` is single, the provider and the model are the original's, and `config` is built fresh from the form's two
+// settings (reasoning, extended). Nothing the original carries over: no `harness_id` (a copy of a managed profile is unmanaged), no `members` or
+// routing fields, no counts of the list route. `existing` is not changed.
+function MP_duplicateBody(existing, draft) {
+  return {
+    id: String(draft.id == null ? "" : draft.id).trim(),
+    description: String(draft.description == null ? "" : draft.description).trim(),
+    kind: "single",
+    provider_id: existing ? existing.provider_id : null,
+    model_name: existing ? existing.model_name : null,
+    context_length: draft.context_length,
+    config: { reasoning: draft.reasoning || null, extended: draft.extended || {} },
+  };
+}
+
 // Where a refused save is told. `fieldMap` maps a server field to the form's own field name. A refusal about a mapped field goes under it, in the server's own words. A 409
 // goes under the name when the form has one (`id` is in the map only on a create: a 409 on an edit is about the row, not the name). Anything else is a line above the footer.
 function MP_refusalErrors(err, fieldMap) {
@@ -356,7 +377,14 @@ const MP_READONLY_FIELDSET = { display: "flex", flexDirection: "column", gap: 16
 
 // The single profile's overlay (design 7.1: "opening a profile shows its overlay for viewing and editing the fields the model allows"): the id (fixed: the profile exists),
 // the description, the provider and the model it names, the context window, and the MODEL SETTINGS its calls apply (plan 03 Task 7): the reasoning level and the extended
-// JSON of its `config`. It is only ever an edit or, for a harness-managed row, a view: a single profile is created by the Register provider overlay's import, never here. An
+// JSON of its `config`. It is an edit or, for a harness-managed row, a view, and it offers one create: a Duplicate (plan 03 Task 8, design 20 Q3) that makes a variant of
+// the same model with other settings, under a new id. The Duplicate verb sits in the footer's left side after Cancel, in edit and managed modes; it switches the overlay to
+// the duplicate form, whose title is "Duplicate LLM profile" and whose id is editable and pre-filled from MP_copyId (the original's id with "-copy"), whose description is
+// pre-filled from the original, whose provider and model are read-only (the copy is a variant of the SAME model), and whose context window, reasoning and extended settings
+// are editable (the form's own draft state, so the variant can differ in the settings its calls apply); it has no managed note, because the copy is never managed. The Create
+// is a POST of MP_duplicateBody (exactly the copy's keys: id, description, kind "single", the original's provider and model, the window, and a `config` built from the two
+// settings: no `harness_id`, no `members`, no counts) to `/model_profiles`, toasts "Created <id>", then onSaved and onClose; a 409 (a taken copy id) lands under Id, the way
+// it does on the aggregate's create. A single profile of its own comes from the Register provider overlay's import, never here. An
 // edit sends the stored row back with the form's fields laid over it (MP_editBody), and `config` is the stored one with the two settings laid over it, so every field the form
 // does not draw round-trips untouched. The Extended fold starts open when the profile holds extended settings (or is managed, whose fold cannot be toggled), like the
 // aggregate's Advanced fold. The fields start from the profile the overlay is mounted with and then belong to the person typing: a new `providers` array (the host hands over
@@ -373,6 +401,10 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
   const [touched, setTouched] = React.useState({});
   const [saving, setSaving] = React.useState(false);
   const [refused, setRefused] = React.useState({ fields: {}, form: null });
+  // The duplicate mode (plan 03 Task 8, design 20 Q3): a variant of the same model under a new id. The form starts from the original (the id pre-filled
+  // from MP_copyId, the description pre-filled, the provider and the model fixed) and differs in the settings its calls apply.
+  const [dup, setDup] = React.useState(false);
+  const [dupId, setDupId] = React.useState(() => MP_copyId(existing.id));
 
   // Whether the overlay is still on screen. A save that is still out when it is dismissed (Cancel, Escape, the scrim, the host taking it away) answers into a screen that has
   // moved on, and onSaved and onClose are the HOST's: NV_ProfileModalHost clears its one modal, which by then may be a different one. A save that lands late closes nothing.
@@ -387,6 +419,9 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
   const contextError = MP_contextError(contextText);
   const extended = MP_parseExtended(extendedText);
   const formReady = !managed && !descriptionError && !!provider && !modelError && !contextError && !extended.error;
+  // The duplicate's id is the form's own (MP_nameError's rule), and a copy is never blocked by the original being managed: the copy is unmanaged.
+  const idError = MP_nameError(dupId);
+  const dupReady = !!dupId.trim() && !idError && !descriptionError && !contextError && !extended.error;
   // A blank field is not a mistake until it has been typed in; a complaint from the server is about what was in the field, so editing the field takes it away.
   const shown = (field, error) => (touched[field] ? error : null) || undefined;
   const forget = (field) => setRefused((r) => {
@@ -421,6 +456,41 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
     setSaving(false);
     api.toastPush({ kind: "success", text: "Saved " + existing.id });
     // The row is saved, so the toast says so. A save that lands after the overlay was dismissed has nobody to report to, and onClose would close whatever the host shows by now.
+    if (!mountedRef.current) return;
+    if (onSaved) onSaved(row);
+    onClose();
+  };
+
+  // Duplicate (plan 03 Task 8, design 20 Q3): make a variant of the same model with other settings, under a new id. The mode re-uses the form's draft
+  // (the description, the window and the two settings start from the original) and its one request slot; the Create is a POST, never a PUT.
+  const enterDuplicate = () => {
+    if (dup || saving) return;
+    setDup(true);
+    setDupId(MP_copyId(existing.id));
+  };
+
+  const dupSubmit = async () => {
+    if (saving || !dupReady) return;
+    setSaving(true);
+    setRefused({ fields: {}, form: null });
+    const api = window.primerApi;
+    let row;
+    try {
+      row = await api.apiFetch("POST", "/model_profiles", MP_duplicateBody(existing, {
+        id: dupId,
+        description: description.trim(),
+        context_length: Number(contextText),
+        reasoning: reasoning,
+        extended: extended.value,
+      }));
+    } catch (err) {
+      // The form has an id, so a 409 (a taken copy id) lands under it: `id` is in the map, the way it is on the aggregate's create.
+      setRefused(MP_refusalErrors(err, { id: "id", description: "description", context_length: "context" }));
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    api.toastPush({ kind: "success", text: "Created " + (row && row.id != null ? row.id : dupId.trim()) });
     if (!mountedRef.current) return;
     if (onSaved) onSaved(row);
     onClose();
@@ -467,24 +537,76 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
     </>
   );
 
+  // The duplicate's fields (plan 03 Task 8): the id is editable (pre-filled from MP_copyId) and the description pre-filled from the original; the
+  // provider and the model are fixed to the original's, so the copy is a variant of the same model; the context window and the model settings are
+  // editable, so the variant can differ in the settings its calls apply. The fields and the refusals are the form's own (the same draft state as the
+  // edit), and the form has no managed note: the copy is never managed.
+  const dupFields = (
+    <>
+      <PK_Field label="Id" error={shown("id", idError) || refused.fields.id}>
+        <input value={dupId} data-testid="mp-single-id" onChange={typed("id", setDupId)} />
+      </PK_Field>
+      <PK_Field label="Description" error={shown("description", descriptionError) || refused.fields.description}>
+        <input value={description} data-testid="mp-single-description" onChange={typed("description", setDescription)} />
+      </PK_Field>
+      <PK_Grid cols={2}>
+        <PK_Field label="Provider">
+          <select value={provider} disabled data-testid="mp-single-provider">
+            {MP_providerOptions(providers, provider).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </PK_Field>
+        <PK_Field label="Model">
+          <input value={modelName} readOnly autoComplete="off" spellCheck={false} data-testid="mp-single-model" />
+        </PK_Field>
+      </PK_Grid>
+      <PK_Field label="Context window" help="The most tokens the model accepts in one request. Compaction uses it."
+        error={shown("context", contextError) || refused.fields.context}>
+        <input type="number" min={1} step={1} value={contextText} data-testid="mp-single-context" onChange={typed("context", setContextText)} />
+      </PK_Field>
+      <PK_Section title="MODEL SETTINGS" testid="mp-single-settings" cols={1}>
+        <PK_Field label="Reasoning" help={MP_REASONING_HELP}>
+          <PK_Segmented testid="mp-single-reasoning" ariaLabel="Reasoning" options={MP_REASONING_OPTIONS} value={reasoning}
+            onChange={(v) => setReasoning(v)} />
+        </PK_Field>
+        <PK_Fold label={extended.error ? "Extended settings (not a JSON object)" : "Extended settings"} testid="mp-single-extended-fold"
+          open={Object.keys(storedConfig.extended || {}).length > 0}>
+          <PK_Field label="Extended (JSON)" help={MP_EXTENDED_HELP} error={extended.error || undefined}>
+            <textarea value={extendedText} rows={6} spellCheck={false} className="mono" data-testid="mp-single-extended"
+              onChange={(e) => setExtendedText(e.target.value)} />
+          </PK_Field>
+        </PK_Fold>
+      </PK_Section>
+    </>
+  );
+
   return (
     <PK_FormOverlay
-      title={managed ? "LLM profile" : "Edit LLM profile"}
+      title={dup ? "Duplicate LLM profile" : managed ? "LLM profile" : "Edit LLM profile"}
       testid="mp-single"
       onClose={onClose}
       footer={{
-        left: <Btn data-testid="mp-single-cancel" onClick={onClose}>{managed ? "Close" : "Cancel"}</Btn>,
-        right: managed ? null : (
+        // The Duplicate verb sits in the footer's left side after Cancel, in edit and managed modes (plan 03 Task 8).
+        left: dup ? (
+          <Btn data-testid="mp-single-cancel" onClick={onClose}>Cancel</Btn>
+        ) : (
+          <>
+            <Btn data-testid="mp-single-cancel" onClick={onClose}>{managed ? "Close" : "Cancel"}</Btn>
+            <Btn data-testid="mp-single-duplicate" onClick={enterDuplicate}>Duplicate</Btn>
+          </>
+        ),
+        right: dup ? (
+          <Btn kind="primary" data-testid="mp-single-submit" disabled={!dupReady} busy={saving} onClick={dupSubmit}>Create</Btn>
+        ) : managed ? null : (
           <Btn kind="primary" data-testid="mp-single-submit" disabled={!formReady} busy={saving} onClick={submit}>Save</Btn>
         ),
       }}
     >
-      {managed ? (
+      {!dup && managed ? (
         <div data-testid="mp-single-managed">
           <Banner kind="info" title={"Managed by harness " + existing.harness_id + ". Re-run the harness to change it."} />
         </div>
       ) : null}
-      {managed ? <fieldset disabled style={MP_READONLY_FIELDSET}>{fields}</fieldset> : fields}
+      {dup ? dupFields : managed ? <fieldset disabled style={MP_READONLY_FIELDSET}>{fields}</fieldset> : fields}
       <div className="field-help" data-testid="profile-modal-footnote">
         Agents bind to a profile. A session, a binding switch or a graph node can override it. Deleting is refused while anything uses it.
       </div>
