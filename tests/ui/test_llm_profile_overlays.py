@@ -1130,3 +1130,104 @@ def test_a_managed_profile_shows_its_settings_read_only(ctx) -> None:
                      f' if (!n.__el) return; if (n.props && n.props.testid) ids.push(n.props.testid); if (n.props && n.props["data-testid"]) ids.push(n.props["data-testid"]);'
                      f' if (typeof n.type === "function" && n.type !== React.Fragment) walk(n.out); else walk(n.children); }})({fieldset}); return ids; }})()')
     assert "mp-single-reasoning" in inside and "mp-single-extended" in inside, "the settings sit in the disabled fieldset with the rest"
+
+# ---- duplicating a single profile (Task 8) --------------------------------------------------------------------------------------------------------------------
+
+
+def enter_duplicate(ctx) -> None:
+    click(ctx, "mp-single-duplicate")
+
+
+def test_the_single_overlay_offers_duplicate_in_edit_and_managed_modes(ctx) -> None:
+    """The Duplicate verb sits in the footer's left side after Cancel, in both modes; it opens the duplicate form, not another overlay."""
+    single(ctx, FULL_SINGLE)
+    assert text_at(ctx, "mp-single-cancel") == "Cancel" and text_at(ctx, "mp-single-duplicate") == "Duplicate"
+    enter_duplicate(ctx)
+    assert single_title(ctx) == "Duplicate LLM profile"
+    single(ctx, {**FULL_SINGLE, "harness_id": "h1"})
+    assert text_at(ctx, "mp-single-cancel") == "Close" and text_at(ctx, "mp-single-duplicate") == "Duplicate"
+    enter_duplicate(ctx)
+    assert single_title(ctx) == "Duplicate LLM profile"
+
+
+def test_the_duplicate_form_starts_from_the_original(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    enter_duplicate(ctx)
+    assert prop(ctx, "mp-single-id", "value") == "p-a-copy" and prop(ctx, "mp-single-id", "readOnly") is not True
+    assert prop(ctx, "mp-single-description", "value") == "old", "the description is pre-filled from the original"
+    assert prop(ctx, "mp-single-provider", "value") == "lp" and prop(ctx, "mp-single-provider", "disabled") is True
+    assert prop(ctx, "mp-single-model", "value") == "qwen" and prop(ctx, "mp-single-model", "readOnly") is True
+    assert prop(ctx, "mp-single-context", "value") == "32768"
+    assert js(ctx, 'MR.findProp("testid", "mp-single-reasoning").props.value') == "high", "the stored reasoning, editable"
+    assert prop(ctx, "mp-single-extended", "value") == '{\n  "top_k": 20\n}'
+    assert not present(ctx, "mp-single-managed"), "no managed note in the duplicate form"
+    assert text_at(ctx, "mp-single-submit") == "Create"
+
+
+def test_duplicate_posts_a_variant_and_leaves_the_original(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    enter_duplicate(ctx)
+    assert single_title(ctx) == "Duplicate LLM profile" and prop(ctx, "mp-single-id", "value") == "p-a-copy"
+    segment(ctx, "mp-single-reasoning", "off")
+    ctx.eval("ANSWER = function () { return Promise.resolve({ id: 'p-a-copy' }); };")
+    click(ctx, "mp-single-submit")
+    assert calls(ctx) == [["POST", "/model_profiles", {
+        "id": "p-a-copy", "description": "old", "kind": "single", "provider_id": "lp", "model_name": "qwen",
+        "context_length": 32768, "config": {"reasoning": "off", "extended": {"top_k": 20}},
+    }]], "exactly one POST of the copy's body; the original is never PUT"
+    assert toasts(ctx) == [{"kind": "success", "text": "Created p-a-copy"}]
+    assert saved_count(ctx) == 1 and closed_count(ctx) == 1
+
+
+def test_the_duplicate_press_is_busy_while_the_request_is_out_and_sends_once(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    enter_duplicate(ctx)
+    ctx.eval("ANSWER = function () { return new Promise(function (resolve) { PENDING.push(resolve); }); };")
+    click(ctx, "mp-single-submit")
+    assert js(ctx, 'MR.find("mp-single-submit").props.busy') is True
+    assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is False, "the request is not folded into disabled"
+    click(ctx, "mp-single-submit")
+    assert len(calls(ctx)) == 1
+    ctx.eval("PENDING[0]({ id: 'p-a-copy' })")
+    settle(ctx)
+    assert saved_count(ctx) == 1 and closed_count(ctx) == 1
+
+
+def test_duplicating_a_managed_profile_makes_an_unmanaged_copy(ctx) -> None:
+    single(ctx, {**FULL_SINGLE, "harness_id": "h1"})
+    assert present(ctx, "mp-single-managed"), "the managed note in view mode"
+    enter_duplicate(ctx)
+    assert not present(ctx, "mp-single-managed"), "the duplicate form carries no managed note"
+    assert js(ctx, 'allUnder("mp-single").filter(function (n) { return n.type === "fieldset"; }).length') == 0, "every control of the form is editable"
+    ctx.eval("ANSWER = function () { return Promise.resolve({ id: 'p-a-copy' }); };")
+    click(ctx, "mp-single-submit")
+    sent = calls(ctx)[0][2]
+    assert sent["provider_id"] == "lp" and sent["model_name"] == "qwen" and sent["kind"] == "single"
+    assert "harness_id" not in sent, "a copy of a managed profile is unmanaged"
+
+
+def test_a_taken_copy_id_is_named_under_id(ctx, envelopes) -> None:
+    single(ctx, FULL_SINGLE)
+    enter_duplicate(ctx)
+    type_(ctx, "mp-single-id", "p-a")
+    reject_with(ctx, envelopes["conflict"])
+    click(ctx, "mp-single-submit")
+    settle(ctx)
+    assert field_error(ctx, "Id") == TAKEN
+    assert field_error(ctx, "Description") is None and field_error(ctx, "Context window") is None
+    assert not present(ctx, "mp-single-error"), "a named field is not repeated above the footer"
+    assert closed_count(ctx) == 0 and saved_count(ctx) == 0 and toasts(ctx) == []
+    type_(ctx, "mp-single-id", "p-a-copy")
+    assert field_error(ctx, "Id") is None, "the refusal was about the old choice"
+
+
+def test_a_blank_copy_id_blocks_create(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    enter_duplicate(ctx)
+    type_(ctx, "mp-single-id", "")
+    assert field_error(ctx, "Id") == "Enter a name."
+    assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is True
+    type_(ctx, "mp-single-id", "bad id")
+    assert field_error(ctx, "Id") == RULE
+    type_(ctx, "mp-single-id", "p-a-copy")
+    assert field_error(ctx, "Id") is None and js(ctx, 'MR.find("mp-single-submit").props.disabled') is False

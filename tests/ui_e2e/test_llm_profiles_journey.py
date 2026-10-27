@@ -9,6 +9,8 @@ drive the real console against the real server:
   rebuilds the body from what it draws would reset it: master Review Focus 1);
 * set a single profile's reasoning to Off and its extended JSON, and read both back with every other field unchanged (Task 7: model calls apply a
   profile's ``config``, #756);
+* duplicate a single profile into a variant with its reasoning off: the form starts from ``<id>-copy`` with the provider and model read-only, and the
+  created row is a fresh unmanaged single profile for the same model while the original is left as it was (Task 8, design 20 Q3);
 * Cancel leaves the grid and the URL as they were;
 * on a phone, the Platform section reads "LLM Profiles" and an aggregate's row and fact sheet say what the desktop card says.
 
@@ -190,6 +192,45 @@ def test_setting_reasoning_off_reaches_the_row(page: Page, base_url: str, consol
         assert {k: v for k, v in edited.items() if k != "config"} == {k: v for k, v in seeded.items() if k != "config"}, "every other field is unchanged"
     finally:
         _clean_up(base_url, provider_id, [], [tuned, a, b])
+
+
+def test_duplicate_a_profile_with_reasoning_off(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
+    """Task 8 (design 20 Q3): the footer's Duplicate opens a variant of the same model; the copy is a fresh unmanaged single profile and the original
+    is left as it was."""
+    provider_id = f"llm-lpd-{unique_suffix}"
+    a, b = _seed_pair(base_url, provider_id)
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        tuned = seed_profile_with(c, provider_id, "tuned-model", context_length=16384, config={"reasoning": "high", "extended": {"top_k": 20}})
+    original = _row(base_url, tuned)
+    assert original["config"] == {"reasoning": "high", "extended": {"top_k": 20}}, original
+    copy_id = f"{tuned}-copy"
+    try:
+        _open_profiles_page(page, console_url)
+        _open_card(page, tuned)
+        expect(page.get_by_test_id("mp-single")).to_contain_text("Edit LLM profile", timeout=10_000)
+        page.get_by_test_id("mp-single-duplicate").click()
+        overlay = page.get_by_test_id("mp-single")
+        expect(overlay).to_contain_text("Duplicate LLM profile")
+        expect(page.get_by_test_id("mp-single-id")).to_have_value(copy_id)
+        expect(page.get_by_test_id("mp-single-id")).to_be_editable()
+        expect(page.get_by_test_id("mp-single-provider")).not_to_be_editable()
+        expect(page.get_by_test_id("mp-single-model")).not_to_be_editable()
+        page.get_by_test_id("mp-single-reasoning:off").click()
+        page.get_by_test_id("mp-single-submit").click()
+        expect(page.get_by_test_id("nv-toasts")).to_contain_text(f"Created {copy_id}", timeout=15_000)
+        expect(overlay).to_have_count(0)
+
+        created = _row(base_url, copy_id)
+        assert created["kind"] == "single"
+        assert created["provider_id"] == original["provider_id"] and created["model_name"] == "tuned-model"
+        assert created["context_length"] == 16384
+        assert created["config"] == {"reasoning": "off", "extended": {"top_k": 20}}, created
+        assert not created.get("harness_id"), "the copy of an unmanaged profile is unmanaged"
+        left = _row(base_url, tuned)
+        assert left == original, "the original is left as it was"
+    finally:
+        _clean_up(base_url, provider_id, [], [copy_id, tuned, a, b])
+
 
 def test_cancel_leaves_the_grid_and_the_url(page: Page, console_url: str) -> None:
     _open_profiles_page(page, console_url)

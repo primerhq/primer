@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.ui._llm_profile_fixtures import FULL_AGG, PROVIDERS, ROWS, router_envelopes
+from tests.ui._llm_profile_fixtures import FULL_AGG, FULL_SINGLE, PROVIDERS, ROWS, router_envelopes
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "ui" / "components" / "model-profiles.jsx"
@@ -418,3 +418,27 @@ def test_extended_text_round_trips_through_the_parser(ctx) -> None:
     assert js(ctx, "[MP_extendedText(null), MP_extendedText(undefined), MP_extendedText({})]") == ["{}", "{}", "{}"]
     nested = {"a": {"b": [1, 2.5, "x"]}, "c": None, "d": True}
     assert js(ctx, f"MP_parseExtended(MP_extendedText({json.dumps(nested)}))") == {"value": nested}
+
+
+# ---- duplicating a profile (Task 8) ---------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_copy_id(ctx) -> None:
+    """The duplicate's starting id is the original's with ``-copy``; the form starts on it and a person may change it."""
+    assert js(ctx, "MP_copyId('p-a')") == "p-a-copy"
+
+
+def test_duplicate_body_is_a_fresh_single_profile(ctx) -> None:
+    """The duplicate's body is a FRESH single profile: exactly its own keys, the original's provider and model, and a ``config`` built from the form's
+    two settings. Nothing the original carries over (no ``harness_id``: a copy of a managed profile is unmanaged; no ``members`` or the list route's counts)."""
+    managed = {**FULL_SINGLE, "harness_id": "h1"}
+    body = js(ctx, f"""MP_duplicateBody({json.dumps(managed)}, {{
+      id: 'p-a-copy', description: 'old', context_length: 32768, reasoning: 'off', extended: {{top_k: 20}}
+    }})""")
+    assert body == {
+        "id": "p-a-copy", "description": "old", "kind": "single", "provider_id": "lp", "model_name": "qwen",
+        "context_length": 32768, "config": {"reasoning": "off", "extended": {"top_k": 20}},
+    }
+    assert set(body) == {"id", "description", "kind", "provider_id", "model_name", "context_length", "config"}, "exactly the keys, no more"
+    assert set(body["config"]) == {"reasoning", "extended"}
+    assert "harness_id" not in body and "members" not in body and "agent_count" not in body and "graph_node_count" not in body
