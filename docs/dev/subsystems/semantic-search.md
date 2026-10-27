@@ -284,7 +284,14 @@ Vector data is physically persisted by the SSP backend:
 The provider rows, cross-encoder rows, and internal-collections singletons persist
 through the generic `Storage[T]` interface with no special semantics.
 `AppConfig.vector_store` no longer exists; operators configure backends at runtime
-via `POST /v1/ssp`.
+via `POST /v1/ssp`. The legacy top-level `vector_store:` YAML key that shipped in
+`config.example.yaml`, the docker entrypoint, the release workflow and the e2e
+bring-up script is gone as well: `AppConfig` parses with `extra="ignore"`, so the
+block used to parse into nothing and was silently dead. The loader
+(`primer/cli.py::_load_config`) now prints a loud yellow warning to stderr when a
+config file still carries the key, so an old config can no longer fail silently;
+vector backends come from the persisted provider rows (bootstrap seeds the Lance
+SSP when the `lance` extra is installed).
 
 ## 8. Public surfaces
 

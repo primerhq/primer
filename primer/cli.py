@@ -104,6 +104,25 @@ def _load_config(
             raise typer.BadParameter(
                 f"config file {resolved} must contain a YAML mapping at the root"
             )
+    if "vector_store" in data:
+        # Legacy top-level key. AppConfig has no vector_store field and
+        # parses with extra="ignore", so this block would otherwise be
+        # silently dropped (it shipped in config.example.yaml, the docker
+        # entrypoint and the release workflow until it was removed). Vector
+        # backends are persisted SemanticSearchProvider rows: bootstrap
+        # seeds a Lance provider when the 'lance' extra is installed and
+        # other backends (pgvector, ...) are registered at runtime.
+        typer.secho(
+            f"config file {resolved}: the top-level `vector_store` key is "
+            "legacy and has NO effect (AppConfig has no such field; the "
+            "block is silently ignored). Vector backends are now "
+            "semantic-search provider rows (SemanticSearchProvider): "
+            "bootstrap seeds a Lance provider when the 'lance' extra is "
+            "installed, and other backends (pgvector, ...) are registered "
+            "at runtime. Remove the block from your config.",
+            err=True,
+            fg=typer.colors.YELLOW,
+        )
     # CLI-chosen runtime_mode always wins.
     data["runtime_mode"] = runtime_mode.value
     return AppConfig(**data)

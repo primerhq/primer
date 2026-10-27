@@ -73,10 +73,11 @@ DB_NAME="primer_e2e"
 # the rendered config has to agree with it, or bring-up fails on any machine
 # that already has something else bound to 5432.
 DB_PORT="${PRIMER_DB_PORT:-5432}"
-# Set PRIMER_E2E_NO_VECTOR=1 to render an AppConfig without a vector_store
-# block. Used by gating tests that need to assert 503 behaviour on the
-# collection / document / search routes when the subsystem is disabled.
-NO_VECTOR="${PRIMER_E2E_NO_VECTOR:-0}"
+# PRIMER_E2E_NO_VECTOR is accepted but now a no-op: it used to toggle a
+# top-level `vector_store:` AppConfig block, but AppConfig has no such field
+# (extra="ignore") so the block parsed into nothing. The block and the toggle
+# are both gone; the e2e server gets its vector backend from the bootstrap
+# Lance SSP / runtime-registered provider rows like any other server.
 
 mkdir -p "$E2E_DIR" "$LOG_DIR"
 
@@ -159,21 +160,8 @@ scheduler:
 
 EOF
 
-if [[ "$NO_VECTOR" != "1" ]]; then
-    cat >> "$CONFIG" <<EOF
-vector_store:
-  provider: pgvector
-  config:
-    hostname: localhost
-    port: $DB_PORT
-    database: $DB_NAME
-    username: $DB_USER
-    password: $DB_PASSWORD
-
-EOF
-else
-    echo "[bringup] PRIMER_E2E_NO_VECTOR=1 — omitting vector_store block from config" >&2
-fi
+# (No `vector_store:` block: it was a legacy key AppConfig silently dropped;
+# the bootstrap Lance SSP / runtime provider rows are the vector backend.)
 
 cat >> "$CONFIG" <<EOF
 worker:

@@ -36,15 +36,14 @@ log_level: info       # one of: debug, info, warning, error
 log_json: true        # JSON lines (true) or human-readable (false)
 # log_file: ./logs/primer.log   # uncomment to log to a rotating file
 
-# --- Vector store (optional, required for collections + search) ------------
-vector_store:
-  provider: pgvector
-  config:
-    hostname: localhost
-    port: 5432
-    database: primer
-    username: primer
-    password: primer
+# --- Vector store ---------------------------------------------------------
+# There is deliberately no `vector_store:` key here. That top-level key is
+# legacy: AppConfig has no such field, so the block parsed into nothing and
+# the loader now warns loudly when it finds one. Vector backends are
+# persisted semantic-search provider rows (SemanticSearchProvider): bootstrap
+# seeds a Lance provider when the 'lance' extra is installed, and other
+# backends (pgvector, pgvectorscale) are registered at runtime (an admin
+# creates the provider row; a collection's `search` block then names it).
 
 # --- Scheduler (required when running a worker; CLI overrides runtime_mode)
 scheduler:

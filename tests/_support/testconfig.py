@@ -134,8 +134,9 @@ def _render_server_config() -> str:
 
     Intentionally a no-op. ``scripts/e2e/bringup.sh`` provisions Postgres +
     pgvector itself via ``docker-compose`` (image pgvector/pgvector) and
-    renders the matching ``db:`` + ``vector_store:`` AppConfig blocks
-    directly, so there is nothing to append here. The testconfig
+    renders the matching ``db:`` AppConfig block directly (the legacy
+    top-level ``vector_store:`` block is gone: AppConfig never read it), so
+    there is nothing to append here. The testconfig
     ``server.storage`` / ``server.vector_store`` blocks exist only to
     DECLARE the postgres/pgvector capabilities to :class:`Caps` (read from
     the raw config), not to re-render the server. Appending anything here

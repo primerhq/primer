@@ -73,14 +73,8 @@ jobs:
           scheduler:
             provider: postgres
             config: {}
-          vector_store:
-            provider: pgvector
-            config:
-              hostname: localhost
-              port: 5432
-              database: primer_e2e
-              username: primer
-              password: primer
+          # (No `vector_store:` block: legacy key AppConfig silently dropped;
+          # the boot smoke exercises Postgres + the pgvector extension below.)
           EOF
       - name: Enable pgvector
         run: PGPASSWORD=primer psql -h localhost -U primer -d primer_e2e -c "CREATE EXTENSION IF NOT EXISTS vector;"

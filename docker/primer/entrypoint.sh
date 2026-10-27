@@ -48,14 +48,9 @@ port: ${PRIMER_PORT}
 log_level: ${PRIMER_LOG_LEVEL}
 log_json: ${PRIMER_LOG_JSON}
 
-vector_store:
-  provider: pgvector
-  config:
-    hostname: ${PRIMER_DB_HOST}
-    port: ${PRIMER_DB_PORT}
-    database: ${PRIMER_DB_DATABASE}
-    username: ${PRIMER_DB_USER}
-    password: ${PRIMER_DB_PASSWORD}
+# (No `vector_store:` block on purpose: it is a legacy key that AppConfig
+# silently dropped. Vector backends are semantic-search provider rows; the
+# bootstrap seeds a Lance provider when the 'lance' extra is installed.)
 
 scheduler:
   provider: postgres

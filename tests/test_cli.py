@@ -111,6 +111,45 @@ class TestLoadConfig:
         assert isinstance(cfg, AppConfig)
         assert cfg.db is None  # zero-config default
 
+
+# ============================================================================
+# Legacy top-level vector_store key. AppConfig has no such field
+# (extra="ignore"), so the block used to parse into nothing. The loader must
+# now say so loudly instead of silently dropping it.
+# ============================================================================
+
+_LEGACY_VECTOR_STORE_YAML = (
+    _BASE_YAML
+    + "vector_store:\n"
+      "  provider: pgvector\n"
+      "  config:\n"
+      "    hostname: localhost\n"
+      "    port: 5432\n"
+)
+
+
+class TestLegacyVectorStoreKey:
+    def test_legacy_key_warns_loudly_and_still_loads(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ):
+        legacy = tmp_path / "legacy.yaml"
+        legacy.write_text(_LEGACY_VECTOR_STORE_YAML, encoding="utf-8")
+        cfg = cli_mod._load_config(legacy, RuntimeMode.API)
+        # The warning is advisory: the block is still dropped, the app
+        # still boots (old configs must not be bricked).
+        assert isinstance(cfg, AppConfig)
+        err = capsys.readouterr().err
+        assert "vector_store" in err
+        # Loud means it names the key and points at the current contract.
+        assert "semantic-search" in err.lower()
+
+    def test_no_vector_store_key_emits_no_warning(
+        self, base_config_file: Path, capsys: pytest.CaptureFixture[str],
+    ):
+        cfg = cli_mod._load_config(base_config_file, RuntimeMode.API)
+        assert isinstance(cfg, AppConfig)
+        assert "vector_store" not in capsys.readouterr().err
+
     # -----------------------------------------------------------------------
     # New: auto-discovery tests
     # -----------------------------------------------------------------------
