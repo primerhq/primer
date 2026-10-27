@@ -702,16 +702,34 @@ function SS_catchUp(store) {
   var apiFetch = (window.primerApi && window.primerApi.apiFetch) || null;
   if (typeof apiFetch !== "function") return;
   store._catchUpInFlight = true;
+  var LIMIT = 1000;
+  // A tap gap over one page used to be silently truncated until a full reload: loop the read while a
+  // page comes back full, anchored at the page's newest seq. Capped at 10 pages (10000 records): a gap
+  // that long means the REST history read is the reliable source. Best-effort throughout (stale-
+  // while-error): an error stops the loop and the next reconnect or poll retries.
+  var MAX_PAGES = 10;
+  var all = [];
+  var pages = 0;
   var afterSeq = SS_highWater(store);
-  apiFetch(
-    "GET",
-    "/sessions/" + encodeURIComponent(store.sid) +
-      "/messages?after_seq=" + afterSeq + "&limit=1000"
-  ).then(function (res) {
-    var items = (res && res.items) || [];
+  (function readNext() {
+    pages += 1;
+    return apiFetch(
+      "GET",
+      "/sessions/" + encodeURIComponent(store.sid) +
+        "/messages?after_seq=" + afterSeq + "&limit=" + LIMIT
+    ).then(function (res) {
+      var items = (res && res.items) || [];
+      for (var i = 0; i < items.length; i++) all.push(items[i]);
+      var last = items[items.length - 1];
+      if (items.length >= LIMIT && pages < MAX_PAGES && last && typeof last.seq === "number") {
+        afterSeq = last.seq;
+        return readNext();
+      }
+    });
+  })().then(function () {
     var merged = 0;
-    for (var i = 0; i < items.length; i++) {
-      if (SS_insertRecord(store, items[i])) merged += 1;
+    for (var i = 0; i < all.length; i++) {
+      if (SS_insertRecord(store, all[i])) merged += 1;
     }
     if (merged > 0) {
       // A reconcile may also finalize a part or settle an optimistic row.
@@ -720,8 +738,8 @@ function SS_catchUp(store) {
       // stamp) so SS_apply's cross-session guard has something real to
       // check even though this path is already sid-scoped by construction
       // (the fetch URL above is store.sid, applied to the same store).
-      for (var j = 0; j < items.length; j++) {
-        SS_apply(store, Object.assign({}, items[j], { session_id: store.sid }));
+      for (var j = 0; j < all.length; j++) {
+        SS_apply(store, Object.assign({}, all[j], { session_id: store.sid }));
       }
       SS_markDirty(store, "transcript");
       SS_markDirty(store, "status");

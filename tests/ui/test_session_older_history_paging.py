@@ -153,12 +153,13 @@ def mount_seam(ctx, total: int, tail_count: int) -> None:
 
 
 def answer_older_page(ctx, first_seq: int, last_seq: int) -> None:
-    """Queue the older page the endpoint would answer (seq ``first_seq..last_seq``) and press the seam."""
+    """Queue the older page the endpoint would answer (seq ``first_seq..last_seq``, in its response
+    envelope) and press the seam."""
     ctx.eval(
         "var p = [];"
         " for (var s = " + str(first_seq) + "; s <= " + str(last_seq) + "; s++)"
         " p.push({ session_id: 's1', seq: s, kind: 'user_input', payload: { text: 'old-' + s } });"
-        " ANSWERS = [p];"
+        " ANSWERS = [{ items: p, total: 999999, offset: 0, limit: 200 }];"
     )
     ctx.eval('MR.click("sd-load-older")')
     ctx.eval("MR.rerender()")
@@ -216,7 +217,7 @@ def test_the_session_doc_wires_the_seam_to_the_top_of_the_transcript() -> None:
     of the first row, fed from the history resource's ``total`` and its items, and the loaded page is
     applied to the store the transcript renders from."""
     assert "function NV_LoadOlderSeam" in DOC
-    inner = DOC[DOC.index('data-testid="nv-transcript-inner"'):]
+    inner = DOC[DOC.index('className="nv-transcript-inner"'):]  # the transcript body's div (a class, not a testid)
     seam = inner.index("<NV_LoadOlderSeam")
     rows = inner.index("NV_scopeToNode(rows, nodeFilter)")
     assert seam < rows, "the seam sits at the top of the transcript, ahead of the first row"
@@ -297,7 +298,7 @@ def test_catch_up_stops_at_the_cap_and_stays_best_effort(store_ctx) -> None:
     store_ctx.eval("SS_catchUp(SS_getStore('w1', 's1'))")
     store_ctx.eval("void 0")  # let the rejection's catch and the flag-clear settle
     assert js(store_ctx, "SS_getStore('w1', 's1')._catchUpInFlight") is False
-    assert js(store_ctx, "SS_getStore('w1', 's1').recordsBySeq.length") == 0, "a refused read applies nothing"
+    assert js(store_ctx, "SS_getStore('w1', 's1').recordsBySeq.length") == 10000, "a refused read applies nothing further (the 10 capped pages remain)"
     store_ctx.eval(
         "window.primerApi.apiFetch = function (m, path) { CALLS.push(path); return Promise.resolve({ items: [] }); };"
     )

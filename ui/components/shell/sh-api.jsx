@@ -85,12 +85,16 @@ var SH_api = {
   // `tail=1` is the crux: the /messages endpoint returns the FIRST `limit`
   // records by default (the OLDEST), so a transcript fetch showed the oldest
   // turns and any session past ~28 turns looked frozen. `tail=1` returns the
-  // LAST `limit` (newest). `beforeSeq` is kept for the one caller's signature
-  // but ignored: the endpoint has no before_seq (it takes tail/after_seq/
-  // offset), so the old branch was a no-op.
+  // LAST `limit` (newest). `tailOffset` pages OLDER from that tail: with `tail`,
+  // the endpoint's `offset` counts rows from the end (offset=0 is the newest
+  // `limit` rows, offset=limit the next-older page), so a transcript that has
+  // rendered the tail window plus older records requests its next older page
+  // at `offset` = the records it has rendered so far. 0/null sends no offset:
+  // the plain tail window, the endpoint's default.
   // Deliberately a recent window (ticket 01a16dfa): the newest `limit` records, not every page.
-  messages: function (sid, limit, beforeSeq, signal) {
+  messages: function (sid, limit, tailOffset, signal) {
     var q = "?limit=" + encodeURIComponent(limit || 200) + "&tail=1";
+    if (tailOffset > 0) q += "&offset=" + encodeURIComponent(tailOffset);
     return window.primerApi.apiFetch(
       "GET", "/sessions/" + encodeURIComponent(sid) + "/messages" + q,
       null, { signal: signal });

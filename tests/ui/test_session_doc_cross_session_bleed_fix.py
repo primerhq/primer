@@ -94,8 +94,10 @@ def test_catchup_reconcile_also_stamps_session_id() -> None:
     for uniform defense in depth even though this path is already
     sid-scoped by construction (fetch URL uses store.sid)."""
     store = _store_src()
+    # The catch-up's apply loop is one call site (the loop, G9-2, collects every page in `all` and
+    # applies them together); the stamp must stay on it whatever variable the loop names its rows.
     assert (
-        "SS_apply(store, Object.assign({}, items[j], { session_id: store.sid }));"
+        "SS_apply(store, Object.assign({}, all[j], { session_id: store.sid }));"
         in store
     )
 

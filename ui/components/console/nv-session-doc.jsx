@@ -2538,6 +2538,62 @@ function NV_arrivedLive(firstLoad, key) {
   return firstLoad !== null && firstLoad[key] !== true;
 }
 
+// The transcript's older history (G9-2): the history read is the NEWEST 200 records of the session's
+// span (SH_api.messages' tail window), and the endpoint pages older rows from that tail (with `tail`,
+// `offset` counts rows from the end; the response's `total` is the span's count). A span with more
+// records than the window used to show a silently truncated conversation. NV_olderHistoryRemaining is
+// how many records are still on the older side of what is rendered (the tail window plus the pages the
+// seam has loaded); NV_olderPageOffset is the tail offset of the next older page.
+function NV_olderHistoryRemaining(total, tailCount, olderCount) {
+  var t = typeof total === "number" ? total : 0;
+  var r = t - ((tailCount || 0) + (olderCount || 0));
+  return r > 0 ? r : 0;
+}
+
+function NV_olderPageOffset(tailCount, olderCount) {
+  return (tailCount || 0) + (olderCount || 0);
+}
+
+// The seam the session document draws at the top of the transcript while older records remain (G9-2).
+// One press reads exactly one older page (SH_api.messages at the tail offset of the rendered count) and
+// hands the page to applyOlder, the document's store apply: SS_apply dedupes by seq, so a re-read of an
+// overlapping window is a no-op, and the store orders records by seq, so the older records land ahead of
+// the newer ones in the transcript the document renders (SA_toTranscript reads store.recordsBySeq). The
+// seam disappears once the span is fully loaded, and a refused read is best-effort (stale-while-error):
+// the seam stays and the press retries. The button keeps its focus while the read is out (the console's
+// busy-button rule: aria-busy, never a native disabled tied to the request).
+function NV_LoadOlderSeam(props) {
+  var olderState = React.useState(0);
+  var olderCount = olderState[0];
+  var setOlderCount = olderState[1];
+  var loadingState = React.useState(false);
+  var loading = loadingState[0];
+  var setLoading = loadingState[1];
+  var remaining = NV_olderHistoryRemaining(props.total, props.tailCount, olderCount);
+  if (remaining <= 0) return null;
+  var press = function () {
+    if (loading) return;
+    setLoading(true);
+    SH_api.messages(props.sid, 200, NV_olderPageOffset(props.tailCount, olderCount), null)
+      .then(function (page) {
+        var items = (page && page.items) || [];
+        if (props.applyOlder) props.applyOlder(items);
+        setOlderCount(olderCount + items.length);
+      })
+      .catch(function () {
+        // best-effort: the seam stays and the press retries
+      })
+      .then(function () { setLoading(false); });
+  };
+  return (
+    <button className="nv-load-older" data-testid="sd-load-older"
+      aria-busy={loading ? "true" : undefined} aria-disabled={loading ? "true" : undefined}
+      onClick={press}>
+      {loading ? "Loading older messages" : "Load older messages (" + remaining + " more)"}
+    </button>
+  );
+}
+
 function NV_SessionDoc(props) {
   var con = NV_useConsole();
   var sid = props.sid;
@@ -3538,6 +3594,19 @@ function NV_SessionDoc(props) {
           data-testid="nv-transcript"
           onScroll={onScroll}>
           <div className="nv-transcript-inner">
+            {/* G9-2: the history read is a tail window of the newest 200 records; while the span (the
+                read's total) holds more, the seam loads the next older page and prepends it through the
+                store (the same store-apply stamp as the REST-seed effect above). */}
+            <NV_LoadOlderSeam
+              sid={sid}
+              total={history.data ? history.data.total : 0}
+              tailCount={(history.data && history.data.items) ? history.data.items.length : 0}
+              applyOlder={function (items) {
+                for (var i = 0; i < items.length; i++) {
+                  window.SS_apply(store, Object.assign({}, items[i], { session_id: sid }));
+                }
+              }}
+            />
             {NV_scopeToNode(rows, nodeFilter).map(function (r) {
               return renderTurn(r, 0);
             })}
