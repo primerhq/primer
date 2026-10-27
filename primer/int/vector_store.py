@@ -183,6 +183,35 @@ class VectorStore(ABC):
         """
 
     @abstractmethod
+    async def count_documents(self, collection_id: str) -> int:
+        """Return how many distinct documents ``collection_id`` has indexed.
+
+        Cheap count: backends MUST answer without materializing records
+        (no ``text`` / ``vector`` / ``meta`` fetch and decode). The count
+        is over distinct ``document_id`` values -- a document with N
+        chunks counts once. This is the primitive ``search_status`` uses
+        for its ``N/M docs`` progress: counting via
+        :meth:`search_by_meta` would pull the whole namespace across the
+        wire on every call.
+
+        Parameters
+        ----------
+        collection_id
+            Scopes the count to a single collection.
+
+        Returns
+        -------
+        int
+            The number of distinct documents indexed. Zero when the
+            collection holds no rows.
+
+        Raises
+        ------
+        primer.model.except_.BadRequestError
+            ``collection_id`` has not been created.
+        """
+
+    @abstractmethod
     async def get(
         self,
         collection_id: str,

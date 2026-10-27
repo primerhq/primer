@@ -18,9 +18,8 @@ These probes pin the fix contract and MUST FAIL against the pre-fix code
   query: no LIMIT, no vector column (static source probe, house pattern).
 * (e) ``count_documents`` raising keeps ``search_status`` best-effort:
   the state is still returned with ``documents_indexed == 0``.
-
-Probe (d) (the lance projected-count shape) is in the next commit, with the
-lance implementation.
+* (d) the lance count is a projected scan: ``document_id`` only, no
+  vectors / text / meta pulled across the wire.
 """
 
 from __future__ import annotations
@@ -264,3 +263,54 @@ async def test_search_status_survives_a_failing_count() -> None:
     )
     assert store.count_calls == 1
     assert store.meta_calls == 0
+
+
+# (d) the lance count is a projected scan
+
+
+class _LanceQuery:
+    def __init__(self) -> None:
+        self.selected: list[str] | None = None
+        self._rows = [
+            {"document_id": "d0"},
+            {"document_id": "d1"},
+            {"document_id": "d1"},
+        ]
+
+    def select(self, columns: list[str]) -> "_LanceQuery":
+        self.selected = list(columns)
+        return self
+
+    async def to_list(self) -> list[dict]:
+        # A store that requested more than document_id would pull the
+        # full rows (vectors included): fail the probe on the projection.
+        if self.selected != ["document_id"]:
+            raise AssertionError(f"unexpected projection: {self.selected!r}")
+        return [dict(r) for r in self._rows]
+
+
+class _LanceTable:
+    def __init__(self) -> None:
+        self._query = _LanceQuery()
+
+    def query(self) -> _LanceQuery:
+        return self._query
+
+
+async def test_lance_count_is_a_projected_document_id_scan() -> None:
+    pytest.importorskip("lancedb")  # house pattern: soft-skip without the extra
+    from primer.vector.lance import LanceVectorStore
+
+    assert hasattr(LanceVectorStore, "count_documents"), (
+        "LanceVectorStore must implement the cheap count op"
+    )
+    store = LanceVectorStore.__new__(LanceVectorStore)  # type: ignore[abstract]
+    table = _LanceTable()
+
+    async def _open_table(collection_id: str) -> _LanceTable:
+        assert collection_id == "kb"
+        return table
+
+    store._open_table = _open_table  # type: ignore[method-assign]
+    assert await store.count_documents("kb") == 2
+    assert table._query.selected == ["document_id"]

@@ -261,8 +261,9 @@ async def search_status(storage_provider, ssr, *, collection_id: str) -> SearchS
     indexed = 0
     try:
         store = await ssr.get_store(collection.search.vector_store_provider_id)
-        records = await store.search_by_meta(collection_id, meta={})
-        indexed = len({r.document_id for r in records})
+        # Cheap distinct-document count: search_by_meta({}) would pull
+        # the whole namespace (texts + vectors) just to render N/M docs.
+        indexed = await store.count_documents(collection_id)
     except Exception:  # noqa: BLE001 - status is best-effort
         indexed = 0
     return SearchStatus(

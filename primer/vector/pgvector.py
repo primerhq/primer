@@ -852,6 +852,23 @@ class PgVectorStore(VectorStore):
             for r in rows
         ]
 
+    async def count_documents(self, collection_id: str) -> int:
+        col = await self._resolve(collection_id)
+        # Distinct-document count over the whole namespace: the same row
+        # set search_by_meta(meta={}) would return, counted not fetched
+        # (no LIMIT, no vector decode).
+        sql = (
+            f'SELECT count(DISTINCT document_id) '
+            f'FROM "{self._schema}"."{col.table_name}"'
+        )
+        try:
+            async with self._provider.pool.acquire() as conn:
+                row = await conn.fetchrow(sql)
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
+
+        return int(row["count"])
+
     async def get(
         self,
         collection_id: str,

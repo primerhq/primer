@@ -281,6 +281,12 @@ class _FakeStore:
             if c == cid and all(r.meta.get(k) == v for k, v in (meta or {}).items())
         ]
 
+    async def count_documents(self, cid):
+        """Cheap distinct-document count (no record materialization)."""
+        return len(
+            {r.document_id for (c, _, _), r in self.records.items() if c == cid}
+        )
+
 
 class _FakeEmbedder:
     """One embedding per input, which is the contract callers rely on.

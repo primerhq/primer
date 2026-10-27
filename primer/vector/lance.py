@@ -681,3 +681,16 @@ class LanceVectorStore(VectorStore):
             rows = [r for r in rows if _meta_matches(r.get("meta", "{}"), meta)]
         rows.sort(key=lambda r: (r["document_id"], r["chunk_id"]))
         return [self._row_to_record(r, collection_id) for r in rows]
+
+    async def count_documents(self, collection_id: str) -> int:
+        table = await self._open_table(collection_id)
+        # Projected scan: document_id only, so the count never pulls
+        # vectors / text / meta the way search_by_meta does.
+        try:
+            rows = await table.query().select(["document_id"]).to_list()
+        except Exception as exc:
+            raise ProviderError(
+                f"LanceDB count_documents failed in {collection_id}: {exc}",
+                cause=exc,
+            ) from exc
+        return len({r["document_id"] for r in rows})
