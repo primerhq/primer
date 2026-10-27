@@ -115,4 +115,62 @@ def batches_referenced_by_park(blob: Any) -> dict[str, BatchRef]:
     return batches
 
 
-__all__ = ["BatchRef", "batches_referenced_by_park"]
+def task_is_live_for_session(task, session) -> "tuple[bool, str]":
+    """Whether a non-terminal ``ToolCallTask`` row is still live for its owning
+    session row - the one liveness rule the executor's two consumers share.
+
+    Both the executor's step-1 check (``primer.worker.engine_handlers.run_engine_tool_call``)
+    and the boot sweep (``primer.api._app_lifespan_phases.sweep_orphaned_tool_call_tasks``)
+    must apply the SAME keep/void rule, so it lives here, next to the membership
+    helper it is built from, and neither consumer re-derives it. The second
+    element of the returned pair is the reason a void writes to the row's
+    ``last_error`` (empty when live).
+
+    Duck-typed on purpose (this module stays import-free): ``task`` needs
+    ``id``/``turn_no``, ``session`` needs ``status``/``cancel_requested``/
+    ``parked_state``/``turn_no`` (the ``WorkspaceSession`` and ``ToolCallTask``
+    rows).
+
+    LIVE (the row keeps; the tool may run):
+
+    * the session carries a park blob and one of that park's tool_wait batches
+      references the task's id - the membership test above; a park of any other
+      kind carries no tool_wait batch and so references no task;
+    * the session carries no park blob at all and the task belongs to the
+      session's CURRENT turn: a crashed mid-turn replay re-emits a
+      byte-identical batch (the same scoped ids, the row's own record_seq
+      invariant) and its park has not applied yet, so a QUEUED row of the
+      current turn must survive until the replay's park names it - voiding it
+      here would orphan the replay's own batch.
+
+    DEAD (void: terminal FAILED, never queued again, the tool never runs):
+
+    * the session row is missing;
+    * the session is ENDED or has a cancel request pending (a dead session's
+      park can never resolve, and its tasks would otherwise outlive it);
+    * the session's park references no batch with the id (the non-byte-identical
+      crash-retry orphan: the re-run emitted a DIFFERENT batch and this id
+      nothing references again);
+    * the session carries no park and the task is from an older turn (anomaly:
+      the turn moved on without the park naming it).
+    """
+    if session is None:
+        return False, "the owning session row is missing"
+    _status = getattr(session, "status", None)
+    _status_value = getattr(_status, "value", _status)
+    if _status_value == "ended" or getattr(
+        session, "cancel_requested", False,
+    ):
+        return False, "the owning session ended (or was cancelled) before the task ran"
+    park = getattr(session, "parked_state", None)
+    if isinstance(park, dict):
+        for ref in batches_referenced_by_park(park).values():
+            if task.id in ref.outstanding_ids or task.id in ref.notifying_ids:
+                return True, ""
+        return False, "orphaned: the session's live park no longer references this task"
+    if int(getattr(task, "turn_no", -1)) == int(getattr(session, "turn_no", -2)):
+        return True, ""
+    return False, "orphaned: the task belongs to a turn the session has moved past"
+
+
+__all__ = ["BatchRef", "batches_referenced_by_park", "task_is_live_for_session"]

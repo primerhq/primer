@@ -236,11 +236,17 @@ class WorkerPool:
             capacity=self.config.concurrency,
         )
 
-        # Build the dispatch table now that _worker_id is known.
+        # Build the dispatch table now that _worker_id is known. TOOL_CALL is
+        # registered UNCONDITIONALLY (the executor slice, BPF wave 1): the
+        # reserved tool slice's own `TOOL_CALL in self._dispatch` guard below
+        # still keeps a flag-off build from claiming tool leases nothing enqueues
+        # into, and a pool test that starts the pool with a hand-rolled dispatch
+        # table opts in or out of the handler explicitly.
         self._dispatch = {
             ClaimKind.SESSION: self._run_engine_session,
             ClaimKind.HARNESS: self._run_engine_harness,
             ClaimKind.TRIGGER: self._run_engine_trigger,
+            ClaimKind.TOOL_CALL: self._run_engine_tool_call,
         }
 
         # Engine path: one claim loop + one bus loop.
@@ -529,10 +535,14 @@ class WorkerPool:
         The condition is literally ``tool_calls_as_claims_enabled and tool_call_reserved_concurrency
         is not None``. ``WorkerConfig`` derives the reserve whenever the flag is on, so "flag and
         reserve" is the whole test. It is deliberately NOT keyed on whether TOOL_CALL is in
-        ``_dispatch`` (the earlier guard): from the executor slice on, TOOL_CALL is ALWAYS in
-        ``_dispatch`` (the handler is registered unconditionally), so that guard would switch the
-        reserved loop on with the flag OFF whenever an explicit reserve is configured, silently
-        shrinking general capacity for a slice nothing enqueues into. A reserve set with the flag
+        ``_dispatch``: since the executor slice (BPF wave 1) the handler is registered
+        unconditionally by the ``_dispatch`` build, so a membership key here would be a constant
+        and would have hidden the loop selection from the flag. (Before that slice landed the
+        docstring at this site falsely stated the registration as present fact while it did not
+        exist - the D-A2-02 fix; the forward-looking claim is stated here as the precondition it
+        is: the executor slice must register the handler unconditionally, OR the reserved slice's
+        own ``TOOL_CALL in self._dispatch`` guard - which stays - is the only thing keeping it
+        from claiming unrunnable leases.) A reserve set with the flag
         off selects the unreserved loop (pinned in tests/worker/test_pool.py).
 
         Extracted to its own method (rather than inlined in start()) so this decision is testable
@@ -572,9 +582,11 @@ class WorkerPool:
                     leases = await self._engine.claim_due(
                         self._worker_id,
                         max_count=min(self.config.claim_batch_size, free),
-                        # Only kinds this pool can run. Without it the unified loop claimed leases of
-                        # a kind with no handler (a TOOL_CALL lease left over after the flag was
-                        # turned off) and then logged "no handler" and sat on them until they expired.
+                        # Only kinds this pool can run. Without it the unified loop would claim leases of
+                        # a kind with no handler and then log "no handler" and sit on them until they
+                        # expired. Every shipped kind has a handler (TOOL_CALL registered unconditionally),
+                        # so the filter today mainly decides WHICH loop claims a tool-call lease (the
+                        # reserved tool slice vs the unified one), not whether anything can run it.
                         kinds=list(self._dispatch),
                     )
                 except Exception:
@@ -1540,6 +1552,9 @@ class WorkerPool:
 
     async def _run_engine_trigger(self, engine_lease: ClaimLease) -> None:
         return await engine_handlers.run_engine_trigger(self, engine_lease)
+
+    async def _run_engine_tool_call(self, engine_lease: ClaimLease) -> None:
+        return await engine_handlers.run_engine_tool_call(self, engine_lease)
 
     async def _cancel_loop(self) -> None:
         """Drain cancel notifications. When a sid arrives that this worker

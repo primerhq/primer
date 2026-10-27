@@ -215,9 +215,10 @@ class ToolCallClaimAdapter(ClaimAdapter):
         # only needs a cheap, queryable summary of which happened). The
         # tool's result travels in result_state, which the resume
         # coordinator turns into the TOOL_RESULT record. The intended
-        # caller is the claim worker, which is not built: a poisoned-task
-        # failure (retry cap) has no write side yet, only the resume
-        # side's synthesised error part.
+        # caller is the claim executor (primer.worker.engine_handlers.
+        # run_engine_tool_call): its poison path (the retry cap) writes
+        # the synthesized error result_state here, so the coordinator
+        # shows the model a tool_result for the failed tool_use.
         if outcome.drop_lease:
             patch = {
                 "state": (

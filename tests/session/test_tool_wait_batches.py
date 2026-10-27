@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.int.claim import ClaimKind, Lease
+from primer.session.tool_wait_batches import task_is_live_for_session
 from primer.model.chat import ExtendedEvent, ToolCallEnd, ToolCallStart, ToolResultPart, _GraphNodeEvent
 from primer.model.tool_call_task import tool_call_task_id
 from primer.model.workspace_session import WorkspaceSession
@@ -436,3 +437,137 @@ async def test_the_helper_does_not_touch_the_blob_and_batchref_is_a_frozen_value
     with pytest.raises(dataclasses.FrozenInstanceError):
         ref.node_id = "C"
     assert hash(ref) == hash(_ref("B", ["s-pure-value/B:tool:0:1"], ["s-pure-value/B:tool:0:2"]))
+
+
+class TestRealModelLiveness:
+    """The shared liveness predicate against REAL model rows (the duck-typed
+    helpers above use bare types; the real rows carry enum status values,
+    which is exactly the case the ENDED check must handle)."""
+
+    def _session(self, **kw):
+        from datetime import datetime, timezone
+
+        from primer.model.agent import Agent, AgentModel
+        from primer.model.workspace_session import (
+            AgentSessionBinding,
+            WorkspaceSession,
+        )
+
+        return WorkspaceSession(
+            id="sess-liveness",
+            workspace_id="ws-1",
+            binding=AgentSessionBinding(
+                agent_id="agent-1",
+                agent_snapshot=Agent(
+                    model=AgentModel(profile_id="profile-1"),
+                    description="liveness test agent",
+                    tools=[],
+                ),
+            ),
+            binding_epoch=1,
+            created_at=datetime.now(timezone.utc),
+            **kw,
+        )
+
+    def _task(self, **kw):
+        from datetime import datetime, timezone
+
+        from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+
+        return ToolCallTask(
+            id="sess-liveness/x:tool:0:1",
+            session_id="sess-liveness",
+            turn_no=kw.pop("turn_no", 0),
+            tool_name="workspace__write",
+            state=ToolCallTaskState.QUEUED,
+            record_seq=1,
+            created_at=datetime.now(timezone.utc),
+            **kw,
+        )
+
+    def test_ended_session_voids_its_task(self):
+        from primer.model.workspace_session import SessionStatus
+
+        live, reason = task_is_live_for_session(
+            self._task(), self._session(status=SessionStatus.ENDED),
+        )
+        assert not live and reason
+
+    def test_cancelled_session_voids_its_task(self):
+        from primer.model.workspace_session import SessionStatus
+
+        live, reason = task_is_live_for_session(
+            self._task(),
+            self._session(
+                status=SessionStatus.RUNNING, cancel_requested=True,
+            ),
+        )
+        assert not live and "cancel" in reason
+
+    def test_running_session_current_turn_is_live_without_a_park(self):
+        from primer.model.workspace_session import SessionStatus
+
+        live, reason = task_is_live_for_session(
+            self._task(turn_no=0),
+            self._session(status=SessionStatus.RUNNING, turn_no=0),
+        )
+        assert live and reason == ""
+
+    def test_running_session_older_turn_is_void(self):
+        from primer.model.workspace_session import SessionStatus
+
+        live, reason = task_is_live_for_session(
+            self._task(turn_no=0),
+            self._session(status=SessionStatus.RUNNING, turn_no=4),
+        )
+        assert not live and reason
+
+    def test_parked_session_referencing_the_task_is_live(self):
+        from primer.model.workspace_session import SessionStatus
+        from primer.session.yields import tool_wait_event_key
+        from primer.worker.yield_runtime import ToolWaitParkedState
+        from datetime import datetime, timezone
+
+        task_id = "sess-liveness/x:tool:0:1"
+        blob = ToolWaitParkedState(
+            outstanding_task_ids=[task_id],
+            notifying_task_ids=[],
+            event_key=tool_wait_event_key("sess-liveness", scoped_task_id=task_id),
+            llm_messages=[],
+            turn_no=0,
+            started_at=datetime.now(timezone.utc),
+        ).to_jsonable()
+        live, reason = task_is_live_for_session(
+            self._task(),
+            self._session(
+                status=SessionStatus.RUNNING,
+                parked_status="parked",
+                parked_state=blob,
+            ),
+        )
+        assert live and reason == ""
+
+    def test_parked_session_not_referencing_the_task_is_void(self):
+        from primer.model.workspace_session import SessionStatus
+        from primer.session.yields import tool_wait_event_key
+        from primer.worker.yield_runtime import ToolWaitParkedState
+        from datetime import datetime, timezone
+
+        other = "sess-liveness/x:tool:9:1"
+        blob = ToolWaitParkedState(
+            outstanding_task_ids=[other],
+            notifying_task_ids=[],
+            event_key=tool_wait_event_key("sess-liveness", scoped_task_id=other),
+            llm_messages=[],
+            turn_no=0,
+            started_at=datetime.now(timezone.utc),
+        ).to_jsonable()
+        live, reason = task_is_live_for_session(
+            self._task(),
+            self._session(
+                status=SessionStatus.RUNNING,
+                parked_status="parked",
+                parked_state=blob,
+            ),
+        )
+        assert not live and reason

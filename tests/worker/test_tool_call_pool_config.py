@@ -270,10 +270,12 @@ async def test_the_reserved_loop_caps_tool_calls_and_never_starves_the_general_s
 
 
 @pytest.mark.asyncio
-async def test_the_reserved_loops_tool_slice_stays_idle_until_a_handler_is_registered():
-    """Flag on, no TOOL_CALL handler (today's build): a claimed lease would be logged "no handler for
-    kind" and abandoned to expire, then claimed again for ever. The tool slice claims nothing until a
-    handler exists; once one is registered the same lease runs."""
+async def test_the_reserved_loops_tool_slice_stays_idle_when_the_handler_is_absent():
+    """The tool slice's own ``TOOL_CALL in self._dispatch`` guard is defense in depth (it stays
+    even though the executor slice registers the handler unconditionally at start, D-A2-02):
+    with the handler removed from the dispatch, a claimed lease would be logged "no handler for
+    kind" and abandoned to expire, then claimed again for ever, so the slice claims nothing;
+    once a handler is back the same lease runs."""
     engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: _SpyAdapter(ClaimKind.TOOL_CALL)})
     scheduler = InMemoryScheduler()
     await scheduler.initialize()
@@ -293,7 +295,8 @@ async def test_the_reserved_loops_tool_slice_stays_idle_until_a_handler_is_regis
     )
     try:
         await pool.start()
-        assert ClaimKind.TOOL_CALL not in pool._dispatch
+        assert ClaimKind.TOOL_CALL in pool._dispatch, "the executor registers the handler at start"
+        del pool._dispatch[ClaimKind.TOOL_CALL]                     # the guard's own pre-executor state
         await engine.upsert(ClaimKind.TOOL_CALL, "t1", priority=CLAIM_PRIORITY_RESUME)
         await asyncio.sleep(0.5)                                       # several polls
         assert engine._leases[(ClaimKind.TOOL_CALL, "t1")].claimed_by is None, "claimed with no handler"
@@ -307,8 +310,11 @@ async def test_the_reserved_loops_tool_slice_stays_idle_until_a_handler_is_regis
 
 @pytest.mark.asyncio
 async def test_a_skipped_tool_slice_is_not_counted_as_an_empty_poll():
-    """Flag on, no TOOL_CALL handler, the general slice full: no claim_due is issued at all, so the
-    empty-poll counter must not move (the reserve having free capacity is not a poll)."""
+    """Flag on, the TOOL_CALL handler removed from the dispatch (the guard's own
+    pre-executor state - the executor registers it unconditionally at start), the
+    general slice full: the tool slice is skipped entirely, so no claim_due is
+    issued at all and the empty-poll counter must not move (the reserve having
+    free capacity is not a poll)."""
     engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _SpyAdapter(ClaimKind.HARNESS)})
     scheduler = InMemoryScheduler()
     await scheduler.initialize()
@@ -331,6 +337,8 @@ async def test_a_skipped_tool_slice_is_not_counted_as_an_empty_poll():
     )
     try:
         await pool.start()
+        assert ClaimKind.TOOL_CALL in pool._dispatch, "the executor registers the handler at start"
+        del pool._dispatch[ClaimKind.TOOL_CALL]                     # the guard's own pre-executor state
         pool._in_flight.add((ClaimKind.HARNESS, "busy"))               # the one general slot is taken
         await asyncio.sleep(0.6)                                       # several polls of the loop
         assert polls == [], f"claim_due was issued with the general slice full and no tool handler: {polls}"

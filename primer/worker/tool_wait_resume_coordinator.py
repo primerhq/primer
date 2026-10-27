@@ -38,19 +38,20 @@ read-and-materialize step, NOT re-execution:
    already uses; no special "continue the turn" call is needed.
 
 NOT YET WIRED: gated-then-resumed siblings' ``ToolApprovalRecord``
-write (ruling 3's cross-team-consistency rider) — no caller can produce
-a GATED ToolCallTask yet (the claim-based tool-call WORKER that would
-claim, execute, and possibly gate a QUEUED task hasn't landed), so
-every sibling this function ever sees today is DONE, never GATED. Add
-that write here, sibling to step 2 above, once that worker exists —
-tracked as a follow-up in the same arc, not a silent gap: a GATED
-sibling reaching this function today would simply have no
-``result_state`` to assemble from, which the guard below turns into a
-loud failure rather than a malformed tool_result.
+write (ruling 3's cross-team-consistency rider). The claim executor can
+now produce a GATED sibling (its approval/yield gate parks the TASK, not
+the session), so that write lands with the decisions slice (respond ->
+flip), which is separate from this arc. Until then a GATED sibling
+reaching this function simply has no ``result_state`` to assemble from,
+which the guard below turns into a loud failure rather than a malformed
+tool_result.
 
-REQUIRED INVARIANT FOR THE FUTURE CLAIM-BASED TOOL-CALL WORKER (design
-note, 01a0518b review — pin now so it can't get lost before that
-worker is built): ``primer.session.dispatch``'s crash-retry doctrine
+REQUIRED INVARIANT FOR THE CLAIM-BASED TOOL-CALL WORKER (design note,
+01a0518b review, pinned before that worker existed; it now exists at
+``primer.worker.engine_handlers.run_engine_tool_call`` and applies this
+invariant through ``primer.session.tool_wait_batches.task_is_live_for_session``,
+shared with its own boot sweep so the two cannot drift):
+``primer.session.dispatch``'s crash-retry doctrine
 (``_create_tool_call_task_idempotent``) only covers a BYTE-IDENTICAL
 replay — the crashed attempt's re-run mints the same scoped ids
 because the LLM re-emits the same tool calls in the same order. LLM
@@ -65,9 +66,11 @@ record_seq; an orphan is the reverse — an OLD id nothing ever
 references again). This coordinator's own read-by-id-from-the-blob
 design makes it immune (an orphaned id simply never appears in
 ``outstanding_task_ids``/``notifying_task_ids`` here), but the
-claim-based worker that eventually claims and executes QUEUED
-``ToolCallTask`` rows is NOT immune by construction — it must not
-blindly execute whatever it dequeues:
+claim-based worker that claims and executes QUEUED
+``ToolCallTask`` rows is NOT immune by construction (and is not
+immune today either, which is why the invariant below is enforced in
+its step 1, not assumed): it must not blindly execute whatever it
+dequeues:
 
     Before executing a claimed ``ToolCallTask``, the worker MUST
     verify the task's id is still referenced by the OWNING session's

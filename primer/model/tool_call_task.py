@@ -155,9 +155,9 @@ class ToolCallTask(Identifiable):
     # claimable) is exactly what a claim-based worker needs to be true: it
     # must never be able to claim a task whose TOOL_CALL record isn't
     # durable yet. The lookup helper that reads a task's arguments back
-    # (primer.claim.tool_call_lookup.read_tool_call_record; it exists but
-    # has no production caller, because the claim worker that would call
-    # it is not built) seeks directly to
+    # (primer.claim.tool_call_lookup.read_tool_call_record, called by the
+    # claim executor on every claim, primer.worker.engine_handlers)
+    # seeks directly to
     # this seq and verifies the record's own id == this row's ``scoped_call_id``, failing
     # loudly on any mismatch rather than falling back to a scan — a
     # mismatch means this invariant broke somewhere upstream, which is a
@@ -238,25 +238,27 @@ class ToolCallTask(Identifiable):
     # durable TOOL_RESULT records, in-process, under the session log's
     # existing single-writer lock, when the parked turn resumes. Nothing
     # clears it after that read; only ToolCallClaimAdapter.on_release's
-    # retry branch resets it to None. Today the only production writers
-    # are the park handlers, for notifying calls (born DONE with the
-    # result already set); the claim worker that would write it for a
-    # claimable call is not built.
+    # retry branch resets it to None. The production writers are the park
+    # handlers, for notifying calls (born DONE with the result already
+    # set), and the claim executor (primer.worker.engine_handlers), which
+    # writes it for a claimable call on a terminal release (the real result
+    # on success, the synthesized error part at the retry cap).
     result_state: dict[str, Any] | None = None
 
-    # Unclean executions so far. CONTRACT for the executor slice, which is not built (nothing
-    # writes this today; the adapter only carries it through ``ReleaseOutcome.entity_update``):
+    # Unclean executions so far. BUILT (the claim executor, primer.worker.engine_handlers;
+    # the adapter carries it through ``ReleaseOutcome.entity_update`` on a failed release):
     # a claim that finds the row RUNNING (the previous holder died mid-run) and an explicit
     # failed release count; a clean GATED release, a gate resume and a drain requeue do not.
-    # The executor poisons the task when this reaches ``max_attempts``, and writes it as a
-    # read-then-write from a FENCED read (``patch_if`` with the old value in ``where``), so a
+    # The executor's retry cap reads the LEASE's own failure counter (``Lease.attempt_count``,
+    # ``WorkerConfig.max_attempts``) at claim time; this field is the row's own count, written
+    # as a read-then-write from a FENCED read (``patch_if`` with the old value in ``where``), so a
     # concurrent increment rejects the write instead of being lost.
     attempts: int = Field(0, ge=0)
 
     # The per-CLAIM fence for every row write the executor makes. BUILT: ``ToolCallClaimAdapter.
     # on_release`` writes only while the row still carries the releaser's token, so a release
     # that outlived its claim cannot move a row someone else now owns, and ``None`` never
-    # matches a fence. CONTRACT for the (unbuilt) claiming handler: it mints the token
+    # matches a fence. BUILT (the same executor): it mints the token
     # (``worker:claimed_at:random``) and writes it with the RUNNING patch, which overwrites the
     # previous holder's token.
     claim_token: str | None = None
