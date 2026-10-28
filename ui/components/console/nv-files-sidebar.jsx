@@ -320,7 +320,7 @@ function NV_FilesSidebar() {
                   onClick={refetch}>Retry</button>
               </div>
             ) : null}
-            {!items.length ? (
+            {!treeErr && !items.length ? (
               <div className="nv-rail-empty">
                 <div>This workspace has no files yet.</div>
                 <button type="button" className="nv-btn-secondary"
