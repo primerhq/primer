@@ -1848,6 +1848,13 @@ function NV_TraceSplit(props) {
     { pollMs: 0, deps: [props.sid, props.turnNo] }
   );
   var rows = (timeline.data && timeline.data.children) || [];
+  // The split's only other hook must run on EVERY render, ahead of the
+  // branches below: an early return before a useState is a render-to-render
+  // hook-count change, and React tears the whole component down with error
+  // #310 the moment data lands after a loading or error branch.
+  var maxState = React.useState(false);
+  var maximized = maxState[0];
+  var setMaximized = maxState[1];
   // G12-07: a failed timeline fetch (404 session/workspace gone or no such
   // turn; 503 read failure) and a still-loading one used to render like a
   // call-free turn - the split body now names the state. The "No entries
@@ -1901,9 +1908,6 @@ function NV_TraceSplit(props) {
   }
   var flatRows = flat(rows, 0, []);
   var traceNodes = flatRows.map(function (r) { return r.node; });
-  var maxState = React.useState(false);
-  var maximized = maxState[0];
-  var setMaximized = maxState[1];
   return (
     <div className="nv-trace-split" data-testid="nv-trace-split">
       <div className="nv-trace-head">

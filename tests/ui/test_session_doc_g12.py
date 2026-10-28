@@ -202,3 +202,19 @@ def test_the_chip_carries_a_dropped_state() -> None:
         assert "dropped (not sent to the model): unreadable" in props["title"], props
     finally:
         ctx.close()
+
+
+# ---- G12-07 fix: the hooks precede the early branches -------------------------------------------
+
+
+def test_the_trace_split_hooks_run_before_the_early_branches() -> None:
+    """React's rules of hooks: a useState after an early return changes the
+    hook count between renders, and error #310 tears the component down the
+    moment data lands after a loading or error branch (the CI red on the
+    healthy-turn trace journeys). Every hook call in NV_TraceSplit must sit
+    ahead of its first early return."""
+    body = _function("NV_TraceSplit")
+    hooks = [m.start() for m in re.finditer(r"React\.use[A-Za-z]+|primerApi\.use[A-Za-z]+", body)]
+    assert hooks, "NV_TraceSplit lost its hooks"
+    early = body.index("return (")
+    assert max(hooks) < early, "a hook of NV_TraceSplit runs after the first early return (React error #310)"
