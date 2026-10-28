@@ -447,3 +447,15 @@ async def test_trigger_tools_conform(toolset) -> None:
         assert_tool_conforms(tool)
         count += 1
     assert count == 11
+
+
+def test_the_create_descriptor_documents_all_four_config_kinds() -> None:
+    """G11-09: the body accepts the 4-kind TriggerConfig union, so the
+    descriptor's config guidance must name all four shapes, not just the
+    two (an agent reading it otherwise has no way to create a webhook or
+    a channel trigger without reading args_schema or the other tools)."""
+    from primer.toolset.trigger import TOOL_CREATE
+
+    text = TOOL_CREATE.description
+    for kind in ("delayed", "scheduled", "webhook", "channel"):
+        assert f"kind:'{kind}'" in text, f"the create descriptor names no {kind} config shape"
