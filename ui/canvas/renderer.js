@@ -1412,7 +1412,7 @@
 
     function buildInert(rec, key) {
       //: round 4b instrumentation: record that buildInert ran and why, so a still-red run yields the exact remaining mechanism.
-      rec.diag = rec.diag || {buildFrame: 0, buildInert: 0, srcdocSet: false, srcdocLen: 0, innerReady: null, innerLen: 0, handshake: []};
+      rec.diag = rec.diag || {buildFrame: 0, buildInert: 0, srcdocSet: false, srcdocLen: 0, innerReady: null, innerCount: 0, handshake: []};
       rec.diag.buildInert += 1;
       var box = element("div", "cv-html-inert");
       var text = element("p", "cv-html-inert-text");
@@ -1433,7 +1433,7 @@
 
     function buildFrame(rec, el) {
       //: round 4b instrumentation: record that buildFrame ran and the srcdoc it set.
-      rec.diag = rec.diag || {buildFrame: 0, buildInert: 0, srcdocSet: false, srcdocLen: 0, innerReady: null, innerLen: 0, handshake: []};
+      rec.diag = rec.diag || {buildFrame: 0, buildInert: 0, srcdocSet: false, srcdocLen: 0, innerReady: null, innerCount: 0, handshake: []};
       rec.diag.buildFrame += 1;
       var doc0 = htmlSrcdoc(el.props.html, {
         settings: current.settings, ownOrigin: current.own_origin, theme: themeNow, bootstrap: bootstrap
@@ -1450,7 +1450,7 @@
         try {
           var d = frame.contentDocument;
           rec.diag.innerReady = d ? d.readyState : "no-doc";
-          rec.diag.innerLen = d && d.documentElement ? d.documentElement.outerHTML.length : 0;
+          rec.diag.innerCount = d && d.documentElement ? d.documentElement.childElementCount : 0;
         } catch (e) { rec.diag.innerReady = "err:" + (e && e.message ? e.message : "?" ); }
         offerPort(rec, frame);
       });
