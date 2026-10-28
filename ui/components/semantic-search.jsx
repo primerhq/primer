@@ -67,6 +67,9 @@ function _sspBuildConfig(form, isLance, isScale, includeAdvanced) {
     config.db_schema = form.db_schema || "public";
     config.hnsw_m = Number(form.hnsw_m) || 16;
     config.hnsw_ef_construction = Number(form.hnsw_ef_construction) || 64;
+    // G10-3: the query-time recall knob the pgvector backend applies on every session
+    // (SET hnsw.ef_search) - same default as the lance branch.
+    config.hnsw_ef_search = Number(form.hnsw_ef_search) || 100;
     config.use_halfvec = !!form.use_halfvec;
     if (isScale) {
       config.enable_diskann = !!form.enable_diskann;
@@ -405,7 +408,7 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider, frame, 
         hostname: "", port: 5432, database: "primer",
         username: "", password: "", db_schema: "public",
         path: "",
-        hnsw_m: 16, hnsw_ef_construction: 64,
+        hnsw_m: 16, hnsw_ef_construction: 64, hnsw_ef_search: 100,
         use_halfvec: false,
         enable_diskann: false, diskann_num_neighbors: 50, diskann_search_list_size: 100,
         index_min_rows: 1000,
@@ -634,6 +637,9 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider, frame, 
           </FieldRow>
           <FieldRow label="ef_construction" hint="build-time accuracy" err={fieldErrors.hnsw_ef_construction}>
             <input className="input mono" type="number" value={form.hnsw_ef_construction} onChange={(e) => update("hnsw_ef_construction", +e.target.value)} style={{ width: "100%" }} />
+          </FieldRow>
+          <FieldRow label="ef_search" hint="query-time recall" err={fieldErrors.hnsw_ef_search}>
+            <input className="input mono" type="number" value={form.hnsw_ef_search} onChange={(e) => update("hnsw_ef_search", +e.target.value)} style={{ width: "100%" }} />
           </FieldRow>
         </div>
 

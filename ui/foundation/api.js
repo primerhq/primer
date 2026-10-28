@@ -445,9 +445,14 @@ function PR_pagedNote(list, noun) {
   return "Showing the first " + n + " " + PR_nounFor(noun, n) + "; there may be more.";
 }
 
-// The note under a list that was cut short (nothing for a whole one): props {list: what PR_fetchAllPages answered, noun, testid (default pr-paged-note)}.
+// The note under a list read with something to say: a cut-short read speaks for itself (nothing for a whole one);
+// a read that FAILED outright (``error``) names the failure instead of the page silently reading 0 (G10-2).
 function PR_PagedNote(props) {
   var text = PR_pagedNote(props.list, props.noun);
+  if (props.error) {
+    var msg = String((props.error && (props.error.detail || props.error.message)) || props.error);
+    text = "The " + (props.noun || "rows") + " read failed: " + msg;
+  }
   if (!text) return null;
   return window.React.createElement("div", { className: "pr-paged-note", role: "note", "data-testid": props.testid || "pr-paged-note" }, text);
 }

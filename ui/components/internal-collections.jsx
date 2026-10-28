@@ -29,9 +29,11 @@ const IC_CACHE_RERANK = "ic:rerank-providers";
 const IC_CACHE_SSP = "ic:ssp";
 const IC_CACHE_BOOTSTRAP = "ic:bootstrap-status";
 
-// Six steps in order — keeps the UI's per-phase rendering in sync with
-// the backend's phase enum. Used to compute the global progress bar
-// (current_phase_index + within_phase_fraction) / total_phases.
+// Eight steps in order, the backend's BootstrapPhase enum (primer/model/internal.py) as the client sees it -
+// keeping the UI's per-phase rendering in sync with it is the whole point of the list (a missing phase used
+// to regress the bar to the first phase's position mid-run, audit G10-4). An id the client has not seen yet
+// is labelled by the raw id at its ordinal position, never clamped to 0. Used to compute the global progress
+// bar (current_phase_index + within_phase_fraction) / total_phases.
 const IC_BOOTSTRAP_PHASES = [
   { id: "drain_queue", label: "Draining CDC queue" },
   { id: "materialise_collections", label: "Materialising collections" },
@@ -39,6 +41,7 @@ const IC_BOOTSTRAP_PHASES = [
   { id: "ingest_graphs", label: "Ingesting graphs" },
   { id: "ingest_collections", label: "Ingesting collections" },
   { id: "ingest_tools", label: "Ingesting tools" },
+  { id: "ingest_ai_docs", label: "Ingesting AI docs" },
   { id: "finalize", label: "Finalising" },
 ];
 
@@ -730,7 +733,8 @@ function BootstrapProgressPanel({ status }) {
   // in the phase sequence + how far into the current phase. Each phase
   // contributes 1/N to the bar; within-phase progress prorates the
   // current phase's contribution.
-  const phaseIndex = Math.max(0, IC_BOOTSTRAP_PHASES.findIndex(p => p.id === status.phase));
+  const foundIdx = IC_BOOTSTRAP_PHASES.findIndex(p => p.id === status.phase);
+  const phaseIndex = foundIdx === -1 ? IC_BOOTSTRAP_PHASES.length - 1 : foundIdx;
   const within = status.phase_total && status.phase_total > 0
     ? Math.min(1, status.phase_done / status.phase_total)
     : 0;
@@ -738,7 +742,7 @@ function BootstrapProgressPanel({ status }) {
   const fraction = (phaseIndex + within) / total;
   const percent = Math.max(0, Math.min(100, Math.round(fraction * 100)));
 
-  const currentLabel = IC_BOOTSTRAP_PHASES[phaseIndex]?.label || "Working…";
+  const currentLabel = foundIdx === -1 ? String(status.phase) : (IC_BOOTSTRAP_PHASES[phaseIndex]?.label || "Working…");
   const counts = status.counts || {};
   const elapsedS = status.started_at
     ? Math.max(0, Math.round((Date.now() - new Date(status.started_at).getTime()) / 1000))

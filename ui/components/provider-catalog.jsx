@@ -130,6 +130,9 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   const classListsRef = React.useRef({});
   const [profileCounts, setProfileCounts] = React.useState({});
   const [profilesList, setProfilesList] = React.useState(null);
+  // The failure of a profiles read that came back failed outright (a first-page failure resolves
+  // to {items: [], error}); a cut-short read keeps speaking through the envelope's own truncated note.
+  const [profilesError, setProfilesError] = React.useState(null);
 
   const [overlayState, setOverlayState] = React.useState({
     open: false,
@@ -180,8 +183,10 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     });
 
     const hasLlm = classesToFetch.some((c) => c.key === "llm");
+    // G10-2: a FAILED profiles read keeps its error (the class reads' PR_partialFailure shape), so
+    // every LLM provider card does not silently read 0 profiles with the note silent.
     const profilesPromise = hasLlm
-      ? PR_fetchAllPages("/model_profiles", { apiFetch, signal }).catch(() => ({ items: [] }))
+      ? PR_fetchAllPages("/model_profiles", { apiFetch, signal }).catch((err) => ({ items: [], error: err }))
       : Promise.resolve({ items: [] });
 
     Promise.all([Promise.all(fetches), profilesPromise]).then(([results, profRes]) => {
@@ -215,6 +220,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
       setClassLists(nextLists);
       setProfileCounts(counts);
       setProfilesList(profRes || null);
+      setProfilesError(profRes && typeof profRes.error === "object" ? profRes.error : null);
       setLoading(false);
     });
 
@@ -451,7 +457,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
           <PR_PagedNote key={`trunc-${c.key}`} list={classLists[c.key]} noun={`${c.label} providers`} testid={`pc-truncated:${c.key}`} />
         ))}
         {classesToFetch.some((c) => c.key === "llm") ? (
-          <PR_PagedNote list={profilesList} noun="LLM profiles" testid="pc-truncated:profiles" />
+          <PR_PagedNote list={profilesList} error={profilesError} noun="LLM profiles" testid="pc-truncated:profiles" />
         ) : null}
 
         {loading && totalCount === 0 && Object.keys(classErrors).length === 0 ? (

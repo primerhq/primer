@@ -615,6 +615,29 @@ function KN_IndexingStrip({ collection, status, embedProviders, sspProviders, pu
     }
   };
 
+  // G10-5: the server's own documented recovery for a failed backfill - the partial index stays
+  // and re-issuing the same PUT retries. Re-issue it with the collection's CURRENT search config
+  // (it is on the same row), not the disabled-state form, which is empty in the error branch.
+  const retry = async () => {
+    setBusy(true);
+    try {
+      await apiFetch("PUT", `/collections/${encodeURIComponent(cid)}/search`, {
+        embedder: collection.search.embedder,
+        vector_store_provider_id: collection.search.vector_store_provider_id,
+      });
+      pushToast && pushToast({ kind: "success", title: "Indexing re-issued" });
+      onChanged && onChanged();
+    } catch (err) {
+      pushToast && pushToast({
+        kind: "error",
+        title: "Could not retry indexing",
+        detail: err?.detail || err?.message,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const st = status.data;
   const ready = st?.state === "ready";
   const activeRung = ready ? "semantic" : "regex";
@@ -647,7 +670,12 @@ function KN_IndexingStrip({ collection, status, embedProviders, sspProviders, pu
       </div>
 
       {st?.state === "error" ? (
-        <Banner kind="error" title="Indexing failed">{st.error}</Banner>
+        <div className="col" style={{ gap: 6 }}>
+          <Banner kind="error" title="Indexing failed">
+            Re-issuing the same request retries; the partial index stays. {st.error}
+          </Banner>
+          <Btn size="sm" busy={busy} onClick={retry}>Retry</Btn>
+        </div>
       ) : null}
 
       {st?.state === "disabled" ? (
@@ -735,6 +763,36 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
     setExpanded((cur) => ({ ...cur, ...opens }));
   };
 
+  // G10-6: the console had create/read/update but no collection-level delete (the server has
+  // DELETE /collections/{id}; the system delete_collection tool covered agent-driven installs).
+  // System collections do not render it (the whole footer is the read-only branch); the server's
+  // 403/409/502 answers already carry the operator-facing detail, surfaced on refusal.
+  const [busyDel, setBusyDel] = React.useState(false);
+
+  const removeCollection = async () => {
+    const ok = await window.confirmDialog({
+      title: "Delete collection",
+      message: `Delete ${cid} and everything in it (documents, content, vectors)?`,
+      confirmLabel: "Delete", danger: true,
+    });
+    if (!ok) return;
+    setBusyDel(true);
+    try {
+      await apiFetch("DELETE", `/collections/${encodeURIComponent(cid)}`);
+      pushToast && pushToast({ kind: "success", title: "Collection deleted", detail: cid });
+      onBack && onBack();
+    } catch (err) {
+      pushToast && pushToast({
+        kind: "error", title: "Could not delete collection",
+        detail: window.primerApi.readRefusal
+          ? window.primerApi.readRefusal(err, err && err.message).message
+          : (err && err.message),
+      });
+    } finally {
+      setBusyDel(false);
+    }
+  };
+
   // uiv2 Wave 2 ("Collection — {name}" header row, type/state/doc-count
   // facts inline, Import zip + close): doc count is only shown when the
   // search-status fetch actually serves one (documents_total, once
@@ -763,6 +821,7 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
           <>
             <Btn kind="ghost" icon="upload" onClick={() => setImportOpen(true)}>Import zip</Btn>
             <Btn icon="plus" onClick={() => setRootNewOpen(true)}>New document</Btn>
+            <Btn kind="ghost" busy={busyDel} onClick={removeCollection}>Delete</Btn>
           </>
         )
       }

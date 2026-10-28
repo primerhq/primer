@@ -95,8 +95,7 @@ The entities:
   them (defence in depth; a password under 4 characters or a keyless placeholder is
   not masked, `primer.llm._failure.scrub`'s rule). Document search is
   `POST /v1/collections/{id}/search`. See [rest-api.md](../architecture/rest-api.md).
-- **Auto-bootstrap.** The reserved `lance` SSP row is seeded at first boot so
-  semantic search works zero-config; the internal-collections bootstrap is a
+- **Auto-bootstrap.** On Postgres-mode installs the reserved `pgvector` SSP row is seeded first (the authoritative vector default), then the reserved `lance` row, so semantic search works zero-config; the internal-collections bootstrap is a
   separate state machine. See [auto-bootstrap.md](../architecture/auto-bootstrap.md).
 - **Adjacent subsystem.** Embedders, the prompt registry, the `Collection` /
   `Document` models, and the ingestion pipeline are documented in
@@ -126,7 +125,7 @@ The entities:
   orchestrator.
 - `primer/api/registries/semantic_search_registry.py`: `SemanticSearchRegistry`.
 - `primer/api/registries/provider_registry.py`: cross-encoder cache + factory,
-  and the reserved-id sets (`RESERVED_SSP_IDS = {'lance'}`,
+  and the reserved-id sets (`RESERVED_SSP_IDS = {'lance', 'pgvector'}`,
   `RESERVED_CROSS_ENCODER_IDS = {'huggingface-ce'}`).
 - `primer/api/routers/semantic_search.py`: `/v1/ssp` CRUD.
 - `primer/api/routers/providers.py`: `CrossEncoderProvider` CRUD.

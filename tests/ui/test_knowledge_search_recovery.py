@@ -117,6 +117,7 @@ window.primerApi = { readRefusal: function (e) { return { message: (e && e.messa
 var apiFetch = function (m, p, body) { CALLS.push([m, p, JSON.stringify(body)]); return Promise.resolve({}); };
 var pushToast = function () {};
 var onBack = function () {};
+var setBusyDel = function () {};
 var cid = "c-1";
 """
     )
@@ -126,5 +127,5 @@ var cid = "c-1";
     calls = json.loads(ctx.eval("JSON.stringify(CALLS)"))
     confirm = json.loads(ctx.eval("JSON.stringify(CONFIRM)"))
     ctx.close()
-    assert calls == [["DELETE", "/collections/c-1", "null"]], calls
+    assert calls == [["DELETE", "/collections/c-1", None]], calls
     assert confirm and confirm["title"] == "Delete collection" and confirm["danger"] is True, confirm
