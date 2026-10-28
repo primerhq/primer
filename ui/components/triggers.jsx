@@ -10,7 +10,7 @@ const TR_SLUG_RE = /^[a-z][a-z0-9-]{1,63}$/;
 
 const TR_CATCHUP_OPTIONS = [
   { value: "one", label: "one — fire once for the most recent missed tick" },
-  { value: "all", label: "all — fire once per missed tick" },
+  { value: "all", label: "all — replay up to 64 missed ticks per claim (oldest first)" },
   { value: "none", label: "none — drop missed ticks" },
 ];
 
@@ -405,6 +405,11 @@ function TR_scheduleLabel(trigger) {
     return cfg.cron ? `${cfg.cron}${cfg.timezone ? " · " + cfg.timezone : ""}` : dash;
   }
   if (cfg.kind === "webhook") return "webhook";
+  if (cfg.kind === "channel") {
+    // The binding is channel-owned; name it here so the generic surface is self-describing (G11-04).
+    const label = "channel: " + (cfg.provider_id || "unknown provider");
+    return cfg.channel_id ? label + " / " + cfg.channel_id : label;
+  }
   return dash;
 }
 
@@ -663,6 +668,10 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
   const [cron, setCron] = React.useState("0 * * * *");
   const [timezone, setTimezone] = React.useState(TR_browserTimezone());
   const [catchup, setCatchup] = React.useState("one");
+
+  // Step 2 — webhook (G11-05): interactive mode + wait bound, both at the model defaults until changed.
+  const [whInteractive, setWhInteractive] = React.useState(false);
+  const [whWait, setWhWait] = React.useState("60");
   const timezones = React.useMemo(() => TR_supportedTimezones(), []);
 
   // Step 3
@@ -715,7 +724,12 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
     if (kind === "webhook") {
       // Token is server-minted - omit from payload (or send empty string).
       // hmac_secret can be set after creation via PUT.
-      return { kind: "webhook" };
+      // interactive / wait ride the POST only when off their model defaults (the server fills the rest in).
+      const config = { kind: "webhook" };
+      if (whInteractive) config.interactive = true;
+      const wait = Number(whWait);
+      if (wait >= 1 && wait <= 600 && wait !== 60) config.wait_timeout_seconds = wait;
+      return config;
     }
     return {
       kind: "scheduled",
@@ -931,6 +945,36 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
               </div>
             </div>
           </div>
+          <div className="field">
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                id="tr-wh-interactive"
+                checked={whInteractive}
+                onChange={(e) => setWhInteractive(e.target.checked)}
+              />
+              <span>Interactive</span>
+            </label>
+            <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+              Hold the POST until the fired run finishes and return its final text; off keeps the
+              immediate 202.
+            </div>
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="tr-wh-wait">
+              Wait bound <span className="hint">seconds, 1 to 600, only while interactive</span>
+            </label>
+            <input
+              id="tr-wh-wait"
+              className="input mono"
+              type="number"
+              min={1}
+              max={600}
+              value={whWait}
+              onChange={(e) => setWhWait(e.target.value)}
+              style={{ width: "100%" }}
+            />
+          </div>
         </div>
       )}
 
@@ -986,23 +1030,36 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
 }
 
 // ============================================================================
-// TR_TriggerEditDialog — edit name / description / enabled.
+// TR_TriggerEditDialog — name / description / enabled, plus the same-kind config.
 //
 // Per Spec §13.4: the detail page exposes an Edit affordance for the
-// trigger metadata. `config` is mostly immutable here — the kind cannot
-// change (server returns 409 trigger_kind_immutable) and the kind-specific
-// payload (fire_at / cron / timezone / catchup) is intentionally NOT
-// editable in this dialog to keep the surface tight. Operators that need
-// to change schedule should delete + recreate.
+// trigger. Only the kind discriminator is immutable (the server answers 409
+// trigger_kind_immutable): a same-kind config updates IN PLACE - the service's
+// update_trigger and the agent update tool both say exactly that, and
+// delete-then-recreate would cascade away the trigger's subscriptions and
+// re-mint its owner. The dialog therefore renders a kind-specific config
+// section (G11-02). Channel bindings (provider_id / channel_id) are
+// channel-owned and stay read-only here (manage them on the Channels page).
 // ============================================================================
 
 function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
   const { apiFetch } = window.primerApi;
+  const cfg = trigger.config || {};
   const [name, setName] = React.useState(trigger.name || "");
   const [description, setDescription] = React.useState(trigger.description || "");
   const [enabled, setEnabled] = React.useState(!!trigger.enabled);
+  // Same-kind config, seeded from the row. The service replaces the config whole on a PUT, so each
+  // branch below rebuilds the full config from these fields; the webhook token and HMAC round-trip
+  // as read (an empty token or the stored echo keeps the stored token, the mask keeps the stored secret).
+  const [cron, setCron] = React.useState(cfg.cron || "");
+  const [timezone, setTimezone] = React.useState(cfg.timezone || "UTC");
+  const [catchup, setCatchup] = React.useState(cfg.catchup || "one");
+  const [fireAtLocal, setFireAtLocal] = React.useState(String(cfg.fire_at || "").slice(0, 16));
+  const [whInteractive, setWhInteractive] = React.useState(!!cfg.interactive);
+  const [whWait, setWhWait] = React.useState(String(cfg.wait_timeout_seconds ?? 60));
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState(null);
+  const timezones = React.useMemo(() => TR_supportedTimezones(), []);
 
   const mountedRef = React.useRef(true);
   React.useEffect(() => {
@@ -1014,10 +1071,27 @@ function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
     setBusy(true);
     setError(null);
     try {
+      // Only the kind discriminator is immutable: a same-kind config goes on the PUT in place. Channel
+      // bindings are channel-owned (managed from the Channels page), so a channel row sends no config.
+      let config = null;
+      if (cfg.kind === "scheduled") {
+        config = { kind: "scheduled", cron, timezone, catchup };
+      } else if (cfg.kind === "delayed" && fireAtLocal) {
+        const dt = new Date(fireAtLocal + ":00Z");
+        config = { kind: "delayed", fire_at: isNaN(dt.getTime()) ? cfg.fire_at : dt.toISOString() };
+      } else if (cfg.kind === "webhook") {
+        config = {
+          kind: "webhook",
+          token: cfg.token || "",
+          hmac_secret: cfg.hmac_secret ?? null,
+          interactive: whInteractive,
+          wait_timeout_seconds: Number(whWait) || 60,
+        };
+      }
       const updated = await apiFetch(
         "PUT",
         "/triggers/" + encodeURIComponent(trigger.id),
-        { name: name || trigger.slug, description: description || null, enabled },
+        { name: name || trigger.slug, description: description || null, enabled, config },
       );
       if (!mountedRef.current) return;
       onSaved(updated);
@@ -1080,9 +1154,115 @@ function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
             Disabled triggers never fire. The claim engine will not schedule them.
           </div>
         </div>
+        {cfg.kind === "scheduled" && (
+          <div data-testid="tr-edit-scheduled">
+            <div className="field">
+              <label className="field-label" htmlFor="tr-edit-cron">
+                Cron expression <span className="hint">standard 5-field cron</span>
+              </label>
+              <input
+                id="tr-edit-cron"
+                className="input mono"
+                value={cron}
+                onChange={(e) => setCron(e.target.value)}
+                style={{ width: "100%" }}
+              />
+            </div>
+            <div className="field">
+              <label className="field-label" htmlFor="tr-edit-timezone">
+                Timezone <span className="hint">IANA tz name</span>
+              </label>
+              <select
+                id="tr-edit-timezone"
+                className="input mono"
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+                style={{ width: "100%" }}
+              >
+                {timezones.map((tz) => (
+                  <option key={tz} value={tz}>{tz}</option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label className="field-label" htmlFor="tr-edit-catchup">
+                Catchup policy <span className="hint">behaviour after downtime</span>
+              </label>
+              <select
+                id="tr-edit-catchup"
+                className="input"
+                value={catchup}
+                onChange={(e) => setCatchup(e.target.value)}
+                style={{ width: "100%" }}
+              >
+                {TR_CATCHUP_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+        {cfg.kind === "delayed" && (
+          <div className="field" data-testid="tr-edit-delayed">
+            <label className="field-label" htmlFor="tr-edit-fire-at">
+              Fire at <span className="hint">UTC; leave empty to keep the stored instant</span>
+            </label>
+            <input
+              id="tr-edit-fire-at"
+              className="input mono"
+              type="datetime-local"
+              value={fireAtLocal}
+              onChange={(e) => setFireAtLocal(e.target.value)}
+              style={{ width: "100%" }}
+            />
+          </div>
+        )}
+        {cfg.kind === "webhook" && (
+          <div data-testid="tr-edit-webhook">
+            <div className="field">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  id="tr-edit-wh-interactive"
+                  checked={whInteractive}
+                  onChange={(e) => setWhInteractive(e.target.checked)}
+                />
+                <span>Interactive</span>
+              </label>
+              <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+                Hold the POST until the fired run finishes and return its final text; off keeps the immediate 202.
+              </div>
+            </div>
+            <div className="field">
+              <label className="field-label" htmlFor="tr-edit-wh-wait">
+                Wait bound <span className="hint">seconds, 1 to 600, only while interactive</span>
+              </label>
+              <input
+                id="tr-edit-wh-wait"
+                className="input mono"
+                type="number"
+                min={1}
+                max={600}
+                value={whWait}
+                onChange={(e) => setWhWait(e.target.value)}
+                style={{ width: "100%" }}
+              />
+            </div>
+          </div>
+        )}
+        {cfg.kind === "channel" && (
+          <div className="field" data-testid="tr-edit-channel">
+            <div className="field-help muted text-sm">
+              Bound to <span className="mono">{cfg.provider_id || "unknown provider"}</span>
+              {cfg.channel_id ? <> / <span className="mono">{cfg.channel_id}</span></> : null}. The
+              binding is channel-owned and managed from the Channels page; only name, description and
+              enabled change here.
+            </div>
+          </div>
+        )}
         <div className="field-help muted text-sm">
-          Kind, schedule, and other config fields are immutable. To change them, delete this
-          trigger and create a new one.
+          The kind cannot change. The fields above update this trigger's config in place - one PUT, no
+          delete + recreate round-trip that would cascade away its subscriptions.
         </div>
         {error && (
           <Banner
@@ -1637,6 +1817,16 @@ function TR_TriggerDetail({ id }) {
                 <dd className="mono">{t.config?.catchup || "—"}</dd>
               </>
             )}
+            {kind === "channel" && (
+              <>
+                <dt data-testid="tr-detail-channel">Channel binding</dt>
+                <dd className="mono">
+                  {t.config?.provider_id || "—"}{t.config?.channel_id ? " / " + t.config?.channel_id : ""}
+                </dd>
+                <dt>Interactive</dt>
+                <dd>{t.config?.interactive ? "on — the run's result posts back into the channel" : "off"}</dd>
+              </>
+            )}
             {kind === "webhook" && (() => {
               const whUrl = TR_webhookUrl(t);
               const hasHmac = !!t.config?.hmac_secret;
@@ -1715,6 +1905,10 @@ function TR_TriggerDetail({ id }) {
                       <span className="muted text-sm" style={{ color: "var(--red)" }}>{rotateError}</span>
                     )}
                   </dd>
+                  <dt data-testid="tr-detail-wh-interactive">Interactive</dt>
+                  <dd>{t.config?.interactive ? "on — a POST holds for the run's final text" : "off — 202 immediately"}</dd>
+                  <dt data-testid="tr-detail-wh-wait">Wait bound</dt>
+                  <dd className="mono">{t.config?.wait_timeout_seconds ?? 60}s</dd>
                 </>
               );
             })()}
@@ -1869,7 +2063,15 @@ function TR_TriggerDetail({ id }) {
                         </span>
                         <span style={{ flex: 1 }} />
                         {r.artefact_id && (
-                          <span className="mono text-sm" style={{ color: "var(--text-3)" }}>{r.artefact_id}</span>
+                          <span
+                            className="mono text-sm"
+                            style={{ color: "var(--text-3)", cursor: "pointer" }}
+                            title="Open the session this fire started"
+                            data-testid="fire-now-result-artefact"
+                            onClick={() => navigate("/sessions/" + r.artefact_id)}
+                          >
+                            {r.artefact_id}
+                          </span>
                         )}
                         {r.error_message && (
                           <span className="text-sm" style={{ color: tone }}>{r.error_message}</span>
