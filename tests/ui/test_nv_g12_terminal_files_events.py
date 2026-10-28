@@ -136,6 +136,39 @@ def test_the_files_error_branch_says_why_and_offers_a_retry() -> None:
     assert 'data-testid="nv-files-tree-error-retry"' in region
 
 
+def test_the_files_error_state_replaces_the_empty_state_in_render() -> None:
+    """Render composition: under a FAILED tree fetch the panel shows ONLY the error +
+    Retry. The "no files yet." + New-file block is a write into the failed read, so it
+    must not fire alongside (both are sibling branches; with data null, items is [] and
+    the un-gated empty state fired too). A genuinely empty workspace still shows the
+    empty state."""
+    src = _paths()["sidebar"]
+    lines = src.splitlines()
+    idx = [k for k, l in enumerate(lines) if "This workspace has no files yet." in l][0]
+    # The branch opener is the nearest line above that ends with "? (" (a wrapper div
+    # may sit between it and the copy).
+    opener = next(k for k in range(idx - 1, max(idx - 4, -1), -1) if lines[k].rstrip().endswith("? ("))
+    cm = re.match(r"^\s*\{(([^{]*?))\? \($", lines[opener])
+    assert cm, f"the empty-state branch condition not found: {lines[opener]!r}"
+    empty_cond = cm.group(1)
+    for name, shape, empty_expected in (
+        ("failed_fetch", "{ data: null, error: { status: 500, title: 'boom' } }", False),
+        ("true_empty", "{ data: { items: [] }, error: null }", True),
+    ):
+        ctx = _mr()
+        ctx.eval(f"var tree = {shape};")
+        ctx.eval("var treeErr = (tree.error && !tree.data);")
+        ctx.eval("var items = (tree.data && tree.data.items) || [];")
+        out = json.loads(ctx.eval(f"JSON.stringify({{ errorBranch: treeErr, emptyBranch: {empty_cond} }})"))
+        if name == "failed_fetch":
+            assert out["errorBranch"], "the error branch must show on a failed fetch"
+            assert bool(out["emptyBranch"]) is empty_expected, (
+                "the empty state + New-file renders alongside the error on a failed fetch"
+            )
+        else:
+            assert bool(out["emptyBranch"]) is empty_expected, "a truly empty workspace must still show its empty state"
+
+
 # ---- G12-04: "Empty commit." only for a loaded zero-file commit -----------------
 
 
