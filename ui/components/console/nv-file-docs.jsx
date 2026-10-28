@@ -139,6 +139,14 @@ function NV_DiffDoc(props) {
     { pollMs: 0, deps: [con.wid, sha] }
   );
   var files = (commit.data && commit.data.files) || [];
+  // A commit read that is still in flight (or failed) is not an empty commit: say what
+  // is happening instead of rendering "Empty commit." for a data: null row (G12-04),
+  // in the file DOC's read-error tone.
+  var commitErr = (commit.error && !commit.data);
+  var commitErrWhy = commitErr ? (function (e) {
+    return (typeof e.detail === "string" ? e.detail
+      : (e.detail && e.detail.message)) || e.message || e.title || "the read failed";
+  })(commit.error) : null;
   return (
     <div className="nv-diffdoc" data-testid={"nv-diff-doc:" + sha}>
       <div className="nv-filedoc-bar">
@@ -148,6 +156,13 @@ function NV_DiffDoc(props) {
         </span>
       </div>
       <div className="nv-diff-body">
+        {commitErr ? (
+          <div className="nv-rail-empty" data-testid="nv-diff-error">
+            <div>Could not open this commit: {String(commitErrWhy)}</div>
+          </div>
+        ) : commit.data == null ? (
+          <div className="nv-rail-empty" data-testid="nv-diff-loading"><div>Loading commit…</div></div>
+        ) : null}
         {files.map(function (f) {
           var lines = String(f.patch || "").split("\n");
           return (
@@ -172,7 +187,7 @@ function NV_DiffDoc(props) {
             <div>This commit changes the workspace runtime's state; its file changes are visible to admins only.</div>
           </div>
         ) : null}
-        {!files.length && !(commit.data && commit.data.files_hidden) ? (
+        {commit.data != null && !files.length && !(commit.data && commit.data.files_hidden) ? (
           <div className="nv-rail-empty"><div>Empty commit.</div></div>
         ) : null}
       </div>

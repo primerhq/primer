@@ -183,6 +183,7 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
   const mobileTabs = [
     { id: "files", label: "Files", content: filesPanel },
     { id: "sessions", label: "Sessions", content: sessionsPanel },
+    { id: "events", label: "Events", content: eventsPanel },
     { id: "logs", label: "Logs", content: logPanel },
     { id: "config", label: "Config", content: configPanel },
   ];

@@ -136,4 +136,5 @@ def test_the_phone_layout_never_had_a_destroy_tab(ctx) -> None:
     ctx.eval('ROWS["ws-1"] = { id: "ws-1", is_default: false }; MOBILE = true; QUERY.tab = "files"')
     _mount(ctx, "ws-1")
     tabs = json.loads(ctx.eval('JSON.stringify(MR.findAll("mobile-tab:").map(function (e) { return e.props["data-testid"]; }))'))
-    assert tabs == ["mobile-tab:files", "mobile-tab:sessions", "mobile-tab:logs", "mobile-tab:config"]
+    # G12-06: the Events tab (and its live errors) used to be desktop-only; the phone set gained it, so the pin moves with the finding.
+    assert tabs == ["mobile-tab:files", "mobile-tab:sessions", "mobile-tab:events", "mobile-tab:logs", "mobile-tab:config"]

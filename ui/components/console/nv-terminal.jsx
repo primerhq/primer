@@ -38,6 +38,13 @@ function NV_Terminal() {
   var connLostState = React.useState(false);
   var connLost = connLostState[0];
   var setConnLost = connLostState[1];
+  // Close code 4404: the server closed the shell because the workspace itself is gone
+  // (workspace_not_found, primer/api/routers/terminal.py) - a PERMANENT state, not a blip:
+  // a retry against a deleted workspace re-closes with 4404, so the transient
+  // "Connection lost. Usually transient." + Retry can never win there.
+  var workspaceGoneState = React.useState(false);
+  var workspaceGone = workspaceGoneState[0];
+  var setWorkspaceGone = workspaceGoneState[1];
   var exitState = React.useState(null);
   var exitCode = exitState[0];
   var setExit = exitState[1];
@@ -60,6 +67,7 @@ function NV_Terminal() {
     setDenied(false);
     setSignedOut(false);
     setConnLost(false);
+    setWorkspaceGone(false);
     setExit(null);
     // Guards against the close event our OWN cleanup's sock.close() fires
     // below: without it, tearing down for a retry or an unmount would
@@ -130,11 +138,14 @@ function NV_Terminal() {
         setDenied(true);
       } else if (ev && ev.code === 4401) {
         setSignedOut(true);
+      } else if (ev && ev.code === 4404) {
+        // The workspace is gone (the server's own workspace_not_found close code):
+        // permanent, no Retry - re-arming re-closes with 4404 forever.
+        setWorkspaceGone(true);
       } else {
-        // Every OTHER close - missing-workspace/internal-error close
-        // codes and a bare network blip (browsers report an abnormal drop
-        // as code 1006) alike - reads as "connection lost", never as a
-        // permanent per-workspace refusal.
+        // Every OTHER close - internal-error close codes and a bare network blip
+        // (browsers report an abnormal drop as code 1006) alike - reads as
+        // "connection lost", never as a permanent per-workspace refusal.
         setConnLost(true);
       }
     };
@@ -228,7 +239,15 @@ function NV_Terminal() {
             if (verb) verb.run();
           }}>×</button>
       </div>
-      {denied ? (
+      {workspaceGone ? (
+        <window.NV_WorkspaceGone
+          wid={con.wid}
+          workspaces={con.workspaces}
+          onOpen={function (id) {
+            var verb = con.registry.get("workspace.switch");
+            if (verb) verb.run({ wid: id });
+          }} />
+      ) : denied ? (
         <div className="nv-rail-empty" data-testid="nv-terminal-denied">
           <div>
             The terminal is disabled for this workspace. An admin can

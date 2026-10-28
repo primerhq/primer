@@ -79,7 +79,7 @@ def _onclose_calls(code: int) -> list:
         "var cancelled = false; var gotExit = false;"
     )
     ctx.eval("var sock_onclose = " + handler.replace("sock.onclose = ", "", 1))
-    ctx.eval("sock_onclose({ code: %d });" % code)
+    ctx.eval(f"sock_onclose({{ code: {code} }});")
     return json.loads(ctx.eval("JSON.stringify(calls)"))
 
 
@@ -123,9 +123,9 @@ def test_the_files_sidebar_error_branch_is_selected_on_a_failed_fetch() -> None:
         ("{ data: { items: [] }, error: null }", False),
     ):
         ctx = _mr()
-        ctx.eval("var tree = %s;" % shape)
-        out = json.loads(ctx.eval("JSON.stringify(%s)" % cond))
-        assert out is expected, f"the error branch mis-selects under {shape}"
+        ctx.eval(f"var tree = {shape};")
+        out = json.loads(ctx.eval(f"JSON.stringify({cond})"))
+        assert bool(out) is expected, f"the error branch mis-selects under {shape}"
 
 
 def test_the_files_error_branch_says_why_and_offers_a_retry() -> None:
@@ -151,7 +151,9 @@ def _empty_commit_condition() -> str:
     opens it), as it reads today."""
     body = _diffdoc_body()
     lines = body.splitlines()
-    idx = [k for k, l in enumerate(lines) if "Empty commit." in l][0]
+    # The committed RENDER line (stable across red/green; the branch's own
+    # comment may also quote the copy), with the condition on the line above it.
+    idx = [k for k, l in enumerate(lines) if ">Empty commit.</div>" in l][0]
     cm = re.match(r"^\s*\{((?:commit\.data != null && )?!files\.length && [^{]*?)\? \($", lines[idx - 1])
     assert cm, f"the Empty-commit branch condition not found: {lines[idx - 1]!r}"
     return cm.group(1)
@@ -167,9 +169,9 @@ def test_the_empty_commit_branch_only_fires_on_loaded_data() -> None:
         ("real_files", '{"files": [{"path": "a"}]}', False),
     ):
         ctx = _mr()
-        ctx.eval("var commit = { data: %s };" % shape)
+        ctx.eval(f"var commit = {{ data: {shape} }};")
         ctx.eval("var files = (commit.data && commit.data.files) || [];")
-        out = json.loads(ctx.eval("JSON.stringify(%s)" % cond))
+        out = json.loads(ctx.eval(f"JSON.stringify({cond})"))
         assert out is expected, f"{name}: the Empty-commit branch reads {out}"
 
 

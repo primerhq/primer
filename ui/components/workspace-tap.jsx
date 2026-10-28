@@ -226,6 +226,10 @@ function WorkspaceTap({ wid, sessionId, fillHeight }) {
   var tap = window.useWorkspaceTap(wid);
   var liveEvents = tap.events;
   var connState = tap.connState;
+  // Sibling surfaces deep-link the session they name (sessions list, trigger fire
+  // results, files history): the row's session cell follows the same house navigate
+  // (workspaces.jsx onOpenSession), keeping the row's expand behaviour (G12-06).
+  var { navigate } = window.primerApi.useRouter();
 
   // selectedClasses: null means all; a subset array filters client-side.
   var [selectedClasses, setSelectedClasses] = React.useState(null);
@@ -239,10 +243,15 @@ function WorkspaceTap({ wid, sessionId, fillHeight }) {
   // merge it below the live tail, deduped by (session_id, seq) — same
   // history→live seam as SessionLiveStream, just workspace-wide.
   var [history, setHistory] = React.useState([]);
+  // A dead backfill must not read as "Connected. Waiting for events…": the failure is a
+  // visible state with its own retry (G12-06), not a swallowed best-effort.
+  var [historyError, setHistoryError] = React.useState(null);
+  var [historyRetry, setHistoryRetry] = React.useState(0);
   React.useEffect(function () {
-    if (!wid) { setHistory([]); return undefined; }
+    if (!wid) { setHistory([]); setHistoryError(null); return undefined; }
     var alive = true;
     setHistory([]);
+    setHistoryError(null);
     // Deliberately a recent window (ticket 01a16dfa): one page of the workspace's events backfills the live tap, not every page.
     window.primerApi.apiFetch(
       "GET",
@@ -250,11 +259,14 @@ function WorkspaceTap({ wid, sessionId, fillHeight }) {
     ).then(function (res) {
       if (!alive) return;
       setHistory((res && Array.isArray(res.items)) ? res.items : []);
-    }).catch(function () {
-      /* best-effort — the live tap still tails for in-flight runs */
+    }).catch(function (err) {
+      if (!alive) return;
+      var e = err || {};
+      setHistoryError((typeof e.detail === "string" ? e.detail
+        : (e.detail && e.detail.message)) || e.message || e.title || "the read failed");
     });
     return function () { alive = false; };
-  }, [wid]);
+  }, [wid, historyRetry]);
 
   var scrollRef = React.useRef(null);
   var stickRef = React.useRef(true);
@@ -433,7 +445,14 @@ function WorkspaceTap({ wid, sessionId, fillHeight }) {
       >
         {events.length === 0 && (
           <div className="muted text-sm" style={{ padding: "20px 18px", textAlign: "center" }}>
-            {connState === "connecting"
+            {historyError ? (
+              <div data-testid="tap-history-error">
+                Could not load event history — {historyError}. The live tap still tails for in-flight runs.
+                <button type="button" className="nv-btn-secondary" style={{ marginLeft: 8 }}
+                  data-testid="tap-history-retry"
+                  onClick={function () { setHistoryRetry(function (t) { return t + 1; }); }}>Retry</button>
+              </div>
+            ) : connState === "connecting"
               ? "Connecting to tap stream…"
               : connState === "error"
                 ? "Stream error — EventSource will auto-reconnect."
@@ -490,8 +509,13 @@ function WorkspaceTap({ wid, sessionId, fillHeight }) {
                   {sid && (
                     <span
                       className="mono muted"
-                      style={{ fontSize: 10, flexShrink: 0 }}
+                      style={{ fontSize: 10, flexShrink: 0, cursor: "pointer" }}
                       title={sid}
+                      data-testid="tap-event-session"
+                      onClick={function (e) {
+                        e.stopPropagation();
+                        navigate("/sessions/" + sid, { workspace_id: wid });
+                      }}
                     >{sidShort}</span>
                   )}
                   {ev.seq != null && (

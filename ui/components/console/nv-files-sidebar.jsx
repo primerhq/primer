@@ -222,6 +222,14 @@ function NV_FilesSidebar() {
   }
 
   var items = (tree.data && tree.data.items) || [];
+  // A FAILED tree fetch is not an empty workspace: the read error + a retry, in the
+  // file DOC's read-error tone (nv-file-docs.jsx NV_FileDoc), not "no files yet." +
+  // a New-file write into a workspace whose state just failed to read (G12-03).
+  var treeErr = (tree.error && !tree.data);
+  var treeErrWhy = treeErr ? (function (e) {
+    return (typeof e.detail === "string" ? e.detail
+      : (e.detail && e.detail.message)) || e.message || e.title || "the read failed";
+  })(tree.error) : null;
   var commitRows = SH_api.commitRows(commits.data);
   var ws = (con.workspaces || []).find(function (w) { return w.id === con.wid; });
 
@@ -304,6 +312,14 @@ function NV_FilesSidebar() {
           </React.Fragment>
         ) : (
           <React.Fragment>
+            {treeErr ? (
+              <div className="nv-rail-empty" data-testid="nv-files-tree-error">
+                <div>Could not load the file tree: {String(treeErrWhy)}</div>
+                <button type="button" className="nv-btn-secondary"
+                  data-testid="nv-files-tree-error-retry"
+                  onClick={refetch}>Retry</button>
+              </div>
+            ) : null}
             {!items.length ? (
               <div className="nv-rail-empty">
                 <div>This workspace has no files yet.</div>
