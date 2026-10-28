@@ -27,7 +27,7 @@ graph TD
     Surfaces -. "useRouter over overlay state" .-> Shim["shell-router-shim.js"]
 ```
 
-The shell adapts to narrow viewports itself rather than swapping in a separate mobile surface; `useViewport` remains the shared breakpoint primitive that both it and the re-hosted pages read.
+On the mobile band the console root swaps the desktop frame for a dedicated mobile shell: `nv-shell.jsx` mounts `NV_MobileShell` whenever `useViewport` reports the mobile band, so a phone gets its own Inbox/Spaces/Files/More tabs instead of the desktop rail and tab groups (the page-by-page detail of that surface is in [ui-pages.md](ui-pages.md), which owns it). The swap is a branch inside one bundle and one CSS file, not a second app, and `useViewport` remains the shared breakpoint primitive that both the shell and the re-hosted pages read.
 
 ## 3. Architecture patterns implemented
 

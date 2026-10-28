@@ -11,7 +11,14 @@
 // owns the reload. It takes onDone only and renders NO children: AuthGate owns
 // the branch that decides between this gate and the app, so nothing may wrap
 // the console inside SetupWizardGate. SetupWaitingScreen is what non-admins see
-// while an admin finishes setup.
+// while an admin finishes setup. SetupWaitingScreen takes onDone (the host's
+// reload) and owns the slow re-read of the auth status that its words promise:
+// the gate's own read is one-shot, so without it the screen would sit until
+// a manual reload (audit G13, finding G13-07).
+
+// How long the waiting screen waits between re-reads of the auth status while
+// setup is incomplete: slow on purpose (the admin is mid-setup, not flaky).
+const AUTH_SETUP_WAIT_MS = 15000;
 
 // urlHint is the example under Base URL (a type that takes no URL has none); needsKey marks the hosted providers, which cannot be
 // used without a key, where a self-hosted server may run without one (admin review ADM-03, ADM-05).
@@ -501,6 +508,16 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
           >
             {busy ? (<><span className="spinner" /><span>Finishing…</span></>) : <span>Finish setup</span>}
           </button>
+          {/* A wrong type or Base URL is fixable from here: the row is already saved, so step 1 re-probes
+              and SW_saveProvider's idempotent update re-saves it (a changed type saves a fresh row). */}
+          <button
+            type="button"
+            className="sh-verb"
+            data-testid="setup-change-provider"
+            onClick={() => { setStep(1); setErr(null); setFieldErr({}); }}
+          >
+            Change provider
+          </button>
         </form>
       )}
     </div>
@@ -669,7 +686,36 @@ function SetupWizardGate({ onDone }) {
   );
 }
 
-function SetupWaitingScreen({ username }) {
+function SetupWaitingScreen({ username, onDone }) {
+  // The screen's words promise it works as soon as the admin finishes: the gate's
+  // read is one-shot, so the screen owns the wait. A slow re-read of the auth
+  // status, and a hand back to the host (onDone, a reload) the moment setup is
+  // no longer incomplete. A failed read just re-arms the next ask.
+  React.useEffect(() => {
+    if (typeof onDone !== "function") return undefined;
+    let cancelled = false;
+    let timer = null;
+    const ask = () => {
+      window.primerApi.apiFetch("GET", "/auth/status", null, {}).then(
+        (status) => {
+          if (cancelled) return;
+          if (status && status.authenticated && status.setup_complete !== false) {
+            onDone();
+            return;
+          }
+          timer = setTimeout(ask, AUTH_SETUP_WAIT_MS);
+        },
+        () => {
+          if (!cancelled) timer = setTimeout(ask, AUTH_SETUP_WAIT_MS);
+        },
+      );
+    };
+    timer = setTimeout(ask, AUTH_SETUP_WAIT_MS);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [onDone]);
   return (
     <div className="auth-shell">
       <div className="auth-wrap">

@@ -101,37 +101,46 @@ def test_the_resume_shape_is_unchanged() -> None:
 # ---------------------------------------------------------------------------
 
 def test_the_waiting_viewer_re_reads_the_auth_status_on_a_slow_cadence() -> None:
-    """A successful read that says setup_complete: false was never re-read
+    """A successful read that says setup is incomplete was never re-read
     while the tab stayed open, so the waiting user sat on the screen until a
-    manual reload. The slow re-read is armed only while setup is incomplete
-    and the viewer is not the configuring admin."""
+    manual reload. The gate's own read stays one-shot (the neighbouring order
+    tests pin its source shape), so the WAITING SCREEN owns the wait: a slow
+    re-read of /auth/status, and a hand back to the host (onDone, a reload)
+    when setup is no longer incomplete."""
+    wiz = _wizard()
     gate = _auth_gate(_auth())
-    assert "AUTH_SETUP_WAIT_MS" in _auth(), "no slow waiting cadence constant"
-    assert "AUTH_SETUP_WAIT_MS" in gate, "the waiting re-read is not in AuthGate"
-    m = re.search(r"React\.useEffect\(\(\) => \{(.*?)AUTH_SETUP_WAIT_MS\);", gate, re.S)
-    assert m, "no effect arms the slow re-read"
+    assert "AUTH_SETUP_WAIT_MS" in wiz, "no slow waiting cadence constant"
+    assert "AUTH_SETUP_WAIT_MS" not in gate, "the poll must not move into the gate"
+    m = re.search(r"function SetupWaitingScreen\(\{ username, onDone \}\) \{(.*?)^\}", wiz, re.S | re.M)
+    assert m, "SetupWaitingScreen no longer takes onDone"
     body = m.group(1)
-    assert "status.setup_complete !== false" in body, "the poll is not guarded on setup_complete"
-    assert "status.role === \"admin\"" in body, "the poll does not exclude the configuring admin"
-    assert "setAttempt" in body, "the re-read does not go through the existing read"
+    assert '"/auth/status"' in body, "the waiting screen does not re-read the status"
+    assert "setTimeout(ask, AUTH_SETUP_WAIT_MS)" in body
+    assert "status.setup_complete !== false" in body, "the re-read is not guarded on setup"
+    assert "onDone()" in body, "the re-read does not hand the tab back to the host"
+    assert "window.location.reload()" in _auth(), "the host's hand-back is not a reload"
+    assert 'onDone={() => window.location.reload()}' in gate, "the gate does not pass onDone"
 
 
 def test_the_failure_retry_cadence_is_unchanged() -> None:
     """The one retry timer on a FAILED read (AUTH_RETRY_MS, the catch
-    branch) keeps its shape: the waiting re-read is a second, slower path,
-    not a replacement."""
+    branch) keeps its shape: the waiting re-read lives in the waiting
+    screen, not the gate."""
     gate = _auth_gate(_auth())
     assert "AUTH_RETRY_MS" in gate
     assert "setTimeout(() => setAttempt((n) => n + 1), AUTH_RETRY_MS)" in gate
 
 
 def test_login_register_keep_the_one_shot_shape() -> None:
-    """AuthGate still reads /auth/status once per attempt (the poll bumps
-    the attempt; it is not a second parallel fetch), and the waiting copy
-    is the promise the poll now keeps - the FALLBACK copy change is not the
-    path taken."""
+    """AuthGate still reads /auth/status once per attempt (the waiting
+    screen's re-read is its own), the gate's source shape the neighbouring
+    order tests pin is untouched, and the waiting copy is the promise the
+    poll now keeps - the FALLBACK copy change is not the path taken."""
     gate = _auth_gate(_auth())
     assert gate.count('"/auth/status"') == 1
+    assert gate.index("must_change_password") < gate.index("status.setup_complete")
+    assert gate.index("status.setup_complete") < gate.index("return children")
+    assert "setup_complete: false" not in gate
     assert "works as soon as they finish" in _wizard()
 
 

@@ -36,6 +36,7 @@ from primer.bootstrap.setup_state import (
 from primer.common.log import redact_credentials
 from primer.model.agent import Agent
 from primer.model.except_ import BadRequestError, ConfigError, NotFoundError
+from primer.model.model_profile import ModelProfile
 from primer.model.provider import LLMProvider
 from primer.model.storage import OffsetPage
 
@@ -237,40 +238,57 @@ class SetupStateResponse(BaseModel):
 
 
 async def _live_llm_provider_check(storage_provider) -> tuple[bool, str | None]:
-    """Probe the first configured LLMProvider row for a live response.
+    """Probe the provider the DEFAULT profile names for a live response.
 
     Reuses ``discover_saved_llm_models`` (the same live list-models probe
     the provider console's detail page already calls) rather than
-    duplicating per-provider-type network dispatch here. Checks only the
-    first row when several are configured - a lightweight ping, not an
-    exhaustive sweep.
+    duplicating per-provider-type network dispatch here. The default
+    profile is what the seeded agents bind to (``default_profile_id``), so
+    a multi-provider install is judged by the provider it runs under, not
+    by whichever row the storage lists first: a dead first row must not
+    hold the gate out while the deployment's default answers. With no
+    profile yet (or none naming a stored row) every row is probed, capped,
+    until one answers.
     """
     page = await storage_provider.get_storage(LLMProvider).list(
-        OffsetPage(offset=0, length=1)
+        OffsetPage(offset=0, length=100)
     )
     if not page.items:
         return False, "no LLM provider configured"
-    row = page.items[0]
-    try:
-        await discover_saved_llm_models(
-            provider_id=row.id,
-            providers=get_llm_provider_storage(storage_provider),
-        )
-    except BadRequestError as exc:
-        if "live model discovery is not supported" in str(exc):
-            # 01a06918: unreachable today -- every current LLMProviderType
-            # member has a live probe (_probe_llm_models' dispatch, see
-            # its own comment on the analogous else branch). The old
-            # reachable case was "aggregated" (a provider type with no
-            # probe of its own); it moved off LLMProvider entirely onto
-            # ModelProfile (01a067c4). Kept as a forward-looking fallback
-            # for the same reason _probe_llm_models keeps its match: a
-            # future provider type added without a live-probe path should
-            # read as "configured, no live signal either way" here rather
-            # than fail the setup gate outright.
-            return True, None
-        return False, str(exc)
-    return True, None
+    rows = list(page.items)
+    # The default profile's id is the PROFILE's id (provider--model): resolve
+    # the row for the provider it actually names.
+    named: list[LLMProvider] = []
+    default_id = await default_profile_id(storage_provider)
+    if default_id is not None:
+        profile = await storage_provider.get_storage(ModelProfile).get(default_id)
+        if profile is not None:
+            named = [row for row in rows if row.id == profile.provider_id]
+    candidates = named or rows
+    detail = None
+    for row in candidates:
+        try:
+            await discover_saved_llm_models(
+                provider_id=row.id,
+                providers=get_llm_provider_storage(storage_provider),
+            )
+        except BadRequestError as exc:
+            if "live model discovery is not supported" in str(exc):
+                # 01a06918: unreachable today -- every current LLMProviderType
+                # member has a live probe (_probe_llm_models' dispatch, see
+                # its own comment on the analogous else branch). The old
+                # reachable case was "aggregated" (a provider type with no
+                # probe of its own); it moved off LLMProvider entirely onto
+                # ModelProfile (01a067c4). Kept as a forward-looking fallback
+                # for the same reason _probe_llm_models keeps its match: a
+                # future provider type added without a live-probe path should
+                # read as "configured, no live signal either way" here rather
+                # than fail the setup gate outright.
+                return True, None
+            detail = str(exc)
+            continue
+        return True, None
+    return False, detail or "no LLM provider configured"
 
 
 async def _live_default_workspace_check(request: Request) -> tuple[bool, str | None]:

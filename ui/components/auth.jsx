@@ -164,7 +164,7 @@ function AuthGate({ children }) {
       if (status.role === "admin") {
         return <window.SetupWizardGate onDone={() => window.location.reload()} />;
       }
-      return <window.SetupWaitingScreen username={status.username} />;
+      return <window.SetupWaitingScreen username={status.username} onDone={() => window.location.reload()} />;
     }
     return children;
   }
