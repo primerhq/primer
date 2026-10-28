@@ -109,10 +109,10 @@ def test_g13_05_both_platform_section_error_divs_carry_role_alert():
     states keep role="status" (the probe asserts they did not change)."""
     m = re.search(r"<div[^>]*data-testid=\"nv-plat-error\"[^>]*>", PLATFORM)
     assert m, "the desktop nv-plat-error div is gone"
-    assert 'role="alert"' in m.group(0), "the desktop section error does not announce: %r" % m.group(0)
+    assert 'role="alert"' in m.group(0), f"the desktop section error does not announce: {m.group(0)!r}"
     m2 = re.search(r"<div[^>]*nv-mob-plat-error[^>]*>", MOBILE)
     assert m2, "the phone nv-mob-plat-error div is gone"
-    assert 'role="alert"' in m2.group(0), "the phone section error does not announce: %r" % m2.group(0)
+    assert 'role="alert"' in m2.group(0), f"the phone section error does not announce: {m2.group(0)!r}"
     # Parity and non-regression guards: the states that already announce stay as they are.
     m3 = re.search(r"<div[^>]*data-testid=\"nv-plat-loading\"[^>]*>", PLATFORM)
     assert m3 and 'role="status"' in m3.group(0), "the desktop loading line lost role=status"
