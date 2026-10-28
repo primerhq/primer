@@ -6,6 +6,19 @@
 
 var NV_PALETTE_CAP = 5;
 
+// G13-01: a source that failed the read (and has no data to serve yet)
+// is an error state, not an empty one - a loaded-empty list, a still-
+// loading resource, and a failed re-fetch over kept data are not.
+function NV_sourceError(res) {
+  return !!(res && res.error && !res.data);
+}
+
+// G13-02: the id the combobox's aria-activedescendant names - derived
+// from the row key (the data-row-key value), unique per row.
+function NV_paletteRowId(key) {
+  return "nv-palette-row-" + key;
+}
+
 function NV_matchRows(items, q, label) {
   var out = [];
   var needle = q.toLowerCase();
@@ -424,6 +437,34 @@ function NV_Palette() {
   });
   var selIdx = flat.length ? Math.min(sel, flat.length - 1) : 0;
 
+  // G13-01: the failed sources, named for the group they feed. recents'
+  // 404 special case (endpoint not deployed) resolves null, never an
+  // error, so it stays a silent empty group on purpose.
+  var PALETTE_SOURCES = [
+    { source: "sessions", group: "Sessions", res: sessions },
+    { source: "recents", group: "Sessions", res: recents },
+    { source: "agents", group: "Platform", res: agents },
+    { source: "graphs", group: "Platform", res: graphs },
+    { source: "triggers", group: "Platform", res: triggers },
+    { source: "toolsets", group: "Platform", res: toolsets },
+    { source: "files", group: "Files", res: files },
+    { source: "wiki", group: "Wiki", res: wikiDocs },
+  ];
+  var errorRows = [];
+  PALETTE_SOURCES.forEach(function (s) {
+    if (NV_sourceError(s.res)) {
+      var e = s.res.error;
+      errorRows.push({
+        source: s.source,
+        group: s.group,
+        why: (typeof e.detail === "string" ? e.detail
+          : (e.detail && e.detail.message)) || e.message || e.title || "the read failed",
+        refetch: s.res.refetch,
+      });
+    }
+  });
+  var anySourceError = errorRows.length > 0;
+
   function onInputKey(ev) {
     if (ev.key === "ArrowDown") {
       ev.preventDefault();
@@ -457,15 +498,36 @@ function NV_Palette() {
           </svg>
           <input className="nv-palette-input" data-testid="nv-palette-input"
             autoFocus value={q}
+            role="combobox"
+            aria-activedescendant={flat.length ? NV_paletteRowId(flat[selIdx].key) : null}
             placeholder="Type a verb, a session, a file, an entity…"
             onChange={function (ev) { setQ(ev.target.value); setSel(0); }}
             onKeyDown={onInputKey} />
           <kbd className="nv-kbd">esc</kbd>
         </div>
         <div className="nv-palette-body">
-          {!flat.length ? (
+          {errorRows.length ? (
+            <div className="nv-palette-errors">
+              {errorRows.map(function (e) {
+                return (
+                  <div key={e.source} className="nv-rail-empty nv-palette-source-error"
+                    data-testid={"nv-palette-source-error:" + e.source}>
+                    <div>Could not load {e.group} ({e.source}): {e.why}</div>
+                    <button type="button" className="nv-btn-secondary"
+                      data-testid={"nv-palette-retry:" + e.source}
+                      onClick={e.refetch}>Retry</button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+          {!flat.length && !anySourceError ? (
             <div className="nv-palette-empty">
               Nothing matches {JSON.stringify(q)}.
+            </div>
+          ) : !flat.length ? (
+            <div className="nv-palette-empty" data-testid="nv-palette-load-failed">
+              Some sources failed to load, so results may be incomplete.
             </div>
           ) : null}
           {groups.map(function (g) {
@@ -491,6 +553,9 @@ function NV_Palette() {
                     <button type="button" key={r.key}
                       className="nv-palette-row"
                       data-testid="nv-palette-row"
+                      id={NV_paletteRowId(r.key)}
+                      role="option"
+                      aria-selected={idx === selIdx ? "true" : "false"}
                       data-row-key={r.key}
                       data-active={idx === selIdx ? "true" : "false"}
                       onClick={r.run}>
