@@ -538,6 +538,22 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "children": [],
                 })
             continue
+        elif kind == _ERROR:
+            # A turn that fails before writing any call record still names
+            # its failure here: the error record terminates the window, and
+            # the trace is where an operator goes to diagnose it (audit
+            # G12-01). Placement follows the house rules: a delegated error
+            # nests under the delegating call, a node-attributed one under
+            # its node, else it is a root child where it lands last (it IS
+            # the turn's end).
+            entry = {
+                "kind": "error",
+                "seq": rec.get("seq"),
+                "ts": rec.get("created_at"),
+                "code": payload.get("code"),
+                "message": payload.get("message"),
+                "children": [],
+            }
         else:
             continue
         _attach(entry, rec, payload, roots, nodes, calls_by_raw_id, calls_by_run)

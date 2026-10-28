@@ -185,7 +185,7 @@ def test_the_trace_split_shows_a_loading_line_before_first_data() -> None:
 def test_the_chip_carries_a_dropped_state() -> None:
     chips = SRC[SRC.index('data-testid="nv-attach-chips"') :]
     chips = chips[: chips.index("nv-composer-row")]
-    m = re.search(r'a\.status === "dropped" \? \((<span[\s\S]*?)\) : null', chips)
+    m = re.search(r'a\.status === "dropped" \? \(\s*(<span[\s\S]*?)\) : null', chips)
     assert m, "the committed chip has no dropped state (G12-09)"
     assert "nv-attach-chip-dropped" in m.group(1)
     assert "not sent to the model" in m.group(1)

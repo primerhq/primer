@@ -2083,9 +2083,28 @@ async def rewind_session(
     }
 
 
+class SteerSessionOut(WorkspaceSession):
+    """Response-only shape of ``POST /v1/workspaces/{id}/sessions/{sid}/steer``: the session row plus the vision attachments the server dropped.
+
+    Never persisted. The drop is a persistent condition (no artifact
+    storage registry on this install, the file over the media cap, or the
+    bytes unreadable), so the send still succeeds and the row is intact -
+    the named files just are not in the model's multimodal input, and the
+    composer's chip must say so (audit G12-09).
+    """
+
+    dropped_attachments: list[dict[str, str]] | None = Field(
+        default=None,
+        description=(
+            "Attachments the server could not resolve to artifact-backed parts, each as {\"path\", \"reason\"}; "
+            "None when nothing was dropped."
+        ),
+    )
+
+
 @sessions_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/steer",
-    response_model=WorkspaceSession,
+    response_model=SteerSessionOut,
     summary="Send a message - invoke / steer / resume (auto-wake)",
     responses=common_responses(403, 404, 409, 422, 500),
 )
@@ -2100,7 +2119,7 @@ async def steer_session(
     storage_provider=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
     artifact_registry=Depends(get_optional_artifact_storage_registry),
-) -> WorkspaceSession:
+) -> SteerSessionOut:
     """Send a user message to a session and auto-wake it.
 
     One input, four behaviours (studio-agents-interact §5.1): a message to
@@ -2275,6 +2294,7 @@ async def steer_session(
         # attachment with a log rather than failing the whole steer.
         extra_parts = None
         extra_payload = None
+        dropped: list[dict[str, str]] = []
         if body.attachments:
             from primer.channel.media import media_from_workspace_files
 
@@ -2285,12 +2305,20 @@ async def steer_session(
                     "attachment(s) for session %r",
                     len(body.attachments), session_id,
                 )
+                # G12-09: a persistent condition must not wedge every send
+                # with a vision chip - report it: name the files the model
+                # will not see.
+                dropped.extend(
+                    {"path": a.path, "reason": "no artifact storage registry configured"}
+                    for a in body.attachments
+                )
             else:
                 workspace = await registry.get_workspace(workspace_id)
                 artifact_store = await artifact_registry.get_default()
                 extra_parts = await media_from_workspace_files(
                     workspace, artifact_store,
                     [a.path for a in body.attachments],
+                    dropped=dropped,
                 )
                 if extra_parts:
                     extra_payload = {
@@ -2311,7 +2339,7 @@ async def steer_session(
             and not body.attachments
             else None
         )
-        return await wake_session(
+        row = await wake_session(
             workspace_id=workspace_id,
             session_id=session_id,
             instruction=body.instruction,
@@ -2324,6 +2352,13 @@ async def steer_session(
             extra_payload=extra_payload,
             receipt=routing_receipt,
             deps=deps,
+        )
+        # G12-09: the response names the dropped attachments (response-only,
+        # like MainSessionOut.created): the send succeeded, the row is
+        # intact, the named files just are not in the model's multimodal
+        # input.
+        return SteerSessionOut.model_validate(
+            {**row.model_dump(), "dropped_attachments": dropped or None}
         )
 
     # 4. Pure-results body: the park is resumable; no new turn to trigger.

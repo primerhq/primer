@@ -123,15 +123,19 @@ def test_send_is_blocked_while_any_upload_is_still_in_flight():
 def test_attachments_clear_only_on_successful_send():
     """Mirrors the existing draft-restore-on-failure behaviour (P0): a
     failed send must leave attachments in place for retry, not silently
-    drop them - setAttachments([]) may appear only in the success
-    branch, never in the failure handler."""
+    drop them - the success branch is the only one that clears chips.
+    G12-09 refines it: the chips the steer response names as dropped
+    (dropped_attachments) are NOT cleared - they stay in their dropped
+    state - while every delivered one clears as before."""
     composer = _composer()
     send_fn = composer[composer.index("function send() {"):]
     send_fn = send_fn[:send_fn.index("\n  function micStart")]
     success_branch = send_fn[:send_fn.index("}, function (err) {")]
     failure_branch = send_fn[send_fn.index("}, function (err) {"):]
-    assert "setAttachments([])" in success_branch
-    assert "setAttachments([])" not in failure_branch
+    assert "setAttachments(" in success_branch
+    assert "res.dropped_attachments" in success_branch
+    assert 'status: "dropped"' in success_branch
+    assert "setAttachments(" not in failure_branch
 
 
 def _send_fold_context():

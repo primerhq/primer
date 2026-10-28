@@ -1765,6 +1765,11 @@ function NV_traceAgentName(node, sessionAgentName, isGraph) {
 function NV_traceRowLabel(node, agentName, isGraph) {
   if (node.kind === "tool_call") return node.name || "tool";
   if (node.kind === "llm_call") return NV_traceAgentName(node, agentName, isGraph);
+  if (node.kind === "error") {
+    // G12-01: the failure the operator came to read - the record's code and message.
+    if (node.code && node.message) return node.code + ": " + node.message;
+    return node.message || node.code || "error";
+  }
   return node.label || node.kind || "";
 }
 // A count the way a trace row reads it: exact below a thousand, then 1.2k / 12k / 999k, then 1.2M.
@@ -1786,6 +1791,7 @@ function NV_traceTokens(node) {
 function NV_traceGlyph(node) {
   if (node.kind === "tool_call") return { char: "T", kind: "tool", title: "Tool call" };
   if (node.kind === "llm_call") return { char: "A", kind: "agent", title: "Model call" };
+  if (node.kind === "error") return { char: "E", kind: "error", title: "Turn failed" };
   return null;
 }
 // ONE badge for both trace surfaces (the sidebar's one-liner and the overlay's expandable row), so they cannot disagree about what it says.
@@ -1793,6 +1799,7 @@ function NV_TraceGlyph(props) {
   var glyph = props.glyph;
   return (
     <span className="nv-trace-glyph" data-kind={glyph.kind} role="img"
+      style={props.tone === "error" ? { color: "var(--red)", borderColor: "var(--red)" } : undefined}
       title={glyph.title} aria-label={glyph.title}>{glyph.char}</span>
   );
 }
@@ -1803,16 +1810,23 @@ function NV_TraceGlyph(props) {
 function NV_TraceLine(props) {
   var n = props.node;
   var glyph = NV_traceGlyph(n);
+  // G12-01: a failed call (status "error") and the turn's error node read
+  // in the error card's tone in the collapsed one-liner, not only inside
+  // the expanded result block.
+  var errTone = n.kind === "error" || n.status === "error";
   return (
-    <div className="nv-trace-row" style={{ paddingLeft: props.depth * 12 }}>
+    <div className="nv-trace-row" style={{ paddingLeft: props.depth * 12 }}
+      data-tone={errTone ? "error" : undefined}>
       <div className="nv-trace-line" data-testid={"nv-trace-line:" + props.index}>
         {glyph ? (
-          <NV_TraceGlyph glyph={glyph} />
+          <NV_TraceGlyph glyph={glyph} tone={errTone ? "error" : undefined} />
         ) : (
-          <span className="nv-trace-icon">{n.kind === "node" ? "◆" : "·"}</span>
+          <span className="nv-trace-icon"
+            style={errTone ? { color: "var(--red)" } : undefined}>{n.kind === "node" ? "◆" : "·"}</span>
         )}
         <span className="nv-trace-ts">{SH_shortTime(n.ts)}</span>
-        <span className="nv-trace-label">
+        <span className="nv-trace-label"
+          style={errTone ? { color: "var(--red)" } : undefined}>
           {NV_traceRowLabel(n, props.agentName, props.isGraph)}
         </span>
         <span style={{ flex: 1 }} />
@@ -1834,6 +1848,50 @@ function NV_TraceSplit(props) {
     { pollMs: 0, deps: [props.sid, props.turnNo] }
   );
   var rows = (timeline.data && timeline.data.children) || [];
+  // G12-07: a failed timeline fetch (404 session/workspace gone or no such
+  // turn; 503 read failure) and a still-loading one used to render like a
+  // call-free turn - the split body now names the state. The "No entries
+  // in this turn." line stays in the maximize overlay: that is the LOADED
+  // zero-row case, which the body's footer already points to.
+  if (timeline.error && !timeline.data) {
+    var e = timeline.error;
+    var why = (typeof e.detail === "string" ? e.detail
+      : (e.detail && e.detail.message)) || e.message || e.title
+      || "the timeline read failed";
+    return (
+      <div className="nv-trace-split" data-testid="nv-trace-split">
+        <div className="nv-trace-head">
+          <span>{SH_traceHeaderLabel(props.turnNo, [])}</span>
+          <span style={{ flex: 1 }} />
+          <button type="button" className="nv-rail-iconbtn" title="Close"
+            data-testid="nv-trace-close"
+            onClick={props.onClose}>×</button>
+        </div>
+        <div className="nv-trace-body" data-testid="nv-trace-error">
+          <span style={{ color: "var(--red)" }}>Couldn't load the trace: {String(why)}</span>
+          <button type="button" className="nv-rail-iconbtn" title="Retry the timeline read"
+            data-testid="nv-trace-retry"
+            onClick={function () { timeline.refetch(); }}>Retry</button>
+        </div>
+      </div>
+    );
+  }
+  if (timeline.loading && !timeline.data) {
+    return (
+      <div className="nv-trace-split" data-testid="nv-trace-split">
+        <div className="nv-trace-head">
+          <span>{SH_traceHeaderLabel(props.turnNo, [])}</span>
+          <span style={{ flex: 1 }} />
+          <button type="button" className="nv-rail-iconbtn" title="Close"
+            data-testid="nv-trace-close"
+            onClick={props.onClose}>×</button>
+        </div>
+        <div className="nv-trace-body" data-testid="nv-trace-loading">
+          <span>Loading trace</span>
+        </div>
+      </div>
+    );
+  }
   function flat(children, depth, out) {
     (children || []).forEach(function (c) {
       out.push({ node: c, depth: depth });
@@ -2234,7 +2292,7 @@ function NV_Composer(props) {
     var promise = typeof props.onSend === "function"
       ? props.onSend(fullText, clientId, steerAttachments)
       : SH_api.steer(con.wid, props.sid, fullText, steerAttachments);
-    promise.then(function () {
+    promise.then(function (res) {
       setVal("");
       // Clear only on success - a failed send restores the typed text
       // (P0 behaviour, untouched below) and the draft must restore with
@@ -2242,7 +2300,22 @@ function NV_Composer(props) {
       // same restore-on-failure now applies to attachments for free -
       // they are only cleared in this success branch.
       delete NV_DRAFTS[props.sid];
-      setAttachments([]);
+      // G12-09: the response names the vision attachments the server could
+      // not resolve to artifact-backed parts (no artifact store, over the
+      // media cap, unreadable) - the send succeeded and the model got the
+      // text, but those files are not in its multimodal input. Keep those
+      // chips in a dropped state instead of clearing them like a delivered
+      // one; a dropped chip is not "done", so the next send does not
+      // re-send it into the same persistent condition.
+      var droppedPaths = {};
+      ((res && res.dropped_attachments) || []).forEach(function (d) {
+        droppedPaths[d.path] = d.reason || "";
+      });
+      setAttachments(readyAttachments.filter(function (a) {
+        return Object.prototype.hasOwnProperty.call(droppedPaths, a.path);
+      }).map(function (a) {
+        return Object.assign({}, a, { status: "dropped", reason: droppedPaths[a.path] });
+      }));
       setSending(false);
       grow();
       props.onSendStarted();
@@ -2407,6 +2480,13 @@ function NV_Composer(props) {
                   ) : null}
                   {a.status === "error" ? (
                     <span className="nv-attach-chip-status">failed</span>
+                  ) : null}
+                  {a.status === "dropped" ? (
+                    <span className="nv-attach-chip-status"
+                      title={"dropped (not sent to the model)" + (a.reason ? ": " + a.reason : "")}
+                      data-testid={"nv-attach-chip-dropped:" + a.id}>
+                      dropped
+                    </span>
                   ) : null}
                   <button type="button" className="nv-attach-chip-remove"
                     title="Remove attachment"

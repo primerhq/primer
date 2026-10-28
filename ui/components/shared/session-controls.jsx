@@ -324,3 +324,10 @@ function SessionSpeakerToggle({ agentId, messages, turnInFlight }) {
 
 
 window.SessionSpeakerToggle = SessionSpeakerToggle;
+
+// G12-05: the doc's voice auto-play (nv-session-doc.jsx guards on
+// `typeof window.CT_speakTurn === "function"` and stores the returned
+// element in a ref whose .pause() the off-toggle calls) was a dead seam:
+// no bundle file defined CT_speakTurn, so the guard never passed. The
+// alias makes the guard + call run the real player.
+window.CT_speakTurn = SC_speakTurn;

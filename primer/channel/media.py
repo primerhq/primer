@@ -210,11 +210,15 @@ async def media_from_workspace_files(
     paths: list[str],
     *,
     config: MediaConfig | None = None,
+    dropped: list[dict[str, str]] | None = None,
 ) -> list[Part]:
     """Read each workspace-relative path, store it, and return an
     artifact-backed media Part. ``workspace`` is any object with
     ``async read_file(path) -> bytes``. MIME is guessed from the extension.
-    Missing/oversized/disallowed files are skipped (best-effort)."""
+    Missing/oversized/disallowed files are skipped (best-effort). When
+    ``dropped`` is given, each skipped path is appended to it as
+    ``{"path", "reason"}`` so the caller can report what the model will not
+    see instead of a log line only (audit G12-09)."""
     import mimetypes
     import os
 
@@ -224,6 +228,8 @@ async def media_from_workspace_files(
             data = await workspace.read_file(path)
         except Exception:
             logger.warning("media_from_workspace_files: read failed for %r", path)
+            if dropped is not None:
+                dropped.append({"path": path, "reason": "unreadable"})
             continue
         if isinstance(data, str):
             data = data.encode("utf-8")
@@ -235,9 +241,13 @@ async def media_from_workspace_files(
                 filename=filename, config=config)
         except MediaError:
             logger.warning("media_from_workspace_files: %r rejected (size/type)", path)
+            if dropped is not None:
+                dropped.append({"path": path, "reason": "rejected (size or type)"})
             continue
         except Exception:
             logger.warning("media_from_workspace_files: store failed for %r", path)
+            if dropped is not None:
+                dropped.append({"path": path, "reason": "store failed"})
             continue
         out.append(part)
     return out
