@@ -12,6 +12,7 @@ test_external_tools_steer.py established.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import UTC, datetime
 
@@ -21,6 +22,7 @@ from httpx import ASGITransport
 
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
+from primer.channel.media import MediaError, media_from_workspace_files
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import DocumentPart, ImagePart
 from primer.model.workspace_session import (
@@ -269,3 +271,69 @@ async def test_missing_attachment_file_is_dropped_not_failed(client, wsr, sp):
     slot = await ws.get_session("sess-1")
     assert slot.appended == ["go"]
     assert not slot.appended_extra_parts
+
+
+# G12-09: a dropped attachment is REPORTED, not just logged ----------------------
+
+
+def test_an_unreadable_attachment_is_named_in_the_helper_report() -> None:
+    """The skip stays best-effort (no raise; the return value keeps its
+    parts-only shape), but the caller can name what was skipped and why."""
+
+    class _WS:
+        async def read_file(self, path):
+            raise FileNotFoundError(path)
+
+    class _Store:
+        async def put(self, *a, **k):
+            raise AssertionError("unreadable file must not reach the store")
+
+    report: list = []
+    out = asyncio.run(
+        media_from_workspace_files(
+            _WS(), _Store(), ["uploads/tok-image.png"], dropped=report
+        )
+    )
+    assert out == [], out
+    assert [d["path"] for d in report] == ["uploads/tok-image.png"], report
+    assert report[0]["reason"], report
+
+
+def test_a_rejected_attachment_is_named_with_its_reason() -> None:
+    class _WSOk:
+        async def read_file(self, path):
+            return b"x" * 200
+
+    class _StoreReject:
+        async def put(self, *a, **k):
+            raise MediaError("oversized")
+
+    report: list = []
+    out = asyncio.run(
+        media_from_workspace_files(
+            _WSOk(), _StoreReject(), ["uploads/big.png"], dropped=report
+        )
+    )
+    assert out == [], out
+    assert len(report) == 1 and report[0]["path"] == "uploads/big.png", report
+    assert report[0]["reason"], report
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_attachment_is_named_in_the_steer_response(client, wsr, sp) -> None:
+    """The steer still answers 200 with the session row (the drop is a
+    persistent condition - over the media cap here - and must not wedge
+    every send), but the response names the file the model will not see."""
+    wid = await _setup_ws(client, wsr)
+    await _seed_agent(sp)
+    await _seed_session(sp, wid)
+
+    r = await client.post(
+        f"/v1/workspaces/{wid}/sessions/sess-1/steer",
+        json={"instruction": "go", "attachments": [{"path": "uploads/nope.png"}]},
+    )
+    assert r.status_code == 200, r.text
+    dropped = r.json().get("dropped_attachments")
+    assert dropped, "the steer response names the dropped attachment"
+    assert dropped[0]["path"] == "uploads/nope.png", dropped
+    assert dropped[0]["reason"], dropped
