@@ -150,6 +150,23 @@ function CR_replyLabel(rt) {
   return "default";
 }
 
+// G11-08: the "chats on but nothing will ever route" state: a chats-enabled
+// channel with no channel trigger/rule. A chats-disabled channel is
+// deliberately quiet and is NOT flagged. Pure, so the probe can run it over a
+// synthetic (channels, triggers) pair.
+function CR_noRuleRooms(channelsItems, trigsItems) {
+  const withRule = {};
+  (trigsItems || []).forEach((t) => {
+    if (t && t.config && t.config.kind === "channel" && t.config.channel_id) {
+      withRule[t.config.channel_id] = true;
+    }
+  });
+  return (channelsItems || []).filter((c) => {
+    const chats = c && c.config && c.config.chats;
+    return !!(chats && chats.enabled) && !withRule[c.id];
+  });
+}
+
 // Flat, uniform rules table: one row per binding (Subscription) across every
 // channel trigger, matching the shared `.tbl` layout used by Chats/Providers.
 // Columns: Provider / Channel / Event / Match / Action / Reply / (delete). A
@@ -169,6 +186,9 @@ function ChannelRulesPage({ pushToast }) {
   const [q, setQ] = React.useState("");
   const [provFilter, setProvFilter] = React.useState("");
   const [showNew, setShowNew] = React.useState(false);
+  // G11-08: the channel a flagged row's "Add rule" opened the dialog for, so
+  // the dialog starts on that channel's provider.
+  const [ruleFor, setRuleFor] = React.useState(null);
 
   if (providers.error && !providers.data) {
     return <Banner kind="error" title={providers.error.title || "Couldn't load channel providers"} detail={providers.error.detail || providers.error.message} actions={<Btn size="sm" icon="refresh" onClick={providers.refetch}>Retry</Btn>} />;
@@ -185,6 +205,9 @@ function ChannelRulesPage({ pushToast }) {
     roomStartsSessions[c.id] = !!(chats && chats.enabled);
   });
   const roomStartsSessionsById = (roomId) => (roomId ? roomStartsSessions[roomId] !== false : true);
+  // G11-08: chats-enabled channels with no channel trigger name themselves on
+  // this page instead of failing silently on the first inbound message.
+  const noRuleRooms = CR_noRuleRooms((channels.data && channels.data.items) || [], trigs);
   // empty state
   if (provs.length === 0) {
     return <Banner kind="info" title="No channel providers yet" detail="Register a Slack, Telegram, or Discord provider under Channels first, then add rules here." />;
@@ -223,6 +246,21 @@ function ChannelRulesPage({ pushToast }) {
       </div>
       <PR_PagedNote list={providers.data} noun="channel providers" testid="cr-providers-note" />
 
+      {noRuleRooms.length > 0 && (
+        <div className="col" style={{ gap: 6, border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+          <div className="text-sm" style={{ fontWeight: 500 }}>Chats enabled, no rule yet</div>
+          <div className="text-sm muted">These rooms start sessions from inbound messages but have no rule, so nothing routes until a rule is added.</div>
+          {noRuleRooms.map((c) => (
+            <div className="row" key={c.id} style={{ gap: 8, alignItems: "center" }}>
+              <span className="mono text-sm">{c.id}</span>
+              <span className="mono text-sm muted">{c.provider_id}</span>
+              <span className="text-sm muted">no rule yet</span>
+              <Btn size="sm" kind="ghost" onClick={() => { setRuleFor(c); setShowNew(true); }}>Add rule</Btn>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="tbl-wrap">
         <table className="tbl" data-testid="channel-rules-table">
           <thead>
@@ -251,8 +289,8 @@ function ChannelRulesPage({ pushToast }) {
           providers={provs}
           allTriggers={trigs}
           roomStartsSessionsById={roomStartsSessionsById}
-          initialProviderId={provFilter || (provs[0] && provs[0].id)}
-          onClose={() => setShowNew(false)}
+          initialProviderId={ruleFor ? ruleFor.provider_id : (provFilter || (provs[0] && provs[0].id))}
+          onClose={() => { setShowNew(false); setRuleFor(null); }}
           onChanged={() => { triggers.refetch(); }}
           pushToast={pushToast}
         />

@@ -668,12 +668,18 @@ function ChannelProviderDetail({ providerId, pushToast, onBack = null, onDeleted
 // ============== Channels list ==============
 
 function ChannelsPage({ onNavigate, pushToast }) {
-  const { apiFetch, useResource, useMutation, useViewport, usePagedList, Pager } = window.primerApi;
+  const { apiFetch, useResource, useMutation, useViewport, usePagedList, Pager, useRouter } = window.primerApi;
   const { isMobile } = useViewport();
+  const { navigate } = useRouter();
   const [showNew, setShowNew] = React.useState(false);
   const [editing, setEditing] = React.useState(null);
   const [filter, setFilter] = React.useState("");
   const [providerFilter, setProviderFilter] = React.useState("");
+  // G11-08: the channel created in this view: its screen names the missing-rule
+  // next step (the zero-to-working-channel path is four steps across three pages
+  // and nothing said steps 3-4 are missing until the first inbound message did
+  // not route).
+  const [justCreated, setJustCreated] = React.useState(null);
 
   // Providers back the dropdown + row badges, so they are a full fetch: every
   // page (PR_fetchAllPages). Only the channels table is offset-paginated (bug #19);
@@ -708,22 +714,31 @@ function ChannelsPage({ onNavigate, pushToast }) {
     {
       invalidates: [CH_LIST_CHANNELS],
       onSuccess: () => {
+        setJustCreated(null);
         if (pushToast) pushToast({ kind: "warning", title: "Channel deleted" });
       },
       onError: (err) => {
-        if (err?.status === 409) {
-          if (pushToast) pushToast({
-            kind: "error",
-            title: "409 Conflict",
-            detail: err.detail || "Cannot delete — workspace associations still reference this channel.",
-            requestId: err.requestId,
-          });
-        } else {
-          CH_toastErr(pushToast, "Delete failed")(err);
-        }
+        // No 409 special case: the channel router carries no reference check
+        // (only the ChannelProvider router has the cascade-block one), so the
+        // route never answers a workspace-associations 409 (audit G11-07).
+        CH_toastErr(pushToast, "Delete failed")(err);
       },
     },
   );
+
+  // G11-07: the row's trash used to delete in one click while the provider
+  // delete two navigation levels away got a confirm; mirror that gate.
+  const removeChannel = async (c) => {
+    if (typeof window.confirmDialog !== "function") return;
+    const ok = await window.confirmDialog({
+      title: `Delete ${c.id}?`,
+      message: `This deletes the ${c.id} channel binding; inbound messages from that conversation stop routing.`,
+      confirmLabel: "Delete channel",
+      danger: true,
+    });
+    if (!ok) return;
+    del.mutate(c.id);
+  };
 
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -750,6 +765,15 @@ function ChannelsPage({ onNavigate, pushToast }) {
         </div>
       </div>
       <PR_PagedNote list={providers.data} noun="channel providers" testid="ch-providers-note" />
+
+      {justCreated && (
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <span className="text-sm">
+            Next: add a rule for <span className="mono">{justCreated.id}</span> on the Channel-rules page; inbound messages from it will not route until then.
+          </span>
+          <Btn size="sm" kind="ghost" onClick={() => { setJustCreated(null); navigate("/channels?tab=rules"); }}>Add rule</Btn>
+        </div>
+      )}
 
       {channels.error && !channels.data && (
         <Banner
@@ -827,7 +851,7 @@ function ChannelsPage({ onNavigate, pushToast }) {
                     <button
                       className="row-action"
                       title="Delete channel"
-                      onClick={(e) => { e.stopPropagation(); del.mutate(c.id); }}
+                      onClick={(e) => { e.stopPropagation(); removeChannel(c); }}
                       disabled={del.loading}
                       style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", padding: "2px 6px" }}
                     >
@@ -853,9 +877,10 @@ function ChannelsPage({ onNavigate, pushToast }) {
           providers={providerItems}
           providersList={providers.data}
           onClose={() => setShowNew(false)}
-          onCreated={() => {
+          onCreated={(row) => {
             setShowNew(false);
-            if (pushToast) pushToast({ kind: "success", title: "Channel created" });
+            if (row) setJustCreated(row);
+            if (pushToast) pushToast({ kind: "success", title: "Channel created", detail: row ? row.id : undefined });
           }}
           pushToast={pushToast}
         />
@@ -942,7 +967,7 @@ function NewChannelModal({ providers, providersList, onClose, onCreated, pushToa
       : apiFetch("POST", "/channels", body),
     {
       invalidates: [CH_LIST_CHANNELS],
-      onSuccess: () => onCreated(),
+      onSuccess: (row) => onCreated(row),
       onError: (err) => {
         if (err.status === 422 && Array.isArray(err.fieldErrors)) {
           const map = {};

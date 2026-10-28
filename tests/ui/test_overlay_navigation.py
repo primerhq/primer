@@ -747,6 +747,7 @@ def test_a_deleted_service_toasts_before_the_page_leaves():
 NOT_YET_REDIRECTED = {
     "providers": "the Providers catalogue is Plan 02's surface (the Register overlay); its row is added there",
     "channels/providers": "a channel provider's detail inside the Providers catalogue: Plan 02",
+    "channels": "the just-created channel's next-step cross-link (G11-08) navigates /channels?tab=rules: a tab request (tabs take the section slot), so the shim opens the rules section in place instead of a bare list; the scan's literal form is the bare path",
 }
 
 _NAVIGATE_LITERAL = re.compile(r"""navigate\(\s*["'`]/([a-z][a-z-]*(?:/[a-z][a-z-]*)?)["'`]\s*[,)]""")

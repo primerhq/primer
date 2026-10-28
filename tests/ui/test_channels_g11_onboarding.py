@@ -90,9 +90,10 @@ def test_the_just_created_channel_names_the_rule_step() -> None:
     assert "Next: add a rule" in SRC, (
         "the just-created channel's screen must name the missing-rule next step"
     )
-    assert 'navigate("/channels/rules")' in SRC, (
+    assert 'navigate("/channels?tab=rules")' in SRC, (
         "the next-step affordance must carry the house navigation to the "
-        "Channel-rules page (the router shim path /channels/rules)"
+        "Channel-rules page (the router shim's tab grammar opens the "
+        "channels overlay's rules section in place)"
     )
     # The created row must reach the page so the screen can name THAT channel.
     modal = SRC[SRC.index("function NewChannelModal("):]
@@ -141,7 +142,7 @@ def _flagged_room_ids() -> list:
 
 
 def test_the_token_line_is_qualified_to_owner_reads() -> None:
-    lines = [l for l in DOC.splitlines() if "WebhookTriggerConfig" in l and "token" in l]
+    lines = [l for l in DOC.splitlines() if l.startswith("- `WebhookTriggerConfig`") and "token" in l]
     assert lines, "the WebhookTriggerConfig token line is gone"
     line = lines[0]
     assert "never returned after initial creation response" not in line, (
