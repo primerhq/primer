@@ -210,7 +210,7 @@ def _run_shell_effect(ctx) -> None:
     effect = SHELL[body:SHELL.index("}, [registry]);", body)]
     ctx.eval(
         "var registry = SH_createVerbRegistry(); var WARNS = []; console.warn = function (m) { WARNS.push(String(m)); };"
-        "(function (registry, goView) {" + effect + "\n})(registry, function () {});"
+        "(function (registry, goView, isMobile) {" + effect + "\n})(registry, function () {}, false);"
     )
 
 

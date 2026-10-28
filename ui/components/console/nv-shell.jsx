@@ -715,15 +715,23 @@ function NV_Shell() {
       surfaces: ["topbar", "palette"],
       run: function () { paletteRef.current.open(); },
     });
-    reg({
-      id: "terminal.toggle", label: "Toggle Terminal", chord: "Ctrl+j",
-      surfaces: ["topbar", "palette"],
-      run: function () {
-        setPanels(function (p) {
-          return { terminal: !p.terminal };
-        });
-      },
-    });
+    // G13-04: the terminal verb registers for the desktop band only. The panel it flips
+    // (con.panels.terminal) is rendered by the desktop studio frame alone, so on a phone
+    // it would be a no-op advertised in the palette and bound by its chord; absent from
+    // the registry it is absent from BOTH the palette list and the chord dispatcher
+    // (both walk the registry). Desktop is unchanged; the band is the mount-time one, like
+    // every other registration in this once-run effect.
+    if (!isMobile) {
+      reg({
+        id: "terminal.toggle", label: "Toggle Terminal", chord: "Ctrl+j",
+        surfaces: ["topbar", "palette"],
+        run: function () {
+          setPanels(function (p) {
+            return { terminal: !p.terminal };
+          });
+        },
+      });
+    }
     // Pivot P2 Task 15: an admin's reset of prime's agents.md to the shipped version (NV_resetPrimeInstructions, nv-system.jsx: it asks first). Its
     // pointer affordance is the row of the Dashboard Setup card's menu, which carries this id as its data-verb and is drawn for an admin only; the
     // palette offers it to an admin only too (available reads the role the palette ranks with, nv-palette.jsx), since the route answers 403 to anyone else.

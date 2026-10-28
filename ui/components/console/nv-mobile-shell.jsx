@@ -1530,7 +1530,7 @@ function NV_MobilePlatform(props) {
         ) : null}
         {res.error ? (
           <div className="card-list-empty"
-            data-testid={"nv-mob-plat-error:" + nav}>
+            role="alert" data-testid={"nv-mob-plat-error:" + nav}>
             {res.error.detail || res.error.message}
           </div>
         ) : null}

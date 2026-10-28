@@ -1465,7 +1465,7 @@ function NV_PlatListPage(props) {
           <div className="nv-plat-state" role="status" data-testid="nv-plat-loading">Loading…</div>
         ) : null}
         {res.error ? (
-          <div className="nv-form-error" data-testid="nv-plat-error">
+          <div className="nv-form-error" role="alert" data-testid="nv-plat-error">
             {res.error.detail || res.error.message}
           </div>
         ) : null}

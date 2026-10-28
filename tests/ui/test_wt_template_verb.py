@@ -91,7 +91,7 @@ def _shell(page_loaded: bool = True):
     effect = SHELL[body:SHELL.index("}, [registry]);", body)]
     ctx.eval(
         "var registry = SH_createVerbRegistry(); var VIEWS = []; var REQUESTS = 0; window.WT_requestCreate = function () { REQUESTS += 1; };"
-        "(function (registry, goView) {" + effect + "\n})(registry, function (n, v, s) { VIEWS.push([n, v || null, s || null]); });"
+        "(function (registry, goView, isMobile) {" + effect + "\n})(registry, function (n, v, s) { VIEWS.push([n, v || null, s || null]); }, false);"
     )
     return ctx
 

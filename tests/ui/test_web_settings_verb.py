@@ -43,7 +43,7 @@ def _run_effect(ctx) -> None:
     """The shell's core-verb effect as ``nv-shell.jsx`` writes it, against the real registry; ``goView`` records its arguments into ``VIEWS``."""
     ctx.eval(
         "var registry = SH_createVerbRegistry(); var VIEWS = []; var WARNS = []; console.warn = function (m) { WARNS.push(String(m)); };"
-        "(function (registry, goView) {" + _effect_source() + "\n})(registry, function () { VIEWS.push([].slice.call(arguments)); });"
+        "(function (registry, goView, isMobile) {" + _effect_source() + "\n})(registry, function () { VIEWS.push([].slice.call(arguments)); }, false);"
     )
 
 
