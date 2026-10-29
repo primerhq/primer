@@ -433,8 +433,15 @@ function NV_doInterrupt(wid, sid, refetchAll, toast) {
   return pending;
 }
 // A failure the user must see (console review C-012, C-022): one error toast with the server's own reason and the request id.
+// G14-04: the reason goes through the one reader (a bare auth code reads as a
+// sentence), with the raw fallback only where the reader is not loaded (the
+// house guarded shape, as PR_PagedNote's); the request id stays what the
+// caller drew it from.
 function NV_failToast(toast, what, err) {
-  toast(what + " failed: " + ((err && (err.detail || err.message)) || "unknown error"), {
+  var reason = (err && ((window.primerApi && window.primerApi.readRefusal)
+    ? window.primerApi.readRefusal(err).message
+    : (err.detail || err.message))) || "unknown error";
+  toast(what + " failed: " + reason, {
     kind: "error", requestId: (err && (err.requestId || err.request_id)) || null,
   });
 }

@@ -94,9 +94,12 @@ function NV_workspaceLabel(workspaces, wid) {
   return (ws && ws.name) || wid;
 }
 
+// G14-04: a bare auth code (auth_required / forbidden_role) arrives in `detail`
+// without a sentence; the one reader maps those to sentences and keeps every
+// other refusal as the server sent it (or says what the browser said).
 function NV_errText(err) {
   if (!err) return null;
-  return err.detail || err.message || "Request failed";
+  return window.primerApi.readRefusal(err).message;
 }
 
 // ---------------------------------------------------------------------------
@@ -336,7 +339,15 @@ function NV_CreateSessionOverlay() {
                     </div>
                   );
                 })}
-                {!visible.length ? (
+                {agents.error || graphs.error ? (
+                  <div className="nv-bind-empty" role="alert" data-testid="nv-ns-bind-error">
+                    <div>Couldn't load the agents and graphs.</div>
+                    <div>{NV_errText(agents.error || graphs.error)}</div>
+                    <button type="button" className="nv-btn-secondary"
+                      data-testid="nv-ns-bind-retry"
+                      onClick={function () { agents.refetch(); graphs.refetch(); }}>Retry</button>
+                  </div>
+                ) : !visible.length ? (
                   <div className="nv-bind-empty">
                     {window.NV_emptyText(
                       ["agent or graph", "agents or graphs"], q, rows.length)}

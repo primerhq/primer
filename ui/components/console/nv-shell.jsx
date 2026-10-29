@@ -811,6 +811,11 @@ function NV_Shell() {
       workspaces: wsItems,
       // What the workspace list read (PR_fetchAllPages): the phone's Spaces tab draws its note when it was cut short.
       workspacesList: workspaces.data || null,
+      // G14-02: a failed first read of the list is a state the tree surfaces
+      // must draw (the refusal + a refire), not a confident "No workspaces
+      // yet."; the error rides the same read, and the refire is that read.
+      workspacesError: workspaces.error || null,
+      refetchWorkspaces: function () { workspaces.refetch(); },
       username: NV_usernameOf(status.data),
       role: (status.data && status.data.role) || "user",
       viewer: status.data && status.data.principal,

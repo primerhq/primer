@@ -613,7 +613,16 @@ function NV_MobileSpaces(props) {
         </button>
       </div>
       <div className="card-list" data-testid="nv-mob-ws-tree">
-        {!workspaces.length ? (
+        {con.workspacesError ? (
+          workspaces.length ? null : (
+            <div className="card-list-empty" role="alert" data-testid="nv-mob-ws-error">
+              <div>Couldn't load the workspaces.</div>
+              <div>{NV_errText(con.workspacesError)}</div>
+              <button type="button" className="nv-btn-secondary touch-target"
+                data-testid="nv-mob-ws-retry" onClick={con.refetchWorkspaces}>Retry</button>
+            </div>
+          )
+        ) : !workspaces.length ? (
           <div className="card-list-empty">No workspaces yet.</div>
         ) : null}
         {workspaces.map(function (w) {
@@ -696,7 +705,7 @@ function NV_MobileSpaces(props) {
       </div>
       <window.Fab icon="plus" label="Create session"
         onClick={function () { setCreateOpen(true); }} />
-      <NV_MobileCreateSessionSheet open={createOpen} workspaces={workspaces} workspacesList={con.workspacesList}
+      <NV_MobileCreateSessionSheet open={createOpen} workspaces={workspaces} workspacesList={con.workspacesList} workspacesError={con.workspacesError} refetchWorkspaces={con.refetchWorkspaces}
         onClose={function () { setCreateOpen(false); }}
         onCreated={function (row, wid, name, binding) {
           sessRes.refetch();
@@ -843,7 +852,16 @@ function NV_MobileCreateSessionSheet(props) {
       ) : null}
       {stage === "workspace" ? (
         <div className="card-list" data-testid="nv-mob-ns-workspace-list">
-          {!(props.workspaces || []).length ? (
+          {props.workspacesError ? (
+            (props.workspaces || []).length ? null : (
+              <div className="card-list-empty" role="alert" data-testid="nv-mob-ns-workspaces-error">
+                <div>Couldn't load the workspaces.</div>
+                <div>{NV_errText(props.workspacesError)}</div>
+                <button type="button" className="nv-btn-secondary touch-target"
+                  data-testid="nv-mob-ns-workspaces-retry" onClick={props.refetchWorkspaces}>Retry</button>
+              </div>
+            )
+          ) : !(props.workspaces || []).length ? (
             <div className="card-list-empty">No workspaces yet.</div>
           ) : null}
           {(props.workspaces || []).map(function (w) {
@@ -886,7 +904,15 @@ function NV_MobileCreateSessionSheet(props) {
                 </button>
               );
             })}
-            {!visible.length ? (
+            {agents.error || graphs.error ? (
+              <div className="card-list-empty" role="alert" data-testid="nv-mob-ns-bind-error">
+                <div>Couldn't load the agents and graphs.</div>
+                <div>{NV_errText(agents.error || graphs.error)}</div>
+                <button type="button" className="nv-btn-secondary touch-target"
+                  data-testid="nv-mob-ns-bind-retry"
+                  onClick={function () { agents.refetch(); graphs.refetch(); }}>Retry</button>
+              </div>
+            ) : !visible.length ? (
               <div className="card-list-empty">
                 {window.NV_emptyText(
                   ["agent or graph", "agents or graphs"], q, rows.length)}
@@ -1102,7 +1128,16 @@ function NV_MobileFiles() {
         onClose={function () { setPickerOpen(false); }}
         title="Choose a workspace">
         <div className="card-list" data-testid="nv-mob-files-ws-list">
-          {!workspaces.length ? (
+          {con.workspacesError ? (
+            workspaces.length ? null : (
+              <div className="card-list-empty" role="alert" data-testid="nv-mob-files-ws-error">
+                <div>Couldn't load the workspaces.</div>
+                <div>{NV_errText(con.workspacesError)}</div>
+                <button type="button" className="nv-btn-secondary touch-target"
+                  data-testid="nv-mob-files-ws-retry" onClick={con.refetchWorkspaces}>Retry</button>
+              </div>
+            )
+          ) : !workspaces.length ? (
             <div className="card-list-empty">No workspaces yet.</div>
           ) : null}
           {workspaces.map(function (w) {

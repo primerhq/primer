@@ -536,6 +536,14 @@ function NV_Rail(props) {
               if (typeof props.onCreateWorkspace === "function") props.onCreateWorkspace();
             }}>+</button>
         </div>
+        {wsRes.error && !workspaces.length ? (
+          <div className="nv-rail-empty" role="alert" data-testid="nv-rail-ws-error">
+            <div>Couldn't load the workspaces.</div>
+            <div>{NV_errText(wsRes.error)}</div>
+            <button type="button" className="nv-btn-secondary"
+              data-testid="nv-rail-ws-retry" onClick={function () { wsRes.refetch(); }}>Retry</button>
+          </div>
+        ) : null}
         {workspaces.map(function (w) {
           var isSelected = w.id === props.selectedWorkspaceId;
           var isOpen = !!expanded[w.id];
