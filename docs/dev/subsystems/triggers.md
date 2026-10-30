@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-The triggers subsystem turns "do something later, on a schedule, or on an inbound HTTP event" into a first-class persisted primitive. A `Trigger` is a fire source (a one-off `delayed` instant, a recurring `scheduled` cron expression, or an inbound `webhook` POST); a `Subscription` is a delivery rule bound to a trigger that says where a fire should land (append a message to an existing session, spin up a fresh agent or graph session, or wake a session that is parked on the `subscribe_to_trigger` yielding tool). When a trigger fires, the orchestrator fans every enabled subscription out to its kind-specific dispatcher.
+The triggers subsystem turns "do something later, on a schedule, on an inbound HTTP event, or on an inbound channel event" into a first-class persisted primitive. A `Trigger` is a fire source (a one-off `delayed` instant, a recurring `scheduled` cron expression, an inbound `webhook` POST, or an inbound `channel` event); a `Subscription` is a delivery rule bound to a trigger that says where a fire should land (append a message to an existing session, spin up a fresh agent or graph session, or wake a session that is parked on the `subscribe_to_trigger` yielding tool). When a trigger fires, the orchestrator fans every enabled subscription out to its kind-specific dispatcher.
 
 Time-based triggers (`delayed` and `scheduled`) ride the existing claim engine: a `Trigger` row with `enabled=true` and a non-null `next_fire_at` becomes an eligible `ClaimKind.TRIGGER` lease, a worker claims it when its moment arrives, fires it, and the claim adapter's `on_release` hook recomputes `next_fire_at`. `webhook` triggers are event-driven: they fire when an authenticated HTTP POST arrives at `POST /v1/webhooks/{token}` and are never picked up by the claim engine (`eligible_for_claim=False`, `next_fire_at` is always null).
 
@@ -27,7 +27,7 @@ erDiagram
     Subscription ||--o| WorkspaceSession : "steers (session_append)"
     Trigger ||--o{ FireEvent : "emits"
     FireEvent ||--o{ Subscription : "dispatched to"
-    Trigger ||--|| TriggerConfig : "carries (delayed | scheduled)"
+    Trigger ||--|| TriggerConfig : "carries (delayed | scheduled | webhook | channel)"
     Subscription ||--|| SubscriptionConfig : "carries (4 kinds)"
 ```
 
@@ -46,7 +46,7 @@ A `FireEvent` here is the logical fire identified by the deterministic `fire_id`
 
 | Path | Responsibility |
 | --- | --- |
-| `primer/model/trigger.py` | `Trigger`, `Subscription`, the three `TriggerConfig` and four `SubscriptionConfig` variants, slug validation. |
+| `primer/model/trigger.py` | `Trigger`, `Subscription`, the four `TriggerConfig` and four `SubscriptionConfig` variants, slug validation. |
 | `primer/trigger/service.py` | The single mutation path: trigger/subscription CRUD, `fire_now`, typed exceptions, claim-lease upsert and drop (a save that disables, and a delete, drop the lease; ticket 01a16ede). |
 | `primer/trigger/dispatch.py` | `fire_trigger` orchestrator + `FireResult`; force-imports the four dispatchers. |
 | `primer/trigger/cron.py` | `validate_cron`, `validate_timezone`, `next_fire_at`, `previous_fire_at`, `iter_missed_fires`, `scheduled_ticks_to_fire` (the ticks one claim fires under its `catchup`), `CATCHUP_LIMIT` (timezone-aware croniter wrapper). |
