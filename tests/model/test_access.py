@@ -24,3 +24,8 @@ def test_public_tools_do_not_make_the_row_listable():
 
 def test_owned_by():
     assert Access.owned_by("u1").owners == ["u1"] and Access.owned_by("u1").public is False
+
+
+def test_rev_defaults_to_zero_and_is_not_a_member():
+    a = Access(owners=["u1"], rev=3)
+    assert Access().rev == 0 and a.rev == 3 and a.members == ["u:u1"]
