@@ -81,7 +81,7 @@ async def _by_the_system_tool(app, raw_client, toolset: Toolset) -> None:
     tools = build_system_toolset(
         storage_provider=app.state.storage_provider, provider_registry=app.state.provider_registry, mcp_oauth=app.state.mcp_oauth,
     )
-    result = await tools.call(tool_name="delete_toolset", arguments={"id": toolset.id}, ctx=caller("user"))
+    result = await tools.call(tool_name="delete_toolset", arguments={"id": toolset.id}, ctx=caller("admin"))
     assert not result.is_error, result.output
 
 
@@ -169,7 +169,7 @@ async def test_the_system_tool_forgets_the_sign_in_before_it_deletes_the_row(oau
         await forget(toolset_id)
 
     monkeypatch.setattr(service, "forget", forget_and_look)
-    result = await _system_tools(oauth_app).call(tool_name="delete_toolset", arguments={"id": "kb"}, ctx=caller("user"))
+    result = await _system_tools(oauth_app).call(tool_name="delete_toolset", arguments={"id": "kb"}, ctx=caller("admin"))
     assert not result.is_error, result.output
     assert seen == [True], "the sign-in was forgotten after the row was gone"
     assert await storage_provider.get_storage(Toolset).get("kb") is None and await service.store.get_tokens("kb") is None
@@ -186,7 +186,7 @@ async def test_a_forget_that_fails_leaves_the_toolset_and_answers_an_error(oauth
         raise RuntimeError("storage went away")
 
     monkeypatch.setattr(service, "forget", broken)
-    result = await _system_tools(oauth_app).call(tool_name="delete_toolset", arguments={"id": "kb"}, ctx=caller("user"))
+    result = await _system_tools(oauth_app).call(tool_name="delete_toolset", arguments={"id": "kb"}, ctx=caller("admin"))
     assert result.is_error
     error = json.loads(result.output)
     assert error["type"] == "storage-error" and "was not deleted" in error["message"] and "RuntimeError" in error["message"]
