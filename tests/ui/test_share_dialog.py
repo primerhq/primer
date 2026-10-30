@@ -78,8 +78,9 @@ def test_the_dialog_script_loads_right_after_the_platform_kit() -> None:
     assert kit in INDEX, "the platform kit tag moved"
     assert tag in INDEX, "the share-dialog script tag is missing from ui/index.html"
     kit_end = INDEX.index(kit) + len(kit)
-    assert INDEX.index(tag) > kit_end, "share-dialog.jsx must load after platform-kit.jsx"
-    assert "<script" not in INDEX[kit_end: INDEX.index(tag)], (
+    tag_start = INDEX.rindex("<script", 0, INDEX.index(tag))
+    assert tag_start > kit_end, "share-dialog.jsx must load after platform-kit.jsx"
+    assert "<script" not in INDEX[kit_end:tag_start], (
         "another script landed between the platform kit and the share dialog"
     )
 
@@ -270,8 +271,7 @@ window.primerApi = {
     __mutFetch = fetcher;
     return {
       mutate: function (body) {
-        var out = __putResults.length ? __putResults.shift() : { ok: true, value: __resState.data };
-        var p = out.ok ? thenOk(out.value) : thenErr(out.error);
+        var p = fetcher(body);
         p.then(
           function (data) { if (opts && typeof opts.onSuccess === "function") opts.onSuccess(data); },
           function (err) { if (opts && typeof opts.onError === "function") opts.onError(err); }
@@ -287,7 +287,14 @@ window.primerApi = {
 };
 var SH_api = {
   getAccess: function (plural, id, signal) { return thenOk(__resState.data); },
-  setAccess: function (plural, id, body) { __puts.push([plural, id, body]); return thenOk(body); },
+  // The response queue lives at the API edge: the fetcher the dialog hands
+  // useMutation is SH_api.setAccess itself, so a queued refusal surfaces
+  // the way the server's 409/422 would.
+  setAccess: function (plural, id, body) {
+    __puts.push([plural, id, body]);
+    var out = __putResults.length ? __putResults.shift() : { ok: true, value: body };
+    return out.ok ? thenOk(out.value) : thenErr(out.error);
+  },
   lookupUsers: function (q, signal) {
     __lookups.push(q);
     return thenOk([{ id: "u-2", username: "bob" }, { id: "u-3", username: "bobby" }]);
@@ -456,7 +463,7 @@ def test_a_422_shows_the_field_error_inline() -> None:
     sub = json.loads(ctx.eval('JSON.stringify(MR.subtree("shr-field-errors"))'))
     assert sub and sub[0].get("role") == "alert"
     assert "At least one owner is required" in _texts(ctx)
-    assert json.loads(ctx.eval("__puts.length")) == 1, "the invalid save was not retried"
+    assert ctx.eval("__puts.length") == 1, "the invalid save was not retried"
 
 
 def test_an_unexpected_refusal_toasts_instead_of_silencing() -> None:
@@ -503,7 +510,7 @@ def test_adding_a_person_uses_the_lookup_and_defaults_to_read() -> None:
     ctx.eval(MOUNT)
     ctx.eval('MR.findProp("data-testid", "shr-add-user").props.onChange({ target: { value: "bo" } })')
     ctx.eval("MR.rerender()")
-    assert json.loads(ctx.eval("__lookups.toString()")) == ["bo"]
+    assert json.loads(ctx.eval("JSON.stringify(__lookups)")) == ["bo"]
     assert ctx.eval('MR.find("shr-lookup-u-2") ? 1 : 0') == 1, "the lookup matches are not offered"
     assert "bob" in _texts(ctx)
     ctx.eval('MR.click("shr-lookup-u-2")')
