@@ -319,7 +319,9 @@ async def test_a_listing_that_needs_sign_in_is_409(raw_client, oauth_app, mock_o
 
 
 async def test_the_catalogue_carries_the_auth_state(raw_client, oauth_app, mock_oauth_mcp) -> None:
-    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
+    ts = make_toolset(mock_oauth_mcp.mcp_url, oauth={})
+    ts.access = Access(grants={"u-user": "read"})
+    await _store(oauth_app, ts)
     await _login_as(raw_client, oauth_app, "user")
     response = await raw_client.get("/v1/tools")
     assert response.status_code == 200, response.text
