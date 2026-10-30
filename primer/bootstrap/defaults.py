@@ -185,6 +185,8 @@ RESERVED_WORKSPACE_TEMPLATES: dict[str, dict] = {
         "description": "Default minimal local workspace template (auto-bootstrapped).",
         "provider_id": RESERVED_LOCAL_WORKSPACE_PROVIDER,
         "backend": {"kind": "local"},
+        # Public, owned by no one: every user may create workspaces from it; admins manage it (access spec 6.7).
+        "access": {"public": True},
     },
 }
 
