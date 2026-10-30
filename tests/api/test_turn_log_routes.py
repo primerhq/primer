@@ -353,3 +353,24 @@ async def test_graph_run_turn_log_storage_backed(
     item = body2["items"][0]
     assert item["node_id"] == "A"
     assert item["model"] == "m"
+
+
+@pytest.mark.asyncio
+async def test_a_run_of_another_graph_is_not_served_under_this_graph(
+    client: httpx.AsyncClient, fake_storage_provider,
+):
+    """The route's READ check is on the path's graph, so a run of ANOTHER graph must answer like a missing run
+    (security review finding 6): otherwise a reader of graph A reads graph B's transcripts by pairing ids."""
+    from primer.model.graph import Graph, GraphThread
+
+    graphs = fake_storage_provider.get_storage(Graph)
+    await graphs.create(Graph(id="g-mine", description="d"))
+    await graphs.create(Graph(id="g-theirs", description="d"))
+    await fake_storage_provider.get_storage(GraphThread).create(
+        GraphThread(id="gt-theirs-1", graph_id="g-theirs", title="t", created_at=_now(), last_activity_at=_now())
+    )
+    for path in ("turn_log", "node_states", "nodes/A/turn_log"):
+        wrong = await client.get(f"/v1/graphs/g-mine/runs/gt-theirs-1/{path}")
+        assert wrong.status_code == 404, (path, wrong.text)
+        right = await client.get(f"/v1/graphs/g-theirs/runs/gt-theirs-1/{path}")
+        assert right.status_code == 200, (path, right.text)

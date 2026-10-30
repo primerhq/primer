@@ -53,6 +53,21 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        # Minimal twin of Storage.patch_if: the where guard (paths read leaf by leaf), then the shallow patch revalidated.
+        current = self._data.get(id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {id!r}")
+        for key, allowed in where.items():
+            value = current
+            for part in key if isinstance(key, tuple) else (key,):
+                value = value.get(part) if isinstance(value, dict) else getattr(value, part, None)
+            if value not in allowed:
+                return None
+        merged = type(current).model_validate({**current.model_dump(), **(patch or {})})
+        self._data[id] = merged
+        return merged
+
     async def update_unless(
         self,
         e,
