@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from primer.model.access import Access
 from primer.api.registries import WorkspaceRegistry
 from primer.internal_collections import (
     INTERNAL_COLLECTION_IDS,
@@ -1267,7 +1268,7 @@ def _seed_agent(sp, agent_id="code-reviewer") -> None:
     from primer.model.agent import Agent, AgentModel
 
     storage = sp.get_storage(Agent)
-    storage._data[agent_id] = Agent(
+    storage._data[agent_id] = Agent(access=Access(public=True), 
         id=agent_id,
         description="x",
         model=AgentModel(profile_id="p--m"),

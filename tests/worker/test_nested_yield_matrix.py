@@ -34,6 +34,7 @@ a graph checkpoint's nested entry). See the note at the bottom of this file.
 
 from __future__ import annotations
 
+from primer.model.access import Access
 from primer.model_profile import ResolvedModel
 from primer.model.model_profile import ModelProfile, ModelProfileConfig
 
@@ -388,7 +389,7 @@ def _provider_row() -> _ProviderRow:
 
 
 def _agent(*, tools: list[str]) -> Agent:
-    return Agent(
+    return Agent(access=Access(public=True), 
         id="agent-sub",
         description="subagent",
         model=AgentModel(profile_id="prov-1--m1"),
