@@ -180,7 +180,7 @@ flowchart TD
   internal-collections semantic index of agents, graphs, collections, and tools.
 - [semantic-search](subsystems/semantic-search.md) - the vector-retrieval half of the
   platform: the search-provider entity and registry, the vector-store backends, and
-  the rerank-plus-MMR retrieval pipeline.
+  the cross-encoder-rerank retrieval pipeline.
 - [web-search](subsystems/web-search.md) - live web retrieval for agents: the search
   provider entity and registry, the active-config singleton with its fallback chain,
   and the `web` MCP toolset agents call.
