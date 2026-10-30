@@ -636,7 +636,8 @@ class SqliteStorageProvider(StorageProvider):
         """Persist the cookie-signing HMAC secret on the singleton row.
 
         Called by the auth layer the first time it needs a secret and
-        ``PRIMER_SESSION_SECRET`` env var is not set.
+        the ``PRIMER_AUTH__SESSION_SECRET`` / ``PRIMER_SESSION_SECRET``
+        env var override is not set.
         """
         async with self._write_guard() as should_commit:
             await self.connection.execute(
