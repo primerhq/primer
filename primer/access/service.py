@@ -14,6 +14,7 @@ from primer.access.person import Person
 from primer.access.policy import level_of, require
 from primer.int.storage import Storage
 from primer.model.access import Access, AccessLevel
+from primer.model.common import dump_for_storage
 from primer.model.except_ import AccessDeniedError, ConflictError, NotFoundError, ValidationError
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.user import User
@@ -171,4 +172,22 @@ __all__ = [
     "get_access_view",
     "lookup_users",
     "set_access",
+    "update_keeping_access",
 ]
+
+
+async def update_keeping_access(storage: Storage[Any], entity: Any, existing: Any, *, what: str) -> Any:
+    """Write every field of ``entity`` except ``access``, guarded on the stored sharing's ``rev``.
+
+    An update keeps the row's sharing as stored; a blind whole-row write from the snapshot ``existing`` would put back a grant
+    an owner revoked between the read and the write. One ``patch_if`` of every other field, fenced on ``access.rev``: a sharing
+    change in the gap answers ``ConflictError`` (409) and nothing is written. Same storage event as an update (CRUD ``updated``).
+    """
+    dumped = dump_for_storage(entity)
+    patch = {key: value for key, value in dumped.items() if key not in ("id", "access")}
+    rev = existing.access.rev
+    guard = [rev, None] if rev == 0 else [rev]
+    written = await storage.patch_if(entity.id, patch, where={("access", "rev"): guard})
+    if written is None:
+        raise ConflictError(f"the sharing of {what} changed while it was being edited; reload it")
+    return written
