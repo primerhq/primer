@@ -123,8 +123,18 @@ async def test_a_non_admin_canvas_wait_scoped_to_a_workspace_or_session_parks(sp
     from datetime import UTC, datetime
 
     from primer.events.filters import matches
+    from primer.model.access import Access
     from primer.model.event import Event
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 
+    # The run's own workspace as a row the access layer can judge (Phase 2, Task 7:
+    # a non-admin pin must name a workspace the run's person can read).
+    await sp.get_storage(Workspace).create(Workspace(
+        id="w", template_id="t", provider_id="p",
+        created_at=datetime.now(UTC),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
+        access=Access(owners=["u-1"]),
+    ))
     fields = [{"path": "payload.element", "op": "eq", "value": "ok"}, {"path": path, "op": "eq", "value": value}]
     result = await make_wait_for_event_handler(sp)({"event_types": ["canvas.event"], "fields": fields}, ctx=_ctx(USER))
 
@@ -219,7 +229,11 @@ async def test_a_non_admin_may_use_eq_and_prefix_matchers(sp):  # noqa: F811
 
     assert isinstance(result, Yielded), result
     [stored] = await _subscriptions(sp)
-    assert [(m.path, m.op) for m in stored.filter.fields] == [("payload.workspace_id", "eq"), ("payload.path", "prefix")]
+    # The subscription is also pinned to the run's own workspace (Phase 2, Task 7:
+    # a non-admin wait may only match workspaces the run's person can read).
+    assert [(m.path, m.op) for m in stored.filter.fields] == [
+        ("payload.workspace_id", "eq"), ("payload.path", "prefix"), ("workspace_id", "eq"),
+    ]
 
 
 @pytest.mark.parametrize("who", [ADMIN, PrincipalRef.system()], ids=["admin", "system"])
