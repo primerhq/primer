@@ -19,8 +19,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
+from primer.access.person import person_from_request
+from primer.access.policy import visible_predicate
 from primer.api.deps import (
     get_principal,
     get_provider_registry,
@@ -58,6 +60,7 @@ _ENUMERATE_TIMEOUT_S = 10.0
     responses=common_responses(500),
 )
 async def list_tools(
+    request: Request,
     principal: str | None = Depends(get_principal),
     registry: ProviderRegistry = Depends(get_provider_registry),
     storage_provider=Depends(get_storage_provider),
@@ -124,13 +127,17 @@ async def list_tools(
         await _emit(tid)
 
     # 2. User-defined Toolset rows. Page so the catalogue scales beyond
-    # the default 200-row cap.
+    # the default 200-row cap. Rows the caller may not read stay out (spec
+    # anti-goal 4: filter in storage); admins get a None predicate and keep
+    # the unfiltered list.
+    access_pred = visible_predicate(person_from_request(request))
     ts_storage = storage_provider.get_storage(Toolset)
     offset = 0
     page_size = 200
     try:
         while True:
-            page = await ts_storage.list(
+            page = await ts_storage.find(
+                access_pred,
                 OffsetPage(offset=offset, length=page_size),
             )
             for row in page.items:
