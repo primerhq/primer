@@ -241,7 +241,8 @@ async def _seed_base(env: _Env) -> None:
         )
     )
     await env.sp.get_storage(WorkspaceTemplate).create(
-        WorkspaceTemplate(id=TPL, description="dev workspace", provider_id="local-1")
+        # Public: creating from a template needs read on it (Phase 1); this test is about the workspace's own access.
+        WorkspaceTemplate(id=TPL, description="dev workspace", provider_id="local-1", access=Access(public=True))
     )
 
 
