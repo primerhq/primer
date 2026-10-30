@@ -321,3 +321,23 @@ async def test_the_events_table_declares_a_workspace_id_index() -> None:
     (stmt,) = [s for s in conn.statements if "workspace_id" in s and "CREATE INDEX" in s]
     assert "events_workspace" in stmt
     assert "ON \"public\".events (workspace_id)" in stmt
+
+
+
+@pytest.mark.asyncio
+async def test_an_admin_reads_a_session_whose_workspace_is_gone(sp):
+    from primer.access.workspaces import require_session
+
+    await sp.get_storage(WorkspaceSession).create(
+        WorkspaceSession(
+            id="sess-orphan",
+            workspace_id="ws-deleted",
+            binding={"kind": "agent", "agent_id": "agt-1"},
+            status=SessionStatus.ENDED,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    got = await require_session(sp, Person("admin-1", "admin"), "sess-orphan", AccessLevel.READ)
+    assert got.id == "sess-orphan"
+    with pytest.raises(NotFoundError):
+        await require_session(sp, Person(U1, "user"), "sess-orphan", AccessLevel.READ)

@@ -88,6 +88,8 @@ async def require_session(
     session = await sp.get_storage(WorkspaceSession).get(session_id)
     if session is None:
         raise NotFoundError(f"{what} does not exist")
+    if person.is_admin:
+        return session  # admins read everything, a session whose workspace is gone (workspace_lost) included
     workspace = await _workspace(sp, session.workspace_id)
     # A dangling workspace id grants nothing: answer like a missing session.
     if workspace is None:
