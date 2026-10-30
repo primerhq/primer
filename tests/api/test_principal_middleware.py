@@ -67,6 +67,7 @@ def test_principal_serialization_shape():
         "display": "alice",
         "role": "admin",
         "source": "local",
+        "user_id": None,
     }
     # role is optional and defaults to None.
     bare = Principal(type="system", id="system", display="system", source="system")
