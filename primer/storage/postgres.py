@@ -586,6 +586,15 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     ],
     "sessions": [
         ("status", False, "((data->>'status'))"),
+        # Cross-workspace list filters push `workspace_id IN <readable>`
+        # into the query (access-control P2 Task 5); index-backed.
+        ("workspace_id", False, "((data->>'workspace_id'))"),
+    ],
+    "workspace": [
+        # Access-control list queries filter on the derived membership
+        # tokens (data->'access'->'members' ? token); GIN serves the
+        # jsonb ? operator. Same shape as the other owned tables.
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
     "channel": [
         (
@@ -1620,6 +1629,12 @@ class PostgresEventStore(EventStore):
             'CREATE INDEX IF NOT EXISTS events_occurred '
             f'ON {self._qualified} (occurred_at)'
         )
+        # Event reads and waits are scoped to the caller's readable
+        # workspaces (access-control P2 Task 7); index-backed.
+        ddl_workspace = (
+            'CREATE INDEX IF NOT EXISTS events_workspace '
+            f'ON {self._qualified} (workspace_id)'
+        )
         ddl_cursors = (
             f'CREATE TABLE IF NOT EXISTS {self._qualified_cursors} ('
             'subscriber_id text PRIMARY KEY, '
@@ -1633,6 +1648,7 @@ class PostgresEventStore(EventStore):
                 await conn.execute(ddl_type)
                 await conn.execute(ddl_entity)
                 await conn.execute(ddl_occurred)
+                await conn.execute(ddl_workspace)
                 await conn.execute(ddl_cursors)
 
     async def append(

@@ -175,7 +175,9 @@ async def test_require_workspace_refuses_an_unreadable_row_like_a_missing_one(
         await require_workspace(sp, STRANGER, "ws-owned", AccessLevel.READ)
     with pytest.raises(NotFoundError) as missing:
         await require_workspace(sp, STRANGER, "no-such-workspace", AccessLevel.READ)
-    assert str(stranger.value) == str(missing.value) == "Workspace 'ws-owned' does not exist"
+    # The unreadable row answers with its own missing-row text (spec 9).
+    assert str(stranger.value) == "Workspace 'ws-owned' does not exist"
+    assert str(missing.value) == "Workspace 'no-such-workspace' does not exist"
 
 
 @pytest.mark.asyncio
@@ -248,7 +250,7 @@ async def test_readable_workspace_ids_per_person(sp: SqliteStorageProvider) -> N
     from primer.access.workspaces import readable_workspace_ids
 
     await _seed(sp)
-    assert sorted(await readable_workspace_ids(sp, OWNER)) == list(_WS_IDS)
+    assert sorted(await readable_workspace_ids(sp, OWNER)) == sorted(_WS_IDS)
     assert sorted(await readable_workspace_ids(sp, READER)) == ["ws-full", "ws-public", "ws-read"]
     assert await readable_workspace_ids(sp, STRANGER) == ["ws-public"]
     assert await readable_workspace_ids(sp, NOBODY) == []
@@ -268,7 +270,7 @@ def test_the_workspace_table_carries_the_members_gin_index() -> None:
     assert unique is False
     assert expr == "USING GIN ((data->'access'->'members'))"
     (stmt,) = [s for s in _hot_field_index_ddl("workspace", '"public"."workspace"') if "access_members" in s]
-    assert f'"workspace_access_members"' in stmt
+    assert '"workspace_access_members"' in stmt
     assert "USING GIN" in stmt and "UNIQUE" not in stmt
 
 
@@ -278,7 +280,7 @@ def test_the_sessions_table_carries_a_workspace_id_index() -> None:
     assert unique is False
     assert expr == "((data->>'workspace_id'))"
     (stmt,) = [s for s in _hot_field_index_ddl("sessions", '"public"."sessions"') if "data->>'workspace_id'" in s]
-    assert f'"sessions_workspace_id"' in stmt
+    assert '"sessions_workspace_id"' in stmt
     assert "CREATE INDEX IF NOT EXISTS" in stmt and "UNIQUE" not in stmt
 
 
