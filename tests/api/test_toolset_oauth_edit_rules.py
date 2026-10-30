@@ -53,10 +53,24 @@ async def _served(raw_client) -> dict:
     return response.json()
 
 
+async def _share_full(raw_client) -> None:
+    """The admin owner shares full with the user (seeded by ``_as``) so the
+    user's write lands on the OAuth edit rule under test instead of the
+    out-of-access 404; returns to the user's session."""
+    await _login(raw_client, "oauth-edit-admin")
+    resp = await raw_client.put(
+        "/v1/toolsets/kb/access",
+        json={"owners": ["oauth-edit-admin"], "grants": {"oauth-edit-user": "full"}},
+    )
+    assert resp.status_code == 200, resp.text
+    await _login(raw_client, "oauth-edit-user")
+
+
 async def test_a_user_cannot_change_an_oauth_toolsets_scopes(raw_client, app) -> None:
     await _create_and_connect(raw_client, app)
     before = await app.state.mcp_oauth.store.get_tokens("kb")
     await _as(raw_client, app, "user")
+    await _share_full(raw_client)
     body = await _served(raw_client)
     body["config"]["config"]["oauth"]["scopes"] = ["read", "write"]
 
@@ -72,6 +86,7 @@ async def test_a_user_cannot_change_an_oauth_toolsets_scopes(raw_client, app) ->
 async def test_a_user_may_change_only_the_extra_headers_of_an_oauth_toolset(raw_client, app) -> None:
     await _create_and_connect(raw_client, app)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client)
     body = await _served(raw_client)
     body["config"]["config"]["headers"]["X-Other"] = "other-test-only"
 

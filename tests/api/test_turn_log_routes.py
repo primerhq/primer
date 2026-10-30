@@ -226,12 +226,16 @@ async def test_graph_run_turn_log_workspace_backed(
     client: httpx.AsyncClient, app, fake_storage_provider,
 ):
     """A workspace-backed graph run reads .state/graphs/<gsid>/turns.jsonl."""
+    from primer.model.graph import Graph
     from primer.model.workspace_session import (
         GraphSessionBinding,
         SessionStatus,
         WorkspaceSession,
     )
 
+    # The route gates on the graph row's access: the row must exist for the
+    # turn log to be readable at all (out-of-access or missing row -> 404).
+    await fake_storage_provider.get_storage(Graph).create(Graph(id="g-1", description="d"))
     sess = WorkspaceSession(
         id="sess-graph-run-1",
         workspace_id="ws-graph",
@@ -291,8 +295,11 @@ async def test_graph_run_turn_log_storage_backed(
     client: httpx.AsyncClient, app, fake_storage_provider,
 ):
     """A GraphThread-backed run queries TurnLogRecord storage."""
-    from primer.model.graph import GraphThread
+    from primer.model.graph import Graph, GraphThread
 
+    # The route gates on the graph row's access: the row must exist for the
+    # turn log to be readable at all (out-of-access or missing row -> 404).
+    await fake_storage_provider.get_storage(Graph).create(Graph(id="g-stor", description="d"))
     thread = GraphThread(
         id="gt-storage-1",
         graph_id="g-stor",

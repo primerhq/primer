@@ -117,6 +117,11 @@ async def test_a_graph_turn_log_of_an_unreachable_workspace_is_a_typed_503(
 
     sid = "sess-graph-down"
     from tests.api.test_session_messages_route import _now
+    from primer.model.graph import Graph
+
+    # The route gates on the graph row's access: the row must exist for the
+    # turn log to be readable at all (out-of-access or missing row -> 404).
+    await fake_storage_provider.get_storage(Graph).create(Graph(id="g-1", description="d"))
     await fake_storage_provider.get_storage(WorkspaceSession).create(WorkspaceSession(
         id=sid, workspace_id="ws-1", binding=GraphSessionBinding(graph_id="g-1"),
         status=SessionStatus.ENDED, created_at=_now(), turn_status="idle",
