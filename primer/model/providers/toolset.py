@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator, model_validator
 
+from primer.model.access import Owned
 from primer.model.common import Identifiable
 from primer.model.masked_url import MaskedUserinfoStr
 
@@ -278,7 +279,7 @@ class PythonConfig(BaseModel):
     )
 
 
-class Toolset(Identifiable):
+class Toolset(Owned, Identifiable):
     """A configured tool source.
 
     Conceptually a *set of tools* the application can offer to LLMs.
