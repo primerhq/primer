@@ -37,9 +37,10 @@ FULL = Access(
 
 @pytest.mark.parametrize(("model_cls", "kwargs"), _MODELS, ids=[c.__name__ for c, _ in _MODELS])
 def test_the_model_carries_access(model_cls, kwargs):
-    assert "access" in model_cls.model_fields
-    # The field is inherited last, so it dumps after the model's own fields.
-    assert list(model_cls.model_fields)[-1] == "access"
+    fields = list(model_cls.model_fields)
+    assert "access" in fields
+    # Sane order: the identity fields first, then access, then the model's own payload.
+    assert fields.index("access") == (2 if "description" in fields else 1)
 
 
 @pytest.mark.parametrize(("model_cls", "kwargs"), _MODELS, ids=[c.__name__ for c, _ in _MODELS])

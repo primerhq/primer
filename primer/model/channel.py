@@ -9,6 +9,7 @@ from typing import Annotated, ClassVar, Union
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from primer.common.url_userinfo import MASK
+from primer.model.access import Owned
 from primer.model.common import Identifiable
 
 
@@ -273,7 +274,7 @@ class TelegramChannelConfig(BaseModel):
     chats: ChatConfig = Field(default_factory=ChatConfig)
 
 
-class Channel(Identifiable):
+class Channel(Owned, Identifiable):
     """One conversational target within a ChannelProvider."""
 
     _id_prefix: ClassVar[str] = "channel"

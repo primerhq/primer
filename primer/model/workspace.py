@@ -46,6 +46,7 @@ from pydantic import (
 )
 from pydantic import ValidationError as PydanticValidationError
 
+from primer.model.access import Owned
 from primer.model.common import Describeable, Identifiable, reading_a_stored_row
 from primer.model.masked_url import MaskedUserinfoUrl
 
@@ -876,7 +877,7 @@ WorkspaceTemplateBackendConfig = Annotated[
 # ===========================================================================
 
 
-class WorkspaceTemplate(Describeable):
+class WorkspaceTemplate(Owned, Describeable):
     """Declarative recipe for materialising a workspace.
 
     Stored in a ``workspace_templates`` :class:`Collection`. One

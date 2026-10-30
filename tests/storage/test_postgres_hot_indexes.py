@@ -34,10 +34,12 @@ from primer.storage.sqlite import _SQLITE_HOT_FIELD_INDEXES
 def test_registry_declares_the_hot_tables():
     """token_hash / session status / channel routing / useridentity
     uniqueness / webhook recovery / tool-approval-record gate key /
-    artifact-location routing are all registered."""
+    artifact-location routing / the five access-members GIN indexes are
+    all registered."""
     assert set(_HOT_FIELD_INDEXES) == {
         "apitoken", "sessions", "channel", "useridentity",
         "webhookdelivery", "toolapprovalrecord", "artifactlocation",
+        "agent", "graph", "toolset", "workspacetemplate",
     }
 
 
@@ -78,7 +80,7 @@ def test_sessions_status_index_is_a_plain_btree_on_the_scalar():
 
 
 def test_channel_index_covers_provider_id_and_external_id():
-    (suffix, unique, expr), = _HOT_FIELD_INDEXES["channel"]
+    (suffix, unique, expr), = _HOT_FIELD_INDEXES["channel"][:1]
     assert suffix == "provider_external"
     assert unique is False
     assert expr == "((data->>'provider_id'), (data->>'external_id'))"
@@ -110,7 +112,7 @@ def test_session_model_maps_to_the_sessions_table():
     [
         ("apitoken", ["apitoken_token_hash_uniq"]),
         ("sessions", ["sessions_status"]),
-        ("channel", ["channel_provider_external"]),
+        ("channel", ["channel_provider_external", "channel_access_members"]),
         ("artifactlocation", ["artifactlocation_provider_id"]),
         ("unindexed_table", []),
     ],
@@ -126,7 +128,7 @@ def test_hot_field_index_ddl_renders_create_if_not_exists(table, expected_names)
         assert "CONCURRENTLY" not in stmt
         assert f'"{name}"' in stmt
         assert qualified in stmt
-        assert "data->>" in stmt
+        assert "data->" in stmt
 
 
 def test_token_hash_ddl_emits_unique_index():
