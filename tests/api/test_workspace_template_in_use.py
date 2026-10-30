@@ -19,6 +19,7 @@ from pydantic import SecretStr
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
 from primer.auth.passwords import hash_password
+from primer.model.access import Access
 from primer.model.user import User
 from primer.model.workspace import (
     ContainerConnectionSocket,
@@ -109,9 +110,13 @@ async def admin(app, sp) -> AsyncIterator[httpx.AsyncClient]:
                 ),
             )
         )
+        # user-snapshot is an owner: the delete-under-test below needs the
+        # owner level (deleting requires owner), and the test is about the
+        # snapshot surviving, not about access.
         await templates.create(
             WorkspaceTemplate(
                 id="tpl-loc", provider_id="loc", description="local",
+                access=Access(owners=["user-snapshot"]),
             )
         )
         await templates.create(
@@ -120,6 +125,7 @@ async def admin(app, sp) -> AsyncIterator[httpx.AsyncClient]:
                 provider_id="dock",
                 description="docker",
                 backend=ContainerTemplateConfig(),
+                access=Access(owners=["user-snapshot"]),
             )
         )
         await templates.create(
@@ -128,6 +134,7 @@ async def admin(app, sp) -> AsyncIterator[httpx.AsyncClient]:
                 provider_id="k3s",
                 description="kubernetes",
                 backend=KubernetesTemplateConfig(image="rt:1"),
+                access=Access(owners=["user-snapshot"]),
             )
         )
         yield client
@@ -241,6 +248,10 @@ _ADMIN_HELD = WorkspaceTemplate.model_validate(
                 "source": {"kind": "secret", "name": "OPENAI_API_KEY"},
             }
         ],
+        # user-snapshot is an owner so the user's delete reaches the
+        # admin-only-settings guard (the thing under test) instead of the
+        # out-of-access 404.
+        "access": {"owners": ["user-snapshot"]},
     }
 )
 

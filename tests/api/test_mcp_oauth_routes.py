@@ -4,6 +4,7 @@ import pytest
 
 from primer.api.registries.provider_registry import _build_default_toolset_factory
 from primer.common.secret_box import SecretBox
+from primer.model.access import Access
 from primer.model.provider import Toolset
 from primer.toolset.oauth.service import ToolsetOAuthService
 from tests._support.mock_oauth_mcp_fixtures import mock_oauth_mcp  # noqa: F401
@@ -305,7 +306,9 @@ async def test_deleting_a_toolset_forgets_its_sign_in(raw_client, oauth_app, moc
 
 
 async def test_a_listing_that_needs_sign_in_is_409(raw_client, oauth_app, mock_oauth_mcp) -> None:
-    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
+    ts = make_toolset(mock_oauth_mcp.mcp_url, oauth={})
+    ts.access = Access(grants={"u-user": "read"})
+    await _store(oauth_app, ts)
     await _login_as(raw_client, oauth_app, "user")
     response = await raw_client.get("/v1/toolsets/kb/tools")
     assert response.status_code == 409, response.text
