@@ -26,10 +26,13 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Reques
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError as PydanticValidationError
 
+from primer.access.person import person_from_request
+from primer.access.policy import require, visible_predicate
 from primer.api.errors import common_responses
 from primer.api.routers import _managed as _managed_mod
 from primer.api.routers._references import ReferenceCheck, build_reference_block_hook
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
+from primer.model.access import Access, AccessLevel
 from primer.model.common import Identifiable, preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.storage.secret_fields import refuse_secret_fields
@@ -185,6 +188,7 @@ def make_crud_router(
     cdc_kind: str | None = None,
     search_fields: list[str] | None = None,
     enrich_list: _OnListEnrichHook = None,
+    owned: bool = False,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
 
@@ -283,6 +287,17 @@ def make_crud_router(
         field to each item (e.g. a reference count from another
         entity's storage) without a per-id endpoint. ``None`` (the
         default) leaves the list route unchanged.
+    owned
+        When True, the UNSCOPED routes enforce access levels through
+        :mod:`primer.access` (never combined with ``scope_field``): create
+        stamps the caller as owner and ignores the body's ``access`` (an
+        id-less admin/system creates admin-managed rows), GET requires
+        ``read`` (no level answers 404 with the missing-row text, per spec 9),
+        PUT requires ``full`` and keeps the stored ``access``, DELETE requires
+        ``owner`` (after ``on_pre_delete_id``), and LIST/FIND AND the caller's
+        :func:`primer.access.policy.visible_predicate` into the storage query.
+        Response rows keep ``access``: callers need it to show sharing, and
+        it is not secret.
     """
 
     # Validate scope params: both must be set together or not at all.
@@ -296,6 +311,11 @@ def make_crud_router(
             raise ValueError(
                 "parent_path_segment must be provided when scope_field is set"
             )
+    if owned and scope_field is not None:
+        raise ValueError(
+            "owned and scope_field are mutually exclusive: a scoped router is "
+            "nested under a parent whose own access gates the subtree"
+        )
 
     # Auto-wire managed_by_field guards. User-supplied hooks are appended
     # after so they compose on top of the built-in protections.
@@ -562,6 +582,17 @@ def make_crud_router(
                     f"{model_cls.__name__} with id {entity.id!r} already exists"
                 )
             refuse_served_masks(entity)
+            if owned:
+                # The caller is stamped as the owner and the body's access is
+                # ignored (spec anti-goal 1: access is never writable through
+                # the create body). An id-less admin/system creates an
+                # admin-managed row.
+                person = person_from_request(request)
+                entity.access = (
+                    Access.owned_by(person.user_id)
+                    if person.user_id is not None
+                    else Access()
+                )
             if on_pre_create is not None:
                 await on_pre_create(entity, request)
             created = await storage.create(entity)
@@ -587,6 +618,7 @@ def make_crud_router(
             responses=get_responses,
         )
         async def _get(
+            request: Request,
             entity_id: str = Path(..., description="Entity id."),
             storage=Depends(storage_dep),
         ) -> _ModelT:
@@ -594,6 +626,15 @@ def make_crud_router(
             if row is None:
                 raise NotFoundError(
                     f"{model_cls.__name__} {entity_id!r} does not exist"
+                )
+            if owned:
+                # No level raises the SAME NotFoundError text as the missing
+                # row above (spec 9: out-of-access reads answer 404).
+                require(
+                    person_from_request(request),
+                    row.access,
+                    AccessLevel.READ,
+                    what=f"{model_cls.__name__} {entity_id!r}",
                 )
             return row
 
@@ -625,6 +666,16 @@ def make_crud_router(
                 raise NotFoundError(
                     f"{model_cls.__name__} {entity_id!r} does not exist"
                 )
+            if owned:
+                require(
+                    person_from_request(request),
+                    existing.access,
+                    AccessLevel.FULL,
+                    what=f"{model_cls.__name__} {entity_id!r}",
+                )
+                # The body's access is ignored (spec anti-goal 1): the row
+                # keeps its stored access.
+                entity.access = existing.access
             if on_pre_update is not None:
                 await on_pre_update(entity, existing, request)
             updated = await storage.update(entity)
@@ -650,6 +701,15 @@ def make_crud_router(
             if existing is None:
                 raise NotFoundError(
                     f"{model_cls.__name__} {entity_id!r} does not exist"
+                )
+            if owned:
+                # on_pre_delete_id ran first (it has no row); a 404 for an
+                # unreadable id still comes from require.
+                require(
+                    person_from_request(request),
+                    existing.access,
+                    AccessLevel.OWNER,
+                    what=f"{model_cls.__name__} {entity_id!r}",
                 )
             if on_pre_delete is not None:
                 await on_pre_delete(existing, request)
@@ -678,12 +738,22 @@ def make_crud_router(
             storage=Depends(storage_dep),
         ) -> _PageResp:
             refuse_secret_fields(model_cls, order_by=order_by)
+            # Owned rows: AND the caller's visibility predicate into the list
+            # query (spec anti-goal 4: filter in storage, never a fetched page
+            # in Python). Admins get None and keep the unfiltered path.
+            access_pred = (
+                visible_predicate(person_from_request(request)) if owned else None
+            )
             # q present AND this entity is searchable -> ILIKE substring find,
             # preserving the same page/order_by handling and the identical
             # OffsetPageResponse {items, total} shape as the plain list.
             if q and q.strip() and search_fields:
                 predicate = _build_search_predicate(search_fields, q)
+                if access_pred is not None:
+                    predicate = Predicate(left=predicate, op=Op.AND, right=access_pred)
                 resp = await storage.find(predicate, page, order_by=order_by)
+            elif access_pred is not None:
+                resp = await storage.find(access_pred, page, order_by=order_by)
             else:
                 resp = await storage.list(page, order_by=order_by)
             if enrich_list is not None:
@@ -697,13 +767,24 @@ def make_crud_router(
             responses=common_responses(400, 422, 500),
         )
         async def _find(
+            request: Request,
             body: FindRequest,
             storage=Depends(storage_dep),
         ) -> _PageResp:
             refuse_secret_fields(model_cls, predicate=body.predicate, order_by=body.order_by)
-            return await storage.find(
-                body.predicate, body.page, order_by=body.order_by
-            )
+            if owned:
+                # AND the caller's visibility predicate: a body predicate can
+                # only narrow the caller's visible set, never widen it (a
+                # predicate on access itself included).
+                access_pred = visible_predicate(person_from_request(request))
+                predicate = (
+                    Predicate(left=body.predicate, op=Op.AND, right=access_pred)
+                    if access_pred is not None and body.predicate is not None
+                    else (access_pred or body.predicate)
+                )
+            else:
+                predicate = body.predicate
+            return await storage.find(predicate, body.page, order_by=body.order_by)
 
     return router
 
