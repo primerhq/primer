@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 from primer.model.workspace_session import (
     AgentSessionBinding,
@@ -38,11 +39,11 @@ def toolset(fake_storage_provider, fake_provider_registry):
 
 async def _seed(sp, sid="sess-1", agent="agent-a"):
     await sp.get_storage(Agent).create(
-        Agent(id=agent, description=agent,
+        Agent(access=Access(public=True), id=agent, description=agent,
               model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]),
     )
     await sp.get_storage(Agent).create(
-        Agent(id="agent-b", description="b",
+        Agent(access=Access(public=True), id="agent-b", description="b",
               model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]),
     )
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(

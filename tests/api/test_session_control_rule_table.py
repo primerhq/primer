@@ -36,6 +36,7 @@ import httpx
 import pytest
 from httpx import ASGITransport
 
+from primer.model.access import Access
 from primer.agent.inner_dispatch import dispatch_inner_tool
 from primer.agent.tool_manager import ToolExecutionManager, invoke_one
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
@@ -191,7 +192,7 @@ async def _seed(world: World, path: str, scenario: str) -> str:
     world.registry.remove("ws-nope")
     if path == "REST binding switch":
         # the switch's target must exist (the route 404s a missing target before it writes): the idle session switches to it at once
-        await world.sp.get_storage(Agent).create(Agent(
+        await world.sp.get_storage(Agent).create(Agent(access=Access(public=True), 
             id="operator2", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[],
         ))
     if path.startswith("REST canvas"):
@@ -368,7 +369,7 @@ async def test_create_workspace_session_from_a_session_reaches_only_what_the_ses
             id=wid, name=wid, template_id="local-default", provider_id="local", created_at=NOW, phase="running",
             runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
         ))
-    await sp.get_storage(Agent).create(Agent(id="somebody", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]))
+    await sp.get_storage(Agent).create(Agent(access=Access(public=True), id="somebody", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]))
     ctx = ToolContext(tool_call_id="c1", session_id="ses-a", workspace_id=own, initiated_by=USER)
 
     body = await _create(sp, target, ctx)
@@ -546,7 +547,7 @@ async def test_a_persons_binding_switch_over_rest_reaches_a_session_only_at_or_b
         id="ses-b", workspace_id="ws-b", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.WAITING, turn_no=1,
         created_at=NOW, initiated_by=creator,
     ))
-    await fake_storage_provider.get_storage(Agent).create(Agent(
+    await fake_storage_provider.get_storage(Agent).create(Agent(access=Access(public=True), 
         id="operator2", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[],
     ))
     before = (await sessions.get("ses-b")).model_dump(mode="json")
@@ -1128,7 +1129,7 @@ class _FireRegistry(FakeRegistry):
 
 
 def _runnable_graph() -> Graph:
-    return Graph(
+    return Graph(access=Access(public=True), 
         id="g-1", description="begin -> end", nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
         edges=[_StaticEdge(from_node="begin", to_node="end")],
     )
@@ -1145,7 +1146,7 @@ async def _fire_world() -> World:
             runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
         ))
     await world.sp.get_storage(User).create(User(id="u-user", username="user", created_at=NOW, role="user"))
-    await world.sp.get_storage(Agent).create(Agent(id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]))
+    await world.sp.get_storage(Agent).create(Agent(access=Access(public=True), id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]))
     await world.sp.get_storage(Graph).create(_runnable_graph())
     await world.sp.get_storage(Trigger).create(Trigger(
         id="tr-fire", slug="tr-fire", name="f", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW),
@@ -1383,7 +1384,7 @@ async def test_the_tools_of_a_graph_session_with_no_holder_slot_reach_only_what_
         provider_registry=world.registry, engine=InMemoryClaimEngine(adapters={}),  # type: ignore[arg-type]
     )
     driver = await pool._build_executor(row, _HolderlessHost(own, repo))  # noqa: SLF001 -- the worker's own build seam
-    agent = Agent(
+    agent = Agent(access=Access(public=True), 
         id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=["workspaces__delete_workspace", "system__call_tool"],
         system_prompt=[],
     )
@@ -2371,7 +2372,7 @@ async def test_a_session_started_while_a_delete_runs_its_rank_scan_is_refused(mo
     from primer.workspace.session_factory import SessionFactoryDeps, start_workspace_session
 
     world = await _ws_world()
-    await world.sp.get_storage(Agent).create(Agent(id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]))
+    await world.sp.get_storage(Agent).create(Agent(access=Access(public=True), id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]))
     real_scan = wsmod.open_sessions_on
     admin_start: dict = {}
 
@@ -2483,7 +2484,7 @@ async def test_a_holder_less_graph_manager_names_its_session_on_events_approvals
         provider_registry=world.registry, engine=InMemoryClaimEngine(adapters={}), approval_resolver=ApprovalResolver(policies),  # type: ignore[arg-type]
     )
     driver = await pool._build_executor(row, _HolderlessHost("ws-1", repo))  # noqa: SLF001 -- the worker's own build seam
-    agent = Agent(
+    agent = Agent(access=Access(public=True), 
         id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=["workspaces__list_workspaces", "workspaces__get_workspace"],
         system_prompt=[],
     )

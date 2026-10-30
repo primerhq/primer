@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from primer.model.access import Access
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.model.agent import Agent, AgentModel
 from primer.model.except_ import NotFoundError
@@ -103,12 +104,20 @@ class _Storage:
         self._store = _AgentStore(agent)
 
     def get_storage(self, model):
+        if model is Graph:
+            # The per-turn access check asks for the live graph; none is stored here, so the snapshot's access decides.
+            return _NoRows()
         assert model is Agent
         return self._store
 
 
+class _NoRows:
+    async def get(self, _id: str):
+        return None
+
+
 def _agent() -> Agent:
-    return Agent(
+    return Agent(access=Access(public=True), 
         id="ag-1", description="test agent", model=AgentModel(profile_id="prov-1--m-1"), tools=[],
         system_prompt=["sys"],
     )
@@ -144,7 +153,7 @@ def _agent_row(sid: str, agent: Agent) -> WorkspaceSession:
 
 
 def _graph() -> Graph:
-    return Graph(
+    return Graph(access=Access(public=True), 
         id="g-1", description="begin -> agent -> end",
         nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="work", agent_id="ag-1"), _EndNode(id="end")],
         edges=[_StaticEdge(from_node="begin", to_node="work"), _StaticEdge(from_node="work", to_node="end")],

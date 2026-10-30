@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from primer.model.access import Access
 from primer.api.registries import WorkspaceRegistry
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.principal import PrincipalRef
@@ -172,7 +173,7 @@ class _FakeClaimEngine:
 def _seed_agent(sp, agent_id="code-reviewer") -> None:
     from primer.model.agent import Agent, AgentModel
 
-    sp.get_storage(Agent)._data[agent_id] = Agent(
+    sp.get_storage(Agent)._data[agent_id] = Agent(access=Access(public=True), 
         id=agent_id,
         description="x",
         model=AgentModel(profile_id="p--m"),
