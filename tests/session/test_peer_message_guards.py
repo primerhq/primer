@@ -36,8 +36,8 @@ from primer.session.peer_messages import (
     parked_on,
     peer_prefix,
     record_peer_message,
-    resolve_default_workspace_id,
 )
+from primer.bootstrap.prime import resolve_default_workspace_id
 from tests.session._peer_fakes import make_world
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)

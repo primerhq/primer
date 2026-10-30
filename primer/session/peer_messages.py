@@ -42,7 +42,6 @@ from pydantic import BaseModel
 from primer.access.person import person_from_ref
 from primer.access.workspaces import workspace_level
 from primer.agent.invoke import MAX_INVOCATION_DEPTH
-from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.events.recorder import actor_of, recorder_for
 from primer.model.access import AccessLevel, LEVEL_RANK
 from primer.model.except_ import ConflictError, NotFoundError
@@ -113,10 +112,6 @@ REFUSE_NO_CALLER = "message_session works only inside a workspace session"  # un
 REFUSE_NOT_FOUND = "Session {session_id!r} does not exist in this workspace"  # not-found
 REFUSE_NO_FULL = (
     "you hold less than full access to workspace {workspace_id!r}, so you cannot message its sessions"
-)  # forbidden
-REFUSE_RANK = (
-    "session {session_id!r} runs at a higher rank ({target_rank}) than this session ({sender_rank}); "
-    "a session may message only sessions at or below its own rank"
 )  # forbidden
 REFUSE_BUSY = "session {session_id!r} is {reason}; nothing was sent (mode if_idle)"  # conflict
 REFUSE_ENDED = "session {session_id!r} has ended ({ended_reason}) and cannot take a message"  # conflict
@@ -369,52 +364,11 @@ async def list_workspace_session_summaries(
     return {"workspace_id": workspace_id, "items": items, "total": page.total if page.total is not None else len(items)}
 
 
-async def reach_of(storage_provider: Any, workspace_id: str) -> str | None:
-    """The workspace a session of ``workspace_id`` may reach, or ``None`` when it may reach every workspace.
-
-    The scope of every path by which a session acts on another session (design 6.1; lead ruling 3 of the G7 fixes): a session reaches its own
-    workspace, and a session in the default workspace (prime, the management plane) reaches every workspace. Which workspace is the default is the one
-    every module asks for (``primer.bootstrap.prime.resolve_default_workspace_id``); with none named, no session is in it. A person (REST) or an API
-    client (MCP), who calls with no session, is not scoped by this.
-    """
-    default_workspace_id = await resolve_default_workspace_id(storage_provider)
-    return None if workspace_id == default_workspace_id else workspace_id
-
-
-def in_reach(reach: str | None, workspace_id: str) -> bool:
-    """Whether a session in ``workspace_id`` is within ``reach`` (:func:`reach_of`). Out of reach is answered exactly as a session that does not
-    exist, by every caller, so a session id seen in a shared file or a log is never confirmed."""
-    return reach is None or workspace_id == reach
-
-
-#: The sentence every tool that names a workspace adds to its description: what a session outside prime reaches (:func:`caller_reach`).
+#: The sentence every tool that names a workspace adds to its description: what a caller's access decides.
 ACCESS_NOTE = (
     "A workspace you hold no access to answers type=not-found, as an unknown id does; a level below the one the tool needs answers "
     "type=forbidden."
 )
-
-#: The workspace a calling session is confined to when its workspace cannot be told: an id no workspace has (an id is never empty), so it reaches
-#: nothing (fail closed).
-NO_WORKSPACE = ""
-
-
-async def caller_reach(storage_provider: Any, ctx: Any) -> str | None:
-    """The one workspace the caller of a tool may reach, or ``None`` for every workspace (lead ruling 3 of the G7 fixes, audit G7-05).
-
-    The reach of every tool that names a workspace or a session, in every toolset that has one (the workspaces tools, the reply-binding and
-    channel-binding tools, the trigger subscription tools): a call from a workspace session reaches its own workspace, and every workspace when that
-    is the default one (prime, the management plane), as :func:`reach_of` says. A call with no calling session (``ctx`` None or with no
-    ``session_id``: a person over MCP, an API client) keeps its reach over every workspace. A context that names a session but no workspace is
-    resolved through the session's row; a session that cannot be found reaches nothing.
-    """
-    if ctx is None or not getattr(ctx, "session_id", None):
-        return None
-    workspace_id = getattr(ctx, "workspace_id", None)
-    if not workspace_id:
-        row = await storage_provider.get_storage(WorkspaceSession).get(ctx.session_id)
-        workspace_id = row.workspace_id if row is not None else NO_WORKSPACE
-    return await reach_of(storage_provider, workspace_id)
-
 
 class PeerSendResult(BaseModel):
     """What ``message_session`` answers when the message was delivered or queued."""
@@ -779,7 +733,6 @@ async def send_peer_message(
 
 __all__ = [
     "MAX_PEER_HOPS",
-    "NO_WORKSPACE",
     "ACCESS_NOTE",
     "PARKED_ON_LABELS",
     "PEER_MESSAGE_MAX_CHARS",
@@ -805,25 +758,20 @@ __all__ = [
     "REFUSE_NOT_ENDED",
     "REFUSE_NO_FULL",
     "REFUSE_QUEUE_FULL",
-    "REFUSE_RANK",
     "REFUSE_RATE",
     "REFUSE_RESTART_NEEDS_INPUT",
     "REFUSE_SELF",
     "REFUSE_TEXT",
     "PeerMessageRefused",
     "PeerSendResult",
-    "caller_reach",
     "check_peer_rate",
     "delete_peer_ledger_of",
-    "in_reach",
     "list_workspace_session_summaries",
     "next_peer_hops",
     "parked_on",
     "peer_prefix",
-    "reach_of",
     "record_peer_message",
     "trim_stale_peer_ledger",
-    "resolve_default_workspace_id",
     "send_peer_message",
     "session_summary",
 ]

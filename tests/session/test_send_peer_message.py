@@ -44,7 +44,6 @@ from primer.session.peer_messages import (
     REFUSE_NO_CALLER,
     REFUSE_NO_FULL,
     REFUSE_NOT_FOUND,
-    REFUSE_RANK,
     REFUSE_SELF,
     PeerMessageRefused,
     PeerSendResult,
@@ -132,10 +131,6 @@ def test_the_copy_is_the_plans_character_for_character():
     assert peer_messages.REFUSE_SELF == "a session cannot message itself"
     assert peer_messages.REFUSE_NO_CALLER == "message_session works only inside a workspace session"
     assert peer_messages.REFUSE_NOT_FOUND == "Session {session_id!r} does not exist in this workspace"
-    assert peer_messages.REFUSE_RANK == (
-        "session {session_id!r} runs at a higher rank ({target_rank}) than this session ({sender_rank}); "
-        "a session may message only sessions at or below its own rank"
-    )
     assert peer_messages.REFUSE_BUSY == "session {session_id!r} is {reason}; nothing was sent (mode if_idle)"
     assert peer_messages.REFUSE_ENDED == "session {session_id!r} has ended ({ended_reason}) and cannot take a message"
     assert peer_messages.NOTE_WOKEN == "Delivered: the session starts its next turn with your message."

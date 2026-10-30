@@ -131,7 +131,7 @@ from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import Parallelism, ReplyTargetInput, SubscriptionConfig
 from primer.trigger.owner import view_for
-from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE
+from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE, caller_scope
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ReplyTargetAnchorInvalid,
@@ -152,7 +152,7 @@ from primer.model.workspace import (
     WorkspaceChannelLink,
 )
 from primer.model.yield_ import ToolContext, Yielded
-from primer.session.peer_messages import ACCESS_NOTE, caller_reach
+from primer.session.peer_messages import ACCESS_NOTE
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
 from primer.artifact.checks import (
     ARTIFACT_DEFAULT_WRITE_NOTE,
@@ -1005,7 +1005,7 @@ def build_system_toolset(
                 owner=ctx.initiated_by if ctx is not None else None,
                 # A session outside prime binds only to its own workspace or a session in it, and the row records that reach for every
                 # fire (review of #870, F1).
-                reach=await caller_reach(storage_provider, ctx),
+                reach=caller_scope(ctx),
                 deps=_binding_deps(),
             )
         except TriggerNotFound as exc:
@@ -1090,7 +1090,7 @@ def build_system_toolset(
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         # From a session outside prime, a binding whose action targets another workspace is left out (ticket 01a16c22).
-        items = await list_subscriptions(trigger_id=args.trigger_id, reach=await caller_reach(storage_provider, ctx), deps=deps)
+        items = await list_subscriptions(trigger_id=args.trigger_id, reach=caller_scope(ctx), deps=deps)
         # A non-manager sees only the owner's display and role (A-20), as trigger__list_subscriptions does.
         caller = _caller(ctx)
         return _ok([await view_for(s, caller, storage_provider) for s in items])
@@ -1138,7 +1138,7 @@ def build_system_toolset(
                 trigger_id=args.trigger_id,
                 subscription_id=args.subscription_id,
                 # Out of the caller's reach answers as an unknown binding and deletes nothing (ticket 01a16c22).
-                reach=await caller_reach(storage_provider, ctx),
+                reach=caller_scope(ctx),
                 deps=_binding_deps(),
             )
         except SubscriptionNotFound as exc:

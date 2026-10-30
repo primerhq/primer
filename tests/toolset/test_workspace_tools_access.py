@@ -407,3 +407,27 @@ async def test_list_my_sessions_needs_read():
     out = await _call(toolset, "list_my_sessions", {}, _ctx("ses-d", "ws-2", U3))
     _ok(out, "list_my_sessions with a read grant")
     assert {row["id"] for row in _items(out)} == {"ses-b", "ses-d"}
+
+
+async def test_subscription_visibility_follows_the_callers_full_not_the_default_workspace():
+    from primer.trigger.reach import caller_scope
+    from primer.trigger.service import list_subscriptions
+
+    world = await _world()
+    deps = ServiceDeps(storage_provider=world.sp, claim_engine=world.engine, event_bus=world.bus)
+    await world.sp.get_storage(Trigger).create(
+        Trigger(id="trg-1", slug="one", name="One", config=DelayedTriggerConfig(kind="delayed", fire_at=NOW.replace(hour=10)), created_at=NOW)
+    )
+    await create_subscription(
+        trigger_id="trg-1", config=AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner"), owner=U2, deps=deps
+    )
+
+    async def _listed(who: PrincipalRef) -> int:
+        reach = caller_scope(_ctx("ses-a", "ws-1", who))
+        return len(await list_subscriptions(trigger_id="trg-1", reach=reach, deps=deps))
+
+    # A run in the default workspace (prime) no longer sees every workspace's subscriptions; a read grant is not enough either.
+    assert await _listed(U1) == 0
+    assert await _listed(U3) == 0
+    assert await _listed(U2) == 1
+    assert await _listed(ADMIN) == 1

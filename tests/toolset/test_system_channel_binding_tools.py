@@ -189,6 +189,19 @@ def _make_workspace(ws_id: str = "ws-1", *, owner: str | None = None) -> Workspa
 
 
 #: The MCP actor the no-ctx reply-binding calls act as (access-control P2 T6): its user owns the workspace row under test.
+
+
+@pytest.fixture(autouse=True)
+def _mcp_admin():
+    """These tools run with no calling session: the MCP endpoint, whose live actor is the person they act as (access-control P2 T6)."""
+    from primer.mcp.server import current_actor
+    from primer.model.principal import Principal
+
+    token = current_actor.set(Principal(type="user", id="admin-mcp", display="admin-mcp", role="admin", source="local", user_id="admin-mcp"))
+    yield
+    current_actor.reset(token)
+
+
 REPLY_TOKEN = Principal(
     type="user", id="tok-reply", display="tok-reply", role="user", source="local",
     user_id="u-reply",
@@ -538,6 +551,11 @@ async def test_list_channel_bindings_hides_owner_details_from_a_non_manager(
     owner's display name and role, like trigger__list_subscriptions."""
     await _seed_channel_trigger(sp)
     await _create_binding(sp, system_toolset, _principal("u-owner"))
+    # The viewer holds full on the target workspace (access-control P2 T6: a subscription is listed only to who may write its target) but did
+    # not save the binding, so it is not its manager.
+    ws = await sp.get_storage(Workspace).get("ws-1")
+    ws.access = Access(owners=["u-owner"], grants={"u-other": "full"})
+    await sp.get_storage(Workspace).update(ws)
 
     result = await system_toolset.call(
         tool_name="list_channel_bindings",

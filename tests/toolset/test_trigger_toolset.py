@@ -56,6 +56,17 @@ def _result_body(result) -> dict:
     return json.loads(result.output)
 
 
+@pytest.fixture(autouse=True)
+def _mcp_admin():
+    """These tools run with no calling session: the MCP endpoint, whose live actor is the person they act as (access-control P2 T6)."""
+    from primer.mcp.server import current_actor
+    from primer.model.principal import Principal
+
+    token = current_actor.set(Principal(type="user", id="admin-mcp", display="admin-mcp", role="admin", source="local", user_id="admin-mcp"))
+    yield
+    current_actor.reset(token)
+
+
 @pytest.fixture
 def toolset(fake_storage_provider):
     return build_trigger_toolset_provider(
@@ -253,6 +264,17 @@ class TestSubscriptions:
     async def test_create_subscription_session_append(
         self, toolset, fake_storage_provider,
     ):
+        # The save asks the subscription owner's full on the target's workspace (access-control P2 T6): the MCP admin holds it on a row
+        # that exists.
+        now = datetime.now(timezone.utc)
+        await fake_storage_provider.get_storage(Workspace).create(Workspace(
+            id="ws-1", name="ws-1", template_id="tpl", provider_id="local-1", created_at=now, phase="running",
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://ws-1", token="t"),
+        ))
+        await fake_storage_provider.get_storage(WorkspaceSession).create(WorkspaceSession(
+            id="sess-1", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag1"),
+            status=SessionStatus.RUNNING, created_at=now, turn_status="idle",
+        ))
         created = await toolset.call(
             tool_name="create",
             arguments=_delayed_args(slug="sub-host", name="Sub Host"),
@@ -296,7 +318,8 @@ class TestSubscriptions:
         await fake_storage_provider.get_storage(Workspace).create(Workspace(
             id="ws-1", name="ws-1", template_id="tpl", provider_id="local-1", created_at=now, phase="running",
             runtime_meta=WorkspaceRuntimeMeta(url="ws://ws-1", token="t"),
-            access=Access(owners=["u-owner"]),
+            # The viewer holds full on the target (a subscription is listed only to who may write its target) but did not save it.
+            access=Access(owners=["u-owner"], grants={"u-other": "full"}),
         ))
         await fake_storage_provider.get_storage(WorkspaceSession).create(WorkspaceSession(
             id="sess-1", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag1"),

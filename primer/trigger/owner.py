@@ -181,7 +181,7 @@ def _rank_label(ref: PrincipalRef | None) -> str:
 # ---------------------------------------------------------------------------
 
 #: What a run (a tool call from a session) reads when it may not fire a trigger: the words a refused message to a session uses
-#: (:data:`primer.session.peer_messages.REFUSE_RANK`), said of the trigger. A trigger "runs at" its owner's rank: that is the most its fires run at.
+#: (the old peer-message rank refusal), said of the trigger. A trigger "runs at" its owner's rank: that is the most its fires run at.
 REFUSE_FIRE_RANK = (
     "trigger {trigger_id!r} runs at a higher rank ({owner_rank}) than this session ({caller_rank}); "
     "a session may fire only triggers at or below its own rank"
