@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from primer.common.validation_errors import without_input
 from primer.model.except_ import (
+    AccessDeniedError,
     AuthenticationError,
     AuthRequiredError,
     BadRequestError,
@@ -66,6 +67,9 @@ _PRIMER_ERROR_MAP: list[tuple[type[PrimerError], int, str, str]] = [
     (AuthRequiredError, 401, "/errors/auth-required", "Authentication Required"),
     (ModelNotFoundError, 404, "/errors/model-not-found", "Model Not Found"),
     (NotFoundError, 404, "/errors/not-found", "Not Found"),
+    # Access-control 403: insufficient level on a readable row (no level at all is NotFoundError). Dispatch is by MRO, so this
+    # wins over the PrimerError catch-all below; the type matches the 403s the guards raise as bare HTTPExceptions.
+    (AccessDeniedError, 403, "/errors/forbidden", "Forbidden"),
     # A refused local workspace is a 409 with its own type URI, so the console can tell "move this workspace
     # to a docker or kubernetes provider" from any other conflict (ticket 01a1072f).
     (WorkspaceRefusedError, 409, "/errors/workspace-refused", "Workspace Refused"),
@@ -110,8 +114,8 @@ _RESPONSES_BY_CODE.setdefault(
         "content": {PROBLEM_JSON_MEDIA_TYPE: {}},
     },
 )
-# 403 is raised as a bare HTTPException by the guards (a system collection, a reserved id), not as a PrimerError, so no row of
-# _PRIMER_ERROR_MAP carries it; it renders as the same problem envelope (_HTTP_STATUS_PROBLEM) and routes may document it.
+# The guards (a system collection, a reserved id) also raise 403 as bare HTTPExceptions, not just the AccessDeniedError row above;
+# they render as the same problem envelope (_HTTP_STATUS_PROBLEM), and this shared description matches the row's.
 _RESPONSES_BY_CODE.setdefault(
     403,
     {
