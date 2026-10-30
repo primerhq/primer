@@ -278,6 +278,23 @@ class NotFoundError(PrimerError):
     """
 
 
+class AccessDeniedError(PrimerError):
+    """The caller holds a level on the row, but not enough for the operation (access-control spec 9).
+
+    The 403 side of the access decision: :class:`NotFoundError` covers
+    "no level at all" (an out-of-access read answers exactly like a
+    missing row); this covers "insufficient level on a readable entity".
+    Its ``/errors/forbidden`` problem type matches the 403s the guards
+    raise as bare HTTPExceptions; the ``code`` extension is what tells
+    the two apart to a client.
+    """
+
+    @property
+    def problem_extensions(self) -> dict[str, object]:
+        """The machine-readable code, so a client can tell it from the guards' 403s."""
+        return {"code": "access_denied"}
+
+
 class ConflictError(PrimerError):
     """Storage operation conflicts with the current state.
 
