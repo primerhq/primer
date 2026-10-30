@@ -79,7 +79,8 @@ def _make_app(provider: _FakeStorageProvider) -> FastAPI:
             tag="widgets",
             owned=True,
             search_fields=["name"],
-        )
+        ),
+        prefix="/v1",
     )
     register_error_handlers(app)
     return app
@@ -141,7 +142,7 @@ async def test_get_unshared_is_404(client, provider):
     body = r.json()
     assert body["type"] == "/errors/not-found"
     # The 404 text is the missing-row text for this id: no information leak.
-    assert body["detail"] == "Widget 'w1' does not exist"
+    assert body["detail"] == "_Widget 'w1' does not exist"
 
 
 async def test_get_shared_read_ok(client, provider):
@@ -165,7 +166,7 @@ async def test_update_with_read_is_403(client, provider):
     body = r.json()
     assert body["type"] == "/errors/forbidden"
     assert body["extensions"]["code"] == "access_denied"
-    assert body["detail"] == "Widget 'w1' needs full access"
+    assert body["detail"] == "_Widget 'w1' needs full access"
     row = await provider.get_storage(_Widget).get("w1")
     assert row.name == "original", "a refused update writes nothing"
 
@@ -206,7 +207,7 @@ async def test_delete_needs_owner(client, provider):
     r = await client.delete("/v1/widgets/w1", headers=_headers("u2"))
     assert r.status_code == 403
     assert r.json()["extensions"]["code"] == "access_denied"
-    assert r.json()["detail"] == "Widget 'w1' needs owner access"
+    assert r.json()["detail"] == "_Widget 'w1' needs owner access"
     assert await provider.get_storage(_Widget).get("w1") is not None
     r = await client.delete("/v1/widgets/w1", headers=_headers("u1"))
     assert r.status_code == 204
@@ -263,6 +264,14 @@ def _find_body(predicate: dict | None) -> dict:
     return {"predicate": predicate, "page": {"kind": "offset", "offset": 0, "length": 100}}
 
 
+def _ilike(field: str, pattern: str) -> dict:
+    return {"left": {"kind": "field", "name": field}, "op": "~=*", "right": {"kind": "value", "value": pattern}}
+
+
+def _contains(field: str, token: str) -> dict:
+    return {"left": {"kind": "field", "name": field}, "op": "contains", "right": {"kind": "value", "value": token}}
+
+
 async def test_find_ands_access_predicate(client, provider):
     await client.post("/v1/widgets", json={"id": "w-private", "name": "hidden"}, headers=_headers("u1"))
     await client.post("/v1/widgets", json={"id": "w-shared", "name": "shown"}, headers=_headers("u1"))
@@ -272,32 +281,28 @@ async def test_find_ands_access_predicate(client, provider):
     # surface it for u2: the access predicate is ANDed, not replaced.
     r = await client.post(
         "/v1/widgets/find",
-        json=_find_body(
-            {"left": {"name": "name"}, "op": "~=*", "right": {"value": "%hidden%"}}
-        ),
+        json=_find_body(_ilike("name", "%hidden%")),
         headers=_headers("u2"),
     )
     assert r.status_code == 200, r.text
     assert [item["id"] for item in r.json()["items"]] == []
 
     # The access field itself is not a caller predicate: matching u1's
-    # membership token must not widen u2's results.
+    # membership token must not widen u2's results: w-private (the only row
+    # u2 cannot see) stays out even though its members carry u:u1; w-shared
+    # comes in because u2 is visible on it and it matches too.
     r = await client.post(
         "/v1/widgets/find",
-        json=_find_body(
-            {"left": {"name": "access.members"}, "op": "contains", "right": {"value": "u:u1"}}
-        ),
+        json=_find_body(_contains("access.members", "u:u1")),
         headers=_headers("u2"),
     )
     assert r.status_code == 200, r.text
-    assert [item["id"] for item in r.json()["items"]] == []
+    assert [item["id"] for item in r.json()["items"]] == ["w-shared"]
 
     # For the owner the body predicate still works as before.
     r = await client.post(
         "/v1/widgets/find",
-        json=_find_body(
-            {"left": {"name": "access.members"}, "op": "contains", "right": {"value": "u:u1"}}
-        ),
+        json=_find_body(_contains("access.members", "u:u1")),
         headers=_headers("u1"),
     )
     assert r.status_code == 200, r.text
@@ -315,8 +320,13 @@ async def test_admin_sees_all(client, provider):
     assert r.status_code == 200, r.text
     listing = await client.get("/v1/widgets", headers=_headers("admin"))
     assert [item["id"] for item in listing.json()["items"]] == ["w1"]
-    # An admin-created row is admin-managed: no owner, nothing public.
+    # A logged-in admin has a user id, so their rows are theirs (admin still
+    # sees every other row); only the id-less system principal (auth
+    # disabled) creates admin-managed rows.
     r = await client.post("/v1/widgets", json={"id": "w-admin", "name": "b"}, headers=_headers("admin"))
+    assert r.status_code == 201, r.text
+    assert r.json()["access"]["owners"] == ["admin"]
+    r = await client.post("/v1/widgets", json={"id": "w-system", "name": "c"}, headers=_headers("system"))
     assert r.status_code == 201, r.text
     assert r.json()["access"]["owners"] == []
     assert r.json()["access"]["public"] is False
