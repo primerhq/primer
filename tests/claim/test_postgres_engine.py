@@ -1862,7 +1862,11 @@ async def test_postgres_session_release_keeps_a_wake_committed_between_its_read_
         assert row.status == SessionStatus.RUNNING
         assert row.turn_no == 5, "turn_no must be bumped exactly once"
         assert row.last_turn_at is not None
-        assert row.last_worker_id is None
+        # The claim-time stamp: a separate committed write of the claim (the
+        # engine's claim connection, before the lease is handed out). The
+        # release no longer writes the field, so what the row carries is the
+        # claiming worker's id, not the seeded "wk" and not None.
+        assert row.last_worker_id == "wk-release", "the claim-time stamp must persist past the release"
         assert await _lease_claimed_by(pg_storage, sid) is None
         assert not await engine.has_lease(ClaimKind.SESSION, sid), "the lease row must be gone"
     finally:
@@ -1888,7 +1892,11 @@ async def test_postgres_session_release_that_loses_its_fence_twice_rolls_the_lea
         assert await _lease_claimed_by(pg_storage, sid) == "wk-release", "the lease DELETE was not rolled back"
         row = await sessions.get(sid)
         assert row.turn_no == 6, "only the competing writes moved turn_no"
-        assert row.last_worker_id == "wk", "the release's own write was not rolled back"
+        # The claim-time stamp is a separate committed write of the claim (its
+        # own connection, before the lease was handed out), so the rolled-back
+        # release leaves it intact. The release no longer writes the field at
+        # all, which is what makes the stamp survive here.
+        assert row.last_worker_id == "wk-release", "the claim-time stamp is a separate claim write: the rolled-back release left it"
         assert row.last_turn_at is None
         assert row.turn_status == "idle" and row.last_seq == 10
     finally:

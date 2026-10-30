@@ -349,18 +349,28 @@ class PostgresClaimEngine(ClaimEngine):
                     # $3). Configured via WorkerConfig.lease_ttl_seconds.
                     str(self.lease_ttl_seconds),
                 )
-            leases = [
-                Lease(
-                    kind=ClaimKind(r["kind"]),
-                    entity_id=r["entity_id"],
-                    claimed_by=worker_id,
-                    claimed_at=r["claimed_at"],
-                    expires_at=r["expires_at"],
-                    attempt_count=r["attempt_count"],
-                    last_error=r["last_error"],
-                )
-                for r in rows
-            ]
+                leases = [
+                    Lease(
+                        kind=ClaimKind(r["kind"]),
+                        entity_id=r["entity_id"],
+                        claimed_by=worker_id,
+                        claimed_at=r["claimed_at"],
+                        expires_at=r["expires_at"],
+                        attempt_count=r["attempt_count"],
+                        last_error=r["last_error"],
+                    )
+                    for r in rows
+                ]
+                # The claim-time hooks run on the claim's own connection,
+                # before the leases are handed out: an adapter that owns a
+                # claim-scoped entity field (the session adapter's
+                # last_worker_id stamp) writes it while the claim is fresh,
+                # and a failing hook fails the claim, never a half-stamped
+                # hand-out.
+                for lease in leases:
+                    adapter = self._adapters.get(lease.kind)
+                    if adapter is not None:
+                        await adapter.on_claim(conn, lease)
             _span.set_attribute("claim.count", len(leases))
             for lease in leases:
                 # claimed_at is the moment of claiming; we don't have
