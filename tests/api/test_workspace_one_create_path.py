@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from primer.model.access import Access
 from primer.api.registries import WorkspaceRegistry
 from primer.model.storage import OffsetPage
 from primer.model.workspace import (
@@ -71,7 +72,7 @@ async def agent_sandbox(sp):  # noqa: F811
             ),
         )
     )
-    template = WorkspaceTemplate(
+    template = WorkspaceTemplate(access=Access(public=True), 
         id="tpl-k", description="t", provider_id="k8s-as", backend=KubernetesTemplateConfig(image="primer-runtime:1"),
     )
     await sp.get_storage(WorkspaceTemplate).create(template)
@@ -133,7 +134,7 @@ async def test_a_system_variant_kubernetes_provider_is_still_built(toolset, sp, 
         )
     )
     await sp.get_storage(WorkspaceTemplate).create(
-        WorkspaceTemplate(id="tpl-s", description="t", provider_id="k8s-sys", backend=KubernetesTemplateConfig(image="primer-runtime:1"))
+        WorkspaceTemplate(access=Access(public=True), id="tpl-s", description="t", provider_id="k8s-sys", backend=KubernetesTemplateConfig(image="primer-runtime:1"))
     )
 
     result = await toolset.call(tool_name="create_workspace", arguments={"id": "ws-sys", "template_id": "tpl-s"})
@@ -239,7 +240,7 @@ async def test_a_new_workspace_that_never_answers_is_failed_and_its_sessions_end
 
 @pytest.mark.asyncio
 async def test_a_template_whose_provider_is_gone_is_not_found_from_both_doors(client, toolset, sp, built) -> None:  # noqa: F811
-    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(id="tpl-x", description="t", provider_id="nope"))
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(access=Access(public=True), id="tpl-x", description="t", provider_id="nope"))
 
     rest = await client.post("/v1/workspaces", json={"id": "ws-x", "template_id": "tpl-x"})
     tool = json.loads((await toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-x"})).output)
