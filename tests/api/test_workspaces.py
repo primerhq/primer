@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -1305,8 +1306,13 @@ class TestWorkspaceRouter:
         with pytest.raises(asyncio.CancelledError):
             await create_workspace(
                 body=WorkspaceCreateBody(template_id="tpl-1"),
-                # Only read by the mounts branch, which this body doesn't take.
-                request=None,  # type: ignore[arg-type]
+                # A stub of the request the HTTP layer would build: the
+                # template access gate reads state.actor, and an admin acts.
+                request=SimpleNamespace(
+                    state=SimpleNamespace(
+                        actor=SimpleNamespace(type="user", user_id=None, role="admin"),
+                    )
+                ),
                 workspace_storage=row_storage,
                 template_storage=sp.get_storage(WorkspaceTemplate),
                 registry=wsr,

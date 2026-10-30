@@ -63,12 +63,27 @@ def _urls(row: WorkspaceTemplate) -> dict[str, str]:
     return {fm.path: str(fm.source.url) for fm in row.files if getattr(fm.source, "kind", None) == "url"}
 
 
+async def _share_full(app, admin) -> None:
+    """The admin (owner of the row) shares full with roleuser (uid ``user-role``)
+    so the user's reads and writes land on the url-source rule under test
+    instead of the out-of-access 404."""
+    r = await admin.get("/v1/users/lookup", params={"q": "roleadmin"})
+    assert r.status_code == 200, r.text
+    owner = next(u["id"] for u in r.json() if u["username"] == "roleadmin")
+    r = await admin.put(
+        "/v1/workspace_templates/tpl-a/access",
+        json={"owners": [owner], "grants": {"user-role": "full"}},
+    )
+    assert r.status_code == 200, r.text
+
+
 # ---- a role=user caller: the whole URL unchanged, or a 422 -----------------------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_a_user_who_sends_the_served_body_back_unchanged_keeps_the_stored_password(app, admin, user) -> None:
     await admin.post("/v1/workspace_templates", json=_template([_url_file(URL)]))
+    await _share_full(app, admin)
     served = (await user.get("/v1/workspace_templates/tpl-a")).json()
     served["description"] = "edited by a user"
 
@@ -90,6 +105,7 @@ async def test_a_user_who_sends_the_served_body_back_unchanged_keeps_the_stored_
 )
 async def test_a_user_who_changes_anything_but_the_password_gets_a_422_and_the_row_is_untouched(app, admin, user, changed: str) -> None:
     await admin.post("/v1/workspace_templates", json=_template([_url_file(URL)]))
+    await _share_full(app, admin)
     served = (await user.get("/v1/workspace_templates/tpl-a")).json()
     served["files"][0]["source"]["url"] = changed
 
@@ -103,6 +119,7 @@ async def test_a_user_who_changes_anything_but_the_password_gets_a_422_and_the_r
 @pytest.mark.asyncio
 async def test_a_user_who_types_a_new_password_for_another_path_stores_what_was_typed(app, admin, user) -> None:
     await admin.post("/v1/workspace_templates", json=_template([_url_file(URL)]))
+    await _share_full(app, admin)
     served = (await user.get("/v1/workspace_templates/tpl-a")).json()
     served["files"][0]["source"]["url"] = "https://reader:typed@files.example.com/other-path.txt"
 
@@ -132,6 +149,7 @@ async def test_a_user_who_moves_a_mask_on_a_template_that_holds_an_admin_only_se
     """The template holds a ``kind=secret`` file source (admin-only): it is not user-editable at all. The refusal must be the 403, with nothing said about what a mask could be restored to."""
     created = await admin.post("/v1/workspace_templates", json=_template([_url_file(URL), SECRET_FILE]))
     assert created.status_code == 201, created.text
+    await _share_full(app, admin)
     served = (await user.get("/v1/workspace_templates/tpl-a")).json()
     served["files"][0]["source"]["url"] = f"https://reader:{MASK}@attacker.example/seed.txt"
 

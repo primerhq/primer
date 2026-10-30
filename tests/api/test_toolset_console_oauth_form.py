@@ -180,6 +180,19 @@ async def _served(raw_client) -> dict:
     return r.json()
 
 
+async def _share_full(raw_client) -> None:
+    """The admin owner shares full with the user (seeded by ``_as``) so the
+    user's save lands on the form rule under test instead of the
+    out-of-access 404; returns to the user's session."""
+    await _login(raw_client, "g4-admin")
+    r = await raw_client.put(
+        "/v1/toolsets/kb/access",
+        json={"owners": ["g4-admin"], "grants": {"g4-user": "full"}},
+    )
+    assert r.status_code == 200, r.text
+    await _login(raw_client, "g4-user")
+
+
 async def _stored_oauth(app) -> dict:
     stored = await app.state.storage_provider.get_storage(Toolset).get("kb")
     return stored.config.config.oauth
@@ -210,6 +223,7 @@ async def test_an_unchanged_admin_save_of_a_public_static_client_keeps_the_sign_
 async def test_a_users_unchanged_save_of_a_public_static_client_is_accepted(forms, raw_client, app) -> None:
     await _create(raw_client, app, PUBLIC_STATIC)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client)
     form = forms(await _served(raw_client), role="user")
 
     r = await raw_client.put("/v1/toolsets/kb", json=form.save())

@@ -38,6 +38,8 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.access.person import person_from_request
+from primer.access.policy import require
 from primer.common.hf_hub import MAX_MODELS_PER_CHECK, check_hf_models
 from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm.anthropic import _discover_anthropic_models
@@ -57,6 +59,8 @@ from primer.api.deps import (
     require_admin,
 )
 from primer.api.errors import common_responses
+from primer.api.routers.access import make_access_router
+from primer.model.access import AccessLevel
 from primer.model.chat import tool_catalogue_flags
 from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.model.except_ import (
@@ -1708,6 +1712,17 @@ async def _toolset_on_delete(toolset_id: str, request: Request) -> None:
 
 # ---- Toolset router --------------------------------------------------------
 
+# The access sub-resource (GET/PUT /toolsets/{id}/access) is mounted
+# BEFORE the CRUD router (route-order rule in _crud.py).
+toolset_access_router = make_access_router(
+    model_cls=Toolset,
+    plural="toolsets",
+    storage_dep=get_toolset_storage,
+    tag="toolsets",
+    allow_public_tools=True,
+)
+
+
 toolset_router = make_crud_router(
     model_cls=Toolset,
     storage_dep=get_toolset_storage,
@@ -1725,6 +1740,7 @@ toolset_router = make_crud_router(
             child_field="toolset_id",
         ),
     ],
+    owned=True,
 )
 
 
@@ -1735,9 +1751,16 @@ toolset_router = make_crud_router(
     responses=common_responses(500),
 )
 async def invalidate_toolset_provider(
+    request: Request,
     toolset_id: str = Path(..., description="Toolset id"),
     registry: ProviderRegistry = Depends(get_provider_registry),
+    toolsets=Depends(get_toolset_storage),
 ) -> None:
+    # invalidating the provider is a write to the toolset's runtime state: full level.
+    # Reserved ids (system, workspaces, ...) are not rows, so the gate sees no row and skips.
+    row = await toolsets.get(toolset_id)
+    if row is not None:
+        require(person_from_request(request), row.access, AccessLevel.FULL, what=f"Toolset {toolset_id!r}")
     await registry.invalidate_toolset(toolset_id)
 
 
@@ -1747,9 +1770,11 @@ async def invalidate_toolset_provider(
     responses=common_responses(401, 404, 409, 500, 502, 504),
 )
 async def list_toolset_tools(
+    request: Request,
     toolset_id: str = Path(..., description="Toolset id"),
     principal: str | None = Depends(get_principal),
     registry: ProviderRegistry = Depends(get_provider_registry),
+    toolsets=Depends(get_toolset_storage),
 ) -> dict:
     """Enumerate the toolset's tools from the live provider.
 
@@ -1762,6 +1787,11 @@ async def list_toolset_tools(
     """
     from primer.model.except_ import ProviderError
 
+    # the tool list reveals the toolset's contents: read level. Reserved ids are
+    # not rows, so the gate skips them and the registry short-circuits as before.
+    row = await toolsets.get(toolset_id)
+    if row is not None:
+        require(person_from_request(request), row.access, AccessLevel.READ, what=f"Toolset {toolset_id!r}")
     provider = await registry.get_toolset(toolset_id)
     tools = []
     try:
@@ -1894,6 +1924,7 @@ async def list_builtin_toolsets(
     responses=common_responses(404, 500),
 )
 async def get_toolset_with_builtin_shim(
+    request: Request,
     toolset_id: str = Path(..., description="Toolset id"),
     storage_provider=Depends(get_storage_provider),
 ) -> dict:
@@ -1944,6 +1975,10 @@ async def get_toolset_with_builtin_shim(
         raise NotFoundError(
             f"Toolset {toolset_id!r} does not exist"
         )
+    # This shim is the GET-by-id that actually runs (it is mounted before the
+    # CRUD router), so it enforces the same access level the owned CRUD route
+    # would: reserved ids are answered above and never reach the gate.
+    require(person_from_request(request), row.access, AccessLevel.READ, what=f"Toolset {toolset_id!r}")
     body = row.model_dump(mode="json")
     body["builtin"] = False
     return body
@@ -2076,6 +2111,7 @@ class ValidatePythonSourceBody(BaseModel):
     responses=common_responses(404, 500),
 )
 async def validate_python_source(
+    request: Request,
     toolset_id: str = Path(..., description="Toolset id"),
     body: ValidatePythonSourceBody = Body(...),
     storage_provider=Depends(get_storage_provider),
@@ -2114,6 +2150,10 @@ async def validate_python_source(
     default_timeout = 30.0
     storage = storage_provider.get_storage(Toolset)
     row = await storage.get(toolset_id)
+    # validating runs the registrar on the stored toolset's context: full level.
+    # A missing row (reserved ids included) still falls back and analyses, as before.
+    if row is not None:
+        require(person_from_request(request), row.access, AccessLevel.FULL, what=f"Toolset {toolset_id!r}")
     if row is not None and isinstance(row.config, PythonConfig):
         default_timeout = row.config.default_timeout_seconds
 
@@ -2181,8 +2221,10 @@ async def validate_python_source(
     responses=common_responses(404, 500),
 )
 async def toolset_runtime(
+    request: Request,
     toolset_id: str = Path(..., description="Toolset id"),
     registry: ProviderRegistry = Depends(get_provider_registry),
+    toolsets=Depends(get_toolset_storage),
 ) -> dict:
     """What a python toolset actually is at runtime.
 
@@ -2191,6 +2233,11 @@ async def toolset_runtime(
     neither filesystem reads nor egress, and the console shows that rather
     than a generic "sandboxed" badge.
     """
+    # the runtime facts reveal the toolset's derived tools: read level.
+    # Reserved ids are not rows, so the gate skips them as before.
+    row = await toolsets.get(toolset_id)
+    if row is not None:
+        require(person_from_request(request), row.access, AccessLevel.READ, what=f"Toolset {toolset_id!r}")
     provider = await registry.get_toolset(toolset_id)
     # y/w/r/n capability badges are not part of Tool's own serialisation
     # (chat.py excludes them so they never reach the LLM-facing schema);

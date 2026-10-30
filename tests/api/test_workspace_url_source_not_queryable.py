@@ -83,6 +83,17 @@ async def ctx(tmp_path: Path) -> AsyncIterator[dict]:
             },
         )
         assert created.status_code in (200, 201), created.text
+        # The user (uid user-u) is a full grantee on the template: the tests
+        # below probe the masked-field oracles, which apply to readers too;
+        # without this the owned list/get would 404 before the oracle is reached.
+        r = await admin.get("/v1/users/lookup", params={"q": "adm"})
+        assert r.status_code == 200, r.text
+        owner = next(u["id"] for u in r.json() if u["username"] == "adm")
+        r = await admin.put(
+            "/v1/workspace_templates/tpl-a/access",
+            json={"owners": [owner], "grants": {"user-u": "full"}},
+        )
+        assert r.status_code == 200, r.text
         await sp.get_storage(Workspace).create(
             Workspace(
                 id="ws-one",

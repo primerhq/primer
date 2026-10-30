@@ -32,6 +32,30 @@ async def _admin_creates(raw_client, app, body: dict, **params):
     raw_client.cookies.clear()
 
 
+async def _share_full(raw_client, toolset_id: str) -> None:
+    """The admin owner shares full with u-user (seeded by ``_as``) so the
+    plain user's write lands on the role rule under test instead of the
+    out-of-access 404; returns to the user's session."""
+    await _login(raw_client, "admin")
+    resp = await raw_client.put(
+        f"/v1/toolsets/{toolset_id}/access",
+        json={"owners": ["u-admin"], "grants": {"u-user": "full"}},
+    )
+    assert resp.status_code == 200, resp.text
+    await _login(raw_client, "user")
+
+
+async def _make_co_owner(raw_client, toolset_id: str) -> None:
+    """Deleting requires the owner level: the admin adds u-user as an owner."""
+    await _login(raw_client, "admin")
+    resp = await raw_client.put(
+        f"/v1/toolsets/{toolset_id}/access",
+        json={"owners": ["u-admin", "u-user"], "grants": {}},
+    )
+    assert resp.status_code == 200, resp.text
+    await _login(raw_client, "user")
+
+
 async def test_a_plain_user_cannot_create_a_stdio_toolset(raw_client, app):
     await _as(raw_client, app, "user")
 
@@ -47,6 +71,7 @@ async def test_a_plain_user_cannot_create_a_stdio_toolset(raw_client, app):
 async def test_a_plain_user_cannot_change_an_existing_stdio_toolset(raw_client, app):
     await _admin_creates(raw_client, app, STDIO)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-stdio")
 
     resp = await raw_client.put("/v1/toolsets/ts-stdio", json=STDIO_OTHER_COMMAND)
 
@@ -58,6 +83,7 @@ async def test_a_plain_user_cannot_change_an_existing_stdio_toolset(raw_client, 
 async def test_a_plain_user_cannot_turn_an_http_toolset_into_a_stdio_one(raw_client, app):
     await _admin_creates(raw_client, app, HTTP, **NO_PROBE)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-http")
 
     resp = await raw_client.put("/v1/toolsets/ts-http", json={**STDIO, "id": "ts-http"})
 
@@ -69,6 +95,7 @@ async def test_a_plain_user_cannot_repoint_a_stdio_toolset_at_http(raw_client, a
     """The stored row counts too: the incoming body here launches nothing, so only the ``existing`` side of the rule can refuse it."""
     await _admin_creates(raw_client, app, STDIO)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-stdio")
 
     resp = await raw_client.put("/v1/toolsets/ts-stdio", json={**HTTP, "id": "ts-stdio"}, params=NO_PROBE)
 
@@ -101,5 +128,6 @@ async def test_a_plain_user_can_still_delete_a_stdio_toolset(raw_client, app):
     """Deleting launches nothing; the gate is on creating and changing the command (the lead's scope for A-02)."""
     await _admin_creates(raw_client, app, STDIO)
     await _as(raw_client, app, "user")
+    await _make_co_owner(raw_client, "ts-stdio")
 
     assert (await raw_client.delete("/v1/toolsets/ts-stdio")).status_code == 204
