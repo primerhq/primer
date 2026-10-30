@@ -37,13 +37,13 @@ class Access(BaseModel):
 
     ``owners``: user ids, several allowed; the creator starts as the sole
     owner. ``grants``: user id to level for shared access (``read`` or
-    ``full``; an entity is never granted ``owner``). ``public`` and
-    ``public_tools`` open read access to every full user (spec 6.2: public
-    always means read); ``public_tools`` marks individual tools of a
-    toolset instead of the whole toolset. ``members`` is derived and
-    indexed (Task 4's GIN index): it carries a ``u:<id>`` token for every
-    owner and grantee and ``public`` when the row is publicly visible,
-    which is what the list predicate matches.
+    ``full``; an entity is never granted ``owner``). ``public`` opens
+    read access to every full user (spec 6.2: public always means read);
+    ``public_tools`` marks individual tools of a toolset as publicly
+    usable (Phase 4's tool_is_public) without exposing the row itself.
+    ``members`` is derived and indexed (Task 4's GIN index): it carries a
+    ``u:<id>`` token for every owner and grantee and ``public`` when the
+    row is publicly visible, which is what the list predicate matches.
     """
 
     owners: list[str] = []
@@ -59,7 +59,10 @@ class Access(BaseModel):
         # two different statements about the same user.
         self.grants = {user_id: level for user_id, level in self.grants.items() if user_id not in owners}
         tokens = {f"u:{user_id}" for user_id in owners | set(self.grants)}
-        if self.public or self.public_tools:
+        if self.public:
+            # Only the row-level flag makes the row listable to every full user.
+            # public_tools opens individual tools (Phase 4's tool_is_public) and
+            # must NOT leak the row itself into everyone's list.
             tokens.add("public")
         self.members = sorted(tokens)
         return self

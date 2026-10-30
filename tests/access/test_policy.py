@@ -169,6 +169,37 @@ async def test_visible_predicate_against_real_storage(widget_store):
     assert await _visible_ids(widget_store, Person(None, "restricted")) == []
 
 
+@pytest.mark.asyncio
+async def test_list_and_get_agree_on_every_row_and_person(widget_store):
+    """The list predicate and level_of must agree per (row, person): a row appears
+    in a person's list if and only if level_of gives them a level on it. Otherwise
+    a listed row 404s on GET (public_tools-only rows must not be listable)."""
+    storage = widget_store.get_storage(_Widget)
+    rows = [
+        ("m-private", Access(owners=["u1"])),
+        ("m-shared-read", Access(owners=["u1"], grants={"u2": "read"})),
+        ("m-shared-full", Access(owners=["u1"], grants={"u2": "full"})),
+        ("m-public", Access(owners=["u1"], public=True)),
+        ("m-public-tools", Access(owners=["u1"], public_tools=["t"])),
+        ("m-multi-owner", Access(owners=["u1", "u2"])),
+    ]
+    for row_id, access in rows:
+        await storage.create(_Widget(id=row_id, name="matrix", access=access))
+    people = [
+        Person(None, "admin"),
+        Person("u1", "user"),
+        Person("u2", "user"),
+        Person("u3", "user"),
+        Person(None, "user"),
+        Person(None, "restricted"),
+    ]
+    for person in people:
+        page = await storage.find(visible_predicate(person), OffsetPage(offset=0, length=10))
+        listed = {item.id for item in page.items if item.id.startswith("m-")}
+        expected = {row_id for row_id, access in rows if level_of(person, access) is not None}
+        assert listed == expected, f"{person} sees {sorted(listed)}, level_of says {sorted(expected)}"
+
+
 # ---------------------------------------------------------------------------
 # tool_is_public
 # ---------------------------------------------------------------------------
