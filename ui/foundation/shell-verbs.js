@@ -27,6 +27,8 @@ var SH_VERB_WORDS = [
   "Jump", "Attach", "Detach", "Speak", "Record", "Reset", "Install",
   "Refresh", "Edit", "Save", "Move", "Add", "Remove", "Enable",
   "Disable", "Invoke", "Steer",
+  // ACL-P1 T10: the console's Share dialog (entity.share)
+  "Share",
   // register-overlay verb, revamp 02 T20
   "Register",
 ];
