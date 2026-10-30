@@ -63,6 +63,7 @@ async def client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
         app = FastAPI()
         register_error_handlers(app)
         app.state.storage_provider = provider
+        app.state.provider_registry = object()  # get_storage_provider asserts the app was wired; nothing here reads it
 
         @app.middleware("http")
         async def _actor(request: Request, call_next):

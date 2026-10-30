@@ -44,6 +44,8 @@ class Access(BaseModel):
     ``members`` is derived and indexed (Task 4's GIN index): it carries a
     ``u:<id>`` token for every owner and grantee and ``public`` when the
     row is publicly visible, which is what the list predicate matches.
+    ``rev`` counts sharing changes; it is the compare-and-set guard of
+    every write to this block (``patch_if`` compares scalars only).
     """
 
     owners: list[str] = []
@@ -51,6 +53,7 @@ class Access(BaseModel):
     public: bool = False
     public_tools: list[str] = []
     members: list[str] = []
+    rev: int = 0
 
     @model_validator(mode="after")
     def _derive_members(self) -> Access:

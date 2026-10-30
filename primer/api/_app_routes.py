@@ -115,6 +115,11 @@ def _mount_routers(
     from primer.api.routers.api_tokens import api_tokens_router
     app.include_router(api_tokens_router, prefix=prefix, dependencies=user_dep)
 
+    # Username-prefix lookup for the Share dialog: id + username of enabled,
+    # non-restricted users only; the full user list stays admin-only.
+    from primer.api.routers.access import users_lookup_router
+    app.include_router(users_lookup_router, prefix=prefix, dependencies=user_dep)
+
     # Platform event log (read window) + event subscriptions. Every
     # read is redacted (primer/events/redaction.py) and the route
     # itself splits by role: admins read the whole log, users read a
