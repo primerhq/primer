@@ -244,7 +244,9 @@ async def test_on_release_failure_does_not_bump_turn_no() -> None:
     updated = fake_storage.updated[0]
     assert updated.turn_no == 0, "turn_no must stay at its pre-release value on failure"
     assert updated.last_turn_at is None, "last_turn_at must NOT be stamped on failure"
-    # Park / worker fields still cleared — that's bookkeeping, not turn accounting.
+    # Park fields still cleared: that's bookkeeping, not turn accounting.
+    # The worker stamp is a claim-time field the release no longer owns: this
+    # test never claims, so nothing stamped it and the release leaves it.
     assert updated.last_worker_id is None
 
 

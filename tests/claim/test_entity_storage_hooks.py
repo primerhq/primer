@@ -77,7 +77,7 @@ async def test_session_on_release_success_bumps_turn_no_and_clears_park(sqlite_p
     assert updated.parked_event_key is None
     assert updated.parked_until is None
     assert updated.parked_state is None
-    assert updated.last_worker_id is None  # outcome has no worker_id
+    assert updated.last_worker_id == "old-worker"  # the release no longer clears the claim-time stamp
 
 
 @pytest.mark.asyncio

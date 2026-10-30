@@ -1382,6 +1382,56 @@ async def test_top_level_list_sessions_filtered_by_agent_id(
             pass
 
 
+async def test_top_level_list_sessions_filtered_by_worker_id(
+    sessions_client, seeded_workspace, seeded_agent, app,
+):
+    """``?worker_id=`` filters by ``last_worker_id`` (the worker that last
+    claimed a turn of the session).
+
+    The row is stamped through the real claim path (``engine.claim_due``
+    handing the lease to the claiming worker) rather than written directly:
+    the defect under test is that no claim-time stamp exists at all, so a
+    direct write would pass while the production path stays broken.
+    """
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+    from primer.claim.in_memory import InMemoryClaimEngine
+    from primer.int.claim import ClaimKind
+    from primer.model.workspace_session import WorkspaceSession
+
+    r = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
+    )
+    assert r.status_code == 201
+    sid = r.json()["id"]
+
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    engine = InMemoryClaimEngine(adapters={
+        ClaimKind.SESSION: SessionClaimAdapter(session_storage=storage),
+    })
+    await engine.upsert(ClaimKind.SESSION, sid)
+    leases = await engine.claim_due("wrk-last-touch", max_count=10)
+    assert any(l.entity_id == sid for l in leases)
+
+    row = await storage.get(sid)
+    assert row.last_worker_id == "wrk-last-touch"
+
+    # The detail route serves the stamp...
+    resp = await sessions_client.get(f"/v1/sessions/{sid}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["last_worker_id"] == "wrk-last-touch"
+
+    # ...and ?worker_id= matches the session that worker touched...
+    resp = await sessions_client.get("/v1/sessions?worker_id=wrk-last-touch")
+    assert resp.status_code == 200, resp.text
+    assert sid in {s["id"] for s in resp.json()["items"]}
+
+    # ...while a worker that never touched it matches nothing.
+    resp = await sessions_client.get("/v1/sessions?worker_id=wrk-never-touched")
+    assert resp.status_code == 200, resp.text
+    assert sid not in {s["id"] for s in resp.json()["items"]}
+
+
 # ===========================================================================
 # ClaimEngine integration
 # ===========================================================================
