@@ -211,7 +211,7 @@ async def test_an_admin_run_parks_on_the_seeded_gate_before_anything_is_written(
         if kind == "upgraded" and toolset_id == "harness":
             # An upgraded harness lifecycle row keeps the id migration 16 gave it under the scoped name; migration 20
             # moves the key, not the id (the approval records reference it).
-            expected_id = default_policy_id(toolset_id, {new: old for old, new in m020._REKEY}[tool_name])
+            expected_id = default_policy_id(toolset_id, m020._PREFIX + tool_name)
         assert meta["policy_id"] == expected_id, meta
         assert meta["approval_type"] == gate
         assert meta["approvers"] == ADMIN_ONLY_SPEC, "an admin-tier gate is decided by an admin only"
@@ -377,9 +377,10 @@ async def test_both_worlds_end_with_the_same_admin_run_gates(tmp_path):
             await sp.aclose()
     assert shapes["fresh"] == shapes["upgraded"]
     assert {(t, n) for _, t, n, _, _ in GATED} <= {(t, n) for t, n, *_ in shapes["fresh"]}
-    inv = {new: old for old, new in m020._REKEY}
     assert ids["fresh"] == {default_policy_id(t, n) for t, n in DEFAULT_GATED_TOOLS}
-    assert ids["upgraded"] == {default_policy_id(t, inv.get(n, n)) for t, n in DEFAULT_GATED_TOOLS}
+    # An upgraded harness lifecycle row keeps the id migration 16 gave it under the scoped name; migration 20 strips
+    # that prefix from the name, not the id.
+    assert ids["upgraded"] == {default_policy_id(t, m020._PREFIX + n if t == "harness" else n) for t, n in DEFAULT_GATED_TOOLS}
 
 
 # ---- the toolset gate cannot be walked around by spelling the body differently ---------------------------------------------------------------------
