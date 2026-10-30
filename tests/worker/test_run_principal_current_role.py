@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from primer.model.access import Access
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind, ReleaseOutcome
@@ -198,7 +199,7 @@ async def _pool(monkeypatch, sp, calls: list) -> WorkerPool:
         )
 
     monkeypatch.setattr(pool, "_resolve_llm", _resolve_llm)
-    await sp.get_storage(Agent).create(Agent(
+    await sp.get_storage(Agent).create(Agent(access=Access(public=True), 
         id="ag-1", description="an operator", model=AgentModel(profile_id="prov-1--m-1"), tools=["adm__nuke"], system_prompt=["sys"],
     ))
     return pool

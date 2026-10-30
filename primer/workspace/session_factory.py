@@ -28,6 +28,9 @@ helper handles the rest atomically.
 
 from __future__ import annotations
 
+from primer.access.person import person_from_ref
+from primer.access.policy import level_of
+
 import json
 import logging
 import uuid
@@ -137,13 +140,14 @@ async def start_workspace_session(
     resolved_graph = None
     if isinstance(binding, AgentSessionBinding):
         resolved_agent = await agents.get(binding.agent_id)
-        if resolved_agent is None:
+        # An agent the starting person cannot read answers like a missing one (read = see it, run it; spec 6.2).
+        if resolved_agent is None or level_of(person_from_ref(initiated_by), resolved_agent.access) is None:
             raise ValidationError(
                 f"Agent {binding.agent_id!r} does not exist"
             )
     elif isinstance(binding, GraphSessionBinding):
         resolved_graph = await graphs.get(binding.graph_id)
-        if resolved_graph is None:
+        if resolved_graph is None or level_of(person_from_ref(initiated_by), resolved_graph.access) is None:
             raise ValidationError(
                 f"Graph {binding.graph_id!r} does not exist"
             )
