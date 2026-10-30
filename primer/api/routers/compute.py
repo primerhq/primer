@@ -26,6 +26,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
 
+from primer.access.person import person_from_request
+from primer.access.policy import require
 from primer.agent.agent_checks import AGENT_FIELD_CODES, check_agent_on_create, check_agent_on_update, missing_toolset_ids
 from primer.api.deps import (
     get_agent_storage,
@@ -40,9 +42,11 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
+from primer.api.routers.access import make_access_router
 from primer.common.context_overflow import output_cap_warning
 from primer.common.entity_checks import EntityCheckError
 from primer.common.log import redact_credentials
+from primer.model.access import AccessLevel
 from primer.model.agent import Agent
 from primer.model.except_ import ConflictError, NotFoundError, PrimerError
 from primer.model.graph import Graph
@@ -97,6 +101,16 @@ async def _agent_pre_delete(entity: Agent, request: Request) -> None:
         raise ConflictError(refusal)
 
 
+# The access sub-resource (GET/PUT /agents/{id}/access) is mounted
+# BEFORE the CRUD router (route-order rule in _crud.py).
+agent_access_router = make_access_router(
+    model_cls=Agent,
+    plural="agents",
+    storage_dep=get_agent_storage,
+    tag="agents",
+)
+
+
 agent_router = make_crud_router(
     model_cls=Agent,
     storage_dep=get_agent_storage,
@@ -111,6 +125,7 @@ agent_router = make_crud_router(
     # rather than strand them. The list is shared with the system delete_agent tool (primer.storage.references).
     references=[ReferenceCheck.from_spec(spec) for spec in AGENT_REFERENCES],
     on_pre_delete=_agent_pre_delete,
+    owned=True,
 )
 
 
@@ -120,6 +135,7 @@ agent_router = make_crud_router(
     responses=common_responses(404, 500),
 )
 async def agent_status(
+    request: Request,
     agent_id: str = Path(..., description="Agent id"),
     agents=Depends(get_agent_storage),
     llm_providers=Depends(get_llm_provider_storage),
@@ -138,6 +154,9 @@ async def agent_status(
     agent: Agent | None = await agents.get(agent_id)
     if agent is None:
         raise NotFoundError(f"Agent {agent_id!r} does not exist")
+    # The status reveals the agent's reference links: reading it needs read,
+    # and an out-of-access id answers the missing-row 404 above.
+    require(person_from_request(request), agent.access, AccessLevel.READ, what=f"Agent {agent_id!r}")
 
     issues: list[str] = []
     warnings: list[str] = []
@@ -227,6 +246,16 @@ async def _graph_pre_create(entity: Graph, request: Request) -> None:
         ) from exc
 
 
+# The access sub-resource (GET/PUT /graphs/{id}/access) is mounted
+# BEFORE the CRUD router (route-order rule in _crud.py).
+graph_access_router = make_access_router(
+    model_cls=Graph,
+    plural="graphs",
+    storage_dep=get_graph_storage,
+    tag="graphs",
+)
+
+
 graph_router = make_crud_router(
     model_cls=Graph,
     storage_dep=get_graph_storage,
@@ -239,6 +268,7 @@ graph_router = make_crud_router(
     # Another graph's sub-graph node, a session that is not ended and a trigger subscription still name the graph (shared with the
     # system delete_graph tool).
     references=[ReferenceCheck.from_spec(spec) for spec in GRAPH_REFERENCES],
+    owned=True,
 )
 
 
@@ -248,6 +278,7 @@ graph_router = make_crud_router(
     responses=common_responses(404, 500, 503),
 )
 async def graph_status(
+    request: Request,
     graph_id: str = Path(..., description="Graph id"),
     graphs=Depends(get_graph_storage),
     agents=Depends(get_agent_storage),
@@ -258,6 +289,9 @@ async def graph_status(
     graph: Graph | None = await graphs.get(graph_id)
     if graph is None:
         raise NotFoundError(f"Graph {graph_id!r} does not exist")
+    # The status reveals the graph's reference links: reading it needs read,
+    # and an out-of-access id answers the missing-row 404 above.
+    require(person_from_request(request), graph.access, AccessLevel.READ, what=f"Graph {graph_id!r}")
 
     issues: list[str] = []
 
@@ -288,11 +322,13 @@ async def graph_status(
     responses=common_responses(404, 500, 503),
 )
 async def get_graph_run_turn_log(
+    request: Request,
     graph_id: str = Path(..., description="Graph id"),
     run_id: str = Path(..., description="Run id (WorkspaceSession or GraphThread id)"),
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     since_seq: int | None = Query(default=None, ge=0),
+    graphs=Depends(get_graph_storage),
     sessions=Depends(get_session_storage),
     workspace_registry=Depends(get_workspace_registry),
     storage_provider=Depends(get_storage_provider),
@@ -306,6 +342,12 @@ async def get_graph_run_turn_log(
        for ``run_id == run_id`` AND ``node_id IS NULL``.
     3. Neither → 404.
     """
+    # The run log reveals the graph's execution: reading it needs read on
+    # the graph, and an out-of-access id answers the missing-row 404.
+    graph: Graph | None = await graphs.get(graph_id)
+    if graph is None:
+        raise NotFoundError(f"Graph {graph_id!r} does not exist")
+    require(person_from_request(request), graph.access, AccessLevel.READ, what=f"Graph {graph_id!r}")
     return await _serve_graph_turn_log(
         run_id=run_id,
         node_id=None,
@@ -324,12 +366,14 @@ async def get_graph_run_turn_log(
     responses=common_responses(404, 500),
 )
 async def get_graph_node_turn_log(
+    request: Request,
     graph_id: str = Path(..., description="Graph id"),
     run_id: str = Path(..., description="Run id (WorkspaceSession or GraphThread id)"),
     node_id: str = Path(..., description="Node id"),
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     since_seq: int | None = Query(default=None, ge=0),
+    graphs=Depends(get_graph_storage),
     sessions=Depends(get_session_storage),
     workspace_registry=Depends(get_workspace_registry),
     storage_provider=Depends(get_storage_provider),
@@ -338,6 +382,12 @@ async def get_graph_node_turn_log(
     node. For workspace runs this reads
     ``<state_path>/graphs/<run_id>/nodes/<node_id>/turns.jsonl``.
     For storage runs it filters on ``node_id == node_id``."""
+    # The node log reveals the graph's execution: reading it needs read on
+    # the graph, and an out-of-access id answers the missing-row 404.
+    graph: Graph | None = await graphs.get(graph_id)
+    if graph is None:
+        raise NotFoundError(f"Graph {graph_id!r} does not exist")
+    require(person_from_request(request), graph.access, AccessLevel.READ, what=f"Graph {graph_id!r}")
     return await _serve_graph_turn_log(
         run_id=run_id,
         node_id=node_id,
@@ -398,6 +448,7 @@ class _NodeStateOut(BaseModel):
     responses=common_responses(404, 500),
 )
 async def get_graph_run_node_states(
+    request: Request,
     graph_id: str = Path(..., description="Graph id"),
     run_id: str = Path(..., description="Run id (WorkspaceSession or GraphThread id)"),
     graphs=Depends(get_graph_storage),
@@ -428,6 +479,9 @@ async def get_graph_run_node_states(
     graph: Graph | None = await graphs.get(graph_id)
     if graph is None:
         raise NotFoundError(f"Graph {graph_id!r} does not exist")
+    # The node states reveal the graph's execution: reading them needs read
+    # on the graph, and an out-of-access id answers the missing-row 404 above.
+    require(person_from_request(request), graph.access, AccessLevel.READ, what=f"Graph {graph_id!r}")
     kinds: dict[str, str] = {node.id: node.kind for node in graph.nodes}
 
     state_map = await _load_run_node_states(

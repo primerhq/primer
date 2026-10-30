@@ -1,11 +1,12 @@
 """Ownership wiring for the five owned entities (access-control plan, Phase 1 Task 7).
 
 Two real users (created over the admin user route, each logged in with their
-own session cookie) drive the real app: user A owns one row per plural and
-user B sees nothing of it in list or get until A shares read through the
-access sub-resource. The two routes that read an owned row outside the CRUD
-factory (/agents/{id}/status, /toolsets/{id}/tools) answer the missing-row
-404 for B before the share.
+own session cookie) drive the real app: user A owns one row per plural
+(a plain user; the toolset row is owned by a second admin because python
+toolset creation is admin-only) and user B sees nothing of it in list or get
+until A shares read through the access sub-resource. The two routes that
+read an owned row outside the CRUD factory (/agents/{id}/status,
+/toolsets/{id}/tools) answer the missing-row 404 for B before the share.
 """
 
 from __future__ import annotations
@@ -55,14 +56,17 @@ def fake_provider_registry(
 _PW = {
     "alice": "alicepassword",
     "bob": "bobpassword",
+    "ada": "adapassword",
 }
 
 
-async def _second_user(admin: AsyncClient, app, username: str) -> tuple[AsyncClient, str]:
-    """Create a plain user and return a client logged in as it, plus its user id."""
+async def _second_user(
+    admin: AsyncClient, app, username: str, role: str = "user"
+) -> tuple[AsyncClient, str]:
+    """Create a user (and log in a client as it) and return (client, user id)."""
     r = await admin.post(
         "/v1/admin/users",
-        json={"username": username, "password": _PW[username], "role": "user"},
+        json={"username": username, "password": _PW[username], "role": role},
     )
     assert r.status_code == 201, r.text
     uid = r.json()["id"]
@@ -106,7 +110,7 @@ async def _hidden_then_shared(
     assert r.status_code == 200, r.text
     assert row_id not in _ids(r)
     r = await b.get(f"/v1/{plural}/{row_id}")
-    assert r.status_code == 404
+    assert r.status_code == 404, r.text
     # A shares read; B sees the row.
     await _share_read(a, a_uid, b_uid, plural, row_id)
     r = await b.get(f"/v1/{plural}/{row_id}")
@@ -161,11 +165,24 @@ def _py_toolset_body(row_id: str) -> dict:
     }
 
 
-async def test_toolset_row_hidden_from_b_until_shared(actors):
-    a, a_uid, b, b_uid = actors
+async def _admin_owner_and_toolset(client, app) -> tuple[AsyncClient, str, str]:
+    # Python toolset source runs on the host, so creating one is admin-only
+    # (403 forbidden_role): the owner here is a second admin, and
+    # admin-owned rows are exactly what the spec describes (admin with a
+    # user id owns what they create).
+    a, a_uid = await _second_user(client, app, "ada", role="admin")
     r = await a.post("/v1/toolsets", json=_py_toolset_body("ts-a"))
     assert r.status_code == 201, r.text
-    await _hidden_then_shared(a, a_uid, b, b_uid, "toolsets", "ts-a")
+    return a, a_uid, "ts-a"
+
+
+async def test_toolset_row_hidden_from_b_until_shared(actors, client, app):
+    _, _, b, b_uid = actors
+    a, a_uid, row_id = await _admin_owner_and_toolset(client, app)
+    try:
+        await _hidden_then_shared(a, a_uid, b, b_uid, "toolsets", row_id)
+    finally:
+        await a.aclose()
 
 
 async def _create_template(a, client, tmp_path: Path) -> None:
@@ -224,18 +241,19 @@ async def test_agent_status_404_for_b_before_sharing(actors, app):
     assert r.status_code == 200, r.text
 
 
-async def test_toolset_tools_404_for_b_before_sharing(actors):
-    a, a_uid, b, b_uid = actors
-    r = await a.post("/v1/toolsets", json=_py_toolset_body("ts-a"))
-    assert r.status_code == 201, r.text
+async def test_toolset_tools_404_for_b_before_sharing(actors, client, app):
+    _, _, b, b_uid = actors
+    a, a_uid, row_id = await _admin_owner_and_toolset(client, app)
+    try:
+        r = await b.get(f"/v1/toolsets/{row_id}/tools")
+        assert r.status_code == 404
 
-    r = await b.get("/v1/toolsets/ts-a/tools")
-    assert r.status_code == 404
-
-    await _share_read(a, a_uid, b_uid, "toolsets", "ts-a")
-    r = await b.get("/v1/toolsets/ts-a/tools")
-    assert r.status_code == 200, r.text
-    assert [t["id"] for t in r.json()["tools"]] == ["greet"]
+        await _share_read(a, a_uid, b_uid, "toolsets", row_id)
+        r = await b.get(f"/v1/toolsets/{row_id}/tools")
+        assert r.status_code == 200, r.text
+        assert [t["id"] for t in r.json()["tools"]] == ["greet"]
+    finally:
+        await a.aclose()
 
 
 async def test_b_cannot_materialise_a_workspace_from_a_private_template(actors, client, tmp_path: Path):

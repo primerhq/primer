@@ -184,6 +184,9 @@ def _mount_routers(
     app.include_router(providers.builtin_toolsets_router, prefix=prefix, dependencies=user_dep)
     from primer.api.routers.mcp_oauth import mcp_oauth_router
     app.include_router(mcp_oauth_router, prefix=prefix, dependencies=user_dep)
+    # The toolset access sub-resource is mounted before the CRUD router
+    # (route-order rule in _crud.py).
+    app.include_router(providers.toolset_access_router, prefix=prefix, dependencies=user_dep)
     app.include_router(providers.toolset_router, prefix=prefix, dependencies=user_dep)
     # Spec B §3.4 — flat tool catalogue for the graph editor's ToolCall
     # picker => feature => require_user.
@@ -234,7 +237,10 @@ def _mount_routers(
     from primer.api.routers.audio import audio_router
     app.include_router(audio_router, prefix=prefix, dependencies=user_dep)
     # Phase 2 — compute (Agent + Graph) — authoring feature => require_user.
+    # Each access sub-resource is mounted before its CRUD router (route-order rule in _crud.py).
+    app.include_router(compute.agent_access_router, prefix=prefix, dependencies=user_dep)
     app.include_router(compute.agent_router, prefix=prefix, dependencies=user_dep)
+    app.include_router(compute.graph_access_router, prefix=prefix, dependencies=user_dep)
     app.include_router(compute.graph_router, prefix=prefix, dependencies=user_dep)
     # Phase 3 — knowledge (Collection + Document) — feature => require_user.
     app.include_router(knowledge.collection_router, prefix=prefix, dependencies=user_dep)
@@ -250,6 +256,8 @@ def _mount_routers(
     # /workspace_providers/_choices would otherwise be read by GET /{id}.
     app.include_router(workspaces_router.provider_choices_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.provider_router, prefix=prefix, dependencies=admin_dep)
+    # The template access sub-resource is mounted before the CRUD router (route-order rule in _crud.py).
+    app.include_router(workspaces_router.workspace_template_access_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.template_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.workspace_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.sessions_router, prefix=prefix, dependencies=user_dep)
@@ -304,10 +312,13 @@ def _mount_routers(
     # configuration => admin; channels + bindings (the feature) is
     # => require_user.
     from primer.api.routers.channels import (
+        make_channel_access_router,
         make_channel_provider_router,
         make_channel_router,
     )
     app.include_router(make_channel_provider_router(), prefix=prefix, dependencies=admin_dep)
+    # The channel access sub-resource is mounted before the CRUD router (route-order rule in _crud.py).
+    app.include_router(make_channel_access_router(), prefix=prefix, dependencies=user_dep)
     app.include_router(make_channel_router(), prefix=prefix, dependencies=user_dep)
     # Harness REST router — feature => require_user (no prefix; the router
     # carries its own version segment).
