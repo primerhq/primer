@@ -31,6 +31,7 @@ ARCHITECTURE_DOCS = [
     "observability",
     "auto-bootstrap",
     "python-tool-isolation",
+    "access-control",
 ]
 
 SUBSYSTEM_DOCS = [

@@ -31,6 +31,7 @@ flowchart TD
         provider[Provider Pattern]
         obs[Observability]
         boot[Auto-Bootstrap]
+        acl[Access Control]
     end
 
     subgraph Runtime["Runtime subsystems"]
@@ -59,6 +60,8 @@ flowchart TD
         uipages[UI Pages]
     end
 
+    acl --> storage
+    acl --> rest
     worker --> claim
     worker --> storage
     claim --> storage
@@ -150,6 +153,9 @@ flowchart TD
 - [auto-bootstrap](architecture/auto-bootstrap.md) - the first-run provisioning seam
   that makes a fresh install immediately usable by idempotently creating a fixed set
   of reserved-id rows.
+- [access-control](architecture/access-control.md) - who may read, change, share or delete an entity: the
+  per-row `access` block, the three levels, the person behind a request, tool or MCP call, and the indexed list
+  filter every owned kind uses.
 
 ### Subsystems
 
