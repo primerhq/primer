@@ -13,10 +13,14 @@ acts as ``user`` with no ``user_id``, so it reads nothing.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from fastapi import Request
 
 from primer.model.principal import PrincipalRef
+
+if TYPE_CHECKING:
+    from primer.model.yield_ import ToolContext
 
 
 @dataclass(frozen=True)
@@ -62,3 +66,22 @@ def person_from_ref(ref: PrincipalRef | None) -> Person:
         # own id IS the user id.
         user_id = ref.id
     return Person(user_id, ref.role or "user")
+
+
+def person_for_tool(ctx: "ToolContext | None") -> Person:
+    """The person behind a tool call: the run's initiator when the call carries a ``ToolContext``, else the MCP request's actor.
+
+    The MCP endpoint dispatches handlers without a ``ToolContext`` and publishes its live actor on
+    :data:`primer.mcp.server.current_actor` instead (the same two sources
+    ``primer.toolset.workspaces._caller_principal`` reads). Nothing known reads only public rows.
+    """
+    if ctx is not None:
+        return person_from_ref(ctx.initiated_by)
+    from primer.mcp.server import current_actor  # lazy: the MCP server module is heavy and optional on this path
+
+    actor = current_actor.get()
+    if actor is None:
+        return Person(None, "user")
+    if actor.type == "system":
+        return Person(None, "system")
+    return Person(actor.user_id, actor.role or "user")
