@@ -55,15 +55,15 @@
         : DEFAULT_DURATION_MS.info;
     const durationMs =
       typeof t.durationMs === "number" ? t.durationMs : defaultMs;
-    const entry = {
+    const entry = Object.assign({}, t, {
       id,
       kind,
+      durationMs,
       title: t.title || "",
       detail: t.detail || "",
       requestId: t.requestId || null,
       actions: Array.isArray(t.actions) ? t.actions : [],
-      durationMs,
-    };
+    });
     state.toasts.push(entry);
     // Enforce MAX_VISIBLE — drop oldest (FIFO).
     while (state.toasts.length > MAX_VISIBLE) {

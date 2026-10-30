@@ -65,6 +65,17 @@ function NV_ToastHost() {
     var prevDismiss = api.toastDismiss;
     api.toastPush = function (t) { return pushToastRef.current(t); };
     api.toastDismiss = function (id) { return removeToastRef.current(id); };
+    // A toast pushed before this host mounted (a boot or auth-screen error
+    // routed by app.jsx's window handlers) sits in the foundation queue
+    // with no rendered subscriber. Replay it through the stack, then
+    // dismiss it from the queue so the foundation's timer dies with the
+    // entry - from here the host owns the timing.
+    if (api._toast) {
+      api._toast.state.toasts.slice().forEach(function (entry) {
+        pushToastRef.current(entry);
+        api._toast.dismiss(entry.id);
+      });
+    }
     return function () {
       api.toastPush = prevPush;
       api.toastDismiss = prevDismiss;
