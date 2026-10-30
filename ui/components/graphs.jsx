@@ -378,7 +378,19 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
               const beginNode = (g.nodes || []).find((n) => n.kind === "begin");
               return (
                 <tr key={g.id} onClick={() => onOpen(g.id)} style={{ cursor: "pointer" }}>
-                  <td className="mono">{g.id}</td>
+                  <td className="mono">
+                    {g.id}
+                    {SHR_accessBadges(g.access).map((b) => (
+                      <span
+                        key={b}
+                        className="pill pill-ended"
+                        data-testid={"graph-access-badge-" + b}
+                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
+                      >
+                        <span className="dot"></span>{b}
+                      </span>
+                    ))}
+                  </td>
                   <td className="muted text-sm" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {g.description || <span style={{ color: "var(--text-4)" }}>—</span>}
                   </td>
@@ -473,6 +485,10 @@ function GraphDetail({ graphId, pushToast }) {
   );
   const [confirmDelete, setConfirmDelete] = React.useState(false);
 
+  // ACL-P1 T10: the Share dialog (the status panel's Share button or the
+  // palette's entity.share verb dispatches to it while this surface is open).
+  const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
+
   if (graph.loading && !graph.data) {
     return <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>;
   }
@@ -498,6 +514,7 @@ function GraphDetail({ graphId, pushToast }) {
         status={status}
         onRefresh={() => { graph.refetch(); status.refetch(); }}
         onDelete={() => setConfirmDelete(true)}
+        onShare={() => setShareOpen(true)}
       />
       <window.GB_Builder
         graphId={id}
@@ -527,6 +544,14 @@ function GraphDetail({ graphId, pushToast }) {
           </div>
         </Modal>
       )}
+      {shareOpen && (
+        <SHR_ShareDialog
+          plural="graphs"
+          id={id}
+          title={id}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -535,7 +560,7 @@ function GraphDetail({ graphId, pushToast }) {
 // GR_GraphStatusPanel — 30s poll on /graphs/{id}/status
 // ============================================================================
 
-function GR_GraphStatusPanel({ id, status, onRefresh, onDelete }) {
+function GR_GraphStatusPanel({ id, status, onRefresh, onDelete, onShare }) {
   const ok = status.data?.ok;
   const issues = status.data?.issues || [];
   const loading = status.loading && !status.data;
@@ -584,6 +609,7 @@ function GR_GraphStatusPanel({ id, status, onRefresh, onDelete }) {
           ))}
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {onShare && <Btn size="sm" kind="ghost" data-testid="graph-share" data-verb="entity.share" onClick={onShare}>Share</Btn>}
           {onRefresh && <Btn size="sm" icon="refresh" kind="ghost" onClick={onRefresh}>Refresh</Btn>}
           {onDelete && <Btn size="sm" icon="trash" kind="danger" onClick={onDelete}>Delete</Btn>}
         </div>

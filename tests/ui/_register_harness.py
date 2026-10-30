@@ -32,6 +32,7 @@ BASE_FILES = (
     COMPONENTS / "shared.jsx",
     COMPONENTS / "shared" / "form-field.jsx",
     COMPONENTS / "shared" / "platform-kit.jsx",
+    COMPONENTS / "shared" / "share-dialog.jsx",
     COMPONENTS / "provider-form.jsx",
     COMPONENTS / "providers" / "register-common.jsx",
 )

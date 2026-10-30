@@ -81,7 +81,7 @@ MANAGED = {**FULL, "harness_id": "h1"}
 # What an edit of FULL that changes nothing sends (the form does not send harness_id).
 FULL_SENT = {k: v for k, v in FULL.items() if k != "harness_id"}
 
-_FILES = ("foundation/escape-stack.js", "foundation/use-mutation.js", "components/shared/form-field.jsx", "components/agents.jsx")
+_FILES = ("foundation/escape-stack.js", "foundation/use-mutation.js", "components/shared/form-field.jsx", "components/shared/share-dialog.jsx", "components/agents.jsx")
 _KIT_FILE = "components/shared/platform-kit.jsx"
 
 _STUBS = r"""

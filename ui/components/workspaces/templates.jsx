@@ -855,6 +855,12 @@ function WT_TemplateOverlay(props) {
   });
   var saving = !!mutation.loading;
 
+  // ACL-P1 T10: the Share dialog for this template (the footer's Share button
+  // or the palette's entity.share verb while this overlay is open).
+  var shareState = window.SHR_useShareOpen();
+  var shareOpen = shareState[0];
+  var setShareOpen = shareState[1];
+
   function save() {
     if (!st || view || outRef.current) return;
     var errs = WT_validateForm(st.form, { isAdmin: isAdmin, initial: st.initial });
@@ -922,7 +928,12 @@ function WT_TemplateOverlay(props) {
     },
   };
   var footer = view ? { right: close } : {
-    left: <Btn kind="ghost" data-testid="wt-cancel" blocked={saving} onClick={closeUnlessSaving}>Cancel</Btn>,
+    left: (
+      <React.Fragment>
+        <Btn kind="ghost" data-testid="wt-cancel" blocked={saving} onClick={closeUnlessSaving}>Cancel</Btn>
+        {!creating && <Btn kind="ghost" data-testid="wt-share" data-verb="entity.share" onClick={function () { setShareOpen(true); }}>Share</Btn>}
+      </React.Fragment>
+    ),
     right: (
       <Btn kind="primary" data-testid="wt-save" busy={saving} onClick={save}>
         {saving ? (creating ? "Creating…" : "Saving…") : (creating ? "Create" : "Save")}
@@ -1085,6 +1096,7 @@ function WT_TemplateOverlay(props) {
   }
 
   return (
+    <React.Fragment>
     <PK_FormOverlay title={title} testid="wt-overlay" onClose={closeUnlessSaving} selector={selector} footer={footer}>
       {note ? <div className="field-help" data-testid="wt-readonly-note" style={WT_NOTE_STYLE}>{note}</div> : null}
       {mode === "edit" ? (
@@ -1126,6 +1138,15 @@ function WT_TemplateOverlay(props) {
       </PK_Fold>
       {server.general ? <div className="nv-form-error" role="alert" data-testid="wt-error">{server.general}</div> : null}
     </PK_FormOverlay>
+    {!creating && !view && shareOpen && (
+      <SHR_ShareDialog
+        plural="workspace_templates"
+        id={id}
+        title={id}
+        onClose={function () { setShareOpen(false); }}
+      />
+    )}
+    </React.Fragment>
   );
 }
 
@@ -1249,8 +1270,9 @@ function WT_TemplatesPage() {
         {paged.visible.map(function (t) {
           var reserved = WT_isReserved(t);
           var locked = reserved || (!isAdmin && WT_heldAdminFields(t).length > 0);
+          var badges = [reserved ? "built in" : null].concat(SHR_accessBadges(t.access)).filter(Boolean).join(" · ") || undefined;
           return (
-            <PK_Card key={t.id} id={t.id} icon={{ path: WT_KIND_ICONS[WT_kindOf(t)] }} badge={reserved ? "built in" : undefined}
+            <PK_Card key={t.id} id={t.id} icon={{ path: WT_KIND_ICONS[WT_kindOf(t)] }} badge={badges}
               title={t.id} subtitle={t.description || undefined} facts={WT_cardFacts(t, choiceFor(t))}
               onOpen={function () { setOpen({ row: t }); }}
               menu={locked ? undefined : [{ label: "Delete", danger: true, testid: "wt-delete:" + t.id, onClick: function () { remove(t); } }]} />

@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 AUTH = ROOT / "ui" / "components" / "toolsets" / "mcp-auth.jsx"
 PLATFORM = ROOT / "ui" / "components" / "console" / "nv-platform.jsx"
 KIT = ROOT / "ui" / "components" / "shared" / "platform-kit.jsx"
+SHARE = ROOT / "ui" / "components" / "shared" / "share-dialog.jsx"
 TOOLSETS = ROOT / "ui" / "components" / "toolsets.jsx"
 
 PRELUDE = r"""
@@ -126,7 +127,7 @@ window.primerApi = {
 
 @pytest.mark.parametrize("mobile", [False, True])
 def test_the_toolsets_list_shows_a_connected_but_unreachable_toolset(mobile: bool) -> None:
-    ctx = mini_react_context(transpile(AUTH) + "\n" + transpile(TOOLSETS), PAGE_PRELUDE)
+    ctx = mini_react_context(transpile(AUTH) + "\n" + transpile(SHARE) + "\n" + transpile(TOOLSETS), PAGE_PRELUDE)
     try:
         ctx.eval("MOBILE = " + json.dumps(mobile))
         ctx.eval("ITEMS = " + json.dumps([{"id": "kb", "builtin": False, "tools": [], "auth": {"state": "connected"},
