@@ -41,6 +41,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import to_jsonable_python
 
+from primer.access.person import person_from_request
+from primer.access.policy import require
 from primer.api.routers._session_rank import refuse_outranked
 from primer.api.deps import (
     get_claim_engine,
@@ -65,6 +67,7 @@ from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.api.registries import WorkspaceRegistry
 from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
 from primer.api.routers._crud import make_crud_router
+from primer.api.routers.access import make_access_router
 from primer.common.preview_allowlist import (
     _HIDDEN,
     _BIG_DOCUMENT_CHARS,
@@ -82,6 +85,7 @@ from primer.common.preview_allowlist import (
     scrub_args_for_display,
     value_at,
 )
+from primer.model.access import AccessLevel
 from primer.model.common import preserve_masked_secrets, refuse_served_masks
 from primer.api.routers._references import ReferenceCheck
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
@@ -706,6 +710,16 @@ async def _workspace_template_pre_update(entity, existing, request: Request) -> 
     restore_template_secrets(entity, existing, admin=_caller_is_admin(request))
 
 
+# The access sub-resource (GET/PUT /workspace_templates/{id}/access) is
+# mounted BEFORE the CRUD router (route-order rule in _crud.py).
+workspace_template_access_router = make_access_router(
+    model_cls=WorkspaceTemplate,
+    plural="workspace_templates",
+    storage_dep=get_workspace_template_storage,
+    tag="workspace-templates",
+)
+
+
 template_router = make_crud_router(
     model_cls=WorkspaceTemplate,
     storage_dep=get_workspace_template_storage,
@@ -719,6 +733,7 @@ template_router = make_crud_router(
     extra_delete_responses=common_responses(403),
     on_pre_delete_id=_reject_reserved_workspace_template_delete,
     on_pre_delete=_workspace_template_pre_delete,
+    owned=True,
 )
 
 
@@ -943,6 +958,10 @@ async def create_workspace(
         raise NotFoundError(
             f"WorkspaceTemplate {body.template_id!r} does not exist"
         )
+    # Materialising a workspace copies the template's config into it: the
+    # template is read here, so it needs read level (the missing-row 404
+    # above is the out-of-access answer).
+    require(person_from_request(request), template.access, AccessLevel.READ, what=f"WorkspaceTemplate {body.template_id!r}")
     if body.id is not None:
         existing = await workspace_storage.get(body.id)
         if existing is not None:

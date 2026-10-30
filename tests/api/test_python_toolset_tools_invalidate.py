@@ -21,6 +21,7 @@ import pytest
 import primer.api
 from primer.api.registries import ProviderRegistry
 from primer.model.provider import Toolset, ToolsetProviderType
+from tests._support.caller import ADMIN_CALLER
 
 SRC_V1 = '''
 @primer_tool()
@@ -59,7 +60,9 @@ def fake_provider_registry(fake_storage_provider):
 
 
 async def _call(toolset, name: str, **args):
-    result = await toolset.call(tool_name=name, arguments=args)
+    # The system toolset gates on the caller's identity (access-control Phase 1): an
+    # identity-less call fails closed, so the test speaks as the admin it represents.
+    result = await toolset.call(tool_name=name, arguments=args, ctx=ADMIN_CALLER)
     return result.is_error, json.loads(result.output)
 
 

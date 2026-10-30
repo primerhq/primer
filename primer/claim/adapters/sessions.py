@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic_core import to_jsonable_python
 
-from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome, read_for_eligibility
+from primer.int.claim import ClaimAdapter, ClaimKind, Lease, ReleaseOutcome, read_for_eligibility
 from primer.int.storage import Storage
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_refusal import WorkspaceRefusedError
@@ -97,11 +97,62 @@ class SessionClaimAdapter(ClaimAdapter):
             f"ON {qualified_table} USING gin ((data->'parked_event_keys'))",
         ]
 
+    async def on_claim(self, conn, lease: Lease) -> None:
+        """Stamp the claiming worker onto the row at claim time.
+
+        ``last_worker_id`` is the last worker that claimed and processed a
+        turn of this session. Stamping it at the claim (not at the release)
+        is what makes a first turn in flight visible: the session list's
+        worker column and ``GET /v1/sessions?worker_id=`` already show the
+        claiming worker while the turn runs, and a re-claim by another
+        worker overwrites the stamp (last toucher wins). The releases no
+        longer clear it, so the stamp persists across the lease drop.
+
+        One field-scoped ``patch_if`` of ``last_worker_id`` only, fenced on
+        the immutable ``workspace_id`` (the release branches' fence for a
+        write that carries no counter): it applies whenever the row exists
+        and puts back no field another writer moved. A gone row is nothing
+        to stamp (the turn will read it missing and drop the lease); a fence
+        rejected twice fails the claim, as the release's fence would. An
+        adapter with no storage stamps nothing: the lease stays claimable,
+        as every other no-storage adapter behaviour does.
+        """
+        if self._storage is None:
+            return
+        entity_id = lease.entity_id
+        sess = await self._storage.get(entity_id, conn=conn)
+        if sess is None:
+            return
+        patch = {"last_worker_id": lease.claimed_by}
+        for attempt in range(2):
+            where = {"workspace_id": [raw_generation(sess, "workspace_id")]}
+            try:
+                written = await self._storage.patch_if(
+                    entity_id, to_jsonable_python(patch), where=where, conn=conn,
+                )
+            except NotFoundError:
+                return
+            if written is not None:
+                return
+            logger.warning(
+                "session claim of %s: the row changed under the claim (workspace_id was %s); %s",
+                entity_id, sess.workspace_id,
+                "re-reading and retrying once" if attempt == 0 else "giving up",
+            )
+            if attempt == 0:
+                sess = await self._storage.get(entity_id, conn=conn)
+                if sess is None:
+                    return
+        raise ConflictError(
+            f"session {entity_id!r}: the row changed under the claim twice; the stamp is not applied"
+        )
+
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
         """Write the fields the release owns, and nothing else.
 
         Every branch is ONE field-scoped ``Storage.patch_if`` of only its own fields (the park columns,
-        ``last_worker_id``, and on a successful turn ``turn_no`` / ``last_turn_at``). It never writes
+        and on a successful turn ``turn_no`` / ``last_turn_at``; the claim-time ``last_worker_id`` stamp
+        is not cleared here). It never writes
         ``turn_status``, ``status``, the cursor or the request flags, and it writes ``last_seq`` only to
         ADVANCE it past the failure marker it appends (``_write_terminal_record``): a whole-document
         ``update`` from the row read here used to put back whatever a concurrent writer (a ``wake_session``
@@ -122,11 +173,12 @@ class SessionClaimAdapter(ClaimAdapter):
         if sess is None:
             return
 
-        # Park branch: the turn hit a yielding tool. Write the park columns
-        # and clear the worker stamp; do NOT bump turn_no (a park is not a
-        # completed turn). The engine drops the lease (drop_lease=True), so
-        # the parked row has no lease and is not re-claimed until the resume
-        # event re-arms it via engine.mark_resumable.
+        # Park branch: the turn hit a yielding tool. Write the park columns;
+        # do NOT bump turn_no (a park is not a completed turn). The engine
+        # drops the lease (drop_lease=True), so the parked row has no lease
+        # and is not re-claimed until the resume event re-arms it via
+        # engine.mark_resumable. The claim-time worker stamp is not cleared:
+        # the parked session still shows the worker that ran its turn.
         if outcome.park is not None:
             p = outcome.park
             await self._patch_owned(entity_id, sess, conn, {
@@ -136,7 +188,6 @@ class SessionClaimAdapter(ClaimAdapter):
                 "parked_until": p.parked_until,
                 "parked_at": p.parked_at,
                 "parked_state": p.parked_state,
-                "last_worker_id": None,
             }, bump=False)
             return
 
@@ -145,11 +196,11 @@ class SessionClaimAdapter(ClaimAdapter):
         # lease but leave the park columns (parked_status stays 'resumable',
         # parked_state intact) so a later /resume can replay the hook. The
         # pause completion still counts as a turn, so bump turn_no /
-        # last_turn_at on success, mirroring the non-park branch.
+        # last_turn_at on success, mirroring the non-park branch; a failed
+        # one writes nothing at all (nothing else is owned here).
         if outcome.preserve_park:
-            await self._patch_owned(
-                entity_id, sess, conn, {"last_worker_id": None}, bump=outcome.success,
-            )
+            if outcome.success:
+                await self._patch_owned(entity_id, sess, conn, {}, bump=True)
             return
 
         # Non-park release: clear any park columns. Only bump turn_no /
@@ -164,7 +215,6 @@ class SessionClaimAdapter(ClaimAdapter):
             "parked_until": None,
             "parked_at": None,
             "parked_state": None,
-            "last_worker_id": None,
         }, bump=outcome.success)
         if written is None:
             return

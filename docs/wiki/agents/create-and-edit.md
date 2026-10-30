@@ -7,7 +7,7 @@ related: [agents/prompts-and-parts, agents/tools-and-grants, providers/model-pro
 ---
 ## What it is
 
-An agent row is created and edited through the `crud` and `system` agent tools, or through the REST routes `POST /v1/agents`, `GET /v1/agents`, `GET /v1/agents/{entity_id}`, `PUT /v1/agents/{entity_id}`, `DELETE /v1/agents/{entity_id}` and `POST /v1/agents/find`. A create or update carries the whole row; the runtime never patches. Before the write, the same semantic checks run as on the REST route: the id pattern, the description, the model profile and the toolsets.
+An agent row is created and edited through the `crud` and `system` agent tools, or through the REST routes `POST /v1/agents`, `GET /v1/agents`, `GET /v1/agents/{entity_id}`, `PUT /v1/agents/{entity_id}`, `PUT /v1/agents/{entity_id}/access`, `DELETE /v1/agents/{entity_id}` and `POST /v1/agents/find`. A create or update carries the whole row; the runtime never patches. Before the write, the same semantic checks run as on the REST route: the id pattern, the description, the model profile and the toolsets.
 
 ## Concepts
 
@@ -29,6 +29,7 @@ An agent row is created and edited through the `crud` and `system` agent tools, 
 - `response_format` - a JSON schema the final message must match; the session's persistent response format beats the agent's.
 - `tts_voice` - the voice spoken TTS uses for the final message.
 - `harness_id` - set only by a harness install. A non-null row is managed: public CRUD cannot create with it set or modify it.
+- `access` - the row's ownership and sharing: `owners` (user ids), `grants` (user id to `read` or `full`), `public` (read for every full user) and the derived `members` tokens the list queries filter on. It is not writable in a create or update body: only the access sub-resource changes it, `GET /v1/agents/{entity_id}/access` to read it and `PUT /v1/agents/{entity_id}/access` (owners only) to change it. A caller with no access reads the row as a `not-found`; a caller below the needed level gets a `403` `access_denied`.
 
 ### The create checks
 

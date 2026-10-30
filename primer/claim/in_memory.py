@@ -230,6 +230,15 @@ class InMemoryClaimEngine(ClaimEngine):
                     lease.kind.value
                 ).observe(wait)
                 _span.add_event("claim_assigned", {"kind": lease.kind.value})
+            # The claim-time hooks run before the leases are handed out: an
+            # adapter that owns a claim-scoped entity field (the session
+            # adapter's last_worker_id stamp) writes it while the claim is
+            # fresh, so the claiming worker observes a stamped row, and a
+            # failing hook fails the claim instead of a half-stamped hand-out.
+            for lease in out:
+                adapter = self._adapters.get(lease.kind)
+                if adapter is not None:
+                    await adapter.on_claim(None, lease)
             _span.set_attribute("claim.count", len(out))
             return out
 

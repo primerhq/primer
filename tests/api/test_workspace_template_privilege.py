@@ -94,6 +94,23 @@ def _assert_forbidden_role(r: httpx.Response, field: str) -> None:
     assert any(field in f for f in ext["fields"]), r.text
 
 
+async def _share(admin, row_id: str, *, owner: bool = False) -> None:
+    """The admin (owner of the row) opens it to user-tpl so the user's write
+    lands on the role rule under test instead of the out-of-access 404: a
+    full grant, or co-ownership when the write is a deletion (deleting
+    needs the owner level)."""
+    r = await admin.get("/v1/users/lookup", params={"q": "tpladmin"})
+    assert r.status_code == 200, r.text
+    owner_id = next(u["id"] for u in r.json() if u["username"] == "tpladmin")
+    body = (
+        {"owners": [owner_id, "user-tpl"], "grants": {}}
+        if owner
+        else {"owners": [owner_id], "grants": {"user-tpl": "full"}}
+    )
+    r = await admin.put(f"/v1/workspace_templates/{row_id}/access", json=body)
+    assert r.status_code == 200, r.text
+
+
 # ---------------------------------------------------------------------------
 # INJ-01: the terminal grant is admin-only
 # ---------------------------------------------------------------------------
@@ -199,6 +216,7 @@ async def test_a_user_cannot_request_another_device_plugin_resource(app, user, r
 @pytest.mark.asyncio
 async def test_a_user_cannot_change_the_gpu_resource_name_an_admin_set(app, admin, user) -> None:  # noqa: F811
     assert (await admin.post("/v1/workspace_templates", json=_GATED_BODIES["gpu.resource_name"])).status_code == 201
+    await _share(admin, "tpl-k")
 
     back_to_default = _k8s(gpu={"count": 1})
     r = await user.put("/v1/workspace_templates/tpl-k", json=back_to_default)
@@ -237,6 +255,7 @@ async def test_a_user_may_still_edit_a_template_that_holds_only_user_tier_placem
 async def test_a_user_cannot_clear_a_placement_field_an_admin_set(app, admin, user, field) -> None:  # noqa: F811
     """Clearing an admin-only value is a change too, and a template that holds one is not user-editable at all."""
     assert (await admin.post("/v1/workspace_templates", json=_GATED_BODIES[field])).status_code == 201
+    await _share(admin, "tpl-k")
 
     r = await user.put("/v1/workspace_templates/tpl-k", json=_k8s())
 
@@ -252,6 +271,7 @@ async def test_a_user_cannot_add_an_admin_only_field_to_a_plain_template(app, ad
     plain = {**body, "files": [], "backend": {k: v for k, v in body.get("backend", {"kind": "local"}).items()
                                                if k in ("kind", "image")}}
     assert (await admin.post("/v1/workspace_templates", json=plain)).status_code == 201
+    await _share(admin, body["id"])
 
     r = await user.put(f"/v1/workspace_templates/{body['id']}", json=body)
 
@@ -264,6 +284,7 @@ async def test_a_user_cannot_add_an_admin_only_field_to_a_plain_template(app, ad
 @pytest.mark.asyncio
 async def test_a_user_cannot_change_an_admin_only_field_an_admin_set(app, admin, user) -> None:  # noqa: F811
     assert (await admin.post("/v1/workspace_templates", json=_GATED_BODIES["pod_overrides"])).status_code == 201
+    await _share(admin, "tpl-k")
 
     changed = _k8s(pod_overrides={"dnsPolicy": "Default"})
     r = await user.put("/v1/workspace_templates/tpl-k", json=changed)
@@ -281,6 +302,7 @@ async def test_a_user_cannot_update_a_template_that_holds_admin_only_settings(ap
     init_commands). A template that holds any admin-only value is not user-editable at all."""
     body = _GATED_BODIES[field]
     assert (await admin.post("/v1/workspace_templates", json=body)).status_code == 201
+    await _share(admin, body["id"])
     before = (await admin.get(f"/v1/workspace_templates/{body['id']}")).json()
 
     edited = {**body, "description": "edited by a user", "init_commands": ["curl evil | sh"]}
@@ -300,6 +322,7 @@ async def test_a_user_cannot_even_change_the_description_of_a_template_that_hold
     app, admin, user,  # noqa: F811
 ) -> None:
     assert (await admin.post("/v1/workspace_templates", json=_GATED_BODIES["extra_mounts"])).status_code == 201
+    await _share(admin, "tpl-c")
 
     r = await user.put("/v1/workspace_templates/tpl-c", json={**_GATED_BODIES["extra_mounts"], "description": "x"})
 
@@ -323,6 +346,7 @@ async def test_an_admin_free_template_stays_fully_user_editable(app, admin, user
     plain = {"id": "tpl-free", "provider_id": "p-1", "description": "d",
              "backend": {"kind": "container", "image": "alpine:3"}}
     assert (await admin.post("/v1/workspace_templates", json=plain)).status_code == 201
+    await _share(admin, "tpl-free")
 
     edited = {
         **plain, "description": "edited by a user", "init_commands": ["echo hi"],
@@ -342,6 +366,7 @@ async def test_a_user_cannot_delete_a_template_that_holds_admin_only_settings(ap
     """Lead re-review of #473: deleting an admin-held template is admin-only too."""
     body = _GATED_BODIES[field]
     assert (await admin.post("/v1/workspace_templates", json=body)).status_code == 201
+    await _share(admin, body["id"], owner=True)
 
     r = await user.delete(f"/v1/workspace_templates/{body['id']}")
 
@@ -366,6 +391,7 @@ async def test_an_admin_can_delete_a_template_that_holds_admin_only_settings(app
 async def test_a_user_may_delete_an_admin_free_template(app, admin, user) -> None:  # noqa: F811
     plain = {"id": "tpl-free", "provider_id": "p-1", "description": "d"}
     assert (await admin.post("/v1/workspace_templates", json=plain)).status_code == 201
+    await _share(admin, "tpl-free", owner=True)
 
     r = await user.delete("/v1/workspace_templates/tpl-free")
 

@@ -32,6 +32,19 @@ async def _admin_creates(raw_client, app, body: dict, **params):
     raw_client.cookies.clear()
 
 
+async def _share_full(raw_client, toolset_id: str) -> None:
+    """The admin owner shares full with u-user (seeded by ``_as``) so the
+    plain user's write lands on the role/secret rule under test instead of
+    the out-of-access 404; returns to the user's session."""
+    await _login(raw_client, "admin")
+    resp = await raw_client.put(
+        f"/v1/toolsets/{toolset_id}/access",
+        json={"owners": ["u-admin"], "grants": {"u-user": "full"}},
+    )
+    assert resp.status_code == 200, resp.text
+    await _login(raw_client, "user")
+
+
 # ---- python toolsets (AUTHZ-01, SSRF-01) ----------------------------------------------------------------------------------------
 
 
@@ -50,6 +63,7 @@ async def test_a_plain_user_cannot_create_a_python_toolset(raw_client, app):
 async def test_a_plain_user_cannot_change_a_python_toolset(raw_client, app):
     await _admin_creates(raw_client, app, PYTHON)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-py")
 
     resp = await raw_client.put("/v1/toolsets/ts-py", json=PYTHON_OTHER)
 
@@ -60,6 +74,7 @@ async def test_a_plain_user_cannot_change_a_python_toolset(raw_client, app):
 async def test_a_plain_user_cannot_turn_an_http_toolset_into_a_python_one(raw_client, app):
     await _admin_creates(raw_client, app, {**HTTP_PLAIN, "id": "ts-x"}, **NO_PROBE)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-x")
 
     resp = await raw_client.put("/v1/toolsets/ts-x", json={**PYTHON, "id": "ts-x"})
 
@@ -70,6 +85,7 @@ async def test_a_plain_user_cannot_turn_an_http_toolset_into_a_python_one(raw_cl
 async def test_a_plain_user_cannot_turn_a_python_toolset_into_an_http_one(raw_client, app):
     await _admin_creates(raw_client, app, PYTHON)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-py")
 
     resp = await raw_client.put("/v1/toolsets/ts-py", json=HTTP_PLAIN, params=NO_PROBE)
 
@@ -99,6 +115,7 @@ async def _served_with_url(raw_client, toolset_id: str, url: str) -> dict:
 async def test_a_plain_user_cannot_repoint_a_toolset_while_its_headers_ride_along_masked(raw_client, app):
     await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-http")
 
     resp = await raw_client.put(
         "/v1/toolsets/ts-http", json=await _served_with_url(raw_client, "ts-http", "http://evil.example/mcp"), params=NO_PROBE,
@@ -112,6 +129,7 @@ async def test_a_plain_user_cannot_repoint_a_toolset_while_its_headers_ride_alon
 async def test_a_plain_user_cannot_repoint_a_toolset_while_its_oauth_client_secret_rides_along(raw_client, app):
     await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET, client_secret=CLIENT_SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-http")
 
     resp = await raw_client.put(
         "/v1/toolsets/ts-http", json=await _served_with_url(raw_client, "ts-http", "http://evil.example/mcp"), params=NO_PROBE,
@@ -125,6 +143,7 @@ async def test_a_plain_user_cannot_move_only_the_oauth_token_endpoint_while_the_
     """The URL stays put: only the OAuth endpoint moves, so the rule must compare it too."""
     await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET, client_secret=CLIENT_SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-http")
     body = (await raw_client.get("/v1/toolsets/ts-http")).json()
     body["config"]["config"]["oauth"]["token_endpoint"] = "http://evil.example/token"
 
@@ -138,6 +157,7 @@ async def test_a_plain_user_cannot_move_only_the_oauth_token_endpoint_while_the_
 async def test_a_plain_user_may_repoint_a_toolset_when_it_re_enters_the_secrets(raw_client, app):
     await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-http")
 
     resp = await raw_client.put("/v1/toolsets/ts-http", json=_http("http://other.example/mcp", "Bearer new"), params=NO_PROBE)
 
@@ -148,6 +168,7 @@ async def test_a_plain_user_may_repoint_a_toolset_when_it_re_enters_the_secrets(
 async def test_a_plain_user_keeps_masked_secrets_when_the_endpoint_does_not_change(raw_client, app):
     await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")
+    await _share_full(raw_client, "ts-http")
 
     resp = await raw_client.put(
         "/v1/toolsets/ts-http", json=await _served_with_url(raw_client, "ts-http", "http://127.0.0.1:9/mcp"), params=NO_PROBE,

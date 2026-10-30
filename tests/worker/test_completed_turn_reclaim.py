@@ -784,7 +784,7 @@ async def test_an_arming_patch_refused_on_a_row_another_process_paused_or_ended_
     assert row.status == status, "the row lost the status the other process gave it"
     assert row.turn_status == "idle", f"turn_status is {row.turn_status!r}: armed, or a stale running left"
     assert row.turn_no == 1 and row.completed_turn_no == 0, "the release applies the lost bump exactly once"
-    assert row.last_worker_id is None
+    assert row.last_worker_id == "wrk-b", "the claim-time stamp of the claiming worker must persist past the release"
     park = {k: getattr(row, k) for k in _PARK}
     if status == SessionStatus.PAUSED:
         assert park == _PARK, "the paused row lost its park (the release did not preserve it)"
@@ -935,7 +935,7 @@ async def test_a_row_paused_or_ended_at_the_guards_first_read_runs_no_turn(world
     expected_turn_status = "claimable" if turn_status == "claimable" else "idle"
     assert row.turn_status == expected_turn_status, f"turn_status is {row.turn_status!r}: a stale running was left"
     assert row.turn_no == 1 and row.completed_turn_no == 0, "the release applies the lost bump exactly once"
-    assert row.last_worker_id is None
+    assert row.last_worker_id == "wrk-b", "the claim-time stamp of the claiming worker must persist past the release"
     park = {k: getattr(row, k) for k in _PARK}
     if status == SessionStatus.PAUSED:
         assert world.outcomes[-1] == ReleaseOutcome(success=True, drop_lease=True, preserve_park=True)

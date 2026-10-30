@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from primer.api.deps import get_storage_provider
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
+from primer.api.routers.access import make_access_router
 from primer.channel.checks import check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
 from primer.common.entity_checks import EntityCheckError
 from primer.model.channel import (
@@ -228,10 +229,22 @@ def make_channel_router() -> APIRouter:
         on_pre_update=_channel_on_pre_update,
         on_update=_invalidate_and_rewarm_channel,
         on_delete=_invalidate_channel,
+        owned=True,
+    )
+
+
+def make_channel_access_router() -> APIRouter:
+    # GET/PUT /channels/{id}/access: mounted BEFORE the channel CRUD router.
+    return make_access_router(
+        model_cls=Channel,
+        plural="channels",
+        storage_dep=_get_channel_storage,
+        tag="channels",
     )
 
 
 __all__ = [
     "make_channel_provider_router",
     "make_channel_router",
+    "make_channel_access_router",
 ]
