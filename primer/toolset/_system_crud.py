@@ -335,7 +335,7 @@ async def _toolset_read_refusal(
     row the caller holds no level on answers exactly like a missing one (access spec 9): the door's own not-found words
     (``not_found_note``) when the door has an idiom of its own, the plain "does not exist" otherwise.
     """
-    row = await registry._sp.get_storage(Toolset).get(canonical_toolset_id(spelled_id))  # type: ignore[attr-defined]
+    row = await registry.storage_provider.get_storage(Toolset).get(canonical_toolset_id(spelled_id))
     if row is None:
         return None
     try:
