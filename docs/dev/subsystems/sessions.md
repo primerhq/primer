@@ -373,7 +373,7 @@ The discriminated `SessionBinding` (`AgentSessionBinding` / `GraphSessionBinding
 
 The sessions subsystem consumes five cross-cutting architecture surfaces rather than reimplementing them:
 
-- **Claim machine** ([architecture/claim-machine.md](../architecture/claim-machine.md)). A session turn runs under a `Lease` from the unified `ClaimEngine`. `SessionClaimAdapter` (`primer/claim/adapters/sessions.py`, `kind=ClaimKind.SESSION`, `entity_table="sessions"`) supplies the eligibility predicate (`e.parked_status IS NULL`, so parked sessions are invisible to claimers) and the `on_release` hook that clears the park columns and `last_worker_id`, bumps `turn_no` / `last_turn_at` only on a successful release, and writes a synthetic terminal `ERROR` record on a failed release. Each branch is one field-scoped `patch_if` of only the fields it owns, with the `turn_no` bump fenced on the value read, so it never overwrites a concurrent steer's `turn_status` or `last_seq` (its one other row write is the failure marker's seq reservation, below).
+- **Claim machine** ([architecture/claim-machine.md](../architecture/claim-machine.md)). A session turn runs under a `Lease` from the unified `ClaimEngine`. `SessionClaimAdapter` (`primer/claim/adapters/sessions.py`, `kind=ClaimKind.SESSION`, `entity_table="sessions"`) supplies the eligibility predicate (`e.data->>'parked_status' IS NULL OR e.data->>'parked_status' = 'resumable'`, so a `parked` session is invisible to claimers and a `resumable` one is claimable) and the `on_release` hook that clears the park columns and `last_worker_id`, bumps `turn_no` / `last_turn_at` only on a successful release, and writes a synthetic terminal `ERROR` record on a failed release. Each branch is one field-scoped `patch_if` of only the fields it owns, with the `turn_no` bump fenced on the value read, so it never overwrites a concurrent steer's `turn_status` or `last_seq` (its one other row write is the failure marker's seq reservation, below).
 - **Worker system** ([architecture/worker-system.md](../architecture/worker-system.md)). `WorkerPool._run_engine_session` is the dispatch wrapper that builds the `SessionDispatchDeps` bundle and calls `run_one_session_turn`. The pool also owns the park/resume hooks (`YieldToWorker` handling, `ParkedState` write, `_handle_resume`) and the startup recovery loop that re-arms leases for non-ENDED rows.
 - **Storage** ([architecture/storage.md](../architecture/storage.md)). The `WorkspaceSession` row is a JSONB-backed `Identifiable`. The streaming and park columns are indexed for the claim predicate.
 - **Observability** ([architecture/observability.md](../architecture/observability.md)). The per-turn structured log (`TurnLogWriter` family + `to_problem_details` + `safe_append`) is a cross-cutting observability surface shared with the graph executors; it is best-effort and never aborts a live turn.
@@ -441,11 +441,36 @@ stateDiagram-v2
     ENDED --> [*]
 ```
 
-The park sub-states (`parked` -> `resumable`) live under `RUNNING`: parking releases the lease and clears `last_lease_at` in the same statement, the claim predicate excludes `parked_status IS NOT NULL`, and the bus listener atomically flips `parked` to `resumable` when the yield event arrives so the next claim picks the row up. The flip (`durably_mark_session_resumable` in `primer/session/yields.py`, shared by the listener, the reply routes and the producers that wake a park themselves) is one `patch_if` guarded on the park it read (`parked_at`), a `parked_status` it may advance from and a status that is not ENDED. It writes `parked_status` and only its own leaves of `parked_state`, as nested `set_paths` the backend applies to the row's current document: the singular `resume_event_payload` and `resume_event_key` and, on a multi-event park, its own entry in `resume_event_payloads` (under the dispatch key through `leaf_key_for`). Two wakes on two keys of one multi-event park that read the same row therefore keep both replies; the whole `parked_state` a wake built from its snapshot, which the flip used to write, dropped the reply the other wake wrote in between (ticket 01a122cc-effa). The safety-net sweeps that catch parks whose event never fires - `TimerScheduler` (`timer:*` deadlines) and `TimeoutSweeper` (non-timer deadlines) in `primer/bus/scheduler_tasks.py` - page through ALL parked sessions (a 200-row window per round-trip) rather than only the first 200, so no park beyond the 200th is ever silently left stuck.
+The park sub-states (`parked` -> `resumable`) live under `RUNNING`: parking releases the lease and clears `last_lease_at` in the same statement, the claim predicate admits only `NULL` and `resumable` rows, and the bus listener atomically flips `parked` to `resumable` when the yield event arrives so the next claim picks the row up. The flip (`durably_mark_session_resumable` in `primer/session/yields.py`, shared by the listener, the reply routes and the producers that wake a park themselves) is one `patch_if` guarded on the park it read (`parked_at`), a `parked_status` it may advance from and a status that is not ENDED. It writes `parked_status` and only its own leaves of `parked_state`, as nested `set_paths` the backend applies to the row's current document: the singular `resume_event_payload` and `resume_event_key` and, on a multi-event park, its own entry in `resume_event_payloads` (under the dispatch key through `leaf_key_for`). Two wakes on two keys of one multi-event park that read the same row therefore keep both replies; the whole `parked_state` a wake built from its snapshot, which the flip used to write, dropped the reply the other wake wrote in between (ticket 01a122cc-effa). The safety-net sweeps that catch parks whose event never fires - `TimerScheduler` (`timer:*` deadlines) and `TimeoutSweeper` (non-timer deadlines) in `primer/bus/scheduler_tasks.py` - page through ALL parked sessions (a 200-row window per round-trip) rather than only the first 200, so no park beyond the 200th is ever silently left stuck.
 
 A gate stays in `parked_state` while its row is `resumable`, so a read that offers a decision must not take `resumable` for "still waiting": `primer.session.pending_gates.gate_is_decided` tells a gate whose decision the row already holds from one still open, and every pending route uses it (ticket 01a16ca6; see "A decided gate is not pending" in [agents](agents.md)).
 
-`SessionMessageKind` enumerates the wire-level history kinds: `user_input`, `assistant_token`, `tool_call`, `tool_result`, `yielded`, `resumed`, `done`, `cancelled`, `error`. `SessionMessageRecord` (`seq`, `kind`, `payload`, `created_at`) is one line in `messages.jsonl`; `seq` is monotonic per session and the composite `(session_id, seq)` is the natural key.
+`SessionMessageKind` enumerates the wire-level history kinds:
+
+- `user_input`
+- `assistant_token`
+- `reasoning`
+- `tool_call`
+- `tool_result`
+- `external_tool_call`
+- `agent_marker`
+- `yielded`
+- `resumed`
+- `done`
+- `cancelled`
+- `error`
+- `graph_transition`
+- `invocation_divider`
+- `compaction_marker`
+- `rewind_marker`
+- `client_action`
+- `llm_call`
+- `compaction_note`
+- `pause_superseded`
+- `canvas_op`
+- `canvas_event`
+
+`SessionMessageRecord` (`seq`, `kind`, `payload`, `created_at`) is one line in `messages.jsonl`; `seq` is monotonic per session and the composite `(session_id, seq)` is the natural key.
 
 `WorkspaceSession.peer_hops` (default 0) is the hop count of the message that started the current turn: 0 for a person, a trigger or a channel, 1 to 8 for a peer reply chain. `wake_session` writes it with every wake that lands an instruction (the peer's hops, or 0 for anyone else), and a message that sits in the queue does not touch it until it is realized: the count on the row is what the CURRENT turn was started with, and the queued message's own count takes effect only when the realize starts its turn. `PeerAttribution` rides a peer message's delivery as `payload.peer` on the USER_INPUT record the message starts and as `attribution.peer` on the `PendingSessionMessage` it queues (one key, `PEER_PAYLOAD_KEY`, `peer`), and the realize carries it through, so the hops the sender counted are the hops the realized message carries. `PeerMessage` (table `peermessage`) is the rate-limit ledger: one row per delivered message, the newest 20 per sender kept (rows beyond the newest 20 are deleted after each write), and refused attempts not recorded. That trim runs only when the same sender sends again, so the ledger used to keep the rows of every session that ever sent a message (audit G7-15). Now the session delete route deletes the rows of the messages the deleted session sent (`delete_peer_ledger_of`; the rows of messages other sessions sent TO it stay, as those senders' allowance), and the session-messaging sweep deletes every row older than `PEER_LEDGER_TTL` (twice the 10-minute rate window, so never a row the rate check counts), orphans included (`trim_stale_peer_ledger`, oldest first, ordered by `sent_at` with no range predicate). Pinned by `tests/session/test_peer_ledger_goes_with_its_session.py`.
 
