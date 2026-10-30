@@ -874,7 +874,7 @@ class TestListPendingAttention:
         assert by_id["sess-attn-approval"]["agent_binding"]["agent_id"] == "agt-1"
         assert by_id["sess-attn-approval"]["agent_binding"]["kind"] == "agent"
         assert by_id["sess-attn-approval"]["initiated_by"] == {
-            "type": "user", "id": "user-root", "display": "root", "role": "admin", "source": "local",
+            "type": "user", "id": "user-root", "display": "root", "role": "admin", "source": "local", "user_id": None,
         }
         assert by_id["sess-attn-approval"]["created_at"] == "2026-07-01T09:00:00+00:00"
 
