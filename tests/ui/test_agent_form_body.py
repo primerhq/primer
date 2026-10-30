@@ -33,7 +33,9 @@ def ctx():
 def test_the_full_fixture_sets_every_agent_field():
     from primer.model.agent import Agent
 
-    assert set(FULL) == set(Agent.model_fields)  # a new Agent field fails here until the form carries it
+    # A new Agent field fails here until the form carries it. ``access`` is the exception: the server stamps it and
+    # ignores it in create/update bodies; it changes only through the Share dialog (PUT /v1/agents/{id}/access).
+    assert set(FULL) == set(Agent.model_fields) - {"access"}
 
 
 def test_a_new_agent_with_only_the_required_fields_posts_this_body(ctx):
