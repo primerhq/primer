@@ -3,27 +3,29 @@
 The REST steer route and a call with no calling session (the MCP endpoint, a chat) are a person or an API client steering: they are unchanged
 (``tests/toolset/test_steer_tool_queue_when_busy.py`` pins them). An AGENT in a session that calls the tool is another session putting a message into
 the target, so it goes through ``send_peer_message``, the service ``message_session`` uses: the target sees who sent it (a prefix and ``payload.peer``), the
-hop count and the per-sender rate limit apply, the target's creator may not outrank the sender, and the two lead rulings that are keyed on a peer message
-(a peer never evicts a person's queued steer; a peer never reopens a session an operator cancelled) hold for it too. Since lead ruling 3 of the G7 fixes
-the reach of the caller's workspace is one of the guards too (it used to be skipped): a session outside the default workspace reaches only its own
-workspace, and a session out of reach answers exactly as one that does not exist. Its answer keeps the session row's keys and adds ``delivery``.
+hop count and the per-sender rate limit apply, the sender's person needs full on the target's workspace (access-control P2 T6: it replaces the sender's
+reach and the run's rank), and the two lead rulings that are keyed on a peer message (a peer never evicts a person's queued steer; a peer never reopens
+a session an operator cancelled) hold for it too. A workspace the person holds no level on answers exactly as one that does not exist. Its answer keeps
+the session row's keys and adds ``delivery``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from primer.model.principal import PrincipalRef
+from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import OffsetPage
 from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, PeerMessage, PendingSessionMessage, SessionStatus
 from primer.model.yield_ import ToolContext
+from primer.mcp.server import current_actor
 from primer.session.peer_messages import PEER_MESSAGE_MAX_CHARS, PEER_RATE_LIMIT, REFUSE_QUEUE_FULL
 from primer.session.pending_messages import _MAX_PENDING_PER_SESSION, store_pending_steer
 from primer.toolset.workspaces import build_workspaces_toolset
-from tests.session._peer_fakes import make_world, records, seed_session, slot
+from tests.session._peer_fakes import make_world, records, seed_session, seed_workspace, slot
 
 T0 = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
 INSTRUCTION = "Focus on the failing test first."
@@ -36,9 +38,23 @@ def _ctx(session_id: str | None = "ses-a", workspace_id: str | None = "ws-1", in
     return ToolContext(tool_call_id="call_1", session_id=session_id, workspace_id=workspace_id, initiated_by=initiated_by)
 
 
+@contextlib.contextmanager
+def _as_person(user_id: str):
+    """The MCP endpoint's live actor for a call with no calling session: the token's user (access is decided by the owner, never by the token)."""
+    token = current_actor.set(
+        Principal(type="user", id=f"tok-{user_id}", display=f"tok-{user_id}", role="user", source="local", user_id=user_id)
+    )
+    try:
+        yield
+    finally:
+        current_actor.reset(token)
+
+
 async def _world():
-    """A world with the calling session ``ses-a``: an agent session of ``ws-1`` that rests, started by a user."""
+    """A world with the calling session ``ses-a``: an agent session of ``ws-1`` that rests, started by a user who owns the workspace (access-control
+    P2 T6: the run's person needs full on the target's workspace)."""
     world = make_world(with_bus=True)
+    await seed_workspace(world, "ws-1", owners=["u1"])
     await seed_session(world, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER, created_at=T0)
     return world
 
@@ -150,6 +166,7 @@ async def test_a_graph_target_gets_the_instruction_as_it_is_with_the_sender_on_t
 
 async def test_a_graph_session_that_steers_is_named_as_a_graph():
     world = make_world(with_bus=True)
+    await seed_workspace(world, "ws-1", owners=["u1"])
     await seed_session(world, sid="ses-g", binding=GraphSessionBinding(graph_id="triage"), initiated_by=USER, created_at=T0)
     await seed_session(world, sid="ses-b", turn_no=1, created_at=T0 + timedelta(minutes=5))
     result, _ = await _steer(world, "ses-b", ctx=_ctx("ses-g"))
@@ -206,25 +223,29 @@ async def test_a_steer_and_a_message_share_the_senders_allowance():
     assert not result.is_error, result.output
 
 
-async def test_a_steer_into_a_session_an_admin_started_is_forbidden_to_a_user_run():
+async def test_the_senders_persons_level_decides_not_the_targets_creator():
+    """The creator's rank is no longer consulted (access-control P2 T6): the sender's person's level on the target's workspace is the whole rule."""
     world = await _world()
     await seed_session(world, sid="ses-b", turn_no=1, initiated_by=ADMIN, created_at=T0 + timedelta(minutes=5))
     result, body = await _steer(world, "ses-b", ctx=_ctx())
-    assert result.is_error and body["type"] == "forbidden"
-    assert "(admin)" in body["message"] and "(user)" in body["message"]
-    await _assert_nothing_stored(world)
-    result, body = await _steer(world, "ses-b", ctx=_ctx(initiated_by=ADMIN))
     assert not result.is_error and body["delivery"] == "woken", result.output
+    # A person with only a read grant on the target's workspace is refused (forbidden), whatever the target's creator.
+    read_only = make_world(with_bus=True)
+    await seed_workspace(read_only, "ws-1", owners=["u2"], grants={"u1": "read"})
+    await seed_session(read_only, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER, created_at=T0)
+    await seed_session(read_only, sid="ses-b", turn_no=1, initiated_by=USER, created_at=T0 + timedelta(minutes=5))
+    result, body = await _steer(read_only, "ses-b", ctx=_ctx())
+    assert result.is_error and body["type"] == "forbidden" and "needs full access" in body["message"]
+    await _assert_nothing_stored(read_only)
 
 
-async def test_a_run_with_no_recorded_initiator_steers_as_an_ordinary_user():
+async def test_a_run_with_no_recorded_initiator_holds_no_level_and_is_not_found():
+    """A run with no principal behind it names no person, and a person with no user id holds no level on any workspace."""
     world = await _world()
     await seed_session(world, sid="ses-b", turn_no=1, created_at=T0 + timedelta(minutes=5))
-    await seed_session(world, sid="ses-c", turn_no=1, initiated_by=ADMIN, created_at=T0 + timedelta(minutes=6))
     result, body = await _steer(world, "ses-b", ctx=_ctx(initiated_by=None))
-    assert not result.is_error and body["delivery"] == "woken", result.output
-    result, body = await _steer(world, "ses-c", ctx=_ctx(initiated_by=None))
-    assert result.is_error and body["type"] == "forbidden"
+    assert result.is_error and body["type"] == "not-found"
+    await _assert_nothing_stored(world)
 
 
 async def test_a_session_cannot_steer_itself():
@@ -236,6 +257,8 @@ async def test_a_session_cannot_steer_itself():
 
 async def test_a_steer_from_a_session_that_is_gone_is_refused_not_sent_unattributed():
     world = make_world(with_bus=True)
+    # The access row must pass (the guard is asked before the row lookup); the refusal under test is the gone sending session, from the peer path.
+    await seed_workspace(world, "ws-1", owners=["u1"])
     await seed_session(world, sid="ses-b", turn_no=1)
     result, body = await _steer(world, "ses-b", ctx=_ctx("ses-ghost"))
     assert result.is_error and body["type"] == "unsupported-surface"
@@ -249,7 +272,8 @@ async def test_the_text_cap_of_a_message_applies_to_a_steer_from_a_session_and_t
     result, body = await _steer(world, "ses-b", instruction=long_text, ctx=_ctx())
     assert result.is_error and body["type"] == "bad-request" and "32000" in body["message"].replace(",", "")
     await _assert_nothing_stored(world)
-    result, body = await _steer(world, "ses-b", instruction=long_text)  # a person's call: no cap, as before
+    with _as_person("u1"):
+        result, body = await _steer(world, "ses-b", instruction=long_text)  # a person's call: no cap, as before
     assert not result.is_error and body["delivery"] == "woken", result.output
 
 
@@ -266,7 +290,8 @@ async def test_r1_a_steer_from_a_session_never_evicts_a_persons_queued_steer():
     assert sorted(p.id for p in await _pending(world)) == queued_before
     assert await _ledger(world) == [] and await _events(world, "session.") == []
     # a person's steer (no calling session) still takes the room, as before: the oldest queued row goes
-    result, body = await _steer(world, "ses-b")
+    with _as_person("u1"):
+        result, body = await _steer(world, "ses-b")
     assert not result.is_error and body["delivery"] == "queued", result.output
     assert len(await _pending(world)) == _MAX_PENDING_PER_SESSION and sorted(p.id for p in await _pending(world)) != queued_before
 
@@ -281,7 +306,8 @@ async def test_r4_a_steer_from_a_session_never_reopens_a_session_an_operator_can
     await _assert_nothing_stored(world)
     # A call with no calling session (the MCP endpoint) does not reopen it either: no person stands behind a tool call (ruling 1 of the G7 fixes;
     # this used to reopen it). A person reopens it through the REST steer or restart route (``human_intent=True``).
-    result, body = await _steer(world, "ses-b")
+    with _as_person("u1"):
+        result, body = await _steer(world, "ses-b")
     assert result.is_error and body == {"type": "conflict", "message": "Session 'ses-b' has ended (cancelled) and cannot take a message"}
     from primer.session.steer_delivery import DELIVERED_WOKEN, deliver_steer
 
@@ -292,22 +318,26 @@ async def test_r4_a_steer_from_a_session_never_reopens_a_session_an_operator_can
 # ---- the scope is one of the guards (lead ruling 3 of the G7 fixes) ------------------------------------------------------------------
 
 
-async def test_a_steer_from_a_session_outside_the_default_workspace_reaches_only_its_own_workspace():
-    """Re-pinned (audit G7-05): this was ``test_a_steer_names_its_own_workspace_and_is_not_limited_to_the_senders`` and pinned the delivery to a
-    session of another workspace that ``message_session`` refused. It answers exactly as an id that does not exist, and nothing is written."""
+async def test_a_steer_into_a_workspace_the_senders_person_holds_no_level_on_is_not_found():
+    """A workspace the sender's person holds no level on answers exactly as an id that does not exist (access-control P2 T6: which workspace the
+    sending session sits in is no longer part of the rule), and nothing is written."""
     world = await _world()
     await seed_session(world, sid="ses-x", workspace_id="ws-2", turn_no=1, created_at=T0 + timedelta(minutes=5))
     result, body = await _steer(world, "ses-x", workspace_id="ws-2", ctx=_ctx())
-    assert result.is_error and body == {"type": "not-found", "message": "Session 'ses-x' does not exist on workspace 'ws-2'"}
+    # The gate is asked before the row lookup (access-control P2 T6), so a no-level workspace answers in its own words and confirms no session id.
+    assert result.is_error and body == {"type": "not-found", "message": "Workspace 'ws-2' does not exist"}
     _, unknown = await _steer(world, "ses-nope", workspace_id="ws-2", ctx=_ctx())
-    assert unknown == {"type": "not-found", "message": "Session 'ses-nope' does not exist on workspace 'ws-2'"}
+    assert unknown == {"type": "not-found", "message": "Workspace 'ws-2' does not exist"}
     await _assert_nothing_stored(world, target="ses-x", workspace_id="ws-2")
 
 
-async def test_a_steer_from_a_session_in_the_default_workspace_reaches_any_workspace():
-    """Prime is the management plane: its sessions reach every workspace (design 6.1)."""
+async def test_a_steer_reaches_a_workspace_the_senders_person_holds_full_on_from_anywhere():
+    """The sender's workspace is no longer part of the rule (access-control P2 T6: the default workspace no longer reaches everything): the person's
+    level on the target's workspace decides, from whatever workspace the sending session sits in."""
     world = make_world(with_bus=True)
     await world.sp.set_default_workspace_id("ws-prime")
+    await seed_workspace(world, "ws-prime", owners=["u1"])
+    await seed_workspace(world, "ws-2", owners=["u1"])
     await seed_session(world, sid="ses-p", workspace_id="ws-prime", binding=AgentSessionBinding(agent_id="operator"), initiated_by=USER, created_at=T0)
     await seed_session(world, sid="ses-x", workspace_id="ws-2", turn_no=1, created_at=T0 + timedelta(minutes=5))
     result, body = await _steer(world, "ses-x", workspace_id="ws-2", ctx=_ctx("ses-p", "ws-prime"))
@@ -340,7 +370,9 @@ async def test_a_session_that_is_not_on_the_named_workspace_is_still_not_found_b
 async def test_a_steer_with_no_calling_session_is_a_plain_instruction_with_no_sender(ctx):
     world = await _world()
     await seed_session(world, sid="ses-b", turn_no=1, peer_hops=5, created_at=T0 + timedelta(minutes=5))
-    result, body = await _steer(world, "ses-b", ctx=ctx)
+    # With no calling session the MCP endpoint's token user is the person; a chat's context carries the run's initiator instead.
+    with _as_person("u1"):
+        result, body = await _steer(world, "ses-b", ctx=ctx)
     assert not result.is_error and body["delivery"] == "woken", result.output
     assert slot(world, "ses-b").appended == [INSTRUCTION]
     (user_input,) = [r for r in records(world, "ses-b") if r["kind"] == "user_input"]

@@ -11,15 +11,19 @@ import json
 from datetime import UTC, datetime
 
 from primer.agent.inner_dispatch import dispatch_inner_tool
+from primer.model.access import Access
 from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.toolset.workspaces import WORKSPACES_TOOLSET_ID, build_workspaces_toolset
 from tests.conftest import _FakeStorageProvider
 
 
 def _row(wid: str, name: str) -> Workspace:
+    # Public: the actor-less person the tools act as (no MCP actor in this file) holds read (access-control P2 T6); the
+    # flag under test is ``is_default``, not the level held.
     return Workspace(
         id=wid, name=name, template_id="local-default", provider_id="local", created_at=datetime(2026, 1, 1, tzinfo=UTC), phase="running",
         runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="stub-token"),
+        access=Access(public=True),
     )
 
 

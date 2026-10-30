@@ -30,8 +30,21 @@ def _owner(row) -> tuple:
     return (row.owner.type, row.owner.id, row.owner.role) if row.owner is not None else None
 
 
+async def _seed_ws1(provider) -> None:
+    """The subscription's target workspace (access-control P2 T6): the save path refuses for an owner that holds no full there."""
+    from primer.model.access import Access
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+
+    await provider.get_storage(Workspace).create(Workspace(
+        id="ws-1", name="ws-1", template_id="tpl", provider_id="local-1", created_at=datetime.now(timezone.utc),
+        phase="running", runtime_meta=WorkspaceRuntimeMeta(url="ws://ws-1", token="t"),
+        access=Access(owners=["user-1"]),
+    ))
+
+
 async def test_the_trigger_tools_record_and_refresh_the_owner(fake_storage_provider) -> None:
-    # The caller's run is in the default workspace (prime), which reaches the subscription's ws-1 (review of #870, F1).
+    # The save asks the subscription owner's full on the target workspace (access-control P2 T6): user-1 owns ws-1.
+    await _seed_ws1(fake_storage_provider)
     await fake_storage_provider.set_default_workspace_id(caller().workspace_id)
     tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
     as_user, as_admin = caller("user"), caller("admin")
@@ -105,7 +118,8 @@ async def test_the_mcp_door_records_the_mcp_principal_as_owner(fake_storage_prov
 
 
 async def test_create_channel_binding_records_the_owner(fake_storage_provider) -> None:
-    # The caller's run is in the default workspace (prime), which reaches the binding's ws-1 (review of #870, F1).
+    # The save asks the caller's full on the target workspace (access-control P2 T6): user-1 owns ws-1.
+    await _seed_ws1(fake_storage_provider)
     await fake_storage_provider.set_default_workspace_id(caller().workspace_id)
     await fake_storage_provider.get_storage(Trigger).create(Trigger(
         id="trg-ch-1", slug="ch-trigger", name="ch", created_at=datetime.now(timezone.utc),

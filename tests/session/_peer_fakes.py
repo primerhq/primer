@@ -32,6 +32,13 @@ class FakeSlot:
     def __init__(self) -> None:
         self.appended: list[str] = []
         self.reopened = False
+        self._status: SessionStatus = SessionStatus.RUNNING
+
+    async def status(self) -> SessionStatus:
+        return self._status
+
+    async def set_status(self, status: SessionStatus, *, ended_reason: str | None = None, waiting_state: Any = None) -> None:
+        self._status = status
 
     async def append_instruction(self, content: str, *, extra_parts: Any = None) -> None:
         self.appended.append(content)
@@ -111,6 +118,9 @@ class FakeEngine:
     async def has_lease(self, kind: Any, session_id: str) -> bool:
         return session_id in self.leased
 
+    async def delete_lease(self, kind: Any, session_id: str) -> None:
+        self.leased.discard(session_id)
+
 
 class FakeBus:
     """Notes every publish. A gate or a wait is answered by a publish on its key, so a test that must see nothing answered looks here."""
@@ -184,6 +194,30 @@ async def seed_session(
         **fields,
     )
     await world.sessions.create(row)
+    return row
+
+
+async def seed_workspace(
+    world: World,
+    workspace_id: str = "ws-1",
+    *,
+    owners: list[str] | None = None,
+    grants: dict[str, str] | None = None,
+    public: bool = False,
+) -> Any:
+    """A workspace's access row (access-control P2 T6): the peer and tool guards ask the acting person's level on it."""
+    from primer.model.access import Access
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+
+    row = Workspace(
+        id=workspace_id,
+        template_id="local-default",
+        provider_id="local",
+        created_at=datetime.now(UTC),
+        runtime_meta=WorkspaceRuntimeMeta(url=f"ws://{workspace_id}", token="t"),
+        access=Access(owners=owners or [], grants=grants or {}, public=public),
+    )
+    await world.sp.get_storage(Workspace).create(row)
     return row
 
 

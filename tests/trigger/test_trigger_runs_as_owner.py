@@ -20,6 +20,7 @@ import pytest
 
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.api.registries import ProviderRegistry
+from primer.model.access import Access
 from primer.model.api_token import ApiToken
 from primer.model.chat import ToolCallPart
 from primer.model.principal import PrincipalRef
@@ -27,6 +28,7 @@ from primer.model.storage import OffsetPage
 from primer.model.provider import Toolset
 from primer.model.trigger import ChannelTriggerConfig, Subscription, Trigger
 from primer.model.user import User
+from primer.model.workspace import Workspace
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.yield_ import ToolContext
 from primer.toolset.system import build_system_toolset
@@ -68,6 +70,13 @@ async def _seed(sp, *, kind: str, target_id: str, trigger_owner, sub_owner) -> S
         "owner": sub_owner.model_dump(mode="json") if sub_owner else None,
     })
     await sp.get_storage(Subscription).create(sub)
+    # The ``seeded_workspace`` fixture's row carries no access; stamp the subscription owner's full on it so the fire's
+    # access check (P2 T6) passes and the rank question these tests ask is the one that decides.
+    if sub_owner is not None:
+        row = await sp.get_storage(Workspace).get("ws-1")
+        if row is not None:
+            row.access = Access(owners=[sub_owner.id])
+            await sp.get_storage(Workspace).update(row)
     return sub
 
 

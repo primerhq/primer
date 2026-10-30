@@ -74,10 +74,11 @@ def may_drive(
     """Whether ``actor`` may act on a session ``target_creator`` started (steer, restart, message, cancel, resume, pause or Stop it): ``actor`` ranks
     at least as high.
 
-    The one rank rule of every path that drives another session (lead rulings 2 and 3 of the G7 fixes): a person's REST steer and restart, the
-    steer and restart tools called with no calling session (the MCP endpoint), a message or a steer or a restart from another session
-    (:func:`primer.session.peer_messages.sender_may_message`, which refuses an unknown sender first) and a trigger's fire
-    (:func:`primer.trigger.owner.refuse_steer_above_fire`). The target's rank is the one recorded on the session: its runs execute at most at that
+    The one rank rule of every path that drives another session (lead rulings 2 and 3 of the G7 fixes): a person's REST steer and restart
+    (:func:`primer.api.routers._session_rank.refuse_outranked`) and a trigger's fire
+    (:func:`primer.trigger.owner.refuse_steer_above_fire`). A message or a steer or a restart from another session no longer ranks the caller,
+    and neither do the tools: they ask the caller's person's level on the target's workspace (access-control P2). The target's rank is the one
+    recorded on the session: its runs execute at most at that
     rank (the creator's current role, capped by it), so comparing with it never lets a lower rank drive a higher run.
 
     ``None`` ranks as an ordinary user on either side (:func:`principal_rank`).

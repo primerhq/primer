@@ -28,6 +28,7 @@ import primer.workspace  # noqa: F401  (makes ToolCallContext.model_rebuild() ru
 from primer.agent.invoke import _SubagentSession
 from primer.agent.loop import _STOPPED_REFUSAL, run_agent_turn
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import (
     Done,
@@ -43,6 +44,7 @@ from primer.model.chat import (
 )
 from primer.model.model_profile import ModelProfileConfig
 from primer.model.principal import PrincipalRef
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model_profile import ResolvedModel
 from primer.toolset.workspaces import build_workspaces_toolset
@@ -130,6 +132,13 @@ class _OneRoundLlm:
 
 async def _seed_running_session(storage_provider) -> None:
     now = datetime(2026, 10, 7, 10, 0, 0, tzinfo=timezone.utc)
+    # The access guard (P2 T6) resolves the run's person's level on the workspace row, so the row must exist. The run acts as the
+    # system principal (an admin), which holds every level, so any access grants it.
+    await storage_provider.get_storage(Workspace).create(Workspace(
+        id=WID, name=WID, template_id="tpl", provider_id="local-1", created_at=now, phase="running",
+        runtime_meta=WorkspaceRuntimeMeta(url=f"ws://{WID}", token="t"),
+        access=Access(owners=["u-user"]),
+    ))
     await storage_provider.get_storage(WorkspaceSession).create(WorkspaceSession(
         id=SID, workspace_id=WID, binding=AgentSessionBinding(agent_id="ag1"), status=SessionStatus.RUNNING,
         last_seq=1, turn_status="running", created_at=now,
@@ -278,7 +287,12 @@ async def _run_the_self_stopping_subagent(fake_storage_provider, *, watching: bo
         profiles={"prov-1--m1": _profile("prov-1--m1", "prov-1", "m1")},
     )
     registry = _Registry(llms={"prov-1": sub_llm}, toolsets={"workspaces": toolset, "rec": recorder})
-    parent_manager = _ParentManager("agent-s", storage, registry)
+    # The parent run's principal rides on the subagent context (access-control P2 T6): the subagent's interrupt acts as this
+    # user, who owns the workspace the row lives in.
+    parent_manager = _ParentManager(
+        "agent-s", storage, registry,
+        identity=PrincipalRef(type="user", id="u-user", display="user", role="user", source="local", user_id="u-user"),
+    )
     parent_llm = _ParentOnceLlm()
     messages_out: list[Message] = []
     interrupted: list[bool] = []

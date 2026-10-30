@@ -26,10 +26,26 @@ from unittest.mock import AsyncMock
 import pytest
 
 from primer.model.except_ import ProviderError
+from primer.mcp.server import current_actor
+from primer.model.access import Access
+from primer.model.principal import Principal
 from primer.model.workspace import Workspace, WorkspaceProvider, WorkspaceTemplate
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.toolset.workspaces import build_workspaces_toolset
 from tests.api.test_workspaces import _provider, _template, sp, wsr  # noqa: F401  (fixtures)
+
+#: The person the tool calls act as (access-control P2 T6): the tool's no-ctx call resolves ``current_actor``, and the run's person must hold
+#: the level the tool asks (read to read, owner to delete), so the seed makes them the workspace's owner.
+OWNER_TOKEN = Principal(type="user", id="u-del", display="u-del", role="user", source="local", user_id="u-del")
+
+
+async def _call(toolset, tool_name: str, arguments: dict):
+    """One tool call as the workspace's owner (the MCP endpoint's token, the run's person)."""
+    token = current_actor.set(OWNER_TOKEN)
+    try:
+        return await toolset.call(tool_name=tool_name, arguments=arguments)
+    finally:
+        current_actor.reset(token)
 
 
 @pytest.fixture
@@ -43,6 +59,8 @@ async def wid(sp, wsr) -> str:  # noqa: F811
     await sp.get_storage(WorkspaceProvider).create(_provider())
     await sp.get_storage(WorkspaceTemplate).create(_template())
     row = await wsr.create(template=_template(), workspace_id="ws-del")
+    # The tool's caller (u-del) owns the workspace (access-control P2 T6): a read asks the run's person's read, the delete its owner.
+    await sp.get_storage(Workspace).update(row.model_copy(update={"access": Access(owners=["u-del"])}))
     await sp.get_storage(Workspace).patch_if(row.id, {"phase": "running"}, where={"phase": ["pending"]})
     await sp.get_storage(WorkspaceSession).create(
         WorkspaceSession(
@@ -70,7 +88,7 @@ async def test_a_reader_sees_terminating_while_the_teardown_runs(sp, wsr, wid, t
     async def _destroy(workspace_id):
         # A reader in the middle of the teardown: the stored row, and the get_workspace tool that serves it.
         seen.append((await _row(sp, workspace_id)).phase)
-        seen.append(json.loads((await toolset.call(tool_name="get_workspace", arguments={"id": workspace_id})).output)["phase"])
+        seen.append(json.loads((await _call(toolset, "get_workspace", {"id": workspace_id})).output)["phase"])
         await real_destroy(workspace_id)
 
     backend.destroy = _destroy
@@ -184,10 +202,10 @@ async def test_the_delete_tool_reports_the_failure_and_the_row_reads_failed(sp, 
 
     backend.destroy = _broken
 
-    result = await toolset.call(tool_name="delete_workspace", arguments={"id": wid})
+    result = await _call(toolset, "delete_workspace", {"id": wid})
 
     assert result.is_error and json.loads(result.output)["type"] == "backend-error"
-    got = json.loads((await toolset.call(tool_name="get_workspace", arguments={"id": wid})).output)
+    got = json.loads((await _call(toolset, "get_workspace", {"id": wid})).output)
     assert got["phase"] == "failed" and "the container would not stop" in got["failure_reason"]
 
 

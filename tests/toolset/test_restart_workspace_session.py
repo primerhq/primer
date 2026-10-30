@@ -14,7 +14,15 @@ from datetime import datetime, timezone
 
 import pytest
 
+from primer.mcp.server import current_actor
+from primer.model.access import Access
+from primer.model.principal import Principal
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.toolset.workspaces import build_workspaces_toolset
+
+#: The user the tool's no-ctx call acts as (access-control P2 T6): the workspace's owner, so the tool's full ask passes.
+OWNER_USER = "u-user"
+OWNER_TOKEN = Principal(type="user", id=OWNER_USER, display=OWNER_USER, role="user", source="local", user_id=OWNER_USER)
 
 
 def _now() -> datetime:
@@ -152,6 +160,12 @@ def _seed_session(sp: _SP, *, sid: str, wid: str, status, ended_reason=None):
         created_at=_now(),
     )
     sp._s._data[sid] = sess
+    # The workspace row the tool's access guard (P2 T6) asks the caller's person's full on: the token the tests set owns it.
+    sp._s._data[wid] = Workspace(
+        id=wid, name=wid, template_id="tpl", provider_id="local-1", created_at=_now(), phase="running",
+        runtime_meta=WorkspaceRuntimeMeta(url=f"ws://{wid}", token="t"),
+        access=Access(owners=[OWNER_USER]),
+    )
     return sess
 
 
@@ -195,14 +209,18 @@ class TestRestartWorkspaceSession:
             status=SessionStatus.ENDED,
             ended_reason="completed",
         )
-        result = await session_toolset.call(
-            tool_name="restart_workspace_session",
-            arguments={
-                "workspace_id": "ws-1",
-                "session_id": "sess-1",
-                "input": "restarted by tool",
-            },
-        )
+        token = current_actor.set(OWNER_TOKEN)
+        try:
+            result = await session_toolset.call(
+                tool_name="restart_workspace_session",
+                arguments={
+                    "workspace_id": "ws-1",
+                    "session_id": "sess-1",
+                    "input": "restarted by tool",
+                },
+            )
+        finally:
+            current_actor.reset(token)
         assert not result.is_error, result.output
         payload = json.loads(result.output)
         assert payload["status"] == "running"
@@ -221,10 +239,14 @@ class TestRestartWorkspaceSession:
             wid="ws-1",
             status=SessionStatus.RUNNING,
         )
-        result = await session_toolset.call(
-            tool_name="restart_workspace_session",
-            arguments={"workspace_id": "ws-1", "session_id": "sess-1"},
-        )
+        token = current_actor.set(OWNER_TOKEN)
+        try:
+            result = await session_toolset.call(
+                tool_name="restart_workspace_session",
+                arguments={"workspace_id": "ws-1", "session_id": "sess-1"},
+            )
+        finally:
+            current_actor.reset(token)
         assert result.is_error
         assert json.loads(result.output)["type"] == "conflict"
 
