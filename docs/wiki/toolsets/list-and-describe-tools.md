@@ -10,7 +10,7 @@ Three `system` tools take you from a tool's name to its result: `system__list_to
 
 ## Concepts
 - `system__call_tool` takes a `toolset_id`, a `tool_name` and an `arguments` object (empty when you leave it out). It reaches any toolset the platform resolves: the [built-in toolsets](toolsets/builtin-toolsets) and the stored [MCP](toolsets/mcp-toolsets) and [Python](toolsets/python-toolsets) toolsets.
-- `tool_name` is the tool's wire id inside its toolset: `create_agent`, not `crud__create_agent`. The harness tools are the exception, because their wire ids carry the prefix: `harness__list`.
+- `tool_name` is the tool's wire id inside its toolset: `create_agent`, not `crud__create_agent`; for the harness tools, `list`, not `harness__list`.
 - The checks run in this order:
   1. The toolset must exist, else `not-found`.
   2. The toolset must list the tool, else `not-found`, naming up to 30 of its tools.

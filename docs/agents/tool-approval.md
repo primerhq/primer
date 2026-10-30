@@ -96,7 +96,7 @@ gate comes back at the next start; a disabled one stays disabled.
 | `system::create_` / `update_` / `delete_agent` and `_graph`; `trigger::create`, `update`, `delete` | `required` | anyone who may decide the session's gates | the other doors to the same writes |
 | `system::create_tool_approval_policy`, `update_tool_approval_policy`, `delete_tool_approval_policy` | `required` | an admin | a run must not remove or relax the gate that protects a write |
 | `system::create_toolset`, `update_toolset` | `policy` (Rego) | an admin | a Python toolset runs its source and a stdio MCP toolset launches a command on the server host |
-| `harness::harness__install`, `harness__sync`, `harness__uninstall` | `required` | an admin | they write a bundle's agents, graphs, triggers and toolsets |
+| `harness::install`, `harness__sync`, `harness__uninstall` | `required` | an admin | they write a bundle's agents, graphs, triggers and toolsets |
 
 "An admin" is the admin-only approver spec (`approvers: {"kind":
 "roles", "roles": [], "users": []}`): a user who is not an admin is

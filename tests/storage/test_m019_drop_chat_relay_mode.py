@@ -51,7 +51,7 @@ async def test_a_stored_row_with_relay_mode_is_unreadable_until_the_step_drops_i
     with pytest.raises(RowDecodeError):
         await sp.get_storage(Channel).get("ch-old")
 
-    assert await run_migrations(sp, is_fresh_install=False) == LATEST_VERSION == 19
+    assert await run_migrations(sp, is_fresh_install=False) == LATEST_VERSION
 
     old = await sp.get_storage(Channel).get("ch-old")
     assert old.config.chats.model_dump() == {"enabled": True}
