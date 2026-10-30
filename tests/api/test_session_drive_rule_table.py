@@ -8,7 +8,9 @@ caller reaches it by:
   :func:`primer.agent.inner_dispatch.dispatch_inner_tool`, the way ``system__call_tool`` reaches a tool;
 * the steer and restart tools with no calling session through the same dispatch with no context and the request's actor on ``current_actor``, as the
   MCP endpoint calls them;
-* the REST steer and restart routes over HTTP, through the auth middleware, as a logged-in user-role account;
+* the REST steer and restart routes over HTTP, through the auth middleware, as a logged-in user-role account. Those two rows now gate on workspace
+  access (P2 Task 3) instead of the rank rule: carol owns the target workspace on every row but ``outranked``, where she holds no grant at all and the
+  missing-row 404 (``N``) replaces the rank refusal;
 * the trigger's ``session_append`` dispatcher.
 
 The actor ranks ``user`` on every path. Scenarios: the target was started by an admin (``outranked``); by a user (``same rank``); it is in another
@@ -26,13 +28,17 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from httpx import ASGITransport
+from pydantic import SecretStr
 
 import primer.trigger.subscribers.session_append as sa
 from primer.agent.inner_dispatch import dispatch_inner_tool
 from primer.mcp.server import current_actor
+from primer.model.access import Access
 from primer.model.principal import Principal, PrincipalRef
+from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.trigger import SessionAppendSubConfig, Subscription, Trigger
 from primer.model.user import User
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus
 from primer.model.yield_ import ToolContext
 from primer.session.peer_messages import MAX_PEER_HOPS
@@ -54,8 +60,8 @@ TABLE: dict[str, tuple[str, dict[str, str]]] = {
     "restart tool, in a session": ("restart", {"outranked": F, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H, P: D}),
     "steer tool, no session":     ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": C, "hop limit": D, P: D}),
     "restart tool, no session":   ("restart", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": C, "hop limit": D, P: D}),
-    "REST steer":                 ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D, P: D}),
-    "REST restart":               ("restart", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D, P: D}),
+    "REST steer":                 ("steer", {"outranked": N, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D, P: D}),
+    "REST restart":               ("restart", {"outranked": N, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D, P: D}),
     "trigger session_append":     ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": S, "hop limit": D, P: D}),
 }
 SCENARIOS = ["outranked", "same rank", "out of reach", "cancelled", "hop limit", P]
@@ -99,7 +105,21 @@ async def _rest_env(app, admin, sp, path: str, scenario: str) -> Env:
     client = httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
     login = await client.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})
     assert login.status_code == 200, login.text
-    return Env(world=world, rest=client, target_workspace=await _seed(world, path, scenario))
+    target_workspace = await _seed(world, path, scenario)
+    if path.startswith("REST"):
+        # The target's workspace row (P2 Task 3): carol owns it on every row but ``outranked``,
+        # where the admin owns it and she holds no level, so the gate answers the missing-row 404.
+        users = sp.get_storage(User)
+        page = await users.find(
+            Predicate(left=FieldRef(name="username"), op=Op.EQ, right=Value(value="carol")), OffsetPage(offset=0, length=1),
+        )
+        owner = "u-root" if scenario == "outranked" else page.items[0].id
+        await sp.get_storage(Workspace).create(
+            Workspace(id=target_workspace, template_id="tpl-1", provider_id="local-1", created_at=NOW,
+                      runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                      access=Access(owners=[owner])),
+        )
+    return Env(world=world, rest=client, target_workspace=target_workspace)
 
 
 def _tool_outcome(result) -> tuple[str, dict]:
@@ -168,9 +188,13 @@ async def _check(env: Env, path: str, scenario: str) -> None:
         else:
             assert after.model_dump(mode="json") == before, f"{path} wrote to the target it refused ({scenario})"
         if outcome == N:
-            # Out of reach answers exactly as an id that does not exist, so the id is never confirmed.
+            # Out of reach answers exactly as an id that does not exist, so the id is never confirmed. The
+            # per-request audit id is stripped: the check is about the answer's shape, not its correlation id.
+            def _stable(body: dict) -> dict:
+                return {**body, "extensions": {k: v for k, v in (body.get("extensions") or {}).items() if k != "request_id"}}
+
             _, unknown = await _drive(env, path, session_id="ses-nobody")
-            assert json.dumps(body).replace("ses-t", "<id>") == json.dumps(unknown).replace("ses-nobody", "<id>"), (body, unknown)
+            assert json.dumps(_stable(body)).replace("ses-t", "<id>") == json.dumps(_stable(unknown)).replace("ses-nobody", "<id>"), (body, unknown)
     finally:
         if env.rest is not None:
             await env.rest.aclose()
