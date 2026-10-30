@@ -83,8 +83,7 @@ stateDiagram-v2
     READY --> INSTALLED: INSTALL
     OUTDATED --> INSTALLED: INSTALL or SYNC
     INSTALLED --> OUTDATED: FETCH (upstream moved)
-    INSTALLED --> SYNC_INFLIGHT: SYNC
-    SYNC_INFLIGHT --> INSTALLED: apply clean
+    INSTALLED --> INSTALLED: SYNC (apply clean)
     DRAFT --> INSTALLED: BUILD then PUSH (outbound)
     INSTALLED --> OUTDATED: BUILD (local drift, outbound)
     INSTALLED --> [*]: UNINSTALL (row deleted)
