@@ -1,8 +1,10 @@
 """Resolve the session-signing secret, and the key that seals the MCP OAuth tokens.
 
 Session secret priority:
-1. ``AuthConfig.session_secret`` (loaded from ``PRIMER_SESSION_SECRET``
-   env var). Operator-set; takes precedence.
+1. ``AuthConfig.session_secret`` (loaded at config time from the
+   ``PRIMER_AUTH__SESSION_SECRET`` env var, or its flat alias
+   ``PRIMER_SESSION_SECRET``, the nested name winning when both are set).
+   Operator-set; takes precedence.
 2. ``system_state.session_secret`` column. Auto-generated on first
    need, persisted for restart durability.
 

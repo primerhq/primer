@@ -77,8 +77,12 @@ class AuthConfig(BaseModel):
     """Cookie-based session authentication.
 
     ``session_secret`` priority:
-    1. PRIMER_SESSION_SECRET env var (set this field via AppConfig
-       env-loading); operator owns rotation.
+    1. The session-secret env var: PRIMER_AUTH__SESSION_SECRET, the name
+       the env prefix + nested delimiter bind onto this field, or the
+       flat alias PRIMER_SESSION_SECRET, which AppConfig's
+       ``_apply_flat_session_secret_env`` validator fills onto the same
+       field. When both are set, the nested name wins; the operator owns
+       rotation.
     2. system_state.session_secret column (auto-generated on first
        need by the auth layer).
 
@@ -491,6 +495,21 @@ class AppConfig(BaseSettings):
             enforce=self.local_workspaces.refuse_when_distributed,
             single_process=self.local_workspaces.single_process,
         )
+
+    @model_validator(mode="after")
+    def _apply_flat_session_secret_env(self) -> "AppConfig":
+        """Honour PRIMER_SESSION_SECRET, the flat name the docs promise.
+
+        env_prefix + env_nested_delimiter bind only PRIMER_AUTH__SESSION_SECRET
+        onto ``auth.session_secret``; the flat name was silently dropped
+        (extra="ignore"). It fills the field only when nothing else set it,
+        so init args / YAML and the nested env name keep winning.
+        """
+        if self.auth.session_secret is None:
+            flat = os.environ.get("PRIMER_SESSION_SECRET")
+            if flat:
+                self.auth.session_secret = flat
+        return self
 
     @model_validator(mode="after")
     def _validate_worker_pool_headroom(self) -> "AppConfig":
