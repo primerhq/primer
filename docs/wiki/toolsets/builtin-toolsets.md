@@ -39,7 +39,7 @@ Stored toolsets sit next to the built-in ones: an [MCP toolset](toolsets/mcp-too
 
 ## Gotchas
 - `system__list_toolsets` and `system__get_toolset` read stored rows only. A built-in id answers `not-found` there. To see what a built-in toolset offers, use `system__list_toolset_tools`.
-- The `harness` tools carry the prefix in their own names (`harness__list`, `harness__install`), so their scoped ids repeat it and an agent's `tools` list cannot grant them. Call them through `system__call_tool` with `"toolset_id": "harness"` and `"tool_name": "harness__list"`.
+- The `harness` tools carry the bare names (`list`, `install`, ...), scoped like every other toolset to `harness__list`, `harness__install` and the rest. An agent's `tools` list grants them like any other tool; `system__call_tool` reaches them with `"toolset_id": "harness"` and `"tool_name": "list"`.
 - The `workspace_ext` tools exist only inside a workspace session. A grant of them does nothing anywhere else.
 - A tool that pauses the turn parks the session until its answer or its deadline arrives. Pausing tools are never offered to outside MCP clients.
 - The retired ids `_system`, `_workspaces` and `_misc` still resolve to `system`, `workspaces` and `misc`, so an old agent row keeps working. Write the current ids.

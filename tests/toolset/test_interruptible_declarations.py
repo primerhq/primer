@@ -173,10 +173,10 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     # task 01a111d1 (D5 2a): the toolset row, then the registry's cached adapter evicted
     (CRUD_TOOLSET_ID, "update_python_toolset_source"),
     # task 01a111d1 (D1): the row, then the claim lease (a separate write on another connection)
-    (HARNESS_TOOLSET_ID, "harness__fetch"),
-    (HARNESS_TOOLSET_ID, "harness__install"),
-    (HARNESS_TOOLSET_ID, "harness__sync"),
-    (HARNESS_TOOLSET_ID, "harness__uninstall"),
+    (HARNESS_TOOLSET_ID, "fetch"),
+    (HARNESS_TOOLSET_ID, "install"),
+    (HARNESS_TOOLSET_ID, "sync"),
+    (HARNESS_TOOLSET_ID, "uninstall"),
     # pivot P5 (design 8.3): the canvas snapshot row, then the canvas_op record and canvas.updated on other stores; a cancel between
     # leaves a canvas the transcript and the event feed do not show
     (CANVAS_TOOLSET_ID, "canvas_apply"),

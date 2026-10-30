@@ -2,7 +2,7 @@
 title: "What a harness is"
 summary: "A harness is a git repository of agents, graphs and documents that primer installs and keeps in sync. List and inspect them."
 order: 1
-tools: [harness__harness__list, harness__harness__get]
+tools: [harness__list, harness__get]
 related: [harnesses/install-and-sync, agents/create-and-edit]
 ---
 ## What it is
@@ -15,34 +15,34 @@ A harness is a git repository of agents, graphs, collections, documents and tool
 - **Managed rows.** An installed entity carries a `harness_id` backpointer, and that lock makes it read-only to the normal tools: the update and delete tools for agents, graphs, collections, model profiles and toolsets refuse a managed row with `type=conflict`, and a REST PUT or DELETE answers 409 `managed_entity`. The lock is how a harness stays in step with its bundle. To change what renders, change the harness's overrides and sync.
 - **Direction.** A harness is `inbound` (the default): it pulls a remote bundle into local storage, and its uninstall deletes the installed objects, the rendering snapshot and the harness row itself. An `outbound` harness does the reverse: it points at live local entities, templatizes chosen fields into overrides, and pushes a renderable bundle back to the git remote. An outbound harness never stamps `harness_id`, so its tracked entities stay user-owned and mutable: drift is detected there, not locked.
 - **Subharnesses.** A parent `harness.yaml` may declare dependencies on other repositories, walked transitively. A sub renders under its own slug, but every entity it lands is stamped with the parent's `harness_id`, so one uninstall removes the whole subtree.
-- **Status.** The row's `status` is one of `draft` (newly registered), `ready` (fetched and validated), `installed` (entities applied), `outdated` (upstream moved, or the overrides changed) and `error` (an operation failed; `last_operation_error` carries the reason). The operations are asynchronous: `fetch`, `install`, `sync` and `uninstall` are queued for a worker, and while one is pending the row holds `pending_operation` and refuses updates. Poll `harness__harness__get` until it clears.
+- **Status.** The row's `status` is one of `draft` (newly registered), `ready` (fetched and validated), `installed` (entities applied), `outdated` (upstream moved, or the overrides changed) and `error` (an operation failed; `last_operation_error` carries the reason). The operations are asynchronous: `fetch`, `install`, `sync` and `uninstall` are queued for a worker, and while one is pending the row holds `pending_operation` and refuses updates. Poll `harness__get` until it clears.
 - **The git coordinates.** `git_url` must be `https://` with a host, and `ref` is a branch, tag or commit. `git_token` is write-only for private repositories: reads mask it as `**********`, and they mask a credential kept in the URL the same way.
 - **The writes.** Registering, configuring, fetching, installing, syncing and uninstalling live on [install and sync a harness](harnesses/install-and-sync), and every one of them needs an admin.
 
 ## How to
-1. List what is registered with `harness__harness__list`, filtering by `slug` or `status`.
-2. Read a row with `harness__harness__get`: it carries the git coordinates, the status, the overrides and any pending operation.
+1. List what is registered with `harness__list`, filtering by `slug` or `status`.
+2. Read a row with `harness__get`: it carries the git coordinates, the status, the overrides and any pending operation.
 3. While an operation is in flight, keep polling the row until `pending_operation` is clear and the status settles.
 4. To change anything about a harness, use the write page: every write needs an admin.
 
 ## Tool calls
 ### List the harnesses
-`harness__harness__list` answers a page with `items`, `total`, `offset` and `length`, optionally filtered by `slug` or `status`.
+`harness__list` answers a page with `items`, `total`, `offset` and `length`, optionally filtered by `slug` or `status`.
 
 ```json
-{"toolset_id": "harness", "tool_name": "harness__list", "arguments": {"status": "installed", "length": 20}}
+{"toolset_id": "harness", "tool_name": "list", "arguments": {"status": "installed", "length": 20}}
 ```
 
-Reference: [`harness__harness__list`](reference/tools/harness/harness__list)
+Reference: [`harness__list`](reference/tools/harness/list)
 
 ### Read a harness row
-`harness__harness__get` returns the full row by `id`, or `type=not-found` when the id is unknown.
+`harness__get` returns the full row by `id`, or `type=not-found` when the id is unknown.
 
 ```json
-{"toolset_id": "harness", "tool_name": "harness__get", "arguments": {"id": "hns_a1b2c3d4e5f6"}}
+{"toolset_id": "harness", "tool_name": "get", "arguments": {"id": "hns_a1b2c3d4e5f6"}}
 ```
 
-Reference: [`harness__harness__get`](reference/tools/harness/harness__get)
+Reference: [`harness__get`](reference/tools/harness/get)
 
 ## Gotchas
 - The reads are open to every user, but every write and operation needs an admin; a lower role is refused with `forbidden`.

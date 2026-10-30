@@ -165,17 +165,25 @@ async def test_the_table_is_every_write_of_an_agent_graph_or_trigger_in_those_to
 
 
 async def test_both_worlds_end_with_the_same_gates(tmp_path):
-    """An upgraded install that never touched its policies holds exactly the rows a fresh install is seeded with."""
+    """An upgraded install that never touched its policies holds exactly the gates a fresh install is seeded with. The harness
+    lifecycle rows sit under the ids migration 16 gave them on the upgraded world (migration 20 moves the key, not the id)."""
+    from primer.storage.migrations import m020_harness_policy_rekey as m020
+
     shapes = {}
+    ids = {}
     for kind in ("fresh", "upgraded"):
         sp, *_ = await _world(tmp_path, kind)
         try:
             page = await sp.get_storage(ToolApprovalPolicy).list(_page(100))
-            shapes[kind] = sorted((p.id, p.toolset_id, p.tool_name, p.enabled, p.approval.type.value) for p in page.items)
+            shapes[kind] = sorted((p.toolset_id, p.tool_name, p.enabled, p.approval.type.value) for p in page.items)
+            ids[kind] = {p.id for p in page.items}
         finally:
             await sp.aclose()
     assert shapes["fresh"] == shapes["upgraded"]
-    assert {(t, n) for _, t, n, _, _ in shapes["fresh"]} == set(DEFAULT_GATED_TOOLS)
+    assert {(t, n) for t, n, _, _ in shapes["fresh"]} == set(DEFAULT_GATED_TOOLS)
+    inv = {new: old for old, new in m020._REKEY}
+    assert ids["fresh"] == {default_policy_id(t, n) for t, n in DEFAULT_GATED_TOOLS}
+    assert ids["upgraded"] == {default_policy_id(t, inv.get(n, n)) for t, n in DEFAULT_GATED_TOOLS}
 
 
 def test_the_shipped_gate_of_every_twin_is_required():

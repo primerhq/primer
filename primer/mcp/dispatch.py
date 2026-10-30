@@ -169,8 +169,7 @@ async def invoke_exposed(
     by :func:`primer.mcp.exposure.build_routing_map`: the keys are the
     exact scoped ids the catalogue advertises, so the inverse is exact
     even when a harness-deployed toolset id contains ``__`` (e.g.
-    ``acme__ts``) or a built-in bare name does (e.g. ``harness__list``);
-    a naive first- or last-``__`` split mis-resolves one or the other.
+    ``acme__ts``); a naive first- or last-``__`` split mis-resolves that.
     Then forwards to :func:`primer.agent.tool_manager.invoke_one` so
     OTel + Prometheus instrumentation stays unified with the
     agent-driven path.
