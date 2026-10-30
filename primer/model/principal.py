@@ -24,7 +24,11 @@ class Principal(BaseModel):
     ``"local"`` for a password-login cookie session, the OIDC provider id
     (e.g. ``"okta"``) for an SSO-minted cookie session, or ``"internal"``
     for bearer-token / system (auth-disabled) callers. ``role`` is the
-    RBAC role the request runs as, or ``None`` when unknown.
+    RBAC role the request runs as, or ``None`` when unknown. ``user_id``
+    is the user acting behind the actor: the user themselves on the
+    cookie path, and the token's owner on the bearer path (access is
+    decided by the owner, never by the token); ``None`` for the system
+    principal (access-control spec 5.1).
     """
 
     type: Literal["user", "trigger", "api_token", "system"] = Field(
@@ -42,6 +46,14 @@ class Principal(BaseModel):
             "(SSO login), or \"internal\" (bearer token / system)."
         ),
     )
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "Id of the user acting behind this actor: the user themselves "
+            "on the cookie path, the token's owner on the bearer path. "
+            "None for the system principal."
+        ),
+    )
 
 
 class PrincipalRef(BaseModel):
@@ -53,7 +65,10 @@ class PrincipalRef(BaseModel):
     store this small frozen projection instead, then re-hydrate it into
     ``ctx.identity`` on the async/worker side so the originating identity
     survives the boundary (a trigger-fired run stays a trigger). Carries
-    no secrets — exactly the five fields exposed as ``ctx.identity``.
+    no secrets: exactly the six fields exposed as ``ctx.identity``.
+    ``user_id`` is the user acting behind the actor (the token's owner
+    for ``api_token`` rows, absent on legacy rows); ``None`` for system
+    runs.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -69,12 +84,21 @@ class PrincipalRef(BaseModel):
     source: str = Field(
         ..., description='Auth channel: "local" | "<oidc-provider-id>" | "internal".',
     )
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "Id of the user acting behind the actor: the token's owner "
+            "for api_token rows, the user themselves for user rows. "
+            "Absent on legacy rows; None for system runs."
+        ),
+    )
 
     @classmethod
     def from_principal(cls, p: "Principal") -> "PrincipalRef":
         """Project a live :class:`Principal` into its persisted form."""
         return cls(
-            type=p.type, id=p.id, display=p.display, role=p.role, source=p.source,
+            type=p.type, id=p.id, display=p.display, role=p.role,
+            source=p.source, user_id=p.user_id,
         )
 
     @classmethod

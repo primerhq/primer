@@ -114,6 +114,9 @@ class AuthMiddleware:
                 display=_AUTH_DISABLED_USER.username,
                 role=None,
                 source="internal",
+                # No user behind the system principal: access decisions
+                # treat it as admin, never as a user row.
+                user_id=None,
             )
             await self.app(scope, receive, send)
             return
@@ -153,6 +156,9 @@ class AuthMiddleware:
                     display=api_token.name,
                     role=user.role,
                     source="internal",
+                    # The actor is the token, the person is its owner:
+                    # access decisions run as the owner's user row.
+                    user_id=user.id,
                 )
             else:
                 # Cookie path: full user authority. source mirrors how the
@@ -164,6 +170,7 @@ class AuthMiddleware:
                     display=user.username,
                     role=user.role,
                     source=session_src or "local",
+                    user_id=user.id,
                 )
 
         # The user was read once, when this request or WebSocket opened. A connection that outlives ``auth.revalidate_interval_s`` (a terminal
