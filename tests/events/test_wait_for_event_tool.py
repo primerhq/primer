@@ -136,6 +136,7 @@ async def test_full_wake_loop_through_the_dispatcher(sp):
         binding=AgentSessionBinding(agent_id="agent-a"),
         status=SessionStatus.WAITING,
         created_at=datetime.now(timezone.utc),
+        initiated_by=ADMIN_CALLER.initiated_by,
         parked_status="parked",
         parked_event_key=yielded.event_key,
     ))
@@ -247,6 +248,7 @@ async def test_a_toolset_event_reaches_the_bus_and_the_agent_masked(sp):
         binding=AgentSessionBinding(agent_id="agent-a"),
         status=SessionStatus.WAITING,
         created_at=datetime.now(timezone.utc),
+        initiated_by=ADMIN_CALLER.initiated_by,
         parked_status="parked",
         parked_event_key=yielded.event_key,
     ))

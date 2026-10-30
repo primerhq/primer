@@ -28,7 +28,9 @@ from httpx import ASGITransport
 from primer.authz import OUTRANKED_MESSAGE
 from primer.canvas.files import referenced_files
 from primer.model.canvas import MAX_EVENT_BODY_BYTES, MAX_SILENT_EVENTS_PER_MINUTE, SessionCanvas
+from primer.model.access import Access
 from primer.model.principal import PrincipalRef
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from tests.api.test_session_steer_restart_rank import WHO, _token_client, _user_id
 from tests.canvas._fakes import FakeWorkspace
@@ -421,10 +423,19 @@ async def test_file_urls_are_minted_for_referenced_files(client, fake_storage_pr
 # ---- the shared read (ruling 2) ------------------------------------------------------------------------------------------------------
 
 
-async def test_any_user_reads_the_values_and_events_with_their_input_while_the_feed_hides_it(client, carol, fake_storage_provider, ws):
+async def test_any_user_reads_the_values_and_events_with_their_input_while_the_feed_hides_it(client, carol, fake_storage_provider, ws, app):
     """The lead's ruling 2 on S6: GET .../canvas is the shared session read, values and the newest events WITH what was entered; the
     REST event feed keeps removing the input for a non-admin (#872)."""
     await _seed(fake_storage_provider, status=SessionStatus.RUNNING, turn_status="running", by=ADMIN)
+    # The workspace as a row the access layer can judge (Phase 2, Task 7):
+    # carol reads its event feed through a read grant.
+    carol_id = await _user_id(app, "carol")
+    await fake_storage_provider.get_storage(Workspace).create(Workspace(
+        id=WS, template_id="t", provider_id="p",
+        created_at=datetime.now(UTC),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
+        access=Access(owners=[ADMIN.id], grants={carol_id: "read"}),
+    ))
     await _draw(client)
     assert (await client.post(_url(tail="/events"), json={"element": "genre", "kind": "change", "value": "Classical"})).status_code == 202
     emit = {"element": "viz", "kind": "emit", "name": "submit", "data": {"note": SECRET_NOTE}}

@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.access.person import person_for_tool
+from primer.access.workspaces import workspace_level
 from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
 from primer.common.user_regex import UserRegexError
@@ -188,6 +190,41 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
                         error_type="validation-error",
                     )
 
+        # A non-admin's subscription is pinned to workspaces the run's
+        # person can read (access-control Phase 2, Task 7): an existing
+        # eq matcher on workspace_id must name one, otherwise the run's
+        # own workspace is pinned. Workspace-less events (session.wake
+        # among them) then never match, because a missing path never
+        # matches; the dispatcher re-checks the level at delivery, so a
+        # revoked grant stops the wake there.
+        fields = list(args.fields or [])
+        if not _role_allows(run_principal(ctx), "admin"):
+            pin = next(
+                (
+                    matcher for matcher in fields
+                    if matcher.path == "workspace_id" and matcher.op == "eq" and matcher.value
+                ),
+                None,
+            )
+            if pin is None:
+                if not ctx.workspace_id:
+                    return _err(
+                        _NOT_ADMIN + "it may only wait on events from workspaces it can read, "
+                        "and this run names no workspace",
+                        error_type="forbidden",
+                    )
+                fields.append(
+                    FieldMatcher(path="workspace_id", op="eq", value=ctx.workspace_id)
+                )
+            elif await workspace_level(storage_provider, person_for_tool(ctx), pin.value) is None:
+                # A missing workspace and one the person holds no level on
+                # answer alike: the refusal names no existence (spec 9).
+                return _err(
+                    _NOT_ADMIN + "it may only wait on events from workspaces it can read; "
+                    "the workspace this wait names is not readable by this run",
+                    error_type="forbidden",
+                )
+
         event_key = f"evwait:{ctx.session_id}:{ctx.tool_call_id}"
         subscription = EventSubscription(
             description=(
@@ -195,7 +232,7 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
             ),
             filter=EventFilter(
                 event_types=args.event_types,
-                fields=list(args.fields or []),
+                fields=fields,
                 expr=args.expr,
             ),
             sink=SessionWakeSink(

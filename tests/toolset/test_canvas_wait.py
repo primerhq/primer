@@ -23,6 +23,7 @@ from primer.events.dispatcher import EventDispatcher
 from primer.events.filters import matches
 from primer.model.canvas import CANVAS_EVENT_KINDS
 from primer.model.event import Event, EventSubscription, SessionWakeSink
+from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage
 from primer.model.workspace_session import PendingSessionMessage, SessionStatus
 from primer.model.yield_ import ToolContext, YieldCancelled, YieldTimeout, YieldToWorker, Yielded
@@ -43,7 +44,12 @@ PROGRAM = (
 @pytest_asyncio.fixture
 async def world() -> World:
     w = make_world()
-    await seed_session(w)
+    # The dispatcher re-checks the park's turn person on the event's workspace at
+    # delivery (access-control Phase 2, Task 7); this suite's session is an
+    # admin's, which the re-check never blocks.
+    await seed_session(w, initiated_by=PrincipalRef(
+        type="user", id="u-admin", display="admin", role="admin", source="local",
+    ))
     await w.service.apply(
         session_id="s1", workspace_id="ws-1", statements=parse_program(PROGRAM), unit="line", base_rev=None, source="agent", by="agent",
     )
