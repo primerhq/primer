@@ -99,7 +99,7 @@ def get_semantic_search_registry(request: Request) -> "SemanticSearchRegistry":
             status_code=503,
             detail={
                 "type": "/errors/subsystem-inactive",
-                "title": "SemanticSearch registry not configured",
+                "message": "The semantic-search registry is not configured on this server.",
             },
         )
     return reg
@@ -120,7 +120,7 @@ def get_artifact_storage_registry(request: Request):
             status_code=503,
             detail={
                 "type": "/errors/subsystem-inactive",
-                "title": "Artifact storage registry not configured",
+                "message": "The artifact storage registry is not configured on this server.",
             },
         )
     return reg
@@ -517,7 +517,10 @@ def require_auth(request: Request = None) -> User | None:  # type: ignore[assign
     if not isinstance(user, User):
         raise HTTPException(
             status_code=401,
-            detail={"error": "auth_required"},
+            detail={
+                "error": "auth_required",
+                "message": "Your session has ended; sign in again.",
+            },
         )
     return user
 
@@ -529,8 +532,10 @@ def require_user(request: Request = None) -> User | None:  # type: ignore[assign
     short-circuit and the same 401 ``auth_required`` when no valid
     session is present — then adds a role gate: ``role`` must be
     ``"user"`` or ``"admin"``. A ``restricted`` user is rejected with
-    HTTP 403 ``{"error": "forbidden_role"}``. Apply to routers whose
-    endpoints require an ordinary operator (agents, graphs, chats, …).
+    HTTP 403 ``{"error": "forbidden_role", "message": "Your role does not
+    allow this."}`` (the sentence the console reader already says for the
+    code). Apply to routers whose endpoints require an ordinary operator
+    (agents, graphs, chats, …).
     """
     if request is None:
         # WebSocket scope — WS handlers call require_user_ws() instead.
@@ -539,12 +544,18 @@ def require_user(request: Request = None) -> User | None:  # type: ignore[assign
     if not isinstance(user, User):
         raise HTTPException(
             status_code=401,
-            detail={"error": "auth_required"},
+            detail={
+                "error": "auth_required",
+                "message": "Your session has ended; sign in again.",
+            },
         )
     if user.role not in ("user", "admin"):
         raise HTTPException(
             status_code=403,
-            detail={"error": "forbidden_role"},
+            detail={
+                "error": "forbidden_role",
+                "message": "Your role does not allow this.",
+            },
         )
     return user
 
@@ -567,8 +578,9 @@ def require_admin(request: Request = None) -> User | None:  # type: ignore[assig
 
     Mirrors :func:`require_auth` (WS short-circuit + 401 ``auth_required``)
     then requires an admin role, rejecting every other authenticated
-    user with HTTP 403 ``{"error": "forbidden_role"}``. Apply to the
-    provider / global-settings / admin routers.
+    user with HTTP 403 ``{"error": "forbidden_role", "message": "Your role
+    does not allow this."}``. Apply to the provider / global-settings /
+    admin routers.
     """
     if request is None:
         return None
@@ -576,12 +588,18 @@ def require_admin(request: Request = None) -> User | None:  # type: ignore[assig
     if not isinstance(user, User):
         raise HTTPException(
             status_code=401,
-            detail={"error": "auth_required"},
+            detail={
+                "error": "auth_required",
+                "message": "Your session has ended; sign in again.",
+            },
         )
     if user.role != "admin":
         raise HTTPException(
             status_code=403,
-            detail={"error": "forbidden_role"},
+            detail={
+                "error": "forbidden_role",
+                "message": "Your role does not allow this.",
+            },
         )
     return user
 
@@ -637,7 +655,8 @@ def require_scope(scope: str):
     Cookie sessions bypass this check (``request.state.api_token is
     None`` for cookie auth — they carry full user authority). Bearer
     tokens MUST include ``scope`` in their ``scopes`` list or the
-    dep raises 403 with ``{"code": "scope_required", "scope": <scope>}``.
+    dep raises 403 with ``{"code": "scope_required", "scope": <scope>,
+    "message": "This API token lacks the required scope."}``.
 
     Usage::
 
@@ -654,7 +673,11 @@ def require_scope(scope: str):
         if scope not in api_token.scopes:
             raise HTTPException(
                 status_code=403,
-                detail={"code": "scope_required", "scope": scope},
+                detail={
+                    "code": "scope_required",
+                    "scope": scope,
+                    "message": "This API token lacks the required scope.",
+                },
             )
     return Depends(_dep)
 

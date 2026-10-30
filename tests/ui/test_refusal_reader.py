@@ -1,8 +1,8 @@
 """ONE reader for a refused write (ticket 01a11cd1-7aaf), and the two refusals it makes readable (admin review ADM-12 and ADM-20).
 
 Seven components each read a failed write out of the RFC 7807 envelope their own way (``MC_extractError``, ``AT_extractError``, ``ADM_extractError``,
-``SSO_extractError``, ``SV_extractError``, ``LA_extractError`` and the trigger dialogs' own reader), and they disagreed: the trigger reader knew the auth gate puts its code in ``extensions.error`` and sends no
-message, the others printed the gate's bare ``auth_required`` as the message, and ``SSO_extractError`` still looked for the code in a ``detail`` object
+``SSO_extractError``, ``SV_extractError``, ``LA_extractError`` and the trigger dialogs' own reader), and they disagreed: the trigger reader knew the auth gate puts its code in ``extensions.error`` and (then)
+sent the code itself as the ``detail`` with no message, the others printed the gate's bare ``auth_required`` as the message, and ``SSO_extractError`` still looked for the code in a ``detail`` object
 that the handler never sends (so its code was always null). ``window.primerApi.readRefusal`` (``ui/foundation/api.js``, next to ``ApiError``) is the one
 reader: ``{code, field, sentence, message}``.
 
@@ -96,8 +96,12 @@ _NO_PROFILE = "ModelProfile 'p-9' does not exist; create the profile first or na
 _BLANK_DESCRIPTION = "the description must not be blank: other agents find an agent by its description"
 
 EXPECTED = {
-    "session_ended": {"code": "auth_required", "field": None, "sentence": "", "message": "Your session has ended; sign in again."},
-    "role_refused": {"code": "forbidden_role", "field": None, "sentence": "", "message": "Your role does not allow this."},
+    "session_ended": {
+        "code": "auth_required", "field": None, "sentence": "Your session has ended; sign in again.", "message": "Your session has ended; sign in again.",
+    },
+    "role_refused": {
+        "code": "forbidden_role", "field": None, "sentence": "Your role does not allow this.", "message": "Your role does not allow this.",
+    },
     "router_code": {
         "code": "trigger_slug_conflict", "field": None, "sentence": "slug 'nightly' already in use", "message": "slug 'nightly' already in use",
     },
@@ -144,7 +148,10 @@ def test_the_real_envelopes_really_look_like_this(envelopes) -> None:
     """The premise: if the server's shapes changed, the table above would pass for nothing."""
     gate, field, pre, block = envelopes["session_ended"], envelopes["agent_field"], envelopes["pre_write"], envelopes["in_use_by"]
 
-    assert gate["detail"] == "auth_required" and gate["extensions"] == {"error": "auth_required"}
+    assert gate["detail"] == "Your session has ended; sign in again." and gate["extensions"] == {
+        "error": "auth_required",
+        "message": "Your session has ended; sign in again.",
+    }
     assert field["extensions"]["errors"][0]["type"] == "agent_description_blank" and field["extensions"]["errors"][0]["loc"] == ["body", "description"]
     assert field["extensions"]["errors"][0]["msg"] == _BLANK_DESCRIPTION
     assert pre["extensions"]["error"] == "model_profile_not_found" and pre["extensions"]["field"] == "model.profile_id"

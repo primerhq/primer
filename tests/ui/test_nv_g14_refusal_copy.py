@@ -6,8 +6,8 @@ only recovery). The "Default agent" row always stands and the no-binding submit 
 mitigation that keeps this at LOW. The fix gates the empty claim on no read error: a failed read draws the refusal (the one reader's sentence, never the raw code)
 with a Retry that refires the reads.
 
-G14-04: the auth gate answers 401/403 with the bare code and nothing else (``detail={"error": "auth_required"}``; the problem handler's code fallback leaves the
-wire ``detail`` the raw code), and ``readRefusal`` (ui/foundation/api.js, the one reader) already maps exactly those codes to sentences - but ``NV_errText``
+G14-04: the auth gate answered 401/403 with the bare code and nothing else (``detail={"error": "auth_required"}``; the problem handler's code fallback left the
+wire ``detail`` the raw code; G15-A made the gate carry the message, the code still in ``extensions.error``), and ``readRefusal`` (ui/foundation/api.js, the one reader) already maps exactly those codes to sentences - but ``NV_errText``
 (nv-overlays.jsx, drawn by the desktop create-session error line and the phone's Inbox and create-session error lines) and ``NV_failToast`` (nv-session-doc.jsx, the
 Park/End/Delete failure toasts) pass ``err.detail || err.message`` straight through: the user reads a snake_case code where a sentence belongs. The fix routes both
 helpers through ``readRefusal``.
@@ -39,8 +39,8 @@ ERRORS = (ROOT / "primer" / "api" / "errors.py").read_text(encoding="utf-8")
 NV_PLATFORM = (UI / "components" / "console" / "nv-platform.jsx").read_text(encoding="utf-8")
 SH_API = UI / "components" / "shell" / "sh-api.jsx"
 
-# The real wire shapes (tests/_support/refusal_envelopes.py answers the same through the real handlers): the auth gate sends only the
-# code and the handler's code fallback leaves it in `detail`; readRefusal's bare-code table maps it to a sentence.
+# Hand-built bare-code envelopes: they exercise readRefusal's bare-code fallback (the code in `extensions.error`, no message). The wire itself now carries the
+# message (G15-A); the real shapes, tests/_support/refusal_envelopes.py answers them through the real handlers.
 _GATE = {"status": 401, "title": "Unauthorized", "detail": "auth_required", "extensions": {"error": "auth_required"}}
 _ROLE = {"status": 403, "title": "Forbidden", "detail": "forbidden_role", "extensions": {"error": "forbidden_role"}}
 _CONFLICT = {"status": 409, "title": "Conflict", "detail": "Session 'sess-1' has ended"}
@@ -51,7 +51,9 @@ _NETWORK = {"type": "/errors/network-error", "title": "Network error", "status":
 
 
 def test_the_wire_shape_and_the_mapper_are_what_the_fix_builds_on():
-    assert 'detail={"error": "auth_required"}' in DEPS, "the auth gate's object-detail raise moved (re-verify the anchors)"
+    assert '"error": "auth_required",' in DEPS and '"message": "Your session has ended; sign in again."' in DEPS, (
+        "the auth gate's object-detail raise moved (re-verify the anchors)"
+    )
     assert 'for key in ("code", "error"):' in ERRORS, "the problem handler's code fallback moved (re-verify the anchors)"
     assert 'auth_required: "Your session has ended; sign in again."' in API, "readRefusal's bare-code table moved"
     assert 'forbidden_role: "Your role does not allow this."' in API

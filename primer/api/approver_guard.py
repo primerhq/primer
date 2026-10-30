@@ -33,7 +33,10 @@ def enforce_approvers(metadata: dict, user: Any) -> None:
     ):
         raise HTTPException(
             status_code=403,
-            detail={"error": APPROVER_MISMATCH},
+            detail={
+                "error": APPROVER_MISMATCH,
+                "message": "Only a named approver or an admin may decide this gate.",
+            },
         )
 
 

@@ -36,7 +36,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 
 from primer.api.deps import get_storage_provider
@@ -157,13 +157,19 @@ async def create_api_token(
         # Defensive: require_auth at include-router level should have
         # 401'd already; this guard means the handler is safe even when
         # mounted without that dep.
-        raise HTTPException(status_code=401, detail={"error": "auth_required"})
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "auth_required",
+                "message": "Your session has ended; sign in again.",
+            },
+        )
 
     name = body.name.strip()
     if not name:
-        return JSONResponse(
+        raise HTTPException(
             status_code=422,
-            content={
+            detail={
                 "code": "token_name_empty",
                 "message": "name must be non-empty after stripping whitespace",
             },
@@ -171,9 +177,9 @@ async def create_api_token(
 
     now = _utcnow()
     if body.expires_at is not None and body.expires_at <= now:
-        return JSONResponse(
+        raise HTTPException(
             status_code=422,
-            content={
+            detail={
                 "code": "token_expires_in_past",
                 "message": "expires_at must be in the future",
             },
@@ -183,9 +189,9 @@ async def create_api_token(
 
     existing = await _find_by_user_and_name(storage, user.id, name)
     if existing is not None:
-        return JSONResponse(
+        raise HTTPException(
             status_code=409,
-            content={
+            detail={
                 "code": "token_name_conflict",
                 "message": f"a token named {name!r} already exists",
             },
@@ -250,7 +256,13 @@ async def list_api_tokens(
     require_cookie_session(request)
     user = _current_user(request)
     if user is None:
-        raise HTTPException(status_code=401, detail={"error": "auth_required"})
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "auth_required",
+                "message": "Your session has ended; sign in again.",
+            },
+        )
 
     storage = sp.get_storage(ApiToken)
     rows = await list_tokens_for_user(storage, user.id)
@@ -275,7 +287,13 @@ async def revoke_api_token(
     require_cookie_session(request)
     user = _current_user(request)
     if user is None:
-        raise HTTPException(status_code=401, detail={"error": "auth_required"})
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "auth_required",
+                "message": "Your session has ended; sign in again.",
+            },
+        )
 
     storage = sp.get_storage(ApiToken)
     row = await get_token_owned_by(storage, user.id, token_id)
@@ -322,13 +340,19 @@ async def rename_api_token(
     require_cookie_session(request)
     user = _current_user(request)
     if user is None:
-        raise HTTPException(status_code=401, detail={"error": "auth_required"})
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "auth_required",
+                "message": "Your session has ended; sign in again.",
+            },
+        )
 
     new_name = body.name.strip()
     if not new_name:
-        return JSONResponse(
+        raise HTTPException(
             status_code=422,
-            content={
+            detail={
                 "code": "token_name_empty",
                 "message": "name must be non-empty after stripping whitespace",
             },
@@ -348,9 +372,9 @@ async def rename_api_token(
     if new_name != row.name:
         clash = await _find_by_user_and_name(storage, user.id, new_name)
         if clash is not None and clash.id != row.id:
-            return JSONResponse(
+            raise HTTPException(
                 status_code=409,
-                content={
+                detail={
                     "code": "token_name_conflict",
                     "message": f"a token named {new_name!r} already exists",
                 },

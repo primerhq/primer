@@ -475,7 +475,10 @@ async def login(
         logger.info("auth.login fail (unknown user) username=%s", username)
         raise HTTPException(
             status_code=401,
-            detail={"error": "invalid_credentials"},
+            detail={
+                "error": "invalid_credentials",
+                "message": "The username or password is wrong.",
+            },
         )
 
     if user.password_hash is None:
@@ -486,7 +489,10 @@ async def login(
         logger.info("auth.login fail (no local password) username=%s", username)
         raise HTTPException(
             status_code=401,
-            detail={"error": "invalid_credentials"},
+            detail={
+                "error": "invalid_credentials",
+                "message": "The username or password is wrong.",
+            },
         )
 
     if user.disabled:
@@ -496,14 +502,20 @@ async def login(
         logger.info("auth.login fail (disabled) username=%s", username)
         raise HTTPException(
             status_code=401,
-            detail={"error": "invalid_credentials"},
+            detail={
+                "error": "invalid_credentials",
+                "message": "The username or password is wrong.",
+            },
         )
 
     if not await gated(verify_password, body.password, user.password_hash):
         logger.info("auth.login fail (bad password) username=%s", username)
         raise HTTPException(
             status_code=401,
-            detail={"error": "invalid_credentials"},
+            detail={
+                "error": "invalid_credentials",
+                "message": "The username or password is wrong.",
+            },
         )
 
     throttle.succeeded(username, client)
@@ -523,7 +535,10 @@ async def login(
         logger.info("auth.login fail (changed during verify) username=%s", username)
         raise HTTPException(
             status_code=401,
-            detail={"error": "invalid_credentials"},
+            detail={
+                "error": "invalid_credentials",
+                "message": "The username or password is wrong.",
+            },
         )
     # Signed with the epoch the row holds NOW, so a login that finishes after a revocation is valid.
     _set_session_cookie(request, response, stored, remember=body.remember)
@@ -617,7 +632,10 @@ async def change_password(
         )
         raise HTTPException(
             status_code=401,
-            detail={"error": "invalid_credentials"},
+            detail={
+                "error": "invalid_credentials",
+                "message": "The username or password is wrong.",
+            },
         )
     change_throttle.succeeded(user.id, "")
     verified_hash = user.password_hash
@@ -630,7 +648,13 @@ async def change_password(
     def _still_verified(current: User) -> None:
         # The password the caller proved is no longer the stored one: another change won the race.
         if current.password_hash != verified_hash:
-            raise HTTPException(status_code=401, detail={"error": "invalid_credentials"})
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "invalid_credentials",
+                    "message": "The username or password is wrong.",
+                },
+            )
 
     storage = get_storage_provider(request).get_storage(User)
     saved = await write_user_fields(

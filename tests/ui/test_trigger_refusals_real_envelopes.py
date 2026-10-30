@@ -1,9 +1,10 @@
 """A refused trigger write reads the REAL envelopes of the auth gate and of the trigger router (the #572 review).
 
 The trigger dialogs' reader first read only ``extensions.code`` and ``detail.code``. The auth gate answers differently: ``require_user`` raises
-``HTTPException(401, detail={"error": "auth_required"})`` and ``(403, detail={"error": "forbidden_role"})`` with no message, so the problem's
-``detail`` is the code itself (``_detail_from_mapping`` falls back to it) and the code sits in ``extensions.error``, not ``extensions.code``. The reader found no
-code and fell back to ``err.detail``, so a session that had expired, a password that was reset or a user signed out everywhere got
+``(401, detail={"error": "auth_required", "message": "Your session has ended; sign in again."})`` and
+``(403, detail={"error": "forbidden_role", "message": "Your role does not allow this."})``, so the problem's ``detail`` is the message and the code sits in
+``extensions.error``, not ``extensions.code``. Before the gate carried the message (G15-A), ``detail`` was the code itself (``_detail_from_mapping`` fell
+back to it), the reader found no code and fell back to ``err.detail``, so a session that had expired, a password that was reset or a user signed out everywhere got
 ``Fire failed / auth_required`` on Fire now, where main showed the HTTP title.
 
 These tests do not hand-build the envelopes: a FastAPI app with the real ``register_error_handlers`` and the real ``require_user`` / ``_raise_code``
@@ -68,12 +69,12 @@ def test_the_dialogs_pass_the_fallbacks_this_file_covers() -> None:
 # ---- the real envelopes really look like this ----------------------------------------------------------------------------------------------------------------
 
 
-def test_the_auth_gate_puts_the_code_in_extensions_error_and_sends_no_message(envelopes) -> None:
+def test_the_auth_gate_puts_the_code_in_extensions_error_and_the_detail_is_the_message(envelopes) -> None:
     """The premise of the fix: if the server's shape changed, the cases below would pass for nothing."""
     ended, refused = envelopes["session_ended"], envelopes["role_refused"]
 
-    assert ended["status"] == 401 and ended["detail"] == "auth_required" and ended["extensions"]["error"] == "auth_required" and "code" not in ended["extensions"]
-    assert refused["status"] == 403 and refused["detail"] == "forbidden_role" and refused["extensions"]["error"] == "forbidden_role" and "code" not in refused["extensions"]
+    assert ended["status"] == 401 and ended["detail"] == "Your session has ended; sign in again." and ended["extensions"]["error"] == "auth_required" and "code" not in ended["extensions"]
+    assert refused["status"] == 403 and refused["detail"] == "Your role does not allow this." and refused["extensions"]["error"] == "forbidden_role" and "code" not in refused["extensions"]
 
 
 def test_the_trigger_router_puts_the_code_in_extensions_code_with_its_message(envelopes) -> None:
