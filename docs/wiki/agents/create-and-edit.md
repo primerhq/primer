@@ -15,6 +15,7 @@ An agent row is created and edited through the `crud` and `system` agent tools, 
 
 - `id` - the stable identifier. Optional on create: omitted, the server generates `agent-<hex>`. Sent, it must match `^[a-z0-9][a-z0-9_-]{0,62}$` - lowercase letters, digits, hyphens and single underscores, 63 characters at most, never `__`. It cannot change afterwards.
 - `description` - free text, embedded for search. Must not be blank.
+- `access` - who owns the agent and who it is shared with: `owners`, people granted `read` or `full`, and whether it is `public`. The server sets it on create (the creator owns the agent) and ignores it in create and update bodies; change it with `system__set_entity_access`, owners only.
 - `model` - `{profile_id}` naming a stored model profile, which carries the provider and the model.
 - `temperature` - optional sampling temperature; `null` defers to the provider's default.
 - `max_tool_turns` - cap on tool-call rounds within one turn; default 50; `null` is unbounded.
