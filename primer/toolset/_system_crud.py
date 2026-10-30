@@ -321,6 +321,31 @@ def _owned_person(ctx: ToolContext | None) -> Person:
     return person_for_tool(ctx)
 
 
+async def _toolset_read_refusal(
+    registry: "ProviderRegistry",
+    spelled_id: str,
+    *,
+    ctx: ToolContext | None,
+    not_found_note: str | None = None,
+) -> ToolCallResult | None:
+    """READ on the toolset row under the id the model spelled; ``None`` when it clears or there is no row to check.
+
+    Reserved and built-in ids have no storage row, so the check skips them: there is no row whose access could be read. A
+    row the caller holds no level on answers exactly like a missing one (access spec 9): the door's own not-found words
+    (``not_found_note``) when the door has an idiom of its own, the plain "does not exist" otherwise.
+    """
+    row = await registry._sp.get_storage(Toolset).get(canonical_toolset_id(spelled_id))  # type: ignore[attr-defined]
+    if row is None:
+        return None
+    try:
+        require(_owned_person(ctx), row.access, AccessLevel.READ, what=f"Toolset {spelled_id!r}")
+        return None
+    except NotFoundError:
+        return _err(not_found_note or f"Toolset {spelled_id!r} does not exist", error_type="not-found")
+    except AccessDeniedError as exc:
+        return _err(exc.message, error_type="forbidden")
+
+
 def _crud_tools_for(
     *,
     entity_label: str,
@@ -943,6 +968,10 @@ def _list_toolset_tools_tool(
             args = _ToolsetIdArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # READ on the toolset row: a row the run holds no level on answers exactly like a missing one (access spec 9).
+        refusal = await _toolset_read_refusal(registry, args.toolset_id, ctx=ctx)
+        if refusal is not None:
+            return refusal
         try:
             provider = await registry.get_toolset(args.toolset_id)
         except NotFoundError as exc:
@@ -994,7 +1023,7 @@ def _toolset_auth_status_tool(
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
     storage = storage_provider.get_storage(Toolset)
 
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], *, ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _ToolsetIdArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -1014,6 +1043,13 @@ def _toolset_auth_status_tool(
                 f"Toolset {args.toolset_id!r} does not exist",
                 error_type="not-found",
             )
+        # The sign-in status reads the toolset row: a row the run holds no level on answers exactly like a missing one
+        # (access spec 9).
+        denied = _access_refusal(
+            _owned_person(ctx), toolset.access, AccessLevel.READ, f"Toolset {args.toolset_id!r}",
+        )
+        if denied is not None:
+            return denied
         if oauth is None:
             return _err(
                 "the MCP OAuth service is unavailable in this process",
@@ -1153,6 +1189,12 @@ def _call_tool_tool(
         # everything decided below is about the tool that RUNS: the approval policy, the role message, the park the card and the resume read. Looked up
         # under the id the model spelled, a policy on ``system::x`` let ``call_tool(toolset_id="_system", tool_name="x")`` run the same tool ungated.
         toolset_id = canonical_toolset_id(args.toolset_id)
+
+        # READ on the toolset row, BEFORE the dispatch: a run holding no level on the toolset never reaches its inner
+        # provider (access spec 9). The registry answers the missing row under this same canonical id.
+        refusal = await _toolset_read_refusal(registry, toolset_id, ctx=ctx)
+        if refusal is not None:
+            return refusal
 
         try:
             provider = await registry.get_toolset(toolset_id)
@@ -1444,6 +1486,13 @@ def _describe_tool_tool(
             args = _DescribeToolArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # READ on the toolset row: a row the run holds no level on answers exactly like a missing one, in this door's own
+        # words ("no toolset <id>") (access spec 9).
+        refusal = await _toolset_read_refusal(
+            registry, args.toolset_id, ctx=ctx, not_found_note=f"no toolset {args.toolset_id!r}",
+        )
+        if refusal is not None:
+            return refusal
         try:
             # One listing answers all three outcomes (found, no such tool with the toolset's names to offer, no such toolset). It is made as the run's own
             # principal, as ``list_toolset_tools`` and ``call_tool`` hand their inner provider, so a toolset with per-user OAuth state answers for the person
