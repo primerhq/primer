@@ -39,7 +39,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.access.person import person_from_request
-from primer.access.policy import require
+from primer.access.policy import require, visible_predicate
 from primer.common.hf_hub import MAX_MODELS_PER_CHECK, check_hf_models
 from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm.anthropic import _discover_anthropic_models
@@ -1992,6 +1992,7 @@ async def get_toolset_with_builtin_shim(
     ),
 )
 async def list_all_tools(
+    request: Request,
     principal: str | None = Depends(get_principal),
     registry: ProviderRegistry = Depends(get_provider_registry),
     storage_provider=Depends(get_storage_provider),
@@ -2040,13 +2041,18 @@ async def list_all_tools(
         out.append(entry)
 
     # 2. User-defined Toolset rows. Page through storage so the
-    # catalogue scales beyond the default 200-row cap.
+    # catalogue scales beyond the default 200-row cap. Rows the caller
+    # may not read stay out of the catalogue (spec anti-goal 4: filter in
+    # storage, never a fetched page in Python); admins get a None predicate
+    # and keep the unfiltered list.
+    access_pred = visible_predicate(person_from_request(request))
     ts_storage = storage_provider.get_storage(Toolset)
     seen_user_ids: set[str] = set()
     offset = 0
     page_size = 200
     while True:
-        page = await ts_storage.list(
+        page = await ts_storage.find(
+            access_pred,
             OffsetPage(offset=offset, length=page_size),
         )
         for row in page.items:
