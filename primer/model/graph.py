@@ -26,6 +26,7 @@ from pydantic import (
 )
 
 from primer.common.log import redact_credentials
+from primer.model.access import Owned
 from primer.model.chat import Message
 from primer.model.common import Describeable, Identifiable
 from primer.model.principal import PrincipalRef
@@ -779,7 +780,7 @@ GraphEdge = Annotated[
 # ===========================================================================
 
 
-class Graph(Describeable):
+class Graph(Owned, Describeable):
     """A directed graph of agent nodes (and optionally sub-graph nodes).
 
     Inherits ``id`` and ``description`` from :class:`Describeable`.

@@ -32,6 +32,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field, PositiveInt, field_validator
 
+from primer.model.access import Owned
 from primer.model.common import Describeable
 
 
@@ -83,7 +84,7 @@ class AgentModel(BaseModel):
     )
 
 
-class Agent(Describeable):
+class Agent(Owned, Describeable):
     """A configured agent definition.
 
     Inherits ``id`` and ``description`` from :class:`Describeable`.

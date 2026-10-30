@@ -576,6 +576,11 @@ class PostgresStorageProvider(StorageProvider):
 # lands under ``sessions``). Each entry is ``(index_suffix, unique, expr)``
 # where the final index name is ``<table>_<suffix>``.
 _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
+    "agent": [
+        # Access-control list queries filter on the derived membership tokens
+        # (data->'access'->'members' ? token); GIN serves the jsonb ? operator.
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
     "apitoken": [
         ("token_hash_uniq", True, "((data->>'token_hash'))"),
     ],
@@ -588,9 +593,13 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             False,
             "((data->>'provider_id'), (data->>'external_id'))",
         ),
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
     "artifactlocation": [
         ("provider_id", False, "((data->>'provider_id'))"),
+    ],
+    "graph": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
     "useridentity": [
         ("provider_subject_uniq", True, "((data->>'provider_id'), (data->>'subject'))"),
@@ -618,6 +627,12 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # many pre-migration records with no gate_event_key at all do not
         # collide with each other or with anything else.
         ("gate_event_key_uniq", True, "((data->>'gate_event_key'))"),
+    ],
+    "toolset": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
+    "workspacetemplate": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
 }
 
