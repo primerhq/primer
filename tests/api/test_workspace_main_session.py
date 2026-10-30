@@ -151,25 +151,52 @@ async def test_each_user_gets_their_own_session(prime_app, client) -> None:
 
     r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
     assert r.status_code == 201, r.text
+    carol_id = r.json()["id"]
+    admin_id = await _user_id(prime_app, "testuser")
+
+    # P2 Task 2: the install-wide default workspace no longer reaches every
+    # user (per-user default workspaces arrive in Task 8). The per-user main
+    # session is verified on a workspace carol actually holds: the admin
+    # creates one and shares full.
+    ws = await client.post(
+        "/v1/workspaces", json={"template_id": RESERVED_LOCAL_WORKSPACE_TEMPLATE}
+    )
+    assert ws.status_code in (200, 201), ws.text
+    shared = ws.json()["id"]
+    share = await client.put(
+        f"/v1/workspaces/{shared}/access",
+        json={"owners": [admin_id], "grants": {carol_id: "full"}},
+    )
+    assert share.status_code == 200, share.text
+
     async with httpx.AsyncClient(
         transport=ASGITransport(app=prime_app), base_url="http://test",
     ) as carol:
         login = await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})
         assert login.status_code == 200, login.text
 
-        cr = await carol.post(f"/v1/workspaces/{wid}/main_session")
+        # carol holds no level on the default workspace: the missing-row
+        # text, as on a missing id (spec 9).
+        denied = await carol.post(f"/v1/workspaces/{wid}/main_session")
+        assert denied.status_code == 404, denied.text
+        assert denied.json()["detail"] == f"Workspace '{wid}' does not exist"
+
+        cr = await carol.post(f"/v1/workspaces/{shared}/main_session")
         assert cr.status_code == 201, cr.text
         cbody = cr.json()
         assert cbody["id"] != admin_session["id"]
+        assert cbody["workspace_id"] == shared
         assert cbody["initiated_by"]["role"] == "user"
         assert cbody["initiated_by"]["display"] == "carol"
 
-        again = await carol.post(f"/v1/workspaces/{wid}/main_session")
+        again = await carol.post(f"/v1/workspaces/{shared}/main_session")
         assert again.status_code == 200 and again.json()["id"] == cbody["id"]
 
-    # Two main sessions on the workspace, one per user; the admin still gets the admin's.
-    rows = await _sessions(prime_app, wid)
-    assert sorted(r.id for r in rows) == sorted({admin_session["id"], cbody["id"]})
+    # Two main sessions on the shared workspace, one per user; the admin
+    # still gets the admin's (on the default workspace too, unchanged).
+    admin_shared = (await client.post(f"/v1/workspaces/{shared}/main_session")).json()
+    rows = await _sessions(prime_app, shared)
+    assert sorted(r.id for r in rows) == sorted({admin_shared["id"], cbody["id"]})
     admin_again = await client.post(f"/v1/workspaces/{wid}/main_session")
     assert admin_again.status_code == 200
     assert admin_again.json()["id"] == admin_session["id"]

@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
 from primer.bootstrap.prime import resolve_default_workspace_id
+from primer.model.access import Access
 from primer.model.common import dump_for_storage
 from primer.model.except_ import ConflictError, NotFoundError, ValidationError
 from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceNotImplementedError, WorkspaceRefusedError
@@ -79,10 +80,12 @@ def new_workspace_row(
     live: "Workspace",
     name: str | None = None,
     reply_binding: WorkspaceChannelLink | None = None,
+    access: Access | None = None,
 ) -> WorkspaceRow:
     """The durable row of a workspace ``materialise`` has just built, as every create door writes it (REST, the ``create_workspace`` tool, the
     bootstrap seed): the full create-time template snapshot (what re-attach uses), the provider the template names, the live instance's runtime
-    coordinates, and :data:`NEW_WORKSPACE_PHASE`."""
+    coordinates, and :data:`NEW_WORKSPACE_PHASE`. ``access`` is the create door's ownership stamp (the creator as the sole owner); ``None``
+    leaves the model default (an unowned row the bootstrap seed writes)."""
     return WorkspaceRow(
         id=workspace_id,
         name=name,
@@ -94,6 +97,7 @@ def new_workspace_row(
         phase=NEW_WORKSPACE_PHASE,
         runtime_meta=live.runtime_meta,
         reply_binding=reply_binding,
+        access=access or Access(),
     )
 
 
@@ -394,6 +398,7 @@ class WorkspaceRegistry:
         workspace_id: str | None = None,
         name: str | None = None,
         reply_binding: WorkspaceChannelLink | None = None,
+        access: Access | None = None,
     ) -> WorkspaceRow:
         """Create a workspace: the live instance, then its durable row. The one create path of ``POST /v1/workspaces`` and the ``create_workspace``
         tool (ticket 01a16d72): every refusal of :meth:`materialise` applies to both, and both write the same row (:func:`new_workspace_row`, so the
@@ -416,7 +421,7 @@ class WorkspaceRegistry:
         the instance is this create's own and is torn down as before.
         """
         if workspace_id is None:
-            return await self._create(template=template, overrides=overrides, workspace_id=None, name=name, reply_binding=reply_binding)
+            return await self._create(template=template, overrides=overrides, workspace_id=None, name=name, reply_binding=reply_binding, access=access)
         lock, holders = self._creating.setdefault(workspace_id, (asyncio.Lock(), [0]))
         holders[0] += 1
         try:
@@ -425,6 +430,7 @@ class WorkspaceRegistry:
                     raise ConflictError(f"Workspace with id {workspace_id!r} already exists")
                 return await self._create(
                     template=template, overrides=overrides, workspace_id=workspace_id, name=name, reply_binding=reply_binding,
+                    access=access,
                 )
         finally:
             holders[0] -= 1
@@ -439,6 +445,7 @@ class WorkspaceRegistry:
         workspace_id: str | None,
         name: str | None,
         reply_binding: WorkspaceChannelLink | None,
+        access: Access | None = None,
     ) -> WorkspaceRow:
         """:meth:`create`'s body: materialise, then the row, with the rollback."""
         live = await self.materialise(template=template, overrides=overrides, workspace_id=workspace_id)
@@ -450,6 +457,7 @@ class WorkspaceRegistry:
                 live=live,
                 name=name,
                 reply_binding=reply_binding,
+                access=access,
             )
             await self._sp.get_storage(WorkspaceRow).create(row)
         except BaseException as exc:

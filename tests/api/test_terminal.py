@@ -13,17 +13,24 @@ PTYs are a POSIX/Linux facility; the socket tests are skipped elsewhere.
 
 from __future__ import annotations
 
+import asyncio
 import sys
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from pydantic import SecretStr
 from starlette.testclient import TestClient as SyncTestClient
 from starlette.websockets import WebSocketDisconnect
 
 from primer.api.app import create_test_app
+from primer.model.access import Access
 from primer.model.except_ import NotFoundError
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 
 _LINUX = sys.platform == "linux" and hasattr(__import__("os"), "openpty")
+
+_NOW = datetime(2026, 10, 8, tzinfo=timezone.utc)
 
 
 class _StubRegistry:
@@ -93,6 +100,25 @@ def _login_non_admin(sclient: SyncTestClient, username: str, password: str) -> N
     )
     assert created.status_code == 201, created.text
     sclient.post("/v1/auth/login", json={"username": username, "password": password})
+    return created.json()["id"]
+
+
+def _own_workspace(sp, owner_id: str) -> None:
+    """Seed the ws-1 row the terminal endpoint connects to, owned by ``owner_id`` (P2 Task 2).
+
+    The access gate reads the row off the storage provider; the
+    ``terminal_user_access`` flag the tests pin stays on the registry stub.
+    """
+    async def _seed() -> None:
+        await sp.get_storage(Workspace).create(
+            Workspace(
+                id="ws-1", template_id="t", provider_id="p", created_at=_NOW,
+                runtime_meta=WorkspaceRuntimeMeta(url="ws://ws-1", token=SecretStr("x")),
+                access=Access(owners=[owner_id]),
+            )
+        )
+
+    asyncio.run(_seed())
 
 
 @pytest.mark.skipif(not _LINUX, reason="PTY requires a POSIX/Linux pseudo-terminal")
@@ -161,14 +187,16 @@ def test_non_admin_denied_when_terminal_user_access_off(
     """Regression: ``terminal_user_access`` used to be read off the live
     workspace handle (which never carried it), so it always defaulted
     False and a non-admin could never be granted access regardless of
-    operator intent. This pins the still-denied-by-default half."""
+    operator intent. This pins the still-denied-by-default half: bob owns
+    the workspace (so the P2 access gate passes) but the flag is off."""
     app = _build_app(
         fake_storage_provider, fake_provider_registry, root=str(tmp_path),
         terminal_user_access=False,
     )
     with SyncTestClient(app) as sclient:
         _login(sclient)  # admin (first registrant)
-        _login_non_admin(sclient, "bob", "bobpassword1")
+        bob_id = _login_non_admin(sclient, "bob", "bobpassword1")
+        _own_workspace(fake_storage_provider, bob_id)
         with pytest.raises(WebSocketDisconnect) as excinfo:
             with sclient.websocket_connect("/v1/workspaces/ws-1/terminal") as ws:
                 ws.receive_bytes()
@@ -181,14 +209,15 @@ def test_non_admin_admitted_when_terminal_user_access_on(
 ):
     """The other half of the regression: once the flag is properly
     readable from the persisted row, flipping it on actually admits a
-    ``user``-role (non-admin) caller."""
+    ``user``-role (non-admin) caller (bob owns the workspace, P2 Task 2)."""
     app = _build_app(
         fake_storage_provider, fake_provider_registry, root=str(tmp_path),
         terminal_user_access=True,
     )
     with SyncTestClient(app) as sclient:
         _login(sclient)  # admin (first registrant)
-        _login_non_admin(sclient, "bob", "bobpassword1")
+        bob_id = _login_non_admin(sclient, "bob", "bobpassword1")
+        _own_workspace(fake_storage_provider, bob_id)
         with sclient.websocket_connect("/v1/workspaces/ws-1/terminal") as ws:
             ws.send_bytes(b"echo hi\n")
             collected = b""

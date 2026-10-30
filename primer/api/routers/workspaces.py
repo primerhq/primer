@@ -44,6 +44,9 @@ from pydantic_core import to_jsonable_python
 from primer.access.person import person_from_request
 from primer.access.policy import require
 from primer.api.routers._session_rank import refuse_outranked
+from primer.access.person import person_from_request
+from primer.access.workspaces import readable_workspace_ids, require_workspace
+from primer.api.routers.access import make_access_router
 from primer.api.deps import (
     get_claim_engine,
     get_collection_storage,
@@ -58,7 +61,6 @@ from primer.api.deps import (
     get_workspace_storage,
     get_workspace_template_storage,
     require_user,
-    require_admin,
 )
 import primer.observability.metrics as _metrics
 from primer.api.errors import PROBLEM_JSON_MEDIA_TYPE, common_responses
@@ -102,13 +104,17 @@ from primer.model.external_tool import (
     ExternalToolResultIn,
     validate_external_tool_defs,
 )
+from primer.model.access import Access, AccessLevel
 from primer.model.storage import (
     CursorPageResponse,
     OffsetPage,
     OffsetPageResponse,
     OrderBy,
+    Op,
     PageRequest,
+    Predicate,
 )
+from primer.storage.q import Q
 from primer.model.workspace import (
     WORKSPACE_ID_PATTERN,
     WorkspaceEventsConfig,
@@ -125,7 +131,6 @@ from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.state_helpers import has_unsafe_commit_chars
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
 from primer.workspace.row_writes import WORKSPACE_PHASES, write_workspace_fields
-from primer.workspace.session_reconcile import open_sessions_on
 from primer.workspace.diagnostic import (
     DIAGNOSTIC_COMMANDS,
     DiagnosticCommandError,
@@ -743,6 +748,16 @@ template_router = make_crud_router(
 
 workspace_router = APIRouter(tags=["workspaces"])
 
+# The sharing sub-resource (spec 6.2): mounted BEFORE the workspace routes,
+# the same prefix and tier (the include in primer/api/_app_routes.py keeps
+# the order; the router needs no gate of its own, the service decides).
+workspace_access_router = make_access_router(
+    model_cls=WorkspaceRow,
+    plural="workspaces",
+    storage_dep=get_workspace_storage,
+    tag="workspace-access",
+)
+
 _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
 
 _SESSION_COUNT_PAGE_SIZE = 200
@@ -795,16 +810,21 @@ async def _enrich_with_session_counts(
     session_storage = get_storage_provider(request).get_storage(WorkspaceSession)
 
     counts: Counter[str] = Counter()
-    offset = 0
-    while True:
-        page = await session_storage.list(
-            OffsetPage(offset=offset, length=_SESSION_COUNT_PAGE_SIZE),
-        )
-        for session in page.items:
-            counts[session.workspace_id] += 1
-        if len(page.items) < _SESSION_COUNT_PAGE_SIZE:
-            break
-        offset += _SESSION_COUNT_PAGE_SIZE
+    page_ids = [item.id for item in resp.items]
+    if page_ids:
+        # Only the page's workspaces (P2 Task 2): a bounded walk scoped by a
+        # where_in, never a scan of every session row.
+        predicate = Q(WorkspaceSession).where_in("workspace_id", page_ids).build()
+        offset = 0
+        while True:
+            page = await session_storage.find(
+                predicate, OffsetPage(offset=offset, length=_SESSION_COUNT_PAGE_SIZE)
+            )
+            for session in page.items:
+                counts[session.workspace_id] += 1
+            if len(page.items) < _SESSION_COUNT_PAGE_SIZE:
+                break
+            offset += _SESSION_COUNT_PAGE_SIZE
 
     default_id = await resolve_default_workspace_id(get_storage_provider(request))
     # ``dict(item)``, not ``item.model_dump()``: the field values as the storage read them, so nothing is validated again. A dump
@@ -821,6 +841,35 @@ async def _enrich_with_session_counts(
     return resp.model_copy(update={"items": enriched})
 
 
+async def _require_workspace(
+    request: Request, workspace_id: str, need: AccessLevel,
+) -> WorkspaceRow:
+    """The access gate of every workspace route (P2 Task 2), returning the row.
+
+    A stranger to the workspace answers its missing-row text (spec 9), a
+    person who holds a lower level than ``need`` answers the Phase 1
+    ``AccessDeniedError`` (403); admins and the system principal clear
+    every gate. The returned row is the one the gate read, so a route
+    needs no second fetch to find the same row again.
+    """
+    return await require_workspace(
+        get_storage_provider(request),
+        person_from_request(request),
+        workspace_id,
+        need,
+    )
+
+
+def _empty_page(page: PageRequest) -> _PageResp:
+    """The page a person who reads no row at all gets from list/find.
+
+    Built by hand because an ``IN ()`` predicate is not a SQL sentence.
+    """
+    if isinstance(page, OffsetPage):
+        return OffsetPageResponse(offset=page.offset, length=0, total=0, items=[])
+    return CursorPageResponse(next_cursor=None, items=[])
+
+
 @workspace_router.get(
     "/workspaces",
     summary="List Workspaces",
@@ -833,7 +882,19 @@ async def list_workspaces(
     storage=Depends(get_workspace_storage),
 ) -> _PageResp:
     refuse_secret_fields(WorkspaceRow, order_by=order_by)
-    resp = await storage.list(page, order_by=order_by)
+    # The readable set (P2 Task 2): admins get no filter (``None``);
+    # everyone else gets ``id IN <their readable ids>``.
+    ids = await readable_workspace_ids(
+        get_storage_provider(request), person_from_request(request)
+    )
+    if ids is not None and not ids:
+        resp: _PageResp = _empty_page(page)
+    elif ids is None:
+        resp = await storage.list(page, order_by=order_by)
+    else:
+        resp = await storage.find(
+            Q(WorkspaceRow).where_in("id", ids).build(), page, order_by=order_by
+        )
     return await _enrich_with_session_counts(resp, request)
 
 
@@ -844,10 +905,22 @@ async def list_workspaces(
 )
 async def find_workspaces(
     body: FindRequest,
+    request: Request,
     storage=Depends(get_workspace_storage),
 ) -> _PageResp:
     refuse_secret_fields(WorkspaceRow, predicate=body.predicate, order_by=body.order_by)
-    return await storage.find(body.predicate, body.page, order_by=body.order_by)
+    ids = await readable_workspace_ids(
+        get_storage_provider(request), person_from_request(request)
+    )
+    if ids is not None and not ids:
+        return _empty_page(body.page)
+    predicate = body.predicate
+    if ids is not None:
+        scoped = Q(WorkspaceRow).where_in("id", ids).build()
+        predicate = scoped if predicate is None else Predicate(
+            left=scoped, op=Op.AND, right=predicate
+        )
+    return await storage.find(predicate, body.page, order_by=body.order_by)
 
 
 @workspace_router.get(
@@ -857,13 +930,11 @@ async def find_workspaces(
     responses=common_responses(404, 500),
 )
 async def get_workspace(
+    request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
-    storage=Depends(get_workspace_storage),
     storage_provider=Depends(get_storage_provider),
 ) -> WorkspaceRowOut:
-    row = await storage.get(workspace_id)
-    if row is None:
-        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    row = await _require_workspace(request, workspace_id, AccessLevel.READ)
     default_id = await resolve_default_workspace_id(storage_provider)
     # The stored field values, not a dump: a dump would re-validate the stored snapshot (see _enrich_with_session_counts).
     return WorkspaceRowOut(**dict(row), is_default=row.id == default_id)
@@ -876,6 +947,7 @@ async def get_workspace(
     responses=common_responses(404, 500),
 )
 async def set_workspace_events(
+    request: Request,
     body: "WorkspaceEventsBody",
     workspace_id: str = Path(..., description="Workspace id"),
     storage=Depends(get_workspace_storage),
@@ -887,9 +959,7 @@ async def set_workspace_events(
     exec_started / exec_exited onto the event log. ``config: null``
     switches it off.
     """
-    row = await storage.get(workspace_id)
-    if row is None:
-        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    row = await _require_workspace(request, workspace_id, AccessLevel.FULL)
     # The field only (round 2 of #917): a whole-row write of the row as read put back a phase another writer had moved since.
     return await write_workspace_fields(storage, row, {"events": body.config})
 
@@ -905,25 +975,25 @@ class WorkspaceEventsBody(BaseModel):
     response_model=WorkspaceRow,
     summary="Grant or revoke non-admin access to the workspace's integrated terminal",
     responses=common_responses(403, 404, 500),
-    # The terminal is admin-only unless this flag is on, so only an admin may flip it (INJ-01): the router is on
-    # the user tier, and without this a role=user caller granted themselves a shell.
-    dependencies=[Depends(require_admin)],
+    # Owner or admin (P2 Task 2; used to be admin-only): the terminal is
+    # admin-only unless this flag is on, so only someone who may act on the
+    # workspace may flip it (INJ-01): the router is on the user tier, and
+    # without a gate a role=user caller granted themselves a shell.
 )
 async def set_workspace_terminal_access(
+    request: Request,
     body: "WorkspaceTerminalAccessBody",
     workspace_id: str = Path(..., description="Workspace id"),
     storage=Depends(get_workspace_storage),
 ) -> WorkspaceRow:
-    """Toggle the per-workspace ``terminal_user_access`` flag. Admin only (403 ``forbidden_role`` otherwise).
+    """Toggle the per-workspace ``terminal_user_access`` flag. Owner or admin (403 ``forbidden`` otherwise).
 
     The integrated terminal (``WS /workspaces/{id}/terminal``) is
     admin-only by default; setting ``enabled: true`` here admits callers
     holding at least the ``user`` role too (``restricted`` accounts never
     get a shell regardless of this toggle).
     """
-    row = await storage.get(workspace_id)
-    if row is None:
-        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    row = await _require_workspace(request, workspace_id, AccessLevel.OWNER)
     # The field only (round 2 of #917): a whole-row write of the row as read put back a phase another writer had moved since.
     return await write_workspace_fields(storage, row, {"terminal_user_access": body.enabled})
 
@@ -977,6 +1047,11 @@ async def create_workspace(
     # first phase every create door writes (pending until the probe's first good ping), and the live instance torn back down if the row
     # write fails or is cancelled. A provider that does not exist is materialise's 404; a Kubernetes provider with variant=agent_sandbox is
     # its refusal, answered 501 here in the words the tool answers too (ruling 1: the check used to live in this route alone).
+    # The caller is the owner (spec 6.1): an id-less principal (the
+    # auth-disabled system) creates an unowned row, and an ``access`` block
+    # in the body is ignored (sharing happens on PUT /{id}/access).
+    person = person_from_request(request)
+    access = Access.owned_by(person.user_id) if person.user_id else Access()
     try:
         row = await registry.create(
             template=template,
@@ -984,6 +1059,7 @@ async def create_workspace(
             workspace_id=body.id,
             name=body.name,
             reply_binding=body.reply_binding,
+            access=access,
         )
     except WorkspaceNotImplementedError as exc:
         raise HTTPException(
@@ -1077,6 +1153,7 @@ class WorkspaceRenameBody(BaseModel):
     responses=common_responses(404, 422, 500),
 )
 async def rename_workspace(
+    request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     body: WorkspaceRenameBody = Body(...),
     storage=Depends(get_workspace_storage),
@@ -1088,9 +1165,7 @@ async def rename_workspace(
     This focused PATCH lets operators label an existing workspace. An
     empty or null name clears the label.
     """
-    row = await storage.get(workspace_id)
-    if row is None:
-        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    row = await _require_workspace(request, workspace_id, AccessLevel.FULL)
     new_name = (body.name or "").strip() or None
     # The name only (round 2 of #917): a whole-row write of the row as read put back a phase another writer had moved since, so a
     # rename that read the row while a delete had it terminating left it terminating for ever after the delete failed.
@@ -1117,6 +1192,7 @@ class _ReplyBindingBody(BaseModel):
     responses=common_responses(404, 409, 422, 500),
 )
 async def set_workspace_reply_binding(
+    request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     body: _ReplyBindingBody = Body(...),
     workspace_storage=Depends(get_workspace_storage),
@@ -1128,11 +1204,9 @@ async def set_workspace_reply_binding(
     workspace forward to the bound channel. Validates that the channel
     exists and that the workspace is not in a terminating phase.
     """
+    row = await _require_workspace(request, workspace_id, AccessLevel.FULL)
     from primer.model.channel import Channel
 
-    row = await workspace_storage.get(workspace_id)
-    if row is None:
-        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
     if row.phase == "terminating":
         raise HTTPException(
             status_code=409,
@@ -1188,6 +1262,7 @@ async def set_workspace_reply_binding(
     responses=common_responses(404, 500),
 )
 async def clear_workspace_reply_binding(
+    request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     workspace_storage=Depends(get_workspace_storage),
 ) -> None:
@@ -1197,9 +1272,7 @@ async def clear_workspace_reply_binding(
     forwarded to any channel. No-ops silently if the binding was
     already cleared.
     """
-    row = await workspace_storage.get(workspace_id)
-    if row is None:
-        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    row = await _require_workspace(request, workspace_id, AccessLevel.FULL)
     # The binding only (round 2 of #917): a whole-row write of the row as read put back a phase another writer had moved since.
     await write_workspace_fields(workspace_storage, row, {"reply_binding": None})
 
@@ -1214,22 +1287,16 @@ async def delete_workspace(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
-    sp=Depends(get_storage_provider),
 ) -> None:
     """Destroy the workspace and everything in it. The default workspace (prime) is refused: 403 ``reserved_workspace``.
 
-    Destroying a workspace ends every open session in it, so the caller must be allowed to act on each of them, by the rank rule of the cancel
-    route (:func:`primer.api.routers._session_rank.refuse_outranked`): 403 ``forbidden_rank`` while one of them runs at a higher rank than the
-    caller, and nothing is torn down (review of #870, F3). ``destroy`` runs the scan once the workspace is marked as being destroyed, so a session
-    start from then on is refused (review of #874, D1).
+    The caller must own the workspace (P2 Task 2, replacing the old session-rank scan): a stranger answers the missing-row text, a
+    non-owner a 403, and nothing is torn down while the gate refuses.
     """
 
-    async def _rank_scan() -> None:
-        async for row in open_sessions_on(sp, workspace_id):
-            refuse_outranked(request, row)
-
+    await _require_workspace(request, workspace_id, AccessLevel.OWNER)
     try:
-        await registry.destroy(workspace_id, before_teardown=_rank_scan)
+        await registry.destroy(workspace_id)
     except ReservedWorkspaceError as exc:
         # The convention of the reserved-id guards above: a bare HTTPException whose detail mapping becomes the envelope's
         # extensions, so a client reads ``extensions.error`` the same way for every "this is protected" refusal.
@@ -1287,6 +1354,7 @@ async def resume_workspace(workspace_id: str) -> dict:
     responses=common_responses(400, 404, 422, 500),
 )
 async def diagnostic_workspace(
+    request: Request,
     body: DiagnosticExecBody,
     workspace_id: str = Path(..., description="Workspace id"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
@@ -1298,6 +1366,7 @@ async def diagnostic_workspace(
     syntax (400 otherwise). Before 01a117fd (A-06) only the first token was
     checked and the whole string then ran through a shell.
     """
+    await _require_workspace(request, workspace_id, AccessLevel.FULL)
     # The policy (which program) lives in the route; the mechanism (no shell,
     # minimal env, refusing shell syntax) is repeated in every backend through
     # the same parser, so a backend reached by another caller is safe too.
@@ -1342,6 +1411,7 @@ sessions_router = APIRouter(tags=["workspace-sessions"])
     responses=common_responses(404, 500),
 )
 async def list_sessions(
+    request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -1350,6 +1420,7 @@ async def list_sessions(
 ) -> dict:
     """List the sessions of a workspace. Each item is the runtime slot with its lifecycle fields (status, ended_reason,
     ended_detail, ended_at) taken from the durable row, the one truth about how a session ended (``primer.session.slot_view``)."""
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
     sessions = await ws.list_sessions()
     sliced = await overlay_rows_on_infos(
@@ -1403,6 +1474,7 @@ async def ensure_main_session(
     ``initiated_by`` carries the caller's role, so an admin's main session clears the admin role floor and a user's does not
     (A-20). 201 when this call created the row, 200 when it returned the caller's existing one; ``created`` says the same.
     """
+    await _require_workspace(request, workspace_id, AccessLevel.FULL)
     await workspace_registry.get_workspace(workspace_id)
 
     from primer.bootstrap.prime import ensure_main_operator_session
@@ -1433,6 +1505,7 @@ async def ensure_main_session(
     responses=common_responses(404, 500),
 )
 async def get_session(
+    request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     session_id: str = Path(..., description="Session id"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
@@ -1444,6 +1517,7 @@ async def get_session(
     from the durable ``WorkspaceSession`` row, the same one ``GET /v1/sessions/{id}`` serves, so the two routes cannot disagree about
     how a session ended (``primer.session.slot_view``). A slot with no row is served as it is.
     """
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
     session = await ws.get_session(session_id)
     if session is None:
@@ -2529,6 +2603,7 @@ class SessionAttachBody(BaseModel):
     responses=common_responses(404, 422, 500),
 )
 async def attach_session(
+    request: Request,
     body: SessionAttachBody = Body(...),
     workspace_id: str = Path(...),
     session_id: str = Path(...),
@@ -2540,6 +2615,7 @@ async def attach_session(
     (S3 spec section 4). ``attached_seq`` is the replay fence the caller
     must apply to delivery records: execute above it, render at or below.
     """
+    await _require_workspace(request, workspace_id, AccessLevel.FULL)
     from primer.model.client_attachment import ClientAttachment
     from primer.session.attachment import ATTACH_TTL_SECONDS, attach_or_refresh
 
@@ -2571,12 +2647,14 @@ async def attach_session(
     responses=common_responses(404, 422, 500),
 )
 async def detach_session(
+    request: Request,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     client_id: str = Query(..., min_length=1),
     storage_provider=Depends(get_storage_provider),
 ) -> dict:
     """Best-effort detach. The TTL covers a client that never calls it."""
+    await _require_workspace(request, workspace_id, AccessLevel.FULL)
     from primer.model.client_attachment import ClientAttachment
     from primer.session.attachment import detach
 
@@ -2689,6 +2767,7 @@ def _visible_entries(ws: Any, entries: list, user: Any) -> list:
     responses=common_responses(400, 404, 500),
 )
 async def file_tree(
+    request: Request,
     workspace_id: str = Path(...),
     path: str = Query(default=".", description="Workspace-relative path"),
     depth: int = Query(default=1, ge=1, description="Tree depth (only depth=1 is supported; deeper values are accepted but treated as 1)"),
@@ -2696,6 +2775,7 @@ async def file_tree(
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     user=Depends(require_user),
 ) -> dict:
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
     _refuse_reserved_read(ws, path, user)
     # No origin decoration: with collection mounting retired, every entry
@@ -2739,6 +2819,7 @@ _MAX_RECURSIVE_WALK_ENTRIES = 10_000
     responses=common_responses(400, 404, 500),
 )
 async def list_files(
+    request: Request,
     workspace_id: str = Path(...),
     path: str = Query(default=".", description="Workspace-relative path"),
     recursive: bool = Query(default=False),
@@ -2747,6 +2828,7 @@ async def list_files(
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     user=Depends(require_user),
 ) -> dict:
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
     _refuse_reserved_read(ws, path, user)
     # No origin decoration: with collection mounting retired, every
@@ -2798,11 +2880,13 @@ async def list_files(
     responses=common_responses(400, 404, 500),
 )
 async def file_info(
+    request: Request,
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     user=Depends(require_user),
 ) -> FileEntry:
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
     _refuse_reserved_read(ws, path, user)
     return await ws.file_info(path)
@@ -2815,6 +2899,7 @@ async def file_info(
     responses=common_responses(400, 404, 500),
 )
 async def read_file(
+    request: Request,
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     encoding: Literal["text", "base64"] = Query(
@@ -2827,6 +2912,7 @@ async def read_file(
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     user=Depends(require_user),
 ) -> FileReadResponse:
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
     _refuse_reserved_read(ws, path, user)
     raw = await ws.read_file(path)
@@ -2861,11 +2947,13 @@ async def read_file(
     responses=common_responses(400, 404, 500),
 )
 async def download_file(
+    request: Request,
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     user=Depends(require_user),
 ) -> StreamingResponse:
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
     _refuse_reserved_read(ws, path, user)
     raw = await ws.read_file(path)
@@ -2891,10 +2979,12 @@ async def download_file(
     responses=common_responses(400, 404, 500),
 )
 async def make_dir(
+    request: Request,
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> None:
+    await _require_workspace(request, workspace_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     await ws.make_dir(path)
 
@@ -2906,6 +2996,7 @@ async def make_dir(
     responses=common_responses(400, 404, 500),
 )
 async def delete_file(
+    request: Request,
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     recursive: bool = Query(
@@ -2914,6 +3005,7 @@ async def delete_file(
     ),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> None:
+    await _require_workspace(request, workspace_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     await ws.delete_file(path, recursive=recursive)
 
@@ -2925,6 +3017,7 @@ async def delete_file(
     responses=common_responses(400, 404, 409, 500),
 )
 async def move_file(
+    request: Request,
     workspace_id: str = Path(...),
     src: str = Query(..., description="Source workspace-relative path"),
     dst: str = Query(..., description="Destination workspace-relative path"),
@@ -2938,6 +3031,7 @@ async def move_file(
     own-descendant); violations surface as 400 / 404 / 409. Backends that do
     not implement move return 501.
     """
+    await _require_workspace(request, workspace_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     try:
         await ws.move_file(src, dst)
@@ -2979,6 +3073,7 @@ async def write_file(
     scheduler=Depends(get_scheduler),
     event_bus=Depends(get_event_bus),
 ) -> Response:
+    await _require_workspace(request, workspace_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     if body.encoding == "text":
         try:
@@ -3077,6 +3172,7 @@ log_router = APIRouter(tags=["workspace-log"])
     responses=common_responses(404, 500),
 )
 async def workspace_log(
+    request: Request,
     workspace_id: str = Path(...),
     limit: int = Query(default=50, ge=1, le=500),
     with_files: bool = Query(
@@ -3091,6 +3187,7 @@ async def workspace_log(
     ),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> dict:
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
     commits = await ws.log(limit=limit, with_files=with_files)
     return {"commits": [c.model_dump(mode="json") for c in commits]}
@@ -3102,6 +3199,7 @@ async def workspace_log(
     responses=common_responses(404, 500),
 )
 async def workspace_show_commit(
+    request: Request,
     workspace_id: str = Path(...),
     sha: str = Path(..., min_length=7, max_length=64),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
@@ -3116,6 +3214,7 @@ async def workspace_show_commit(
     mounts.json), so a non-admin gets the header with ``files: []`` and
     ``files_hidden: true`` (A-22). Admins get the full diff.
     """
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
     state_repo = getattr(ws, "_state", None)
     show = getattr(state_repo, "show_commit", None) if state_repo else None
@@ -3209,9 +3308,11 @@ def _tool_call_id_from_blob(blob: dict) -> str | None:
     responses=common_responses(404, 500),
 )
 async def list_pending_yields(
+    request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     session_storage=Depends(get_session_storage),
 ) -> dict:
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     """Return every pending yield across **all** parked sessions in the
     workspace.
 
@@ -4006,10 +4107,12 @@ async def list_pending_attention(
     responses=common_responses(404, 500),
 )
 async def list_session_pending_yields(
+    request: Request,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     session_storage=Depends(get_session_storage),
 ) -> dict:
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     """Return the pending yield(s) for a single session.
 
     Same item shape as the aggregated ``/workspaces/{wid}/yields/pending``
@@ -4079,6 +4182,7 @@ events_router = APIRouter(tags=["workspace-events"])
     responses=common_responses(404, 500),
 )
 async def list_workspace_events(
+    request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     limit: int = Query(
         default=200,
@@ -4092,6 +4196,7 @@ async def list_workspace_events(
     session_storage=Depends(get_session_storage),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> dict:
+    await _require_workspace(request, workspace_id, AccessLevel.READ)
     """Return the most-recent ``limit`` tap events across ALL sessions in the
     workspace, oldest-first.
 
@@ -4206,6 +4311,7 @@ __all__ = [
     "provider_router",
     "sessions_router",
     "template_router",
+    "workspace_access_router",
     "workspace_router",
     "yields_pending_router",
 ]
