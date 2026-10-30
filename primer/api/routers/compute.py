@@ -349,6 +349,7 @@ async def get_graph_run_turn_log(
         raise NotFoundError(f"Graph {graph_id!r} does not exist")
     require(person_from_request(request), graph.access, AccessLevel.READ, what=f"Graph {graph_id!r}")
     return await _serve_graph_turn_log(
+        graph_id=graph_id,
         run_id=run_id,
         node_id=None,
         limit=limit,
@@ -389,6 +390,7 @@ async def get_graph_node_turn_log(
         raise NotFoundError(f"Graph {graph_id!r} does not exist")
     require(person_from_request(request), graph.access, AccessLevel.READ, what=f"Graph {graph_id!r}")
     return await _serve_graph_turn_log(
+        graph_id=graph_id,
         run_id=run_id,
         node_id=node_id,
         limit=limit,
@@ -485,6 +487,7 @@ async def get_graph_run_node_states(
     kinds: dict[str, str] = {node.id: node.kind for node in graph.nodes}
 
     state_map = await _load_run_node_states(
+        graph_id=graph_id,
         run_id=run_id,
         sessions=sessions,
         workspace_registry=workspace_registry,
@@ -517,6 +520,7 @@ async def get_graph_run_node_states(
 
 async def _load_run_node_states(
     *,
+    graph_id: str,
     run_id: str,
     sessions,
     workspace_registry,
@@ -537,7 +541,8 @@ async def _load_run_node_states(
 
     # 1. WorkspaceSession (workspace-backed graph): read state.json.
     sess: WorkspaceSession | None = await sessions.get(run_id)
-    if sess is not None and isinstance(sess.binding, GraphSessionBinding):
+    # Only a run of THIS graph: the route's READ check is on graph_id, so a run of another graph must answer like a missing one.
+    if sess is not None and isinstance(sess.binding, GraphSessionBinding) and sess.binding.graph_id == graph_id:
         workspace = await workspace_registry.get_workspace(sess.workspace_id)
         if workspace is None:
             raise NotFoundError(
@@ -581,7 +586,7 @@ async def _load_run_node_states(
 
     thread_storage = storage_provider.get_storage(GraphThread)
     thread = await thread_storage.get(run_id)
-    if thread is not None:
+    if thread is not None and thread.graph_id == graph_id:
         return {
             nid: {
                 "status": ns.status.value,
@@ -599,6 +604,7 @@ async def _load_run_node_states(
 
 async def _serve_graph_turn_log(
     *,
+    graph_id: str,
     run_id: str,
     node_id: str | None,
     limit: int,
@@ -610,7 +616,8 @@ async def _serve_graph_turn_log(
 ) -> dict:
     # 1. WorkspaceSession (workspace-backed graph)
     sess: WorkspaceSession | None = await sessions.get(run_id)
-    if sess is not None and isinstance(sess.binding, GraphSessionBinding):
+    # Only a run of THIS graph: the route's READ check is on graph_id, so a run of another graph must answer like a missing one.
+    if sess is not None and isinstance(sess.binding, GraphSessionBinding) and sess.binding.graph_id == graph_id:
         # Lazy import to defer the sessions-router dependency.
         from primer.api.routers.sessions import _read_workspace_turn_log
         workspace = await workspace_registry.get_workspace(sess.workspace_id)
@@ -640,7 +647,7 @@ async def _serve_graph_turn_log(
 
     thread_storage = storage_provider.get_storage(GraphThread)
     thread = await thread_storage.get(run_id)
-    if thread is not None:
+    if thread is not None and thread.graph_id == graph_id:
         log_storage = storage_provider.get_storage(TurnLogRecord)
         return await _query_storage_turn_log(
             storage=log_storage,

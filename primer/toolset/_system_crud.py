@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 
 from primer.access.person import Person, person_for_tool
 from primer.access.policy import require, visible_predicate
+from primer.access.service import update_keeping_access
 from primer.agent.approval import (
     ApprovalContext,
     ApprovalResolver,
@@ -646,7 +647,13 @@ def _crud_tools_for(
             except EntityCheckError as exc:
                 return _err(exc.tool_message(), error_type=exc.tool_error_type)
         try:
-            updated = await storage.update(entity)
+            if owned:
+                # Guarded on the stored sharing's rev (a share changed meanwhile is a conflict, never a resurrected grant).
+                updated = await update_keeping_access(storage, entity, existing, what=f"{cls_name} {entity_id!r}")
+            else:
+                updated = await storage.update(entity)
+        except ConflictError as exc:
+            return _err(str(exc), error_type="conflict")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
         if on_update is not None:
