@@ -232,6 +232,7 @@ class ClaimAdapter(ABC):
         the leases it already stamped are re-claimed at their TTL, as an
         orphaned claim always is.
         """
+        return
 
     @abstractmethod
     async def on_release(
