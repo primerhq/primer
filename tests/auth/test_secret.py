@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from primer.api.config import AuthConfig
+from primer.api.config import AppConfig, AuthConfig
 from primer.auth.secret import resolve_session_secret
 from primer.model.system_state import SystemState
 
@@ -67,3 +67,35 @@ async def test_idempotent_on_second_call_after_persist():
     second = await resolve_session_secret(storage=storage, auth_config=cfg)
     assert first == second
     assert len(storage.set_calls) == 1
+
+
+def test_flat_env_name_populates_the_session_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PRIMER_SESSION_SECRET is the flat name the docs promise for auth.session_secret."""
+    monkeypatch.setenv("PRIMER_SESSION_SECRET", "flat-env-secret")
+    monkeypatch.delenv("PRIMER_AUTH__SESSION_SECRET", raising=False)
+    cfg = AppConfig()
+    assert cfg.auth.session_secret == "flat-env-secret"
+
+
+def test_nested_env_name_wins_over_the_flat_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRIMER_SESSION_SECRET", "flat-env-secret")
+    monkeypatch.setenv("PRIMER_AUTH__SESSION_SECRET", "nested-env-secret")
+    cfg = AppConfig()
+    assert cfg.auth.session_secret == "nested-env-secret"
+
+
+@pytest.mark.asyncio
+async def test_resolver_uses_the_flat_env_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRIMER_SESSION_SECRET", "flat-env-secret")
+    monkeypatch.delenv("PRIMER_AUTH__SESSION_SECRET", raising=False)
+    cfg = AppConfig()
+    storage = _FakeStorage(initial_secret="from-db")
+    result = await resolve_session_secret(storage=storage, auth_config=cfg.auth)
+    assert result == "flat-env-secret"
+    assert storage.set_calls == []
