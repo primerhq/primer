@@ -45,14 +45,15 @@ async def world(tmp_path: Path):
 
 
 def _ctx(role: str) -> ToolContext:
+    # No calling session (a console-style caller): the default-workspace reach rule of create_workspace must not fire on the guard calls.
     return ToolContext(
-        tool_call_id="call-1", session_id="sess-1", workspace_id=None,
-        initiated_by=PrincipalRef(type="user", id="user-1", display="user", role=role, source="local"),
+        tool_call_id="call-1", session_id="", workspace_id=None,
+        initiated_by=PrincipalRef(type="user", id="user-1", display="user", role=role, source="local", user_id="user-1"),
     )
 
 
 async def _call(toolset, name: str, *, ctx: ToolContext | None = None, **args):
-    result = await toolset.call(tool_name=name, arguments=args, ctx=ctx)
+    result = await toolset.call(tool_name=name, arguments=args, ctx=_ctx("admin") if ctx is None else ctx)
     try:
         body = json.loads(result.output)
     except ValueError:
@@ -282,7 +283,9 @@ class TestWorkspaceTemplateGuards:
     async def test_admin_only_settings_still_guard_template_deletion(self, world) -> None:
         sp, toolset = world
         held = WorkspaceTemplate.model_validate({
-            **_template_body(), "id": "tpl-held", "files": [{"path": "creds", "source": {"kind": "secret", "name": "OPENAI_API_KEY"}}],
+            **_template_body(), "id": "tpl-held",
+            "access": {"owners": ["user-1"]},
+            "files": [{"path": "creds", "source": {"kind": "secret", "name": "OPENAI_API_KEY"}}],
         })
         await sp.get_storage(WorkspaceTemplate).create(held)
         await sp.get_storage(Workspace).create(_workspace().model_copy(update={"template_id": "tpl-held", "id": "ws-secret-user"}))

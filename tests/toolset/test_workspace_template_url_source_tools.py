@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from primer.api.registries import WorkspaceRegistry
+from primer.model.access import Access, AccessLevel
 from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
 from primer.model.workspace import WorkspaceTemplate
@@ -26,7 +27,7 @@ URL = "https://reader:s3cr3t@files.example.com/seed.txt"
 MASKED = f"https://reader:{MASK}@files.example.com/seed.txt"
 CTX = ToolContext(
     tool_call_id="call-1", session_id="sess-1", workspace_id=None,
-    initiated_by=PrincipalRef(type="user", id="user-1", display="user", role="admin", source="local"),
+    initiated_by=PrincipalRef(type="user", id="user-1", display="user", role="admin", source="local", user_id="user-1"),
 )
 
 
@@ -45,7 +46,7 @@ def _template(url: str = URL, row_id: str = "tpl-a", description: str = "d") -> 
 
 USER = ToolContext(
     tool_call_id="call-2", session_id="sess-2", workspace_id=None,
-    initiated_by=PrincipalRef(type="user", id="user-2", display="user", role="user", source="local"),
+    initiated_by=PrincipalRef(type="user", id="user-2", display="user", role="user", source="local", user_id="user-2"),
 )
 
 
@@ -141,7 +142,7 @@ def _files(*files: tuple[str, str]) -> dict:
 @pytest.mark.asyncio
 async def test_a_user_run_that_sends_the_served_body_back_unchanged_keeps_the_password(world) -> None:
     sp, toolset = world
-    await _call(toolset, "create_workspace_template", entity=_template())
+    await _call(toolset, "create_workspace_template", entity=_template(), ctx=USER)
     _, served, _ = await _call(toolset, "get_workspace_template", id="tpl-a", ctx=USER)
     served["description"] = "edited by a user run"
 
@@ -156,7 +157,7 @@ async def test_a_user_run_that_sends_the_served_body_back_unchanged_keeps_the_pa
 async def test_a_user_run_that_changes_anything_but_the_password_gets_a_validation_error_and_the_row_is_untouched(world, changed: str) -> None:
     """The lead's ruling: a non-admin caller gets a served mask restored only when the WHOLE URL is unchanged; an admin keeps the origin rule."""
     sp, toolset = world
-    await _call(toolset, "create_workspace_template", entity=_template())
+    await _call(toolset, "create_workspace_template", entity=_template(), ctx=USER)
     _, served, _ = await _call(toolset, "get_workspace_template", id="tpl-a", ctx=USER)
     served["files"][0]["source"]["url"] = changed
 
@@ -188,6 +189,9 @@ async def test_a_user_run_that_moves_a_mask_on_a_template_that_holds_an_admin_on
     body["files"].append({"path": "creds", "source": {"kind": "secret", "name": "OPENAI_API_KEY"}})
     failed, created, _ = await _call(toolset, "create_workspace_template", entity=body)
     assert not failed, created
+    row = await sp.get_storage(WorkspaceTemplate).get("tpl-a")
+    row.access = Access(owners=["user-1"], grants={"user-2": AccessLevel.FULL})
+    await sp.get_storage(WorkspaceTemplate).update(row)
     _, served, _ = await _call(toolset, "get_workspace_template", id="tpl-a", ctx=USER)
     served["files"][0]["source"]["url"] = f"https://reader:{MASK}@attacker.example/seed.txt"
 
