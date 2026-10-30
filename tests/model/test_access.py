@@ -16,8 +16,10 @@ def test_owner_grant_is_dropped():
     assert Access(owners=["u1"], grants={"u1": "read"}).grants == {}
 
 
-def test_public_tools_make_it_publicly_listable():
-    assert "public" in Access(owners=["u1"], public_tools=["t"]).members
+def test_public_tools_do_not_make_the_row_listable():
+    # Per-tool public (Phase 4's tool_is_public) must not leak the row itself
+    # into every user's list: only the row-level public flag adds the token.
+    assert Access(owners=["u1"], public_tools=["t"]).members == ["u:u1"]
 
 
 def test_owned_by():
