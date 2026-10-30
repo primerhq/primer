@@ -1752,8 +1752,12 @@ def build_workspaces_toolset(
         try:
             # The one create path of this tool and POST /v1/workspaces (ticket 01a16d72): the live instance, then the row with the first phase
             # every create door writes (pending until the probe's first good ping), and the instance rolled back if the row write fails or
-            # is cancelled (a hard Cancel of the turn cancels every call whatever its flag).
-            row = await workspace_registry.create(template=template, overrides=args.overrides, workspace_id=args.id)
+            # is cancelled (a hard Cancel of the turn cancels every call whatever its flag). The caller is the owner (spec 6.1), as on REST.
+            person = person_for_tool(ctx)
+            access = Access.owned_by(person.user_id) if person.user_id else Access()
+            row = await workspace_registry.create(
+                template=template, overrides=args.overrides, workspace_id=args.id, access=access,
+            )
         except PrimerValidationError as exc:
             # A refusal of the request itself (a size the provider cannot honour, master Review Focus 5): the message
             # names overrides.resources.<field>, and nothing was built.

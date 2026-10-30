@@ -27,6 +27,7 @@ from pydantic import SecretStr
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
 from primer.auth.passwords import hash_password
+from primer.model.access import Access
 from primer.model.provider import SqliteConfig
 from primer.model.user import User
 from primer.model.workspace import FileMount, Workspace, WorkspaceRuntimeMeta, WorkspaceTemplateOverrides, _UrlSource
@@ -93,6 +94,9 @@ async def ctx(tmp_path: Path) -> AsyncIterator[dict]:
                     files=[FileMount(path="extra.txt", source=_UrlSource(url=f"https://reader:{_OVERRIDE_PASSWORD}@files.example.com/extra.txt"))]
                 ),
                 runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:1/", token=SecretStr("t")),
+                # Public so the role=user client of this file can read it
+                # (P2 Task 2: an out-of-access workspace answers 404).
+                access=Access(public=True),
             )
         )
         yield {"admin": admin, "user": user, "sp": sp}

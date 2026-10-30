@@ -251,6 +251,9 @@ def _mount_routers(
     app.include_router(workspaces_router.provider_choices_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.provider_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(workspaces_router.template_router, prefix=prefix, dependencies=user_dep)
+    # The sharing sub-resource BEFORE the workspace routes: its
+    # /workspaces/{id}/access path must not fall through to the CRUD router.
+    app.include_router(workspaces_router.workspace_access_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.workspace_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.sessions_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.files_router, prefix=prefix, dependencies=user_dep)

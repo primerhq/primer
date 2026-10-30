@@ -148,7 +148,7 @@ class _ActorMiddleware:
                     state = State()
                     scope["state"] = state
                 uid, _, role = raw[0].decode().partition(":")
-                user = User(id=uid, username=uid, role=role)
+                user = User(id=uid, username=uid, role=role, created_at=NOW)
                 state.user = user
                 state.actor = Principal(
                     type="user", id=uid, display=uid, role=role,
@@ -245,9 +245,18 @@ async def _seed_base(env: _Env) -> None:
     )
 
 
+async def _seed_users(env: _Env, *ids: str) -> None:
+    """User rows the sharing routes may name (set_access refuses unknown ids)."""
+    for uid in ids:
+        await env.sp.get_storage(User).create(
+            User(id=uid, username=uid, created_at=NOW)
+        )
+
+
 async def _seed_matrix(env: _Env) -> None:
     """ws-a owned by alice (bob: read), ws-b owned by carol, ws-c public."""
     await _seed_base(env)
+    await _seed_users(env, ALICE, BOB, CAROL)
     await _mk_workspace(env.sp, "ws-a", owners=[ALICE], grants={BOB: "read"}, name="alpha")
     await _mk_workspace(env.sp, "ws-b", owners=[CAROL], name="beta")
     await _mk_workspace(env.sp, "ws-c", owners=[ALICE], public=True, name="gamma")
@@ -326,7 +335,7 @@ async def test_list_workspaces_shows_only_the_readable_set(env: _Env) -> None:
     assert r.status_code == 200
     assert {w["id"] for w in r.json()["items"]} == {"ws-a", "ws-c"}
     r = await env.client.get("/v1/workspaces", headers=_as(CAROL))
-    assert {w["id"] for w in r.json()["items"]} == {"ws-b"}
+    assert {w["id"] for w in r.json()["items"]} == {"ws-b", "ws-c"}
     r = await env.client.get("/v1/workspaces", headers=_as(ALICE))
     assert {w["id"] for w in r.json()["items"]} == {"ws-a", "ws-c"}
     r = await env.client.get("/v1/workspaces", headers=_as(ADMIN, "admin"))
@@ -336,9 +345,14 @@ async def test_list_workspaces_shows_only_the_readable_set(env: _Env) -> None:
 @pytest.mark.asyncio
 async def test_list_workspaces_with_no_readable_rows_is_empty(env: _Env) -> None:
     await _seed_matrix(env)
-    r = await env.client.get("/v1/workspaces", headers=_as("dora"))
+    # A restricted account holds no level on any row (the onboarding gate):
+    # its readable set is empty, and the list answers an empty page.
+    r = await env.client.get("/v1/workspaces", headers=_as("dora", "restricted"))
     assert r.status_code == 200
     assert r.json()["items"] == []
+    # a plain stranger reads exactly the public rows
+    r = await env.client.get("/v1/workspaces", headers=_as("dora"))
+    assert {w["id"] for w in r.json()["items"]} == {"ws-c"}
 
 
 @pytest.mark.asyncio
@@ -587,7 +601,7 @@ def test_terminal_ws_refusals_at_connect() -> None:
     app.state.workspace_registry = _StubRegistry(ws_a, terminal_user_access=True)
     app.add_middleware(_ActorMiddleware)
 
-    async def _resolve(_workspace: Any, *, cols: int, rows_: int) -> _FakePty:
+    async def _resolve(_workspace: Any, *, cols: int, rows: int) -> _FakePty:
         return _FakePty()
 
     app.state.terminal_pty_resolver = _resolve
