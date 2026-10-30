@@ -214,7 +214,19 @@ function ToolsetsPage({ pushToast }) {
               const authState = window.TS_cardAuthStatus && window.TS_cardAuthStatus(t);
               return (
                 <tr key={t.id} onClick={() => navigate("/toolsets/" + t.id)} style={{ cursor: "pointer" }}>
-                  <td className="mono">{t.id}</td>
+                  <td className="mono">
+                    {t.id}
+                    {SHR_accessBadges(t.access).map((b) => (
+                      <span
+                        key={b}
+                        className="pill pill-ended"
+                        data-testid={"toolset-access-badge-" + b}
+                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
+                      >
+                        <span className="dot"></span>{b}
+                      </span>
+                    ))}
+                  </td>
                   <td>
                     <span className="pill" style={{ color: kindColor, borderColor: "var(--border)", background: "var(--bg-2)" }}>
                       <span className="dot" style={{ background: kindColor }}></span>
@@ -946,6 +958,17 @@ function ToolsetDetail({ toolsetId, pushToast }) {
     { pollMs: null, deps: [id] }
   );
 
+  // ACL-P1 T10: the Share dialog (the header's Share button or the palette's
+  // entity.share verb dispatches to it while this surface is open). The tool
+  // names for the per-tool public switches ride the same key TS_ToolsTab reads,
+  // so an open Tools tab shares its cache entry instead of refetching.
+  const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
+  const tsTools = useResource(
+    "toolset-tools:" + id,
+    (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(id) + "/tools", null, { signal }),
+    { pollMs: null, deps: [id] }
+  );
+
   const invalidate = useMutation(
     () => apiFetch("POST", "/toolsets/" + encodeURIComponent(id) + "/invalidate"),
     {
@@ -1024,6 +1047,7 @@ function ToolsetDetail({ toolsetId, pushToast }) {
         onInvalidate={() => invalidate.mutate()}
         onDelete={() => { setCascadeError(null); setConfirmDelete(true); }}
         onBack={() => navigate("/toolsets")}
+        onShare={() => setShareOpen(true)}
       />
 
       <div className="panel">
@@ -1097,6 +1121,17 @@ function ToolsetDetail({ toolsetId, pushToast }) {
           </ul>
         </Modal>
       )}
+
+      {shareOpen && (
+        <SHR_ShareDialog
+          plural="toolsets"
+          id={id}
+          title={id}
+          allowPublicTools
+          tools={(tsTools.data?.tools ?? []).map((t) => t.name || t.id)}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1104,10 +1139,11 @@ function ToolsetDetail({ toolsetId, pushToast }) {
 // Internal action bar — rendered INSIDE the page body so the outer
 // page-header (rendered by app.jsx) is supplemented by detail-level
 // actions without double-rendering the title.
-function TS_DetailActions({ onInvalidate, onDelete, onBack }) {
+function TS_DetailActions({ onInvalidate, onDelete, onBack, onShare }) {
   return (
     <div className="page-header" style={{ marginBottom: 0, justifyContent: "flex-end" }}>
       <div className="page-actions">
+        {onShare && <Btn icon="send" kind="ghost" data-testid="toolset-share" data-verb="entity.share" onClick={onShare}>Share</Btn>}
         {onInvalidate && <Btn icon="refresh" kind="ghost" onClick={onInvalidate}>Invalidate</Btn>}
         {onDelete && <Btn icon="trash" kind="danger" onClick={onDelete}>Delete</Btn>}
         {onBack && <Btn icon="chevron-left" kind="ghost" onClick={onBack}>Back</Btn>}

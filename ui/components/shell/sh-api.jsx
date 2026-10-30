@@ -303,6 +303,24 @@ var SH_api = {
       null, { signal: signal });
   },
 
+  // ---- access (ACL-P1, Task 10): the console's Share dialog -------------
+  // The owned-entity access sub-resource (GET /v1/{plural}/{id}/access; the
+  // plurals: agents, graphs, toolsets, workspace_templates, channels). The
+  // 404 is the authoritative "you cannot read this"; the write side
+  // (setAccess, below) carries the rev the read served.
+  getAccess: function (plural, id, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/" + plural + "/" + encodeURIComponent(id) + "/access",
+      null, { signal: signal });
+  },
+
+  // The username-prefix lookup the dialog's add control uses (top ten).
+  lookupUsers: function (q, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/users/lookup?q=" + encodeURIComponent(q) + "&limit=10",
+      null, { signal: signal });
+  },
+
   // ---- writes -------------------------------------------------------------
   createSession: function (wid, body) {
     return window.primerApi.apiFetch(
@@ -476,6 +494,14 @@ var SH_api = {
   },
   putCanvasSettings: function (body) {
     return window.primerApi.apiFetch("PUT", "/canvas_settings", body);
+  },
+
+  // The access sub-resource's write (ACL-P1, Task 10): the dialog posts the
+  // exact contract body - { owners, grants, public, public_tools, rev } -
+  // with the rev its read served (409 stale, 422 invalid, 403 not owner).
+  setAccess: function (plural, id, body) {
+    return window.primerApi.apiFetch(
+      "PUT", "/" + plural + "/" + encodeURIComponent(id) + "/access", body);
   },
 
   // ---- cache keys ---------------------------------------------------------
