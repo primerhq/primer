@@ -629,7 +629,8 @@ def test_the_new_channel_dialog_toasts_a_refusal_through_the_one_reader(envelope
     ``err.detail`` as it came. Mounted with the real ``useMutation`` and a real ``ApiError``; a click on Save answers the REAL envelope."""
     from tests.ui._mini_react import mini_react_context, transpile
 
-    source = transpile(UI / "components" / "channels.jsx")
+    # The Share seam loads with the page, as ui/index.html loads it (the dialog's hook is read on mount).
+    source = transpile(UI / "components" / "shared" / "share-dialog.jsx") + "\n" + transpile(UI / "components" / "channels.jsx")
     prelude = API + "\n" + (UI / "foundation" / "use-mutation.js").read_text(encoding="utf-8") + "\n" + _CHANNELS_PRELUDE
     ctx = mini_react_context(source, prelude)
     _OPEN_CONTEXTS.append(ctx)
