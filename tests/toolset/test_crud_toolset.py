@@ -9,6 +9,7 @@ from primer.toolset.crud import (
     CRUD_TOOLSET_ID,
     build_crud_toolset,
 )
+from tests._support.caller import ADMIN_CALLER
 
 
 async def test_exposes_exactly_the_construction_tools(fake_storage_provider):
@@ -52,6 +53,7 @@ async def test_update_agent_replaces_the_row(fake_storage_provider):
                 "model": {"profile_id": "p--m"},
             }
         },
+        ctx=ADMIN_CALLER,
     )
     res = await provider.call(
         tool_name="update_agent",
@@ -63,6 +65,7 @@ async def test_update_agent_replaces_the_row(fake_storage_provider):
                 "model": {"profile_id": "p--m"},
             },
         },
+        ctx=ADMIN_CALLER,
     )
     assert res.is_error is False, res.output
     row = await fake_storage_provider.get_storage(Agent).get("agent-y")

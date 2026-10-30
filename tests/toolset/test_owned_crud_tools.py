@@ -1,11 +1,11 @@
 """Ownership rules on the system, crud and workspaces toolsets' CRUD tools (ACL-P1 T8b).
 
 The same rules the REST ``make_crud_router(owned=True)`` applies (Task 5) apply to the
-tools: the caller is the run's ``initiated_by``; a list is confined to the caller's
-visibility predicate; a row the caller may not read answers exactly like a missing id;
-create stamps the caller as owner and ignores any ``access`` in the body; update needs
-``full`` and keeps the stored access; delete needs ``owner``. Admins see and reach every
-row.
+tools: the caller is the run's ``initiated_by`` (or, with no context, the MCP request's
+actor); a list is confined to the caller's visibility predicate; a row the caller may not
+read answers exactly like a missing id; create stamps the caller as owner and ignores any
+``access`` in the body; update needs ``full`` and keeps the stored access; delete needs
+``owner``. Admins see and reach every row.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def _call(
     """One tool call attributed to ``ref`` (``None`` for a call with no identity)."""
     return provider.call(
         tool_name=tool, arguments=arguments,
-        ctx=ToolContext(tool_call_id="call-1", initiated_by=ref),
+        ctx=ToolContext(tool_call_id="call-1", session_id="sess-1", workspace_id=None, initiated_by=ref),
     )
 
 
@@ -172,6 +172,22 @@ async def test_list_agents_omits_others_private_rows(sp, system) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_call_without_a_context_acts_as_the_mcp_request_actor(sp, system) -> None:
+    from primer.mcp.server import current_actor
+    from primer.model.principal import Principal
+
+    await sp.get_storage(Agent).create(_agent_row("ag-a", A))
+    await sp.get_storage(Agent).create(_agent_row("ag-b", B))
+    actor = Principal(type="user", id="mcp-b", display=B, role="user", source="local", user_id=B)
+    token = current_actor.set(actor)
+    try:
+        res = await system.call(tool_name="list_agents", arguments={}, ctx=None)
+    finally:
+        current_actor.reset(token)
+    assert _ids(res) == {"ag-b"}
+
+
+@pytest.mark.asyncio
 async def test_get_agent_answers_a_private_row_exactly_like_a_missing_id(sp, system) -> None:
     await sp.get_storage(Agent).create(_agent_row("ag-a", A))
     missing = await _call(system, "get_agent", {"id": "no-such-agent"}, _user(B))
@@ -259,7 +275,7 @@ async def test_find_agents_omits_others_private_rows(sp, system) -> None:
     await sp.get_storage(Agent).create(_agent_row("ag-b", B))
     predicate = {
         "kind": "predicate", "left": {"kind": "field", "name": "id"},
-        "op": "like", "right": {"kind": "value", "value": "ag-%"},
+        "op": "~=", "right": {"kind": "value", "value": "ag-%"},
     }
     assert _ids(await _call(system, "find_agents", {"predicate": predicate}, _user(B))) == {"ag-b"}
     admin = _user(ADMIN, role="admin")
@@ -284,6 +300,25 @@ async def test_the_other_owned_entities_hide_private_rows_the_same_way(sp, syste
 # ===========================================================================
 # The crud toolset: the python-toolset trio
 # ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_crud_create_agent_stamps_the_caller_as_owner(sp, crud) -> None:
+    res = await _call(crud, "create_agent", {"entity": {"id": "ag-c", "description": "ag-c", "model": {"profile_id": "p--m"}}}, _user(B))
+    assert not res.is_error, res.output
+    row = await sp.get_storage(Agent).get("ag-c")
+    assert row.access.owners == [B]
+
+
+@pytest.mark.asyncio
+async def test_crud_update_agent_needs_full_and_a_stranger_reads_nothing(sp, crud) -> None:
+    await sp.get_storage(Agent).create(_agent_row("ag-a", A, grants={B: "read"}))
+    body = _agent_body("ag-a")
+    reader = await _call(crud, "update_agent", {"id": "ag-a", "entity": body}, _user(B))
+    assert _type(reader) == "forbidden"
+    stranger = await _call(crud, "update_agent", {"id": "ag-a", "entity": body}, _user(C))
+    assert _type(stranger) == "not-found"
+    assert (await sp.get_storage(Agent).get("ag-a")).description == "ag-a"
 
 
 @pytest.mark.asyncio

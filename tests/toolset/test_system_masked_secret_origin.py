@@ -36,7 +36,7 @@ async def _create(toolset, body: dict, kind: str = "llm_provider"):
 
 
 async def _served(toolset, row_id: str = "llm-o", kind: str = "llm_provider") -> dict:
-    return json.loads((await toolset.call(tool_name=f"get_{kind}", arguments={"id": row_id})).output)
+    return json.loads((await toolset.call(tool_name=f"get_{kind}", arguments={"id": row_id}, ctx=ADMIN_CALLER)).output)
 
 
 def _error_type(result) -> str:

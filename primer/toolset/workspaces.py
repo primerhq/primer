@@ -54,12 +54,16 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.access.person import person_for_tool
+from primer.access.policy import require, visible_predicate
 from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
 from primer.common.validation_errors import without_input
+from primer.model.access import Access, AccessLevel
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.common import preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import (
+    AccessDeniedError,
     BadRequestError,
     ConfigError,
     ConflictError,
@@ -752,6 +756,8 @@ _OnMutate = Callable[[str], Awaitable[None]] | None
 _PrivilegeCheck = Callable[[Any, Any, "ToolContext | None"], ToolCallResult | None] | None
 #: ``(entity, existing, ctx) -> None``: puts the stored secrets back into a full-replace body (raises ``ValidationError`` for a mask that cannot be restored); the default is ``preserve_masked_secrets``.
 _RestoreSecrets = Callable[[Any, Any, "ToolContext | None"], None] | None
+#: ``(ctx) -> Access``: the ``access`` a create stores on the row, whatever the body sent (ownership stamping, access-control Phase 1).
+_StampAccess = Callable[["ToolContext | None"], Access] | None
 
 
 #: ``(page or row) -> payload``: what a list or get tool serves instead of the stored page or row (a response-only field added to each row).
@@ -824,6 +830,7 @@ def _make_create_handler(
     on_create: _OnMutate = None,
     guards: CrudGuards | None = None,
     privilege_check: _PrivilegeCheck = None,
+    stamp_access: _StampAccess = None,
 ) -> ToolHandler:
     guards = guards or CrudGuards(kind=cls_name)
 
@@ -833,6 +840,10 @@ def _make_create_handler(
         except ValidationError as exc:
             return _err_from_validation(exc)
         entity = args.entity  # type: ignore[attr-defined]
+        if stamp_access is not None:
+            # The body's ``access`` is never trusted: the row is stored with the
+            # caller's ownership stamp instead (access-control Phase 1).
+            entity.access = stamp_access(ctx)  # type: ignore[attr-defined]
         refusal = refuse_create(guards, entity)
         if refusal is None and privilege_check is not None:
             refusal = privilege_check(entity, None, ctx)
@@ -868,6 +879,7 @@ def _make_update_handler(
     guards: CrudGuards | None = None,
     privilege_check: _PrivilegeCheck = None,
     restore: _RestoreSecrets = None,
+    preserve_access: bool = False,
 ) -> ToolHandler:
     guards = guards or CrudGuards(kind=cls_name)
 
@@ -893,6 +905,9 @@ def _make_update_handler(
             refusal = privilege_check(entity, existing, ctx)
         if refusal is not None:
             return refusal
+        if preserve_access:
+            # The stored access is kept, whatever the body sent (access-control Phase 1).
+            entity.access = existing.access  # type: ignore[attr-defined]
         # get_* serves a masked secret (a url file source's password, an env value) and this is a full replace, so a caller that reads a row and writes it back would store the mask: the REST
         # routers run the same helper as an on_pre_update hook. A secret the caller really changed replaces the stored one; a mask that cannot be restored for this caller is refused (01a11d32).
         try:
@@ -1225,6 +1240,65 @@ def build_workspaces_toolset(
     def _template_storage():
         return storage_provider.get_storage(WorkspaceTemplate)
 
+    def _template_person(ctx: ToolContext | None):
+        """The person behind a template-tool call (access-control Phase 1): the run's initiator, else the MCP request's actor."""
+        return person_for_tool(ctx)
+
+    async def _template_list_scope(ctx: ToolContext | None) -> Predicate | None:
+        """``list_workspace_templates`` confined to the caller's visibility predicate (``None`` for an admin)."""
+        return visible_predicate(_template_person(ctx))
+
+    async def _template_get_scope(ctx: ToolContext | None, template_id: str) -> bool:
+        """``get_workspace_template`` answers a row the caller may not read exactly as a missing one."""
+        row = await _template_storage().get(template_id)
+        if row is None:
+            return False
+        try:
+            require(_template_person(ctx), row.access, AccessLevel.READ, what=f"WorkspaceTemplate {template_id!r}")
+            return True
+        except (NotFoundError, AccessDeniedError):
+            return False
+
+    def _template_access_of(ctx: ToolContext | None) -> Access:
+        """The ``access`` a new template is stored with: the caller as sole owner, ``Access()`` for an identity-less run."""
+        person = _template_person(ctx)
+        return Access.owned_by(person.user_id) if person.user_id is not None else Access()
+
+    def _template_access_refusal(need: AccessLevel):
+        """A template write-level check; a row the caller holds no level on answers exactly as a missing one."""
+
+        def _refusal(_entity: Any, existing: WorkspaceTemplate, ctx: ToolContext | None) -> ToolCallResult | None:
+            what = f"WorkspaceTemplate {existing.id!r}"
+            try:
+                require(_template_person(ctx), existing.access, need, what=what)
+                return None
+            except NotFoundError:
+                return _err(f"{what} does not exist", error_type="not-found")
+            except AccessDeniedError as exc:
+                return _err(exc.message, error_type="forbidden")
+
+        return _refusal
+
+    def _template_write_access_check(
+        entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
+    ) -> ToolCallResult | None:
+        """``full`` before the admin-field checks (spec 9: a row the caller cannot reach answers as a missing one)."""
+        if existing is None:
+            return _template_refusal(entity, None, ctx)
+        denial = _template_access_refusal(AccessLevel.FULL)(entity, existing, ctx)
+        if denial is not None:
+            return denial
+        return _template_refusal(entity, existing, ctx)
+
+    def _template_delete_access_check(
+        _entity: None, existing: WorkspaceTemplate, ctx: ToolContext | None,
+    ) -> ToolCallResult | None:
+        """``owner`` before the admin-field check."""
+        denial = _template_access_refusal(AccessLevel.OWNER)(_entity, existing, ctx)
+        if denial is not None:
+            return denial
+        return _template_delete_refusal(_entity, existing, ctx)
+
     def _workspace_storage():
         return storage_provider.get_storage(WorkspaceRow)
 
@@ -1428,7 +1502,7 @@ def build_workspaces_toolset(
             "``get_workspace_template``)."
         ),
         _PaginationArgs,
-        _make_list_handler(_template_storage, WorkspaceTemplate),
+        _make_list_handler(_template_storage, WorkspaceTemplate, scope=_template_list_scope),
         examples=[
             ToolExample(args={}, returns="page of WorkspaceTemplate rows"),
             ToolExample(args={"limit": 10}),
@@ -1446,7 +1520,7 @@ def build_workspaces_toolset(
             "missing."
         ),
         _IdArgs,
-        _make_get_handler(_template_storage, "WorkspaceTemplate"),
+        _make_get_handler(_template_storage, "WorkspaceTemplate", scope=_template_get_scope),
         examples=[
             ToolExample(args={"id": "py-base"}, returns="the WorkspaceTemplate row"),
         ],
@@ -1468,7 +1542,7 @@ def build_workspaces_toolset(
         _CreateTemplateArgs,
         _make_create_handler(
             _CreateTemplateArgs, _template_storage, "WorkspaceTemplate", guards=template_guards,
-            privilege_check=_template_refusal,
+            privilege_check=_template_refusal, stamp_access=_template_access_of,
         ),
         examples=[
             ToolExample(
@@ -1513,7 +1587,8 @@ def build_workspaces_toolset(
         _UpdateTemplateArgs,
         _make_update_handler(
             _UpdateTemplateArgs, _template_storage, "WorkspaceTemplate", guards=template_guards,
-            privilege_check=_template_refusal, restore=_restore_template_secrets,
+            privilege_check=_template_write_access_check, restore=_restore_template_secrets,
+            preserve_access=True,
         ),
         examples=[
             ToolExample(
@@ -1554,7 +1629,7 @@ def build_workspaces_toolset(
         _IdArgs,
         _make_delete_handler(
             _template_storage, "WorkspaceTemplate", storage_provider=storage_provider, guards=template_guards,
-            privilege_check=_template_delete_refusal,
+            privilege_check=_template_delete_access_check,
         ),
         examples=[
             ToolExample(args={"id": "py-base"}, returns="{deleted: true, id: ...}"),
