@@ -826,7 +826,19 @@ function ChannelsPage({ onNavigate, pushToast }) {
               const p = providerItems.find((x) => x.id === c.provider_id);
               return (
                 <tr key={c.id} onClick={() => setEditing(c)} style={{ cursor: "pointer" }}>
-                  <td className="mono">{c.id}</td>
+                  <td className="mono">
+                    {c.id}
+                    {SHR_accessBadges(c.access).map((b) => (
+                      <span
+                        key={b}
+                        className="pill pill-ended"
+                        data-testid={"channel-access-badge-" + b}
+                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
+                      >
+                        <span className="dot"></span>{b}
+                      </span>
+                    ))}
+                  </td>
                   <td>
                     <a
                       className="mono"
@@ -957,6 +969,11 @@ function NewChannelModal({ providers, providersList, onClose, onCreated, pushToa
   const [label, setLabel] = React.useState(existing?.label || "");
   const [fieldErrors, setFieldErrors] = React.useState({});
 
+  // ACL-P1 T10: the Share dialog (the footer's Share button opens it in edit
+  // mode; channels have no per-channel detail overlay, so this form is the
+  // shareable surface and the verb's palette gate stays off for it).
+  const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
+
   // Chats config state
   const [chatsEnabled, setChatsEnabled] = React.useState(
     existing?.config?.chats?.enabled ?? false
@@ -1008,12 +1025,16 @@ function NewChannelModal({ providers, providersList, onClose, onCreated, pushToa
   const formReady = !!providerId && !!externalId;
 
   return (
+    <>
     <Modal
       title={isEdit ? `Edit channel · ${existing.id}` : "New channel"}
       onClose={onClose}
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          {isEdit && (
+            <Btn kind="ghost" data-testid="channel-share" data-verb="entity.share" onClick={() => setShareOpen(true)}>Share</Btn>
+          )}
           <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!formReady} busy={create.loading}>
             {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create channel")}
           </Btn>
@@ -1074,6 +1095,15 @@ function NewChannelModal({ providers, providersList, onClose, onCreated, pushToa
         </div>
       </div>
     </Modal>
+    {isEdit && shareOpen && (
+      <SHR_ShareDialog
+        plural="channels"
+        id={existing.id}
+        title={existing.id}
+        onClose={() => setShareOpen(false)}
+      />
+    )}
+    </>
   );
 }
 
