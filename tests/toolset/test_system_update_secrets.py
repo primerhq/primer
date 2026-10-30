@@ -44,7 +44,7 @@ def _toolset_with_env() -> dict:
 
 
 async def _served(toolset, kind: str, entity_id: str) -> dict:
-    result = await toolset.call(tool_name=f"get_{kind}", arguments={"id": entity_id})
+    result = await toolset.call(tool_name=f"get_{kind}", arguments={"id": entity_id}, ctx=ADMIN_CALLER)
     assert not result.is_error, result.output
     return json.loads(result.output)
 
@@ -280,7 +280,9 @@ class TestAnEntityWithoutSecretsIsUnaffected:
         served = await _served(system_toolset, "agent", "agt-1")
         served["description"] = "edited"
 
-        result = await system_toolset.call(tool_name="update_agent", arguments={"id": "agt-1", "entity": served})
+        result = await system_toolset.call(
+            tool_name="update_agent", arguments={"id": "agt-1", "entity": served}, ctx=ADMIN_CALLER
+        )
 
         assert not result.is_error, result.output
         assert json.loads(result.output)["description"] == "edited"

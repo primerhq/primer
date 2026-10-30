@@ -238,6 +238,7 @@ def build_crud_toolset(
             pre_create=pre_create,
             pre_update=pre_update,
             write_note=AGENT_WRITE_NOTE if label == "agent" else None,
+            owned=True,
         )
         for bare in (f"create_{label}", f"update_{label}"):
             tool, handler = produced[bare]
