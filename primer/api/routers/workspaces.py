@@ -1810,13 +1810,15 @@ async def switch_session_binding(
 
     # Verified before anything is written: a switch to a target that
     # does not exist would strand the session on an unbuildable binding.
+    # The switcher must be able to read the target (read = see it, run it): an unreadable one answers like a missing one.
+    switcher = person_from_request(request)
     if body.kind == "graph":
         target = await storage_provider.get_storage(Graph).get(body.graph_id)
-        if target is None:
+        if target is None or level_of(switcher, target.access) is None:
             raise NotFoundError(f"Graph {body.graph_id!r} does not exist")
     else:
         target = await storage_provider.get_storage(Agent).get(body.agent_id)
-        if target is None:
+        if target is None or level_of(switcher, target.access) is None:
             raise NotFoundError(f"Agent {body.agent_id!r} does not exist")
 
     request = {

@@ -1303,6 +1303,10 @@ def build_system_toolset(
             args = _InvokeAgentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # The calling run's person must be able to read the agent (read = see it, run it): unreadable answers like missing.
+        sub_agent = await storage_provider.get_storage(Agent).get(args.agent_id)
+        if sub_agent is None or level_of(person_for_tool(ctx), sub_agent.access) is None:
+            return _err(f"agent {args.agent_id!r} does not exist", error_type="not-found")
         try:
             with invocation_depth_guard():
                 workspace_instructions = await _workspace_instructions_of(ctx)
@@ -1489,17 +1493,18 @@ def build_system_toolset(
         # Verified before the request is stored: a queued switch to a
         # target that does not exist would fail at the checkpoint, long
         # after the agent that asked for it could react.
+        # The calling run's person must be able to read the target (read = see it, run it): unreadable answers like missing.
+        switcher = person_for_tool(ctx)
         if args.kind == "graph":
-            if await storage_provider.get_storage(Graph).get(
-                args.graph_id
-            ) is None:
+            target = await storage_provider.get_storage(Graph).get(args.graph_id)
+            if target is None or level_of(switcher, target.access) is None:
                 return _err(f"graph {args.graph_id!r} does not exist",
                             error_type="not-found")
-        elif await storage_provider.get_storage(Agent).get(
-            args.agent_id
-        ) is None:
-            return _err(f"agent {args.agent_id!r} does not exist",
-                        error_type="not-found")
+        else:
+            target = await storage_provider.get_storage(Agent).get(args.agent_id)
+            if target is None or level_of(switcher, target.access) is None:
+                return _err(f"agent {args.agent_id!r} does not exist",
+                            error_type="not-found")
 
         sessions = storage_provider.get_storage(WorkspaceSession)
         row = await sessions.get(ctx.session_id)

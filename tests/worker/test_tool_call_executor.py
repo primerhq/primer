@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from primer.model.access import Access
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import CLAIM_PRIORITY_RESUME, ClaimAdapter, ClaimKind
@@ -213,7 +214,7 @@ def _parked_session(
         workspace_id="ws-1",
         binding=AgentSessionBinding(
             agent_id="agent-1",
-            agent_snapshot=Agent(
+            agent_snapshot=Agent(access=Access(public=True), 
                 model=AgentModel(profile_id="profile-1"),
                 description="the probe agent",
                 tools=[f"{TOOLSET_ID}__do_thing", f"{TOOLSET_ID}__boom"],

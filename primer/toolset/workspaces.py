@@ -920,7 +920,15 @@ def _make_update_handler(
         except PrimerValidationError as exc:
             return _err(exc.message, error_type="validation-error")
         try:
-            updated = await storage.update(entity)
+            if preserve_access:
+                # Guarded on the stored sharing's rev (a share changed meanwhile is a conflict, never a resurrected grant).
+                from primer.access.service import update_keeping_access
+
+                updated = await update_keeping_access(storage, entity, existing, what=f"{cls_name} {args.id!r}")
+            else:
+                updated = await storage.update(entity)
+        except ConflictError as exc:
+            return _err(str(exc), error_type="conflict")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
         if on_update is not None:

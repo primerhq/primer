@@ -17,10 +17,11 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from primer.access.person import person_for_tool
+from primer.access.service import update_keeping_access
 from primer.access.policy import require
 from primer.model.access import Access, AccessLevel
 from primer.model.chat import Tool, ToolCallResult, ToolExample
-from primer.model.except_ import AccessDeniedError, NotFoundError
+from primer.model.except_ import AccessDeniedError, ConflictError, NotFoundError
 from primer.model.yield_ import ToolContext
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err
@@ -213,7 +214,11 @@ def build_python_toolset_tools(
         # The REST route's rule, through the same helper: the version moves when the source does and stays when it does not, so an update that
         # sends the stored source again leaves a parked call resumable (ticket 01a16f1d ruling 5).
         own_python_source_version(updated, existing)
-        await store.update(updated)
+        try:
+            # Guarded on the stored sharing's rev (a share changed meanwhile is a conflict, never a resurrected grant).
+            await update_keeping_access(store, updated, existing, what=f"toolset {args.toolset_id!r}")
+        except ConflictError as exc:
+            return _err(str(exc), error_type="conflict")
         if provider_registry is not None:
             # The registry caches the adapter built from the row at first use, and the python adapter registers its tools from
             # ``config.source`` when it is built, so without this the OLD source keeps serving until a restart. Same call the

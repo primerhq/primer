@@ -28,6 +28,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from primer.access.person import person_from_request
 from primer.access.policy import require, visible_predicate
+from primer.access.service import update_keeping_access
 from primer.api.errors import common_responses
 from primer.api.routers import _managed as _managed_mod
 from primer.api.routers._references import ReferenceCheck, build_reference_block_hook
@@ -678,7 +679,13 @@ def make_crud_router(
                 entity.access = existing.access
             if on_pre_update is not None:
                 await on_pre_update(entity, existing, request)
-            updated = await storage.update(entity)
+            if owned:
+                # Guarded on the stored sharing's rev: a share changed meanwhile answers 409, never a resurrected grant.
+                updated = await update_keeping_access(
+                    storage, entity, existing, what=f"{model_cls.__name__} {entity_id!r}"
+                )
+            else:
+                updated = await storage.update(entity)
             if on_update is not None:
                 await on_update(updated.id, request)
             return updated
