@@ -1648,7 +1648,7 @@ class WorkspaceEventsConfig(BaseModel):
     )
 
 
-class Workspace(Identifiable):
+class Workspace(Owned, Identifiable):
     """Persisted record of a materialised workspace.
 
     The actual workspace contents (filesystem, ``.state`` repo, live
