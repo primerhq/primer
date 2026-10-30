@@ -41,6 +41,7 @@ from pydantic_core import to_jsonable_python
 from primer.int.claim import ClaimKind
 from primer.model.chat import TextPart
 from primer.model.except_ import ConflictError, NotFoundError, PrimerError
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import (
     CANVAS_DIGEST_PAYLOAD_KEY,
     CANVAS_EVENT_PAYLOAD_KEY,
@@ -282,6 +283,7 @@ async def wake_session(
     receipt: SessionWakeReceipt | None = None,
     by_a_person: bool | None = None,
     queued_message_id: str | None = None,
+    by: PrincipalRef | None = None,
 ) -> WorkspaceSession:
     """Append ``instruction`` (if any) and re-arm the session's claim.
 
@@ -340,6 +342,15 @@ async def wake_session(
     it travels into the queue with a message this wake stores
     (:func:`queued_attribution`). ``None`` (every direct caller) means
     ``human_intent``.
+
+    ``by`` (access-control spec §13 Q1) names the person whose input starts
+    this wake's turn: the steer's sender, the clicker, the trigger fire's
+    owner, the session's creator for a channel reply. A wake that arms a
+    turn writes it on the row as ``turn_person`` in the same write that
+    arms; a wake that queues instead carries it into the queue's
+    attribution, so the drain that realizes the message wakes with it.
+    ``None`` (every park, yield and approval resume) leaves the person the
+    row already ran with in place.
 
     Raises NotFoundError (missing / workspace mismatch). An ENDED session is
     reopened in place (reopen slot + invocation divider + ENDED->CREATED)
@@ -464,7 +475,7 @@ async def wake_session(
                         if routed:
                             return await _defer_routed(
                                 deps, row=row, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
-                                receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload,
+                                receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload, by=by,
                             )
                         continue
                     done = await _reopen_ended_locked(
@@ -540,7 +551,9 @@ async def wake_session(
                             # delivers this message, or a reply chain would restart at hop 1 each time a pause held it. So does whether a person
                             # wrote it (G7 ruling 1): a held trigger message must not reopen a session cancelled before it is realized. And so
                             # does the canvas click it is (pivot P5; the lead's ruling 8 on #892 round 2), marked read only when it is realized.
+                            # So does the person whose input this is (spec §13 Q1): the realized turn runs as it.
                             attribution=_attribution_to_queue(peer, by_a_person=sent_by_a_person, extra_payload=extra_payload),
+                            by=by,
                         )
                         pending_id = pending.id
                     await _record_pause_superseded(
@@ -563,7 +576,7 @@ async def wake_session(
                     if route_steer(row, queued=queued) == ROUTE_PENDING:
                         return await _defer_routed(
                             deps, row=row, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
-                            receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload,
+                            receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload, by=by,
                         )
 
                 if not instruction:
@@ -596,7 +609,7 @@ async def wake_session(
                     )
                 return await _defer_routed(
                     deps, row=fresh, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
-                    receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload,
+                    receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload, by=by,
                 )
 
             # 1. Append the user message to the on-disk slot FIFO (the queue) and
@@ -675,7 +688,7 @@ async def wake_session(
             was_paused = decided.pause_requested
             landed, settled = await _write_the_wake(
                 sessions, row, decided=decided, instruction=instruction, human_intent=human_intent, peer=peer,
-                external_tools=external_tools, armed=armed,
+                external_tools=external_tools, armed=armed, by=by,
             )
             if landed is None:
                 # A Cancel or a pause landed on the row after the decision (on any process): it wins, the session is not woken (a turn this
@@ -837,6 +850,7 @@ async def _defer_routed(
     receipt: SessionWakeReceipt,
     queued_message_id: str | None,
     extra_payload: dict | None = None,
+    by: PrincipalRef | None = None,
 ) -> WorkspaceSession:
     """The routed message waits: the turn is open, or older messages are queued. ``skip`` drops it; a message the drain is realizing stays where
     it is in the queue; any other is stored at the back of the queue, carrying its sender (``queued_attribution``) and the canvas click it is
@@ -856,6 +870,7 @@ async def _defer_routed(
         workspace_registry=deps.workspace_registry,
         event_bus=deps.event_bus,
         attribution=_attribution_to_queue(peer, by_a_person=by_a_person, extra_payload=extra_payload),
+        by=by,
     )
     receipt.outcome = "queued"
     return row
@@ -871,6 +886,7 @@ async def _write_the_wake(
     peer: PeerAttribution | None,
     external_tools: "list | None",
     armed: WorkspaceSession | None,
+    by: PrincipalRef | None = None,
 ) -> tuple[WorkspaceSession | None, str | None]:
     """The fields a wake owns, in ONE ``patch_if``: never a whole-row write of a copy read earlier, which put back whatever another process
     committed since (a Cancel's flag, a release's park, a reservation's ``last_seq``).
@@ -912,6 +928,10 @@ async def _write_the_wake(
             # The hop count of the message that starts this turn: a peer's, else 0. A person, a trigger and a channel start a fresh chain, so
             # the count never carries from one chain into the next. It rides this write, which is the one that arms the turn.
             fields["peer_hops"] = peer.hops if peer is not None else 0
+        # The person whose input started this turn (spec §13 Q1): the write that arms the turn names it, and the turn runs as it. A wake
+        # with no person (a park, yield or approval resume) leaves the person the row already ran with in place.
+        if by is not None:
+            fields["turn_person"] = by
         # Name the session from its opening instruction, once. Sessions
         # are the only conversational surface now, so the session list
         # needs the same readable titles the chat list had; a later

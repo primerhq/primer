@@ -149,7 +149,9 @@ async def test_a_trigger_message_queued_before_the_cancel_does_not_reopen_the_se
     res = await _fire(world, sub)
     assert (res.ok, res.skipped) == (True, False), res
     (queued,) = await _pending(world)
-    assert queued.attribution == {MACHINE_ATTRIBUTION_KEY: True}, "the queue must remember that no person wrote it"
+    # The queue must remember that no person typed it (the machine mark keeps the cancel-sticks rule), and who the fire's
+    # owner is (spec 13 Q1: the realized turn runs as the owner).
+    assert queued.attribution == {MACHINE_ATTRIBUTION_KEY: True, "by": OWNER.model_dump(mode="json")}, "the queue must remember that no person wrote it"
 
     await _cancel_and_drain(world)
 

@@ -71,6 +71,7 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.model.except_ import ValidationError as PrimerValidationError
+from primer.model.principal import person_ref
 from primer.model.storage import (
     CursorPage,
     FieldRef,
@@ -2441,6 +2442,8 @@ def build_workspaces_toolset(
                 claim_engine=claim_engine,
                 # A resume sets a run going at its creator's rank: the caller must out-rank or equal the creator (review of #853).
                 guard=_rank_guard(ctx),
+                # Starting a never-started session's first turn names its person (spec §13 Q1); a parked turn keeps its own.
+                by=person_ref(run_principal(ctx)),
             )
         except _Refused as exc:
             return exc.result
@@ -2594,6 +2597,8 @@ def build_workspaces_toolset(
             claim_engine=claim_engine,
             workspace_registry=workspace_registry,
             event_bus=event_bus,
+            # The steer's turn runs as the calling run's person (spec §13 Q1); a run with none keeps the target's.
+            by=person_ref(run_principal(ctx)),
         )
         if delivery.outcome == DELIVERED_MISSING:
             # deliver_steer reports a session that cannot take a message as missing, and says why: an ended session that cannot be reopened (a
@@ -2716,6 +2721,8 @@ def build_workspaces_toolset(
                 # 01a08c08: no person stands behind a tool call (an MCP client, or a context with no session), so it does not clear a pause
                 # and does not reopen a session an operator cancelled (lead ruling 1 of the G7 fixes; only the REST Restart does).
                 human_intent=False,
+                # The reopened turn runs as the calling run's person (spec §13 Q1); a run with none keeps the session's own.
+                by=person_ref(run_principal(ctx)),
                 reset_deps=SessionResetDeps(
                     storage_provider=storage_provider,
                     workspace_registry=workspace_registry,

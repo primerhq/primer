@@ -250,11 +250,15 @@ async def resume_session(
     one path the ``resume_workspace_session`` tool takes too (ticket
     01a16d3c-9984); its docstring holds the write's fencing.
     """
+    from primer.model.principal import PrincipalRef
     from primer.workspace.session_factory import resume_session as _resume_session_helper
 
     return await _resume_session_helper(
         workspace_id=workspace_id, session_id=session_id, sessions=sessions, scheduler=scheduler, claim_engine=engine,
         guard=lambda row: refuse_outranked(request, row),
+        # The person whose input starts the turn (spec §13 Q1): the request's resolved actor. A resume of a parked turn keeps the parked
+        # turn's person (the helper writes nothing when the row already has one).
+        by=PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None,
     )
 
 

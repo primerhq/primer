@@ -45,7 +45,7 @@ from primer.authz import may_drive, principal_rank, rank_label
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.events.recorder import actor_of, recorder_for
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.principal import PrincipalRef
+from primer.model.principal import PrincipalRef, person_ref
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import (
     GraphSessionBinding,
@@ -503,6 +503,7 @@ async def _deliver_restart(
     target: WorkspaceSession,
     text: str,
     peer: PeerAttribution,
+    by: PrincipalRef | None = None,
 ) -> SteerDelivery:
     """Restart the ENDED session ``target`` with ``text`` as a message from another session, reported the way ``deliver_steer`` reports a delivery.
 
@@ -520,6 +521,7 @@ async def _deliver_restart(
             instruction=text,
             human_intent=False,
             peer=peer,
+            by=by,
             reset_deps=SessionResetDeps(
                 storage_provider=storage_provider, workspace_registry=workspace_registry, event_bus=event_bus, claim_engine=claim_engine,
             ),
@@ -671,6 +673,9 @@ async def send_peer_message(
         waiting_on = parked_on(target)
         paused = _is_paused(target)
 
+        # The person the message's turn runs as (spec §13 Q1): the sending run's, when it names one; a run with no
+        # person behind it (unattributed) leaves the target's person in place, as before.
+        sender_person = person_ref(sender_principal)
         if restart:
             delivery = await _deliver_restart(
                 storage_provider=storage_provider,
@@ -681,6 +686,7 @@ async def send_peer_message(
                 target=target,
                 text=body,
                 peer=attribution,
+                by=sender_person,
             )
         else:
             delivery = await deliver_steer(
@@ -694,6 +700,7 @@ async def send_peer_message(
                 claim_engine=claim_engine,
                 workspace_registry=workspace_registry,
                 event_bus=event_bus,
+                by=sender_person,
             )
         if delivery.outcome == DELIVERED_SKIPPED_BUSY:
             # The target had a turn open by the time the delivery looked (the guards saw it idle): nothing was stored.

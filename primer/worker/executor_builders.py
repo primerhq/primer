@@ -43,13 +43,14 @@ def _pool_event_recorder(pool):
 
 
 def session_run_principal(session) -> PrincipalRef:
-    """The principal recorded for ``session``: its ``initiated_by``, else an unattributed (ordinary) user.
+    """The principal a turn of ``session`` runs as: its ``turn_person`` (the person whose input started the turn, access-control spec §13
+    Q1), else its ``initiated_by``, else an unattributed (ordinary) user.
 
-    Never the system principal, which clears every role floor (security review A-20): a row saved before attribution landed, and the
-    "main" session a workspace create used to seed, name no initiator, and a user can reach both. A run is NOT ranked by this alone:
-    :func:`resolve_run_principal` re-reads the creator's role now (lead ruling 2 of the G7 fixes, G6-6).
+    Never the system principal, which clears every role floor (security review A-20): a row saved before attribution landed names no
+    initiator, and a user can reach it. A run is NOT ranked by this alone:
+    :func:`resolve_run_principal` re-reads the person's role now (lead ruling 2 of the G7 fixes, G6-6).
     """
-    return getattr(session, "initiated_by", None) or PrincipalRef.unattributed()
+    return getattr(session, "turn_person", None) or getattr(session, "initiated_by", None) or PrincipalRef.unattributed()
 
 
 def _is_unattributed(ref: PrincipalRef) -> bool:

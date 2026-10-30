@@ -2141,6 +2141,7 @@ async def steer_session(
         apply_tool_results,
         cancel_pending_external,
     )
+    from primer.model.principal import PrincipalRef
     from primer.session.pending_messages import store_pending_steer
     from primer.session.steer_routing import ROUTE_PENDING, route_steer
     from primer.session.yields import durably_wake_session
@@ -2352,6 +2353,8 @@ async def steer_session(
             extra_payload=extra_payload,
             receipt=routing_receipt,
             deps=deps,
+            # The person whose input starts this turn (spec §13 Q1): the request's resolved actor (absent only when auth is off).
+            by=PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None,
         )
         # G12-09: the response names the dropped attachments (response-only,
         # like MainSessionOut.created): the send succeeded, the row is
@@ -2403,6 +2406,7 @@ async def restart_session_route(
     from primer.model.external_tool import ExternalToolCall
     from primer.session.enqueue import SessionWakeDeps
     from primer.session.external_tools import cancel_pending_external
+    from primer.model.principal import PrincipalRef
     from primer.session.reset import SessionResetDeps, restart_session
 
     row = await storage_provider.get_storage(WorkspaceSession).get(session_id)
@@ -2437,6 +2441,8 @@ async def restart_session_route(
             workspace_registry=registry,
             event_bus=event_bus,
         ),
+        # The person whose input starts the reopened turn (spec §13 Q1): the request's resolved actor.
+        by=PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None,
     )
 
 
