@@ -19,6 +19,8 @@ import pytest
 from tests.ui._mini_react import mini_react_context, transpile
 
 TOOLSETS = Path(__file__).resolve().parents[2] / "ui" / "components" / "toolsets.jsx"
+# The Share seam loads before every page component, as ui/index.html loads it; the detail reads its hook on mount.
+SHARE_DIALOG = Path(__file__).resolve().parents[2] / "ui" / "components" / "shared" / "share-dialog.jsx"
 
 _PRELUDE = """
 var __navs = []; var __detail = null;
@@ -58,7 +60,7 @@ def _close_contexts():
 
 
 def _mount(tid: str, error: dict):
-    ctx = mini_react_context(transpile(TOOLSETS), _PRELUDE)
+    ctx = mini_react_context(transpile(SHARE_DIALOG) + "\n" + transpile(TOOLSETS), _PRELUDE)
     _OPEN.append(ctx)
     ctx.eval(_TEXT)
     ctx.eval("__detail = { loading: false, data: null, error: " + json.dumps(error) + ", refetch: function () {} };")
