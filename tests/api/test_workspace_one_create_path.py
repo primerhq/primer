@@ -157,7 +157,8 @@ async def test_the_tool_says_it_refuses_the_variant(toolset) -> None:
 
 async def _local_template(sp) -> None:  # noqa: F811
     await sp.get_storage(WorkspaceProvider).create(_provider())
-    await sp.get_storage(WorkspaceTemplate).create(_template())
+    # Public: the create_workspace TOOL here runs with no identity and reads only public templates (access control).
+    await sp.get_storage(WorkspaceTemplate).create(_template().model_copy(update={"access": Access(public=True)}))
 
 
 @pytest.mark.asyncio
