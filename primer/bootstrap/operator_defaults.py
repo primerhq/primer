@@ -30,6 +30,7 @@ from primer.bootstrap.defaults import (
     RESERVED_PLANNER_AGENT,
     RESERVED_TOOL_RUNNER_AGENT,
 )
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 from primer.toolset.core_kit import CORE_KIT_TOOLS
 
@@ -211,6 +212,8 @@ TOOL_RUNNER_PROMPT: tuple[str, ...] = (
 def operator_agent(profile_id: str) -> Agent:
     """Build the default operator row."""
     return Agent(
+        # Seeded agents belong to no one and are public: every user may run them, admins manage them (access spec 6.7).
+        access=Access(public=True),
         id="operator",
         description=OPERATOR_DESCRIPTION,
         model=AgentModel(profile_id=profile_id),
@@ -222,6 +225,8 @@ def operator_agent(profile_id: str) -> Agent:
 def builder_agent(profile_id: str) -> Agent:
     """Build the default builder row."""
     return Agent(
+        # Seeded agents belong to no one and are public: every user may run them, admins manage them (access spec 6.7).
+        access=Access(public=True),
         id="builder",
         description=BUILDER_DESCRIPTION,
         model=AgentModel(profile_id=profile_id),
@@ -233,6 +238,8 @@ def builder_agent(profile_id: str) -> Agent:
 def planner_agent(profile_id: str) -> Agent:
     """Build the default planner row."""
     return Agent(
+        # Seeded agents belong to no one and are public: every user may run them, admins manage them (access spec 6.7).
+        access=Access(public=True),
         id="planner",
         description=PLANNER_DESCRIPTION,
         model=AgentModel(profile_id=profile_id),
@@ -244,6 +251,8 @@ def planner_agent(profile_id: str) -> Agent:
 def explorer_agent(profile_id: str) -> Agent:
     """Build the default explorer row."""
     return Agent(
+        # Seeded agents belong to no one and are public: every user may run them, admins manage them (access spec 6.7).
+        access=Access(public=True),
         id="explorer",
         description=EXPLORER_DESCRIPTION,
         model=AgentModel(profile_id=profile_id),
@@ -255,6 +264,8 @@ def explorer_agent(profile_id: str) -> Agent:
 def tool_runner_agent(profile_id: str) -> Agent:
     """Build the default tool-runner row (core kit: five meta-tools)."""
     return Agent(
+        # Seeded agents belong to no one and are public: every user may run them, admins manage them (access spec 6.7).
+        access=Access(public=True),
         id="tool-runner",
         description=TOOL_RUNNER_DESCRIPTION,
         model=AgentModel(profile_id=profile_id),
