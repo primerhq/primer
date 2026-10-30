@@ -79,6 +79,9 @@ from primer.storage.migrations.m020_harness_policy_rekey import (
     M020HarnessPolicyRekey,
 )
 from primer.storage.migrations.m021_entity_ownership import M021EntityOwnership
+from primer.storage.migrations.m022_workspace_ownership import (
+    M022WorkspaceOwnership,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +121,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M019DropChatRelayMode(),
     M020HarnessPolicyRekey(),
     M021EntityOwnership(),
+    M022WorkspaceOwnership(),
 )
 
 #: Highest version this build knows how to apply.
