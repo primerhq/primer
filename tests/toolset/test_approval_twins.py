@@ -181,9 +181,10 @@ async def test_both_worlds_end_with_the_same_gates(tmp_path):
             await sp.aclose()
     assert shapes["fresh"] == shapes["upgraded"]
     assert {(t, n) for t, n, _, _ in shapes["fresh"]} == set(DEFAULT_GATED_TOOLS)
-    inv = {new: old for old, new in m020._REKEY}
     assert ids["fresh"] == {default_policy_id(t, n) for t, n in DEFAULT_GATED_TOOLS}
-    assert ids["upgraded"] == {default_policy_id(t, inv.get(n, n)) for t, n in DEFAULT_GATED_TOOLS}
+    # An upgraded harness lifecycle row keeps the id migration 16 gave it under the scoped name; migration 20 strips
+    # that prefix from the name, not the id.
+    assert ids["upgraded"] == {default_policy_id(t, m020._PREFIX + n if t == "harness" else n) for t, n in DEFAULT_GATED_TOOLS}
 
 
 def test_the_shipped_gate_of_every_twin_is_required():

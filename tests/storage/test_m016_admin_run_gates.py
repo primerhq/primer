@@ -52,10 +52,14 @@ async def test_an_untouched_install_gets_the_shipped_gate_on_every_admin_tier_wr
 
     rows = await _rows(sp)
     # The step writes what it shipped: the harness lifecycle rows are stored under the scoped tool name; migration 20
-    # moves them to the bare id. Undoing that move, the row set is the live gate set under the live shipped gates.
-    inv = {new: old for old, new in m020._REKEY}
+    # strips that prefix. Undoing that move, the row set is the live gate set under the live shipped gates.
+    def frozen(toolset_id: str, tool_name: str) -> str:
+        return m020._PREFIX + tool_name if toolset_id == "harness" else tool_name
+
     expected = {
-        default_policy_id(toolset_id, inv.get(tool_name, tool_name)): (toolset_id, inv.get(tool_name, tool_name), shipped)
+        default_policy_id(toolset_id, frozen(toolset_id, tool_name)): (
+            toolset_id, frozen(toolset_id, tool_name), shipped,
+        )
         for (toolset_id, tool_name), shipped in ADMIN_GATES.items()
     }
     assert set(rows) == set(expected)
@@ -65,7 +69,7 @@ async def test_an_untouched_install_gets_the_shipped_gate_on_every_admin_tier_wr
         assert row.approval == shipped, (toolset_id, tool_name)
         assert row.approvers == ApproverSpec.model_validate(ADMIN_ONLY_SPEC), "an admin-tier gate is decided by an admin only"
         assert row.timeout_seconds is None and row.preview_args is None
-    assert {rows[default_policy_id(t, inv.get(n, n))].approval.type.value for t, n in HOST_CODE_TOOLSET_WRITES} == {"policy"}
+    assert {rows[default_policy_id(t, frozen(t, n))].approval.type.value for t, n in HOST_CODE_TOOLSET_WRITES} == {"policy"}
 
 
 @pytest.mark.parametrize("spelling", ["system", "_system"])
@@ -117,11 +121,13 @@ def test_the_frozen_table_is_the_live_one_today():
     from primer.storage.migrations import m016_admin_run_gates as m016
     from primer.storage.migrations import m020_harness_policy_rekey as m020
 
-    # Migration 20 re-keys the harness lifecycle names to the bare tool ids; undoing that move, the step's frozen
-    # table is still the live one (the chain m016 + m020 reproduces the live gate set).
-    inv = {new: old for old, new in m020._REKEY}
+    # Migration 20 re-keys the harness names to the bare tool ids (stripping the prefix m016 stored them under); undoing
+    # that move, the step's frozen table is still the live one (the chain m016 + m020 reproduces the live gate set).
+    def frozen_name(toolset_id: str, tool_name: str) -> str:
+        return m020._PREFIX + tool_name if toolset_id == "harness" else tool_name
+
     frozen = {(t, n): approval for t, n, approval in m016._GATES}
-    live = {(t, inv.get(n, n)): shipped for (t, n), shipped in ADMIN_GATES.items()}
+    live = {(t, frozen_name(t, n)): shipped for (t, n), shipped in ADMIN_GATES.items()}
     assert set(frozen) == set(live)
     assert all(frozen[key] == shipped.model_dump(mode="json") for key, shipped in live.items())
     assert m016._HOST_CODE_TOOLSET_POLICY == HOST_CODE_TOOLSET_POLICY
