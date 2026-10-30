@@ -10,8 +10,11 @@ import pytest
 from pydantic import SecretStr
 
 from primer.api.registries import ProviderRegistry
+from primer.mcp.server import current_actor
+from primer.model.access import Access
 from primer.model.channel import Channel
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.principal import Principal
 from primer.model.storage import CursorPageResponse, OffsetPageResponse
 from primer.model.workspace import Workspace, WorkspaceChannelLink, WorkspaceRuntimeMeta
 from primer.toolset.system import build_system_toolset
@@ -148,6 +151,7 @@ def system_toolset(sp: _SP, pr: ProviderRegistry):
 
 
 def _make_workspace(ws_id: str = "ws-1") -> Workspace:
+    # Owned by u-1: the actor-less calls act as u-1's MCP token user, and reply binding needs full (access-control P2 T6).
     return Workspace(
         id=ws_id,
         template_id="tpl-1",
@@ -158,7 +162,18 @@ def _make_workspace(ws_id: str = "ws-1") -> Workspace:
             url="ws://localhost:5959",
             token=SecretStr("tok"),
         ),
+        access=Access.owned_by("u-1"),
     )
+
+
+@pytest.fixture(autouse=True)
+def _actor():
+    """No calling session in this file: the calls act as u-1's MCP token user (access-control P2 T6)."""
+    token = current_actor.set(Principal(type="user", id="tok-u1", display="u1", role="user", source="local", user_id="u-1"))
+    try:
+        yield
+    finally:
+        current_actor.reset(token)
 
 
 def _make_channel(ch_id: str = "chan-1") -> Channel:

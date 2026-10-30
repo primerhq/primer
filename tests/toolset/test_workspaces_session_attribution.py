@@ -19,8 +19,10 @@ from typing import Any
 import pytest
 
 from primer.api.registries import WorkspaceRegistry
+from primer.mcp.server import current_actor
+from primer.model.access import Access
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.principal import PrincipalRef
+from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import OffsetPage, OffsetPageResponse
 from primer.model.workspace import (
     LocalWorkspaceConfig,
@@ -70,6 +72,18 @@ class _Storage:
             return None
         self._data[e.id] = e
         return e
+
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        # The storage contract's guarded field write (a wake arms its turn with one: audit G7-03), with the reference semantics.
+        from tests.storage._patch_reference import patch_model
+
+        current = self._data.get(id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {id!r}")
+        updated = patch_model(current, patch, where=where, set_paths=set_paths)
+        if updated is not None:
+            self._data[id] = updated
+        return updated
 
     async def delete(self, id):
         if id not in self._data:
@@ -192,6 +206,17 @@ def _provider() -> WorkspaceProvider:
 # ===========================================================================
 
 
+@pytest.fixture(autouse=True)
+def _actor():
+    """No calling session in this file: the calls act as u-1's MCP token user, whom ``create_workspace`` stamps owner
+    of ``ws-stub`` (access-control P2 T6)."""
+    token = current_actor.set(Principal(type="user", id="tok-u1", display="u1", role="user", source="local", user_id="u-1"))
+    try:
+        yield
+    finally:
+        current_actor.reset(token)
+
+
 @pytest.fixture
 def sp() -> _SP:
     return _SP()
@@ -256,6 +281,7 @@ async def test_create_session_stamps_ctx_initiated_by(
             display="ci",
             role="user",
             source="internal",
+            user_id="u-1",
         ),
     )
     result = await session_toolset.call(

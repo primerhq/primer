@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from primer.mcp.server import current_actor
 from primer.model.chat import Done, TextDelta
 from primer.model.except_ import RateLimitError
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
@@ -30,7 +31,16 @@ from primer.session.dispatch import run_one_session_turn
 from primer.session.steer_delivery import DELIVERED_QUEUED, DELIVERED_WOKEN, deliver_steer
 from tests.agent.test_workspace_executor import _FakeLLM
 from tests.session.test_dispatch import _make_lease, fake_event_bus  # noqa: F401  (a fixture, used by name)
-from tests.session.test_pause_and_resume_tools_take_the_rest_path import OK, _close, _Process, _Registry, _rest, _tool, _world
+from tests.session.test_pause_and_resume_tools_take_the_rest_path import (  # noqa: F401
+    OK,
+    OWNER_TOKEN,
+    _close,
+    _Process,
+    _Registry,
+    _rest,
+    _tool,
+    _world,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -298,7 +308,11 @@ async def test_the_workspace_session_tools_serve_a_session_paused_mid_turn_as_pa
 
             kind, got = await _tool(api, "get_workspace_session", row, fake_event_bus)
             assert (kind, got["status"]) == ("ok", "paused"), got
-            listed = await api.toolset(fake_event_bus).call(tool_name="list_workspace_sessions", arguments={"workspace_id": row.workspace_id})
+            token = current_actor.set(OWNER_TOKEN)
+            try:
+                listed = await api.toolset(fake_event_bus).call(tool_name="list_workspace_sessions", arguments={"workspace_id": row.workspace_id})
+            finally:
+                current_actor.reset(token)
             assert [(s["session_id"], s["status"]) for s in json.loads(listed.output)["items"] if s["session_id"] == row.id] == [(row.id, "paused")]
         finally:
             await _close(closers)
@@ -324,7 +338,11 @@ async def test_a_session_paused_mid_turn_whose_answer_asks_a_question_is_served_
             assert await slot.status() == SessionStatus.WAITING, "the answer did not leave the slot waiting: this test needs a question"
             kind, got = await _tool(api, "get_workspace_session", row, fake_event_bus)
             assert (kind, got["status"]) == ("ok", "paused"), got
-            listed = await api.toolset(fake_event_bus).call(tool_name="list_workspace_sessions", arguments={"workspace_id": row.workspace_id})
+            token = current_actor.set(OWNER_TOKEN)
+            try:
+                listed = await api.toolset(fake_event_bus).call(tool_name="list_workspace_sessions", arguments={"workspace_id": row.workspace_id})
+            finally:
+                current_actor.reset(token)
             assert [(s["session_id"], s["status"]) for s in json.loads(listed.output)["items"] if s["session_id"] == row.id] == [(row.id, "paused")]
         finally:
             await _close(closers)

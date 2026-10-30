@@ -32,7 +32,7 @@ from primer.session.mutation_lock import KeyedLock
 from primer.session.peer_messages import send_peer_message
 from primer.session.pending_messages import realize_next_pending, store_pending_steer
 from primer.session.steer_delivery import deliver_steer
-from tests.session._peer_fakes import World, records, seed_session
+from tests.session._peer_fakes import World, records, seed_session, seed_workspace
 from tests.session._wake_worlds import install_sessions, new_world  # noqa: F401  (new_world is a fixture)
 from tests.session.test_dispatch import FakeExecutor, _make_lease
 
@@ -113,6 +113,8 @@ def _route_both_then_race(monkeypatch, world: World, sid: str) -> _ReadBarrier:
 async def test_two_wakes_in_two_processes_that_both_read_the_target_idle_arm_one_turn(new_world, monkeypatch):
     async with asyncio.timeout(BOUND_S):
         world = await new_world(with_bus=True)
+        # The peer guard (P2 T6) asks the sender's person's full on the target's workspace row, so the row must name that person.
+        await seed_workspace(world, "ws-1", owners=["u1"])
         await seed_session(world, sid="ses-b", turn_no=1, last_seq=4, created_at=T0)
         _each_wake_in_its_own_process(monkeypatch)
         _route_both_then_race(monkeypatch, world, "ses-b")
@@ -136,6 +138,8 @@ async def test_two_wakes_that_both_read_the_target_idle_skip_the_second_for_if_i
     """``parallelism="skip"`` (``if_idle``): the wake that loses the arm reports ``skipped_busy`` and stores nothing."""
     async with asyncio.timeout(BOUND_S):
         world = await new_world(with_bus=True)
+        # The peer guard (P2 T6) asks the sender's person's full on the target's workspace row, so the row must name that person.
+        await seed_workspace(world, "ws-1", owners=["u1"])
         await seed_session(world, sid="ses-b", turn_no=1, created_at=T0)
         _each_wake_in_its_own_process(monkeypatch)
         _route_both_then_race(monkeypatch, world, "ses-b")
@@ -154,6 +158,8 @@ async def test_the_audit_shape_two_peer_messages_with_one_lock_each_start_one_tu
     """The audit's reproduction of G7-03 (a) (scratch ``test_fc1``): the #821 scenario with one ``KeyedLock`` per wake."""
     async with asyncio.timeout(BOUND_S):
         world = await new_world(with_bus=True)
+        # The peer guard (P2 T6) asks the sender's person's full on the target's workspace row, so the row must name that person.
+        await seed_workspace(world, "ws-1", owners=["u1"])
         await seed_session(world, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER, created_at=T0)
         await seed_session(world, sid="ses-c", binding=AgentSessionBinding(agent_id="reviewer"), initiated_by=USER,
                            status=SessionStatus.RUNNING, turn_status="running", turn_no=1, created_at=T0)
@@ -186,6 +192,8 @@ async def test_a_message_that_lands_while_an_older_one_is_queued_goes_behind_it(
     lands. The steer is queued behind it, and the drain's realize then starts the turn with the OLDER message: one USER_INPUT for the turn."""
     async with asyncio.timeout(BOUND_S):
         world = await new_world(with_bus=True)
+        # The peer guard (P2 T6) asks the sender's person's full on the target's workspace row, so the row must name that person.
+        await seed_workspace(world, "ws-1", owners=["u1"])
         row = await seed_session(world, sid="ses-b", turn_no=1, turn_status="idle", created_at=T0)
         await store_pending_steer(storage_provider=world.sp, session=row, text="older queued peer message",
                                   workspace_registry=world.registry, event_bus=world.bus, attribution=PEER)
@@ -208,6 +216,8 @@ async def test_a_peer_message_to_an_idle_session_with_older_messages_waiting_is_
 
     async with asyncio.timeout(BOUND_S):
         world = await new_world(with_bus=True)
+        # The peer guard (P2 T6) asks the sender's person's full on the target's workspace row, so the row must name that person.
+        await seed_workspace(world, "ws-1", owners=["u1"])
         await seed_session(world, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER,
                            status=SessionStatus.RUNNING, turn_status="running", turn_no=1, created_at=T0)
         row = await seed_session(world, sid="ses-b", turn_no=1, turn_status="idle", created_at=T0)
@@ -228,6 +238,8 @@ async def test_a_realize_that_finds_the_turn_already_armed_leaves_the_message_qu
     second USER_INPUT for that turn. Its message stays at the head of the queue for the next boundary, the same row, not a copy."""
     async with asyncio.timeout(BOUND_S):
         world = await new_world(with_bus=True)
+        # The peer guard (P2 T6) asks the sender's person's full on the target's workspace row, so the row must name that person.
+        await seed_workspace(world, "ws-1", owners=["u1"])
         _each_wake_in_its_own_process(monkeypatch)
         row = await seed_session(world, sid="ses-b", turn_no=1, turn_status="idle", created_at=T0)
         queued = await store_pending_steer(storage_provider=world.sp, session=row, text="older", workspace_registry=world.registry,
@@ -248,6 +260,8 @@ async def test_two_realizes_of_one_queue_head_in_two_processes_deliver_it_once(n
     the other leaves it, and the message is delivered once."""
     async with asyncio.timeout(BOUND_S):
         world = await new_world(with_bus=True)
+        # The peer guard (P2 T6) asks the sender's person's full on the target's workspace row, so the row must name that person.
+        await seed_workspace(world, "ws-1", owners=["u1"])
         _each_wake_in_its_own_process(monkeypatch)
         row = await seed_session(world, sid="ses-b", turn_no=1, created_at=T0)
         await store_pending_steer(storage_provider=world.sp, session=row, text="only once", workspace_registry=world.registry,

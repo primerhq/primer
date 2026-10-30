@@ -21,7 +21,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.model.access import Access
 from primer.model.principal import PrincipalRef
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext
 from primer.toolset.trigger import (
     TRIGGER_TOOLSET_ID,
@@ -283,10 +286,22 @@ class TestSubscriptions:
 
     @pytest.mark.asyncio
     async def test_list_subscriptions_hides_owner_details_from_a_non_manager(
-        self, toolset
+        self, toolset, fake_storage_provider,
     ):
         """A-20 pin: a caller who does not manage a subscription sees only
         the owner's display and role, never the owner's type or id."""
+        # The save asks the subscription owner's full on the target's workspace (access-control P2 T6): the target session and a workspace
+        # row the owner owns must exist.
+        now = datetime.now(timezone.utc)
+        await fake_storage_provider.get_storage(Workspace).create(Workspace(
+            id="ws-1", name="ws-1", template_id="tpl", provider_id="local-1", created_at=now, phase="running",
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://ws-1", token="t"),
+            access=Access(owners=["u-owner"]),
+        ))
+        await fake_storage_provider.get_storage(WorkspaceSession).create(WorkspaceSession(
+            id="sess-1", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag1"),
+            status=SessionStatus.RUNNING, created_at=now, turn_status="idle",
+        ))
         created = await toolset.call(
             tool_name="create",
             arguments=_delayed_args(slug="owner-hide", name="Owner Hide"),

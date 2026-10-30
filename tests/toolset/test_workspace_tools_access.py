@@ -318,7 +318,8 @@ async def test_session_control_tools_need_full():
             "steer as the token's user with a read grant",
         )
     with _as_mcp("u2"):
-        out = await _call(toolset, "steer_workspace_session", {"workspace_id": "ws-2", "session_id": "ses-b", "instruction": "go"})
+        # A live session (the cancelled ses-b would refuse a machine steer: an operator's Cancel sticks to one nobody's turn reopens).
+        out = await _call(toolset, "steer_workspace_session", {"workspace_id": "ws-2", "session_id": "ses-d", "instruction": "go"})
         _ok(out, "steer as the token's user (the owner)")
         assert json.loads(out.output)["delivery"] == "woken"
 
@@ -348,7 +349,7 @@ async def test_delete_workspace_needs_owner():
     out = await _call(toolset, "delete_workspace", {"id": "ws-2"}, _ctx("ses-b", "ws-2", U2))
     _ok(out, "delete_workspace by the owner")
     assert json.loads(out.output) == {"deleted": True, "id": "ws-2"}
-    assert world.sp.get_storage(Workspace).get("ws-2") is None
+    assert await world.sp.get_storage(Workspace).get("ws-2") is None
 
 
 async def test_mcp_caller_is_checked_as_the_tokens_user():

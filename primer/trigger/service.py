@@ -28,7 +28,11 @@ from primer.model.trigger import (
     refuse_retired_reply_target,
 )
 from primer.storage.q import Q
-from primer.trigger.reach import refuse_target_out_of_reach, subscription_in_reach, subscription_reaches_outside
+from primer.trigger.reach import (
+    refuse_target_out_of_access,
+    subscription_in_reach,
+    subscription_reaches_outside,
+)
 from primer.trigger.cron import (
     CronInvalid,
     TimezoneInvalid,
@@ -559,14 +563,13 @@ async def create_subscription(
     """Create a subscription bound to ``trigger_id``.
 
     ``owner`` is the caller; a fresh-session run the subscription fires is
-    attributed to it (see :mod:`primer.trigger.owner`).
+    attributed to it (see :mod:`primer.trigger.owner`). The owner must hold full on the target
+    workspace (access-control P2 T6): a target they hold no full on raises
+    :class:`SubscriptionTargetNotFound` and nothing is stored, and every fire checks the owner
+    again (:mod:`primer.trigger.reach`).
 
-    ``reach`` is the calling session's reach
-    (:func:`primer.session.peer_messages.caller_reach`): ``None`` (every
-    workspace) for a person, an API client or a session in prime. A target
-    outside it raises :class:`SubscriptionTargetNotFound` and nothing is
-    stored; within it the row records it, and every fire checks it again
-    (:mod:`primer.trigger.reach`).
+    ``reach`` is the calling session's reach, recorded on the row for the
+    tools that still ask it (:mod:`primer.trigger.reach`).
 
     Subscriptions with ``kind='parked_session'`` are reserved for the
     ``subscribe_to_trigger`` yielding tool — the REST + toolset create
@@ -583,7 +586,9 @@ async def create_subscription(
             "subscriptions of kind 'parked_session' are only created via "
             "the subscribe_to_trigger yielding tool"
         )
-    refusal = await refuse_target_out_of_reach(deps.storage_provider, reach, config)
+    # The owner of the subscription must hold full on its target workspace (access-control P2 T6): a target they hold no full on is
+    # answered exactly as one that does not exist, and nothing is stored.
+    refusal = await refuse_target_out_of_access(deps.storage_provider, owner, config)
     if refusal is not None:
         raise SubscriptionTargetNotFound(refusal)
     await _validate_explicit_reply_target(reply_target, deps)
@@ -628,10 +633,13 @@ async def update_subscription(
     """Partial update.
 
     The caller becomes the owner, as in :func:`update_trigger`, and its
-    reach becomes the row's (as in :func:`create_subscription`): from a
-    session outside prime, a subscription whose target is out of the
-    caller's reach is refused with :class:`SubscriptionNotFound`, exactly
-    as an unknown subscription id (review of #874, C1), and left as it was.
+    reach becomes the row's: from a session outside prime, a subscription
+    whose target is out of the caller's reach is refused with
+    :class:`SubscriptionNotFound`, exactly as an unknown subscription id
+    (review of #874, C1), and left as it was. The new owner must hold full
+    on the target workspace (access-control P2 T6): an update whose owner
+    does not is refused with :class:`SubscriptionTargetNotFound`, and left
+    as it was.
 
     Nullable string fields (``payload_template``, ``description``) use
     the ``_UNSET`` sentinel so callers can leave them untouched while
@@ -649,6 +657,11 @@ async def update_subscription(
     sub = await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
     sub.owner = owner
     sub.reach = reach
+    # The new owner must hold full on the target (access-control P2 T6): an update whose owner does not is
+    # refused with the save's own answer, before anything is written.
+    refusal = await refuse_target_out_of_access(deps.storage_provider, sub.owner, sub.config)
+    if refusal is not None:
+        raise SubscriptionTargetNotFound(refusal)
     if payload_template is not _UNSET:
         sub.payload_template = payload_template
     if parallelism is not None:

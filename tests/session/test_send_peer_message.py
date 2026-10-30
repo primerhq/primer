@@ -42,7 +42,7 @@ from primer.session.peer_messages import (
     REFUSE_BUSY,
     REFUSE_ENDED,
     REFUSE_NO_CALLER,
-    REFUSE_NO_PRINCIPAL,
+    REFUSE_NO_FULL,
     REFUSE_NOT_FOUND,
     REFUSE_RANK,
     REFUSE_SELF,
@@ -52,7 +52,7 @@ from primer.session.peer_messages import (
 )
 from primer.session.pending_messages import _MAX_PENDING_PER_SESSION, realize_next_pending, store_pending_steer
 from primer.session.steer_delivery import DELIVERED_SKIPPED_BUSY, SteerDelivery
-from tests.session._peer_fakes import World, make_world, records, seed_session, slot
+from tests.session._peer_fakes import World, make_world, records, seed_session, seed_workspace, slot
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 USER = PrincipalRef(type="user", id="u1", display="u1", role="user", source="local")
@@ -61,8 +61,10 @@ PREFIXED = "[from session ses-a (agent planner)]\nping"
 
 
 async def _world(**sender_fields) -> World:
-    """A world with the sender ``ses-a``: an agent session of workspace ``ws-1`` in the middle of a turn, started by a user."""
+    """A world with the sender ``ses-a``: an agent session of workspace ``ws-1`` in the middle of a turn, started by a user, on a workspace the
+    user owns (access-control P2 T6: the sender's person's level on the target's workspace is the rule, not the sender's reach or rank)."""
     world = make_world(with_bus=True)
+    await seed_workspace(world, "ws-1", owners=["u1"])
     fields = {"status": SessionStatus.RUNNING, "turn_status": "running", "turn_no": 1, "initiated_by": USER, **sender_fields}
     await seed_session(world, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), **fields)
     return world
@@ -157,9 +159,9 @@ def test_the_copy_is_the_plans_character_for_character():
 
 
 def test_the_copy_the_service_adds_beyond_the_plan():
-    """Four refusals the plan does not quote: input the tool's argument model rejects first, a principal that cannot be ranked, and a queue that is
+    """Four refusals the plan does not quote: the level below full on the target's workspace (access-control P2 T6), a queue that is
     full (lead ruling R1, review of #788)."""
-    assert peer_messages.REFUSE_NO_PRINCIPAL == "this session's run has no recorded principal, so it cannot message another session"
+    assert peer_messages.REFUSE_NO_FULL == "you hold less than full access to workspace {workspace_id!r}, so you cannot message its sessions"
     assert peer_messages.REFUSE_QUEUE_FULL == "session {session_id!r} is busy and its queue of waiting messages is full; nothing was sent, retry later"
     assert peer_messages.REFUSE_TEXT == "a message is 1 to {limit} characters; write larger outputs to a file and send its path"
     assert peer_messages.REFUSE_MODE == "mode is auto or if_idle, not {mode!r}"
@@ -405,6 +407,7 @@ async def test_a_queued_message_to_a_graph_session_keeps_the_raw_text_and_the_gr
 
 async def test_a_graph_session_can_send_and_is_named_by_its_graph():
     world = make_world(with_bus=True)
+    await seed_workspace(world, "ws-1", owners=["u1"])
     await seed_session(world, sid="ses-g", binding=GraphSessionBinding(graph_id="triage"), initiated_by=USER, turn_no=1)
     await seed_session(world, sid="ses-b", turn_no=1)
     result = await _send(world, "ses-b", sender="ses-g")
@@ -435,7 +438,9 @@ async def test_a_message_from_something_that_is_not_a_session_is_refused():
     await _assert_nothing_stored(world)
 
 
-async def test_another_workspace_is_out_of_reach_unless_the_sender_is_in_the_default_workspace():
+async def test_a_session_without_full_on_the_targets_workspace_is_refused():
+    """The access rule (P2 T6): the sender's person needs full on the target's workspace. No level at all (ws-2 has no row) reads exactly like a
+    session that does not exist, so a session id seen in a shared file or a log never confirms it exists."""
     world = await _world()
     await seed_session(world, sid="ses-x", workspace_id="ws-2", turn_no=1)
     with pytest.raises(PeerMessageRefused) as info:
@@ -444,65 +449,66 @@ async def test_another_workspace_is_out_of_reach_unless_the_sender_is_in_the_def
     with pytest.raises(PeerMessageRefused) as missing:
         await _send(world, "ses-nope")
     _expect_refusal(missing, "not-found", "Session 'ses-nope' does not exist in this workspace")
-    assert info.value.message == REFUSE_NOT_FOUND.format(session_id="ses-x"), "out of reach reads exactly like a session that does not exist"
+    assert info.value.message == REFUSE_NOT_FOUND.format(session_id="ses-x"), "no access reads exactly like a session that does not exist"
     await _assert_nothing_stored(world, target="ses-x", workspace_id="ws-2")
 
-    # The default workspace is the one the install records (an install that predates the record has its legacy "primer" row instead).
-    await world.sp.set_default_workspace_id("primer")
-    await seed_session(world, sid="ses-p", workspace_id="primer", binding=AgentSessionBinding(agent_id="prime"), initiated_by=USER, turn_no=1)
-    result = await _send(world, "ses-x", sender="ses-p")
+    # The level the sender's person holds on the target's workspace is the whole rule: which workspace the sender sits in is no part of it.
+    await seed_workspace(world, "ws-2", owners=["u1"])
+    result = await _send(world, "ses-x", sender="ses-a")
     assert (result.delivery, result.workspace_id) == ("woken", "ws-2")
     user_input = [r for r in records(world, "ses-x", workspace_id="ws-2") if r["kind"] == "user_input"][-1]
-    assert user_input["payload"]["peer"]["from_workspace_id"] == "primer"
-    assert slot(world, "ses-x", workspace_id="ws-2").appended == ["[from session ses-p (agent prime)]\nping"]
+    assert user_input["payload"]["peer"]["from_workspace_id"] == "ws-1"
+    assert slot(world, "ses-x", workspace_id="ws-2").appended == ["[from session ses-a (agent planner)]\nping"]
     [event] = await _events(world, "session.messaged")
-    assert (event.workspace_id, event.payload["from_workspace_id"], event.payload["to_workspace_id"]) == ("ws-2", "primer", "ws-2")
+    assert (event.workspace_id, event.payload["from_workspace_id"], event.payload["to_workspace_id"]) == ("ws-2", "ws-1", "ws-2")
 
 
-async def test_the_default_workspace_is_read_from_the_system_state_when_one_is_recorded():
-    """After pivot P2 the default workspace is whatever the deployment records, not the legacy id."""
+async def test_the_senders_workspace_is_no_longer_part_of_the_rule():
+    """Two senders with the same person, in different workspaces, get the same answer (access-control P2 T6: the default workspace no longer
+    reaches everything)."""
     world = await _world()
+    await seed_workspace(world, "ws-2", owners=["u1"])
     await seed_session(world, sid="ses-x", workspace_id="ws-2", turn_no=1)
     await seed_session(world, sid="ses-p", workspace_id="prime", binding=AgentSessionBinding(agent_id="prime"), initiated_by=USER, turn_no=1)
     await seed_session(world, sid="ses-q", workspace_id="primer", binding=AgentSessionBinding(agent_id="q"), initiated_by=USER, turn_no=1)
 
     await world.sp.set_default_workspace_id("prime")
     assert (await _send(world, "ses-x", sender="ses-p")).workspace_id == "ws-2"
-    with pytest.raises(PeerMessageRefused) as info:
-        await _send(world, "ses-x", sender="ses-q")
-    _expect_refusal(info, "not-found")
+    assert (await _send(world, "ses-x", sender="ses-q")).workspace_id == "ws-2"
 
 
-async def test_a_lower_ranked_sender_is_forbidden():
-    world = await _world()
+async def test_a_read_grant_on_the_targets_workspace_is_forbidden():
+    world = make_world(with_bus=True)
+    await seed_workspace(world, "ws-1", owners=["u2"], grants={"u1": "read"})
+    await seed_session(world, sid="ses-a", status=SessionStatus.RUNNING, turn_status="running", turn_no=1, initiated_by=USER)
     await seed_session(world, sid="ses-b", turn_no=1, initiated_by=ADMIN)
     with pytest.raises(PeerMessageRefused) as info:
         await _send(world, "ses-b")
-    _expect_refusal(info, "forbidden", REFUSE_RANK.format(session_id="ses-b", target_rank="admin", sender_rank="user"))
-    assert "(admin)" in info.value.message and "(user)" in info.value.message
+    _expect_refusal(info, "forbidden", REFUSE_NO_FULL.format(workspace_id="ws-1"))
     await _assert_nothing_stored(world)
 
 
-async def test_a_sender_of_equal_or_higher_rank_may_message():
-    world = await _world(initiated_by=ADMIN)
-    await seed_session(world, sid="ses-b", turn_no=1, initiated_by=USER)
-    await seed_session(world, sid="ses-c", turn_no=1, initiated_by=ADMIN)
-    assert (await _send(world, "ses-b", principal=ADMIN)).delivery == "woken"
-    assert (await _send(world, "ses-c", principal=ADMIN)).delivery == "woken"
+async def test_a_sender_with_full_on_the_targets_workspace_may_message_whatever_the_creator():
+    world = await _world()
+    await seed_session(world, sid="ses-b", turn_no=1, initiated_by=ADMIN)
+    await seed_session(world, sid="ses-c", turn_no=1, initiated_by=PrincipalRef.unattributed())
+    assert (await _send(world, "ses-b")).delivery == "woken"
+    assert (await _send(world, "ses-c")).delivery == "woken"
 
 
-async def test_a_sender_with_no_principal_is_forbidden():
+async def test_a_sender_with_no_principal_holds_no_level_and_is_not_found():
+    """A run with no principal behind it names no person, and a person with no user id holds no level on any workspace."""
     world = await _world()
     await seed_session(world, sid="ses-b", turn_no=1)
     with pytest.raises(PeerMessageRefused) as info:
         await _send(world, "ses-b", principal=None)
-    _expect_refusal(info, "forbidden", REFUSE_NO_PRINCIPAL)
-    assert "higher rank" not in info.value.message, "an unrankable sender was never compared with the target, so it was not found lower"
+    _expect_refusal(info, "not-found", REFUSE_NOT_FOUND.format(session_id="ses-b"))
     await _assert_nothing_stored(world)
 
 
-async def test_out_of_reach_is_decided_before_rank_so_a_hidden_session_leaks_nothing():
-    """A session of another workspace that also outranks the sender answers ``not-found``, not ``forbidden`` (which would confirm it exists)."""
+async def test_no_access_is_decided_before_the_level_so_a_hidden_session_leaks_nothing():
+    """A session in a workspace the sender's person holds no level on answers ``not-found``, even when its creator outranks the sender (a
+    ``forbidden`` would confirm the session exists)."""
     world = await _world()
     await seed_session(world, sid="ses-x", workspace_id="ws-2", turn_no=1, initiated_by=ADMIN)
     with pytest.raises(PeerMessageRefused) as info:
@@ -1119,17 +1125,21 @@ async def test_a_peer_message_never_reopens_a_session_an_operator_cancelled(mode
     await _assert_nothing_stored(world)
 
 
-async def test_a_cancelled_target_is_refused_after_reach_and_rank_so_it_leaks_nothing():
-    """The cancelled-session refusal comes after the guards that hide a session (out of reach: not-found) and that compare ranks (forbidden)."""
+async def test_a_cancelled_target_is_refused_after_the_access_checks_so_it_leaks_nothing():
+    """The cancelled-session refusal comes after the guards that hide a session (no level on the workspace: not-found) and that forbid a level
+    below full, so a cancelled session the sender may not see or message is never confirmed by its refusal."""
     world = await _world()
     await seed_session(world, sid="ses-x", workspace_id="ws-2", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2)
     with pytest.raises(PeerMessageRefused) as hidden:
         await _send(world, "ses-x")
     _expect_refusal(hidden, "not-found")
-    await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, initiated_by=ADMIN)
-    with pytest.raises(PeerMessageRefused) as higher:
-        await _send(world, "ses-b")
-    _expect_refusal(higher, "forbidden")
+    read_only = make_world(with_bus=True)
+    await seed_workspace(read_only, "ws-1", owners=["u2"], grants={"u1": "read"})
+    await seed_session(read_only, sid="ses-a", status=SessionStatus.RUNNING, turn_status="running", turn_no=1, initiated_by=USER)
+    await seed_session(read_only, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, initiated_by=ADMIN)
+    with pytest.raises(PeerMessageRefused) as lower:
+        await _send(read_only, "ses-b")
+    _expect_refusal(lower, "forbidden", REFUSE_NO_FULL.format(workspace_id="ws-1"))
 
 
 async def test_a_session_cancelled_after_every_check_of_the_send_is_not_reopened(monkeypatch):

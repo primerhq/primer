@@ -1,21 +1,19 @@
 """Which sessions a trigger subscription may start or feed (review of #870, F1; tickets 01a16ba1-da9b and 01a16ba1-e2d1).
 
 A subscription is a deferred tool call: when its trigger fires, it starts a session in a workspace (``agent_fresh_session``,
-``graph_fresh_session``) or puts text into an existing session (``session_append``, ``parked_session``). Saved from a workspace session, it must
-not reach further than that session could itself, or a session outside the default workspace (prime) could start a run in prime, which reaches
-every workspace, by subscribing to a trigger. So the reach of the session that saves it (:func:`primer.session.peer_messages.caller_reach`) is
-checked twice:
+``graph_fresh_session``) or puts text into an existing session (``session_append``, ``parked_session``). The owner of a subscription must hold
+full on the workspace the subscription starts or feeds a session in, asked twice (access-control P2 T6: the reach of the session that saved it
+is no longer the rule):
 
-* when it is saved (:func:`refuse_target_out_of_reach`, from :func:`primer.trigger.service.create_subscription` and ``update_subscription``): a
-  target out of reach is refused in the words of a target that does not exist, and nothing is stored, so a workspace or session id seen in a file
-  is never confirmed;
-* when it fires (:func:`refuse_fire_out_of_reach`, from every dispatcher in :mod:`primer.trigger.subscribers`): the reach is recorded on the row
-  (``Subscription.reach``), and a fire whose target is outside it is refused (``target_out_of_reach``, a failed delivery the subscription records)
-  and logged, and starts and feeds no session. That covers a row written past the save check, and a parked or appended-to session that is not
-  where it was when the row was saved.
+* when it is saved (:func:`refuse_target_out_of_access`, from :func:`primer.trigger.service.create_subscription` and ``update_subscription``): a
+  target the owner holds no full on is refused in the words of a target that does not exist, and nothing is stored, so a workspace or session id
+  seen in a file is never confirmed;
+* when it fires (:func:`refuse_fire_out_of_reach`, from every dispatcher in :mod:`primer.trigger.subscribers`): the owner is recorded on the row
+  (``Subscription.owner``), and a fire whose owner holds no full on the target is refused (``target_out_of_reach``, a failed delivery the
+  subscription records) and logged, and starts and feeds no session. That covers a grant revoked after the save, and a parked or appended-to
+  session that moved since the row was saved.
 
-A subscription saved from prime, by a person (REST) or by an API client (MCP) records no reach (``None``, every workspace), and so does every row
-saved before reach was recorded: those fire as they always did.
+A save with no identity (``owner`` ``None``) and every row saved before owners were recorded check nothing: those fire as they always did.
 
 A trigger is not in a workspace, but its subscriptions are, so the tools that act on a whole trigger ask too (review of #874, B1): from a session
 outside prime, ``trigger::update``, ``trigger::fire_now`` and ``trigger::delete`` answer exactly as an unknown trigger when any subscription of the
@@ -32,6 +30,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from primer.model.access import AccessLevel, LEVEL_RANK
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     AgentFreshSubConfig,
     GraphFreshSubConfig,
@@ -68,6 +68,38 @@ async def refuse_target_out_of_reach(storage_provider: Any, reach: str | None, c
         return REFUSE_NOT_FOUND.format(session_id=config.session_id)
     # A kind added later without a rule here is refused from a session outside prime until it gets one (fail closed).
     return f"a {getattr(config, 'kind', '?')} subscription cannot be saved from a session outside the default workspace (prime)"
+
+
+async def refuse_target_out_of_access(storage_provider: Any, owner: PrincipalRef | None, config: Any) -> str | None:
+    """The refusal of a subscription ``config`` saved for an owner that does not hold full on its target workspace, else ``None`` (access-control P2 T6).
+
+    The access twin of :func:`refuse_target_out_of_reach`, which the save paths now ask instead of it: the owner of the subscription
+    (:func:`primer.access.person.person_from_ref`) must hold full on the workspace the subscription starts or feeds a session in, with the same
+    answers: a workspace the owner holds no level on is refused in the words of a workspace that does not exist, and a target session the owner
+    does not hold full on, or that does not exist at all, in the words a missing session answers in. ``owner`` ``None`` (a save with no identity)
+    refuses nothing, as the reach it replaced did.
+    """
+    if owner is None:
+        return None
+    from primer.access.person import person_from_ref
+    from primer.access.workspaces import workspace_level
+    from primer.session.peer_messages import REFUSE_NOT_FOUND
+
+    person = person_from_ref(owner)
+    if isinstance(config, AgentFreshSubConfig | GraphFreshSubConfig):
+        level = await workspace_level(storage_provider, person, config.workspace_id)
+        if level is not None and LEVEL_RANK[level] >= LEVEL_RANK[AccessLevel.FULL]:
+            return None
+        return f"Workspace {config.workspace_id!r} does not exist"
+    if isinstance(config, SessionAppendSubConfig | ParkedSessionSubConfig):
+        row = await storage_provider.get_storage(WorkspaceSession).get(config.session_id)
+        if row is not None:
+            level = await workspace_level(storage_provider, person, row.workspace_id)
+            if level is not None and LEVEL_RANK[level] >= LEVEL_RANK[AccessLevel.FULL]:
+                return None
+        return REFUSE_NOT_FOUND.format(session_id=config.session_id)
+    # A kind added later without a rule here is refused until it gets one (fail closed).
+    return f"a {getattr(config, 'kind', '?')} subscription cannot be saved until its kind names a workspace its owner is checked on"
 
 
 async def subscription_in_reach(storage_provider: Any, reach: str | None, sub: Subscription) -> bool:
@@ -122,16 +154,17 @@ async def subscription_reaches_outside(storage_provider: Any, reach: str | None,
 async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> str | None:
     """Why a fire of ``sub`` may not start or feed its target, or ``None`` when it may.
 
-    ``sub.reach`` ``None`` (every workspace) never refuses. Otherwise the target's workspace must be the recorded one: the config's
-    ``workspace_id`` for a fresh session, the target session's workspace for ``session_append`` and ``parked_session``. A target session that no
-    longer exists is not refused here: there is nothing to start or feed, and the dispatcher reports the missing session in its own words. The
-    reason is stored on the subscription (``last_fire_error``), read by whoever may read the row, so it names the recorded reach (the saver's own
-    workspace) and never the target's.
+    The owner recorded on the row (``sub.owner``) must hold full on the target's workspace: the config's ``workspace_id`` for a fresh session,
+    the target session's workspace for ``session_append`` and ``parked_session``. A row with no owner (saved before owners were recorded) never
+    refuses, and a target session that no longer exists is not refused here: there is nothing to start or feed, and the dispatcher reports the
+    missing session in its own words. A kind with no rule is refused (fail closed). The reason is stored on the subscription
+    (``last_fire_error``), read by whoever may read the row.
     """
-    reach = getattr(sub, "reach", None)
-    if reach is None:
+    owner = getattr(sub, "owner", None)
+    if owner is None:
         return None
-    from primer.session.peer_messages import in_reach
+    from primer.access.person import person_from_ref
+    from primer.access.workspaces import workspace_level
 
     config = sub.config
     if isinstance(config, AgentFreshSubConfig | GraphFreshSubConfig):
@@ -143,15 +176,16 @@ async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> 
         target = row.workspace_id
     else:
         target = None  # a kind with no rule here: refused (fail closed)
-    if target is not None and in_reach(reach, target):
+    level = await workspace_level(storage_provider, person_from_ref(owner), target) if target is not None else None
+    if target is not None and level is not None and LEVEL_RANK[level] >= LEVEL_RANK[AccessLevel.FULL]:
         return None
     logger.warning(
-        "trigger %s subscription %s refused: its target is outside the reach recorded on it (workspace %s); the fire starts and feeds no session",
-        sub.trigger_id, sub.id, reach,
+        "trigger %s subscription %s refused: its owner %s holds no full on its target workspace %s; the fire starts and feeds no session",
+        sub.trigger_id, sub.id, owner.display, target,
     )
     return (
-        f"this subscription was saved from a session that reaches only workspace {reach!r}, and its target is outside that reach; "
-        "the fire starts and feeds no session (re-save it from a session that reaches the target, from prime or as a person)"
+        f"the owner of this subscription holds no full on its target workspace {target!r}; "
+        "the fire starts and feeds no session (re-save it from a user that does)"
     )
 
 
@@ -160,6 +194,7 @@ __all__ = [
     "SUBSCRIPTION_REACH_NOTE",
     "TARGET_OUT_OF_REACH",
     "refuse_fire_out_of_reach",
+    "refuse_target_out_of_access",
     "refuse_target_out_of_reach",
     "subscription_in_reach",
     "subscription_reaches_outside",

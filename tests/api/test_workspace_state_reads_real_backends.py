@@ -228,7 +228,10 @@ async def test_rest_move_from_a_reserved_path_answers_the_same_whether_it_exists
 
 async def test_the_delete_tool_answers_the_same_whether_a_reserved_path_exists(local_ws):
     import json
+    from datetime import datetime, timezone
 
+    from primer.model.access import Access
+    from primer.model.workspace import Workspace
     from primer.toolset.workspaces import build_workspaces_toolset
     from tests._support.caller import caller
     from tests.tap.test_mcp_tap_tool import _Provider
@@ -239,8 +242,16 @@ async def test_the_delete_tool_answers_the_same_whether_a_reserved_path_exists(l
         async def get_workspace(self, workspace_id):
             return ws
 
+    provider = _Provider()
+    # The delete tool asks the caller's person's full on the workspace row before the reserved-path refusal (access-control P2 T6); the
+    # caller here is ``user-1`` (the legacy ref of ``caller("user")``), so the row it names is owned by that user.
+    provider._workspaces._data["w"] = Workspace(
+        id="w", name="w", template_id="tpl", provider_id="local-1", created_at=datetime.now(timezone.utc), phase="running",
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://w", token="t"),
+        access=Access(owners=["user-1"]),
+    )
     ts = build_workspaces_toolset(
-        storage_provider=_Provider(), workspace_registry=_Reg(), tap_router=None,
+        storage_provider=provider, workspace_registry=_Reg(), tap_router=None,
     )
     outs = []
     for path in (_EXISTING, _MISSING):

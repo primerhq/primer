@@ -245,7 +245,7 @@ def _eval_predicate(entity: Any, node: Any) -> bool:
     """Tiny predicate evaluator for the in-memory test storage.
 
     Supports EQ / NE / GT / LT / GE / LE / LIKE / ILIKE / CONTAINS /
-    IS_NULL / IS_NOT_NULL / AND / OR -- the operators the API routers
+    IN / IS_NULL / IS_NOT_NULL / AND / OR -- the operators the API routers
     actually emit when translating query params (LIKE/ILIKE back the
     ``?q=`` search) or declarative checks (CONTAINS backs
     ``ReferenceCheck(op=Op.CONTAINS)``, array-membership reference
@@ -298,6 +298,12 @@ def _eval_predicate(entity: Any, node: Any) -> bool:
                 if not isinstance(actual, (list, tuple)):
                     return False
                 return expected in actual
+            if node.op == Op.IN:
+                # Membership of the field value in the right operand's list (the access
+                # list scopes of primer/access emit IN; a missing field matches nothing).
+                if actual is None or not isinstance(expected, (list, tuple, set, frozenset)):
+                    return False
+                return actual in expected
         return True
     return True
 

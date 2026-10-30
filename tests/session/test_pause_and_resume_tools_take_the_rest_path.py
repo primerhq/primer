@@ -28,10 +28,19 @@ import pytest
 
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.agent.workspace_executor import WorkspaceAgentExecutor
+from primer.mcp.server import current_actor
+from primer.model.access import Access
 from primer.model.chat import Done, TextDelta
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.principal import Principal
 from primer.model.provider import SqliteConfig
-from primer.model.workspace import LocalWorkspaceConfig, WorkspaceProvider, WorkspaceProviderType
+from primer.model.workspace import (
+    LocalWorkspaceConfig,
+    Workspace,
+    WorkspaceProvider,
+    WorkspaceProviderType,
+    WorkspaceRuntimeMeta,
+)
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
 from primer.storage.sqlite import SqliteStorageProvider
@@ -48,6 +57,10 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="the workspa
 
 OK = [TextDelta(text="all good", index=0), Done(stop_reason="stop", raw_reason="stop")]
 NOW = datetime(2026, 10, 24, 9, 0, tzinfo=timezone.utc)
+#: The person the tool's call acts as (access-control P2 T6): the no-ctx call resolves this token, and the pause/resume tools
+#: ask the run's person's full on the workspace, so the world's workspace row names this user as its owner.
+OWNER_USER = "u-owner"
+OWNER_TOKEN = Principal(type="user", id=OWNER_USER, display=OWNER_USER, role="user", source="local", user_id=OWNER_USER)
 #: The request the REST handlers are called with: no actor, and the sessions here name no creator, so the rank rule admits it.
 REQ = SimpleNamespace(state=SimpleNamespace(actor=None))
 
@@ -142,6 +155,12 @@ async def _world(tmp_path, *, two_processes: bool = False, **row_fields: Any):
         id=slot.session_id, workspace_id=workspace.id, binding=AgentSessionBinding(agent_id="researcher"), created_at=NOW, **fields,
     )
     await api.sessions.create(row)
+    # The workspace row the tool's access guard (P2 T6) asks the caller's person's full on: the token the tool calls set owns it.
+    await api.sp.get_storage(Workspace).create(Workspace(
+        id=workspace.id, name=workspace.id, template_id="tpl", provider_id="local-1", created_at=NOW, phase="running",
+        runtime_meta=WorkspaceRuntimeMeta(url=f"ws://{workspace.id}", token="t"),
+        access=Access(owners=[OWNER_USER]),
+    ))
     return api, worker, row, closers
 
 
@@ -152,7 +171,12 @@ async def _close(closers) -> None:
 
 async def _tool(process: _Process, tool: str, row: WorkspaceSession, event_bus=None) -> tuple[str, Any]:
     """The tool's answer as ``("ok", body)`` or ``(type, message)``."""
-    result = await process.toolset(event_bus).call(tool_name=tool, arguments={"workspace_id": row.workspace_id, "session_id": row.id})
+    # No calling session (the MCP endpoint): the tool acts as the token's user, the workspace's owner (access-control P2 T6).
+    token = current_actor.set(OWNER_TOKEN)
+    try:
+        result = await process.toolset(event_bus).call(tool_name=tool, arguments={"workspace_id": row.workspace_id, "session_id": row.id})
+    finally:
+        current_actor.reset(token)
     body = json.loads(result.output)
     return (body["type"], body["message"]) if result.is_error else ("ok", body)
 
