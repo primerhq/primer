@@ -431,9 +431,19 @@ async def seeded(toolset):
         tool_name="create_workspace_template",
         arguments={"entity": _template_body()},
     )
+    # The admin the seed stands for (no session: a console- or MCP-shaped caller): a template created with no identity is
+    # admin-managed, so only an admin reads it.
+    from primer.model.principal import PrincipalRef
+    from primer.model.yield_ import ToolContext
+
+    admin = ToolContext(
+        tool_call_id="seed", session_id=None, workspace_id=None,
+        initiated_by=PrincipalRef(type="user", id="admin-1", display="admin", role="admin", source="local", user_id="admin-1"),
+    )
     create = await toolset.call(
         tool_name="create_workspace",
         arguments={"id": "ws-stub", "template_id": "tpl-1"},
+        ctx=admin,
     )
     assert not create.is_error, create.output
     return "ws-stub"

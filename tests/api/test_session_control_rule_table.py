@@ -961,7 +961,7 @@ REPLY_DOORS = {
 
 async def _reply_world() -> WsWorld:
     world = await _ws_world()
-    await world.sp.get_storage(Channel).create(Channel(
+    await world.sp.get_storage(Channel).create(Channel(access=Access(public=True), 
         id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM, external_id="777", config=TelegramChannelConfig(),
     ))
     store = world.sp.get_storage(Workspace)
@@ -1307,7 +1307,7 @@ async def test_the_rest_delete_follows_the_rank_rule_of_the_rest_cancel(app, cli
 
 async def _template_world() -> WsWorld:
     world = await _ws_world()
-    await world.sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(id="tpl", description="t", provider_id="local-1"))
+    await world.sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(access=Access(public=True), id="tpl", description="t", provider_id="local-1"))
     return world
 
 
