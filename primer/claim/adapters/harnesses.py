@@ -9,8 +9,8 @@ from primer.model.harness import HarnessStatus
 
 class HarnessClaimAdapter(ClaimAdapter):
     kind = ClaimKind.HARNESS
-    # Match _table_name_for(Harness) ("harness"); see chats.py for why a plural
-    # name breaks the Postgres claim query.
+    # Match _table_name_for(Harness) ("harness"); a plural name breaks the
+    # Postgres claim query.
     entity_table = "harness"
 
     def __init__(self, *, harness_storage: Storage | None) -> None:
