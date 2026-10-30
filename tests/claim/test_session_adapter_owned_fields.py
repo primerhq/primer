@@ -57,7 +57,7 @@ def _row(**fields) -> WorkspaceSession:
         id=SID, workspace_id="w1", binding=AgentSessionBinding(agent_id="ag1"),
         status=SessionStatus.WAITING, created_at=datetime.now(UTC), turn_no=4, last_seq=10,
         next_unprocessed_seq=11, turn_status="idle",
-        # Set, so the release's own clear of it is observable in every branch.
+        # Set, so a release that clears the claim-time stamp is observable in every branch.
         last_worker_id="wk",
     )
     base.update(fields)
@@ -94,7 +94,7 @@ async def test_a_wake_committed_between_the_read_and_the_write_survives_the_rele
     assert row.last_seq == 11, "last_seq regressed: the next turn would reuse seq 11"
     assert row.status == SessionStatus.RUNNING
     assert row.turn_no == (5 if bumped else 4)
-    assert row.last_worker_id is None, "the release did not clear the worker stamp"
+    assert row.last_worker_id == "wk", "the release cleared the claim-time worker stamp (it must persist)"
     if outcome.park is not None:
         assert row.parked_status == "parked"
         assert row.parked_event_key == "ask_user:s-owned:tc-1"

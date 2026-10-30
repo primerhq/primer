@@ -319,11 +319,11 @@ async def test_parked_session_resumes_cluster_wide(
         # and resumed to completion on the shared Postgres claim engine. API
         # processes never run turns, so a worker process executed both the
         # park turn and the continuation. Worker IDENTITY is intentionally
-        # not asserted: the session adapter's on_release clears last_worker_id
-        # on every release (park and completion), so the persisted terminal
-        # row always reports last_worker_id == None — asserting on it would
-        # flake. The cross-API respond + continuation-to-completion is the
-        # load-bearing cluster-wide-resume invariant.
+        # not asserted: last_worker_id is stamped at claim time by whichever
+        # worker process claims each turn, and which process that was is not
+        # part of this invariant (asserting it would flake). The cross-API
+        # respond + continuation-to-completion is the load-bearing
+        # cluster-wide-resume invariant.
 
     finally:
         server.stop()
