@@ -42,7 +42,7 @@ from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import to_jsonable_python
 
 from primer.access.person import person_from_request
-from primer.access.policy import require
+from primer.access.policy import level_of, require
 from primer.api.routers._session_rank import refuse_outranked
 from primer.api.deps import (
     get_claim_engine,
@@ -1117,6 +1117,7 @@ class _ReplyBindingBody(BaseModel):
     responses=common_responses(404, 409, 422, 500),
 )
 async def set_workspace_reply_binding(
+    request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     body: _ReplyBindingBody = Body(...),
     workspace_storage=Depends(get_workspace_storage),
@@ -1146,7 +1147,9 @@ async def set_workspace_reply_binding(
         )
     channel_storage = sp.get_storage(Channel)
     channel = await channel_storage.get(body.channel_id)
-    if channel is None:
+    # The binding reads the channel it names: a channel the caller holds no level on answers exactly like a missing one,
+    # in this route's own channel_not_found words (access spec 9).
+    if channel is None or level_of(person_from_request(request), channel.access) is None:
         raise HTTPException(
             status_code=422,
             detail={
