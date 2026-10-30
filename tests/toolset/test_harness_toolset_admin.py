@@ -19,15 +19,15 @@ from primer.toolset.harness import build_harness_toolset_provider
 from tests.toolset.test_harness_toolset import _SP, _EventBus
 
 _WRITES = (
-    "harness__register",
-    "harness__update",
-    "harness__update_overrides",
-    "harness__fetch",
-    "harness__install",
-    "harness__sync",
-    "harness__uninstall",
+    "register",
+    "update",
+    "update_overrides",
+    "fetch",
+    "install",
+    "sync",
+    "uninstall",
 )
-_READS = ("harness__list", "harness__get")
+_READS = ("list", "get")
 
 
 def _provider(sp=None):
@@ -51,7 +51,7 @@ async def test_register_refuses_an_unsafe_git_url(monkeypatch, git_url):
     monkeypatch.delenv("PRIMER_HARNESS_ALLOW_FILE_URLS", raising=False)
     sp = _SP()
     result = await _provider(sp).call(
-        tool_name="harness__register", arguments={"name": "x", "slug": "bad-url", "git_url": git_url},
+        tool_name="register", arguments={"name": "x", "slug": "bad-url", "git_url": git_url},
     )
     assert result.is_error, result.output
     assert (await sp.get_storage(Harness).list(None)).items == []
@@ -61,7 +61,7 @@ async def test_register_and_update_refuse_an_unsafe_ref():
     sp = _SP()
     provider = _provider(sp)
     bad = await provider.call(
-        tool_name="harness__register",
+        tool_name="register",
         arguments={"name": "x", "slug": "bad-ref", "git_url": "https://h.example/r", "ref": "--output=x"},
     )
     assert bad.is_error, bad.output
@@ -70,7 +70,7 @@ async def test_register_and_update_refuse_an_unsafe_ref():
         Harness(id="hns_1", slug="ok-harness", name="x", git_url="https://h.example/r",
                 created_at=datetime.now(timezone.utc)),
     )
-    upd = await provider.call(tool_name="harness__update", arguments={"id": "hns_1", "ref": "-b"})
+    upd = await provider.call(tool_name="update", arguments={"id": "hns_1", "ref": "-b"})
     assert upd.is_error, upd.output
     assert (await sp.get_storage(Harness).get("hns_1")).ref == "main"
 
@@ -89,7 +89,7 @@ async def test_update_cannot_repoint_git_url_and_the_masked_token_keeps_the_real
     assert "git_url" not in TOOL_UPDATE.args_schema["properties"]
 
     result = await provider.call(
-        tool_name="harness__update",
+        tool_name="update",
         arguments={"id": "hns_1", "git_url": "https://evil.example/r", "git_token": "**********"},
     )
     assert not result.is_error, result.output
@@ -108,7 +108,7 @@ async def test_install_records_who_asked():
     admin = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
     ctx = ToolContext(tool_call_id="tc", session_id=None, workspace_id=None, initiated_by=admin)
 
-    result = await _provider(sp).call(tool_name="harness__install", arguments={"id": "hns_1", "overrides": {}}, ctx=ctx)
+    result = await _provider(sp).call(tool_name="install", arguments={"id": "hns_1", "overrides": {}}, ctx=ctx)
 
     assert not result.is_error, result.output
     assert (await sp.get_storage(Harness).get("hns_1")).operation_requested_by == admin

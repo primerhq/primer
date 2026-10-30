@@ -227,9 +227,8 @@ async def build_routing_map(
     ``(toolset_id, bare_name)`` is exact regardless of how many ``__``
     separators a scoped id contains. This is the authoritative resolver the
     dispatch path uses instead of string-splitting: a harness-deployed
-    toolset whose id itself contains ``__`` (e.g. ``acme__ts``) and a
-    built-in tool whose bare name contains ``__`` (e.g. ``harness__list``)
-    both resolve correctly, where neither a first- nor last-``__`` split can.
+    toolset whose id itself contains ``__`` (e.g. ``acme__ts``) resolves
+    correctly, where a first- or last-``__`` split cannot.
 
     The result is memoized per storage provider and keyed on the
     :class:`McpExposure` row's ``updated_at`` stamp: a hit returns the cached

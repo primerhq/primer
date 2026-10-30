@@ -4,15 +4,15 @@ title: Harnesses - git-installed entity bundles
 summary: How primer manages git-backed bundles of agents, graphs, collections, documents, and toolsets via the fetch/install/sync/uninstall lifecycle.
 related: [agents, graphs, knowledge, semantic-search]
 mcp_tools:
-  - harness::harness__list
-  - harness::harness__get
-  - harness::harness__register
-  - harness::harness__update
-  - harness::harness__update_overrides
-  - harness::harness__fetch
-  - harness::harness__install
-  - harness::harness__sync
-  - harness::harness__uninstall
+  - harness::list
+  - harness::get
+  - harness::register
+  - harness::update
+  - harness::update_overrides
+  - harness::fetch
+  - harness::install
+  - harness::sync
+  - harness::uninstall
 ---
 
 # Harnesses - git-installed entity bundles
@@ -32,7 +32,7 @@ The use case is sharing. A platform team writes a "support-bot"
 harness that bundles two agents, one graph that orchestrates them,
 and a knowledge collection seeded with the team's runbooks. They
 push it to GitHub. Operators in different deployments install it
-with one `harness::harness__install` call. Each deployment gets its own
+with one `harness::install` call. Each deployment gets its own
 copies of the entity rows (with `harness_id` set so they're
 recognised as managed), and the harness exposes per-deployment
 overrides for the things that legitimately vary (e.g. the LLM
@@ -42,7 +42,7 @@ Harnesses are a worker-claimed entity, like sessions -
 the fetch, install, sync, and uninstall operations are run by the
 worker pool, not synchronously inside the request. The MCP tools
 are async: they return 202 + a status field; the agent polls
-`harness::harness__get` to see when the operation completes.
+`harness::get` to see when the operation completes.
 
 ## Mental model
 
@@ -114,7 +114,7 @@ The four operations:
   is one click.
 
 All four are claim-based (via the harness `ClaimAdapter`). They can
-be queued - `harness::harness__install` followed by `harness::harness__sync` will
+be queued - `harness::install` followed by `harness::sync` will
 process in order, not interleaved.
 
 ## MCP tools
@@ -146,42 +146,42 @@ are not gated.
 
 ### Discovery and inspection
 
-- `harness::harness__list` - paginated listing of harness rows.
-- `harness::harness__get` - fetch by id. Includes computed fields like
+- `harness::list` - paginated listing of harness rows.
+- `harness::get` - fetch by id. Includes computed fields like
   `last_synced_at`, `bundle_hash`.
 
 ### Registration
 
-- `harness::harness__register` - create a draft row. Body: `name`, `slug`,
+- `harness::register` - create a draft row. Body: `name`, `slug`,
   `git_url`, optional `ref`, `subpath`, `description` and `git_token`. The
   `id` is assigned by the server and overrides are set afterwards with
-  `harness::harness__update_overrides`.
-  Does NOT fetch - explicit `harness::harness__fetch` next.
+  `harness::update_overrides`.
+  Does NOT fetch - explicit `harness::fetch` next.
   `git_url` must be `https://` with a host; `ref` is a branch, tag
   or commit name (letters, digits, `.`, `_`, `/`, `-`) and may not
   start with `-`. Anything else is a `validation-error`.
-- `harness::harness__update` - partial update of `name`,
+- `harness::update` - partial update of `name`,
   `description`, `ref`, `subpath` and `git_token`. Editing `ref` while
   installed marks the row outdated; sync to apply. It cannot change
   `git_url` (the REST `PUT` can, and then needs the token re-entered).
   Sending `git_token` as the masked `**********` keeps the stored
   token; `""` clears it.
-- `harness::harness__update_overrides` - partial update of the overrides
+- `harness::update_overrides` - partial update of the overrides
   dict only. Editing overrides while installed marks outdated;
   sync to apply.
 
 ### Lifecycle operations
 
-- `harness::harness__fetch` - clone + validate. Returns 202; poll `get` to
+- `harness::fetch` - clone + validate. Returns 202; poll `get` to
   see `status=ready` (or `error`).
-- `harness::harness__install` - apply to storage. Returns 202. Idempotent -
+- `harness::install` - apply to storage. Returns 202. Idempotent -
   re-installing replaces the bundle. Takes `overrides`: the stored
   overrides, unchanged (read them with `harness__get`); another value is
   refused with `type=conflict`. They are what the call's approval card
   shows, so the person approving it sees what will be rendered.
-- `harness::harness__sync` - diff + update. Fast-path no-op if no changes
+- `harness::sync` - diff + update. Fast-path no-op if no changes
   upstream. Returns 202. Takes `overrides` as install does.
-- `harness::harness__uninstall` - remove the harness. Returns 202. An
+- `harness::uninstall` - remove the harness. Returns 202. An
   installed (inbound) harness takes the objects it installed with it
   (agents, graphs, collections, documents, toolsets), then its rendering and
   the Harness row itself; an outbound harness keeps the objects it merely
@@ -218,7 +218,7 @@ installed at the latest 1.x tag.
 
 ```json
 {
-  "tool": "harness::harness__register",
+  "tool": "harness::register",
   "arguments": {
     "name": "Code review",
     "slug": "code-review",
@@ -230,11 +230,11 @@ installed at the latest 1.x tag.
 
 Status is `draft`. The row carries a server-assigned `id` (the later calls
 write it as `h-code-review`); set the overrides with
-`harness::harness__update_overrides`, not at registration:
+`harness::update_overrides`, not at registration:
 
 ```json
 {
-  "tool": "harness::harness__update_overrides",
+  "tool": "harness::update_overrides",
   "arguments": {
     "id": "h-code-review",
     "overrides": {
@@ -249,7 +249,7 @@ write it as `h-code-review`); set the overrides with
 
 ```json
 {
-  "tool": "harness::harness__fetch",
+  "tool": "harness::fetch",
   "arguments": {"id": "h-code-review"}
 }
 ```
@@ -258,7 +258,7 @@ Returns 202. Poll:
 
 ```json
 {
-  "tool": "harness::harness__get",
+  "tool": "harness::get",
   "arguments": {"id": "h-code-review"}
 }
 ```
@@ -270,7 +270,7 @@ for repos with large checkouts).
 
 ```json
 {
-  "tool": "harness::harness__install",
+  "tool": "harness::install",
   "arguments": {
     "id": "h-code-review",
     "overrides": {"llm_provider_id": "lp-claude", "max_concurrent_reviews": 3}
@@ -294,7 +294,7 @@ Poll until `status=installed`. The agents `code-review__lint`,
 
 ```json
 {
-  "tool": "harness::harness__update",
+  "tool": "harness::update",
   "arguments": {"id": "h-code-review", "ref": "v1.5.0"}
 }
 ```
@@ -305,7 +305,7 @@ Poll until `status=installed`. The agents `code-review__lint`,
 
 ```json
 {
-  "tool": "harness::harness__sync",
+  "tool": "harness::sync",
   "arguments": {
     "id": "h-code-review",
     "overrides": {"llm_provider_id": "lp-claude", "max_concurrent_reviews": 3}
@@ -324,8 +324,8 @@ set). Status returns to `installed`. If something went wrong,
 - **Managed entity CRUD is blocked.** Trying to PUT or DELETE a
   managed Agent / Graph / Collection / Document via the regular
   CRUD endpoints returns 409 with reason "managed by harness <id>".
-  Updates must go through `harness::harness__sync` after the upstream
-  changes (and optionally `harness::harness__update_overrides` to change
+  Updates must go through `harness::sync` after the upstream
+  changes (and optionally `harness::update_overrides` to change
   what gets rendered).
 - **Override changes mark the harness outdated, but don't auto-
   sync.** The operator decides when to actually re-apply. This is
@@ -343,7 +343,7 @@ set). Status returns to `installed`. If something went wrong,
   affect the installed Document.
 - **Delete is async (202), not sync.** The uninstall path is
   worker-claimed. After the 202, the rows still exist briefly.
-  Poll `harness::harness__get` to confirm the harness is back to `draft`.
+  Poll `harness::get` to confirm the harness is back to `draft`.
 - **Jinja2 sandbox.** Templates can't import modules, call
   `__getattr__` on builtins, or escape into Python. Constants,
   filters, and the override variables are the only context. This

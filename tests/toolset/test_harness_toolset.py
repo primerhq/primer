@@ -212,7 +212,7 @@ class TestRegister:
     @pytest.mark.asyncio
     async def test_register_creates_draft_row(self, toolset) -> None:
         result = await toolset.call(
-            tool_name="harness__register",
+            tool_name="register",
             arguments={
                 "name": "My Harness",
                 "slug": "my-harness",
@@ -230,7 +230,7 @@ class TestRegister:
     @pytest.mark.asyncio
     async def test_register_stores_token_as_secret_str(self, toolset, sp) -> None:
         result = await toolset.call(
-            tool_name="harness__register",
+            tool_name="register",
             arguments={
                 "name": "Tokenized",
                 "slug": "tokenized-harness",
@@ -252,7 +252,7 @@ class TestRegister:
     @pytest.mark.asyncio
     async def test_register_uses_custom_ref(self, toolset) -> None:
         result = await toolset.call(
-            tool_name="harness__register",
+            tool_name="register",
             arguments={
                 "name": "Dev branch",
                 "slug": "dev-harness",
@@ -273,11 +273,11 @@ class TestRegister:
             "slug": "dup-slug",
             "git_url": "https://github.com/example/repo",
         }
-        r1 = await toolset.call(tool_name="harness__register", arguments=args)
+        r1 = await toolset.call(tool_name="register", arguments=args)
         assert not r1.is_error
 
         r2 = await toolset.call(
-            tool_name="harness__register",
+            tool_name="register",
             arguments={
                 "name": "Second",
                 "slug": "dup-slug",
@@ -300,7 +300,7 @@ class TestList:
         _make_harness(sp, id="hns_a1", slug="harness-a", name="A")
         _make_harness(sp, id="hns_b1", slug="harness-b", name="B")
 
-        result = await toolset.call(tool_name="harness__list", arguments={})
+        result = await toolset.call(tool_name="list", arguments={})
         assert not result.is_error
         body = _result(result)
         assert "items" in body
@@ -312,7 +312,7 @@ class TestList:
         _make_harness(sp, id="hns_b2", slug="other-slug", name="Other")
 
         result = await toolset.call(
-            tool_name="harness__list",
+            tool_name="list",
             arguments={"slug": "filter-slug"},
         )
         assert not result.is_error
@@ -330,7 +330,7 @@ class TestList:
         )
 
         result = await toolset.call(
-            tool_name="harness__list",
+            tool_name="list",
             arguments={"status": "ready"},
         )
         assert not result.is_error
@@ -349,7 +349,7 @@ class TestGet:
     async def test_get_returns_row(self, toolset, sp) -> None:
         h = _make_harness(sp)
         result = await toolset.call(
-            tool_name="harness__get",
+            tool_name="get",
             arguments={"id": h.id},
         )
         assert not result.is_error
@@ -360,7 +360,7 @@ class TestGet:
     @pytest.mark.asyncio
     async def test_get_404_when_missing(self, toolset) -> None:
         result = await toolset.call(
-            tool_name="harness__get",
+            tool_name="get",
             arguments={"id": "hns_nonexistent"},
         )
         assert result.is_error
@@ -378,7 +378,7 @@ class TestFetch:
     async def test_fetch_enqueues_operation(self, toolset, sp, event_bus) -> None:
         h = _make_harness(sp)
         result = await toolset.call(
-            tool_name="harness__fetch",
+            tool_name="fetch",
             arguments={"id": h.id},
         )
         assert not result.is_error
@@ -395,7 +395,7 @@ class TestFetch:
         sp.get_storage(Harness)._data[h.id] = h
 
         result = await toolset.call(
-            tool_name="harness__fetch",
+            tool_name="fetch",
             arguments={"id": h.id},
         )
         assert result.is_error
@@ -405,7 +405,7 @@ class TestFetch:
     @pytest.mark.asyncio
     async def test_fetch_404_when_missing(self, toolset) -> None:
         result = await toolset.call(
-            tool_name="harness__fetch",
+            tool_name="fetch",
             arguments={"id": "hns_ghost"},
         )
         assert result.is_error
@@ -430,7 +430,7 @@ class TestUpdateOverrides:
         sp.get_storage(Harness)._data[h.id] = h
 
         result = await toolset.call(
-            tool_name="harness__update_overrides",
+            tool_name="update_overrides",
             arguments={"id": h.id, "overrides": {"region": "us-east-1"}},
         )
         assert not result.is_error
@@ -448,7 +448,7 @@ class TestUpdateOverrides:
         sp.get_storage(Harness)._data[h.id] = h
 
         result = await toolset.call(
-            tool_name="harness__update_overrides",
+            tool_name="update_overrides",
             arguments={"id": h.id, "overrides": {"region": 999}},  # invalid type
         )
         assert result.is_error
@@ -459,7 +459,7 @@ class TestUpdateOverrides:
     async def test_update_overrides_no_schema_cached(self, toolset, sp) -> None:
         h = _make_harness(sp)  # no overrides_schema
         result = await toolset.call(
-            tool_name="harness__update_overrides",
+            tool_name="update_overrides",
             arguments={"id": h.id, "overrides": {"x": "y"}},
         )
         assert result.is_error
@@ -477,7 +477,7 @@ class TestUninstall:
     async def test_uninstall_enqueues_operation(self, toolset, sp, event_bus) -> None:
         h = _make_harness(sp)
         result = await toolset.call(
-            tool_name="harness__uninstall",
+            tool_name="uninstall",
             arguments={"id": h.id},
         )
         assert not result.is_error
@@ -492,7 +492,7 @@ class TestUninstall:
         sp.get_storage(Harness)._data[h.id] = h
 
         result = await toolset.call(
-            tool_name="harness__uninstall",
+            tool_name="uninstall",
             arguments={"id": h.id},
         )
         assert result.is_error
@@ -510,15 +510,15 @@ class TestCatalog:
     async def test_toolset_id_and_tool_count(self, toolset) -> None:
         names = [t.id async for t in toolset.list_tools()]
         expected = {
-            "harness__list",
-            "harness__get",
-            "harness__register",
-            "harness__update",
-            "harness__update_overrides",
-            "harness__fetch",
-            "harness__install",
-            "harness__sync",
-            "harness__uninstall",
+            "list",
+            "get",
+            "register",
+            "update",
+            "update_overrides",
+            "fetch",
+            "install",
+            "sync",
+            "uninstall",
         }
         assert set(names) == expected
 
@@ -549,7 +549,7 @@ class TestUpdate:
     async def test_update_name(self, toolset, sp) -> None:
         h = _make_harness(sp)
         result = await toolset.call(
-            tool_name="harness__update",
+            tool_name="update",
             arguments={"id": h.id, "name": "New Name"},
         )
         assert not result.is_error
@@ -560,7 +560,7 @@ class TestUpdate:
     async def test_update_git_token_stores_secret(self, toolset, sp) -> None:
         h = _make_harness(sp)
         result = await toolset.call(
-            tool_name="harness__update",
+            tool_name="update",
             arguments={"id": h.id, "git_token": "new-secret"},
         )
         assert not result.is_error
@@ -575,7 +575,7 @@ class TestUpdate:
     @pytest.mark.asyncio
     async def test_update_404_when_missing(self, toolset) -> None:
         result = await toolset.call(
-            tool_name="harness__update",
+            tool_name="update",
             arguments={"id": "hns_ghost", "name": "Ghost"},
         )
         assert result.is_error
@@ -594,7 +594,7 @@ class TestInstall:
         h = _make_harness(sp, status=HarnessStatus.READY)
         # No overrides_schema cached
         result = await toolset.call(
-            tool_name="harness__install",
+            tool_name="install",
             arguments={"id": h.id},
         )
         assert result.is_error
@@ -610,7 +610,7 @@ class TestInstall:
         sp.get_storage(Harness)._data[h.id] = h
 
         result = await toolset.call(
-            tool_name="harness__install",
+            tool_name="install",
             arguments={"id": h.id, "overrides": h.overrides},
         )
         assert not result.is_error
@@ -627,7 +627,7 @@ class TestInstall:
         sp.get_storage(Harness)._data[h.id] = h
 
         result = await toolset.call(
-            tool_name="harness__install",
+            tool_name="install",
             arguments={"id": h.id},
         )
         assert result.is_error
@@ -640,7 +640,7 @@ class TestSync:
     async def test_sync_requires_installed_status(self, toolset, sp) -> None:
         h = _make_harness(sp, status=HarnessStatus.DRAFT)
         result = await toolset.call(
-            tool_name="harness__sync",
+            tool_name="sync",
             arguments={"id": h.id},
         )
         assert result.is_error
@@ -652,7 +652,7 @@ class TestSync:
         h = _make_harness(sp, status=HarnessStatus.INSTALLED)
         # No available_bundle_hash
         result = await toolset.call(
-            tool_name="harness__sync",
+            tool_name="sync",
             arguments={"id": h.id},
         )
         assert result.is_error
@@ -666,7 +666,7 @@ class TestSync:
         sp.get_storage(Harness)._data[h.id] = h
 
         result = await toolset.call(
-            tool_name="harness__sync",
+            tool_name="sync",
             arguments={"id": h.id, "overrides": h.overrides},
         )
         assert not result.is_error

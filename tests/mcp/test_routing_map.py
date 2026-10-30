@@ -7,10 +7,9 @@ Two pathological cases a naive split mis-handles:
 * A harness-deployed toolset whose id itself contains ``__`` has a scoped
   tool id of ``<slug>__<template>__<bare>`` (e.g. ``acme__ts__hello``). A
   first-``__`` split yields toolset ``acme`` (WRONG; the row is ``acme__ts``).
-* The built-in ``harness`` toolset whose OWN bare tool ids contain ``__``
-  (e.g. ``harness__list``) has scoped id ``harness__harness__list``. A
-  last-``__`` split yields bare ``list`` (WRONG; the bare name is
-  ``harness__list``).
+* A toolset whose OWN bare tool ids contain ``__`` (e.g. ``acme__widget``) has
+  scoped id ``acme__acme__widget``. A last-``__`` split yields bare ``widget``
+  (WRONG; the bare name is ``acme__widget``).
 
 The routing map keys are the exact scoped ids the catalogue advertises, so
 its inverse handles both.
@@ -63,25 +62,28 @@ async def test_routing_map_resolves_harness_deployed_toolset_with_dunder_id(
 
 
 @pytest.mark.asyncio
-async def test_routing_map_resolves_builtin_harness_dunder_bare_name(
+async def test_routing_map_resolves_toolset_with_dunder_bare_name(
     fake_storage_provider,
 ) -> None:
-    """The built-in ``harness`` toolset's ``harness__list`` bare name resolves.
+    """A toolset whose bare tool ids contain ``__`` resolves exactly.
 
-    ``harness__harness__list`` -> toolset ``harness`` + tool
-    ``harness__list`` (a last-``__`` split would mis-resolve the bare name
-    to ``list``).
+    ``acme__acme__widget`` -> toolset ``acme`` + tool ``acme__widget`` (a
+    last-``__`` split would mis-resolve the bare name to ``widget``).
     """
-    # ``harness`` is a RESERVED toolset id so _iter_catalogue resolves it
-    # from the registry without a storage row.
-    provider = FakeToolsetProvider(
-        "harness", [_tool("harness", "harness__list")],
+    # A regular toolset row in storage, resolved through the registry the
+    # user-toolset branch of _iter_catalogue uses.
+    ts_store = fake_storage_provider.get_storage(Toolset)
+    await ts_store.create(
+        Toolset(id="acme", provider=ToolsetProviderType.INTERNAL),
     )
-    registry = FakeProviderRegistry({"harness": provider})
+    provider = FakeToolsetProvider(
+        "acme", [_tool("acme", "acme__widget")],
+    )
+    registry = FakeProviderRegistry({"acme": provider})
     deps = ExposureDeps(
         storage_provider=fake_storage_provider, provider_registry=registry,
     )
 
     routing = await build_routing_map(deps)
 
-    assert routing["harness__harness__list"] == ("harness", "harness__list")
+    assert routing["acme__acme__widget"] == ("acme", "acme__widget")

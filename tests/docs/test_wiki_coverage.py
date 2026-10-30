@@ -159,11 +159,11 @@ def _known_toolsets() -> frozenset[str]:
 
 
 def _registered_ids() -> frozenset[str]:
-    """The ids a tool answers to: its registered id and its catalog scoped id.
+    """The ids a tool answers to: its registered (bare) id and its catalog scoped id.
 
-    A harness tool registers under an already-prefixed id (``harness__list``),
-    so its scoped id is the prefix twice and the docs' spelling is the
-    registered id itself; the set of both is what a page may carry.
+    The docs name a tool by either (a call's ``tool_name`` is the bare id; the wiki
+    frontmatter and the prose carry the scoped id); the set of both is what a page
+    may carry.
     """
     return frozenset(
         {entry.tool.id for entry in tool_entries()} | {entry.scoped_id for entry in tool_entries()}
@@ -173,10 +173,10 @@ def _registered_ids() -> frozenset[str]:
 def _known_scoped_id(name: str) -> bool:
     """True when a page may carry ``name``: the toolset exists and the tool answers to it.
 
-    The head/tail split below cannot parse a harness tool's scoped id (``harness__harness__list``): the harness
-    toolset's tools already carry the ``harness__`` prefix in their registered id, so the head lands on the doubled
-    prefix, not a toolset. Such a name is known when it is in the registered set directly (``_registered_ids``
-    holds every registered id and scoped id, so a typo is still refused there).
+    The head/tail split below cannot parse a scoped id whose TOOLSET part itself holds a ``__`` (a harness-deployed
+    toolset, ``acme__ts__tool``): the head lands on the first part, not a toolset. Such a name is known when it is in
+    the registered set directly (``_registered_ids`` holds every registered id and scoped id, so a typo is still
+    refused there).
     """
     registered = _registered_ids()
     if name in registered:

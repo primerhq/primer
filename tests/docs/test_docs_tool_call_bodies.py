@@ -199,14 +199,14 @@ def test_an_argument_the_tool_does_not_declare_is_refused() -> None:
     """The harness register example passed an ``id`` and ``overrides`` that the tool never reads: its schema does not forbid extra names,
     so only the declared-names rule sees them."""
     call = Call(
-        "harness", "harness__register",
+        "harness", "register",
         {"name": "n", "slug": "my-slug", "git_url": "u", "id": "h-1", "overrides": {"a": 1}},
     )
 
     problems = problems_in(call)
 
     assert any("id: not an argument" in p for p in problems) and any("overrides: not an argument" in p for p in problems), problems
-    assert problems_in(Call("harness", "harness__register", {"name": "n", "slug": "my-slug", "git_url": "u"})) == []
+    assert problems_in(Call("harness", "register", {"name": "n", "slug": "my-slug", "git_url": "u"})) == []
 
 
 def test_a_web_search_call_with_max_results_is_refused() -> None:

@@ -119,7 +119,7 @@ def _refuse_if_outbound(harness: Harness, operation: str) -> ToolCallResult | No
 # ---------------------------------------------------------------------------
 
 TOOL_LIST = make_tool(
-    id="harness__list",
+    id="list",
     toolset_id=HARNESS_TOOLSET_ID,
     purpose=(
         "List harnesses, optionally filtered, as a paginated response "
@@ -150,7 +150,7 @@ TOOL_LIST = make_tool(
 )
 
 TOOL_GET = make_tool(
-    id="harness__get",
+    id="get",
     toolset_id=HARNESS_TOOLSET_ID,
     purpose="Get a single harness by id, returning the full row.",
     when=(
@@ -172,7 +172,7 @@ TOOL_GET = make_tool(
 )
 
 TOOL_REGISTER = make_tool(
-    id="harness__register",
+    id="register",
     toolset_id=HARNESS_TOOLSET_ID,
     purpose="Register a new git-backed harness, creating it in status DRAFT.",
     when=(
@@ -212,7 +212,7 @@ TOOL_REGISTER = make_tool(
 )
 
 TOOL_UPDATE = make_tool(
-    id="harness__update",
+    id="update",
     toolset_id=HARNESS_TOOLSET_ID,
     purpose="Update mutable metadata on a harness (name, description, ref, subpath, git_token).",
     when=(
@@ -239,7 +239,7 @@ TOOL_UPDATE = make_tool(
 )
 
 TOOL_UPDATE_OVERRIDES = make_tool(
-    id="harness__update_overrides",
+    id="update_overrides",
     toolset_id=HARNESS_TOOLSET_ID,
     purpose="Validate overrides against the cached schema and store them.",
     when=(
@@ -267,7 +267,7 @@ TOOL_UPDATE_OVERRIDES = make_tool(
 )
 
 TOOL_FETCH = make_tool(
-    id="harness__fetch",
+    id="fetch",
     toolset_id=HARNESS_TOOLSET_ID,
     # The harness row's pending_operation, then its claim lease (announce_enqueued): two writes with no transaction. A
     # cancel between leaves an operation nothing claims. A Stop waits for the call (same for install, sync, uninstall).
@@ -307,7 +307,7 @@ _OVERRIDES_NOTE = (
 )
 
 TOOL_INSTALL = make_tool(
-    id="harness__install",
+    id="install",
     toolset_id=HARNESS_TOOLSET_ID,
     interruptible=False,
     purpose="Enqueue an INSTALL operation to apply the harness.",
@@ -337,7 +337,7 @@ TOOL_INSTALL = make_tool(
 )
 
 TOOL_SYNC = make_tool(
-    id="harness__sync",
+    id="sync",
     toolset_id=HARNESS_TOOLSET_ID,
     interruptible=False,
     purpose="Enqueue a SYNC operation to reconcile an installed harness.",
@@ -367,7 +367,7 @@ TOOL_SYNC = make_tool(
 )
 
 TOOL_UNINSTALL = make_tool(
-    id="harness__uninstall",
+    id="uninstall",
     toolset_id=HARNESS_TOOLSET_ID,
     interruptible=False,
     purpose="Enqueue an UNINSTALL operation to remove an installed harness.",
@@ -814,23 +814,23 @@ def build_harness_toolset_provider(
     The API lifespan passes the live engine; ``None`` is for standalone builds and tests.
     """
     registry: dict[str, tuple[Tool, ToolHandler]] = {
-        "harness__list": (TOOL_LIST, _make_list_handler(storage_provider)),
-        "harness__get": (TOOL_GET, _make_get_handler(storage_provider)),
-        "harness__register": (TOOL_REGISTER, _make_register_handler(storage_provider)),
-        "harness__update": (TOOL_UPDATE, _make_update_handler(storage_provider)),
-        "harness__update_overrides": (
+        "list": (TOOL_LIST, _make_list_handler(storage_provider)),
+        "get": (TOOL_GET, _make_get_handler(storage_provider)),
+        "register": (TOOL_REGISTER, _make_register_handler(storage_provider)),
+        "update": (TOOL_UPDATE, _make_update_handler(storage_provider)),
+        "update_overrides": (
             TOOL_UPDATE_OVERRIDES,
             _make_update_overrides_handler(storage_provider),
         ),
-        "harness__fetch": (
+        "fetch": (
             TOOL_FETCH,
             _make_enqueue_handler(storage_provider, event_bus, claim_engine, HarnessOperation.FETCH),
         ),
-        "harness__install": (
+        "install": (
             TOOL_INSTALL, _make_install_handler(storage_provider, event_bus, claim_engine),
         ),
-        "harness__sync": (TOOL_SYNC, _make_sync_handler(storage_provider, event_bus, claim_engine)),
-        "harness__uninstall": (
+        "sync": (TOOL_SYNC, _make_sync_handler(storage_provider, event_bus, claim_engine)),
+        "uninstall": (
             TOOL_UNINSTALL,
             _make_enqueue_handler(storage_provider, event_bus, claim_engine, HarnessOperation.UNINSTALL),
         ),

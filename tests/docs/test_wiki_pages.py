@@ -85,9 +85,9 @@ def test_expected_tools_adds_a_conditional_tool_only_when_it_exists():
 
 
 def test_calls_in_body_reads_both_shapes_and_skips_other_json():
-    body = ('```json\n{"toolset_id": "harness", "tool_name": "harness__list", "arguments": {}}\n```\n'
+    body = ('```json\n{"toolset_id": "harness", "tool_name": "list", "arguments": {}}\n```\n'
             '```json\n{"name": "workspace__read", "arguments": {"path": "a"}}\n```\n```json\n{"id": "a"}\n```\n```json\n{oops}\n```\n')
-    assert calls_in_body(body) == ["harness__harness__list", "workspace__read"]
+    assert calls_in_body(body) == ["harness__list", "workspace__read"]
 
 
 def test_render_frontmatter_round_trips_through_the_page_parser():
