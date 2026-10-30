@@ -213,6 +213,26 @@ class ClaimAdapter(ABC):
         """
         return True
 
+    async def on_claim(self, conn, lease: Lease) -> None:
+        """Called by the engine once per lease it claims, after the lease is
+        stamped with ``lease.claimed_by`` and before it is handed to the
+        claiming worker (the turn has not run yet).
+
+        Default: no-op, in the shape of :meth:`is_eligible` / :meth:`is_dead`
+        - a kind whose adapter owns no claim-scoped entity field (harness,
+        trigger, tool call) has nothing to stamp. The session adapter
+        overrides it: the claiming worker's own id (``lease.claimed_by``) is
+        stamped onto the row field-scoped and fenced, on the claim's own
+        connection, so a first turn in flight already shows its worker (the
+        session list's worker column, ``GET /v1/sessions?worker_id=``) and a
+        re-claim by another worker overwrites the stamp (last toucher wins).
+        The write keeps the adapter's release-branch discipline: one
+        field-scoped ``Storage.patch_if`` fenced on the row's current state,
+        never a whole-document update. A hook that raises fails the claim;
+        the leases it already stamped are re-claimed at their TTL, as an
+        orphaned claim always is.
+        """
+
     @abstractmethod
     async def on_release(
         self, conn, entity_id: str, *, outcome: ReleaseOutcome,
