@@ -96,12 +96,41 @@ async def test_non_text_events_are_ignored():
 # ---- the whole approval path, previously dead -----------------------------
 
 
+class _JudgeProfileStore:
+    """The ModelProfile row naming the policy's (provider_id, model) pair:
+    the D-A3-02 shape has the judge resolve through the profile seam, so
+    the fake registry carries its storage provider next to get_llm."""
+
+    def __init__(self, row):
+        self._row = row
+
+    async def get(self, row_id):
+        return self._row if row_id == self._row.id else None
+
+    async def find(self, predicate, page):
+        from primer.model.storage import OffsetPageResponse
+        return OffsetPageResponse(offset=0, length=1, items=[self._row])
+
+
 class _Registry:
     def __init__(self, llm):
+        from primer.model.model_profile import ModelProfile
         self._llm = llm
+        self._sp = _JudgeProfileStoreProvider(_JudgeProfileStore(ModelProfile(
+            id="mp-x", description="judge profile", kind="single",
+            provider_id="x", model_name="m", context_length=4096,
+        )))
 
     async def get_llm(self, provider_id):
         return self._llm
+
+
+class _JudgeProfileStoreProvider:
+    def __init__(self, store):
+        self._store = store
+
+    def get_storage(self, model_cls):
+        return self._store
 
 
 async def test_llm_gate_verdict_flows_through_evaluate_approval_gate():

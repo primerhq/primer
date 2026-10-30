@@ -88,7 +88,36 @@ async def test_an_llm_judge_routing_anyone_on_an_admin_only_gate_still_needs_an_
         async def judge_structured(self, **kwargs):
             return {"required": True, "reason": "looks fine", "approvers": {"kind": "anyone"}}
 
+    class _JudgeStore:
+        """The ModelProfile row naming the policy's (provider_id, model) pair: the D-A3-02
+        shape has the judge resolve through the profile seam, so the fake registry carries its
+        storage provider next to get_llm."""
+
+        def __init__(self, row):
+            self._row = row
+
+        async def get(self, row_id):
+            return self._row if row_id == self._row.id else None
+
+        async def find(self, predicate, page):
+            from primer.model.storage import OffsetPageResponse
+            return OffsetPageResponse(offset=0, length=1, items=[self._row])
+
+    class _JudgeSP:
+        def __init__(self, store):
+            self._store = store
+
+        def get_storage(self, model_cls):
+            return self._store
+
     class _Registry:
+        def __init__(self):
+            from primer.model.model_profile import ModelProfile
+            self._sp = _JudgeSP(_JudgeStore(ModelProfile(
+                id="mp-llm-1", description="judge profile", kind="single",
+                provider_id="llm-1", model_name="judge", context_length=4096,
+            )))
+
         async def get_llm(self, provider_id):
             return _Judge()
 

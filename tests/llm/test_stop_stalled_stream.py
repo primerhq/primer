@@ -79,11 +79,15 @@ def _models(name: str) -> list[ResolvedModel]:
 
 
 def _openchat(port: int) -> OpenChatLLM:
+    # D-A3-04: request_timeout_seconds=None (the point of this file: the
+    # stall window must NOT fire, the STOP does) needs a generation
+    # deadline on, so the total budget carries it; these tests finish in
+    # well under a second, so the 300 s budget never fires.
     return OpenChatLLM(LLMProvider(
         id="openchat-stop", provider=LLMProviderType.OPENCHAT, models=_models("m"),
         config=OpenChatConfig(url=HttpUrl(f"http://127.0.0.1:{port}/v1/"),
                               api_key=SecretStr("sk-test"), flavor=OpenChatFlavor.LMSTUDIO),
-        limits=Limits(max_concurrency=1, request_timeout_seconds=None),
+        limits=Limits(max_concurrency=1, request_timeout_seconds=None, total_timeout_seconds=300.0),
     ))
 
 
@@ -92,7 +96,7 @@ def _anthropic(port: int, monkeypatch: pytest.MonkeyPatch) -> AnthropicLLM:
     return AnthropicLLM(LLMProvider(
         id="anthropic-stop", provider=LLMProviderType.ANTHROPIC, models=_models("claude-test"),
         config=AnthropicConfig(api_key=SecretStr("sk-ant-test")),
-        limits=Limits(max_concurrency=1, request_timeout_seconds=None),
+        limits=Limits(max_concurrency=1, request_timeout_seconds=None, total_timeout_seconds=300.0),
     ))
 
 

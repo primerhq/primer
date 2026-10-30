@@ -44,8 +44,11 @@ class TestLimitsField:
         assert lim.request_timeout_seconds == 60.0
 
     def test_none_disables_timeout(self) -> None:
-        lim = Limits(max_concurrency=1, request_timeout_seconds=None)
+        # D-A3-04: a row may disable the stall window only while a
+        # generation deadline (here the total budget) stays on.
+        lim = Limits(max_concurrency=1, request_timeout_seconds=None, total_timeout_seconds=60.0)
         assert lim.request_timeout_seconds is None
+        assert lim.total_timeout_seconds == 60.0
 
     def test_zero_is_allowed(self) -> None:
         # 0.0 is valid (ge=0.0).
@@ -318,11 +321,15 @@ async def _stalling_openai_sdk():
 
 
 def _make_anthropic_provider(*, timeout_seconds: float | None = 0.05) -> LLMProvider:
+    # D-A3-04: the timeout_seconds=None case (test_anthropic_no_timeout_
+    # when_none) needs a generation deadline on, so the total budget
+    # carries it; the budget never fires inside these sub-second tests.
     return LLMProvider(
         id="test-ant",
         provider=LLMProviderType.ANTHROPIC,
         config=AnthropicConfig(api_key=SecretStr("sk-ant-test")),
-        limits=Limits(max_concurrency=2, request_timeout_seconds=timeout_seconds),
+        limits=Limits(max_concurrency=2, request_timeout_seconds=timeout_seconds,
+                      total_timeout_seconds=300.0),
     )
 
 

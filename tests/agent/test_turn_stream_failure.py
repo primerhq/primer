@@ -1,10 +1,10 @@
 """01a070d6: run_agent_turn raises TurnStreamFailure instead of quietly
 returning when a stream ends in a terminal Error.
 
-Covers the two failure shapes (zero-content, partial-content-then-error)
-and the one non-failure shape that must NOT raise (a genuinely empty but
-otherwise clean stream) so the fix doesn't over-fire on a legitimate
-"the LLM said nothing" turn.
+Covers the three failure shapes (zero-content, partial-content-then-error,
+and - since D-A3-03 - a zero-content stream that ends in Done rather than
+Error: the model said nothing, reasoning-only or otherwise, and the turn
+must fail with the ended_detail instead of resting as a silent success).
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from primer.model.chat import (
     Done,
     Error,
     Message,
+    ReasoningDelta,
     StreamEvent,
     TextDelta,
     TextPart,
@@ -115,14 +116,36 @@ async def test_partial_content_then_error_raises_with_salvaged_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_genuinely_empty_clean_stream_does_not_raise() -> None:
-    """A Done-terminated, zero-content stream is a legitimate empty
-    answer, not a failure -- must keep the pre-01a070d6 quiet-return
-    behavior."""
+async def test_genuinely_empty_clean_stream_fails_the_turn() -> None:
+    """A Done-terminated, zero-content stream used to end the turn as a
+    quiet success (the pre-D-A3-03 behavior this flip replaces): the
+    session looked healthy while the model said nothing, and nothing told
+    the caller the turn failed. It now fails like any other empty stream,
+    so dispatch stamps the ended_detail and the session rests."""
     llm = _ScriptedLLM([Done(stop_reason="stop", raw_reason="stop")])
-    events = await _drive(llm)
-    assert any(isinstance(ev, Done) for ev in events)
-    assert not any(isinstance(ev, Error) for ev in events)
+    with pytest.raises(TurnStreamFailure) as exc_info:
+        await _drive(llm)
+    failure = exc_info.value
+    assert failure.ended_detail_code == "reasoning_only_response"
+    assert failure.partial_messages == []
+    assert failure.rounds_completed == 0
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_stream_fails_the_turn() -> None:
+    """The D-A3-03 shape: the model streams reasoning but no convertible
+    content (the default converter drops ReasoningDelta) and ends with
+    Done; the turn must fail with the ended_detail, not succeed empty."""
+    llm = _ScriptedLLM([
+        ReasoningDelta(text="let me think about it", index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+    with pytest.raises(TurnStreamFailure) as exc_info:
+        await _drive(llm)
+    failure = exc_info.value
+    assert failure.ended_detail_code == "reasoning_only_response"
+    assert failure.partial_messages == []
+    assert failure.rounds_completed == 0
 
 
 @pytest.mark.asyncio
