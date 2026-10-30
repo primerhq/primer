@@ -89,7 +89,7 @@ async def test_a_resume_after_an_approval_keeps_the_parked_person():
     )
     await durably_wake_session(
         row, event_key="ask_user:s1:tc-1", payload={"response": "yes"},
-        session_storage=world.sessions, engine=world.engine,
+        session_storage=world.sessions, engine=_ResumableEngine(),
     )
     current = await world.sessions.get("s1")
     assert current.parked_status == "resumable", "the resume must have landed"
@@ -102,6 +102,16 @@ class _RecordingBus:
 
     async def publish(self, event_key, payload=None):
         self.published.append((event_key, payload or {}))
+
+
+class _ResumableEngine:
+    """A claim engine that only records the lease re-arm: the durable flip's sole engine call."""
+
+    def __init__(self) -> None:
+        self.resumables: list[tuple] = []
+
+    async def mark_resumable(self, kind: Any, entity_id: str, *, priority: int = 50) -> None:
+        self.resumables.append((kind, entity_id))
 
 
 def _channel() -> Channel:

@@ -504,6 +504,7 @@ async def post_canvas_event(
     """
     from primer.canvas.delivery import DELIVERY_QUEUED, DELIVERY_RECORDED, deliver_canvas_event
     from primer.canvas.wait import queued_steer_carries
+    from primer.model.principal import PrincipalRef
 
     session = await _session_on(storage_provider, workspace_id, session_id)
     refuse_outranked(request, session)
@@ -539,6 +540,8 @@ async def post_canvas_event(
             claim_engine=engine,
             workspace_registry=registry,
             event_bus=event_bus,
+            # The clicker (spec §13 Q1): a click that wakes the session runs the turn as them.
+            by=PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None,
         )
     return CanvasEventAccepted(
         event_id=recorded.event_id,

@@ -20,6 +20,7 @@ from typing import Any
 from pydantic_core import to_jsonable_python
 
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import (
     PeerAttribution,
     SessionMessageKind,
@@ -339,6 +340,7 @@ async def restart_session(
     reset_deps: "SessionResetDeps",
     wake_deps,  # primer.session.enqueue.SessionWakeDeps
     peer: PeerAttribution | None = None,
+    by: PrincipalRef | None = None,
 ) -> WorkspaceSession:
     """Reset an ENDED session then invoke it (studio-agents-interact §5.3).
 
@@ -366,6 +368,10 @@ async def restart_session(
     to ``wake_session``, so the USER_INPUT record names the sender
     (``payload["peer"]``) and the reopened turn's ``peer_hops`` is the
     message's hop count.
+
+    ``by`` (access-control spec §13 Q1) names the person whose input this
+    restart is: forwarded to ``wake_session``, so the reopened turn runs as
+    them.
     """
     from primer.session.enqueue import wake_session
 
@@ -379,6 +385,7 @@ async def restart_session(
         human_intent=human_intent,
         deps=wake_deps,
         peer=peer,
+        by=by,
     )
 
 

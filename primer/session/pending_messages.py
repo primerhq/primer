@@ -27,8 +27,10 @@ from typing import Any
 from pydantic import ValidationError
 
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import (
+    BY_ATTRIBUTION_KEY,
     CANVAS_EVENT_PAYLOAD_KEY,
     MACHINE_ATTRIBUTION_KEY,
     PEER_PAYLOAD_KEY,
@@ -155,6 +157,7 @@ async def store_pending_steer(
     workspace_registry: Any,
     event_bus: Any | None = None,
     attribution: dict | None = None,
+    by: PrincipalRef | None = None,
     client_msg_id: str | None = None,
 ) -> PendingSessionMessage:
     """Queue a follow-up steer without touching the message log.
@@ -172,7 +175,13 @@ async def store_pending_steer(
     and the store are not one step), and then the cap drops the oldest PEER
     message first (``_enforce_pending_cap``), so a person's steer is never the
     one that goes.
+
+    ``by`` (access-control spec §13 Q1) is the person whose input this
+    message is: it rides the stored row as ``attribution["by"]``, so the
+    wake that realizes the message later runs the turn as that person.
     """
+    if by is not None:
+        attribution = {**(attribution or {}), BY_ATTRIBUTION_KEY: by.model_dump(mode="json")}
     storage = storage_provider.get_storage(PendingSessionMessage)
     if _carries_peer(attribution) and await _queue_is_full(storage, session.id):
         raise PendingQueueFull(
@@ -398,6 +407,12 @@ async def _realize_oldest(
         peer = PeerAttribution.from_attribution(row.attribution)
     except ValidationError:
         logger.warning("realize: ignoring a malformed peer attribution on pending row %s", row.id)
+    # The person whose input the queued message was (spec §13 Q1), which the queue kept: the realized turn runs as them.
+    by = None
+    try:
+        by = PrincipalRef.model_validate(row.attribution[BY_ATTRIBUTION_KEY]) if isinstance(row.attribution, dict) and BY_ATTRIBUTION_KEY in row.attribution else None
+    except ValidationError:
+        logger.warning("realize: ignoring a malformed by attribution on pending row %s", row.id)
     receipt = SessionWakeReceipt()
     try:
         await wake_session(
@@ -413,6 +428,7 @@ async def _realize_oldest(
             # Who WROTE it, which the queue kept: a person's steer still reopens a session cancelled since; a peer's or a machine's does not.
             by_a_person=_written_by_a_person(row.attribution),
             peer=peer,
+            by=by,
             # A queued canvas click (pivot P5) names its event on the record, and is marked read by this wake.
             extra_payload=_canvas_payload(row.attribution),
             deps=wake_deps,
