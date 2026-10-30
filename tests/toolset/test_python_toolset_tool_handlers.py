@@ -22,6 +22,7 @@ import re
 import pytest
 
 from primer.model.chat import ToolCallResult
+from primer.model.principal import PrincipalRef
 from primer.model.provider import Toolset
 from primer.model.providers.toolset import PythonConfig
 from primer.model.yield_ import ToolContext, YieldToWorker
@@ -73,7 +74,10 @@ BROKEN = "@primer_tool()\ndef nodoc(a: str) -> str:\n    return a\n"
 
 MCP_ROW = {"id": "kb", "provider": "mcp", "config": {"transport": "http", "config": {"url": "https://mcp.example/mcp", "headers": {}}}}
 
-CTX = ToolContext(tool_call_id="tc-1", session_id="s-1", workspace_id=None)
+CTX = ToolContext(
+    tool_call_id="tc-1", session_id="s-1", workspace_id=None,
+    initiated_by=PrincipalRef(type="user", id="user-1", display="user", role="admin", source="local"),
+)
 
 
 @pytest.fixture
@@ -83,7 +87,7 @@ def tools(fake_storage_provider):
 
 async def _call(tools, name: str, **arguments) -> tuple[ToolCallResult, dict]:
     _tool, handler = tools[name]
-    result = await handler(arguments)
+    result = await handler(arguments, CTX)
     return result, json.loads(result.output)
 
 

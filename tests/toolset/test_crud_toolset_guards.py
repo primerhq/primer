@@ -22,6 +22,7 @@ import primer.toolset
 from primer.model.agent import Agent
 from primer.model.graph import Graph
 from primer.toolset.crud import build_crud_toolset
+from tests._support.caller import ADMIN_CALLER
 
 KINDS = {
     "agent": (Agent, {"id": "agent-m", "description": "managed", "model": {"profile_id": "prov--model"}}),
@@ -30,7 +31,7 @@ KINDS = {
 
 
 async def _call(toolset, name: str, **args):
-    result = await toolset.call(tool_name=name, arguments=args)
+    result = await toolset.call(tool_name=name, arguments=args, ctx=ADMIN_CALLER)
     try:
         body = json.loads(result.output)
     except ValueError:

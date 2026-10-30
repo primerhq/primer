@@ -19,6 +19,7 @@ import pytest
 
 from primer.api.registries import WorkspaceRegistry
 from primer.mcp.server import current_actor
+from primer.model.access import Access, AccessLevel
 from primer.model.principal import Principal
 from primer.model.provider import SqliteConfig
 from primer.model.workspace import WorkspaceTemplate
@@ -51,7 +52,7 @@ async def world(tmp_path: Path):
 
 
 def _actor(role: str, kind: str = "user") -> Principal:
-    return Principal(type=kind, id=f"{kind}-{role}", display=role, role=role, source="local")
+    return Principal(type=kind, id=f"{kind}-{role}", display=role, role=role, source="local", user_id=f"{kind}-{role}")
 
 
 class as_mcp:
@@ -181,6 +182,10 @@ async def test_an_mcp_admin_deletes_a_template_that_holds_admin_only_settings(wo
 async def test_a_non_admin_mcp_caller_cannot_update_or_delete_a_template_that_holds_admin_only_settings(world) -> None:
     sp, toolset = world
     await _hold_an_admin_only_template(toolset)
+    # The MCP user holds a full grant: the refusal under test is the admin-only-field rule, reached once the row is visible.
+    row = await sp.get_storage(WorkspaceTemplate).get("tpl-s")
+    row.access = Access(owners=[], grants={"user-user": AccessLevel.FULL})
+    await sp.get_storage(WorkspaceTemplate).update(row)
     changed = {**_PRIVILEGED["files.secret"], "description": "changed by an MCP user"}
 
     with as_mcp("user"):
@@ -210,8 +215,9 @@ async def test_a_tool_context_with_no_initiator_does_not_inherit_the_mcp_request
         )
         delete_error, delete_answer = await _call(toolset, "delete_workspace_template", ctx=_no_initiator_ctx(), id="tpl-s")
 
-    assert update_error and update_answer["type"] == "forbidden", update_answer
-    assert delete_error and delete_answer["type"] == "forbidden", delete_answer
+    # Spec 9: a row the caller holds no level on answers exactly like a missing one, so the no-initiator caller is refused here.
+    assert update_error and update_answer["type"] == "not-found", update_answer
+    assert delete_error and delete_answer["type"] == "not-found", delete_answer
     assert await sp.get_storage(WorkspaceTemplate).get("tpl-s") is not None
 
 

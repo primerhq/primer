@@ -121,6 +121,7 @@ def test_a_dropdown_cut_short_says_so_under_it(dialog):
 # ---- a dialog handed a list: the new-channel dialog's provider select ------------------------------------------------------------------------------------
 
 CHANNELS = ROOT / "ui" / "components" / "channels.jsx"
+SHARE_DIALOG = ROOT / "ui" / "components" / "shared" / "share-dialog.jsx"
 
 _CHANNEL_PRELUDE = API + "\n" + (ROOT / "ui" / "foundation" / "use-mutation.js").read_text(encoding="utf-8") + r"""
 globalThis.Modal = function (props) { return React.createElement("div", { "data-testid": "modal" }, props.children, props.footer); };
@@ -135,7 +136,7 @@ window.primerApi.useResource = function () { return { data: null, loading: false
 def test_the_new_channel_dialog_says_a_provider_list_cut_short():
     """The host (Platform > Channels' create, or the Channels page) reads every channel provider and hands the read over as ``providersList``: a read cut
     short is said under the provider select, a whole one says nothing."""
-    ctx = mini_react_context(transpile(CHANNELS), _CHANNEL_PRELUDE)
+    ctx = mini_react_context(transpile(SHARE_DIALOG) + "\n" + transpile(CHANNELS), _CHANNEL_PRELUDE)
     try:
         ctx.eval("MR.mount(NewChannelModal, { providers: [{ id: 'cp-1', provider: 'discord' }], providersList: { items: [{ id: 'cp-1' }], truncated: false },"
                  " onClose: function () {}, onCreated: function () {}, pushToast: function () {} });")

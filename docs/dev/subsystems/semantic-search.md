@@ -12,8 +12,7 @@ concerns:
 - The **vector stores** themselves (the `VectorStore` ABC plus the pgvector and
   Lance backends) that physically hold and rank embeddings.
 - The **retrieval-augmentation pipeline** in `CollectionSearcher`: optional
-  cross-encoder reranking (CER) and Maximal Marginal Relevance (MMR)
-  diversification layered on top of raw vector search.
+  cross-encoder reranking (CER) layered on top of raw vector search.
 - **Internal search** (the self-describing capability catalog): the toggle
   (`InternalCollectionsConfig` plus `POST /v1/internal_collections/bootstrap`)
   that turns on semantic search for the reserved `system` collection, the
@@ -33,8 +32,8 @@ A `SemanticSearchProvider` row describes one backend. Every `Collection` binds t
 exactly one SSP through a required, immutable `search_provider_id`; the
 collection's embedded chunks live in that SSP's vector store. A search resolves
 the collection, embeds the query with the collection's configured embedder,
-retrieves candidates from the SSP's `VectorStore`, and optionally reranks and
-diversifies them. Internal search reuses the same machinery: it enables search
+retrieves candidates from the SSP's `VectorStore`, and optionally reranks
+them. Internal search reuses the same machinery: it enables search
 on the `system` collection (a `Collection` row with `system=True`) with the
 embedder and the SSP that `InternalCollectionsConfig` names.
 
@@ -121,7 +120,7 @@ The entities:
 - `primer/vector/pgvector.py`, `primer/vector/lance.py`: the two shipped
   backends.
 - `primer/cross_encoder/huggingface.py`: the local `HuggingFaceCrossEncoder`.
-- `primer/search/searcher.py`: `CollectionSearcher`, the vector -> CER -> MMR
+- `primer/search/searcher.py`: `CollectionSearcher`, the vector -> CER
   orchestrator.
 - `primer/api/registries/semantic_search_registry.py`: `SemanticSearchRegistry`.
 - `primer/api/registries/provider_registry.py`: cross-encoder cache + factory,
@@ -194,10 +193,10 @@ The entities:
 ## 6. Lifecycle
 
 A document search resolves the collection, picks the SSP-backed vector store, and
-runs the pipeline. The fetch size `N` is resolved once so a single retrieval
-feeds both optional stages: no config gives `N = k`; CER alone gives
-`N = cer.top_n`; MMR alone gives `N = mmr.fetch_k or max(50, 10*k)`; both give the
-max of all sources (`CollectionSearcher._resolve_fetch_size`).
+runs the pipeline. The fetch size `N` is resolved once so the single retrieval
+feeds the optional rerank: no cross-encoder gives `N = k`; a configured
+cross-encoder gives `N = max(k, cer.top_n)`
+(`CollectionSearcher._resolve_fetch_size`).
 
 ```mermaid
 sequenceDiagram
@@ -220,9 +219,6 @@ sequenceDiagram
         CE-->>Searcher: relevance logits
         Searcher->>Searcher: replace score, re-sort desc
     end
-    opt mmr configured
-        Searcher->>Searcher: L2-normalise, MMR select
-    end
     Searcher-->>Client: top-k hits
 ```
 
@@ -233,10 +229,6 @@ Notes on the stages (`primer/search/searcher.py`):
   `ConfigError` at construction rather than mid-query. CER trims candidates to
   `top_n` before scoring, replaces `SearchResult.score` with the raw logit, and
   re-sorts.
-- MMR (`_mmr_select`) L2-normalises the query and candidate vectors on the fly so
-  cosine is well-defined regardless of the store's distance metric, then runs the
-  `lambda_mult * sim(d, q) - (1 - lambda_mult) * max sim(d, d_j)` loop. Empty or
-  zero-magnitude query / candidate vectors raise `ConfigError`.
 - `k <= 0` and an empty query raise `BadRequestError`.
 
 Provider lifecycle: `SemanticSearchRegistry.get_provider(id)` lazy-resolves the
@@ -327,7 +319,7 @@ REST:
 - `POST /v1/collections/{id}/search`: document search; resolves the store via
   `SemanticSearchRegistry.get_store(coll.search_provider_id)` and calls
   `VectorStore.search` directly. Note: this path does not yet run
-  `CollectionSearcher`, so per-collection `Collection.search` (MMR / CER) toggles
+  `CollectionSearcher`, so per-collection `Collection.search` (CER) settings
   do not affect external clients today.
 - `/v1/internal_collections/config` (PUT / GET / DELETE; `GET` answers 404 when
   the subsystem is not configured, or `200 {"configured": false}` with
@@ -355,15 +347,13 @@ Python: `CollectionSearcher` (`primer/search/searcher.py`), the `VectorStore` an
   raises `ConflictError`), `put` (upsert on the composite key), `search`
   (top-`k`, scores normalised so higher = more similar but only comparable within
   one result list), `search_by_meta`, `get`, `delete`, `drop_collection`.
-  Backends must populate `SearchResult.record.vector` when MMR is in play.
 - **`CrossEncoder` ABC** (`primer/int/cross_encoder.py`): `list_models` and
   `score(model, query, documents, batch_size=32)` returning one score per
   document in input order. Scores are explicitly backend-relative (raw logits for
   sentence-transformers / bge; sigmoided `[0,1]` for hosted Cohere / Jina), usable
   only to sort or threshold within one call. `aclose()` is a default no-op.
 - **Distance / normalisation contract**: every shipped embedder L2-normalises its
-  output (HuggingFace and OpenAI adapters), so cosine ranking is well-defined and
-  MMR's on-the-fly normalisation matches the on-disk vectors.
+  output (HuggingFace and OpenAI adapters), so cosine ranking is well-defined.
   See [knowledge.md](knowledge.md) for the embedder prompt registry.
 - **Asymmetric retrieval**: the internal-collections subsystem embeds with
   `task_type='retrieval_document'` on ingest and `'retrieval_query'` on search
@@ -381,11 +371,8 @@ Python: `CollectionSearcher` (`primer/search/searcher.py`), the `VectorStore` an
 
 - `tests/search/test_searcher.py` drives `CollectionSearcher` against
   `_FakeEmbedder` / `_FakeVectorStore` / `_FakeCrossEncoder`: construction guards
-  (cer-without-cross-encoder raises, mmr-only does not), arg validation
-  (`k<=0`, empty query), vanilla passthrough, CER score replacement and overfetch,
-  MMR endpoints (`lambda=1` relevance-only, `lambda=0` first pick most relevant,
-  fewer-than-`k`, missing-vector `ConfigError`), and both-enabled composition
-  (CER before MMR).
+  (cer-without-cross-encoder raises), arg validation (`k<=0`, empty query),
+  vanilla passthrough, and CER score replacement and overfetch.
 - `tests/cross_encoder/test_huggingface.py` covers the local reranker: constructor
   guards, `list_models`, scoring (empty-docs short-circuit, unknown model, lazy
   load + cache, score order, size-mismatch `ProviderError`).
@@ -414,7 +401,7 @@ Python: `CollectionSearcher` (`primer/search/searcher.py`), the `VectorStore` an
 - **Cross-encoder scores were returned as raw logits and documented as backend-relative, with the cross-encoder required at `CollectionSearcher` construction.** Why: different rerankers normalise differently so a uniform scale would invent meaning, and failing fast surfaces a typed `ConfigError` pointing at the offending collection rather than an opaque mid-query error. Spec: docs/superpowers/specs/2026-05-05-mmr-cross-encoder-reranking-design.md.
 - **MMR L2-normalised vectors on the fly rather than trusting the vector store's distance metric.** Why: the orchestrator does not know which metric the backend ranks under, so normalising both query and candidate vectors makes cosine well-defined across pgvector, Lance, and future backends. Spec: docs/superpowers/specs/2026-05-05-mmr-cross-encoder-reranking-design.md.
 - **The default reserved cross-encoder shipped as `cross-encoder/ms-marco-MiniLM-L-6-v2` rather than the spec's `BAAI/bge-reranker-v2-m3`.** Why: the lighter English-only MiniLM model (~80MB) keeps the zero-config disk footprint small versus the multilingual ~2.3GB bge model. Spec: docs/superpowers/specs/2026-05-05-mmr-cross-encoder-reranking-design.md.
-- **The self-describing catalog reused the existing `Collection` / embedder / vector-store plumbing as `system=True` rows instead of a parallel index.** Why: it avoids divergent embedding pipelines and lets future MMR / CER apply to the catalog for free by toggling `Collection.search`. Spec: docs/superpowers/specs/2026-05-08-semantic-catalog-design.md.
+- **The self-describing catalog reused the existing `Collection` / embedder / vector-store plumbing as `system=True` rows instead of a parallel index.** Why: it avoids divergent embedding pipelines and lets future CER apply to the catalog for free by toggling `Collection.search`. Spec: docs/superpowers/specs/2026-05-08-semantic-catalog-design.md.
 - **A larger production `InternalCollectionsSubsystem` (CDC worker, bootstrap state machine, AI-docs ingest, activation API) absorbed the activation surface the catalog spec deferred, leaving the smaller `primer/catalog` module as a lower layer exercised only by its own tests.** Why: the live runtime needed event-driven reconciliation, progress reporting, and a fifth AI-docs collection that the thin event-agnostic catalog deliberately did not cover. Spec: docs/superpowers/specs/2026-05-08-semantic-catalog-design.md.
 - **The five reserved `_internal_*` collections were replaced by one system collection.** Why: indexing the platform's own entities no longer needs a separate subsystem with its own namespaces and toolset. The system collection is a normal wiki that agents read and grep through the ordinary collections tools, and it needs no embedder to be useful.
 - **MMR was removed.** Why: the v2 collection model has no field that can express it, and an unreachable-but-tested code path is worse than a deleted one. Cross-encoder reranking survives because the search block still carries it.

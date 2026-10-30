@@ -210,6 +210,9 @@ def _run_shell_effect(ctx) -> None:
     effect = SHELL[body:SHELL.index("}, [registry]);", body)]
     ctx.eval(
         "var registry = SH_createVerbRegistry(); var WARNS = []; console.warn = function (m) { WARNS.push(String(m)); };"
+        # The Share verb's gate reads the seam (the palette's rank context carries no overlay): model a live shareable surface,
+        # as the palette offers it with one of the five detail overlays open.
+        "window.SHR_shareLive = function () { return true; };"
         "(function (registry, goView, isMobile) {" + effect + "\n})(registry, function () {}, false);"
     )
 

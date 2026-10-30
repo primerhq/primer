@@ -19,6 +19,7 @@ import pytest
 from primer.model.provider import Toolset, ToolsetProviderType
 from primer.model.providers.toolset import PythonConfig
 from primer.toolset.crud import build_crud_toolset
+from tests._support.caller import ADMIN_CALLER
 
 SRC_V1 = '''
 @primer_tool()
@@ -37,7 +38,7 @@ NO_DOCSTRING = "@primer_tool()\ndef nodoc(x: str) -> str:\n    return x\n"
 
 
 async def _call(toolset, name: str, **args):
-    result = await toolset.call(tool_name=name, arguments=args)
+    result = await toolset.call(tool_name=name, arguments=args, ctx=ADMIN_CALLER)
     try:
         body = json.loads(result.output)
     except ValueError:

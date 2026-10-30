@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
+from primer.access.person import Person, person_for_tool
+from primer.access.policy import require, visible_predicate
 from primer.agent.approval import (
     ApprovalContext,
     ApprovalResolver,
@@ -34,6 +36,7 @@ from primer.agent.inner_dispatch import dispatch_inner_tool, inner_role_refusal
 from primer.authz import _role_allows
 from primer.common.entity_checks import EntityCheckError
 from primer.common.toolset_ids import canonical_toolset_id
+from primer.model.access import Access, AccessLevel
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.model.provider import Toolset
@@ -42,6 +45,7 @@ from primer.toolset._helpers import ok as _ok
 from primer.model.collection import Collection, Document
 from primer.model.common import Identifiable, preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import (
+    AccessDeniedError,
     AuthRequiredError,
     BadRequestError,
     ConflictError,
@@ -51,6 +55,7 @@ from primer.model.except_ import (
 )
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.storage import (
+    Op,
     Predicate,
 )
 from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
@@ -296,6 +301,26 @@ def _refuse_unless_admin(ctx: ToolContext | None, note: str) -> ToolCallResult |
     return _err(note, error_type="forbidden")
 
 
+def _access_refusal(person: Person, access: Access, need: AccessLevel, what: str) -> ToolCallResult | None:
+    """The answer when ``person`` holds less than ``need`` on ``access``; ``None`` when the level clears.
+
+    A row the caller holds no level on answers exactly like a missing one (access-control spec 9); a level below
+    ``need`` answers ``forbidden``.
+    """
+    try:
+        require(person, access, need, what=what)
+        return None
+    except NotFoundError:
+        return _err(f"{what} does not exist", error_type="not-found")
+    except AccessDeniedError as exc:
+        return _err(exc.message, error_type="forbidden")
+
+
+def _owned_person(ctx: ToolContext | None) -> Person:
+    """The person behind an owned-tool call: the run's initiator when a context is present, else the MCP request's actor."""
+    return person_for_tool(ctx)
+
+
 def _crud_tools_for(
     *,
     entity_label: str,
@@ -306,6 +331,7 @@ def _crud_tools_for(
     on_update: _OnMutate = None,
     on_delete: _OnMutate = None,
     required_role: str | None = None,
+    owned: bool = False,
     guards: CrudGuards | None = None,
     pre_create: _PreCreate = None,
     pre_update: _PreUpdate = None,
@@ -317,6 +343,12 @@ def _crud_tools_for(
     pre_delete: _PreDelete = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
+
+    ``owned`` enforces the row's ``access`` the way the REST ``owned=True`` router does (access-control Phase 1): the caller
+    is the run's ``initiated_by``; a list or find is confined to the caller's visibility predicate (an admin is unconfined);
+    get needs ``read`` and answers a row the caller may not read exactly like a missing id; create stamps the caller as sole
+    owner (an identity-less run stores an admin-managed row) and ignores any ``access`` in the body; update needs ``full``
+    and keeps the stored access; delete needs ``owner``.
 
     ``guards`` declares what the entity's REST router guards (harness-managed rows, reserved ids, references that block a
     delete; see :mod:`primer.toolset._system_guards`); ``None`` is no guards.
@@ -361,7 +393,7 @@ def _crud_tools_for(
     guards = guards or CrudGuards(kind=entity_label)
 
     # ---- list ---------------------------------------------------------
-    async def _list_handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _list_handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _PaginationArgs.model_validate(arguments)
             page = _parse_page(args)
@@ -375,7 +407,11 @@ def _crud_tools_for(
         except PrimerValidationError as exc:
             return _err(exc.message, error_type="validation-error")
         try:
-            response = await storage.list(page, order_by=order_by)
+            visibility = visible_predicate(_owned_person(ctx)) if owned else None
+            if visibility is None:
+                response = await storage.list(page, order_by=order_by)
+            else:
+                response = await storage.find(visibility, page, order_by=order_by)
         except BadRequestError as exc:
             # A bad cursor (a forged one, or one that does not belong to this
             # request) is a client error, like the secret-field refusal above,
@@ -411,7 +447,7 @@ def _crud_tools_for(
     )
 
     # ---- get ----------------------------------------------------------
-    async def _get_handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _get_handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _GetByIdArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -421,6 +457,10 @@ def _crud_tools_for(
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
+        if owned:
+            denied = _access_refusal(_owned_person(ctx), row.access, AccessLevel.READ, f"{cls_name} {args.id!r}")  # type: ignore[attr-defined]
+            if denied is not None:
+                return denied
         return _ok(row)
 
     tools[f"get_{entity_label}"] = (
@@ -449,6 +489,11 @@ def _crud_tools_for(
             entity = model_cls.model_validate(body)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        if owned:
+            # The run's initiator owns the new row; a body-level ``access`` is ignored, and an
+            # identity-less run (admin / system) stores the row admin-managed.
+            person = _owned_person(ctx)
+            entity.access = Access.owned_by(person.user_id) if person.user_id is not None else Access()  # type: ignore[attr-defined]
         reason = admin_when(entity, None) if admin_when is not None else None
         if reason:
             denied = _refuse_unless_admin(ctx, reason if isinstance(reason, str) else admin_note or "this write requires the admin role")
@@ -546,6 +591,12 @@ def _crud_tools_for(
             return _err(
                 f"{cls_name} {entity_id!r} does not exist", error_type="not-found"
             )
+        if owned:
+            denied = _access_refusal(_owned_person(ctx), existing.access, AccessLevel.FULL, f"{cls_name} {entity_id!r}")  # type: ignore[attr-defined]
+            if denied is not None:
+                return denied
+            # The stored access is kept, whatever the body sent.
+            entity.access = existing.access  # type: ignore[attr-defined]
         try:
             reason = admin_when(entity, existing) if admin_when is not None else None
         except PrimerValidationError as exc:          # a check that restores a served mask to decide who may write (update_toolset) answers a refusal too
@@ -629,7 +680,7 @@ def _crud_tools_for(
     )
 
     # ---- delete -------------------------------------------------------
-    async def _delete_handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _delete_handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _DeleteByIdArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -643,6 +694,10 @@ def _crud_tools_for(
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
+        if owned:
+            denied = _access_refusal(_owned_person(ctx), existing.access, AccessLevel.OWNER, f"{cls_name} {args.id!r}")  # type: ignore[attr-defined]
+            if denied is not None:
+                return denied
         refusal = refuse_delete(guards, existing)
         if refusal is None:
             refusal = await refuse_delete_if_referenced(guards, existing, storage_provider)
@@ -699,7 +754,7 @@ def _crud_tools_for(
     )
 
     # ---- find ---------------------------------------------------------
-    async def _find_handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _find_handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _FindArgs.model_validate(arguments)
             page = _parse_page(args)
@@ -715,6 +770,13 @@ def _crud_tools_for(
             refuse_secret_fields(model_cls, predicate=predicate, order_by=order_by)
         except PrimerValidationError as exc:
             return _err(exc.message, error_type="validation-error")
+        if owned:
+            visibility = visible_predicate(_owned_person(ctx))
+            if visibility is not None:
+                predicate = (
+                    Predicate(left=predicate, op=Op.AND, right=visibility)
+                    if predicate is not None else visibility
+                )
         try:
             response = await storage.find(predicate, page, order_by=order_by)
         except BadRequestError as exc:

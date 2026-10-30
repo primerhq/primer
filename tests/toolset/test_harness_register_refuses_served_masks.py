@@ -30,7 +30,7 @@ def _args(**extra) -> dict:
 async def test_a_register_that_carries_the_served_token_mask_is_refused_and_stores_nothing(served: str) -> None:
     sp = _SP()
 
-    result = await _provider(sp).call(tool_name="harness__register", arguments=_args(git_token=served))
+    result = await _provider(sp).call(tool_name="register", arguments=_args(git_token=served))
 
     assert result.is_error, result.output
     assert json.loads(result.output)["type"] == "validation-error" and "re-enter" in result.output
@@ -40,7 +40,7 @@ async def test_a_register_that_carries_the_served_token_mask_is_refused_and_stor
 async def test_a_register_of_a_real_token_still_works_and_serves_it_masked() -> None:
     sp = _SP()
 
-    result = await _provider(sp).call(tool_name="harness__register", arguments=_args(git_token="ghp_real_token_0123456789"))
+    result = await _provider(sp).call(tool_name="register", arguments=_args(git_token="ghp_real_token_0123456789"))
 
     assert not result.is_error, result.output
     assert json.loads(result.output)["git_token"] == "**********"
@@ -49,6 +49,6 @@ async def test_a_register_of_a_real_token_still_works_and_serves_it_masked() -> 
 
 
 async def test_a_register_with_no_token_still_works() -> None:
-    result = await _provider(_SP()).call(tool_name="harness__register", arguments=_args())
+    result = await _provider(_SP()).call(tool_name="register", arguments=_args())
 
     assert not result.is_error, result.output

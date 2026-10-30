@@ -30,8 +30,8 @@ from primer.trigger.cron import next_fire_at as _cron_next
 
 class TriggerClaimAdapter(ClaimAdapter):
     kind = ClaimKind.TRIGGER
-    # Match _table_name_for(Trigger) ("trigger"); see chats.py for why a plural
-    # name breaks the Postgres claim query.
+    # Match _table_name_for(Trigger) ("trigger"); a plural name breaks the
+    # Postgres claim query.
     entity_table = "trigger"
 
     def __init__(self, *, storage: Storage | None) -> None:

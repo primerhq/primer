@@ -37,8 +37,8 @@ async def _seeded() -> tuple[_SP, object]:
 async def test_get_and_list_results_carry_no_password() -> None:
     sp, provider = await _seeded()
 
-    got = await provider.call(tool_name="harness__get", arguments={"id": "hns_1"})
-    listed = await provider.call(tool_name="harness__list", arguments={})
+    got = await provider.call(tool_name="get", arguments={"id": "hns_1"})
+    listed = await provider.call(tool_name="list", arguments={})
 
     assert not got.is_error and not listed.is_error, (got.output, listed.output)
     assert "s3cr3t" not in got.output + listed.output
@@ -48,9 +48,9 @@ async def test_get_and_list_results_carry_no_password() -> None:
 
 async def test_registering_with_the_url_a_get_returned_is_refused_and_stores_nothing() -> None:
     sp, provider = await _seeded()
-    served = json.loads((await provider.call(tool_name="harness__get", arguments={"id": "hns_1"})).output)
+    served = json.loads((await provider.call(tool_name="get", arguments={"id": "hns_1"})).output)
 
-    result = await provider.call(tool_name="harness__register", arguments={"name": "Copy", "slug": "copy-harness", "git_url": served["git_url"]})
+    result = await provider.call(tool_name="register", arguments={"name": "Copy", "slug": "copy-harness", "git_url": served["git_url"]})
 
     assert result.is_error, result.output
     assert json.loads(result.output)["type"] == "validation-error" and "re-enter the password" in result.output
@@ -61,7 +61,7 @@ async def test_registering_with_a_real_credential_is_fine_and_served_masked() ->
     sp = _SP()
     provider = _provider(sp)
 
-    result = await provider.call(tool_name="harness__register", arguments={"name": "New", "slug": "new-harness", "git_url": URL})
+    result = await provider.call(tool_name="register", arguments={"name": "New", "slug": "new-harness", "git_url": URL})
 
     assert not result.is_error, result.output
     assert json.loads(result.output)["git_url"] == MASKED and "s3cr3t" not in result.output

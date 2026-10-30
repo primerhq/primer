@@ -28,10 +28,10 @@ _SCHEMA = {"type": "object", "properties": {}, "additionalProperties": True}
 
 # tool -> (the harness state the tool accepts, the operation it enqueues)
 _OPERATIONS = {
-    "harness__fetch": (dict(status=HarnessStatus.DRAFT), HarnessOperation.FETCH),
-    "harness__install": (dict(status=HarnessStatus.READY, overrides_schema=_SCHEMA), HarnessOperation.INSTALL),
-    "harness__sync": (dict(status=HarnessStatus.INSTALLED, available_bundle_hash="h1"), HarnessOperation.SYNC),
-    "harness__uninstall": (dict(status=HarnessStatus.DRAFT), HarnessOperation.UNINSTALL),
+    "fetch": (dict(status=HarnessStatus.DRAFT), HarnessOperation.FETCH),
+    "install": (dict(status=HarnessStatus.READY, overrides_schema=_SCHEMA), HarnessOperation.INSTALL),
+    "sync": (dict(status=HarnessStatus.INSTALLED, available_bundle_hash="h1"), HarnessOperation.SYNC),
+    "uninstall": (dict(status=HarnessStatus.DRAFT), HarnessOperation.UNINSTALL),
 }
 
 
@@ -83,7 +83,7 @@ class TestTheOperationBecomesClaimable:
     async def test_the_lease_has_the_operator_priority_the_routes_give_it(self, claiming_toolset, sp, engine) -> None:
         harness = _make_harness(sp)
 
-        await claiming_toolset.call(tool_name="harness__fetch", arguments={"id": harness.id})
+        await claiming_toolset.call(tool_name="fetch", arguments={"id": harness.id})
 
         assert engine._leases[(ClaimKind.HARNESS, harness.id)].priority_score == CLAIM_PRIORITY_OPERATOR  # noqa: SLF001
 
@@ -91,8 +91,8 @@ class TestTheOperationBecomesClaimable:
     async def test_a_refused_call_creates_no_lease(self, claiming_toolset, sp, engine) -> None:
         busy = _make_harness(sp, id="hns_busy", slug="busy-one", pending_operation=HarnessOperation.INSTALL)
 
-        refused = await claiming_toolset.call(tool_name="harness__fetch", arguments={"id": busy.id})
-        missing = await claiming_toolset.call(tool_name="harness__fetch", arguments={"id": "hns_ghost"})
+        refused = await claiming_toolset.call(tool_name="fetch", arguments={"id": busy.id})
+        missing = await claiming_toolset.call(tool_name="fetch", arguments={"id": "hns_ghost"})
 
         assert refused.is_error and missing.is_error
         assert not await engine.has_lease(ClaimKind.HARNESS, busy.id)
@@ -104,7 +104,7 @@ class TestTheOperationBecomesClaimable:
     ) -> None:
         harness = _make_harness(sp)
 
-        result = await toolset.call(tool_name="harness__fetch", arguments={"id": harness.id})
+        result = await toolset.call(tool_name="fetch", arguments={"id": harness.id})
 
         assert not result.is_error, result.output
         assert _result(result)["pending_operation"] == "fetch"
@@ -113,7 +113,7 @@ class TestTheOperationBecomesClaimable:
 
 class TestDirectionIsGuardedLikeTheRoutes:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("tool", ["harness__fetch", "harness__install", "harness__sync"])
+    @pytest.mark.parametrize("tool", ["fetch", "install", "sync"])
     async def test_an_inbound_operation_on_an_outbound_harness_is_refused(self, tool, toolset, sp) -> None:
         harness = _make_harness(sp, direction=HarnessDirection.OUTBOUND)
 
@@ -127,7 +127,7 @@ class TestDirectionIsGuardedLikeTheRoutes:
     async def test_the_refusal_creates_no_lease(self, claiming_toolset, sp, engine) -> None:
         harness = _make_harness(sp, direction=HarnessDirection.OUTBOUND)
 
-        await claiming_toolset.call(tool_name="harness__fetch", arguments={"id": harness.id})
+        await claiming_toolset.call(tool_name="fetch", arguments={"id": harness.id})
 
         assert not await engine.has_lease(ClaimKind.HARNESS, harness.id)
 
@@ -136,7 +136,7 @@ class TestDirectionIsGuardedLikeTheRoutes:
         """The delete route does not guard direction: an outbound harness is removed too (without its tracked objects)."""
         harness = _make_harness(sp, direction=HarnessDirection.OUTBOUND)
 
-        result = await toolset.call(tool_name="harness__uninstall", arguments={"id": harness.id})
+        result = await toolset.call(tool_name="uninstall", arguments={"id": harness.id})
 
         assert not result.is_error, result.output
         assert _result(result)["pending_operation"] == "uninstall"
@@ -147,7 +147,7 @@ class TestUninstallCascadeDefaultsByDirection:
     async def test_an_inbound_harness_uninstall_removes_the_objects_it_installed(self, toolset, sp) -> None:
         harness = _make_harness(sp, direction=HarnessDirection.INBOUND)
 
-        await toolset.call(tool_name="harness__uninstall", arguments={"id": harness.id})
+        await toolset.call(tool_name="uninstall", arguments={"id": harness.id})
 
         assert sp.get_storage(Harness)._data[harness.id].uninstall_cascade is True
 
@@ -155,6 +155,6 @@ class TestUninstallCascadeDefaultsByDirection:
     async def test_an_outbound_harness_keeps_the_objects_it_merely_tracks(self, toolset, sp) -> None:
         harness = _make_harness(sp, direction=HarnessDirection.OUTBOUND)
 
-        await toolset.call(tool_name="harness__uninstall", arguments={"id": harness.id})
+        await toolset.call(tool_name="uninstall", arguments={"id": harness.id})
 
         assert sp.get_storage(Harness)._data[harness.id].uninstall_cascade is False

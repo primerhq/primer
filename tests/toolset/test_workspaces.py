@@ -610,23 +610,30 @@ class TestSubResourceHandlers:
 
     @pytest.mark.asyncio
     async def test_template_full_crud(self, toolset) -> None:
+        from primer.model.principal import PrincipalRef
+        from primer.model.yield_ import ToolContext
+
+        admin = ToolContext(
+            tool_call_id="call-1", session_id="sess-1", workspace_id=None,
+            initiated_by=PrincipalRef(type="user", id="user-1", display="user", role="admin", source="local", user_id="user-1"),
+        )
         body = _template_body()
         await toolset.call(
-            tool_name="create_workspace_template", arguments={"entity": body}
+            tool_name="create_workspace_template", arguments={"entity": body}, ctx=admin
         )
         body["description"] = "v2"
         upd = await toolset.call(
             tool_name="update_workspace_template",
-            arguments={"id": "tpl-1", "entity": body},
+            arguments={"id": "tpl-1", "entity": body}, ctx=admin,
         )
         assert not upd.is_error
         assert json.loads(upd.output)["description"] == "v2"
         get = await toolset.call(
-            tool_name="get_workspace_template", arguments={"id": "tpl-1"}
+            tool_name="get_workspace_template", arguments={"id": "tpl-1"}, ctx=admin
         )
         assert json.loads(get.output)["description"] == "v2"
         delete = await toolset.call(
-            tool_name="delete_workspace_template", arguments={"id": "tpl-1"}
+            tool_name="delete_workspace_template", arguments={"id": "tpl-1"}, ctx=admin
         )
         assert not delete.is_error
 

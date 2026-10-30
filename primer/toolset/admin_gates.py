@@ -13,8 +13,8 @@ creator's) walked around the approval system:
 :data:`ADMIN_GATES` maps each to the gate a fresh install ships: ``required``, except the two toolset writes, whose gate is the Rego policy
 :data:`HOST_CODE_TOOLSET_POLICY`. Each is decided by an admin only (``approvers`` = ``primer.session.approvers.ADMIN_ONLY_SPEC``, through
 ``crud.shipped_approvers``): a person who may not make the write, or a chat-platform user primer cannot identify, cannot approve it. ``bootstrap/seed.py`` seeds them with the crud gates (``crud.DEFAULT_GATED_TOOLS`` lists every default gate);
-migration 16 gives an existing install the same rows. Like every policy they gate model-initiated calls: the tool manager, ``system__call_tool``
-(the harness tools' one door in a run, as their bare ids carry ``__`` and the tool manager will not mount them) and the MCP endpoint, which has no
+migration 16 gives an existing install the same rows, and migration 20 re-keys the harness lifecycle ones to the bare tool ids. Like every policy they gate
+model-initiated calls: the tool manager (the harness tools now mount on an agent's own surface), ``system__call_tool`` and the MCP endpoint, which has no
 park and refuses a gated call as ``approval_required``. A person acting over REST is not gated.
 
 The toolset gate: a Rego policy that is an allowlist
@@ -64,11 +64,12 @@ HOST_CODE_TOOLSET_WRITES: tuple[tuple[str, str], ...] = (
     (_SYSTEM, "update_toolset"),
 )
 
-#: The harness operations that write a bundle's agents, graphs, triggers and toolsets (the bare ids carry the ``harness__`` prefix).
+#: The harness operations that write a bundle's agents, graphs, triggers and toolsets. The key is the bare tool id (``install``, ...); the manager and the
+#: gate both scope it to the wire id ``harness__<id>``.
 HARNESS_LIFECYCLE: tuple[tuple[str, str], ...] = (
-    (_HARNESS, "harness__install"),
-    (_HARNESS, "harness__sync"),
-    (_HARNESS, "harness__uninstall"),
+    (_HARNESS, "install"),
+    (_HARNESS, "sync"),
+    (_HARNESS, "uninstall"),
 )
 
 #: The shipped gate on ``system::create_toolset`` and ``system::update_toolset`` (see the module docstring). Migration 16 keeps its own copy of
@@ -121,9 +122,9 @@ PREVIEW_ARGS: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType({
     (_SYSTEM, "create_toolset"): _TOOLSET_PREVIEW,
     (_SYSTEM, "update_toolset"): ("id", *_TOOLSET_PREVIEW),
     # An install or sync names the overrides it applies, and the person who approves it sees them (ticket 01a16a29, R860-1).
-    (_HARNESS, "harness__install"): ("id", "overrides"),
-    (_HARNESS, "harness__sync"): ("id", "overrides"),
-    (_HARNESS, "harness__uninstall"): ("id",),
+    (_HARNESS, "install"): ("id", "overrides"),
+    (_HARNESS, "sync"): ("id", "overrides"),
+    (_HARNESS, "uninstall"): ("id",),
 })
 
 # What each card draws FIRST (``Tool.preview_lead``), before its one-line preview cuts a long entity, and never cut itself: what the person
@@ -138,8 +139,8 @@ PREVIEW_LEAD: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType({
     (_SYSTEM, "update_tool_approval_policy"): _POLICY_LEAD,
     (_SYSTEM, "create_toolset"): _TOOLSET_LEAD,
     (_SYSTEM, "update_toolset"): _TOOLSET_LEAD,
-    (_HARNESS, "harness__install"): ("overrides",),
-    (_HARNESS, "harness__sync"): ("overrides",),
+    (_HARNESS, "install"): ("overrides",),
+    (_HARNESS, "sync"): ("overrides",),
 })
 
 

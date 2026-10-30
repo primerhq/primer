@@ -99,6 +99,7 @@ from primer.model.model_profile import ModelProfile
 from primer.common.log import redact_credentials
 from primer.model.chat import Tool, ToolCallResult, ToolExample, ToolTurnCapReached, TurnStreamFailure
 from primer.toolset._describe import make_tool
+from primer.toolset._system_access import access_tools
 from primer.toolset._system_artifact import artifact_store_tools
 from primer.toolset._system_canvas import canvas_settings_tools
 from primer.toolset._helpers import err as _err, ok as _ok
@@ -542,25 +543,27 @@ def build_system_toolset(
     # cross-encoder/semantic-search/artifact-storage/channel-provider),
     # tool-approval policies -> admin; user-facing feature entities
     # (agents, graphs, collections/documents, threads, toolsets,
-    # channels, and the toolset row itself) -> user.
+    # channels, and the toolset row itself) -> user. ``owned`` (the
+    # last element) turns on the access-control enforcement the REST
+    # ``owned=True`` routers apply to the five owned entities.
     crud_specs = [
-        ("llm_provider", "llm_providers", LLMProvider, None, _inv_llm, _inv_llm, "admin"),
+        ("llm_provider", "llm_providers", LLMProvider, None, _inv_llm, _inv_llm, "admin", False),
         # A profile names a provider and its API-level tunables, so it is
         # provider configuration => admin, matching its REST router.
-        ("model_profile", "model_profiles", ModelProfile, None, _inv_mp, _inv_mp, "admin"),
-        ("embedding_provider", "embedding_providers", EmbeddingProvider, None, _inv_emb, _inv_emb, "admin"),
-        ("cross_encoder_provider", "cross_encoder_providers", CrossEncoderProvider, None, _inv_ce, _inv_ce, "admin"),
-        ("toolset", "toolsets", Toolset, None, _inv_ts, _inv_ts, "user"),
-        ("agent", "agents", Agent, None, None, None, "user"),
-        ("graph", "graphs", Graph, None, None, None, "user"),
-        ("collection", "collections", Collection, None, None, None, "user"),
-        ("document", "documents", Document, None, None, None, "user"),
-        ("graph_thread", "graph_threads", GraphThread, None, None, None, "user"),
-        ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin"),
-        ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, _inv_asp, _inv_asp, "admin"),
-        ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, None, None, "admin"),
-        ("channel_provider", "channel_providers", ChannelProvider, None, None, None, "admin"),
-        ("channel", "channels", Channel, None, None, None, "user"),
+        ("model_profile", "model_profiles", ModelProfile, None, _inv_mp, _inv_mp, "admin", False),
+        ("embedding_provider", "embedding_providers", EmbeddingProvider, None, _inv_emb, _inv_emb, "admin", False),
+        ("cross_encoder_provider", "cross_encoder_providers", CrossEncoderProvider, None, _inv_ce, _inv_ce, "admin", False),
+        ("toolset", "toolsets", Toolset, None, _inv_ts, _inv_ts, "user", True),
+        ("agent", "agents", Agent, None, None, None, "user", True),
+        ("graph", "graphs", Graph, None, None, None, "user", True),
+        ("collection", "collections", Collection, None, None, None, "user", False),
+        ("document", "documents", Document, None, None, None, "user", False),
+        ("graph_thread", "graph_threads", GraphThread, None, None, None, "user", False),
+        ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin", False),
+        ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, _inv_asp, _inv_asp, "admin", False),
+        ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, None, None, "admin", False),
+        ("channel_provider", "channel_providers", ChannelProvider, None, None, None, "admin", False),
+        ("channel", "channels", Channel, None, None, None, "user", True),
     ]
     # The entities whose warm adapter an edit through the REST route refreshes but an edit through a TOOL does not (task 01a111d1, D5
     # phase 2c, the lead's ruling: document it, do not mirror the hook). ChannelRegistry invalidates only the cache of its own process,
@@ -668,7 +671,7 @@ def build_system_toolset(
         "collection": _collection_pre_delete,
         "toolset": _toolset_pre_delete,
     }
-    for label, plural, cls, on_c, on_u, on_d, role in crud_specs:
+    for label, plural, cls, on_c, on_u, on_d, role, owned in crud_specs:
         pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
         registry.update(
             _crud_tools_for(
@@ -680,6 +683,7 @@ def build_system_toolset(
                 on_update=on_u,
                 on_delete=on_d,
                 required_role=role,
+                owned=owned,
                 guards=guards_by_label.get(label),
                 pre_create=pre_create,
                 pre_update=pre_update,
@@ -1189,6 +1193,8 @@ def build_system_toolset(
     # They read no storage and no registry (nothing is stored), so they carry no per-build dependency.
     registry.update(probe_tools())
     registry.update(artifact_store_tools(storage_provider=storage_provider))
+    # Sharing (access control, Phase 1): the twins of GET / PUT /v1/{plural}/{id}/access and GET /v1/users/lookup.
+    registry.update(access_tools(storage_provider=storage_provider))
     # The canvas settings (pivot P5): the tool twins of GET / PUT /v1/canvas_settings, admin-only. Not in the canvas toolset, which keeps the
     # design's three tools.
     registry.update(canvas_settings_tools(storage_provider))

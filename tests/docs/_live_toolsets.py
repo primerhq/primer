@@ -5,9 +5,8 @@ workspace registry, is a real tool. A name is stale only if no wiring has it.
 
 ``built_in_providers()`` maps ``toolset id -> provider`` for ALL ten reserved toolsets (``RESERVED_TOOLSET_IDS``, ``collections`` included: a
 check that left one out would pass for every document that names its tools; ``canvas`` joined with pivot P5, design 8.3). ``built_in_tools()`` maps ``toolset id -> {spelling -> Tool}`` and
-derives from it. A tool is reachable under every spelling the docs use: its registered id, and that id without the ``<toolset>__`` prefix (the
-harness toolset registers ``harness__list`` and the agent docs call it ``harness::harness__list`` while the dev docs write the scoped id
-``harness__list``).
+derives from it. A tool is reachable under every spelling the docs use: its registered (bare) id and the catalog's scoped id (a call's
+``tool_name`` is the bare id, ``list``; the docs name the tool by its scoped id, ``harness__list``).
 """
 
 from __future__ import annotations
@@ -78,7 +77,7 @@ def built_in_tools() -> dict[str, dict[str, Tool]]:
             spellings: dict[str, Tool] = {}
             async for tool in provider.list_tools():
                 spellings[tool.id] = tool
-                spellings[tool.id.removeprefix(f"{toolset_id}__")] = tool
+                spellings[f"{toolset_id}__{tool.id}"] = tool
             built[toolset_id] = spellings
         return built
 

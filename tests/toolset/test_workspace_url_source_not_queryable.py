@@ -36,7 +36,7 @@ _PASSWORD = "s3cr3t"
 _OVERRIDE_PASSWORD = "ovpass99"
 USER = ToolContext(
     tool_call_id="call-u", session_id="sess-u", workspace_id=None,
-    initiated_by=PrincipalRef(type="user", id="user-u", display="user", role="user", source="local"),
+    initiated_by=PrincipalRef(type="user", id="user-u", display="user", role="user", source="local", user_id="user-u"),
 )
 
 
@@ -59,7 +59,7 @@ async def toolset(tmp_path: Path) -> AsyncIterator:
     await sp.initialize()
     await sp.get_storage(WorkspaceTemplate).create(
         WorkspaceTemplate.model_validate({
-            "id": "tpl-a", "provider_id": "p-loc", "description": "d",
+            "id": "tpl-a", "provider_id": "p-loc", "description": "d", "access": {"owners": ["user-u"]},
             "files": [{"path": "seed.txt", "source": {"kind": "url", "url": f"https://reader:{_PASSWORD}@files.example.com/seed.txt"}}],
         })
     )

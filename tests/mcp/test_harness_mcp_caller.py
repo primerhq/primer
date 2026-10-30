@@ -47,8 +47,8 @@ async def _seed(fake_storage_provider, status: HarnessStatus) -> None:
 @pytest.mark.parametrize(
     ("tool", "status", "operation"),
     [
-        ("harness__install", HarnessStatus.READY, HarnessOperation.INSTALL),
-        ("harness__sync", HarnessStatus.INSTALLED, HarnessOperation.SYNC),
+        ("install", HarnessStatus.READY, HarnessOperation.INSTALL),
+        ("sync", HarnessStatus.INSTALLED, HarnessOperation.SYNC),
     ],
 )
 async def test_an_admin_over_mcp_is_recorded_as_the_requester(fake_storage_provider, tool, status, operation):
@@ -68,7 +68,7 @@ async def test_a_user_over_mcp_is_refused_and_nothing_is_enqueued(fake_storage_p
     await _seed(fake_storage_provider, HarnessStatus.READY)
     user = Principal(type="user", id="u-user", display="user", role="user", source="local")
 
-    result = await _call(fake_storage_provider, "harness__install", user)
+    result = await _call(fake_storage_provider, "install", user)
 
     assert result.is_error is True
     assert "requires the 'admin' role" in result.output

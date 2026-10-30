@@ -65,6 +65,17 @@ function NV_ToastHost() {
     var prevDismiss = api.toastDismiss;
     api.toastPush = function (t) { return pushToastRef.current(t); };
     api.toastDismiss = function (id) { return removeToastRef.current(id); };
+    // A toast pushed before this host mounted (a boot or auth-screen error
+    // routed by app.jsx's window handlers) sits in the foundation queue
+    // with no rendered subscriber. Replay it through the stack, then
+    // dismiss it from the queue so the foundation's timer dies with the
+    // entry - from here the host owns the timing.
+    if (api._toast) {
+      api._toast.state.toasts.slice().forEach(function (entry) {
+        pushToastRef.current(entry);
+        api._toast.dismiss(entry.id);
+      });
+    }
     return function () {
       api.toastPush = prevPush;
       api.toastDismiss = prevDismiss;
@@ -741,6 +752,26 @@ function NV_Shell() {
       available: function (c) { return c.role === "admin"; },
       run: function () {
         if (typeof window.NV_resetPrimeInstructions === "function") window.NV_resetPrimeInstructions();
+      },
+    });
+    // ACL-P1 T10: the console's Share dialog for the five owned entity types. The pointer
+    // affordance is the Share button the detail surfaces draw (data-verb="entity.share");
+    // from the palette the verb dispatches to the open surface (SHR_requestShare,
+    // share-dialog.jsx), which opens the dialog only while it is itself open. The gate
+    // reads the share seam (SHR_shareLive, share-dialog.jsx): live while a shareable
+    // surface is mounted; a no-op with none open. The dialog is read-only for a
+    // non-owner, so offering it to a read-level viewer still says the truth: they can
+    // see who has access, only owners can change it.
+    reg({
+      id: "entity.share", label: "Share Entity",
+      surfaces: ["overlay-button", "palette"],
+      available: function () {
+        // The palette's rank context carries no overlay, so the gate reads the seam:
+        // the five shareable surfaces subscribe on mount (SHR_useShareOpen).
+        return window.SHR_shareLive ? window.SHR_shareLive() : false;
+      },
+      run: function () {
+        if (window.SHR_requestShare) window.SHR_requestShare();
       },
     });
     // Every Platform page and every provider type is a palette verb too ("Open Providers", "Open Providers: TTS", "Open LLM Profiles" ...) on the platform-nav

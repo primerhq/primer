@@ -260,7 +260,19 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
               const sessionCount = perRowSessions[a.id];
               return (
                 <tr key={a.id} onClick={() => openRow(a.id)} style={{ cursor: "pointer" }}>
-                  <td className="mono">{a.id}</td>
+                  <td className="mono">
+                    {a.id}
+                    {SHR_accessBadges(a.access).map((b) => (
+                      <span
+                        key={b}
+                        className="pill pill-ended"
+                        data-testid={"agent-access-badge-" + b}
+                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
+                      >
+                        <span className="dot"></span>{b}
+                      </span>
+                    ))}
+                  </td>
                   <td className="muted text-sm" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {a.description || <span style={{ color: "var(--text-4)" }}>—</span>}
                   </td>
@@ -670,7 +682,7 @@ function AG_toolsForSave(selected, stored) {
   return kept.concat(added);
 }
 
-function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading }) {
+function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading, onShare }) {
   // Same modal serves both create (existing == null) and edit
   // (existing == agent row). In edit mode the id field is locked,
   // submit PUT-replaces, and the success callback is just close().
@@ -985,6 +997,9 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             {isEdit && onDelete && (
               <Btn kind="ghost" data-testid="agent-form-delete" onClick={onDelete} style={{ color: "var(--red)" }}>Delete</Btn>
             )}
+            {isEdit && onShare && (
+              <Btn kind="ghost" data-testid="agent-share" data-verb="entity.share" onClick={onShare}>Share</Btn>
+            )}
           </>
         ),
         right: (
@@ -1248,6 +1263,10 @@ function AgentDetail({ agentId, pushToast }) {
     { pollMs: 30000, deps: [id] }
   );
 
+  // ACL-P1 T10: the Share dialog (the form footer's Share button or the
+  // palette's entity.share verb dispatches to it while this surface is open).
+  const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
+
   const delMut = useMutation(
     () => apiFetch("DELETE", "/agents/" + encodeURIComponent(id)),
     {
@@ -1347,6 +1366,7 @@ function AgentDetail({ agentId, pushToast }) {
         pushToast={pushToast}
         onChat={startChat}
         chatLoading={startChatMut.loading}
+        onShare={() => setShareOpen(true)}
         onDelete={() => { setDeleteError(null); setConfirmDelete(true); }}
         onClose={() => navigate("/agents")}
         onCreate={() => {
@@ -1389,6 +1409,15 @@ function AgentDetail({ agentId, pushToast }) {
             <li>DELETE is NOT idempotent — a second DELETE returns 404 (app spec §5).</li>
           </ul>
         </Modal>
+      )}
+
+      {shareOpen && (
+        <SHR_ShareDialog
+          plural="agents"
+          id={id}
+          title={id}
+          onClose={() => setShareOpen(false)}
+        />
       )}
     </>
   );

@@ -43,7 +43,7 @@ class SessionClaimAdapter(ClaimAdapter):
 
     def eligibility_sql(self) -> str:
         # parked_status lives inside the entity's JSONB ``data`` column, not as
-        # a top-level column. Use the JSONB accessor (matching the chat/harness/
+        # a top-level column. Use the JSONB accessor (matching the harness and
         # trigger adapters); ``e.parked_status`` raises UndefinedColumnError on
         # Postgres and breaks the claim loop so no session ever runs.
         #

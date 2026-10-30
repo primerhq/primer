@@ -12,6 +12,7 @@ import pytest
 # constructs a context.
 import primer.workspace  # noqa: F401
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.toolset.harness import HARNESS_TOOLSET_ID, build_harness_toolset_provider
 from primer.model.chat import (
     Tool,
     ToolCallPart,
@@ -740,3 +741,85 @@ class TestUserRoleFloorRealSurfaces:
         assert denied.error is True
         assert "admin" in denied.output
         assert system.calls == []
+
+
+# ---- Regression: the real harness toolset mounts in list_tools -----------
+
+
+class TestHarnessToolsetMounts:
+    """Red probe (FIX-H1): an agent bound to the ``harness`` toolset used to
+    fail EVERY turn at tool listing.
+
+    ``ToolExecutionManager.list_tools`` reserves the double underscore as the
+    scope separator and raises :class:`ConfigError` when a provider yields a
+    bare tool id that already contains it. The harness toolset registered its
+    tools under scoped ids (``harness__list``, ``harness__get``, ...), so the
+    manager raised on them instead of scoping them. Reaching the harness tools
+    worked only through ``system__call_tool`` and MCP, never through the agent's
+    own tool surface.
+
+    The fix renames the harness tools' bare ids (``list``, ``get``, ...); the
+    manager then scopes them to the same wire ids (``harness__list``, ...) the
+    model was always told to use. This test binds the REAL harness provider and
+    asserts the catalogue mounts.
+    """
+
+    # The list/get handlers only capture ``storage_provider`` in a closure;
+    # nothing is touched at build time, so a bare stub assembles the provider.
+    # ``list`` needs an empty page at call time, so the stub's store answers it.
+    @staticmethod
+    def _harness_provider():
+        class _Page:
+            items: list = []
+            total = 0
+            offset = 0
+            length = 50
+
+        class _Storage:
+            async def list(self, page):
+                return _Page()
+
+        class _SP:
+            def get_storage(self, model):
+                del model
+                return _Storage()
+
+        return build_harness_toolset_provider(storage_provider=_SP())
+
+    @pytest.mark.asyncio
+    async def test_real_harness_toolset_lists_scoped_ids(self) -> None:
+        provider = self._harness_provider()
+        mgr = ToolExecutionManager(
+            toolset_providers={HARNESS_TOOLSET_ID: provider},  # type: ignore[arg-type]
+            initiated_by=PrincipalRef.system(),
+        )
+        tools = await mgr.list_tools()
+        assert sorted(t.id for t in tools) == sorted(
+            [
+                "harness__list",
+                "harness__get",
+                "harness__register",
+                "harness__update",
+                "harness__update_overrides",
+                "harness__fetch",
+                "harness__install",
+                "harness__sync",
+                "harness__uninstall",
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_real_harness_toolset_dispatches(self) -> None:
+        """Mounting is only half the fix: a call through the scoped id must
+        reach the owning provider handler (not raise, not 404)."""
+        provider = self._harness_provider()
+        mgr = ToolExecutionManager(
+            toolset_providers={HARNESS_TOOLSET_ID: provider},  # type: ignore[arg-type]
+            initiated_by=PrincipalRef.system(),
+        )
+        await mgr.list_tools()
+        result = await mgr.execute(
+            ToolCallPart(id="c", name="harness__list", arguments={}),
+        )
+        assert result.error is False
+        assert "items" in result.output

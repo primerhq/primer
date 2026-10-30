@@ -16,7 +16,12 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from primer.access.person import person_for_tool
+from primer.access.policy import require
+from primer.model.access import Access, AccessLevel
 from primer.model.chat import Tool, ToolCallResult, ToolExample
+from primer.model.except_ import AccessDeniedError, NotFoundError
+from primer.model.yield_ import ToolContext
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err
 from primer.toolset._helpers import ok as _ok
@@ -127,7 +132,7 @@ def build_python_toolset_tools(
     """
     guards = toolset_guards()
 
-    async def _create_python_toolset_handler(args_json: dict):
+    async def _create_python_toolset_handler(args_json: dict, ctx: ToolContext | None = None):
         from primer.model.providers.toolset import (
             PythonConfig,
             Toolset,
@@ -145,6 +150,10 @@ def build_python_toolset_tools(
                 default_timeout_seconds=args.default_timeout_seconds,
             ),
         )
+        # The run's initiator owns the new row; an identity-less run (admin / system)
+        # stores the row admin-managed (access-control Phase 1).
+        person = person_for_tool(ctx)
+        row.access = Access.owned_by(person.user_id) if person.user_id is not None else Access()
         # Refused BEFORE registration: no code of a refused toolset is parsed.
         refusal = refuse_create(guards, row)
         if refusal is not None:
@@ -161,7 +170,7 @@ def build_python_toolset_tools(
         await storage_provider.get_storage(Toolset).create(row)
         return _ok({"ok": True, "toolset_id": args.toolset_id, "tools": tools})
 
-    async def _update_python_toolset_source_handler(args_json: dict):
+    async def _update_python_toolset_source_handler(args_json: dict, ctx: ToolContext | None = None):
         from primer.model.providers.toolset import Toolset
         from primer.toolset.python_runner.registration import RegistrationError
         from primer.toolset.toolset_checks import own_python_source_version
@@ -171,6 +180,15 @@ def build_python_toolset_tools(
         existing = await store.get(args.toolset_id)
         if existing is None:
             return _ok({"ok": False, "error": "not-found"})
+        # A row the caller holds no level on answers exactly as a missing one, and a level
+        # below full is refused before the toolset is judged (access-control Phase 1).
+        person = person_for_tool(ctx)
+        try:
+            require(person, existing.access, AccessLevel.FULL, what=f"toolset {args.toolset_id!r}")
+        except NotFoundError:
+            return _ok({"ok": False, "error": "not-found"})
+        except AccessDeniedError as exc:
+            return _err(exc.message, error_type="forbidden")
         refusal = _refuse_unless_python(existing)
         if refusal is not None:
             return refusal
@@ -210,7 +228,7 @@ def build_python_toolset_tools(
             }
         )
 
-    async def _list_python_tools_handler(args_json: dict):
+    async def _list_python_tools_handler(args_json: dict, ctx: ToolContext | None = None):
         from primer.model.providers.toolset import Toolset
         from primer.toolset.python_runner.registration import RegistrationError
 
@@ -219,6 +237,12 @@ def build_python_toolset_tools(
             args.toolset_id
         )
         if existing is None:
+            return _ok({"ok": False, "error": "not-found"})
+        # A row the caller may not read answers exactly as a missing one (access-control Phase 1).
+        person = person_for_tool(ctx)
+        try:
+            require(person, existing.access, AccessLevel.READ, what=f"toolset {args.toolset_id!r}")
+        except NotFoundError:
             return _ok({"ok": False, "error": "not-found"})
         refusal = _refuse_unless_python(existing)
         if refusal is not None:
