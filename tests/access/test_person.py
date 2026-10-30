@@ -166,3 +166,33 @@ def test_person_role_properties():
     assert Person("u1", "user").is_full_user
     assert not Person(None, "restricted").is_admin
     assert not Person(None, "restricted").is_full_user
+
+
+# ---- person_for_tool: the person behind a tool call (Task 8) -------------------------------------------------
+
+
+def test_person_for_tool_uses_the_run_initiator_when_there_is_a_context():
+    from primer.access.person import person_for_tool
+    from primer.model.yield_ import ToolContext
+
+    ref = PrincipalRef(type="api_token", id="tok-1", display="t", role="user", source="local", user_id="u9")
+    ctx = ToolContext(tool_call_id="c1", session_id="s1", workspace_id="w1", initiated_by=ref)
+    assert person_for_tool(ctx) == Person("u9", "user")
+
+
+def test_person_for_tool_without_a_context_is_the_mcp_request_actor():
+    from primer.access.person import person_for_tool
+    from primer.mcp.server import current_actor
+
+    actor = Principal(type="api_token", id="tok-2", display="t", role="admin", source="local", user_id="u7")
+    token = current_actor.set(actor)
+    try:
+        assert person_for_tool(None) == Person("u7", "admin")
+    finally:
+        current_actor.reset(token)
+
+
+def test_person_for_tool_with_nothing_known_reads_only_public_rows():
+    from primer.access.person import person_for_tool
+
+    assert person_for_tool(None) == Person(None, "user")
