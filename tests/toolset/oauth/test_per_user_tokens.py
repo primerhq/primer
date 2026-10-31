@@ -304,3 +304,64 @@ async def test_the_callback_writes_the_row_of_the_person_who_started_it(svc, kb,
     await connect(svc, kb, person=B)
     row = await svc.store.get_tokens(token_key("kb", "u-b"), toolset_id="kb", user_id="u-b")
     assert row is not None and (row.connected_by, row.connected_at) == ("u-b", clock.now)
+
+
+ELSEWHERE = "http://evil.example/v1/toolsets/kb/oauth/callback"
+
+
+async def test_a_start_that_may_not_reregister_signs_nobody_out(svc, kb, clock, mock_oauth_mcp, fake_storage_provider):
+    """Review finding 1: B, below FULL, starts from another redirect URI (a forged Host). Re-registering would replace the one client A's tokens
+    name, so A's next refresh would fail and wipe A's sign-in, and A's own sign-in in flight would fail its exchange. B is refused with a 409
+    naming the registered origin; the registration, A's tokens and A's pending sign-in all stand."""
+    from primer.model.except_ import ConflictError
+    from primer.model.user import User
+    from tests.toolset.oauth._service_helpers import NOW, authorize
+
+    mock_oauth_mcp.state.register_confidential = True
+    mock_oauth_mcp.state.access_token_ttl_s = 60
+    await connect(svc, kb, person=A)
+    registered = await svc.store.get_client("kb")
+    await fake_storage_provider.get_storage(User).create(User(id="u-b", username="b", created_at=NOW, role="user"))
+    a_again = await svc.start_sign_in(target_of(kb, A), redirect_uri=REDIRECT, started_by="u-a", browser_binding=BINDING)
+
+    with pytest.raises(ConflictError, match="sign in through http://127.0.0.1:9"):
+        await svc.start_sign_in(target_of(kb, B), redirect_uri=ELSEWHERE, started_by="u-b", browser_binding="b-binding-0123456789", may_reregister=False)
+
+    assert (await svc.store.get_client("kb")).client_id == registered.client_id and len(mock_oauth_mcp.state.registrations) == 1
+    back = authorize(a_again.authorize_url)
+    done = await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
+    assert done.state == "connected", "A's sign-in in flight still exchanges its code"
+    clock.advance(hours=2)
+    assert await svc.access_token(target_of(kb, A)), "A's refresh still authenticates with the registered client"
+
+
+async def test_full_access_or_a_public_url_may_reregister(svc, kb, fake_storage_provider, mock_oauth_mcp):
+    """Someone with FULL re-registers as before; with PRIMER_PUBLIC_URL set the redirect URI is the deployment's, not the caller's, so a start
+    behaves as it always did."""
+    from tests.toolset.oauth._service_helpers import KEY
+
+    await svc.start_sign_in(target_of(kb, A), redirect_uri=REDIRECT, started_by="u-a", browser_binding=BINDING)
+    await svc.start_sign_in(target_of(kb, A), redirect_uri=ELSEWHERE, started_by="u-a", browser_binding=BINDING, may_reregister=True)
+    assert (await svc.store.get_client("kb")).redirect_uri == ELSEWHERE
+
+    public = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=SecretBox.from_key_material(KEY), public_url="https://primer.example")
+    try:
+        moved = public.redirect_uri("kb", request_base_url=None)
+        await public.start_sign_in(target_of(kb, B), redirect_uri=moved, started_by="u-b", browser_binding=BINDING, may_reregister=False)
+    finally:
+        await public.aclose()
+    assert (await svc.store.get_client("kb")).redirect_uri == moved and len(mock_oauth_mcp.state.registrations) == 3
+
+
+async def test_an_unreadable_registration_is_renewed_only_by_full_access(svc, kb, fake_storage_provider, mock_oauth_mcp):
+    from primer.model.except_ import ConflictError
+    from tests.toolset.oauth._service_helpers import NOW, OTHER_KEY
+    from primer.toolset.oauth.store import McpOAuthStore
+
+    other = McpOAuthStore(fake_storage_provider, SecretBox.from_key_material(OTHER_KEY))
+    await other.put_client(McpOAuthClient(id="kb", issuer=mock_oauth_mcp.issuer, redirect_uri=REDIRECT, client_id="old-client",
+                                          client_secret_enc=other.seal("old-secret"), registered_at=NOW))
+
+    with pytest.raises(ConflictError, match="full access"):
+        await svc.start_sign_in(target_of(kb, B), redirect_uri=REDIRECT, started_by="u-b", browser_binding=BINDING, may_reregister=False)
+    assert mock_oauth_mcp.state.registrations == []

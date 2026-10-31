@@ -112,6 +112,17 @@ nobody is refused), Primer discovers the upstream metadata, creates or reuses th
 toolset's client, records one short-lived state and PKCE verifier naming that
 person, and returns the authorization URL. `PRIMER_PUBLIC_URL` supplies the
 stable callback origin in deployments where request-derived URLs are not safe.
+Without it the redirect URI comes from the request's `Host`, and a new
+registration replaces the one every person's tokens name, so their next refresh
+fails and signs them out. Only a caller with full access on the toolset (or an
+admin) may therefore replace an existing registration: below that, a start whose
+redirect URI differs from the registered one is a 409 `sign in through <registered
+origin>`, and one whose registration must be renewed (another issuer, a client
+secret the current key cannot open) is a 409 asking someone with full access to
+sign in first (`start_sign_in(may_reregister=...)`, review finding 1). The first
+registration of a toolset is made by whoever starts first. With
+`PRIMER_PUBLIC_URL` set the redirect URI is the deployment's, not the caller's,
+and every start behaves as before.
 The start answer also sets the `primer_mcp_oauth` cookie: a fresh nonce,
 HttpOnly, `SameSite=Lax`, scoped to the callback path, living as long as the
 pending sign-in (600 s), and `Secure` when the callback is https. The pending row
@@ -224,7 +235,9 @@ The REST surface is:
 
 - `POST /v1/toolsets/{id}/oauth/start` starts or restarts the caller's own
   browser sign-in (any full user who may use the toolset), or connects the shared
-  client-credentials one (full access on the toolset).
+  client-credentials one (full access on the toolset). A 409 means the start
+  would replace the toolset's client registration, which only full access may do
+  (section 6).
 - `GET /v1/toolsets/{id}/oauth/callback`, public, consumes an authorization-code
   callback without requiring the browser to hold a Primer session; it requires the
   `primer_mcp_oauth` cookie the start answer set in the same browser. It writes the

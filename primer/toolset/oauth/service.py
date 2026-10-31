@@ -10,7 +10,8 @@ only code that starts, finishes, uses or ends one:
 
 * **Browser sign-in** (``authorization_code``). :meth:`~ToolsetOAuthService.start_sign_in` discovers the authorization server
   (:mod:`primer.toolset.oauth.protocol`), refuses one without PKCE S256, picks the client (the toolset's static client, else its earlier registration
-  when the issuer and redirect URI still match, else a new dynamic registration; the registration is per toolset, never per person), stores a pending
+  when the issuer and redirect URI still match, else a new dynamic registration; the registration is per toolset, never per person, and only a caller
+  with FULL on the toolset may replace one that exists, review finding 1), stores a pending
   sign-in naming the person (the PKCE verifier sealed, single use, ten minutes) and returns the authorize URL. The pending sign-in is bound to the
   browser that started it: it keeps the digest of a nonce that browser holds as an HttpOnly cookie, and :meth:`~ToolsetOAuthService.complete_sign_in`
   takes it back by its ``state`` only with that nonce, exchanges the code and writes the token row of the person the pending sign-in names. A callback
@@ -57,7 +58,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, ParamSpec, TypeVar
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from pydantic import BaseModel, Field
@@ -68,7 +69,7 @@ from primer.common.error_codes import safe_code
 from primer.common.origin import origin_of
 from primer.common.secret_box import SecretBox, SecretBoxError
 from primer.int.storage_provider import StorageProvider
-from primer.model.except_ import BadRequestError, ConfigError, PrimerError, ProviderError
+from primer.model.except_ import BadRequestError, ConfigError, ConflictError, PrimerError, ProviderError
 from primer.model.mcp_oauth import ClientAuthMethod, ClientSource, McpOAuthClient, McpOAuthPendingSignIn, McpOAuthTokenSet, McpSignInRequiredError
 from primer.model.provider import HttpConfig, McpConfig, OAuthConfig, Toolset, ToolsetProviderType, TransportType
 from primer.model.user import User
@@ -367,8 +368,15 @@ class ToolsetOAuthService:
     # ---- browser sign-in ------------------------------------------------------------------------------------------------------------------------------------------------
 
     @_for_its_target
-    async def start_sign_in(self, target: OAuthTarget, *, redirect_uri: str, started_by: str | None, browser_binding: str) -> SignInStart:
+    async def start_sign_in(
+        self, target: OAuthTarget, *, redirect_uri: str, started_by: str | None, browser_binding: str, may_reregister: bool = False,
+    ) -> SignInStart:
         """Start a browser sign-in of ``target``: the authorize URL to open, valid for :data:`PENDING_TTL`.
+
+        ``may_reregister`` says the caller may replace the toolset's client registration (FULL on the toolset, or an admin). A new registration
+        replaces the one every person's tokens name, so their next refresh fails and signs them out (review finding 1). Without it, and without
+        ``PRIMER_PUBLIC_URL`` (the redirect URI then comes from the request), a start that would replace an existing registration raises
+        :class:`~primer.model.except_.ConflictError` naming the registered origin; the first registration of a toolset is anyone's.
 
         ``browser_binding`` is a nonce only the browser that starts the sign-in holds (the route sets it as an HttpOnly cookie on the start answer);
         the pending sign-in keeps its digest, and :meth:`complete_sign_in` takes it back only with the same nonce (audit G4-01). The ``state`` in the
@@ -393,7 +401,7 @@ class ToolsetOAuthService:
         protocol.require_s256(metadata)
         if not metadata.authorization_endpoint:
             raise BadRequestError(f"the authorization server {metadata.issuer} has no authorization endpoint, so a browser sign-in cannot start")
-        client, source = await self._sign_in_client(target, found, redirect_uri=redirect_uri, now=now)
+        client, source = await self._sign_in_client(target, found, redirect_uri=redirect_uri, now=now, may_reregister=may_reregister)
         resource = self._resource(target, found)
         verifier, challenge = protocol.pkce_pair()
         state = secrets.token_urlsafe(32)
@@ -974,9 +982,11 @@ class ToolsetOAuthService:
             return None
         return target.oauth.resource_uri or protocol.canonical_resource(target.server_url)
 
-    async def _sign_in_client(self, target: OAuthTarget, found: Discovery, *, redirect_uri: str, now: datetime) -> tuple[ClientAuth, ClientSource]:
+    async def _sign_in_client(
+        self, target: OAuthTarget, found: Discovery, *, redirect_uri: str, now: datetime, may_reregister: bool,
+    ) -> tuple[ClientAuth, ClientSource]:
         """The client a browser sign-in uses: the toolset's static client, else its registration when the issuer and redirect URI still match (and it
-        can be read), else a new dynamic registration, which replaces the old one."""
+        can be read), else a new dynamic registration, which replaces the old one (refused to a caller who may not, see :meth:`start_sign_in`)."""
         metadata = found.metadata
         static = target.oauth.static_client
         if static is not None:
@@ -989,6 +999,18 @@ class ToolsetOAuthService:
                 logger.warning("MCP toolset %s: its client registration cannot be read with the current encryption key; registering again", target.toolset_id)
             else:
                 return protocol.client_auth_for(metadata, registered.client_id, secret), "registered"
+        if registered is not None and not may_reregister and self._public_url is None:
+            if registered.redirect_uri != redirect_uri:
+                parts = urlsplit(registered.redirect_uri)
+                raise ConflictError(
+                    f"sign in through {parts.scheme}://{parts.netloc}: the MCP toolset {target.toolset_id} is registered at its authorization server for that address, and "
+                    "signing in from another one would replace the registration and sign everyone else out (someone with full access on the "
+                    "toolset can move it)"
+                )
+            raise ConflictError(
+                f"the client registration of the MCP toolset {target.toolset_id} must be renewed, which signs everyone out of it: someone with full "
+                "access on the toolset must sign in first"
+            )
         made = await protocol.register_client(metadata=metadata, redirect_uri=redirect_uri, client_name=target.oauth.client_name, http=self._http)
         await self._store.put_client(McpOAuthClient(
             id=target.toolset_id,
