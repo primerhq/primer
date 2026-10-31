@@ -164,7 +164,7 @@ async def is_fresh_install(sp: StorageProvider) -> bool:
     from primer.model.channel import Channel
     from primer.model.collection import Collection, Document
     from primer.model.graph import Graph
-    from primer.model.storage import OffsetPage
+    from primer.model.storage import CursorPage
     from primer.model.providers.toolset import Toolset
     from primer.model.trigger import Trigger
     from primer.model.user import User
@@ -175,7 +175,8 @@ async def is_fresh_install(sp: StorageProvider) -> bool:
     if state.bootstrap_completed_at is not None or state.last_migration_at is not None:
         return False
     for model in (User, Agent, Graph, Toolset, Collection, Document, Workspace, WorkspaceSession, WorkspaceTemplate, Channel, Trigger, ApiToken):
-        page = await sp.get_storage(model).list(OffsetPage(offset=0, length=1))
+        # find, not list: boot recovery pins that session reads go through find (index-friendly), and a cursor page needs no COUNT.
+        page = await sp.get_storage(model).find(None, CursorPage(length=1))
         if page.items:
             return False
     return True
