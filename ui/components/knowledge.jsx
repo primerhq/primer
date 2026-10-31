@@ -99,7 +99,25 @@ function KN_Tree({ cid, parent, depth, expanded, toggle, selectedPath, onSelect,
 // Document pane
 // ---------------------------------------------------------------------------
 
-function KN_DocumentPane({ collection, path, readOnly, pushToast, onChanged, onSelect }) {
+// ACL-P3-T7 (access P3, decision 4): the collection's level gates its writes.
+// The disabled controls carry one of these as their words - never hidden
+// silently.
+const KN_RO_NOTE = "Read-only: you can view this collection";
+const KN_OWNER_NOTE = "Only an owner can do this";
+const KN_SYSTEM_NOTE = "System collection: regenerated from platform state, read-only.";
+
+// level: the view's your_level from GET /collections/{id}/access (undefined
+// while that read is in flight); system: the collection's system flag (its row
+// is public, so it answers read to everyone who is not an owner).
+// ro: the document writes stay drawn but disabled; ownerOnly: the search
+// toggle and the collection delete need the owner.
+function KN_writeGates(level, system) {
+  const ro = !!system || level === "read";
+  return { ro, ownerOnly: !ro && level === "full" };
+}
+window.KN_writeGates = KN_writeGates;
+
+function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged, onSelect }) {
   const { useResource, apiFetch } = window.primerApi;
   const cid = collection.id;
   const [draft, setDraft] = React.useState(null);
@@ -204,20 +222,42 @@ function KN_DocumentPane({ collection, path, readOnly, pushToast, onChanged, onS
           {readOnly ? (
             <div className="row" style={{ gap: 6, alignItems: "center" }}>
               <Icon name="lock" />
-              <span className="muted text-sm">
-                System collection: regenerated from platform state, read-only.
-              </span>
+              <span className="muted text-sm">{KN_SYSTEM_NOTE}</span>
             </div>
           ) : null}
         </div>
-        {readOnly ? null : (
-          <div className="row" style={{ gap: 6 }}>
-            <Btn icon="plus" kind="ghost" onClick={() => setChildOpen(true)}>New child</Btn>
-            <Btn icon="move" kind="ghost" onClick={() => setMoveOpen(true)}>Move</Btn>
-            <Btn icon="trash" kind="ghost" onClick={remove} disabled={busy}>Delete</Btn>
-            <Btn icon="check" onClick={save} disabled={busy}>Save</Btn>
-          </div>
-        )}
+        {/* ACL-P3-T7: the writes stay drawn at a read level - disabled, with
+            the reason as their words - instead of vanishing. */}
+        <div className="row" style={{ gap: 6 }}>
+          <Btn
+            icon="plus" kind="ghost" data-testid="kn-doc-new-child" disabled={ro}
+            title={ro ? (readOnly ? KN_SYSTEM_NOTE : KN_RO_NOTE) : "Create a child document"}
+            onClick={() => setChildOpen(true)}
+          >
+            New child
+          </Btn>
+          <Btn
+            icon="move" kind="ghost" data-testid="kn-doc-move" disabled={ro}
+            title={ro ? (readOnly ? KN_SYSTEM_NOTE : KN_RO_NOTE) : "Move this document"}
+            onClick={() => setMoveOpen(true)}
+          >
+            Move
+          </Btn>
+          <Btn
+            icon="trash" kind="ghost" data-testid="kn-doc-delete" onClick={remove}
+            disabled={busy || ro}
+            title={ro ? (readOnly ? KN_SYSTEM_NOTE : KN_RO_NOTE) : "Delete this document"}
+          >
+            Delete
+          </Btn>
+          <Btn
+            icon="check" data-testid="kn-doc-save" onClick={save}
+            disabled={busy || ro}
+            title={ro ? (readOnly ? KN_SYSTEM_NOTE : KN_RO_NOTE) : "Save this document"}
+          >
+            Save
+          </Btn>
+        </div>
       </div>
 
       {readOnly ? (
@@ -233,12 +273,15 @@ function KN_DocumentPane({ collection, path, readOnly, pushToast, onChanged, onS
             value={title}
             placeholder="Title (defaults to the slug)"
             onChange={(e) => setTitle(e.target.value)}
+            disabled={ro && !readOnly}
+            title={ro && !readOnly ? KN_RO_NOTE : undefined}
           />
           <textarea
             className="input mono"
             style={{ minHeight: 320 }}
             value={draft ?? ""}
             onChange={(e) => setDraft(e.target.value)}
+            disabled={ro && !readOnly}
           />
         </>
       )}
@@ -576,7 +619,7 @@ function KN_SearchLadder({ activeRung }) {
 // The enablement form (a real, must-not-drop capability per the delta)
 // folds into the strip's own disabled-state branch rather than living
 // as a separate section.
-function KN_IndexingStrip({ collection, status, embedProviders, sspProviders, pushToast, onChanged }) {
+function KN_IndexingStrip({ collection, status, embedProviders, sspProviders, pushToast, onChanged, ro, ownerOnly }) {
   const { apiFetch, useCapabilities, capabilityHint } = window.primerApi;
   const caps = useCapabilities();
   const cid = collection.id;
@@ -647,6 +690,8 @@ function KN_IndexingStrip({ collection, status, embedProviders, sspProviders, pu
   // server; picking one that is missing fails at enable time with a 409
   // naming it, so say so at the point of choice instead.
   const selectedSspRow = sspRows.find((p) => p.id === ssp);
+  // ACL-P3-T7: the search toggle is an owner write (access P3, decision 4) -
+  // drawn at every level, disabled at read and at full with the reason.
   const selectedSspMissing =
     !!selectedSspRow &&
     selectedSspRow.provider === "lance" &&
@@ -713,12 +758,27 @@ function KN_IndexingStrip({ collection, status, embedProviders, sspProviders, pu
               {capabilityHint("lance")}
             </div>
           ) : null}
-          <Btn size="sm" onClick={enable} disabled={busy || !embedder || !model || !ssp}>
+          <Btn
+            size="sm"
+            data-testid="kn-search-enable"
+            onClick={enable}
+            disabled={busy || !embedder || !model || !ssp || ro || ownerOnly}
+            title={ro ? KN_RO_NOTE : ownerOnly ? KN_OWNER_NOTE : "Enable meaning-based search"}
+          >
             Enable search
           </Btn>
         </div>
       ) : (
-        <Btn kind="ghost" size="sm" onClick={disable} disabled={busy}>Disable search</Btn>
+        <Btn
+          kind="ghost"
+          size="sm"
+          data-testid="kn-search-disable"
+          onClick={disable}
+          disabled={busy || ro || ownerOnly}
+          title={ro ? KN_RO_NOTE : ownerOnly ? KN_OWNER_NOTE : "Disable meaning-based search"}
+        >
+          Disable search
+        </Btn>
       )}
     </div>
   );
@@ -729,7 +789,8 @@ function KN_IndexingStrip({ collection, status, embedProviders, sspProviders, pu
 // ---------------------------------------------------------------------------
 
 function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProviders, pushToast, onBack }) {
-  const { useResource, apiFetch } = window.primerApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { navigate } = useRouter();
   const [expanded, setExpanded] = React.useState({});
   const [selectedPath, setSelectedPath] = React.useState(null);
   const [reloadKey, setReloadKey] = React.useState(0);
@@ -737,6 +798,22 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
   const [rootNewOpen, setRootNewOpen] = React.useState(false);
   const readOnly = !!collection.system;
   const cid = collection.id;
+
+  // ACL-P3-T7: the viewer's level on the collection (GET /collections/{id}/access,
+  // the same read nv-shell takes for the open workspace): at read the document
+  // writes stay drawn but disabled, at full the search toggle and the delete
+  // lose to the owner, at owner everything stays live.
+  const access = useResource(
+    "collection-access:" + cid,
+    (signal) => apiFetch("GET", `/collections/${encodeURIComponent(cid)}/access`, null, { signal }),
+    { pollMs: null, deps: [cid] },
+  );
+  const gates = KN_writeGates(access.data?.your_level, collection.system);
+
+  // ACL-P3-T7: the Share dialog (the footer's Share button or the palette's
+  // entity.share verb). A harness-managed row (a non-null harness_id) draws
+  // the link to the harness instead - a direct share 409s harness_managed.
+  const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
 
   // Lifted from the old KN_SearchSettings (uiv2 Wave 2): the header
   // facts row needs the same search-status fetch the indexing strip
@@ -817,13 +894,53 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
       width={860}
       onClose={onBack}
       footer={
-        readOnly ? null : (
-          <>
-            <Btn kind="ghost" icon="upload" onClick={() => setImportOpen(true)}>Import zip</Btn>
-            <Btn icon="plus" onClick={() => setRootNewOpen(true)}>New document</Btn>
-            <Btn kind="ghost" busy={busyDel} onClick={removeCollection}>Delete</Btn>
-          </>
-        )
+        <>
+          {collection.harness_id ? (
+            <SHR_HarnessShare
+              harnessId={collection.harness_id}
+              onOpen={() => navigate("/harnesses/" + encodeURIComponent(collection.harness_id))}
+            />
+          ) : (
+            <Btn
+              kind="ghost"
+              icon="send"
+              data-testid="collection-share"
+              data-verb="entity.share"
+              onClick={() => setShareOpen(true)}
+            >
+              Share
+            </Btn>
+          )}
+          <Btn
+            kind="ghost"
+            icon="upload"
+            data-testid="kn-import-zip"
+            disabled={gates.ro}
+            title={gates.ro ? KN_RO_NOTE : "Import a zip of documents"}
+            onClick={() => setImportOpen(true)}
+          >
+            Import zip
+          </Btn>
+          <Btn
+            icon="plus"
+            data-testid="kn-new-document"
+            disabled={gates.ro}
+            title={gates.ro ? KN_RO_NOTE : "Create a document at the root"}
+            onClick={() => setRootNewOpen(true)}
+          >
+            New document
+          </Btn>
+          <Btn
+            kind="ghost"
+            data-testid="kn-delete-collection"
+            busy={busyDel}
+            disabled={gates.ro || gates.ownerOnly}
+            title={gates.ro ? KN_RO_NOTE : gates.ownerOnly ? KN_OWNER_NOTE : "Delete this collection"}
+            onClick={removeCollection}
+          >
+            Delete
+          </Btn>
+        </>
       }
     >
       <div className="col" style={{ gap: 0, margin: "-16px" }}>
@@ -841,6 +958,8 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
           sspProviders={sspProviders}
           pushToast={pushToast}
           onChanged={bump}
+          ro={gates.ro}
+          ownerOnly={gates.ownerOnly}
         />
         <div className="row" style={{ gap: 16, alignItems: "flex-start", padding: "14px 16px 16px" }}>
           <div className="col kn-tree" style={{ minWidth: 240, maxWidth: 320, gap: 8 }}>
@@ -868,6 +987,7 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
                 collection={collection}
                 path={selectedPath}
                 readOnly={readOnly}
+                ro={gates.ro}
                 pushToast={pushToast}
                 onChanged={bump}
                 onSelect={setSelectedPath}
@@ -900,6 +1020,14 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
           onCreated={(p) => { setRootNewOpen(false); bump(); setSelectedPath(p); }}
         />
       ) : null}
+      {shareOpen && (
+        <SHR_ShareDialog
+          plural="collections"
+          id={cid}
+          title={cid}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
     </Modal>
   );
 }
@@ -1143,7 +1271,18 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
                   <tr key={c.id} style={{ cursor: "pointer" }}
                     onClick={() => setSelected(c)}>
                     <td className="mono">
-                      {c.id} {c.system ? <Icon name="lock" /> : null}
+                      {c.id}
+                      {c.system ? <Icon name="lock" /> : null}
+                      {SHR_accessBadges(c.access).map((b) => (
+                        <span
+                          key={b}
+                          className="pill pill-ended"
+                          data-testid={"collection-access-badge-" + b}
+                          style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
+                        >
+                          <span className="dot"></span>{b}
+                        </span>
+                      ))}
                     </td>
                     <td className="muted text-sm">{c.description}</td>
                     <td className="mono muted text-sm">
