@@ -127,7 +127,7 @@ def test_ws_group_of_splits_mine_shared_public() -> None:
 
     def grp(row: dict, viewer) -> str:
         return json.loads(
-            ctx.eval("NV_wsGroupOf(%s, %s)" % (json.dumps(row), json.dumps(viewer)))
+            ctx.eval(f"JSON.stringify(NV_wsGroupOf({json.dumps(row)}, {json.dumps(viewer)}))")
         )
 
     assert grp({"access": {"owners": ["u1"], "grants": {}, "public": False}}, "u1") == "mine"
@@ -200,8 +200,8 @@ def test_the_session_controls_are_read_only() -> None:
         "nv-session-delete",
         "nv-stop",
     ):
-        assert "wsRo" in _after(SESSION_SRC, 'data-testid="%s"' % tid, 300), (
-            "the %s control is not disabled at read level" % tid
+        assert "wsRo" in _after(SESSION_SRC, f'data-testid="{tid}"', 300), (
+            f"the {tid} control is not disabled at read level"
         )
 
 
