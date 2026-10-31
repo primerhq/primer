@@ -490,3 +490,44 @@ async def test_a_silent_peer_is_dropped_and_its_terminal_freed(tmp_path: Path, m
     finally:
         _kill(pid)
         await srv.close()
+
+
+# ---------------------------------------------------------------------------
+# GI-14: pty_open's error paths answer a frame and leak nothing
+# ---------------------------------------------------------------------------
+
+
+async def test_a_non_integer_size_answers_an_error_frame(runtime) -> None:
+    connect, _root, _url = runtime
+    conn = await connect()
+    rid = await conn.send("pty_open", {"cmd": ["/bin/sh"], "cols": "wide", "rows": 24})
+    frame = await conn.reply(rid)
+    assert frame["ok"] is False
+    assert frame["error"]["code"] == "EPROTOCOL"
+    assert (await conn.health())["ok"] is True
+    await conn.ws.close()
+
+
+async def test_a_failed_pty_open_announcement_frees_the_child(tmp_path: Path) -> None:
+    from primer_runtime.pty_op import PtyRegistry, start_pty
+
+    pidfile = tmp_path / "pty.pid"
+    pid_seen: list[int] = []
+
+    async def send(frame: str) -> None:
+        if '"pty_open"' in frame:
+            pid_seen.append(await _pid(pidfile))
+            raise ConnectionResetError("Cannot write to closing transport")
+
+    registry = PtyRegistry()
+    task = start_pty(
+        req_id=1, args={"cmd": ["sh", "-c", f"echo $$ > {pidfile}; exec sleep 60"]},
+        workspace_root=str(tmp_path), send=send, registry=registry,
+    )
+    try:
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 15)
+        assert pid_seen
+        assert await _gone(pid_seen[0])
+        assert registry.get(1) is None
+    finally:
+        _kill(pid_seen[0] if pid_seen else None)

@@ -314,8 +314,15 @@ async def _run_pty(
             error={"code": ErrorCode.EPROTOCOL, "message": "pty_open: 'cmd' must be a non-empty list"},
         )))
         return
-    cols = int(args.get("cols") or 80)
-    rows = int(args.get("rows") or 24)
+    try:
+        cols = int(args.get("cols") or 80)
+        rows = int(args.get("rows") or 24)
+    except (TypeError, ValueError):  # a bad size from a client frame answers an error, never a silent dead task (GI-14)
+        await send(serialize(Response(
+            req_id=req_id, ok=False,
+            error={"code": ErrorCode.EPROTOCOL, "message": "pty_open: 'cols' and 'rows' must be integers"},
+        )))
+        return
     workdir_raw: str | None = args.get("workdir")
     env_extra: dict[str, str] | None = args.get("env")
 
@@ -425,11 +432,13 @@ async def _run_pty(
                 )
             loop.remove_reader(master_fd)
 
-    # Announce readiness, then start draining the master fd.
-    await send(serialize(Event(req_id=req_id, event="pty_open")))
+    # Start draining the master fd, then announce readiness. Output waits in the queue until the announcement is out,
+    # and an announcement that cannot be sent (the client left) runs the teardown below instead of leaking the child
+    # and the master fd (GI-14).
     loop.add_reader(master_fd, _on_readable)
 
     try:
+        await send(serialize(Event(req_id=req_id, event="pty_open")))
         while True:
             chunk = await queue.get()
             if not chunk:
