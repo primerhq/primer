@@ -145,6 +145,15 @@ class EventSubscription(ABC):
         """Release the subscription. Idempotent. After aclose()
         further __anext__ calls raise StopAsyncIteration."""
 
+    async def ready(self, timeout: float | None = None) -> None:
+        """Return once the subscription is actually receiving events.
+
+        ``subscribe()`` is synchronous, so a transport that connects in the background (the Postgres LISTEN) is not listening yet when it returns;
+        a caller that publishes right after subscribing awaits this first. The default is already listening. A transport that cannot be reached
+        within ``timeout`` returns anyway (the subscription keeps trying; callers have their own fallbacks).
+        """
+        return None
+
 
 __all__ = [
     "Event",

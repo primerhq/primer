@@ -3732,6 +3732,7 @@ async def _watch_bus_for_cancel(
 ) -> None:
     try:
         sub = event_bus.subscribe()
+        await sub.ready()
     except Exception as exc:  # noqa: BLE001 - the row poll is the fallback
         logger.warning(
             "session %s: cannot subscribe to the bus for Stop/Cancel (%s); "

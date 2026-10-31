@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -44,8 +45,26 @@ from primer.model.yield_ import with_wake_entry, with_wake_park
 
 logger = logging.getLogger(__name__)
 
+#: How long a gap in the event ids must have been seen before it can be treated as permanent (a rolled-back insert), on top of the transactions that
+#: were running when it was first seen having finished.
+HOLE_GRACE_SECONDS = 1.0
+
+#: The longest a gap may hold delivery back. Transaction ids are cluster-wide, so a long write transaction anywhere (an index build, an idle-in-
+#: transaction connection, another database on the same cluster) keeps the horizon from clearing; delivery must not freeze behind it. A gap seen this
+#: long is passed even though the horizon has not cleared, and logged once.
+HOLE_MAX_WAIT_SECONDS = 60.0
+
 if TYPE_CHECKING:
     from primer.model.workspace_session import WorkspaceSession
+
+
+def _too_big_for_notify(event_key: str, envelope: dict) -> bool:
+    """Whether the wake envelope would exceed a NOTIFY body (the bus refuses one over the cap; a margin covers the wrapper)."""
+    import json
+
+    from primer.bus.postgres import MAX_NOTIFY_PAYLOAD_BYTES
+
+    return len(json.dumps({"event_key": event_key, "payload": envelope}).encode("utf-8")) > MAX_NOTIFY_PAYLOAD_BYTES - 200
 
 
 class _EventWindow:
@@ -97,8 +116,13 @@ class EventDispatcher(_BackgroundTask):
         poll_seconds: float = 5.0,
         batch: int = 200,
         max_failures: int = 5,
+        clock: Any = time.monotonic,
     ) -> None:
         super().__init__(name="event-dispatcher")
+        self._clock = clock
+        # Gaps seen in the event ids: (first missing id, last missing id) -> [next transaction id then, when first seen, whether the give-up was logged].
+        self._holes: dict[tuple[int, int], list] = {}
+        self._horizon_supported = True
         self._sp = storage_provider
         self._bus = event_bus
         self._provider_registry = provider_registry
@@ -191,6 +215,8 @@ class EventDispatcher(_BackgroundTask):
         # Subscriptions share one read of the log: the window serves every subscription whose cursor lies inside it. Lowest cursor first, so the
         # window only ever moves forward.
         window = _EventWindow(store, self._batch)
+        floor = min(cursors.values())
+        self._holes = {gap: v for gap, v in self._holes.items() if gap[1] > floor}
         self._pending_cursors = {}
         delivered = 0
         try:
@@ -227,6 +253,10 @@ class EventDispatcher(_BackgroundTask):
             if not events:
                 return delivered
             for event in events:
+                if event.id > cursor + 1 and not await self._gap_resolved(cursor + 1, event.id - 1):
+                    # An id below this event may still commit (Postgres takes the id at INSERT): hold the cursor here, never move it past the hole.
+                    self._pending_cursors[sub.id] = cursor
+                    return delivered
                 if await matches_async(event, sub.filter):
                     ok = await self._deliver(sub, event)
                     if ok:
@@ -259,6 +289,44 @@ class EventDispatcher(_BackgroundTask):
                             return delivered
                 cursor = event.id
             self._pending_cursors[sub.id] = cursor
+
+    async def _gap_resolved(self, first: int, last: int) -> bool:
+        """Whether the ids ``first..last`` (absent from the log, below an event that is there) can be passed.
+
+        Passed at once on a store with no horizon. Otherwise the gap is remembered with the next transaction id at first sight; it is passed only after
+        a grace period AND once every transaction that was running at first sight has finished (the oldest running one has reached that id): a
+        transaction that held one of these ids has then either committed (the row is in the log, no gap) or rolled back (the gap is permanent).
+        """
+        if not self._horizon_supported:
+            return True
+        store = self._sp.get_event_store()
+        gap = (first, last)
+        seen = self._holes.get(gap)
+        if seen is None:
+            horizon = await store.read_horizon()
+            if horizon is None:
+                self._horizon_supported = False
+                return True
+            self._holes[gap] = [horizon[1], self._clock(), False]
+            return False
+        next_xid_then, first_seen, warned = seen
+        waited = self._clock() - first_seen
+        if waited < HOLE_GRACE_SECONDS:
+            return False
+        horizon = await store.read_horizon()
+        if horizon is None or horizon[0] >= next_xid_then:
+            return True
+        if waited < HOLE_MAX_WAIT_SECONDS:
+            return False
+        # Ceiling: something unrelated keeps the horizon back. Pass the gap rather than freeze delivery; say so once per gap, not per subscription.
+        if not warned:
+            seen[2] = True
+            logger.warning(
+                "event-dispatcher: passing event ids %d-%d after waiting %.0fs; a long-running transaction is holding the horizon back, so an event "
+                "inserted by a transaction that commits later may be skipped",
+                first, last, waited,
+            )
+        return True
 
     def _sub_completed(self, sub: EventSubscription) -> bool:
         sink = sub.sink
@@ -376,9 +444,19 @@ class EventDispatcher(_BackgroundTask):
         # What a user entered (a canvas.event's value and data) is removed from EVERY wake, whoever waits (an admin's wait_for_event and canvas_wait
         # included): the flip stamps this envelope on the waiting row, which any user may read, and the resume makes it the run's tool result. The
         # input never leaves the session it belongs to; canvas_wait restores it from that session's own canvas (audit G8-08, rulings on #872).
-        await self._bus.publish(
-            sink.event_key, with_wake_entry(with_wake_park(without_input(redact_event(event)).model_dump(mode="json"), parked_at), sub.id),
-        )
+        envelope = with_wake_entry(with_wake_park(without_input(redact_event(event)).model_dump(mode="json"), parked_at), sub.id)
+        if _too_big_for_notify(sink.event_key, envelope):
+            # A Postgres NOTIFY body is capped (about 8 KB) and a CRUD event carries the whole row, so a big envelope could never ride the bus: it
+            # failed until the event was skipped and the park never woke (core review finding 3). Wake through storage instead, with the guarded
+            # flip the bus listener runs on receipt, so the park and entry fences apply unchanged and a repeat is a no-op.
+            from primer.model.workspace_session import WorkspaceSession
+            from primer.session.yields import flip_sessions_parked_on
+
+            await flip_sessions_parked_on(
+                sink.event_key, envelope, session_storage=self._sp.get_storage(WorkspaceSession), engine=self._claim_engine,
+            )
+        else:
+            await self._bus.publish(sink.event_key, envelope)
         if sink.one_shot:
             await self._complete_one_shot(sub)
         return True

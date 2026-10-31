@@ -29,7 +29,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from primer.bus.scheduler_tasks import _BackgroundTask
+from primer.bus.scheduler_tasks import _BackgroundTask, _iter_parks
 from primer.bus.ws_watch_probe import Change, WatchProbe
 from primer.int.coordinator import ROLE_WATCHER_MANAGER
 from primer.int.event_bus import EventBus
@@ -346,58 +346,8 @@ async def _find_active_watch_parks(scheduler) -> list[dict]:
     ``resumable``, the manager drops the watcher (the resume will
     rebuild it if the new worker re-parks).
     """
-    from primer.scheduler.in_memory import InMemoryScheduler
-    from primer.scheduler.postgres import PostgresScheduler
-
-    out: list[dict] = []
-
-    if isinstance(scheduler, InMemoryScheduler):
-        async with scheduler._lock:
-            for sess in scheduler._sessions.values():
-                if (
-                    sess.parked_status == "parked"
-                    and sess.parked_event_key is not None
-                    and sess.parked_event_key.startswith("watch:")
-                ):
-                    out.append(_extract_park_dict(sess))
-        return out
-
-    if isinstance(scheduler, PostgresScheduler):
-        sql = """
-            SELECT id,
-                   data->>'workspace_id'      AS workspace_id,
-                   data->>'parked_event_key'  AS event_key,
-                   data->'parked_state'        AS parked_state
-              FROM sessions
-             WHERE data->>'parked_status' = 'parked'
-               AND data->>'parked_event_key' LIKE 'watch:%'
-             LIMIT 200
-        """
-        async with scheduler._storage.pool.acquire() as conn:
-            rows = await conn.fetch(sql)
-        for row in rows:
-            # asyncpg returns JSONB as a string unless a codec is
-            # registered on the connection — parse defensively.
-            raw_blob = row["parked_state"]
-            if isinstance(raw_blob, str):
-                import json as _json
-                raw_blob = _json.loads(raw_blob)
-            blob = raw_blob or {}
-            yielded = blob.get("yielded") or {}
-            meta = yielded.get("resume_metadata") or {}
-            out.append(
-                {
-                    "event_key": row["event_key"],
-                    "workspace_id": row["workspace_id"],
-                    "paths": list(meta.get("paths") or []),
-                    "batch_window_ms": int(
-                        meta.get("batch_window_ms") or DEFAULT_BATCH_WINDOW_MS
-                    ),
-                }
-            )
-        return out
-
-    return []
+    # Parks live in session storage on every backend (the in-memory scheduler keeps none of its own), so one paged read serves both.
+    return [_extract_park_dict(sess) async for sess in _iter_parks(scheduler, "watch:")]
 
 
 def _extract_park_dict(sess) -> dict:

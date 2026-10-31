@@ -51,6 +51,9 @@ logger = logging.getLogger(__name__)
 
 
 YIELD_EVENTS_CHANNEL = "primer_yield_events"
+
+#: How long a caller of ``ready()`` waits for the first LISTEN before carrying on without it.
+DEFAULT_READY_TIMEOUT_SECONDS = 5.0
 """Postgres NOTIFY channel name. Distinct from session_ready so the
 existing scheduler wake-up traffic doesn't double-trigger yield
 resumes."""
@@ -105,6 +108,14 @@ class _PostgresSubscription(EventSubscription):
         self._conn = None
         self._closed = False
         self._supervisor: asyncio.Task | None = None
+        # Set once the first LISTEN has succeeded (or the subscription is closed, so a waiter never hangs on it).
+        self._ready = asyncio.Event()
+
+    async def ready(self, timeout: float | None = DEFAULT_READY_TIMEOUT_SECONDS) -> None:
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=timeout)
+        except TimeoutError:
+            logger.warning("PostgresEventBus: subscription not listening after %ss; continuing, it keeps retrying", timeout)
 
     def __aiter__(self) -> "_PostgresSubscription":
         return self
@@ -121,6 +132,7 @@ class _PostgresSubscription(EventSubscription):
         if self._closed:
             return
         self._closed = True
+        self._ready.set()
         # Drop ourselves from the parent bus's registry so a long-lived bus
         # doesn't accumulate dead subscriptions. Idempotent + guarded by the
         # _closed flag above so a double aclose() only deregisters once.
@@ -251,6 +263,7 @@ class _PostgresSubscription(EventSubscription):
                     self._on_reconnect()
                 first_attempt = False
                 self._conn = conn
+                self._ready.set()
 
                 # Block until the connection drops. asyncpg fires
                 # termination listeners when the server connection is

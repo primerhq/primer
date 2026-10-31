@@ -790,7 +790,7 @@ class TestWritePrecondition:
 # ===========================================================================
 
 
-def _park_watch_session(app, *, wid: str, paths: list[str], event_key: str):
+async def _park_watch_session(app, *, wid: str, paths: list[str], event_key: str):
     """Inject a watch_files-parked session into the app's in-memory
     scheduler so a file write can wake it."""
     from datetime import timedelta
@@ -836,21 +836,15 @@ def _park_watch_session(app, *, wid: str, paths: list[str], event_key: str):
         "started_at": now.isoformat(),
         "resume_event_payload": None,
     }
-    sched = app.state.scheduler
-    sched._sessions[sid] = sess
-    sched._leases[sid] = _LeaseState(
-        worker_id=None,
-        expires_at=None,
-        runnable=False,
-        next_attempt_at=now,
-    )
+    # The park lives in session storage, where production keeps it.
+    await app.state.storage_provider.get_storage(WorkspaceSession).create(sess)
 
 
 class TestWatchWakeOnWrite:
     @pytest.mark.asyncio
     async def test_matching_write_wakes_park(self, client, wsr, app) -> None:
         wid, _ = await _setup(client, wsr)
-        _park_watch_session(app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1")
+        await _park_watch_session(app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1")
         published: list = []
         orig = app.state.event_bus.publish
 
@@ -874,7 +868,7 @@ class TestWatchWakeOnWrite:
     @pytest.mark.asyncio
     async def test_non_matching_write_no_wake(self, client, wsr, app) -> None:
         wid, _ = await _setup(client, wsr)
-        _park_watch_session(app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1")
+        await _park_watch_session(app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1")
         published: list = []
         orig = app.state.event_bus.publish
 
@@ -896,7 +890,7 @@ class TestWatchWakeOnWrite:
     async def test_write_succeeds_when_wake_raises(self, client, wsr, app) -> None:
         """The wake is best-effort: a publish error must not fail the write."""
         wid, _ = await _setup(client, wsr)
-        _park_watch_session(app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1")
+        await _park_watch_session(app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1")
 
         async def _boom(event_key, payload=None):
             raise RuntimeError("bus exploded")

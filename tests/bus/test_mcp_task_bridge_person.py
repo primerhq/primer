@@ -15,7 +15,9 @@ from primer.access.person import Person, person_for_tool
 from primer.bus.in_memory import InMemoryEventBus
 from primer.bus.mcp_tasks import McpTaskBridge, _find_parked_mcp_task_keys
 from primer.model.principal import PrincipalRef
+from primer.model.workspace_session import WorkspaceSession
 from primer.scheduler.in_memory import InMemoryScheduler
+from tests.conftest import _FakeStorageProvider
 from tests.toolset.test_mcp_tasks import _FakeSession, _FakeStdioProvider, _make_mcp_task_parked_session, _MockProviderRegistry
 
 
@@ -36,14 +38,14 @@ class _RecordingProvider(_FakeStdioProvider):
 
 
 async def _poll_once(turn_person: PrincipalRef | None, initiated_by: PrincipalRef | None) -> list[Person]:
-    scheduler = InMemoryScheduler()
+    scheduler = InMemoryScheduler(storage_provider=_FakeStorageProvider())
     await scheduler.initialize()
     bus = InMemoryEventBus()
     await bus.initialize()
     try:
         sess = _make_mcp_task_parked_session(session_id="sess-1", tool_call_id="tc-1", toolset_id="srv-1", task_id="t-abc")
         sess.turn_person, sess.initiated_by = turn_person, initiated_by
-        scheduler._sessions["sess-1"] = sess
+        await scheduler._storage.get_storage(WorkspaceSession).create(sess)  # parks live in session storage
         provider = _RecordingProvider(_FakeSession(tools=[], task_id="t-abc"), toolset_id="srv-1")
         bridge = McpTaskBridge(bus=bus, scheduler=scheduler, provider_registry=_MockProviderRegistry({"srv-1": provider}))
         [park] = await _find_parked_mcp_task_keys(scheduler)
@@ -87,14 +89,14 @@ async def _store_person_and_toolset(sp, *, disabled: bool = False, granted: bool
 
 
 async def _poll_with_storage(sp) -> tuple[list[Person], list[tuple[str, dict]]]:
-    scheduler = InMemoryScheduler()
+    scheduler = InMemoryScheduler(storage_provider=_FakeStorageProvider())
     await scheduler.initialize()
     bus = InMemoryEventBus()
     await bus.initialize()
     try:
         sess = _make_mcp_task_parked_session(session_id="sess-1", tool_call_id="tc-1", toolset_id="srv-1", task_id="t-abc")
         sess.turn_person = _ref("u-turn")
-        scheduler._sessions["sess-1"] = sess
+        await scheduler._storage.get_storage(WorkspaceSession).create(sess)  # parks live in session storage
         provider = _RecordingProvider(_FakeSession(tools=[], task_id="t-abc"), toolset_id="srv-1")
         bridge = McpTaskBridge(bus=bus, scheduler=scheduler, provider_registry=_MockProviderRegistry({"srv-1": provider}), storage_provider=sp)
         woken: list[tuple[str, dict]] = []

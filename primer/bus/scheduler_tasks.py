@@ -879,6 +879,23 @@ async def _iter_parked_sessions(session_storage: Storage):
         offset += _PARKED_PAGE_SIZE
 
 
+async def _iter_parks(scheduler: Any, prefix: str):
+    """Yield every parked session whose ``parked_event_key`` starts with ``prefix``, read from session storage.
+
+    The scheduler only carries the storage provider; a scheduler built without one has no parks to find. Paged through every row (the old Postgres
+    query stopped at 200 with no order).
+    """
+    provider = getattr(scheduler, "_storage", None)
+    if provider is None:
+        return
+    from primer.model.workspace_session import WorkspaceSession
+
+    async for sess in _iter_parked_sessions(provider.get_storage(WorkspaceSession)):
+        key = sess.parked_event_key
+        if key is not None and key.startswith(prefix):
+            yield sess
+
+
 async def _find_due_timer_keys(session_storage: Storage) -> list[str]:
     """Find ``timer:*`` parked event_keys whose deadline is due (all rows)."""
     now = datetime.now(timezone.utc)

@@ -98,16 +98,14 @@ def _make_watch_parked_session(
 
 
 async def _scheduler_with(*sessions: WorkspaceSession) -> InMemoryScheduler:
-    sched = InMemoryScheduler()
+    """The scheduler a single-process install runs, with the parks where production keeps them: in session storage."""
+    from tests.conftest import _FakeStorageProvider
+
+    sp = _FakeStorageProvider()
+    sched = InMemoryScheduler(storage_provider=sp)
     await sched.initialize()
     for sess in sessions:
-        sched._sessions[sess.id] = sess
-        sched._leases[sess.id] = _LeaseState(
-            worker_id=None,
-            expires_at=None,
-            runnable=False,
-            next_attempt_at=datetime.now(timezone.utc),
-        )
+        await sp.get_storage(WorkspaceSession).create(sess)
     return sched
 
 

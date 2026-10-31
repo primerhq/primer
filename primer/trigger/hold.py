@@ -85,6 +85,7 @@ async def fire_and_hold(
         return HeldFire(fire_result=result, timed_out=True)
 
     sub = deps.event_bus.subscribe()
+    await sub.ready()  # listening before the fire publishes its wake
     try:
         result = await fire_trigger(
             trigger_id=trigger_id, scheduled_for=None, deps=deps,
