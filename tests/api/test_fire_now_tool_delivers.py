@@ -3,7 +3,7 @@
 Both surfaces fire through :func:`primer.trigger.service.fire_now`; the tool used to build its ``ServiceDeps`` with no workspace registry and no
 scheduler (its factory was given none), so every ``agent_fresh_session``, ``graph_fresh_session`` and ``session_append`` subscription answered
 ``dispatch_failed`` ("requires a workspace_registry") from the tool while the REST route, which threads ``app.state``'s, delivered. The reach and
-rank rules the tool applies (#874) are unchanged and pinned where they live (``tests/api/test_session_control_rule_table.py``).
+access rules the tool applies are unchanged and pinned where they live (``tests/api/test_session_control_rule_table.py``).
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ from pathlib import Path
 import pytest
 
 from primer.mcp.server import current_actor
-from primer.model.principal import Principal
+from primer.model.access import Access
+from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import OffsetPage
 from primer.model.trigger import DelayedTriggerConfig, SessionAppendSubConfig, Subscription, Trigger
 from tests.api._sub_targets import seed_sub_targets
@@ -34,13 +35,14 @@ async def _seed(sp) -> None:
         id="sess-busy", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING, turn_status="running", created_at=_now(),
     ))
+    owner = PrincipalRef(type="user", id="u-adm", display="adm", role="admin", source="local")  # access-control P3: a fire runs as an owner
     await sp.get_storage(Trigger).create(Trigger(
-        id="tr-tool", slug="tool-fire", name="t", config=DelayedTriggerConfig(fire_at=_now() + timedelta(hours=1)),
+        id="tr-tool", slug="tool-fire", name="t", owner=owner, access=Access(owners=["u-adm"]), config=DelayedTriggerConfig(fire_at=_now() + timedelta(hours=1)),
         enabled=True, next_fire_at=_now() + timedelta(hours=1), created_at=_now(),
     ))
     await sp.get_storage(Subscription).create(Subscription(
         id="sb-append", trigger_id="tr-tool", config=SessionAppendSubConfig(session_id="sess-busy"),
-        payload_template="fired {{ trigger_slug }}", parallelism="queue", enabled=True, created_at=_now(),
+        payload_template="fired {{ trigger_slug }}", parallelism="queue", enabled=True, created_at=_now(), owner=owner,
     ))
 
 
@@ -88,11 +90,8 @@ async def test_the_tool_and_the_route_hand_the_fire_the_same_collaborators(app, 
 
     seen: list = []
 
-    guards: list = []
-
-    async def _spy(*, trigger_id, scheduled_for, deps, extra_context=None, owner_guard=None):
+    async def _spy(*, trigger_id, scheduled_for, deps, extra_context=None):
         seen.append(deps)
-        guards.append(owner_guard)
         return FireResult(fire_id="fire-x", results=[])
 
     monkeypatch.setattr(dispatch_mod, "fire_trigger", _spy)
@@ -115,7 +114,6 @@ async def test_the_tool_and_the_route_hand_the_fire_the_same_collaborators(app, 
     assert tool_deps.claim_engine is rest_deps.claim_engine
     assert tool_deps.claim_engine is getattr(app.state, "claim_engine", None)
     assert tool_deps.storage_provider is rest_deps.storage_provider is sp
-    assert all(guard is not None for guard in guards), "a manual fire reached fire_trigger without its owner guard (review of #927)"
 
 
 def _call(path: str, opener: str) -> str:

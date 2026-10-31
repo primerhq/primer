@@ -24,6 +24,7 @@ from primer.model.provider import (
 )
 from primer.storage.factory import StorageProviderFactory
 from primer.toolset.system import build_system_toolset
+from tests._support.caller import AsCaller
 
 
 @pytest_asyncio.fixture
@@ -42,8 +43,9 @@ async def tools(tmp_path):
         cross_encoder_factory=lambda p: object(),
         toolset_factory=lambda t: object(),
     )
-    provider = build_system_toolset(storage_provider=sp, provider_registry=pr)
-    pr._system_toolset_provider = provider  # type: ignore[attr-defined]
+    raw = build_system_toolset(storage_provider=sp, provider_registry=pr)
+    pr._system_toolset_provider = raw  # type: ignore[attr-defined]
+    provider = AsCaller(raw)  # the calls act as an admin: the collections they touch are admin-only otherwise
     # A collection to hang documents off (search off -> indexer is a no-op).
     await provider.call(
         tool_name="create_collection",

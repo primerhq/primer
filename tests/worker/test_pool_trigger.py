@@ -24,6 +24,7 @@ from primer.int.claim import ClaimKind
 from primer.model.agent import Agent, AgentModel
 from primer.model.scheduler import WorkerConfig
 from primer.model.storage import OffsetPage
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     SessionAppendSubConfig,
     DelayedTriggerConfig,
@@ -34,6 +35,11 @@ from primer.model.trigger import (
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.worker.pool import WorkerPool
 
+
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing what they test rather than ownership.
+_PLATFORM = PrincipalRef.system()
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -97,7 +103,7 @@ async def test_pool_routes_trigger_lease_to_fire(
         created_at=_now(),
     )
     await triggers.create(t)
-    sub = Subscription(
+    sub = Subscription(owner=_PLATFORM, 
         id="sb-pool", trigger_id="tr-pool",
         config=SessionAppendSubConfig(session_id="sess-trig"),
         payload_template="hello",
@@ -314,7 +320,7 @@ async def test_run_engine_trigger_catchup_failed_deliveries_are_recorded_and_rep
         enabled=True, next_fire_at=due - timedelta(minutes=3),
         last_fired_at=last_fired, created_at=last_fired,
     ))
-    await fake_storage_provider.get_storage(Subscription).create(Subscription(
+    await fake_storage_provider.get_storage(Subscription).create(Subscription(owner=_PLATFORM, 
         id="sb-1", trigger_id="tr-cron",
         config=SessionAppendSubConfig(session_id="s-1"),
         enabled=True, created_at=last_fired,

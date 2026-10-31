@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import ParkedSessionSubConfig, Subscription
 from primer.model.workspace_session import (
     AgentSessionBinding,
@@ -17,8 +18,13 @@ from primer.trigger.subscribers import DispatchDeps
 from primer.trigger.subscribers.parked_session import ParkedSessionDispatcher
 
 
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing dispatch rather than ownership.
+_PLATFORM = PrincipalRef.system()
+
 def _make_sub(session_id: str, tool_call_id: str) -> Subscription:
-    return Subscription(
+    return Subscription(owner=_PLATFORM, 
         id="sb-1",
         trigger_id="tr-1",
         config=ParkedSessionSubConfig(

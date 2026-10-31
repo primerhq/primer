@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     SessionAppendSubConfig,
     DelayedTriggerConfig,
@@ -16,6 +17,11 @@ from primer.model.trigger import (
 from primer.trigger.dispatch import fire_trigger
 from primer.trigger.subscribers import DispatchDeps
 
+
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing dispatch rather than ownership.
+_PLATFORM = PrincipalRef.system()
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -76,7 +82,7 @@ async def test_fire_dispatches_each_enabled_subscription(
         created_at=_now(),
     )
     await sessions.create(session)
-    sub = Subscription(
+    sub = Subscription(owner=_PLATFORM, 
         id="sb-1", trigger_id="tr-1",
         config=SessionAppendSubConfig(session_id="cn-1"),
         payload_template="hello {{ fired_at }}",
@@ -129,7 +135,7 @@ async def test_fire_isolates_per_sub_failures(
         created_at=_now(),
     )
     await triggers.create(t)
-    sub_bad = Subscription(
+    sub_bad = Subscription(owner=_PLATFORM, 
         id="sb-bad", trigger_id="tr-1",
         config=SessionAppendSubConfig(session_id="cn-missing"),
         enabled=True,

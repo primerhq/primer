@@ -158,6 +158,11 @@ def _ws_row(wid: str, access: Access) -> Workspace:
     )
 
 
+#: The access every ordinary caller of these worlds holds on a seeded trigger (access-control P3: a trigger is owned, and the doors ask its level before the
+#: reach of its subscriptions): every ordinary caller owns it, so a delete (an owner act) is held back only by the reach rule these tests pin.
+TRIGGER_FULL = Access(owners=["u-ada", "u-user", "u-mcp", "u-root"], rev=1)
+
+
 class _Slot(FakeSlot):
     """The on-disk slot, as the get tool uses it. The pause and resume tools never touch it: they write the session row (ticket 01a16d3c-9984)."""
 
@@ -1117,11 +1122,15 @@ RECORDED = {"own workspace": None, P: None, "no session": None}
 
 
 async def _seed_triggers(world: WsWorld) -> None:
+    await world.sp.get_storage(Channel).create(Channel(
+        access=Access(public=True), id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM, external_id="777",
+        config=TelegramChannelConfig(),
+    ))
     triggers = world.sp.get_storage(Trigger)
-    await triggers.create(Trigger(
+    await triggers.create(Trigger(access=TRIGGER_FULL, 
         id=TRIGGER, slug="tr-one", name="t", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
-    await triggers.create(Trigger(id=CHANNEL_TRIGGER, slug="tr-ch", name="c", created_at=NOW, owner=USER, config=ChannelTriggerConfig(provider_id="cp-1")))
+    await triggers.create(Trigger(access=TRIGGER_FULL, id=CHANNEL_TRIGGER, slug="tr-ch", name="c", created_at=NOW, owner=USER, config=ChannelTriggerConfig(provider_id="cp-1", channel_id="ch-1")))
 
 
 async def _subscriptions(world: WsWorld) -> dict[str, Subscription]:
@@ -1231,6 +1240,7 @@ async def _fire_world(ws2_owner: str = "u-ada") -> World:
     await world.sp.get_storage(Graph).create(_runnable_graph())
     await world.sp.get_storage(Trigger).create(Trigger(
         id="tr-fire", slug="tr-fire", name="f", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW),
+        access=Access(owners=["u-user"]),  # the run-as owner holds the access the fire-time check asks of them (P3 SEC)
     ))
     await seed_session(world, sid="ses-t", workspace_id="ws-2", turn_no=1, created_at=NOW, initiated_by=USER)
     key = "trigger:ses-pk:tr-fire"
@@ -1554,7 +1564,7 @@ async def _trigger_world(target_workspace: str = "ws-2", owner: PrincipalRef = A
     session in ``target_workspace``. The fire of the subscription is gated on ``owner``'s level on the target (P2 T6), so the caller passes the
     person who holds it."""
     world = await _ws_world()
-    await world.sp.get_storage(Trigger).create(Trigger(
+    await world.sp.get_storage(Trigger).create(Trigger(access=TRIGGER_FULL, 
         id="tr-x", slug="tr-x", name="t", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
     await world.sp.get_storage(Subscription).create(Subscription(
@@ -1641,7 +1651,7 @@ async def test_update_from_outside_prime_cannot_re_enable_a_trigger_that_starts_
     """Probe B of the #874 review: a person's disabled trigger whose subscription starts a session in prime. A session in ws-1 re-enabled it and set
     it due, and the worker's next fire started a session in prime. Refused now, so the fire finds the trigger disabled."""
     world = await _fire_world()
-    await world.sp.get_storage(Trigger).create(Trigger(
+    await world.sp.get_storage(Trigger).create(Trigger(access=TRIGGER_FULL, 
         id="tr-off", slug="tr-off", name="nightly", created_at=NOW, owner=ADMIN, enabled=False,
         config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=30)),
     ))
@@ -1673,22 +1683,23 @@ async def test_update_from_outside_prime_cannot_re_enable_a_trigger_that_starts_
 
 # -- who may fire a trigger now (ticket 01a16e65-12d1) ---------------------------------------------------------------------------------------
 #
-# A manual fire (``POST /v1/triggers/{id}/fire_now`` and ``trigger__fire_now``, one service path since #915) drives the trigger owner's automation:
-# the fire runs as its owners (``principal_for_fire``), so a ``session_append`` subscription of an admin's trigger steers at the admin's rank. It
-# follows the rank rule (``primer.authz.may_drive``): the caller (the REST principal, the MCP client, or the calling session's run principal) must rank
-# at least as high as the trigger's owner. An admin is never outranked; a person (over REST or MCP, never a run) may always fire a trigger they own;
-# a token acts as its owner, for its rank and for what it owns. Otherwise 403 ``forbidden_rank`` (REST) or ``type=forbidden`` (a tool), and nothing
-# fires: no ``trigger.fired`` event, no subscription dispatched, the trigger's ``last_fired_*`` as they were. A trigger saved before owners were
-# recorded ranks as an ordinary user (``principal_rank(None)``). The reach rule (#874) is asked first, so an out-of-reach trigger still answers as an
-# unknown one. The clock (a scheduled or delayed fire) has no caller and is not ranked.
+# A manual fire (``POST /v1/triggers/{id}/fire_now`` and ``trigger__fire_now``, one service path since #915) drives the trigger owner's automation.
+# Access-control P3 replaced the rank rule with levels on the trigger: the caller's person (the REST principal, the MCP person, or the calling run's
+# person) must hold full on the trigger, and the subscription owner must hold full on each target workspace. A trigger the caller cannot read answers
+# as an unknown one (``trigger_not_found``, 404 over REST), and nothing fires: no ``trigger.fired`` event, no subscription dispatched, the trigger's
+# ``last_fired_*`` as they were. An admin holds every level; a trigger with no owner (saved before owners were recorded, or a system trigger) is the
+# admin's alone. The clock (a scheduled or delayed fire) has no caller. ``tests/trigger/test_trigger_access.py`` pins the levels themselves.
 
 FIRE_TRIGGER = "tr-r"
-_FIRE_WORDS_REQUEST = (
-    "trigger 'tr-r' runs at a higher rank ({owner}) than you ({caller}); you may fire only your own triggers and triggers at or below your rank"
-)
-_FIRE_WORDS_RUN = "trigger 'tr-r' runs at a higher rank ({owner}) than this session ({caller}); a session may fire only triggers at or below its own rank"
-_FIRE_WORDS_RUN_OUTSIDE = "trigger 'tr-r' runs at a higher rank ({owner}) than this run ({caller}); a run may fire only triggers at or below its own rank"
+_UNKNOWN_TRIGGER = ("trigger_not_found", {"type": "trigger_not_found", "message": FIRE_TRIGGER})
 ADA = Principal(type="user", id="u-ada", display="ada", role="user", source="local", user_id="u-ada")
+
+
+def _owned_by(owner: PrincipalRef | None, ids: dict[str, str] | None = None) -> Access:
+    """The access a trigger saved by ``owner`` holds (P3): its user owns it; a token's user, as the token acts as its owner; none for no owner or system."""
+    if owner is None or owner.type == "system":
+        return Access(owners=[])
+    return Access(owners=[owner.id if owner.type == "user" else (ids or {}).get(owner.id, owner.id)])
 
 
 async def _fire_events(sp) -> list:
@@ -1716,11 +1727,12 @@ async def _rank_world(owner: PrincipalRef | None, *, user_full_on_ws2: bool = Tr
     session ``ses-o`` in ws-2), and an API token of ada's (``at-ada``) for the rows where a token acts as its owner. ws-2 grants full to the two
     ordinary accounts, so a fire the rank rule accepts is never held back by the subscription owner's level on the target (P2 T6)."""
     world = await _ws_world()
-    grants = {"u-user": "full", "u-root": "full"} if user_full_on_ws2 else {"u-root": "full"}
+    grants = {"u-user": "full", "u-root": "full", "u-mcp": "full"} if user_full_on_ws2 else {"u-root": "full"}
     ws2 = (await world.sp.get_storage(Workspace).get("ws-2")).model_copy(update={"access": Access(owners=["u-ada"], grants=grants)})
     await world.sp.get_storage(Workspace).update(ws2)
     await world.sp.get_storage(Trigger).create(Trigger(
         id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
+        access=Access(owners=[owner.id] if owner is not None and owner.type == "user" else []),  # P3 SEC: the owner holds the access the fire asks of them
     ))
     await world.sp.get_storage(Subscription).create(Subscription(
         id="sb-r", trigger_id=FIRE_TRIGGER, config=AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner"), created_at=NOW, owner=owner,
@@ -1747,13 +1759,13 @@ FIRE_CALLERS: dict[str, tuple[PrincipalRef | None, Principal | PrincipalRef, boo
     "MCP: a demoted admin's token on their own trigger": (
         ADA_THEN, Principal(type="api_token", id="at-ada", display="automation", role="user", source="internal", user_id="u-ada"), True,
     ),
-    "MCP: a user on a trigger saved before owners were recorded": (None, MCP_USER, True),
+    "MCP: a user on a trigger saved before owners were recorded": (None, MCP_USER, False),
     "MCP: a user on a system trigger": (PrincipalRef.system(), MCP_USER, False),
     "a user's run on an admin's trigger": (ADMIN, USER, False),
     "an admin's run on a user's trigger": (USER, ADMIN, True),
     "a user's run on their own trigger": (USER, USER, True),
-    "a run with its owner's identity at a lower rank (a trigger-capped run)": (ADA_THEN, ADA_THEN.model_copy(update={"role": "user"}), False),
-    "a user's run on a trigger saved before owners were recorded": (None, USER, True),
+    "a run with its owner's identity at a lower rank (a trigger-capped run)": (ADA_THEN, ADA_THEN.model_copy(update={"role": "user"}), True),
+    "a user's run on a trigger saved before owners were recorded": (None, USER, False),
     "a user's run on a system trigger": (PrincipalRef.system(), USER, False),
     "an admin's run on a system trigger": (PrincipalRef.system(), ADMIN, True),
 }
@@ -1763,7 +1775,7 @@ _FIRE_ROWS = [
 
 
 @pytest.mark.parametrize(("who", "door"), _FIRE_ROWS)
-async def test_fire_now_fires_a_trigger_only_when_the_caller_ranks_with_its_owner(who, door):
+async def test_fire_now_fires_a_trigger_only_when_the_caller_holds_full_on_it(who, door):
     owner, caller, accepted = FIRE_CALLERS[who]
     world = await _rank_world(owner)
     before = await _fire_rows(world.sp)
@@ -1778,10 +1790,7 @@ async def test_fire_now_fires_a_trigger_only_when_the_caller_ranks_with_its_owne
         )
 
     if not accepted:
-        words = (_FIRE_WORDS_REQUEST if isinstance(caller, Principal) else _FIRE_WORDS_RUN).format(
-            owner="system" if owner.type == "system" else owner.role, caller="user",
-        )
-        assert (outcome, body) == (F, {"type": F, "message": words}), (who, door, body)
+        assert (outcome, body) == _UNKNOWN_TRIGGER, (who, door, body)
         assert await _fire_rows(world.sp) == before, f"a refused fire fired ({who}, {door})"
         return
     assert outcome == D, (who, door, body)
@@ -1833,9 +1842,9 @@ async def test_the_clock_fires_an_admins_trigger_with_no_caller_to_rank():
 def test_the_fire_now_descriptor_says_who_may_fire_and_what_a_refusal_answers():
     from primer.toolset.trigger import TOOL_FIRE_NOW
 
-    text = TOOL_FIRE_NOW.description
-    assert "rank at least as high as its owner" in text and "``type=forbidden`` and nothing fires" in text, text
-    assert "you may also fire your own" in text and "answers ``trigger_not_found``, not ``forbidden``" in text, text
+    flat = " ".join(TOOL_FIRE_NOW.description.split())
+    assert "Needs full access to the trigger" in flat and "``type=forbidden`` and nothing fires" in flat, flat
+    assert "a trigger you cannot read answers ``type=trigger_not_found``" in flat, flat
 
 
 #: who -> (the trigger's owner, who asks over REST, whether it may fire). ``carol`` ranks user, ``admin`` is the app's first account; ``carol then
@@ -1849,14 +1858,14 @@ REST_FIRERS: dict[str, tuple[str | None, str, bool]] = {
     "an admin's token on a user's trigger": ("carol", "admin's token", True),
     "a demoted admin's token on their own trigger": ("carol then admin", "carol's token", True),
     "a demoted admin on a trigger their token saved": ("carol's token then admin", "carol", True),
-    "a user on a trigger saved before owners were recorded": (None, "carol", True),
+    "a user on a trigger saved before owners were recorded": (None, "carol", False),
     "a user on a system trigger": ("system", "carol", False),
     "an admin on a system trigger": ("system", "admin", True),
 }
 
 
 @pytest.mark.parametrize("who", list(REST_FIRERS))
-async def test_the_rest_fire_now_fires_a_trigger_only_when_the_caller_ranks_with_its_owner(app, client, fake_storage_provider, who):
+async def test_the_rest_fire_now_fires_a_trigger_only_when_the_caller_holds_full_on_it(app, client, fake_storage_provider, who):
     """Over HTTP, through the auth middleware. The subscription appends to a busy session started by the trigger's owner, so a delivered fire queues
     a message there; a refused one queues nothing, publishes nothing and records nothing."""
     owner_name, asker, accepted = REST_FIRERS[who]
@@ -1877,7 +1886,7 @@ async def test_the_rest_fire_now_fires_a_trigger_only_when_the_caller_ranks_with
         id="ses-busy", workspace_id="ws-r", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.RUNNING, turn_status="running",
         turn_no=1, created_at=NOW, initiated_by=owner,
     ))
-    await sp.get_storage(Trigger).create(Trigger(
+    await sp.get_storage(Trigger).create(Trigger(access=_owned_by(owner, {f"at-{carol_id}": carol_id}),
         id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
     await sp.get_storage(Subscription).create(Subscription(
@@ -1903,9 +1912,8 @@ async def test_the_rest_fire_now_fires_a_trigger_only_when_the_caller_ranks_with
             r = await client.post(route)
 
     if not accepted:
-        assert r.status_code == 403, f"{who} could fire: {r.text}"
-        words = _FIRE_WORDS_REQUEST.format(owner="system" if owner.type == "system" else owner.role, caller="user")
-        assert (r.json()["detail"], r.json()["extensions"]["code"]) == (words, "forbidden_rank"), r.json()
+        assert r.status_code == 404, f"{who} could fire: {r.text}"
+        assert r.json()["extensions"]["code"] == "trigger_not_found", r.json()
         assert await _fire_rows(sp) == before, f"a refused fire fired ({who})"
         assert (await sp.get_storage(WorkspaceSession).get("ses-busy")).model_dump(mode="json") == session_before
         assert (await sp.get_storage(PendingSessionMessage).list(OffsetPage(offset=0, length=10))).items == []
@@ -1928,7 +1936,7 @@ MCP_FIRERS: dict[str, tuple[str | None, str, bool]] = {
     "an admin's mcp token on a user's trigger": ("carol", "admin's token", True),
     "a demoted admin's cookie on their own trigger": ("carol then admin", "carol", True),
     "a demoted admin's mcp token on their own trigger": ("carol then admin", "carol's token", True),
-    "a user's cookie on a trigger saved before owners were recorded": (None, "carol", True),
+    "a user's cookie on a trigger saved before owners were recorded": (None, "carol", False),
 }
 
 
@@ -1950,7 +1958,7 @@ async def _mcp_token(sp, user_id: str) -> str:
 
 
 @pytest.mark.parametrize("who", list(MCP_FIRERS))
-async def test_fire_now_over_the_real_mcp_endpoint_fires_a_trigger_only_when_the_caller_ranks_with_its_owner(app, client, fake_storage_provider, who):
+async def test_fire_now_over_the_real_mcp_endpoint_fires_a_trigger_only_when_the_caller_holds_full_on_it(app, client, fake_storage_provider, who):
     """Through ``POST /v1/mcp`` (the auth gate, ``invoke_exposed``, ``current_actor``): the person's own call, with the owner rule."""
     from tests.api.test_mcp_mount import _mcp_call
 
@@ -1968,7 +1976,7 @@ async def test_fire_now_over_the_real_mcp_endpoint_fires_a_trigger_only_when_the
     }[owner_name]
     # The workspace the subscription starts a session in: carol holds full on it (the access rule asks the caller's person; an admin clears it).
     await sp.get_storage(Workspace).create(_ws_row("ws-x", Access(owners=[carol_id])))
-    await sp.get_storage(Trigger).create(Trigger(
+    await sp.get_storage(Trigger).create(Trigger(access=_owned_by(owner, {f"at-{carol_id}": carol_id}),
         id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
     await sp.get_storage(Subscription).create(Subscription(
@@ -1988,8 +1996,7 @@ async def test_fire_now_over_the_real_mcp_endpoint_fires_a_trigger_only_when_the
 
     text = result.content[0].text
     if not accepted:
-        words = _FIRE_WORDS_REQUEST.format(owner="system" if owner.type == "system" else owner.role, caller="user")
-        assert (result.is_error, json.loads(text)) == (True, {"type": F, "message": words}), text
+        assert (result.is_error, json.loads(text)) == (True, {"type": "trigger_not_found", "message": FIRE_TRIGGER}), text
         assert await _fire_rows(sp) == before, f"a refused MCP fire fired ({who})"
         return
     assert result.is_error is False, text
@@ -2016,7 +2023,7 @@ async def test_an_approved_fire_now_through_call_tool_ranks_the_resumed_run(run_
     ), 30)
 
     if not accepted:
-        assert (part.error, json.loads(part.output)) == (True, {"type": F, "message": _FIRE_WORDS_RUN.format(owner="admin", caller="user")})
+        assert (part.error, json.loads(part.output)) == (True, {"type": "trigger_not_found", "message": FIRE_TRIGGER})
         assert await _fire_rows(world.sp) == before
         return
     assert not part.error, part.output
@@ -2083,80 +2090,21 @@ async def test_a_subagent_started_over_mcp_is_ranked_as_its_run_not_as_the_mcp_p
         current_actor.reset(token)
 
     assert text == "done"
-    assert _tool_result_of(llm) == {"type": F, "message": _FIRE_WORDS_RUN_OUTSIDE.format(owner="admin", caller="user")}
+    assert _tool_result_of(llm) == {"type": "trigger_not_found", "message": FIRE_TRIGGER}
     assert await _fire_rows(world.sp) == before, "a subagent fired an admin's trigger at the MCP person's rank"
 
 
-def test_a_call_nobody_can_name_is_worded_as_an_ordinary_user():
-    """A call with no context, no actor and no delegated run ranks as an ordinary user (``principal_rank(None)``) and is worded as one."""
-    from primer.trigger.owner import refuse_fire_now
-
-    trigger = Trigger(id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=ADMIN, config=DelayedTriggerConfig(fire_at=NOW))
-
-    reason = asyncio.run(refuse_fire_now(trigger, None, _FakeStorageProvider(), from_run=False))
-
-    assert reason == _FIRE_WORDS_REQUEST.format(owner="admin", caller="user")
-    assert "unattributed" not in reason
-
-
-#: Who saves the trigger between the rank check and ``fire_trigger``'s read -> whether the fire goes ahead (the caller ranks user).
-SAVED_BY = {
-    "an admin (the saver becomes the owner, above the caller)": (ADMIN, False),
-    "another user (an owner the caller may fire anyway)": (PrincipalRef(type="user", id="u-other", display="other", role="user", source="local"), True),
-}
-
-
-@pytest.mark.parametrize("door", ["a user's run", "MCP: a user"])
-@pytest.mark.parametrize("saved_by", list(SAVED_BY))
-async def test_an_owner_saved_between_the_rank_check_and_the_fire_is_ranked_again_on_the_row_that_is_fired(monkeypatch, saved_by, door):
-    """Review of #927: the rank was decided on ``fire_now``'s read and ``fire_trigger`` read the row again, so a save in between (which makes its
-    saver the owner) fired the trigger at the saver's rank. The checked owner now goes to ``fire_trigger``: when its read shows another owner the
-    rule is asked again on that row, and a refusal there is the same refusal, before anything is recorded or dispatched. A save by an owner the
-    caller may fire anyway does not stop the fire (refusing it would say the trigger runs above the caller when it does not)."""
-    import primer.trigger.dispatch as dispatch_mod
-
-    new_owner, fires = SAVED_BY[saved_by]
-    world = await _rank_world(USER)
-    real_fire = dispatch_mod.fire_trigger
-
-    async def save_then_fire(**kwargs):
-        row = await world.sp.get_storage(Trigger).get(kwargs["trigger_id"])
-        await world.sp.get_storage(Trigger).update(row.model_copy(update={"owner": new_owner}))
-        return await real_fire(**kwargs)
-
-    monkeypatch.setattr(dispatch_mod, "fire_trigger", save_then_fire)
-    if door == "a user's run":
-        outcome, body = await asyncio.wait_for(_call(world, "trigger", "fire_now", {"id": FIRE_TRIGGER}, own="ws-2", door="tool manager"), 30)
-    else:
-        outcome, body = await asyncio.wait_for(_call(world, "trigger", "fire_now", {"id": FIRE_TRIGGER}, own=None, door="MCP"), 30)
-
-    row = await world.sp.get_storage(Trigger).get(FIRE_TRIGGER)
-    assert row.owner == new_owner, "the save landed"
-    if fires:
-        assert outcome == D, body
-        assert await _fired(world.sp)
-        return
-    words = (_FIRE_WORDS_RUN if door == "a user's run" else _FIRE_WORDS_REQUEST).format(owner="admin", caller="user")
-    assert (outcome, body) == (F, {"type": F, "message": words}), body
-    assert (row.last_fired_id, row.last_fired_at) == (None, None), "the trigger records a fire"
-    assert await _fire_events(world.sp) == [], "a trigger.fired was recorded"
-    assert all(s.last_fired_at is None for s in (await _subscriptions(world)).values()), "a subscription was dispatched"
+# The rank-wording test (``refuse_fire_now`` for a caller nobody can name) and the owner-saved-between re-ask test are gone with the rank rule they
+# pinned: ``tests/trigger/test_trigger_access.py`` and ``tests/toolset/test_trigger_tools_access.py`` pin the levels, and the fire itself re-reads
+# the trigger's access.
 
 
 # -- who may change or delete a trigger (ticket 01a16ee4) --------------------------------------------------------------------------------------
 #
-# A save re-arms the trigger's claim under the saver's timing, and a delete ends it: both act on every subscription the trigger drives, so
-# ``update_trigger`` and ``delete_trigger`` follow the rank rule of a manual fire (``primer.trigger.owner.refuse_trigger_change``, the same rule
-# as ``refuse_fire_now``): the caller (the REST principal, the MCP person, or the calling run's principal) must rank at least as high as the
-# trigger's owner. An admin is never outranked; a person (over REST or MCP, never a run) may always change or delete a trigger they own.
-# Otherwise 403 ``forbidden_rank`` (REST) or ``type=forbidden`` (a tool), and nothing changes: the row, its owner and its subscriptions stay as
-# they were, and a refused change adopts no owner (the caller does not become the owner of a trigger they may not save). The reach rule (#874)
-# is asked first, as for a fire. A tool call with no context, the MCP endpoint's own, records the MCP principal as the owner of what it saves.
-
-_CHANGE_WORDS_REQUEST = (
-    "trigger 'tr-r' runs at a higher rank ({owner}) than you ({caller}); you may change or delete only your own triggers and triggers at or below your rank"
-)
-_CHANGE_WORDS_RUN = "trigger 'tr-r' runs at a higher rank ({owner}) than this session ({caller}); a session may change or delete only triggers at or below its own rank"
+# A save re-arms the trigger's claim under the saver's timing, and a delete ends it: both act on every subscription the trigger drives. Under access
+# control P3 an update needs full on the trigger and a delete needs owner; a caller who cannot read the trigger gets the unknown-trigger answer
+# (``trigger_not_found``, 404 over REST) and nothing changes: the row, its owner and its subscriptions stay as they were. An admin holds every level.
+# A tool call with no context, the MCP endpoint's own, records the MCP principal as the owner of what it saves.
 
 
 def _change_args(verb: str) -> dict:
@@ -2174,7 +2122,7 @@ async def _change_rows(sp) -> tuple:
     ("who", "door", "verb"),
     [(who, door, verb) for who in FIRE_CALLERS for door in (("MCP",) if who.startswith("MCP: ") else DOORS) for verb in ("update", "delete")],
 )
-async def test_update_and_delete_touch_a_trigger_only_when_the_caller_ranks_with_its_owner(who, door, verb):
+async def test_update_and_delete_touch_a_trigger_only_when_the_caller_holds_the_level(who, door, verb):
     """The same rule as a manual fire: the rows of ``FIRE_CALLERS`` on the ``trigger::update`` / ``trigger::delete`` doors (and the crud twins
     that share their handlers). A refused change or delete leaves the row, its owner and its subscriptions exactly as they were; an accepted
     update makes its caller the owner."""
@@ -2192,10 +2140,7 @@ async def test_update_and_delete_touch_a_trigger_only_when_the_caller_ranks_with
         )
 
     if not accepted:
-        words = (_CHANGE_WORDS_REQUEST if isinstance(caller, Principal) else _CHANGE_WORDS_RUN).format(
-            owner="system" if owner.type == "system" else owner.role, caller="user",
-        )
-        assert (outcome, body) == (F, {"type": F, "message": words}), (who, door, verb, body)
+        assert (outcome, body) == _UNKNOWN_TRIGGER, (who, door, verb, body)
         assert await _change_rows(world.sp) == before, f"a refused {verb} changed the trigger ({who}, {door})"
         return
     assert outcome == D, (who, door, verb, body)
@@ -2233,7 +2178,7 @@ async def test_a_create_over_mcp_records_the_mcp_principal_as_owner():
     ],
 )
 async def test_an_update_over_mcp_records_the_mcp_principal_as_owner(actor):
-    world = await _rank_world(None)  # the trigger has no recorded owner: any rank may save it, and the saver becomes the owner
+    world = await _rank_world(PrincipalRef(type="user", id=actor.user_id or actor.id, display=actor.display, role=actor.role, source="local"))  # its person owns it
 
     _outcome, _body = await asyncio.wait_for(
         _call(world, "trigger", "update", {"id": FIRE_TRIGGER, "name": "edited"}, own=None, door="MCP", actor=actor), 30,
@@ -2245,7 +2190,7 @@ async def test_an_update_over_mcp_records_the_mcp_principal_as_owner(actor):
 
 
 @pytest.mark.parametrize(("who", "verb"), [(who, verb) for who in REST_FIRERS for verb in ("update", "delete")])
-async def test_the_rest_update_and_delete_touch_a_trigger_only_when_the_caller_ranks_with_its_owner(app, client, fake_storage_provider, who, verb):
+async def test_the_rest_update_and_delete_touch_a_trigger_only_when_the_caller_holds_the_level(app, client, fake_storage_provider, who, verb):
     """Over HTTP, through the auth middleware: ``PUT /v1/triggers/{id}`` and ``DELETE /v1/triggers/{id}``, the rows of ``REST_FIRERS``. A
     refused change or delete is a 403 ``forbidden_rank`` and leaves the row, its owner and its subscriptions exactly as they were; an accepted
     update makes its asker the owner."""
@@ -2263,7 +2208,7 @@ async def test_the_rest_update_and_delete_touch_a_trigger_only_when_the_caller_r
         "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
         "carol's token then admin": PrincipalRef(type="api_token", id=f"at-{carol_id}", display="automation", role="admin", source="internal"),
     }[owner_name]
-    await sp.get_storage(Trigger).create(Trigger(
+    await sp.get_storage(Trigger).create(Trigger(access=_owned_by(owner, {f"at-{carol_id}": carol_id}),
         id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
     await sp.get_storage(Subscription).create(Subscription(
@@ -2288,9 +2233,8 @@ async def test_the_rest_update_and_delete_touch_a_trigger_only_when_the_caller_r
     r = await _ask()
 
     if not accepted:
-        words = _CHANGE_WORDS_REQUEST.format(owner="system" if owner.type == "system" else owner.role, caller="user")
-        assert r.status_code == 403, f"{who} could {verb}: {r.text}"
-        assert (r.json()["detail"], r.json()["extensions"]["code"]) == (words, "forbidden_rank"), r.json()
+        assert r.status_code == 404, f"{who} could {verb}: {r.text}"
+        assert r.json()["extensions"]["code"] == "trigger_not_found", r.json()
         assert await _change_rows(sp) == before, f"a refused {verb} changed the trigger ({who})"
         return
     assert r.status_code == (200 if verb == "update" else 204), f"{who} could not {verb}: {r.text}"
@@ -2304,13 +2248,14 @@ async def test_the_rest_update_and_delete_touch_a_trigger_only_when_the_caller_r
         assert row.owner is not None and row.owner.id == expected_owner_id, (who, row.owner)
 
 
-def test_the_update_and_delete_descriptors_say_the_rank_rule_and_what_a_refusal_answers():
+def test_the_update_and_delete_descriptors_say_the_level_and_what_a_refusal_answers():
     from primer.toolset.trigger import TOOL_CREATE, TOOL_DELETE, TOOL_UPDATE
 
-    for tool in (TOOL_UPDATE, TOOL_DELETE):
+    for tool, level in ((TOOL_UPDATE, "full access"), (TOOL_DELETE, "owners")):
         flat = " ".join(tool.description.split())
-        assert "rank at least as high as its owner" in flat, tool.id
-        assert "``type=forbidden``" in flat, tool.id
+        assert level in flat and "``type=trigger_not_found``" in flat, tool.id
+    assert "``type=forbidden``" in " ".join(TOOL_UPDATE.description.split())
+    assert "``type=forbidden``" in " ".join(TOOL_DELETE.description.split())
     flat = " ".join(TOOL_CREATE.description.split())
     assert "records you as the trigger's ``owner``" in flat, flat
 
@@ -2485,13 +2430,13 @@ async def test_the_rest_subscription_routes_serve_and_delete_whatever_the_target
     """Ruling 4: a person over REST reaches every workspace, so the REST subscription routes pass no reach and list, get and delete a subscription
     whatever its target (here a user-role account)."""
     store = fake_storage_provider.get_storage(Subscription)
-    await fake_storage_provider.get_storage(Trigger).create(Trigger(
+    r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
+    assert r.status_code == 201, r.text
+    await fake_storage_provider.get_storage(Trigger).create(Trigger(access=Access(owners=[await _user_id(app, "carol")]),
         id=TRIGGER, slug="tr-one", name="t", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
     for name in ("fresh-ws1", "fresh-ws2", "fresh-prime"):
         await store.create(Subscription(id=_sid(TRIGGER, name), trigger_id=TRIGGER, config=TARGETS[name], created_at=NOW, owner=USER))
-    r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
-    assert r.status_code == 201, r.text
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
         assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
         listed = await carol.get(f"/v1/triggers/{TRIGGER}/subscriptions")

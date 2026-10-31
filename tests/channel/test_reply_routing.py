@@ -43,6 +43,11 @@ THREAD = "1700000000.000100"          # the platform thread the inbound message 
 OTHER_ANCHOR = "1700000000.999999"    # a thread an explicit target or a workspace binding names
 
 
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing what they test rather than ownership.
+_PLATFORM = PrincipalRef.system()
+
 class _BoltApp:
     """Records the handlers ``_install_handlers`` registers, as slack_bolt's decorators would."""
 
@@ -86,7 +91,7 @@ async def sp(tmp_path):
 
 def _fresh(sub_id: str = "sb-1", **fields) -> Subscription:
     """A binding that starts a fresh ``ag-1`` session in ``ws-1`` with the message text."""
-    return Subscription(
+    return Subscription(owner=_PLATFORM, 
         id=sub_id, trigger_id="tr-1", config=AgentFreshSubConfig(workspace_id="ws-1", agent_id="ag-1"),
         payload_template="{{ event.text }}", parallelism="queue", created_at=datetime.now(UTC), **fields,
     )
@@ -595,7 +600,7 @@ async def test_a_room_with_chats_disabled_starts_no_session_but_a_session_append
     """The measurement found a disabled room starting sessions like any other. Now the bindings that start a session do not fire there,
     and a binding that feeds a running session still does."""
     world = _World(monkeypatch, sp)
-    append = Subscription(
+    append = Subscription(owner=_PLATFORM, 
         id="sb-append", trigger_id="tr-1", config=SessionAppendSubConfig(session_id="s-run"), payload_template="{{ event.text }}",
         parallelism="queue", created_at=datetime.now(UTC),
     )

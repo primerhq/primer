@@ -169,8 +169,6 @@ var TR_REMEDIES = {
   trigger_not_found: "Trigger {message} was not found: it may have been deleted. Go back to the triggers list.",
   subscription_not_found: "Subscription {message} was not found: it may have been deleted. Reload the trigger to see its current subscriptions.",
   trigger_kind_immutable: "{message}. To change the kind, create a new trigger.",
-  forbidden_role: "{message}. Ask the trigger's owner or an administrator.",
-  forbidden_rank: "{message}. Ask the trigger's owner or an administrator to fire it.",
   not_a_webhook_trigger: "{message}. Only a webhook trigger has a token.",
   parked_session_only_from_yield: "{message}. A session creates one itself when it waits on the trigger; it is not made from here.",
   cron_invalid: "{message}. Check each field's range (minute 0-59, hour 0-23, day of month 1-31, month 1-12, weekday 0-6).",
@@ -208,33 +206,19 @@ function TR_fireOutcome(res, label) {
   return { kind: "success", title: "Trigger fired", detail: label };
 }
 
+// ACL-P3-T7: the access-level rule of the detail's buttons, the same shape as the collection's KN_writeGates:
+// read sees but cannot write, full edits, fires and manages subscriptions but loses the owner verbs (delete,
+// token rotation, sharing) to the owner. An unknown level (the access read in flight) fails open - the server
+// enforces every write, this only removes the dead click.
+const TR_RO_NOTE = "Read-only: you can view this trigger";
+const TR_OWNER_NOTE = "Only an owner can do this";
+function TR_writeGates(level) {
+  var ro = level === "read";
+  return { ro: ro, ownerOnly: !ro && level === "full" };
+}
+window.TR_writeGates = TR_writeGates;
+
 // Copy text to clipboard + flash a brief toast.
-// The rank rule of a manual fire, mirrored from the server (primer.trigger.owner.refuse_fire_now / refuse_trigger_change, tickets
-// 01a16e65-12d1 and 01a16ee4): a viewer may fire, edit or delete a trigger only when they rank at least as high as the trigger's owner, or
-// when it is their own. The server ranks an admin with the system principal, so an admin is never blocked. A trigger with no recorded owner
-// ranks as an ordinary user. A non-manager's view of the owner is reduced to {display, role} (no id), so ownership is compared by the id
-// only when the full owner is served (a manager's own view, which always includes one's own trigger).
-// The rank the server gives a principal (primer.authz.principal_rank): system above admin above user above restricted, an unknown role below
-// restricted. A system owner carries no role (null), so the type decides.
-function TR_roleRank(role, type) {
-  if (type === "system" || role === "system" || role === "admin") return 3;
-  if (role === "user") return 1;
-  if (role === "restricted") return 0;
-  return -1;
-}
-
-// null when the viewer may act on the trigger, else the reason the button is disabled. The server answers the same refusal; this only removes
-// the dead click, so it fails open (null) whenever it cannot decide (no principal served, unknown role).
-function TR_rankBlockedReason(trigger, principal, verb) {
-  if (!principal || !principal.role || !principal.id) return null;
-  var owner = trigger && trigger.owner;
-  if (owner && owner.id && owner.type === principal.type && owner.id === principal.id) return null; // one's own trigger
-  var mine = TR_roleRank(principal.role, principal.type);
-  var theirs = owner ? TR_roleRank(owner.role, owner.type) : 1; // a row with no recorded owner ranks as an ordinary user
-  if (mine >= theirs) return null;
-  return "You rank below this trigger's owner (" + ((owner && owner.role) || "user") + "). Ask the owner or an administrator to " + verb + " it.";
-}
-
 function TR_CopyButton({ text, label, testId }) {
   const [copied, setCopied] = React.useState(false);
   const copy = async () => {
@@ -278,20 +262,9 @@ function TR_TriggersPage({ triggerId }) {
 const TR_PAGE_SIZE = 25;
 
 function TR_TriggerList() {
-  const { useRouter, usePagedList, Pager, useResource, apiFetch } = window.primerApi;
+  const { useRouter, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const [createOpen, setCreateOpen] = React.useState(false);
-
-  // The viewer's principal (from /auth/status): the rank rule of a manual fire mirrored on the row buttons (see TR_rankBlockedReason).
-  const authStatus = typeof useResource === "function"
-    ? useResource(
-        "trigger-auth-status",
-        (signal) => apiFetch("GET", "/auth/status", null, { signal }),
-        { pollMs: 0 },
-      )
-    : { data: null };
-
-  const principal = (authStatus && authStatus.data && authStatus.data.principal) || null;
 
   // Server-side offset pagination (bug #19). Replaces the client-side slice
   // over a default-limit /triggers fetch, which silently capped the visible
@@ -369,7 +342,6 @@ function TR_TriggerList() {
                 <TR_TriggerRow
                   key={t.id}
                   trigger={t}
-                  principal={principal}
                   onOpen={() => navigate("/triggers/" + t.id)}
                   onChanged={list.refetch}
                 />
@@ -444,20 +416,15 @@ function TR_focusAfterRowGone(tr) {
   if (focusTarget) focusTarget.focus();
 }
 
-function TR_TriggerRow({ trigger, principal, onOpen, onChanged }) {
+function TR_TriggerRow({ trigger, onOpen, onChanged }) {
   const { apiFetch } = window.primerApi;
   const kind = trigger?.config?.kind || "—";
   const enabled = !!trigger.enabled;
   const [busy, setBusy] = React.useState(false);
 
-  // The rank rule of a manual fire, mirrored from the server (primer.trigger.owner, tickets 01a16e65-12d1 and 01a16ee4): a viewer who ranks
-  // below the trigger's owner (and it is not their own) gets Fire now / Edit / Delete disabled with the reason; the server refuses the same
-  // way, this only removes the dead click.
-  const blocked = {
-    fire: TR_rankBlockedReason(trigger, principal, "fire"),
-    edit: TR_rankBlockedReason(trigger, principal, "edit"),
-    del: TR_rankBlockedReason(trigger, principal, "delete"),
-  };
+  // The row mirrors no access rule (ACL-P3-T7): it always offers Fire now / Edit / Delete and says a refusal on
+  // the spot (the row's toasts below - the server is the decider). The level rule of the buttons lives on the
+  // detail page (TR_writeGates).
 
   const stop = (e) => { e.stopPropagation(); };
 
@@ -543,6 +510,16 @@ function TR_TriggerRow({ trigger, principal, onOpen, onChanged }) {
       <td>
         <div style={{ fontWeight: 600 }}>{trigger.name || trigger.slug}</div>
         <div className="mono muted text-sm" style={{ fontSize: 11 }}>{trigger.slug}</div>
+        {SHR_accessBadges(trigger.access).map((b) => (
+          <span
+            key={b}
+            className="pill pill-ended"
+            data-testid={"trigger-access-badge-" + b}
+            style={{ fontSize: 10.5, marginTop: 2 }}
+          >
+            <span className="dot"></span>{b}
+          </span>
+        ))}
         {trigger.last_fire_error && (
           <span
             className="pill pill-failed"
@@ -585,9 +562,9 @@ function TR_TriggerRow({ trigger, principal, onOpen, onChanged }) {
           size="sm"
           kind="ghost"
           icon="zap"
-          disabled={busy || !!blocked.fire}
+          disabled={busy}
           onClick={fireNow}
-          title={blocked.fire || "Fire this trigger immediately, bypassing the schedule"}
+          title="Fire this trigger immediately, bypassing the schedule"
           data-testid={`trigger-row-fire-${trigger.id}`}
         >
           Fire now
@@ -596,9 +573,9 @@ function TR_TriggerRow({ trigger, principal, onOpen, onChanged }) {
           size="sm"
           kind="ghost"
           icon="edit"
-          disabled={busy || !!blocked.edit}
+          disabled={busy}
           onClick={(e) => { e.stopPropagation(); onOpen(); }}
-          title={blocked.edit || "Open the trigger to edit it"}
+          title="Open the trigger to edit it"
           data-testid={`trigger-row-edit-${trigger.id}`}
         >
           Edit
@@ -607,9 +584,9 @@ function TR_TriggerRow({ trigger, principal, onOpen, onChanged }) {
           size="sm"
           kind="danger"
           icon="trash"
-          disabled={busy || !!blocked.del}
+          disabled={busy}
           onClick={remove}
-          title={blocked.del || "Delete this trigger"}
+          title="Delete this trigger"
           data-testid={`trigger-row-delete-${trigger.id}`}
         >
           Delete
@@ -1365,7 +1342,7 @@ function TR_SubTargetLabel({ sub }) {
 // server treats as cancel-and-unpark.
 // ============================================================================
 
-function TR_SubscriptionsPanel({ trigger, subs, onChanged, onAdd, onEdit }) {
+function TR_SubscriptionsPanel({ trigger, subs, onChanged, onAdd, onEdit, ro }) {
   const { apiFetch } = window.primerApi;
   const [busyId, setBusyId] = React.useState(null);
   const [error, setError] = React.useState(null);
@@ -1444,6 +1421,8 @@ function TR_SubscriptionsPanel({ trigger, subs, onChanged, onAdd, onEdit }) {
             kind="primary"
             icon="plus"
             data-testid="add-subscription-btn"
+            disabled={ro}
+            title={ro ? TR_RO_NOTE : undefined}
             onClick={onAdd}
           >
             Add subscription
@@ -1516,7 +1495,7 @@ function TR_SubscriptionsPanel({ trigger, subs, onChanged, onAdd, onEdit }) {
                         <select
                           className="input"
                           value={sub.parallelism || "skip"}
-                          disabled={rowBusy}
+                          disabled={rowBusy || ro}
                           onChange={(e) => setParallelism(sub, e.target.value)}
                           style={{ fontSize: 11, padding: "2px 6px" }}
                         >
@@ -1533,7 +1512,7 @@ function TR_SubscriptionsPanel({ trigger, subs, onChanged, onAdd, onEdit }) {
                           <input
                             type="checkbox"
                             checked={!!sub.enabled}
-                            disabled={rowBusy}
+                            disabled={rowBusy || ro}
                             onChange={(e) => setEnabled(sub, e.target.checked)}
                           />
                         </label>
@@ -1557,9 +1536,9 @@ function TR_SubscriptionsPanel({ trigger, subs, onChanged, onAdd, onEdit }) {
                         <button
                           className="icon-btn"
                           style={{ width: 22, height: 22, marginRight: 4 }}
-                          title="Edit subscription"
+                          title={ro ? TR_RO_NOTE : "Edit subscription"}
                           onClick={() => onEdit(sub)}
-                          disabled={rowBusy}
+                          disabled={rowBusy || ro}
                         >
                           <Icon name="edit" size={10} />
                         </button>
@@ -1567,9 +1546,9 @@ function TR_SubscriptionsPanel({ trigger, subs, onChanged, onAdd, onEdit }) {
                       <button
                         className="icon-btn"
                         style={{ width: 22, height: 22 }}
-                        title={isDynamic ? "Cancel dynamic subscription" : "Delete subscription"}
+                        title={ro ? TR_RO_NOTE : (isDynamic ? "Cancel dynamic subscription" : "Delete subscription")}
                         onClick={() => remove(sub)}
-                        disabled={rowBusy}
+                        disabled={rowBusy || ro}
                       >
                         <Icon name="trash" size={10} />
                       </button>
@@ -1619,13 +1598,13 @@ function TR_TriggerDetail({ id }) {
     { pollMs: 2000, deps: [id] },
   );
 
-  // The viewer's principal (from /auth/status): the rank rule of a manual fire mirrored on the buttons (see TR_rankBlockedReason).
-  const authStatus = useResource(
-    "trigger-auth-status",
-    (signal) => apiFetch("GET", "/auth/status", null, { signal }),
-    { pollMs: 0 },
+  // The viewer's access level for this trigger (GET /triggers/{id}/access, ACL-P3-T7): read sees but cannot
+  // write, full edits, fires and manages subscriptions, owner keeps every verb.
+  const access = useResource(
+    "trigger-access:" + id,
+    (signal) => apiFetch("GET", "/triggers/" + encodeURIComponent(id) + "/access", null, { signal }),
+    { pollMs: null, deps: [id] },
   );
-  const principal = (authStatus.data && authStatus.data.principal) || null;
 
   const [editOpen, setEditOpen] = React.useState(false);
   const [confirmDelete, setConfirmDelete] = React.useState(false);
@@ -1640,6 +1619,10 @@ function TR_TriggerDetail({ id }) {
   const [rotateError, setRotateError] = React.useState(null);
   const [hmacError, setHmacError] = React.useState(null);
   const [hmacDialogOpen, setHmacDialogOpen] = React.useState(false);
+
+  // ACL-P3-T7: the Share dialog (the action bar's Share button or the
+  // palette's entity.share verb dispatches to it while this surface is open).
+  const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
 
   const refetchAll = React.useCallback(() => {
     detail.refetch();
@@ -1734,14 +1717,10 @@ function TR_TriggerDetail({ id }) {
   const t = detail.data;
   const kind = t?.config?.kind || "—";
   const subItems = subs.data?.items ?? [];
-  // The rank rule of a manual fire, mirrored from the server (primer.trigger.owner, tickets 01a16e65-12d1 and 01a16ee4): a viewer who ranks
-  // below the trigger's owner (and it is not their own) gets Fire now / Edit / Delete disabled with the reason; the server refuses the same
-  // way, this only removes the dead click.
-  const blocked = {
-    fire: TR_rankBlockedReason(t, principal, "fire"),
-    edit: TR_rankBlockedReason(t, principal, "edit"),
-    del: TR_rankBlockedReason(t, principal, "delete"),
-  };
+  // The level rule of the buttons, one decision (TR_writeGates, top of this file).
+  const gates = TR_writeGates(access.data?.your_level);
+  // The reason a disabled control says (never hidden silently): read-only first, then owner-only.
+  const gateNote = (own) => (gates.ro ? TR_RO_NOTE : (gates.ownerOnly ? TR_OWNER_NOTE : own));
 
   return (
     <div className="col" data-testid="trigger-detail" style={{ gap: 14 }}>
@@ -1769,9 +1748,21 @@ function TR_TriggerDetail({ id }) {
           <Btn
             size="sm"
             kind="ghost"
+            icon="send"
+            data-testid="trigger-share"
+            data-verb="entity.share"
+            disabled={gates.ro || gates.ownerOnly}
+            title={gateNote(undefined)}
+            onClick={() => setShareOpen(true)}
+          >
+            Share
+          </Btn>
+          <Btn
+            size="sm"
+            kind="ghost"
             icon="edit"
-            disabled={!!blocked.edit}
-            title={blocked.edit || "Edit this trigger"}
+            disabled={gates.ro}
+            title={gates.ro ? TR_RO_NOTE : "Edit this trigger"}
             onClick={() => setEditOpen(true)}
           >
             Edit
@@ -1780,8 +1771,8 @@ function TR_TriggerDetail({ id }) {
             size="sm"
             kind="danger"
             icon="trash"
-            disabled={!!blocked.del}
-            title={blocked.del || "Delete this trigger and its subscriptions"}
+            disabled={gates.ro || gates.ownerOnly}
+            title={gateNote("Delete this trigger and its subscriptions")}
             onClick={() => setConfirmDelete(true)}
           >
             Delete trigger
@@ -1850,6 +1841,8 @@ function TR_TriggerDetail({ id }) {
                       size="sm"
                       kind="ghost"
                       icon="edit"
+                      disabled={gates.ro || gates.ownerOnly}
+                      title={gateNote(undefined)}
                       onClick={() => setHmacDialogOpen(true)}
                       data-testid="set-hmac-btn"
                     >
@@ -1880,6 +1873,8 @@ function TR_TriggerDetail({ id }) {
                             setHmacError(TR_writeErrorText(err, "Could not clear the HMAC secret"));
                           }
                         }}
+                        disabled={gates.ro || gates.ownerOnly}
+                        title={gateNote(undefined)}
                         data-testid="clear-hmac-btn"
                       >
                         Clear
@@ -1896,7 +1891,8 @@ function TR_TriggerDetail({ id }) {
                       kind="ghost"
                       icon="refresh"
                       onClick={rotateToken}
-                      disabled={rotateBusy}
+                      disabled={rotateBusy || gates.ro || gates.ownerOnly}
+                      title={gateNote(undefined)}
                       data-testid="rotate-token-btn"
                     >
                       {rotateBusy ? "Rotating…" : "Rotate token"}
@@ -1955,8 +1951,8 @@ function TR_TriggerDetail({ id }) {
               icon="zap"
               data-testid="fire-now-btn"
               onClick={fireNow}
-              disabled={fireBusy || !!blocked.fire}
-              title={blocked.fire || "Fire this trigger immediately, bypassing the schedule"}
+              disabled={fireBusy || gates.ro}
+              title={gates.ro ? TR_RO_NOTE : "Fire this trigger immediately, bypassing the schedule"}
             >
               {fireBusy ? "Firing…" : "Fire now"}
             </Btn>
@@ -2093,6 +2089,7 @@ function TR_TriggerDetail({ id }) {
         onChanged={refetchAll}
         onAdd={() => setSubDialog({ mode: "create" })}
         onEdit={(sub) => setSubDialog({ mode: "edit", sub })}
+        ro={gates.ro}
       />
 
       {/* Edit dialog */}
@@ -2148,6 +2145,17 @@ function TR_TriggerDetail({ id }) {
             />
           )}
         </Modal>
+      )}
+
+      {/* ACL-P3-T7: the share dialog (no public-tools section - a trigger
+          has no per-tool public exposure). */}
+      {shareOpen && (
+        <SHR_ShareDialog
+          plural="triggers"
+          id={id}
+          title={t.name || t.slug}
+          onClose={() => setShareOpen(false)}
+        />
       )}
     </div>
   );

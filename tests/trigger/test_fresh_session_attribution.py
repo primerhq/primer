@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     AgentFreshSubConfig,
     GraphFreshSubConfig,
@@ -33,6 +34,9 @@ from primer.trigger.subscribers.graph_fresh_session import (
 def _agent_sub(workspace_id, agent_id) -> Subscription:
     return Subscription(
         id="sb-attr-1",
+        # Platform-owned (an ownerless subscription is refused at fire since access-control P3 Task 4): it takes the same
+        # trigger-typed, user-ranked attribution an ownerless row used to.
+        owner=PrincipalRef.system(),
         trigger_id="tr-attr-1",
         config=AgentFreshSubConfig(
             workspace_id=workspace_id, agent_id=agent_id,
@@ -46,6 +50,9 @@ def _agent_sub(workspace_id, agent_id) -> Subscription:
 def _graph_sub(workspace_id, graph_id) -> Subscription:
     return Subscription(
         id="sb-attr-2",
+        # Platform-owned (an ownerless subscription is refused at fire since access-control P3 Task 4): it takes the same
+        # trigger-typed, user-ranked attribution an ownerless row used to.
+        owner=PrincipalRef.system(),
         trigger_id="tr-attr-2",
         config=GraphFreshSubConfig(
             workspace_id=workspace_id, graph_id=graph_id,
@@ -57,7 +64,7 @@ def _graph_sub(workspace_id, graph_id) -> Subscription:
 
 
 @pytest.mark.asyncio
-async def test_ownerless_agent_fresh_session_stamps_a_user_ranked_trigger_initiated_by(
+async def test_a_platform_owned_agent_fresh_session_stamps_a_user_ranked_trigger_initiated_by(
     fake_storage_provider, fake_claim_engine, fake_scheduler,
     fake_workspace_registry, seeded_workspace, seeded_agent,
 ):
@@ -89,7 +96,7 @@ async def test_ownerless_agent_fresh_session_stamps_a_user_ranked_trigger_initia
 
 
 @pytest.mark.asyncio
-async def test_ownerless_graph_fresh_session_stamps_a_user_ranked_trigger_initiated_by(
+async def test_a_platform_owned_graph_fresh_session_stamps_a_user_ranked_trigger_initiated_by(
     fake_storage_provider, fake_claim_engine, fake_scheduler,
     fake_workspace_registry, seeded_workspace, seeded_graph,
 ):

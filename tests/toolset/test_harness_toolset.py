@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from primer.harness.hashes import operation_input_digests
+from primer.model.access import Access
 from primer.model.harness import Harness, HarnessOperation, HarnessStatus
 from primer.model.storage import (
     FieldRef,
@@ -42,8 +43,27 @@ class _Storage:
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
 
-    async def get(self, id: str):
+    async def get(self, id: str, *, conn=None):
         return self._data.get(id)
+
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        """The guarded field-scoped write (what ``rewrite_keeping_access`` uses): merge ``patch`` into the stored document iff ``where`` holds."""
+        from primer.model.common import dump_for_storage
+        from primer.model.except_ import NotFoundError
+
+        current = self._data.get(id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {id!r}")
+        doc = {"id": id, **dump_for_storage(current)}
+        for key, allowed in where.items():
+            value: Any = doc
+            for part in (key if isinstance(key, tuple) else (key,)):
+                value = value.get(part) if isinstance(value, dict) else None
+            if value not in allowed:
+                return None
+        updated = type(current).model_validate({**doc, **(patch or {})})
+        self._data[id] = updated
+        return updated
 
     async def create(self, entity):
         from primer.model.except_ import ConflictError
@@ -196,6 +216,7 @@ def _make_harness(sp: _SP, **kwargs) -> Harness:
         git_url="https://github.com/example/repo",
         status=HarnessStatus.DRAFT,
         created_at=datetime.now(timezone.utc),
+        access=Access(public=True),  # readable by the no-identity unit-test caller (access-control P3 T6)
     )
     defaults.update(kwargs)
     harness = Harness(**defaults)
@@ -295,6 +316,16 @@ class TestRegister:
 
 
 class TestList:
+    @pytest.fixture(autouse=True)
+    def _mcp_admin(self):
+        """An admin lists every harness (the fake storage here does not evaluate the access filter a user's list adds)."""
+        from primer.mcp.server import current_actor
+        from primer.model.principal import Principal
+
+        token = current_actor.set(Principal(type="user", id="admin-mcp", display="admin-mcp", role="admin", source="local", user_id="admin-mcp"))
+        yield
+        current_actor.reset(token)
+
     @pytest.mark.asyncio
     async def test_list_returns_all(self, toolset, sp) -> None:
         _make_harness(sp, id="hns_a1", slug="harness-a", name="A")

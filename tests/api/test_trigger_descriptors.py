@@ -23,6 +23,7 @@ from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset.events_wait import _WaitForEventArgs, make_wait_for_event_handler
 from primer.toolset.trigger import TOOL_FIRE_NOW, TOOL_LIST, TOOL_SUBSCRIBE, TOOL_SUBSCRIBE_CHANNEL
 from primer.toolset.workspace_ext import build_workspace_ext_toolset
+from tests._support.caller import ADMIN_CALLER
 
 USER = PrincipalRef(type="user", id="u-1", display="user", role="user", source="local")
 
@@ -44,7 +45,8 @@ async def test_fire_now_names_every_key_of_its_answer(app):
         id="tr-d", slug="described", name="d", config=DelayedTriggerConfig(fire_at=_now() + timedelta(hours=1)), created_at=_now(),
     ))
 
-    result = await app.state.provider_registry._trigger_toolset_provider.call(tool_name="fire_now", arguments={"id": "tr-d"})
+    # As an admin: a fire needs full on the trigger (access-control P3 Task 4); this test is about the answer's keys.
+    result = await app.state.provider_registry._trigger_toolset_provider.call(tool_name="fire_now", arguments={"id": "tr-d"}, ctx=ADMIN_CALLER)
 
     answer = json.loads(result.output)
     assert set(answer) == {"skipped", "fire_id", "results"}

@@ -27,12 +27,14 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.model.storage import OffsetPage
+from primer.model.access import Access
 from primer.model.trigger import (
     ChannelTriggerConfig,
     ScheduledTriggerConfig,
     Subscription,
     Trigger,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset.trigger import _make_subscribe_channel_handler
 
@@ -47,6 +49,8 @@ def _ctx() -> ToolContext:
         tool_call_id="call-1",
         session_id="sess-1",
         workspace_id="ws-1",
+        # The seeded channel trigger is provider-wide, which only an admin may park on (access-control P3 Decision 5).
+        initiated_by=PrincipalRef(type="user", id="admin-1", display="admin", role="admin", source="local", user_id="admin-1"),
     )
 
 
@@ -60,6 +64,8 @@ async def _seed_channel_trigger(
         config=ChannelTriggerConfig(provider_id="prov-1"),
         enabled=enabled,
         created_at=datetime.now(timezone.utc),
+        # Readable by the parking caller (parking needs read on the trigger, access-control P3 Task 4).
+        access=Access(public=True),
     )
     await fake_storage_provider.get_storage(Trigger).create(trigger)
     return trigger
@@ -75,6 +81,8 @@ async def _seed_scheduled_trigger(
         config=ScheduledTriggerConfig(cron="0 2 * * *"),
         enabled=True,
         created_at=datetime.now(timezone.utc),
+        # Readable by the parking caller (parking needs read on the trigger, access-control P3 Task 4).
+        access=Access(public=True),
     )
     await fake_storage_provider.get_storage(Trigger).create(trigger)
     return trigger

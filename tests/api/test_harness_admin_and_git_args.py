@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import SecretStr
 
+from primer.model.access import Access
 from primer.model.harness import Harness, HarnessDirection, HarnessStatus
 from primer.model.storage import OffsetPage
 from tests.api.test_require_user_admin import _login, _seed
@@ -36,6 +37,7 @@ async def _put_harness(app, *, hid: str = "hns_sec00000001", direction=HarnessDi
         overrides_schema={"type": "object", "properties": {}},
         available_bundle_hash="bh",
         created_at=datetime.now(timezone.utc),
+        access=Access(public=True),  # a plain user reads it (access-control P3 T6)
     )
     fields.update(kw)
     harness = Harness(**fields)

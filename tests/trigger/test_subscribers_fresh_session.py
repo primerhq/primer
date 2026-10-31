@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     AgentFreshSubConfig,
     GraphFreshSubConfig,
@@ -27,8 +28,13 @@ from primer.trigger.subscribers.graph_fresh_session import (
 )
 
 
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing dispatch rather than ownership.
+_PLATFORM = PrincipalRef.system()
+
 def _agent_sub(workspace_id, agent_id, parallelism="skip") -> Subscription:
-    return Subscription(
+    return Subscription(owner=_PLATFORM, 
         id="sb-1",
         trigger_id="tr-1",
         config=AgentFreshSubConfig(
@@ -41,7 +47,7 @@ def _agent_sub(workspace_id, agent_id, parallelism="skip") -> Subscription:
 
 
 def _graph_sub(workspace_id, graph_id, parallelism="queue") -> Subscription:
-    return Subscription(
+    return Subscription(owner=_PLATFORM, 
         id="sb-1",
         trigger_id="tr-1",
         config=GraphFreshSubConfig(

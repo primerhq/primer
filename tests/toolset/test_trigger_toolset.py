@@ -23,6 +23,7 @@ import pytest
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.access import Access
 from primer.model.principal import PrincipalRef
+from primer.model.trigger import Trigger
 from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext
@@ -330,6 +331,10 @@ class TestSubscriptions:
             arguments=_delayed_args(slug="owner-hide", name="Owner Hide"),
         )
         trigger_id = _result_body(created)["id"]
+        # The trigger is u-owner's and shared read with u-other (subscribing needs full on it, listing read; access-control P3 Task 4).
+        triggers = fake_storage_provider.get_storage(Trigger)
+        row = await triggers.get(trigger_id)
+        await triggers.update(row.model_copy(update={"access": Access(owners=["u-owner"], grants={"u-other": "read"})}))
         owner = PrincipalRef(
             type="user", id="u-owner", display="u-owner",
             role="user", source="local",

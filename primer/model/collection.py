@@ -20,6 +20,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from primer.model.access import Owned
 from primer.model.common import Describeable, Identifiable
 from primer.model.search import CollectionCrossEncoder
 
@@ -96,8 +97,12 @@ class CollectionSearchConfig(BaseModel):
     )
 
 
-class Collection(Describeable):
-    """A wiki of pure-text documents; optionally vectorised via `search`."""
+class Collection(Owned, Describeable):
+    """A wiki of pure-text documents; optionally vectorised via `search`.
+
+    Owned (access-control spec 6.2): read = read and search its documents, full = write them, owner = delete, share,
+    enable or disable search. Its documents carry no access of their own; they inherit the collection's.
+    """
 
     _id_prefix: ClassVar[str] = "collection"
 

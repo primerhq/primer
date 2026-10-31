@@ -5,7 +5,7 @@ Thin routes over :mod:`primer.access.service`; the system tools call the same se
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
@@ -21,6 +21,15 @@ def _users(request: Request):
     return get_storage_provider(request).get_storage(User)
 
 
+def _harness_exists(request: Request):
+    from primer.model.harness import Harness
+
+    async def _exists(harness_id: str) -> bool:
+        return await get_storage_provider(request).get_storage(Harness).get(harness_id) is not None
+
+    return _exists
+
+
 def make_access_router(
     *,
     model_cls: type,
@@ -28,8 +37,12 @@ def make_access_router(
     storage_dep: Callable[..., Any],
     tag: str,
     allow_public_tools: bool = False,
+    after_write: Callable[[Request, Any], Awaitable[None]] | None = None,
 ) -> APIRouter:
-    """``GET`` / ``PUT /{plural}/{entity_id}/access`` for an owned model. Include it BEFORE the model's CRUD router."""
+    """``GET`` / ``PUT /{plural}/{entity_id}/access`` for an owned model. Include it BEFORE the model's CRUD router.
+
+    ``after_write(request, row)`` runs once a PUT has landed (a harness fans its access out to what it installed).
+    """
     router = APIRouter(tags=[tag])
     name = model_cls.__name__
 
@@ -68,6 +81,8 @@ def make_access_router(
             body,
             what=f"{name} {entity_id!r}",
             allow_public_tools=allow_public_tools,
+            after_write=(lambda row: after_write(request, row)) if after_write is not None else None,
+            harness_exists=_harness_exists(request),
         )
 
     return router

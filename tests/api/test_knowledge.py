@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi.exceptions import RequestValidationError
 
@@ -26,6 +28,10 @@ _SSP_BODY = {
         "db_schema": "public",
     },
 }
+
+
+# Direct route calls act as an admin: the collections built below have no owners, so only an admin reads them.
+_ADMIN_REQUEST = SimpleNamespace(state=SimpleNamespace(actor=SimpleNamespace(type="user", user_id="admin", role="admin")))
 
 
 def _collection(**overrides) -> Collection:
@@ -139,6 +145,7 @@ class TestSearchUnregisteredCollection:
         ssr.get_store = AsyncMock(return_value=_Store())
 
         result = await search_collection(
+            request=_ADMIN_REQUEST,
             collection_id="kb-unindexed",
             body=_CollectionSearchBody(query="anything", top_k=5),
             collections=collections,
@@ -181,6 +188,7 @@ class TestSearchUnregisteredCollection:
 
         with _pytest.raises(_BRE):
             await search_collection(
+                request=_ADMIN_REQUEST,
                 collection_id="kb-x",
                 body=_CollectionSearchBody(query="q", top_k=5),
                 collections=collections,
@@ -227,14 +235,14 @@ class TestIndexedDocumentsDocumentIdFilter:
 
         # No filter: all 3 chunks.
         full = await list_indexed_documents(
-            collection_id="kb-chunks", limit=50, offset=0,
+            request=_ADMIN_REQUEST, collection_id="kb-chunks", limit=50, offset=0,
             document_id=None, collections=collections, ssr=ssr,
         )
         assert full["total"] == 3
 
         # Filtered to doc-a: 2 chunks.
         scoped = await list_indexed_documents(
-            collection_id="kb-chunks", limit=50, offset=0,
+            request=_ADMIN_REQUEST, collection_id="kb-chunks", limit=50, offset=0,
             document_id="doc-a", collections=collections, ssr=ssr,
         )
         assert scoped["total"] == 2

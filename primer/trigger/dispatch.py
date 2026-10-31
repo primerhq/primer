@@ -17,6 +17,7 @@ from primer.model.channel_event import ChannelEvent
 from primer.model.event_matcher import EventTextBudget, current_event_text_budget, match_outcome
 from primer.model.principal import PrincipalRef
 from primer.model.storage import Op, OffsetPage
+from primer.trigger.row_writes import write_trigger_fields
 from primer.model.trigger import Subscription, Trigger
 from primer.storage.q import Q
 from primer.trigger.fire_id import make_fire_id
@@ -239,7 +240,6 @@ async def fire_trigger(
     scheduled_for: datetime | None,
     deps: DispatchDeps,
     extra_context: dict | None = None,
-    owner_guard: Callable[[Trigger], Awaitable[None]] | None = None,
 ) -> FireResult:
     """Fire a single trigger: load enabled subs, dispatch each.
 
@@ -254,19 +254,13 @@ async def fire_trigger(
     ``webhook_body``, ``webhook_headers``, ``webhook_query``, and
     ``webhook_method`` without the source needing request-level coupling.
 
-    ``owner_guard`` (a manual fire, :func:`primer.trigger.service.fire_now`; review of #927) is handed the row this
-    function reads, before anything is recorded or dispatched; it raises to refuse the fire. The caller's rank was
-    decided on an EARLIER read of the trigger, and a save between the two reads makes whoever saved it the owner, so
-    the guard holds the owner that read checked and asks the rank rule again when this read shows another one: the
-    fire is decided on the row that is fired. A refusal propagates and nothing is fired. Clock, webhook and channel
-    fires pass none.
+    The trigger row is written field by field at the end (:func:`primer.trigger.row_writes.write_trigger_fields`): an edit
+    or a sharing change saved while the fire ran survives it (access-control P3 Decision 8).
     """
     triggers_storage = deps.storage_provider.get_storage(Trigger)
     trigger = await triggers_storage.get(trigger_id)
     if trigger is None or not trigger.enabled:
         return FireResult(skipped=True)
-    if owner_guard is not None:
-        await owner_guard(trigger)
 
     fired_at = datetime.now(timezone.utc)
     source = get_source(trigger.config.kind)
@@ -417,18 +411,16 @@ async def fire_trigger(
     # Update trigger row's last_fired_at + last_fired_id + error. Recording
     # last_fired_id here is the dedup marker the gate above reads on a
     # redelivery.
-    trigger.last_fired_at = fired_at
-    trigger.last_fired_id = fire_id
     first_err = next((r for r in results if not r.get("ok")), None)
-    if first_err:
-        trigger.last_fire_error = json.dumps({
-            "code": first_err.get("error_code"),
-            "subscription_id": first_err.get("subscription_id"),
-            "message": first_err.get("error_message"),
-        })
-    else:
-        trigger.last_fire_error = None
-    await triggers_storage.update(trigger)
+    last_fire_error = json.dumps({
+        "code": first_err.get("error_code"),
+        "subscription_id": first_err.get("subscription_id"),
+        "message": first_err.get("error_message"),
+    }) if first_err else None
+    # The fire's own fields only (P3 Decision 8): an edit or a sharing change saved while the fire ran survives it.
+    await write_trigger_fields(triggers_storage, trigger, {
+        "last_fired_at": fired_at, "last_fired_id": fire_id, "last_fire_error": last_fire_error,
+    })
     return FireResult(skipped=False, fire_id=fire_id, results=results)
 
 

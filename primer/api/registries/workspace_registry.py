@@ -54,6 +54,7 @@ from primer.workspace.size_overrides import (
 
 if TYPE_CHECKING:
     from primer.int.secret_provider import SecretProvider
+    from primer.access.person import Person
     from primer.int.storage_provider import StorageProvider
     from primer.int.workspace import Workspace, WorkspaceBackend
 
@@ -315,8 +316,12 @@ class WorkspaceRegistry:
         template: WorkspaceTemplate,
         overrides: WorkspaceTemplateOverrides | None = None,
         workspace_id: str | None = None,
+        person: "Person | None" = None,
     ) -> "Workspace":
         """Create a new live workspace via the right backend.
+
+        ``person`` is who the workspace is created for: a ``document`` file mount (the template's or an override's) is read as them, so a document they
+        cannot read answers as missing (access-control P3 SEC, finding 4). ``None`` (the bootstrap seed) checks nothing.
 
         ``workspace_id`` pins the live instance to a caller-supplied id
         (typically the same id the durable row is keyed by). Forwarding
@@ -376,7 +381,7 @@ class WorkspaceRegistry:
             refuse_unsupported_resource_overrides(provider.config.kind, overrides)
         backend = await self.get_backend(template.provider_id)
         resolvers = FileResolvers(
-            document_resolver=make_document_resolver(self._sp),
+            document_resolver=make_document_resolver(self._sp, person),
             secret_resolver=(
                 make_secret_resolver(self._secret_provider)
                 if self._secret_provider is not None
@@ -399,6 +404,7 @@ class WorkspaceRegistry:
         name: str | None = None,
         reply_binding: WorkspaceChannelLink | None = None,
         access: Access | None = None,
+        person: "Person | None" = None,
     ) -> WorkspaceRow:
         """Create a workspace: the live instance, then its durable row. The one create path of ``POST /v1/workspaces`` and the ``create_workspace``
         tool (ticket 01a16d72): every refusal of :meth:`materialise` applies to both, and both write the same row (:func:`new_workspace_row`, so the
@@ -421,7 +427,9 @@ class WorkspaceRegistry:
         the instance is this create's own and is torn down as before.
         """
         if workspace_id is None:
-            return await self._create(template=template, overrides=overrides, workspace_id=None, name=name, reply_binding=reply_binding, access=access)
+            return await self._create(
+                template=template, overrides=overrides, workspace_id=None, name=name, reply_binding=reply_binding, access=access, person=person,
+            )
         lock, holders = self._creating.setdefault(workspace_id, (asyncio.Lock(), [0]))
         holders[0] += 1
         try:
@@ -430,7 +438,7 @@ class WorkspaceRegistry:
                     raise ConflictError(f"Workspace with id {workspace_id!r} already exists")
                 return await self._create(
                     template=template, overrides=overrides, workspace_id=workspace_id, name=name, reply_binding=reply_binding,
-                    access=access,
+                    access=access, person=person,
                 )
         finally:
             holders[0] -= 1
@@ -446,9 +454,10 @@ class WorkspaceRegistry:
         name: str | None,
         reply_binding: WorkspaceChannelLink | None,
         access: Access | None = None,
+        person: "Person | None" = None,
     ) -> WorkspaceRow:
         """:meth:`create`'s body: materialise, then the row, with the rollback."""
-        live = await self.materialise(template=template, overrides=overrides, workspace_id=workspace_id)
+        live = await self.materialise(template=template, overrides=overrides, workspace_id=workspace_id, person=person)
         try:
             row = new_workspace_row(
                 workspace_id=workspace_id if workspace_id is not None else live.id,

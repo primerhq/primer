@@ -54,15 +54,38 @@ window.SHR_useShareOpen = SHR_useShareOpen;
 // ---- badges the list rows and cards draw from the row's access -------------
 
 // "Public" when anyone can use it, "Shared" when a grant exists; private is
-// the default and says nothing.
+// the default and says nothing. The row's access is the Access model: grants
+// is the uid -> level map (the /access view's array shape only arrives
+// through the dialog), so a grant is counted by the map's keys.
 function SHR_accessBadges(access) {
   var out = [];
   if (!access) return out;
   if (access.public) out.push("Public");
-  if (Array.isArray(access.grants) && access.grants.length) out.push("Shared");
+  var grants = access.grants;
+  if (grants && (Array.isArray(grants) ? grants.length : Object.keys(grants).length)) out.push("Shared");
   return out;
 }
 window.SHR_accessBadges = SHR_accessBadges;
+
+// ACL-P3-T7: a row the harness installs (a non-null harness_id) answers 409
+// harness_managed to a direct share - its sharing is the harness's to change.
+// Its detail surface draws this INSTEAD of the Share button: it names the
+// harness and opens it, so the operator shares the harness instead.
+function SHR_HarnessShare({ harnessId, onOpen }) {
+  return (
+    <Btn
+      size="sm"
+      kind="ghost"
+      icon="book"
+      data-testid="shr-harness-share"
+      title="This is shared through its harness; share the harness instead"
+      onClick={onOpen}
+    >
+      Shared through harness <span className="mono">{harnessId}</span>
+    </Btn>
+  );
+}
+window.SHR_HarnessShare = SHR_HarnessShare;
 
 // ---- the dialog -------------------------------------------------------------
 

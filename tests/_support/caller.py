@@ -18,3 +18,22 @@ def caller(role: str | None = "admin", *, kind: str = "user") -> ToolContext:
 
 
 ADMIN_CALLER = caller("admin")
+
+
+class AsCaller:
+    """A toolset whose calls carry ``ctx`` unless the call passes its own.
+
+    For tests written before a tool read its caller: the collections they seed carry no owners (admin-only, as a platform
+    row's would), so the calls act as the admin those tests stood for (access-control P3 Task 2).
+    """
+
+    def __init__(self, provider, ctx: ToolContext = ADMIN_CALLER) -> None:
+        self._provider = provider
+        self._ctx = ctx
+
+    async def call(self, **kwargs):
+        kwargs.setdefault("ctx", self._ctx)
+        return await self._provider.call(**kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._provider, name)

@@ -14,12 +14,18 @@ from datetime import UTC, datetime
 import pytest
 
 import primer.trigger.subscribers.parked_session as ps
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import ParkedSessionSubConfig, Subscription
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import WAKE_ENTRY_KEY
 from primer.session.yields import flip_sessions_parked_on
 from primer.trigger.subscribers import DispatchDeps
 from tests.conftest import _FakeStorageProvider
+
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing dispatch rather than ownership.
+_PLATFORM = PrincipalRef.system()
 
 SESSION = "s-gate-id"
 RAW = "call_0"
@@ -42,7 +48,7 @@ def _no_rank_refusal(monkeypatch):
 
 
 def _sub(sub_id: str) -> Subscription:
-    return Subscription(
+    return Subscription(owner=_PLATFORM, 
         id=sub_id, trigger_id="tr-1", created_at=datetime.now(UTC),
         config=ParkedSessionSubConfig(session_id=SESSION, tool_call_id=RAW, parked_at=datetime(2026, 1, 1, tzinfo=UTC)),
     )

@@ -10,6 +10,10 @@ naming the modes that are available.
 
 Navigation ergonomics are the contract here: a miss reports the siblings
 it did find, and every write refuses a system-owned collection.
+
+Every tool acts with the caller's access (access-control plan P3,
+Decision 6): reads need read on the collection, writes need full, and a
+collection the caller cannot read answers like a missing one.
 """
 
 from __future__ import annotations
@@ -19,6 +23,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.access.person import person_for_tool
+from primer.access.policy import visible_predicate
 from primer.knowledge.fulltext import fulltext_collection
 from primer.knowledge.grep import grep_collection as _grep
 from primer.knowledge.indexing import (
@@ -35,7 +41,10 @@ from primer.model.except_ import (
     NotFoundError,
     PrimerError,
 )
+from primer.model.access import AccessLevel
 from primer.model.storage import OffsetPage
+from primer.model.yield_ import ToolContext
+from primer.toolset._collection_access import collection_for
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok_json as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
@@ -151,37 +160,24 @@ def build_collections_toolset(
     docs = storage_provider.get_storage(Document)
     content = storage_provider.get_content_store()
 
-    async def _load(collection_id: str) -> tuple[Collection | None, ToolCallResult | None]:
-        coll = await colls.get(collection_id)
-        if coll is None:
-            return None, _err(
-                f"collection {collection_id!r} does not exist",
-                error_type="not-found",
-            )
-        return coll, None
-
-    async def _load_writable(
-        collection_id: str,
+    async def _load(
+        ctx: ToolContext | None, collection_id: str, need: AccessLevel = AccessLevel.READ,
     ) -> tuple[Collection | None, ToolCallResult | None]:
-        coll, error = await _load(collection_id)
-        if error is not None:
-            return None, error
-        if coll.system:
-            return None, _err(
-                f"collection {collection_id!r} is system-owned and read-only",
-                error_type="forbidden",
-            )
-        return coll, None
+        return await collection_for(
+            colls, person_for_tool(ctx), collection_id, need, what=f"collection {collection_id!r}",
+        )
 
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
 
     # ---- reads ------------------------------------------------------------
 
-    async def _collections_list(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _collections_list(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         rows: list[Collection] = []
         offset, page = 0, 200
+        visible = visible_predicate(person_for_tool(ctx))
         while True:
-            resp = await colls.list(OffsetPage(offset=offset, length=page))
+            window = OffsetPage(offset=offset, length=page)
+            resp = await (colls.list(window) if visible is None else colls.find(visible, window))
             rows.extend(resp.items)
             if len(resp.items) < page:
                 break
@@ -216,11 +212,11 @@ def build_collections_toolset(
         _collections_list,
     )
 
-    async def _collection_tree(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _collection_tree(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         args, error = _parse(_TreeArgs, arguments)
         if error is not None:
             return error
-        _, error = await _load(args.collection)
+        _, error = await _load(ctx, args.collection)
         if error is not None:
             return error
         try:
@@ -248,11 +244,11 @@ def build_collections_toolset(
         _collection_tree,
     )
 
-    async def _read_document(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _read_document(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         args, error = _parse(_ReadArgs, arguments)
         if error is not None:
             return error
-        _, error = await _load(args.collection)
+        _, error = await _load(ctx, args.collection)
         if error is not None:
             return error
         try:
@@ -337,11 +333,11 @@ def build_collections_toolset(
             return "semantic"
         return "fulltext"
 
-    async def _search(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _search(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         args, error = _parse(_SearchArgs, arguments)
         if error is not None:
             return error
-        coll, error = await _load(args.collection)
+        coll, error = await _load(ctx, args.collection)
         if error is not None:
             return error
 
@@ -422,11 +418,11 @@ def build_collections_toolset(
 
     # ---- writes -----------------------------------------------------------
 
-    async def _create_document(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _create_document(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         args, error = _parse(_CreateArgs, arguments)
         if error is not None:
             return error
-        _, error = await _load_writable(args.collection)
+        _, error = await _load(ctx, args.collection, AccessLevel.FULL)
         if error is not None:
             return error
         try:
@@ -459,11 +455,11 @@ def build_collections_toolset(
         _create_document,
     )
 
-    async def _update_document(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _update_document(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         args, error = _parse(_UpdateArgs, arguments)
         if error is not None:
             return error
-        _, error = await _load_writable(args.collection)
+        _, error = await _load(ctx, args.collection, AccessLevel.FULL)
         if error is not None:
             return error
         try:
@@ -493,11 +489,11 @@ def build_collections_toolset(
         _update_document,
     )
 
-    async def _move_document(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _move_document(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         args, error = _parse(_MoveArgs, arguments)
         if error is not None:
             return error
-        _, error = await _load_writable(args.collection)
+        _, error = await _load(ctx, args.collection, AccessLevel.FULL)
         if error is not None:
             return error
         try:
@@ -527,11 +523,11 @@ def build_collections_toolset(
         _move_document,
     )
 
-    async def _delete_document(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _delete_document(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         args, error = _parse(_DeleteArgs, arguments)
         if error is not None:
             return error
-        _, error = await _load_writable(args.collection)
+        _, error = await _load(ctx, args.collection, AccessLevel.FULL)
         if error is not None:
             return error
         try:

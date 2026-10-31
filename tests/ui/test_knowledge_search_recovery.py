@@ -96,11 +96,19 @@ def test_the_detail_offers_a_collection_level_delete() -> None:
     assert m, "no collection-level DELETE in the detail overlay (only /search and /docs exist)"
 
 
-def test_the_delete_verb_renders_only_for_non_system_collections() -> None:
+def test_the_delete_verb_is_gated_off_for_system_collections() -> None:
+    """ACL-P3-T7 redrew the footer the old check pinned: the Delete verb is
+    drawn at every level (never hidden silently) and a system collection's
+    public row reads "read" to every non-owner, so the level gates - which
+    the system flag feeds - keep it drawn but disabled for them."""
     detail = _fn("KN_CollectionDetail")
-    i = detail.index("readOnly ? null : (")
-    frag = detail[i:i + 500]
-    assert "Delete" in frag, "the footer's non-system branch has no Delete verb"
+    i = detail.index("KN_writeGates(")
+    frag = detail[i:i + 120]
+    assert "collection.system" in frag, "the system flag must feed the level gates"
+    i = detail.index("kn-delete-collection")
+    frag = detail[i:i + 320]
+    assert "gates.ro" in frag, "the delete is not disabled at the read level"
+    assert "gates.ownerOnly" in frag, "the delete is not owner-only at the full level"
 
 
 def test_confirming_the_delete_issues_the_delete_request() -> None:

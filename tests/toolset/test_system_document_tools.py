@@ -27,6 +27,7 @@ from primer.model.common import dump_for_storage
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.toolset.system import build_system_toolset
+from tests._support.caller import AsCaller
 from tests.toolset.test_system import _emb, _FakeEmbedder
 
 
@@ -80,8 +81,9 @@ async def world(tmp_path: Path):
         cross_encoder_factory=lambda p: object(),
         toolset_factory=lambda t: object(),
     )
-    toolset = build_system_toolset(storage_provider=sp, provider_registry=registry, semantic_search_registry=_SSR(store))
-    registry._system_toolset_provider = toolset
+    raw = build_system_toolset(storage_provider=sp, provider_registry=registry, semantic_search_registry=_SSR(store))
+    registry._system_toolset_provider = raw
+    toolset = AsCaller(raw)  # the calls act as an admin: kb-1 and the system collection are not this caller's otherwise
     await toolset.call(tool_name="create_embedding_provider", arguments={"entity": dump_for_storage(_emb())})
     kb = Collection(
         id="kb-1", description="kb",

@@ -13,6 +13,7 @@ from primer.model.channel_event import (
     NormalizedEventType,
 )
 from primer.model.event_matcher import EventMatcher
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     ChannelTriggerConfig,
     SessionAppendSubConfig,
@@ -22,6 +23,11 @@ from primer.model.trigger import (
 from primer.trigger.dispatch import fire_trigger
 from primer.trigger.subscribers import DispatchDeps
 
+
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing dispatch rather than ownership.
+_PLATFORM = PrincipalRef.system()
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -58,7 +64,7 @@ async def test_matching_sub_dispatches_non_matching_skipped(
     )
     await sessions.create(session)
 
-    sub_open = Subscription(
+    sub_open = Subscription(owner=_PLATFORM, 
         id="sb-open", trigger_id="tr-c",
         config=SessionAppendSubConfig(session_id="cn-1"),
         payload_template="hi",
@@ -69,7 +75,7 @@ async def test_matching_sub_dispatches_non_matching_skipped(
         enabled=True,
         created_at=_now(),
     )
-    sub_cmd = Subscription(
+    sub_cmd = Subscription(owner=_PLATFORM, 
         id="sb-cmd", trigger_id="tr-c",
         config=SessionAppendSubConfig(session_id="cn-1"),
         payload_template="hi",
@@ -130,7 +136,7 @@ async def _hostile_trigger(storage, trigger_id: str, subs: int) -> None:
         enabled=True, next_fire_at=None, created_at=_now(),
     ))
     for index in range(subs):
-        await storage.get_storage(Subscription).create(Subscription(
+        await storage.get_storage(Subscription).create(Subscription(owner=_PLATFORM, 
             id=f"{trigger_id}-sb-{index:02d}", trigger_id=trigger_id,
             config=SessionAppendSubConfig(session_id="cn-none"),
             payload_template="hi",
@@ -216,7 +222,7 @@ async def test_a_subscription_without_a_text_pattern_still_matches_after_the_bud
     from primer.model.event_matcher import channel_event_text_budget
 
     await _hostile_trigger(fake_storage_provider, "tr-mixed", 12)
-    await fake_storage_provider.get_storage(Subscription).create(Subscription(
+    await fake_storage_provider.get_storage(Subscription).create(Subscription(owner=_PLATFORM, 
         id="tr-mixed-sb-zz-plain", trigger_id="tr-mixed",
         config=SessionAppendSubConfig(session_id="cn-none"),
         payload_template="hi",
@@ -315,7 +321,7 @@ async def test_each_owner_key_is_the_user_behind_the_subscription(fake_storage_p
             event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern="x"),
             enabled=True, created_at=_now(), owner=owner,
         ))
-    await subs.create(Subscription(
+    await subs.create(Subscription(owner=_PLATFORM, 
         id="no-text", trigger_id="tr-count",
         config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
         event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED),
@@ -420,7 +426,7 @@ async def test_the_router_reads_each_triggers_subscriptions_once(tmp_path, async
             config=ChannelTriggerConfig(provider_id="channel-provider-1"),
             enabled=True, next_fire_at=None, created_at=_now(),
         ))
-        await provider.get_storage(Subscription).create(Subscription(
+        await provider.get_storage(Subscription).create(Subscription(owner=_PLATFORM, 
             id=f"{trigger_id}-sub", trigger_id=trigger_id,
             config=SessionAppendSubConfig(session_id="cn-none"), payload_template="hi",
             event_matcher=EventMatcher(event_type=NormalizedEventType.MESSAGE_POSTED, text_pattern="nothing-here"),

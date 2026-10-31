@@ -13,6 +13,7 @@ import pytest
 
 import primer.trigger.subscribers.session_append as sa
 from primer.model.storage import OffsetPage
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import SessionAppendSubConfig, Subscription
 from primer.session.steer_delivery import (
     DELIVERED_MISSING,
@@ -25,8 +26,13 @@ from primer.trigger.subscribers import DispatchDeps, get_dispatcher
 from tests.conftest import _FakeStorageProvider
 
 
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing dispatch rather than ownership.
+_PLATFORM = PrincipalRef.system()
+
 def _sub(parallelism: str = "queue") -> Subscription:
-    return Subscription(
+    return Subscription(owner=_PLATFORM, 
         id="sb-1",
         trigger_id="tr-1",
         config=SessionAppendSubConfig(session_id="s1"),

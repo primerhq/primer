@@ -100,13 +100,45 @@ def check_collection_system_flag(entity: Collection, existing: Collection | None
         )
 
 
+#: A whole-row update that changes ``search`` (403 / ``forbidden``).
+COLLECTION_SEARCH_PROTECTED = "collection_search_protected"
+#: The search block's lifecycle fields: the platform writes them, so a body's copy never counts as a change.
+_SEARCH_LIFECYCLE = {"state", "error"}
+
+
+def check_collection_search_unchanged(entity: Collection, existing: Collection) -> None:
+    """Refuse a whole-row update that changes ``search``, and keep the stored block (access-control plan P3, Decision 6).
+
+    Search is turned on, reconfigured and off only through ``PUT`` / ``DELETE /v1/collections/{id}/search``: owner-only, and
+    the enable validates the providers and backfills the index, which a whole-row write would skip. A body that sends the
+    stored configuration back passes, whatever lifecycle (``state``, ``error``) it echoes: the stored block is what is
+    written, never the body's copy.
+    """
+
+    def _config(search) -> dict | None:
+        return None if search is None else search.model_dump(mode="json", exclude=_SEARCH_LIFECYCLE)
+
+    if _config(entity.search) != _config(existing.search):
+        raise EntityCheckError(
+            "forbidden",
+            f"the search of collection {existing.id!r} cannot be changed by replacing the collection: the owner turns it on, "
+            "changes it or turns it off with PUT or DELETE /v1/collections/{id}/search. Send the stored search block back "
+            "unchanged (leaving it out means no search)",
+            code=COLLECTION_SEARCH_PROTECTED,
+            field="search",
+        )
+    entity.search = existing.search
+
+
 __all__ = [
     "COLLECTION_ID_INVALID",
+    "COLLECTION_SEARCH_PROTECTED",
     "COLLECTION_ID_RESERVED",
     "GRAPH_ID_INVALID",
     "RESERVED_COLLECTION_ID_PREFIX",
     "SYSTEM_FLAG_PROTECTED",
     "check_collection_id",
+    "check_collection_search_unchanged",
     "check_collection_system_flag",
     "check_graph_id",
     "is_reserved_collection_id",
