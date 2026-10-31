@@ -691,13 +691,23 @@ class SqliteStorageProvider(StorageProvider):
         the ``PRIMER_AUTH__SESSION_SECRET`` / ``PRIMER_SESSION_SECRET``
         env var override is not set.
         """
-        async with self._write_guard() as should_commit:
-            await self.connection.execute(
-                "UPDATE system_state SET session_secret = ? WHERE id = ? AND session_secret IS NULL",
-                (secret, "singleton"),
-            )
-            if should_commit:
-                await self.connection.commit()
+        # Two processes booting a fresh install on one file can meet SQLITE_BUSY that busy_timeout does not
+        # wait out (a lock upgrade between two deferred transactions). The write is conditional and
+        # idempotent, so a short retry settles the race.
+        for attempt in range(5):
+            try:
+                async with self._write_guard() as should_commit:
+                    await self.connection.execute(
+                        "UPDATE system_state SET session_secret = ? WHERE id = ? AND session_secret IS NULL",
+                        (secret, "singleton"),
+                    )
+                    if should_commit:
+                        await self.connection.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == 4:
+                    raise
+                await asyncio.sleep(0.05 * (attempt + 1))
 
     async def set_sso_jit_enabled(self, enabled: bool) -> None:
         """Persist whether SSO just-in-time user provisioning is enabled."""
