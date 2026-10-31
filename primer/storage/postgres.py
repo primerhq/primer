@@ -316,12 +316,21 @@ class PostgresStorageProvider(StorageProvider):
                 f'  PRIMARY KEY (kind, entity_id)'
                 f')',
             )
+            # The claim query reads two disjoint kinds of candidate per kind (unclaimed; claimed but expired), each served by its own partial index.
+            # They supersede the earlier (priority_score, next_attempt_at) index, which had no kind prefix and could not serve the expired branch.
             await execute_create_idempotent(
                 conn,
-                f'CREATE INDEX IF NOT EXISTS leases_claim_order '
-                f'ON "{self._schema}"."leases" (priority_score, next_attempt_at) '
+                f'CREATE INDEX IF NOT EXISTS leases_unclaimed_by_kind '
+                f'ON "{self._schema}"."leases" (kind, priority_score, next_attempt_at) '
                 f'WHERE claimed_by IS NULL',
             )
+            await execute_create_idempotent(
+                conn,
+                f'CREATE INDEX IF NOT EXISTS leases_expiry_by_kind '
+                f'ON "{self._schema}"."leases" (kind, expires_at) '
+                f'WHERE claimed_by IS NOT NULL',
+            )
+            await conn.execute(f'DROP INDEX IF EXISTS "{self._schema}".leases_claim_order')
             await execute_create_idempotent(
                 conn,
                 f'CREATE TABLE IF NOT EXISTS "{self._schema}"."system_state" ('
