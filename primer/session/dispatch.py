@@ -2343,8 +2343,9 @@ def _post_turn_status(
         # Translate ended-but-stop-reason into a finer reason when we can.
         mapped = _STOP_REASON_TO_STATUS.get(last_done_reason or "", (None, None))
         return (SessionStatus.ENDED, mapped[1] or "completed")
-    # Executor-set WAITING (e.g. assistant asked a question heuristic).
-    if agent_status == SessionStatus.WAITING:
+    # Executor-set WAITING (e.g. assistant asked a question heuristic). An autonomous session has nobody to answer it, so it
+    # falls through to the stop reason and ends (AG-M4).
+    if agent_status == SessionStatus.WAITING and not autonomous:
         return (SessionStatus.WAITING, None)
     # The model kept asking for tools and max_tool_turns stopped the turn. Its last model
     # event was Done(tool_use), which the mapping below reads as "the executor will queue
@@ -2360,7 +2361,9 @@ def _post_turn_status(
     if last_done_reason is None:
         return (SessionStatus.ENDED, "completed")
     mapped = _STOP_REASON_TO_STATUS.get(last_done_reason)
-    if mapped is None:
+    if mapped is None or (autonomous and mapped[0] == SessionStatus.WAITING):
+        # An autonomous session never rests WAITING (``max_tokens``, ``content_filter``): a resting one-shot holds a
+        # ``parallelism="skip"`` gate shut for ever (AG-M4).
         return (SessionStatus.ENDED, "completed")
     return mapped
 
