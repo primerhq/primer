@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
+from primer.model.access import Access
 from primer.api.registries import ProviderRegistry
 from primer.model.channel import Channel
 from primer.model.except_ import ConflictError, NotFoundError
@@ -162,7 +163,7 @@ def _make_workspace(ws_id: str = "ws-1") -> Workspace:
 
 
 def _make_channel(ch_id: str = "chan-1") -> Channel:
-    return Channel(
+    return Channel(access=Access(public=True), 
         id=ch_id,
         provider_id="cp-1",
         provider="slack",

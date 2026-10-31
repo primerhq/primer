@@ -227,9 +227,18 @@ async def seeded(session_toolset, sp):
             "entity": {"id": "tpl-1", "description": "dev", "provider_id": "local-1"},
         },
     )
+    from primer.model.principal import PrincipalRef
+    from primer.model.yield_ import ToolContext
+
+    # The template was created with no identity (admin-managed): the seed creates the workspace as a session-less admin.
+    admin = ToolContext(
+        tool_call_id="seed", session_id=None, workspace_id=None,
+        initiated_by=PrincipalRef(type="user", id="admin-1", display="admin", role="admin", source="local", user_id="admin-1"),
+    )
     create = await session_toolset.call(
         tool_name="create_workspace",
         arguments={"id": "ws-stub", "template_id": "tpl-1"},
+        ctx=admin,
     )
     assert not create.is_error, create.output
     _seed_agent(sp)
