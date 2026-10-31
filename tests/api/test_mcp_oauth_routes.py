@@ -32,6 +32,7 @@ async def oauth_app(app, fake_storage_provider, fake_provider_registry):
     service = ToolsetOAuthService(
         storage_provider=fake_storage_provider,
         secret_box=SecretBox.from_key_material("routes-test-key-0123456789"),
+        auth_enabled=False,  # connect() with no person seeds the shared browser row, the system person's on an auth-disabled install
     )
     app.state.mcp_oauth = service
     fake_provider_registry._toolset_factory = _build_default_toolset_factory(oauth=service)

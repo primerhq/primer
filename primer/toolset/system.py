@@ -173,6 +173,7 @@ from primer.knowledge.checks import (
     RESERVED_COLLECTION_ID_PREFIX,
     check_collection_id,
     check_collection_search_unchanged,
+    check_collection_search_use,
     check_collection_system_flag,
     check_graph_id,
 )
@@ -515,9 +516,12 @@ def build_system_toolset(
         del existing
         check_channel_provider_secrets(entity)
 
-    async def _collection_pre_create(entity: Collection) -> None:
+    async def _collection_pre_create(entity: Collection, *, person: Any = None) -> None:
         check_collection_id(entity)
         check_collection_system_flag(entity)
+        await check_collection_search_use(entity, storage_provider=storage_provider, person=person)
+
+    _collection_pre_create.takes_person = True  # type: ignore[attr-defined]
 
     async def _collection_pre_update(entity: Collection, existing: Collection) -> None:
         check_collection_system_flag(entity, existing)

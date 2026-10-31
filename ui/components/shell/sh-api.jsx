@@ -326,6 +326,15 @@ var SH_api = {
       null, { signal: signal });
   },
 
+  // ACL-P6-T3a: the usernames of user ids (the badges that only have ids: a row's
+  // access.owners / grants are ids). One batched read; unknown ids are absent, and
+  // the route caps a call at 200 ids.
+  userNames: function (ids, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/users/lookup?ids=" + ids.join(","),
+      null, { signal: signal });
+  },
+
   // ---- writes -------------------------------------------------------------
   createSession: function (wid, body) {
     return window.primerApi.apiFetch(

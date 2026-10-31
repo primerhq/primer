@@ -4,11 +4,12 @@ Before this step a toolset had ONE token row, stored under the toolset id, used 
 belongs to one person, stored under ``token_key(toolset, user)`` and naming both in ``toolset_id`` / ``user_id``; a client-credentials sign-in stays
 the shared row under the bare toolset id. Each token row that names no ``toolset_id`` yet (its id is then the toolset id):
 
-* a browser row moves to its heir: the user whose username (or id) is its ``connected_by`` (the admin who connected it), else the first admin (the
-  admin ``User`` with the oldest ``created_at``). Not the toolset's owner: the token is an upstream account, and handing it to someone who never held
-  it would be an escalation through a credential. The copy keeps every stored field (the sealed tokens as their ciphertext, the version, the lease);
-* a browser row with no heir (an install with no users: the auth-disabled shape, whose system person keeps the shared row) and a client-credentials
-  row stay under the bare id, stamped with ``toolset_id`` and ``user_id = None``.
+* a browser row moves to its heir: the user whose id is its ``connected_by``, else the ENABLED admin whose username it is (the admin who connected
+  it; a name now held by a plain user, or by a disabled admin, does not count: review finding 3), else the first enabled admin (the enabled admin
+  ``User`` with the oldest ``created_at``). Not the toolset's owner: the token is an upstream account, and handing it to someone who never held it
+  would be an escalation through a credential. The copy keeps every stored field (the sealed tokens as their ciphertext, the version, the lease);
+* a browser row with no heir (no enabled admin: the auth-disabled shape has no users at all, and its system person keeps the shared row) and a
+  client-credentials row stay under the bare id, stamped with ``toolset_id`` and ``user_id = None``.
 
 Every pending sign-in is dropped (they last ten minutes, and the old ones name no person). Registered clients are primer's, not a person's, and stay.
 
@@ -54,6 +55,7 @@ class McpOAuthPendingSignIn(_View):  # noqa: N801
 class User(_View):  # noqa: N801
     username: str | None = None
     role: str = "user"
+    disabled: bool = False
     created_at: datetime | None = None
 
 
@@ -86,10 +88,11 @@ class M027McpOAuthPerUser:
         token_rows = await _all_rows(tokens)
         pending_rows = await _all_rows(pending)
 
-        by_name = {u.username: u.id for u in users if u.username}
         by_id = {u.id for u in users}
-        admins = [u for u in users if u.role == "admin" and u.created_at is not None]
-        first_admin = min(admins, key=lambda u: u.created_at).id if admins else None
+        admins = [u for u in users if u.role == "admin" and not u.disabled]
+        by_name = {u.username: u.id for u in admins if u.username}
+        dated = [u for u in admins if u.created_at is not None]
+        first_admin = min(dated, key=lambda u: u.created_at).id if dated else None
 
         moved = stamped = 0
         for row in token_rows:
@@ -99,7 +102,7 @@ class M027McpOAuthPerUser:
             heir = None
             if row.grant != "client_credentials":
                 named = row.connected_by
-                heir = by_name.get(named) or (named if named in by_id else None) or first_admin
+                heir = (named if named in by_id else None) or by_name.get(named) or first_admin
             if heir is None:
                 await tokens.update(row.model_copy(update={"toolset_id": row.id, "user_id": None}))
                 stamped += 1

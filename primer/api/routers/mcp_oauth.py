@@ -24,10 +24,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from primer.api.deps import get_mcp_oauth, get_storage_provider
 from primer.api.errors import _problem_response, common_responses
 from primer.access.person import Person, person_from_request
-from primer.access.policy import require
+from primer.access.policy import level_of, require
 from primer.access.tools import may_use_toolset
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
-from primer.model.access import AccessLevel
+from primer.model.access import LEVEL_RANK, AccessLevel
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.model.provider import Toolset, ToolsetProviderType
 from primer.toolset.oauth.service import (
@@ -103,7 +103,7 @@ def console_return_url(toolset_id: str, outcome: str, code: str | None = None) -
 @mcp_oauth_router.post(
     "/toolsets/{toolset_id}/oauth/start",
     response_model=SignInStart,
-    responses=common_responses(400, 403, 404, 500, 502, 504),
+    responses=common_responses(400, 403, 404, 409, 500, 502, 504),
 )
 async def start_toolset_sign_in(
     request: Request,
@@ -114,7 +114,8 @@ async def start_toolset_sign_in(
 ) -> SignInStart:
     """Start the caller's own browser sign-in (any full user who may use the toolset), or connect the shared client-credentials one (FULL on
     the toolset), which connects at once. A browser sign-in answers the authorize URL and sets the ``primer_mcp_oauth`` cookie, which binds the
-    sign-in to this browser: the callback refuses one that does not carry it."""
+    sign-in to this browser: the callback refuses one that does not carry it. Only FULL on the toolset may replace its client registration
+    (review finding 1): below it, a start from another address than the registered one is a 409 that names it."""
     person = person_from_request(request)
     if toolset_id in RESERVED_TOOLSET_IDS:
         toolset = Toolset(id=toolset_id, provider=ToolsetProviderType.INTERNAL)
@@ -130,7 +131,11 @@ async def start_toolset_sign_in(
         return SignInStart(authorize_url=None, redirect_uri=None, expires_at=None, status=status)
     redirect_uri = _redirect_uri(service, request, toolset_id)
     binding = secrets.token_urlsafe(32)
-    started = await service.start_sign_in(target, redirect_uri=redirect_uri, started_by=person.user_id, browser_binding=binding)
+    level = level_of(person, toolset.access)
+    may_reregister = level is not None and LEVEL_RANK[level] >= LEVEL_RANK[AccessLevel.FULL]
+    started = await service.start_sign_in(
+        target, redirect_uri=redirect_uri, started_by=person.user_id, browser_binding=binding, may_reregister=may_reregister,
+    )
     response.set_cookie(SIGN_IN_COOKIE, binding, max_age=int(PENDING_TTL.total_seconds()), **_cookie_options(request, redirect_uri))
     return started
 

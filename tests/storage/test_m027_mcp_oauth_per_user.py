@@ -162,3 +162,33 @@ def test_it_is_registered_as_version_27():
     from primer.storage.migrations.m027_mcp_oauth_per_user import M027McpOAuthPerUser
 
     assert isinstance(MIGRATIONS[26], M027McpOAuthPerUser) and MIGRATIONS[26].version == 27
+
+
+async def test_the_heir_is_an_id_or_an_enabled_admin(sp):
+    """Review finding 3: ``connected_by`` resolves as a user id first; a username counts only for an enabled admin (a demoted or disabled one, or a
+    plain user who took the name later, never inherits the upstream account); else the first ENABLED admin; else the row stays under the bare id."""
+    await sp.get_storage(USERS).create(USERS(id="u-root", username="root", role="admin", disabled=True, created_at=(NOW - timedelta(days=30)).isoformat()))
+    await _user(sp, "u-ann", "ann", "admin", age_days=20)               # the first enabled admin
+    await _user(sp, "u-bob", "bob", "user", age_days=5)
+    await sp.get_storage(USERS).create(USERS(id="u-old", username="old", role="admin", disabled=True, created_at=NOW.isoformat()))
+    await _user(sp, "u-sly", "u-bob", "admin", age_days=1)              # a username that spells another user's id
+    tokens = sp.get_storage(TOKENS)
+    for toolset_id, named in (("by-id", "u-bob"), ("by-user-name", "bob"), ("by-disabled-admin", "old"), ("by-admin-name", "ann")):
+        await tokens.create(_legacy_tokens(toolset_id, connected_by=named))
+    await sp.set_schema_version(26)
+
+    await run_migrations(sp, is_fresh_install=False)
+
+    heirs = {row["toolset_id"]: row["user_id"] for row in (await _rows(sp, TOKENS)).values()}
+    assert heirs == {"by-id": "u-bob", "by-user-name": "u-ann", "by-disabled-admin": "u-ann", "by-admin-name": "u-ann"}
+
+
+async def test_no_enabled_admin_leaves_the_row(sp):
+    await sp.get_storage(USERS).create(USERS(id="u-root", username="root", role="admin", disabled=True, created_at=NOW.isoformat()))
+    await _user(sp, "u-bob", "bob", "user", age_days=5)
+    await sp.get_storage(TOKENS).create(_legacy_tokens("kb", connected_by="root"))
+    await sp.set_schema_version(26)
+
+    await run_migrations(sp, is_fresh_install=False)
+
+    assert {key: (row["toolset_id"], row["user_id"]) for key, row in (await _rows(sp, TOKENS)).items()} == {"kb": ("kb", None)}

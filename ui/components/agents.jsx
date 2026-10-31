@@ -101,6 +101,17 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
     );
   }, [items, textFilter]);
 
+  // ACL-P6-T3a: the owner badge says the username, not the id: one batched lookup
+  // (SHR_useUserNames, share-dialog.jsx) for every owner id on the page.
+  const ownerIds = React.useMemo(() => {
+    const out = [];
+    items.forEach((a) => {
+      ((a.access && a.access.owners) || []).forEach((o) => { if (out.indexOf(o) < 0) out.push(o); });
+    });
+    return out;
+  }, [items]);
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   // Per-row status — fetch /agents/{id}/status once per visible row.
   const [perRowStatus, setPerRowStatus] = React.useState({});
   React.useEffect(() => {
@@ -272,6 +283,16 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
                         <span className="dot"></span>{b}
                       </span>
                     ))}
+                    {a.access && a.access.owners.length > 0 && (
+                      <span
+                        className="pill pill-ended"
+                        data-testid="agent-owner-badge"
+                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
+                        title={"Owned by " + a.access.owners.map((o) => ownerNames[o] || o).join(", ")}
+                      >
+                        <span className="dot"></span>Owned
+                      </span>
+                    )}
                   </td>
                   <td className="muted text-sm" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {a.description || <span style={{ color: "var(--text-4)" }}>—</span>}

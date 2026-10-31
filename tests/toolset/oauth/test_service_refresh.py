@@ -64,7 +64,8 @@ async def services(fake_storage_provider, box, clock):
     made: list[ToolsetOAuthService] = []
 
     def make(owner_id: str = "pod-a", *, secret_box: SecretBox | None = None) -> ToolsetOAuthService:
-        service = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=secret_box or box, clock=clock, owner_id=owner_id)
+        service = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=secret_box or box, clock=clock, owner_id=owner_id,
+                                      auth_enabled=False)  # SYSTEM: the shared row of an auth-disabled install
         made.append(service)
         return service
 

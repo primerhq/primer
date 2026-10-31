@@ -60,7 +60,9 @@ flowchart LR
 - `primer/access/service.py`: `get_access_view`, `set_access` (owners only; the whole desired state; refuses an empty
   owner list, unknown, disabled or restricted users, per-tool flags on kinds without tools, and a row a harness
   installed with 409 `harness_managed`; writes the `access` block alone with `patch_if` guarded on `access.rev`, then
-  runs an optional `after_write` hook), `lookup_users` (username prefix, id and username only), and the two writers
+  runs an optional `after_write` hook), `lookup_users` (username prefix, id and username only), `lookup_user_names`
+  (the ids form the console's badges call: one query over at most 200 ids, unknown ids absent, disabled and restricted
+  users still named), and the two writers
   that keep the sharing out of a whole-row write: `update_keeping_access` (every other field, fenced on the rev the
   caller read: a sharing change in between answers 409) and `rewrite_keeping_access` (every other field, fenced on the
   rev read fresh and retried, for long operations such as a harness sync whose snapshot may be stale).
@@ -73,7 +75,8 @@ flowchart LR
   `primer/trigger/channel_access.py` `require_channel_trigger_access` (a channel trigger needs read on its channel).
 - REST: `make_crud_router(..., owned=True)` (`primer/api/routers/_crud.py`), or `row_guard` plus `list_filter` for a
   kind that inherits its parent's access (documents from their collection), and `make_access_router(...)`
-  (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access`, plus `GET /v1/users/lookup`.
+  (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access`, plus `GET /v1/users/lookup` (the
+  username-prefix `q`; the ids form `?ids=` names the ids the console's badges show, at most 200).
 - Tools: `system__get_entity_access`, `system__set_entity_access`, `system__lookup_users`
   (`primer/toolset/_system_access.py`); the generated CRUD tools enforce the same levels.
 - Phase 4: `primer/model/access.py` `Grantable` (the mixin of grantable infrastructure) and `TOOLS_PUBLIC_TOKEN`;
@@ -251,9 +254,12 @@ fetch, speech and artifact storage providers stay global settings (below), not g
 - `usable(sp, person, model_cls, id)` (`primer/access/infra.py`) is the one question every check asks: the row, or
   `None` when it is missing or the person holds no level on it, so an unusable row reads exactly like a missing one.
 - New rows are private; rows the platform writes are public: the bootstrap runner's providers, and the profile the
-  public seeded agents run on, which `publish_default_profile` (`primer/bootstrap/seed.py`, called by the ensure pass on
-  boot and `/setup/seed`) makes public together with its members and their LLM providers, only while no admin ever shared
-  them (`rev` 0). Existing rows become public in migration 26.
+  public seeded agents run on, which `publish_default_profile` (`primer/bootstrap/seed.py`) makes public together with its
+  members and their LLM providers, only while no admin ever shared them (`rev` 0). The ensure pass (boot and
+  `/setup/seed`) calls it ONLY while it writes the seeded roster for the first time (a fresh install, the wizard's seed),
+  for the profile those agents are written with; a later boot or seed re-run publishes nothing, so a private profile an
+  admin adds stays private, and pointing the seeded agents at one is the admin's call (users get
+  `model_profile_unusable`). Existing rows become public in migration 26.
 - The choices lists (`GET /v1/model_profiles/choices`, `system__list_model_profile_choices`,
   `GET /v1/workspace_providers/_choices`, `list_workspace_provider_choices`) take the person's `visible_predicate`.
 
@@ -285,8 +291,13 @@ what the edit adds.
   `set_reply_binding` tool, a channel trigger) needs it too; otherwise the channel reads as missing.
 - **Search providers.** `enable_search(person=)` needs use of the embedder, the vector store and the cross-encoder
   (else the existing not-registered 409), and so does every search (`primer/knowledge/search_use.py`): REST answers 409 and
-  points to grep and the tree, the `collections` tool falls back to fulltext on `auto` and refuses `semantic`. Indexing
-  writes by full users are not a use of their own.
+  points to grep and the tree, the `collections` tool falls back to fulltext on `auto` and refuses `semantic`, and
+  `system__search_collection` refuses (`conflict`, the REST words) before it embeds anything. A collection
+  create whose `search` block names providers runs the same check for the saver (`check_collection_search_use`, REST 409,
+  tool `conflict`, the same not-registered words); a whole-row update cannot change `search` at all. Indexing writes by
+  full users are not a use of their own, but indexing (`index_document`, `index_documents`, given the storage) refuses to
+  embed through a provider no owner of the collection may use (`owners_may_use`; an owner with no user row counts as
+  unable), failing closed: a backfill records the reason on the search block (`state: error`).
 
 ### Global settings
 
@@ -294,7 +305,13 @@ Install-wide settings every feature already uses are readable by every full user
 admins: the web search and fetch providers and their active configs, the speech providers and active config, the artifact
 storage providers and active store, canvas settings and the MCP exposure singleton. The routers split by verb with
 `read_write_routers` (`primer/api/routers/_crud.py`): GETs mount at the user tier (a restricted user still reaches
-nothing, an unauthenticated caller gets 401), the writes, the `_test` probes and the active-config PUTs stay admin.
+nothing, an unauthenticated caller gets 401), the writes, the `_test` probes and the active-config PUTs stay admin. The
+exposure catalogue `GET /v1/mcp_exposure/available` is exposure administration, not a global setting (it lists and
+contacts every toolset row, private ones included), so it stays admin; `GET /v1/mcp_exposure` (the allowlist) is readable.
+A non-admin's read is served stricter than an admin's: the read parts mount with `serve_global_settings`
+(`primer/api/deps.py`), which sets `SERVING_NON_ADMIN` (`primer/model/common.py`) for that request, so the masking
+serializers serve every API key fully masked (`_mask_with_tail` drops the tail) and every URL with no userinfo at all
+(`MaskedUserinfoUrl`, and `NonAdminStrippedUrlStr` for the S3 `endpoint_url`, which an admin still sees as typed).
 
 ### Console (Phase 4)
 

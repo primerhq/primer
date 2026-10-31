@@ -115,7 +115,7 @@ async def test_a_new_session_has_an_empty_canvas(client, fake_storage_provider, 
     assert await _canvas(fake_storage_provider) is None, "reading a canvas never creates one"
 
 
-async def test_ops_apply_and_read_back_as_a_program(client, fake_storage_provider, ws):
+async def test_ops_apply_and_read_back_as_a_program(app, client, fake_storage_provider, ws):
     await _seed(fake_storage_provider)
     out = await _draw(client)
     assert out["rev"] == 1 and "genre" in out["changed"]["added"] and out["warnings"] == []
@@ -128,7 +128,7 @@ async def test_ops_apply_and_read_back_as_a_program(client, fake_storage_provide
     [record] = ws.lines("s1")
     assert (record["kind"], record["payload"]["source"], record["payload"]["by"]) == ("canvas_op", "operator", "testuser")
     [updated] = await _platform(fake_storage_provider, "canvas.updated")
-    assert updated.actor == "testuser"
+    assert updated.actor == f"user:{await _user_id(app, 'testuser')}", "the standard actor label, not the username (review finding 6)"
 
 
 async def test_json_ops_apply_and_a_malformed_op_is_named(client, fake_storage_provider, ws):
@@ -190,7 +190,7 @@ async def test_delete_clears(client, fake_storage_provider, ws):
 # ---- clicks ------------------------------------------------------------------------------------------------------------------------
 
 
-async def test_a_click_on_an_idle_session_wakes_it(client, fake_storage_provider, ws):
+async def test_a_click_on_an_idle_session_wakes_it(app, client, fake_storage_provider, ws):
     await _seed(fake_storage_provider)
     await _draw(client)
     r = await client.post(_url(tail="/events"), json={"element": "play", "kind": "click"})
@@ -202,7 +202,7 @@ async def test_a_click_on_an_idle_session_wakes_it(client, fake_storage_provider
     assert user_input["payload"]["canvas_event"]["element"] == "play"
     assert (await fake_storage_provider.get_storage(WorkspaceSession).get("s1")).turn_status == "claimable"
     [logged] = await _platform(fake_storage_provider, "canvas.event")
-    assert logged.payload["by"] == "testuser" and logged.actor == "testuser"
+    assert logged.payload["by"] == "testuser" and logged.actor == f"user:{await _user_id(app, 'testuser')}"
 
 
 async def test_a_silent_event_is_recorded(client, fake_storage_provider, ws):

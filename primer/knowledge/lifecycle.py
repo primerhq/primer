@@ -114,6 +114,7 @@ async def enable_search(storage_provider, provider_registry, ssr, *,
             provider_registry=provider_registry,
             semantic_search_registry=ssr,
             content_store=content_store,
+            storage_provider=storage_provider,
         )
     except Exception as exc:  # noqa: BLE001 - partial index stays intact
         logger.exception("backfill failed for collection %s", collection_id)

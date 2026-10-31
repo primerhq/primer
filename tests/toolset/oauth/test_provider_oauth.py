@@ -26,6 +26,7 @@ async def _service(fake_storage_provider) -> ToolsetOAuthService:
     return ToolsetOAuthService(
         storage_provider=fake_storage_provider,
         secret_box=SecretBox.from_key_material("provider-test-key-0123456789"),
+        auth_enabled=False,  # the system person's shared row is an auth-disabled install's
     )
 
 

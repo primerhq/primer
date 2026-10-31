@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from primer.access.acting import acting_as
 from primer.access.person import person_from_ref
+from primer.access.tools import user_may_use_toolset
 from primer.bus.scheduler_tasks import _BackgroundTask
 from primer.common.log import redact_credentials
 from primer.int.coordinator import ROLE_MCP_BRIDGE
@@ -136,6 +137,15 @@ class McpTaskBridge(_BackgroundTask):
         # The upstream calls act for the parked run's person, so a browser-OAuth toolset sends that person's token and nobody else's; a park
         # that names nobody gets no browser token (access-control P5 Task 1). The wake below is the bridge's own write and stays system.
         person = person_from_ref(park.get("person"))
+        # Review finding 4: a person disabled, or no longer able to use the toolset, since the call parked is not polled for with their token.
+        if self._sp is not None and person.user_id is not None and not await user_may_use_toolset(self._sp, person.user_id, toolset_id):
+            reason = (
+                f"the person this run acts for may no longer use the MCP toolset {toolset_id} (disabled, or their access was removed), so task "
+                f"{task_id} is no longer followed"
+            )
+            logger.info("mcp-task-bridge: %s ends as failed: %s", event_key, reason)
+            await self._publish_wake(event_key, {"result": {"isError": True, "content": [{"type": "text", "text": reason}]}})
+            return
         with acting_as(person):
             status_result = await provider.poll_task_status(task_id)
         status = (status_result.status or "").lower()

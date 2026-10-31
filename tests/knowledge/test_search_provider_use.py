@@ -139,3 +139,56 @@ async def test_a_person_with_the_grants_is_offered_semantic(sp):
     listed = await tools.call(tool_name="collections_list", arguments={}, ctx=_ctx("ada"))
 
     assert json.loads(listed.output)["collections"][0]["search"] == "semantic"
+
+
+class _CountingEmb(_Emb):
+    def __init__(self) -> None:
+        super().__init__(dim=4)
+        self.calls = 0
+
+    async def embed(self, *, model, inputs):
+        self.calls += 1
+        return await super().embed(model=model, inputs=inputs)
+
+
+async def _owned_kb(sp, search: CollectionSearchConfig) -> Collection:
+    store = sp.get_storage(Collection)
+    return await store.update((await store.get("kb")).model_copy(update={"search": search}))
+
+
+async def test_indexing_refuses_a_provider_no_owner_may_use(sp):
+    """Security review finding 2, defence in depth: indexing never embeds through a provider no owner of the collection may use."""
+    from primer.knowledge.indexing import index_document
+    from primer.model.collection import Document
+    from primer.model.except_ import PrimerError
+    from tests.knowledge.test_indexing import _ContentStore
+
+    emb, reg, ssr = _CountingEmb(), AsyncMock(), AsyncMock()
+    reg.get_embedder = AsyncMock(return_value=emb)
+    ssr.get_store = AsyncMock(return_value=_Store())
+    doc = Document(id="d1", collection_id="kb", slug="a.md", path="a.md", meta={})
+    kw = {"document": doc, "provider_registry": reg, "semantic_search_registry": ssr, "content_store": _ContentStore("hello"),
+          "storage_provider": sp}
+
+    with pytest.raises(PrimerError, match="no owner"):
+        await index_document(collection=await _owned_kb(sp, _cfg("emb-priv", "ssp-pub", "ready")), **kw)
+    assert emb.calls == 0
+
+    assert await index_document(collection=await _owned_kb(sp, _cfg("emb-ada", "ssp-ada", "ready")), **kw) == 1
+
+
+async def test_a_backfill_through_a_provider_no_owner_may_use_records_the_refusal(sp):
+    """An admin may use any provider, but enabling search on ada's collection with one she may not use indexes nothing: the reason is
+    recorded on the search block."""
+    from primer.model.collection import Document
+
+    await sp.get_storage(Document).create(Document(id="d1", collection_id="kb", slug="a.md", path="a.md", meta={}))
+    await sp.get_content_store().upsert(document_id="d1", collection_id="kb", path="a.md", content="hello")
+    emb, reg, ssr = _CountingEmb(), AsyncMock(), AsyncMock()
+    reg.get_embedder = AsyncMock(return_value=emb)
+    ssr.get_store = AsyncMock(return_value=_Store())
+
+    updated = await enable_search(sp, reg, ssr, collection_id="kb", cfg=_cfg("emb-priv", "ssp-pub"), person=ROOT)
+
+    assert updated.search.state == "error" and "no owner" in updated.search.error
+    assert emb.calls == 0
