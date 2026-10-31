@@ -324,6 +324,8 @@ class WorkspaceRegistry:
         ``person`` is the creator (access-control P4 Task 5): they must be able to USE the template's workspace provider (a use grant, or a
         public provider; admins any). An unusable provider answers exactly like a missing one (the 404 :meth:`get_backend` raises), and
         nothing is built. ``None`` (the bootstrap seed, internal callers) checks nothing.
+        It is also who the workspace is created for for the file mounts (access-control P3 SEC, finding 4): a ``document`` file mount (the template's or an
+        override's) is read as them, so a document they cannot read answers as missing.
 
         ``workspace_id`` pins the live instance to a caller-supplied id
         (typically the same id the durable row is keyed by). Forwarding
@@ -385,7 +387,7 @@ class WorkspaceRegistry:
             refuse_unsupported_resource_overrides(provider.config.kind, overrides)
         backend = await self.get_backend(template.provider_id)
         resolvers = FileResolvers(
-            document_resolver=make_document_resolver(self._sp),
+            document_resolver=make_document_resolver(self._sp, person),
             secret_resolver=(
                 make_secret_resolver(self._secret_provider)
                 if self._secret_provider is not None

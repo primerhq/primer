@@ -40,6 +40,7 @@ from primer.harness.outbound import (
     OutboundBuildError,
     build_bundle_targz,
     build_outbound,
+    refuse_unreadable_tracked,
 )
 from primer.model.common import refuse_served_masks
 from primer.model.except_ import ConflictError, NotFoundError
@@ -922,6 +923,8 @@ async def download_harness_bundle(
 
     # Build fresh from the live DB (the source of truth for an outbound
     # harness) and stream it — no queue, no worker, no ephemeral pod fs.
+    # The bundle carries each tracked row's full spec: READ on the harness alone is not enough (403 unless the person reads every tracked row).
+    await refuse_unreadable_tracked(harness, person_from_request(request), storage_provider=sp)
     try:
         result = await build_outbound(harness, storage_provider=sp)
     except OutboundBuildError as exc:

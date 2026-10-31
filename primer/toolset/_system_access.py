@@ -115,6 +115,11 @@ def access_tools(*, storage_provider: "StorageProvider") -> dict[str, tuple[Tool
             return _refusal(exc)
         return ok(view.model_dump(mode="json"))
 
+    async def _harness_exists(harness_id: str) -> bool:
+        from primer.model.harness import Harness
+
+        return await storage_provider.get_storage(Harness).get(harness_id) is not None
+
     async def _set(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _SetAccessArgs.model_validate(arguments)
@@ -134,6 +139,7 @@ def access_tools(*, storage_provider: "StorageProvider") -> dict[str, tuple[Tool
                 use_only=args.kind in _USE_ONLY,
                 # A shared harness hands its new access to everything it installed.
                 after_write=(lambda row: apply_harness_access(storage_provider, row)) if args.kind == "harness" else None,
+                harness_exists=_harness_exists,
             )
         except (NotFoundError, AccessDeniedError, ConflictError, PrimerValidationError) as exc:
             return _refusal(exc)

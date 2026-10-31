@@ -321,6 +321,15 @@ set). Status returns to `installed`. If something went wrong,
 
 ## Gotchas
 
+- **A harness is shared, and what it installed shares its access.**
+  `harness::list` and `harness::get` (and the bundle download) need
+  `read` on the harness; a harness you cannot read answers as if it did
+  not exist, and so do the agents, graphs, toolsets and collections it
+  installed. Share the harness (`system::set_entity_access` with
+  `kind: "harness"`): its new sharing is copied onto everything it
+  installed. Sharing an installed row directly is refused
+  (`harness_managed`, `type=conflict`). Every write and operation on a
+  harness still needs an admin.
 - **Managed entity CRUD is blocked.** Trying to PUT or DELETE a
   managed Agent / Graph / Collection / Document via the regular
   CRUD endpoints returns 409 with reason "managed by harness <id>".
