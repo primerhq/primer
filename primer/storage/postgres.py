@@ -1783,6 +1783,17 @@ class PostgresEventStore(EventStore):
             rows = await conn.fetch(sql, *params)
         return [self._row_to_event(r) for r in rows]
 
+    async def read_horizon(self) -> tuple[int, int] | None:
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    'SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS lo, pg_snapshot_xmax(pg_current_snapshot())::text AS hi',
+                )
+        except Exception:  # noqa: BLE001 - a server without the snapshot functions (before 13): ids are then read as they always were
+            logger.warning("events: the transaction horizon is unavailable; out-of-order commits cannot be detected", exc_info=True)
+            return None
+        return int(row["lo"]), int(row["hi"])
+
     async def max_id(self) -> int:
         async with self._pool.acquire() as conn:
             value = await conn.fetchval(

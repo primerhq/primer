@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,10 @@ from primer.model.storage import OffsetPage
 from primer.model.yield_ import with_wake_entry, with_wake_park
 
 logger = logging.getLogger(__name__)
+
+#: How long a gap in the event ids must have been seen before it can be treated as permanent (a rolled-back insert), on top of the transactions that
+#: were running when it was first seen having finished.
+HOLE_GRACE_SECONDS = 1.0
 
 if TYPE_CHECKING:
     from primer.model.workspace_session import WorkspaceSession
@@ -106,8 +111,13 @@ class EventDispatcher(_BackgroundTask):
         poll_seconds: float = 5.0,
         batch: int = 200,
         max_failures: int = 5,
+        clock: Any = time.monotonic,
     ) -> None:
         super().__init__(name="event-dispatcher")
+        self._clock = clock
+        # Gaps seen in the event ids: (first missing id, last missing id) -> (next transaction id then, when first seen). See _gap_resolved.
+        self._holes: dict[tuple[int, int], tuple[int, float]] = {}
+        self._horizon_supported = True
         self._sp = storage_provider
         self._bus = event_bus
         self._provider_registry = provider_registry
@@ -200,6 +210,8 @@ class EventDispatcher(_BackgroundTask):
         # Subscriptions share one read of the log: the window serves every subscription whose cursor lies inside it. Lowest cursor first, so the
         # window only ever moves forward.
         window = _EventWindow(store, self._batch)
+        floor = min(cursors.values())
+        self._holes = {gap: v for gap, v in self._holes.items() if gap[1] > floor}
         self._pending_cursors = {}
         delivered = 0
         try:
@@ -236,6 +248,10 @@ class EventDispatcher(_BackgroundTask):
             if not events:
                 return delivered
             for event in events:
+                if event.id > cursor + 1 and not await self._gap_resolved(cursor + 1, event.id - 1):
+                    # An id below this event may still commit (Postgres takes the id at INSERT): hold the cursor here, never move it past the hole.
+                    self._pending_cursors[sub.id] = cursor
+                    return delivered
                 if await matches_async(event, sub.filter):
                     ok = await self._deliver(sub, event)
                     if ok:
@@ -268,6 +284,30 @@ class EventDispatcher(_BackgroundTask):
                             return delivered
                 cursor = event.id
             self._pending_cursors[sub.id] = cursor
+
+    async def _gap_resolved(self, first: int, last: int) -> bool:
+        """Whether the ids ``first..last`` (absent from the log, below an event that is there) can be passed.
+
+        Passed at once on a store with no horizon. Otherwise the gap is remembered with the next transaction id at first sight; it is passed only after
+        a grace period AND once every transaction that was running at first sight has finished (the oldest running one has reached that id): a
+        transaction that held one of these ids has then either committed (the row is in the log, no gap) or rolled back (the gap is permanent).
+        """
+        if not self._horizon_supported:
+            return True
+        store = self._sp.get_event_store()
+        seen = self._holes.get((first, last))
+        if seen is None:
+            horizon = await store.read_horizon()
+            if horizon is None:
+                self._horizon_supported = False
+                return True
+            self._holes[(first, last)] = (horizon[1], self._clock())
+            return False
+        next_xid_then, first_seen = seen
+        if self._clock() - first_seen < HOLE_GRACE_SECONDS:
+            return False
+        horizon = await store.read_horizon()
+        return horizon is None or horizon[0] >= next_xid_then
 
     def _sub_completed(self, sub: EventSubscription) -> bool:
         sink = sub.sink

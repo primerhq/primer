@@ -69,6 +69,15 @@ class EventStore(ABC):
         dispatcher's filter evaluator, not the store.
         """
 
+    async def read_horizon(self) -> tuple[int, int] | None:
+        """``(oldest, next)`` transaction ids of the database right now, or ``None`` when ids are assigned in commit order.
+
+        Postgres assigns an event id at INSERT, not at COMMIT, so a reader can see id N+1 while the transaction that holds id N is still running. A
+        reader that finds a hole in the ids asks this: every transaction that was running when it first saw the hole has finished once ``oldest``
+        reaches the ``next`` it read then. A store with one writer (SQLite) never has such a hole and answers ``None``.
+        """
+        return None
+
     @abstractmethod
     async def max_id(self) -> int:
         """The highest event id, or 0 when the log is empty."""
