@@ -268,15 +268,18 @@ async def rewrite_keeping_access(storage: Storage[Any], entity: Any, *, what: st
     raise ConflictError(f"the sharing of {what} kept changing while it was being edited; retry")
 
 
-async def update_keeping_access(storage: Storage[Any], entity: Any, existing: Any, *, what: str) -> Any:
-    """Write every field of ``entity`` except ``access``, guarded on the stored sharing's ``rev``.
+async def update_keeping_access(
+    storage: Storage[Any], entity: Any, existing: Any, *, what: str, keep: tuple[str, ...] = (),
+) -> Any:
+    """Write every field of ``entity`` except ``access`` (and the ``keep`` fields), guarded on the stored sharing's ``rev``.
 
     An update keeps the row's sharing as stored; a blind whole-row write from the snapshot ``existing`` would put back a grant
     an owner revoked between the read and the write. One ``patch_if`` of every other field, fenced on ``access.rev``: a sharing
     change in the gap answers ``ConflictError`` (409) and nothing is written. Same storage event as an update (CRUD ``updated``).
+    ``keep`` names fields another writer owns (a trigger fire's bookkeeping): they stay as stored.
     """
     dumped = dump_for_storage(entity)
-    patch = {key: value for key, value in dumped.items() if key not in ("id", "access")}
+    patch = {key: value for key, value in dumped.items() if key not in ("id", "access", *keep)}
     rev = existing.access.rev
     guard = [rev, None] if rev == 0 else [rev]
     written = await storage.patch_if(entity.id, patch, where={("access", "rev"): guard})

@@ -255,3 +255,55 @@ async def test_a_delayed_fire_that_raised_before_dispatch_stays_armed_and_fires_
     assert (row.enabled, row.next_fire_at) == (False, None)
     assert not await engine.has_lease(ClaimKind.TRIGGER, made.id)
 
+
+# ---------------------------------------------------------------------------
+# W49: update and rotate against a concurrent fire
+# ---------------------------------------------------------------------------
+
+_FIRE_FIELDS = {"last_fired_at": TICK, "last_fired_id": "fire-concurrent", "last_fire_error": '{"code": "c"}'}
+
+
+def _fire_lands_after_the_read(monkeypatch, sp) -> None:
+    real = service._require_trigger
+
+    async def _read_then_fire(*args, **kwargs):
+        row = await real(*args, **kwargs)
+        await write_trigger_fields(sp.get_storage(Trigger), row, _FIRE_FIELDS)
+        return row
+
+    monkeypatch.setattr(service, "_require_trigger", _read_then_fire)
+
+
+def _fire_fields(row: Trigger) -> dict:
+    return {"last_fired_at": row.last_fired_at, "last_fired_id": row.last_fired_id, "last_fire_error": row.last_fire_error}
+
+
+async def test_update_and_rotate_results_are_unchanged(sp) -> None:
+    deps = service.ServiceDeps(storage_provider=sp)
+    made = await service.create_trigger(slug="wh", name="w", description=None, config=WebhookTriggerConfig(), deps=deps)
+    await write_trigger_fields(sp.get_storage(Trigger), made, _FIRE_FIELDS)
+    renamed = await service.update_trigger(trigger_id=made.id, name="renamed", deps=deps)
+    assert (renamed.name, _fire_fields(renamed)) == ("renamed", _FIRE_FIELDS)
+    rotated = await service.rotate_webhook_token(trigger_id=made.id, owner=PrincipalRef.system(), deps=deps)
+    assert rotated.config.token != made.config.token and rotated.name == "renamed"
+    assert _fire_fields(rotated) == _FIRE_FIELDS
+    assert await sp.get_storage(Trigger).get(made.id) == rotated
+
+
+async def test_an_update_keeps_a_concurrent_fires_bookkeeping(sp, monkeypatch) -> None:
+    deps = service.ServiceDeps(storage_provider=sp)
+    made = await service.create_trigger(slug="wh", name="w", description=None, config=WebhookTriggerConfig(), deps=deps)
+    _fire_lands_after_the_read(monkeypatch, sp)
+    await service.update_trigger(trigger_id=made.id, name="renamed", deps=deps)
+    row = await sp.get_storage(Trigger).get(made.id)
+    assert (row.name, _fire_fields(row)) == ("renamed", _FIRE_FIELDS)
+
+
+async def test_a_rotate_keeps_a_concurrent_fires_bookkeeping(sp, monkeypatch) -> None:
+    deps = service.ServiceDeps(storage_provider=sp)
+    made = await service.create_trigger(slug="wh", name="w", description=None, config=WebhookTriggerConfig(), deps=deps)
+    _fire_lands_after_the_read(monkeypatch, sp)
+    rotated = await service.rotate_webhook_token(trigger_id=made.id, owner=PrincipalRef.system(), deps=deps)
+    row = await sp.get_storage(Trigger).get(made.id)
+    assert row.config.token == rotated.config.token != made.config.token
+    assert _fire_fields(row) == _FIRE_FIELDS
