@@ -340,6 +340,30 @@ async def test_the_catalogue_carries_the_auth_state(raw_client, oauth_app, mock_
     assert entry["unavailable_reason"] == "the MCP server kb needs the person this run acts for to sign in (Toolsets > kb > Connect in the console)"
 
 
+async def test_a_rest_listing_sends_the_signed_in_users_token(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    """The auth middleware makes the signed-in user the acting person (access-control P5 Task 1), so a REST listing of a browser-OAuth toolset
+    sends that user's own token, never the admin's that is stored beside it."""
+    ts = make_toolset(mock_oauth_mcp.mcp_url, oauth={})
+    ts.access = Access(grants={"u-user": "read"})
+    await _store(oauth_app, ts)
+    service = oauth_app.state.mcp_oauth
+    user, admin = Person("u-user", "user"), Person("u-admin", "admin")
+    await connect(service, ts, person=admin)
+    await connect(service, ts, person=user)
+    row = await service.store.get_tokens(target_of(ts, user).key, toolset_id="kb", user_id="u-user")
+    mock_oauth_mcp.state.seen_tokens.clear()
+    await _login_as(raw_client, oauth_app, "user")
+
+    listed = await raw_client.get("/v1/toolsets/kb/tools")
+    catalogue = await raw_client.get("/v1/tools")
+
+    assert listed.status_code == 200, listed.text
+    assert catalogue.status_code == 200, catalogue.text
+    entry = next(item for item in catalogue.json()["items"] if item["id"] == "kb")
+    assert entry["available"] is True and entry["auth"]["state"] == "connected"
+    assert set(mock_oauth_mcp.state.seen_tokens) == {service.store.unseal(row.access_token_enc)}
+
+
 async def test_the_post_callback_is_gone(raw_client, oauth_app) -> None:
     response = await raw_client.post("/v1/toolsets/kb/oauth/callback", params={"code": "x", "state": "y"})
     assert response.status_code == 405

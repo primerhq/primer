@@ -70,13 +70,19 @@ def person_from_ref(ref: PrincipalRef | None) -> Person:
 
 
 def person_for_tool(ctx: "ToolContext | None") -> Person:
-    """The person behind a tool call: the run's initiator when the call carries a ``ToolContext``, else the MCP request's actor.
+    """The person behind a tool call or listing: the run's initiator when the call carries a ``ToolContext``, else the acting person
+    (:func:`primer.access.acting.acting_person`: the request's person, or the run's around a run's listing), else the MCP request's actor.
 
     The MCP endpoint dispatches handlers without a ``ToolContext`` and publishes its live actor on
-    :data:`primer.mcp.server.current_actor` instead. Nothing known reads only public rows.
+    :data:`primer.mcp.server.current_actor` as well. Nothing known reads only public rows.
     """
     if ctx is not None:
         return person_from_ref(ctx.initiated_by)
+    from primer.access.acting import acting_person
+
+    acting = acting_person()
+    if acting is not None:
+        return acting
     from primer.mcp.server import current_actor  # lazy: the MCP server module is heavy and optional on this path
 
     actor = current_actor.get()

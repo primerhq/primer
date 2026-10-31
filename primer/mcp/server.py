@@ -259,7 +259,7 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
 
             await recorder_for(deps.storage_provider).emit(
                 "mcp.tool_called",
-                actor=actor_of(principal),
+                actor=actor_of(actor),
                 payload={
                     "tool": name,
                     "ok": ok,

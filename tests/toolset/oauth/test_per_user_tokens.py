@@ -119,6 +119,24 @@ async def test_listing_sends_the_acting_persons_token(svc, kb, provider, mock_oa
     assert set(mock_oauth_mcp.state.seen_tokens) == {await _access(svc, kb, A)}
 
 
+async def test_a_runs_listing_sends_the_runs_persons_token(svc, kb, provider, mock_oauth_mcp):
+    """The tool manager lists as the run's person (access-control P5 Task 1), whoever the calling task inherited: B's run sends B's token even
+    inside A's request."""
+    from primer.access.acting import acting_as
+    from primer.agent.tool_manager import ToolExecutionManager
+
+    await connect(svc, kb, person=A)
+    await connect(svc, kb, person=B)
+    mock_oauth_mcp.state.seen_tokens.clear()
+    manager = ToolExecutionManager(toolset_providers={"kb": provider}, initiated_by=_ref(B))
+
+    with acting_as(A):
+        tools = sorted(tool.id for tool in await manager.list_tools())
+
+    assert tools == ["kb__bump", "kb__echo"] and manager.unavailable_toolsets() == {}
+    assert set(mock_oauth_mcp.state.seen_tokens) == {await _access(svc, kb, B)}
+
+
 async def test_no_person_gets_no_browser_token(svc, kb, provider, mock_oauth_mcp):
     await connect(svc, kb, person=A)
     await connect(svc, kb, person=SYSTEM)
