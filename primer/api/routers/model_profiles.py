@@ -35,6 +35,8 @@ from __future__ import annotations
 from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+
+from primer.access.person import person_from_request
 from pydantic import Field
 
 from primer.api.deps import (
@@ -245,6 +247,7 @@ _invalidate_aggregated_llm = _make_invalidator("invalidate_aggregated_llm")
 
 model_profile_router = make_crud_router(
     model_cls=ModelProfile,
+    grantable=True,
     storage_dep=get_model_profile_storage,
     plural="model_profiles",
     tag="model-profiles",
@@ -287,6 +290,7 @@ model_profile_choices_router = APIRouter(tags=["model-profiles"])
     responses=common_responses(400, 422, 500),
 )
 async def list_model_profile_choices_route(
+    request: Request,
     page: PageRequest = Depends(parse_page),
     storage=Depends(get_model_profile_storage),
 ) -> OffsetPageResponse[ModelProfileChoice] | CursorPageResponse[ModelProfileChoice]:
@@ -296,7 +300,7 @@ async def list_model_profile_choices_route(
     ``aggregated``; ``context_length`` is the stored window, null for an aggregated profile. The provider, the model name, the
     members and the ``config`` are never part of the answer.
     """
-    return await list_model_profile_choices(storage, page)
+    return await list_model_profile_choices(storage, page, person_from_request(request))
 
 
 __all__ = ["ModelProfileWithUsage", "model_profile_choices_router", "model_profile_router"]

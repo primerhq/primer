@@ -1373,6 +1373,7 @@ def build_workspaces_toolset(
         _CreateProviderArgs,
         _make_create_handler(
             _CreateProviderArgs, _provider_storage, "WorkspaceProvider", guards=provider_guards,
+            stamp_access=lambda ctx: Access(),  # a new provider is private; its use grant is set through set_entity_access (admins)
         ),
         examples=[
             ToolExample(
@@ -1411,13 +1412,13 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _list_workspace_provider_choices(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _list_workspace_provider_choices(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             _NoArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         try:
-            return _ok(await list_provider_choices(_provider_storage()))
+            return _ok(await list_provider_choices(_provider_storage(), person_for_tool(ctx)))
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
 

@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from primer.model.access import Grantable
 from primer.model.common import Identifiable
 from primer.model.providers._shared import ApiKeySecret, Limits, MaskedUserinfoUrl, _HttpApiKeyConfig
 
@@ -235,7 +236,7 @@ class OpenRouterConfig(BaseModel):
     )
 
 
-class LLMProvider(Identifiable):
+class LLMProvider(Grantable, Identifiable):
     """A configured LLM provider entry.
 
     One ``LLMProvider`` describes a single chat/completion backend the

@@ -38,7 +38,7 @@ def _harness(hid: str, access: Access | None = None) -> Harness:
 
 
 def test_registered_as_version_25():
-    assert MIGRATIONS[-1].version == 25 and isinstance(MIGRATIONS[-1], M025HarnessOwnership)
+    assert MIGRATIONS[24].version == 25 and isinstance(MIGRATIONS[24], M025HarnessOwnership)
 
 
 async def test_harnesses_get_the_first_admin_and_installed_rows_copy_it(sp):

@@ -559,6 +559,11 @@ def build_system_toolset(
     # channels, and the toolset row itself) -> user. ``owned`` (the
     # last element) turns on the access-control enforcement the REST
     # ``owned=True`` routers apply to the five owned entities.
+    # The infrastructure rows that carry a use grant (access-control P4 Task 3): created private, edited without resetting it, shared
+    # through ``set_entity_access`` by admins only.
+    _GRANTABLE_LABELS = frozenset({
+        "llm_provider", "model_profile", "embedding_provider", "cross_encoder_provider", "semantic_search_provider", "channel_provider",
+    })
     crud_specs = [
         ("llm_provider", "llm_providers", LLMProvider, None, _inv_llm, _inv_llm, "admin", False),
         # A profile names a provider and its API-level tunables, so it is
@@ -715,6 +720,7 @@ def build_system_toolset(
                 on_delete=on_d,
                 required_role=role,
                 owned=owned,
+                grantable=label in _GRANTABLE_LABELS,
                 guards=guards_by_label.get(label),
                 pre_create=pre_create,
                 pre_update=pre_update,

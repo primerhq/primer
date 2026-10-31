@@ -9,7 +9,7 @@ from typing import Annotated, ClassVar, Union
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from primer.common.url_userinfo import MASK
-from primer.model.access import Owned
+from primer.model.access import Owned, Grantable
 from primer.model.common import Identifiable
 
 
@@ -176,7 +176,7 @@ def channel_token_problem(config: BaseModel) -> tuple[str, str] | None:
     return None
 
 
-class ChannelProvider(Identifiable):
+class ChannelProvider(Grantable, Identifiable):
     """A configured messaging-platform credential set."""
 
     _id_prefix: ClassVar[str] = "channel-provider"

@@ -86,11 +86,17 @@ def _view(access: Access, refs: dict[str, UserRef], level: AccessLevel | None) -
 
 
 async def get_access_view(
-    storage: Storage[Any], users: Storage[User], entity_id: str, person: Person, *, what: str
+    storage: Storage[Any], users: Storage[User], entity_id: str, person: Person, *, what: str, use_only: bool = False
 ) -> AccessView:
-    """The sharing of ``entity_id``; needs read access (no access answers not found)."""
+    """The sharing of ``entity_id``; needs read access (no access answers not found).
+
+    For grantable infrastructure (``use_only``) a non-admin gets only ``your_level`` and ``public``: no owners, no grants, so a colleague's
+    use grant cannot be enumerated. Admins see everything.
+    """
     row = await _load(storage, entity_id, what)
     level = require(person, row.access, AccessLevel.READ, what=what)
+    if use_only and not person.is_admin:
+        return AccessView(owners=[], grants=[], public=row.access.public, public_tools=[], rev=0, your_level=level)
     refs = await _user_refs(users, [*row.access.owners, *row.access.grants])
     return _view(row.access, refs, level)
 
@@ -105,21 +111,33 @@ async def set_access(
     what: str,
     allow_public_tools: bool = False,
     after_write: Callable[[Any], Awaitable[None]] | None = None,
+    use_only: bool = False,
 ) -> AccessView:
     """Replace the sharing of ``entity_id``; owners only. Writes the ``access`` block alone, guarded on its ``rev``.
 
     A row a harness installed (it has a ``harness_id``) is shared through its harness, never directly: 409 ``harness_managed``.
     ``after_write`` runs with the written row once the write has landed (a harness fans its access out to what it installed).
+
+    ``use_only`` is the shape of grantable infrastructure (a model profile, a provider; spec 6.1): no owners, only ``read`` grants (meaning
+    *use*), no per-tool flags. Admins hold ``owner`` by role, so ``require(..., OWNER)`` leaves the edit to them alone; a grantee reads the
+    view and anyone else answers not found. Harness inheritance does not apply to these rows.
     """
     row = await _load(storage, entity_id, what)
     require(person, row.access, AccessLevel.OWNER, what=what)
-    if getattr(row, "harness_id", None):
+    if getattr(row, "harness_id", None) and not use_only:
         raise ConflictError(f"{what} is managed by a harness (harness_managed); share the harness instead", code="harness_managed")
     current: Access = row.access
     if update.rev is not None and update.rev != current.rev:
         raise ConflictError(f"the sharing of {what} changed since rev {update.rev}; reload it")
     owners = list(dict.fromkeys(update.owners))
-    if not owners:
+    if use_only:
+        if owners:
+            raise ValidationError(f"{what} is shared by use grants only; it has no owners")
+        if any(level != "read" for level in update.grants.values()):
+            raise ValidationError(f"{what} is shared by use grants only: a grant is 'read' (use)")
+        if update.public_tools:
+            raise ValidationError(f"{what} has no tools to make public")
+    elif not owners:
         raise ValidationError("an entity needs at least one owner")
     if update.public_tools and not allow_public_tools:
         raise ValidationError(f"{what} has no tools to make public")

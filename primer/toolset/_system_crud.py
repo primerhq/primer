@@ -359,6 +359,7 @@ def _crud_tools_for(
     on_delete: _OnMutate = None,
     required_role: str | None = None,
     owned: bool = False,
+    grantable: bool = False,
     guards: CrudGuards | None = None,
     pre_create: _PreCreate = None,
     pre_update: _PreUpdate = None,
@@ -538,6 +539,8 @@ def _crud_tools_for(
             # identity-less run (admin / system) stores the row admin-managed.
             person = _owned_person(ctx)
             entity.access = Access.owned_by(person.user_id) if person.user_id is not None else Access()  # type: ignore[attr-defined]
+        elif grantable:
+            entity.access = Access()  # type: ignore[attr-defined]  # a new profile or provider is private; the body's access is ignored
         reason = admin_when(entity, None) if admin_when is not None else None
         if reason:
             denied = _refuse_unless_admin(ctx, reason if isinstance(reason, str) else admin_note or "this write requires the admin role")
@@ -641,6 +644,8 @@ def _crud_tools_for(
                 return denied
             # The stored access is kept, whatever the body sent.
             entity.access = existing.access  # type: ignore[attr-defined]
+        elif grantable:
+            entity.access = existing.access  # type: ignore[attr-defined]  # an edit never resets a use grant
         if row_guard is not None:
             denied = await row_guard(existing, ctx, True)
             if denied is not None:
@@ -669,7 +674,7 @@ def _crud_tools_for(
             except EntityCheckError as exc:
                 return _err(exc.tool_message(), error_type=exc.tool_error_type)
         try:
-            if owned:
+            if owned or grantable:
                 # Guarded on the stored sharing's rev (a share changed meanwhile is a conflict, never a resurrected grant).
                 updated = await update_keeping_access(storage, entity, existing, what=f"{cls_name} {entity_id!r}")
             else:

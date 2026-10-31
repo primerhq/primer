@@ -29,10 +29,13 @@ def make_access_router(
     tag: str,
     allow_public_tools: bool = False,
     after_write: Callable[[Request, Any], Awaitable[None]] | None = None,
+    use_only: bool = False,
 ) -> APIRouter:
     """``GET`` / ``PUT /{plural}/{entity_id}/access`` for an owned model. Include it BEFORE the model's CRUD router.
 
-    ``after_write(request, row)`` runs once a PUT has landed (a harness fans its access out to what it installed).
+    ``after_write(request, row)`` runs once a PUT has landed (a harness fans its access out to what it installed). ``use_only`` is the
+    grantable-infrastructure shape (:func:`primer.access.service.set_access`): the route is on the user tier, and the service lets only
+    admins change it.
     """
     router = APIRouter(tags=[tag])
     name = model_cls.__name__
@@ -49,7 +52,9 @@ def make_access_router(
         storage=Depends(storage_dep),
         users=Depends(_users),
     ) -> AccessView:
-        return await get_access_view(storage, users, entity_id, person_from_request(request), what=f"{name} {entity_id!r}")
+        return await get_access_view(
+            storage, users, entity_id, person_from_request(request), what=f"{name} {entity_id!r}", use_only=use_only,
+        )
 
     @router.put(
         f"/{plural}/{{entity_id}}/access",
@@ -73,6 +78,7 @@ def make_access_router(
             what=f"{name} {entity_id!r}",
             allow_public_tools=allow_public_tools,
             after_write=(lambda row: after_write(request, row)) if after_write is not None else None,
+            use_only=use_only,
         )
 
     return router

@@ -197,6 +197,7 @@ def make_crud_router(
     search_fields: list[str] | None = None,
     enrich_list: _OnListEnrichHook = None,
     owned: bool = False,
+    grantable: bool = False,
     row_guard: _RowGuardHook = None,
     list_filter: _ListFilterHook = None,
 ) -> APIRouter:
@@ -308,6 +309,11 @@ def make_crud_router(
         :func:`primer.access.policy.visible_predicate` into the storage query.
         Response rows keep ``access``: callers need it to show sharing, and
         it is not secret.
+    grantable
+        For grantable infrastructure (a model profile, a provider; :class:`primer.model.access.Grantable`) behind an admin router: create
+        stamps a private block (``Access()``) and ignores the body's ``access``; update keeps the stored ``access`` through
+        :func:`primer.access.service.update_keeping_access`, so an edit never resets a use grant. No level checks and no list filter (the
+        router is admin-only); who may USE the row is the ``/access`` sub-resource's business.
     row_guard / list_filter
         For a kind that inherits its access from a parent row (unscoped
         routes only): ``row_guard(row, request, write)`` runs right after the
@@ -618,6 +624,8 @@ def make_crud_router(
                     if person.user_id is not None
                     else Access()
                 )
+            if grantable:
+                entity.access = Access()
             if on_pre_create is not None:
                 await on_pre_create(entity, request)
             created = await storage.create(entity)
@@ -703,11 +711,13 @@ def make_crud_router(
                 # The body's access is ignored (spec anti-goal 1): the row
                 # keeps its stored access.
                 entity.access = existing.access
+            if grantable:
+                entity.access = existing.access
             if row_guard is not None:
                 await row_guard(existing, request, True)
             if on_pre_update is not None:
                 await on_pre_update(entity, existing, request)
-            if owned:
+            if owned or grantable:
                 # Guarded on the stored sharing's rev: a share changed meanwhile answers 409, never a resurrected grant.
                 updated = await update_keeping_access(
                     storage, entity, existing, what=f"{model_cls.__name__} {entity_id!r}"

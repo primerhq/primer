@@ -76,6 +76,21 @@ class Access(BaseModel):
         return cls(owners=[user_id])
 
 
+class Grantable(BaseModel):
+    """Mixin for grantable infrastructure: model profiles and the providers a user-owned entity references (spec 6.1, 6.2).
+
+    The block is an :class:`Access` with ``owners = []``, every grant ``read`` (meaning *use*) and ``public``; admins hold ``owner`` by role,
+    so only they edit it. It says who may USE the row (reference it from their own entities, and run through it); creating, editing and
+    deleting the row stays admin-only. A new row is private; rows the platform writes, and every row that existed before access control, are
+    public.
+    """
+
+    access: Access = Field(
+        default_factory=Access,
+        description="Who may use this row (use grants and public); admins only edit it. Its derived members are indexed.",
+    )
+
+
 class Owned(BaseModel):
     """Mixin for the entities Phase 1 makes owned (spec 6.1)."""
 

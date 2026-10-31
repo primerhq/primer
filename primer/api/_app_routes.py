@@ -153,6 +153,11 @@ def _mount_routers(
     # Phase 1 — providers (system configuration => admin only).
     # helpers BEFORE CRUD so the literal /_types path wins over /{id},
     # same ordering rule as web_search / web_fetch below.
+    # The use grants of profiles and providers (``/{plural}/{id}/access``): user tier, the service lets only admins change them; before
+    # every admin CRUD router below.
+    from primer.api.routers.infra_access import infra_access_routers
+    for _router in infra_access_routers:
+        app.include_router(_router, prefix=prefix, dependencies=user_dep)
     app.include_router(providers.llm_provider_types_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.embedding_provider_types_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.cross_encoder_provider_types_router, prefix=prefix, dependencies=admin_dep)

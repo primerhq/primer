@@ -25,6 +25,13 @@ from tests.api.conftest import app, fake_provider_registry  # noqa: F401
 
 _FIELDS = {"id", "description", "kind", "context_length"}
 
+def _pub(row):
+    """The row a user may use: these suites check the shape of a user's choices, so every row is public."""
+    from primer.model.access import Access
+
+    return row.model_copy(update={"access": Access(public=True)})
+
+
 
 @pytest.fixture
 async def admin(app) -> AsyncIterator[httpx.AsyncClient]:  # noqa: F811
@@ -79,7 +86,7 @@ def _single(profile_id: str, *, context_length: int = 32_000) -> ModelProfile:
 
 async def _seed(app, *rows: ModelProfile) -> None:  # noqa: F811
     for row in rows:
-        await app.state.storage_provider.get_storage(ModelProfile).create(row)
+        await app.state.storage_provider.get_storage(ModelProfile).create(_pub(row))
 
 
 async def _all_profile_ids(app) -> list[str]:  # noqa: F811

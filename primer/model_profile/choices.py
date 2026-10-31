@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from primer.access.person import Person
+from primer.access.policy import visible_predicate
 from primer.model.model_profile import ModelProfile, ModelProfileChoice
 from primer.model.storage import CursorPage, CursorPageResponse, OffsetPage, OffsetPageResponse, OrderBy
 
@@ -26,14 +28,16 @@ def model_profile_choice(row: ModelProfile) -> ModelProfileChoice:
 
 
 async def list_model_profile_choices(
-    storage: Any, page: OffsetPage | CursorPage,
+    storage: Any, page: OffsetPage | CursorPage, person: Person | None = None,
 ) -> OffsetPageResponse[ModelProfileChoice] | CursorPageResponse[ModelProfileChoice]:
     """One page of the profiles in ``storage``, sorted by id, each as a :class:`ModelProfileChoice`.
 
     The page answers in the shape of the request: ``{offset, length, total, items}`` for an offset page and ``{next_cursor, items}``
     for a cursor page, as ``GET /v1/model_profiles`` does.
     """
-    resp = await storage.list(page, order_by=_ORDER)
+    # A person is offered the profiles they may use (a use grant, or public; admins all): the filter runs in the storage query.
+    visible = visible_predicate(person) if person is not None else None
+    resp = await storage.list(page, order_by=_ORDER) if visible is None else await storage.find(visible, page, order_by=_ORDER)
     items = [model_profile_choice(row) for row in resp.items]
     if isinstance(resp, CursorPageResponse):
         return CursorPageResponse[ModelProfileChoice](next_cursor=resp.next_cursor, items=items)
