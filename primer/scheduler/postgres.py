@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 _DDL_WORKERS = """
-CREATE TABLE IF NOT EXISTS workers (
+CREATE TABLE IF NOT EXISTS {workers} (
     id              TEXT PRIMARY KEY,
     host            TEXT NOT NULL,
     pid             INT NOT NULL,
@@ -71,6 +71,14 @@ class PostgresScheduler(Scheduler):
         config: PostgresSchedulerConfig,
     ) -> None:
         self._storage = storage_provider
+        # Schema-qualified table names (CORE-8): an unqualified `workers`
+        # would land in `public` and be shared by every deployment on the
+        # cluster (one deployment's boot marks the others' workers dead,
+        # purge deletes their rows). Same pattern as the provider's
+        # ``leases_table``.
+        self._schema = storage_provider.schema
+        self._workers_table = f'"{self._schema}"."workers"'
+        self._sessions_table = f'"{self._schema}"."sessions"'
         self._config = config
         self._lease_ttl_seconds: int = 30
         # Every LISTEN connection currently checked out of the pool, so
@@ -93,21 +101,24 @@ class PostgresScheduler(Scheduler):
         try:
             async with self._storage.pool.acquire() as conn:
                 async with conn.transaction():
-                    await conn.execute(_DDL_WORKERS)
+                    await conn.execute(_DDL_WORKERS.format(workers=self._workers_table))
                     # Added after the table shipped (Lead sweep M2): nullable, no default, so a worker from before load reporting
                     # reads as "never reported" (NULL), not as idle. Idempotent; safe against a rolling upgrade. Checked first because
                     # ALTER TABLE takes an ACCESS EXCLUSIVE lock even when ``IF NOT EXISTS`` then does nothing, and that would queue
                     # behind (and block) every heartbeat and health read on every boot of every process.
                     has_load_column = await conn.fetchval(
                         "SELECT 1 FROM information_schema.columns "
-                        "WHERE table_schema = current_schema() AND table_name = 'workers' AND column_name = 'in_flight'"
+                        "WHERE table_schema = $1 AND table_name = 'workers' AND column_name = 'in_flight'",
+                        self._schema,
                     )
                     if not has_load_column:
-                        await conn.execute("ALTER TABLE workers ADD COLUMN IF NOT EXISTS in_flight INT")
+                        await conn.execute(
+                            f"ALTER TABLE {self._workers_table} ADD COLUMN IF NOT EXISTS in_flight INT"
+                        )
                     # Boot-time recovery: mark dead any worker rows that
                     # haven't heartbeat in 5 minutes.
                     await conn.execute(
-                        "UPDATE workers SET status = 'dead' "
+                        f"UPDATE {self._workers_table} SET status = 'dead' "
                         "WHERE status != 'dead' "
                         "AND last_heartbeat < now() - interval '5 minutes'"
                     )
@@ -151,8 +162,8 @@ class PostgresScheduler(Scheduler):
     ) -> None:
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
-                """
-                INSERT INTO workers (id, host, pid, capacity, started_at,
+                f"""
+                INSERT INTO {self._workers_table} (id, host, pid, capacity, started_at,
                                      last_heartbeat, status)
                 VALUES ($1, $2, $3, $4, now(), now(), 'active')
                 ON CONFLICT (id) DO UPDATE SET
@@ -169,43 +180,43 @@ class PostgresScheduler(Scheduler):
     async def heartbeat_worker(self, worker_id: str) -> None:
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE workers SET last_heartbeat = now() WHERE id = $1",
+                f"UPDATE {self._workers_table} SET last_heartbeat = now() WHERE id = $1",
                 worker_id,
             )
 
     async def report_worker_load(self, worker_id: str, *, in_flight: int) -> None:
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE workers SET in_flight = $2 WHERE id = $1",
+                f"UPDATE {self._workers_table} SET in_flight = $2 WHERE id = $1",
                 worker_id, in_flight,
             )
 
     async def drain_worker(self, worker_id: str) -> None:
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE workers SET status = 'draining' WHERE id = $1",
+                f"UPDATE {self._workers_table} SET status = 'draining' WHERE id = $1",
                 worker_id,
             )
 
     async def deregister_worker(self, worker_id: str) -> None:
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
-                "DELETE FROM workers WHERE id = $1", worker_id,
+                f"DELETE FROM {self._workers_table} WHERE id = $1", worker_id,
             )
 
     async def purge_dead_workers(self) -> int:
         """One DELETE over the whole tombstone set."""
         async with self._storage.pool.acquire() as conn:
             rows = await conn.fetch(
-                "DELETE FROM workers WHERE status = 'dead' RETURNING id",
+                f"DELETE FROM {self._workers_table} WHERE status = 'dead' RETURNING id",
             )
         return len(rows)
 
     async def list_workers(self) -> list[WorkerInfo]:
         async with self._storage.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, host, pid, capacity, started_at, last_heartbeat, status, in_flight "
-                "FROM workers ORDER BY id"
+                f"SELECT id, host, pid, capacity, started_at, last_heartbeat, status, in_flight "
+                f"FROM {self._workers_table} ORDER BY id"
             )
         return [
             WorkerInfo(
@@ -442,13 +453,13 @@ class PostgresScheduler(Scheduler):
         aggregates. See spec §14. Sessions by status."""
         async with self._storage.pool.acquire() as conn:
             sessions_table_exists = await conn.fetchval(
-                "SELECT to_regclass('sessions') IS NOT NULL"
+                f"SELECT to_regclass('{self._sessions_table}') IS NOT NULL"
             )
             sessions_by_status: dict[str, int] = {}
             if sessions_table_exists:
                 rows = await conn.fetch(
-                    "SELECT data->>'status' AS status, count(*) AS n "
-                    "FROM sessions GROUP BY data->>'status'"
+                    f"SELECT data->>'status' AS status, count(*) AS n "
+                    f"FROM {self._sessions_table} GROUP BY data->>'status'"
                 )
                 for r in rows:
                     sessions_by_status[r["status"] or "unknown"] = r["n"]

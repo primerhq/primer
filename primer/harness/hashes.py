@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 
@@ -71,19 +71,21 @@ def changed_operation_inputs(harness: Any) -> list[str] | None:
     return [name for name in current if stamped.get(name) != current[name]]
 
 
-def hash_bundle(files: Iterable[tuple[str, bytes]]) -> str:
-    """Hash an entire bundle directory.
+def hash_bundle(paths: Iterable[str], read: Callable[[str], bytes]) -> str:
+    """Hash an entire bundle directory, reading one file at a time.
 
-    ``files`` yields ``(relative_path, content_bytes)`` for every file
-    that contributes to the bundle (harness.yaml, overrides.schema.json,
-    everything under templates/ and any data files). The hash is order-
-    independent: we sort by path, then concatenate ``path\\x00content\\x00``.
+    ``paths`` names every file that contributes to the bundle (harness.yaml,
+    overrides.schema.json, everything under templates/ and any data files)
+    and ``read`` returns the content of one relative path. The hash is
+    order-independent: we sort by path, then concatenate ``path\\x00content\\x00``
+    -- the same framing as the old tuple-materialising form, so stored bundle
+    hashes (which drive the sync fast path) are unchanged.
     """
     h = hashlib.sha256()
-    for path, content in sorted(files, key=lambda x: x[0]):
+    for path in sorted(paths):
         h.update(path.encode("utf-8"))
         h.update(b"\x00")
-        h.update(content)
+        h.update(read(path))
         h.update(b"\x00")
     return h.hexdigest()
 

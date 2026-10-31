@@ -474,20 +474,11 @@ class WorkerPool:
                 await asyncio.sleep(self.config.heartbeat_interval_seconds)
                 if self._keepalive_over():
                     return
-                try:
-                    await self._scheduler.heartbeat_worker(self._worker_id)
-                except Exception:
-                    logger.exception("heartbeat_loop: scheduler heartbeat failed")
-                # The load rides the same tick (Lead sweep M2): the registry is the one place every API sees, and an item count held
-                # only in this process was why an API-only /v1/health could not say how busy the fleet was. Advisory and its own
-                # try block: a registry that will not take it must not skip the engine heartbeat below.
-                try:
-                    await self._scheduler.report_worker_load(self._worker_id, in_flight=len(self._in_flight))
-                except Exception:
-                    logger.exception("heartbeat_loop: reporting this worker's load failed")
-                # Two try blocks, not one: the engine heartbeat is what keeps the in-flight leases
-                # alive and what preempts a turn whose lease is lost, so a failed scheduler (worker
-                # row) heartbeat must not skip it for the whole tick.
+                # Engine path first (CORE-10): this heartbeat is what keeps the
+                # in-flight leases alive and what preempts a turn whose lease
+                # is lost, so a slow or blocking worker-row write must not push
+                # the lease refresh past the TTL. Its own try block: a failure
+                # here must not leak into the worker-row writes.
                 try:
                     # Engine path: heartbeat all in-flight leases via engine.
                     if self._in_flight:
@@ -521,6 +512,17 @@ class WorkerPool:
                             scope.cancel(CANCEL_REASON_PREEMPTED)
                 except Exception:
                     logger.exception("heartbeat_loop iteration failed")
+                try:
+                    await self._scheduler.heartbeat_worker(self._worker_id)
+                except Exception:
+                    logger.exception("heartbeat_loop: scheduler heartbeat failed")
+                # The load rides the same tick (Lead sweep M2): the registry is the one place every API sees, and an item count held
+                # only in this process was why an API-only /v1/health could not say how busy the fleet was. Advisory and its own
+                # try block: a registry that will not take it must not break the rest of the tick.
+                try:
+                    await self._scheduler.report_worker_load(self._worker_id, in_flight=len(self._in_flight))
+                except Exception:
+                    logger.exception("heartbeat_loop: reporting this worker's load failed")
         except asyncio.CancelledError:
             return
 

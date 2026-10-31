@@ -88,9 +88,9 @@ from primer.model.storage import OffsetPage
 logger = logging.getLogger(__name__)
 
 
-def _collect_bundle_files(base: Path) -> list[tuple[str, bytes]]:
-    """Walk ``base`` and return (relative_path, bytes) for every non-.git file; a symlink is refused (``harness_symlink_refused``)."""
-    result: list[tuple[str, bytes]] = []
+def _collect_bundle_paths(base: Path) -> list[str]:
+    """Walk ``base`` and return the relative paths of every non-.git file; a symlink is refused (``harness_symlink_refused``). Contents are read by the caller, one file at a time (KN-19k)."""
+    result: list[str] = []
     for p in sorted(base.rglob("*")):
         # Skip the .git directory and everything inside it
         parts = p.relative_to(base).parts
@@ -101,8 +101,7 @@ def _collect_bundle_files(base: Path) -> list[tuple[str, bytes]]:
         if reason is not None:
             raise HarnessGitError("harness_symlink_refused", f"{p.relative_to(base).as_posix()}: {reason}")
         if p.is_file():
-            rel = str(p.relative_to(base))
-            result.append((rel, p.read_bytes()))
+            result.append(str(p.relative_to(base)))
     return result
 
 HARNESS_HEARTBEAT_INTERVAL_SECONDS = 10.0
@@ -460,8 +459,10 @@ async def _do_fetch(
                     )
 
             # Compute parent's own bundle_hash over the subpath (excluding .git)
-            bundle_files = await asyncio.to_thread(_collect_bundle_files, base)
-            parent_bundle_hash = hash_bundle(bundle_files)
+            bundle_paths = await asyncio.to_thread(_collect_bundle_paths, base)
+            parent_bundle_hash = await asyncio.to_thread(
+                hash_bundle, bundle_paths, lambda name: (base / name).read_bytes(),
+            )
 
             # ---- Dependency walk (optional) -----------------------------
             parent_deps = harness_meta.get("dependencies") or []
@@ -839,8 +840,10 @@ async def _do_install(
             base = Path(dest)
             if harness.subpath:
                 base = base / harness.subpath
-            parent_bundle_hash = hash_bundle(
-                await asyncio.to_thread(_collect_bundle_files, base),
+            parent_bundle_hash = await asyncio.to_thread(
+                hash_bundle,
+                await asyncio.to_thread(_collect_bundle_paths, base),
+                lambda name: (base / name).read_bytes(),
             )
             if harness.dependencies_resolved:
                 h = hashlib.sha256()
@@ -1057,8 +1060,10 @@ async def _do_sync(
             base = Path(dest)
             if harness.subpath:
                 base = base / harness.subpath
-            parent_bundle_hash = hash_bundle(
-                await asyncio.to_thread(_collect_bundle_files, base),
+            parent_bundle_hash = await asyncio.to_thread(
+                hash_bundle,
+                await asyncio.to_thread(_collect_bundle_paths, base),
+                lambda name: (base / name).read_bytes(),
             )
             if harness.dependencies_resolved:
                 h = hashlib.sha256()
