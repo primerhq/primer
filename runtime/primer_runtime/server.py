@@ -70,6 +70,11 @@ _PROTOCOL_MAJOR: int = int(PROTOCOL_VERSION.split(".")[0])
 # more, so a too-big request fails alone; this covers its 128 MiB workspace-file PUT (a ~96 MiB file, base64).
 _MAX_MSG_SIZE: int = 256 * 1024 * 1024
 
+# Server-side ping (GI-11): a peer that stops answering (a lost node) is dropped after this plus half again, and the
+# teardown frees its terminals and watches. Any received frame counts as life, and the platform's own HEALTH heartbeat
+# (every 15 s) keeps a healthy connection from ever being pinged.
+_HEARTBEAT_S: float = 30.0
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -122,7 +127,7 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     if not _check_token(token, provided):
         raise web.HTTPUnauthorized(reason="Invalid or missing bearer token")
 
-    ws = web.WebSocketResponse(max_msg_size=_MAX_MSG_SIZE)
+    ws = web.WebSocketResponse(max_msg_size=_MAX_MSG_SIZE, heartbeat=_HEARTBEAT_S)
     await ws.prepare(request)
 
     # --- Handshake: first message must be op="hello" ----------------------
@@ -183,228 +188,241 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     # blocks the message loop below (reads/list/stat/state stay inline).
     op_registry = MutatingOpRegistry()
 
-    async for msg in ws:
-        if msg.type == WSMsgType.TEXT:
-            try:
-                frame = msg.json()
-            except Exception:
-                continue  # ignore malformed frames
-
-            frame_req_id = frame.get("req_id", 0)
-            op_name: str = frame.get("op", "")
-            args: dict = frame.get("args") or {}
-
-            # --- Liveness -------------------------------------------------
-            # Cheap health probe used by the platform's workspace probe task
-            # and RuntimeClient.ping(). Connection-level (not a filesystem
-            # op), so it is answered here rather than via the HANDLERS table.
-            if op_name == OpName.HEALTH:
-                await ws.send_str(serialize(Response(
-                    req_id=frame_req_id,
-                    ok=True,
-                    result={
-                        "ok": True,
-                        "version": RUNTIME_VERSION,
-                        "protocol": PROTOCOL_VERSION,
-                    },
-                )))
-                continue
-
-            # --- Watch ops -----------------------------------------------
-            if op_name == OpName.WATCH_START:
-                start_watch(
-                    req_id=frame_req_id,
-                    args=args,
-                    workspace_root=workspace_root,
-                    send=ws.send_str,
-                    registry=watch_registry,
-                )
-                continue
-
-            if op_name == OpName.WATCH_CANCEL:
-                target_req_id: int = (args or {}).get("target_req_id", -1)
-                cancel_watch(target_req_id, watch_registry)
-                # watch_closed is emitted by the subscription task itself
-                continue
-
-            # --- Workspace lifecycle broadcast ---------------------------
-            if op_name == OpName.EVENTS_SUBSCRIBE:
-                handle = await start_events_subscribe(
-                    req_id=frame_req_id,
-                    args=args,
-                    workspace_root=workspace_root,
-                    send=ws.send_str,
-                    broadcaster=broadcaster,
-                    watch_registry=watch_registry,
-                )
-                if handle is not None:
-                    events_handles.append(handle)
-                continue
-
-            # --- Interactive PTY ops --------------------------------------
-            # PTY_OPEN is a long-lived streaming op (emits pty_open/data/exit
-            # keyed by its req_id); the others are single-shot control
-            # requests carrying target_req_id (mirrors WATCH_START/CANCEL).
-            if op_name == OpName.PTY_OPEN:
-                start_pty(
-                    req_id=frame_req_id,
-                    args=args,
-                    workspace_root=workspace_root,
-                    send=ws.send_str,
-                    registry=pty_registry,
-                )
-                continue
-
-            if op_name in (OpName.PTY_STDIN, OpName.PTY_RESIZE, OpName.PTY_CLOSE):
-                # Fully wrapped: these args come from client frames, and ANY
-                # exception escaping here (e.g. int("abc") → ValueError;
-                # struct.error pre-clamp) would break out of the message
-                # loop, skipping the post-loop cancel_all() teardown and
-                # leaking every PTY/watch on this connection.
+    # The teardown runs however the loop ends (GI-8): a reply that cannot be sent because the client left, or any
+    # other raise, would otherwise leave this connection's shells, execs and watches running for ever.
+    try:
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
                 try:
-                    pty_target: int = args.get("target_req_id", -1)
-                    found = True
-                    if op_name == OpName.PTY_STDIN:
-                        try:
-                            data = base64.b64decode(args.get("data_b64", "") or "")
-                        except Exception:  # noqa: BLE001
-                            await ws.send_str(serialize(Response(
-                                req_id=frame_req_id, ok=False,
-                                error={"code": ErrorCode.EPROTOCOL, "message": "pty_stdin: invalid base64"},
-                            )))
-                            continue
-                        found = pty_registry.write_stdin(pty_target, data)
-                    elif op_name == OpName.PTY_RESIZE:
-                        found = pty_registry.resize(
-                            pty_target,
-                            int(args.get("cols") or 80),
-                            int(args.get("rows") or 24),
-                        )
-                    else:  # PTY_CLOSE
-                        found = pty_registry.close(pty_target)
-                except Exception as exc:  # noqa: BLE001 — protocol boundary
+                    frame = msg.json()
+                except Exception:
+                    continue  # ignore malformed frames
+                if not isinstance(frame, dict):
+                    continue  # not a request object: malformed too
+
+                frame_req_id = frame.get("req_id", 0)
+                op_name: str = frame.get("op", "")
+                args: dict = frame.get("args") or {}
+                if not isinstance(args, dict):
                     await ws.send_str(serialize(Response(
                         req_id=frame_req_id, ok=False,
-                        error={"code": ErrorCode.EPROTOCOL, "message": f"{op_name}: {exc}"},
+                        error={"code": ErrorCode.EPROTOCOL, "message": f"{op_name}: 'args' must be an object"},
                     )))
                     continue
-                if found:
-                    await ws.send_str(serialize(Response(req_id=frame_req_id, ok=True, result={"ok": True})))
-                else:
-                    await ws.send_str(serialize(Response(
-                        req_id=frame_req_id, ok=False,
-                        error={"code": ErrorCode.ENOENT, "message": f"no PTY for target_req_id={pty_target}"},
-                    )))
-                continue
 
-            # --- Streaming exec op ----------------------------------------
-            # Spawn the exec stream as a tracked task (mirrors PTY_OPEN) so a
-            # long-running exec does NOT block this single message loop — while
-            # it streams, pty_stdin/pty_resize and file ops on this same
-            # connection stay serviceable. The task owns its own framing
-            # (stdout/stderr/exit events + error Response) and per-req_id output
-            # ordering; cancel_all() on WS close tears it down.
-            if op_name == OpName.EXEC:
-                # The registry holds ONE task per req_id: a second exec under a req_id that is still in flight would
-                # drop the first from it, out of reach of exec_cancel and of the teardown below, so it would run on
-                # holding its write lock after this socket closed. Refused before anything is spawned. (The refusal
-                # carries the refused request's req_id, which is the in-flight exec's too; RuntimeClient never reuses one.)
-                if exec_registry.in_flight(frame_req_id):
+                # --- Liveness -------------------------------------------------
+                # Cheap health probe used by the platform's workspace probe task
+                # and RuntimeClient.ping(). Connection-level (not a filesystem
+                # op), so it is answered here rather than via the HANDLERS table.
+                if op_name == OpName.HEALTH:
                     await ws.send_str(serialize(Response(
-                        req_id=frame_req_id, ok=False,
-                        error={"code": ErrorCode.EPROTOCOL, "message": f"exec: req_id {frame_req_id} is already in flight"},
+                        req_id=frame_req_id,
+                        ok=True,
+                        result={
+                            "ok": True,
+                            "version": RUNTIME_VERSION,
+                            "protocol": PROTOCOL_VERSION,
+                        },
                     )))
                     continue
-                start_exec(
-                    req_id=frame_req_id,
-                    args=args,
-                    workspace_root=workspace_root,
-                    locks=locks,
-                    send=ws.send_str,
-                    registry=exec_registry,
-                    broadcaster=broadcaster,
-                )
-                continue
 
-            # exec_cancel (protocol 1.4): a single-shot control request carrying target_req_id (mirrors PTY_CLOSE). The
-            # exec's task is cancelled, which stops the command's process group and releases its write lock; one still
-            # queued on the lock never starts. Guarded like the PTY control ops: the args come from a client frame, and
-            # an exception escaping here would skip the teardown after the loop and leak every exec on this connection.
-            if op_name == OpName.EXEC_CANCEL:
-                exec_target = args.get("target_req_id") if isinstance(args, dict) else None
-                if not isinstance(exec_target, int) or isinstance(exec_target, bool):
-                    await ws.send_str(serialize(Response(
-                        req_id=frame_req_id, ok=False,
-                        error={"code": ErrorCode.EPROTOCOL, "message": "exec_cancel: 'target_req_id' must be an integer"},
-                    )))
-                elif exec_registry.cancel(exec_target):
-                    await ws.send_str(serialize(Response(req_id=frame_req_id, ok=True, result={"ok": True})))
-                else:
-                    await ws.send_str(serialize(Response(
-                        req_id=frame_req_id, ok=False,
-                        error={"code": ErrorCode.ENOENT, "message": f"no exec for target_req_id={exec_target}"},
-                    )))
-                continue
+                # --- Watch ops -----------------------------------------------
+                if op_name == OpName.WATCH_START:
+                    start_watch(
+                        req_id=frame_req_id,
+                        args=args,
+                        workspace_root=workspace_root,
+                        send=ws.send_str,
+                        registry=watch_registry,
+                    )
+                    continue
 
-            # --- Single-shot ops ------------------------------------------
-            handler = HANDLERS.get(op_name)
-            if handler is None:
-                err_resp = Response(
-                    req_id=frame_req_id,
-                    ok=False,
-                    error={"code": ErrorCode.EUNSUPPORTED, "message": f"Op not implemented: {op_name!r}"},
-                )
-                await ws.send_str(serialize(err_resp))
-                continue
+                if op_name == OpName.WATCH_CANCEL:
+                    target_req_id: int = (args or {}).get("target_req_id", -1)
+                    cancel_watch(target_req_id, watch_registry)
+                    # watch_closed is emitted by the subscription task itself
+                    continue
 
-            # Mutating ops take a Tier-A write lock and may PARK on a busy
-            # scope/path lock; offload them as tracked tasks (mirrors EXEC/
-            # PTY_OPEN) so a parked writer never blocks unrelated reads/list/
-            # stat/state on this connection. The task owns its own single
-            # Response, keyed by frame_req_id, so multiplexing is unchanged.
-            if op_name in _MUTATING_OPS:
-                start_mutating_op(
-                    handler,  # type: ignore[arg-type]
-                    op_name,
-                    frame_req_id,
-                    args,
-                    workspace_root,
-                    locks,
-                    ws.send_str,
-                    op_registry,
-                )
-                continue
+                # --- Workspace lifecycle broadcast ---------------------------
+                if op_name == OpName.EVENTS_SUBSCRIBE:
+                    handle = await start_events_subscribe(
+                        req_id=frame_req_id,
+                        args=args,
+                        workspace_root=workspace_root,
+                        send=ws.send_str,
+                        broadcaster=broadcaster,
+                        watch_registry=watch_registry,
+                    )
+                    if handle is not None:
+                        events_handles.append(handle)
+                    continue
 
-            try:
-                result = await handler(args, workspace_root, locks)  # type: ignore[operator]
-                ok_resp = Response(req_id=frame_req_id, ok=True, result=result)
-                await ws.send_str(serialize(ok_resp))
-            except OpError as exc:
-                err_resp = Response(
-                    req_id=frame_req_id,
-                    ok=False,
-                    error={"code": exc.code, "message": exc.message},
-                )
-                await ws.send_str(serialize(err_resp))
-            except Exception as exc:  # noqa: BLE001
-                log.exception("Unexpected error handling op %r", op_name)
-                err_resp = Response(
-                    req_id=frame_req_id,
-                    ok=False,
-                    error={"code": ErrorCode.EINTERNAL, "message": str(exc)},
-                )
-                await ws.send_str(serialize(err_resp))
-        elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-            break
+                # --- Interactive PTY ops --------------------------------------
+                # PTY_OPEN is a long-lived streaming op (emits pty_open/data/exit
+                # keyed by its req_id); the others are single-shot control
+                # requests carrying target_req_id (mirrors WATCH_START/CANCEL).
+                if op_name == OpName.PTY_OPEN:
+                    start_pty(
+                        req_id=frame_req_id,
+                        args=args,
+                        workspace_root=workspace_root,
+                        send=ws.send_str,
+                        registry=pty_registry,
+                    )
+                    continue
 
-    # Cancel any lingering watch subscriptions / PTY sessions / exec streams /
-    # mutating-op tasks on disconnect.
-    watch_registry.cancel_all()
-    pty_registry.cancel_all()
-    exec_registry.cancel_all()
-    op_registry.cancel_all()
-    for handle in events_handles:
-        broadcaster.unsubscribe(handle)
+                if op_name in (OpName.PTY_STDIN, OpName.PTY_RESIZE, OpName.PTY_CLOSE):
+                    # Fully wrapped: these args come from client frames, and ANY
+                    # exception escaping here (e.g. int("abc") → ValueError;
+                    # struct.error pre-clamp) would break out of the message
+                    # loop, skipping the post-loop cancel_all() teardown and
+                    # leaking every PTY/watch on this connection.
+                    try:
+                        pty_target: int = args.get("target_req_id", -1)
+                        found = True
+                        if op_name == OpName.PTY_STDIN:
+                            try:
+                                data = base64.b64decode(args.get("data_b64", "") or "")
+                            except Exception:  # noqa: BLE001
+                                await ws.send_str(serialize(Response(
+                                    req_id=frame_req_id, ok=False,
+                                    error={"code": ErrorCode.EPROTOCOL, "message": "pty_stdin: invalid base64"},
+                                )))
+                                continue
+                            found = pty_registry.write_stdin(pty_target, data)
+                        elif op_name == OpName.PTY_RESIZE:
+                            found = pty_registry.resize(
+                                pty_target,
+                                int(args.get("cols") or 80),
+                                int(args.get("rows") or 24),
+                            )
+                        else:  # PTY_CLOSE
+                            found = pty_registry.close(pty_target)
+                    except Exception as exc:  # noqa: BLE001 — protocol boundary
+                        await ws.send_str(serialize(Response(
+                            req_id=frame_req_id, ok=False,
+                            error={"code": ErrorCode.EPROTOCOL, "message": f"{op_name}: {exc}"},
+                        )))
+                        continue
+                    if found:
+                        await ws.send_str(serialize(Response(req_id=frame_req_id, ok=True, result={"ok": True})))
+                    else:
+                        await ws.send_str(serialize(Response(
+                            req_id=frame_req_id, ok=False,
+                            error={"code": ErrorCode.ENOENT, "message": f"no PTY for target_req_id={pty_target}"},
+                        )))
+                    continue
+
+                # --- Streaming exec op ----------------------------------------
+                # Spawn the exec stream as a tracked task (mirrors PTY_OPEN) so a
+                # long-running exec does NOT block this single message loop — while
+                # it streams, pty_stdin/pty_resize and file ops on this same
+                # connection stay serviceable. The task owns its own framing
+                # (stdout/stderr/exit events + error Response) and per-req_id output
+                # ordering; cancel_all() on WS close tears it down.
+                if op_name == OpName.EXEC:
+                    # The registry holds ONE task per req_id: a second exec under a req_id that is still in flight would
+                    # drop the first from it, out of reach of exec_cancel and of the teardown below, so it would run on
+                    # holding its write lock after this socket closed. Refused before anything is spawned. (The refusal
+                    # carries the refused request's req_id, which is the in-flight exec's too; RuntimeClient never reuses one.)
+                    if exec_registry.in_flight(frame_req_id):
+                        await ws.send_str(serialize(Response(
+                            req_id=frame_req_id, ok=False,
+                            error={"code": ErrorCode.EPROTOCOL, "message": f"exec: req_id {frame_req_id} is already in flight"},
+                        )))
+                        continue
+                    start_exec(
+                        req_id=frame_req_id,
+                        args=args,
+                        workspace_root=workspace_root,
+                        locks=locks,
+                        send=ws.send_str,
+                        registry=exec_registry,
+                        broadcaster=broadcaster,
+                    )
+                    continue
+
+                # exec_cancel (protocol 1.4): a single-shot control request carrying target_req_id (mirrors PTY_CLOSE). The
+                # exec's task is cancelled, which stops the command's process group and releases its write lock; one still
+                # queued on the lock never starts. Guarded like the PTY control ops: the args come from a client frame, and
+                # an exception escaping here would skip the teardown after the loop and leak every exec on this connection.
+                if op_name == OpName.EXEC_CANCEL:
+                    exec_target = args.get("target_req_id") if isinstance(args, dict) else None
+                    if not isinstance(exec_target, int) or isinstance(exec_target, bool):
+                        await ws.send_str(serialize(Response(
+                            req_id=frame_req_id, ok=False,
+                            error={"code": ErrorCode.EPROTOCOL, "message": "exec_cancel: 'target_req_id' must be an integer"},
+                        )))
+                    elif exec_registry.cancel(exec_target):
+                        await ws.send_str(serialize(Response(req_id=frame_req_id, ok=True, result={"ok": True})))
+                    else:
+                        await ws.send_str(serialize(Response(
+                            req_id=frame_req_id, ok=False,
+                            error={"code": ErrorCode.ENOENT, "message": f"no exec for target_req_id={exec_target}"},
+                        )))
+                    continue
+
+                # --- Single-shot ops ------------------------------------------
+                handler = HANDLERS.get(op_name)
+                if handler is None:
+                    err_resp = Response(
+                        req_id=frame_req_id,
+                        ok=False,
+                        error={"code": ErrorCode.EUNSUPPORTED, "message": f"Op not implemented: {op_name!r}"},
+                    )
+                    await ws.send_str(serialize(err_resp))
+                    continue
+
+                # Mutating ops take a Tier-A write lock and may PARK on a busy
+                # scope/path lock; offload them as tracked tasks (mirrors EXEC/
+                # PTY_OPEN) so a parked writer never blocks unrelated reads/list/
+                # stat/state on this connection. The task owns its own single
+                # Response, keyed by frame_req_id, so multiplexing is unchanged.
+                if op_name in _MUTATING_OPS:
+                    start_mutating_op(
+                        handler,  # type: ignore[arg-type]
+                        op_name,
+                        frame_req_id,
+                        args,
+                        workspace_root,
+                        locks,
+                        ws.send_str,
+                        op_registry,
+                    )
+                    continue
+
+                try:
+                    result = await handler(args, workspace_root, locks)  # type: ignore[operator]
+                    ok_resp = Response(req_id=frame_req_id, ok=True, result=result)
+                    await ws.send_str(serialize(ok_resp))
+                except OpError as exc:
+                    err_resp = Response(
+                        req_id=frame_req_id,
+                        ok=False,
+                        error={"code": exc.code, "message": exc.message},
+                    )
+                    await ws.send_str(serialize(err_resp))
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("Unexpected error handling op %r", op_name)
+                    err_resp = Response(
+                        req_id=frame_req_id,
+                        ok=False,
+                        error={"code": ErrorCode.EINTERNAL, "message": str(exc)},
+                    )
+                    await ws.send_str(serialize(err_resp))
+            elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                break
+    except ConnectionError:
+        pass  # the client went away while a reply was being sent
+    finally:
+        # Cancel any lingering watch subscriptions / PTY sessions / exec streams /
+        # mutating-op tasks on disconnect.
+        watch_registry.cancel_all()
+        pty_registry.cancel_all()
+        exec_registry.cancel_all()
+        op_registry.cancel_all()
+        for handle in events_handles:
+            broadcaster.unsubscribe(handle)
 
     return ws
 

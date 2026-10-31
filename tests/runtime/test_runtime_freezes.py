@@ -402,3 +402,91 @@ async def test_a_request_over_the_frame_limit_fails_alone(runtime, monkeypatch) 
         await pty.close()
     finally:
         await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# GI-8: the teardown runs however the message loop ends
+# ---------------------------------------------------------------------------
+
+
+async def test_a_client_gone_during_an_inline_op_still_frees_its_terminal(tmp_path: Path, monkeypatch) -> None:
+    from primer_runtime import ops
+    from primer_runtime import server as server_mod
+
+    gate = asyncio.Event()
+    real_stat = ops.HANDLERS["stat"]
+
+    async def slow_stat(args, root, locks=None):  # a slow inline op (a git state op, a big read)
+        await gate.wait()
+        return await real_stat(args, root, locks)
+
+    monkeypatch.setitem(ops.HANDLERS, "stat", slow_stat)
+    root = tmp_path / "ws"
+    root.mkdir()
+    srv = TestServer(server_mod.build_app(token=_TOKEN, workspace_root=str(root)))
+    await srv.start_server()
+    pidfile = tmp_path / "pty.pid"
+    pid = None
+    try:
+        http = aiohttp.ClientSession()
+        ws = await http.ws_connect(srv.make_url("/"), headers={"Authorization": f"Bearer {_TOKEN}"})
+        conn = Conn(ws)
+        await ws.send_json({"req_id": 0, "op": "hello", "args": {"protocol": server_mod.PROTOCOL_VERSION}})
+        await conn.reply(0)
+        await conn.pty_open({"cmd": ["sh", "-c", f"echo $$ > {pidfile}; exec sleep 60"]})
+        pid = await _pid(pidfile)
+        await conn.send("stat", {"path": "."})
+        await asyncio.sleep(0.2)
+        ws._response.connection.transport.abort()  # the client drops mid-op
+        await http.close()
+        await asyncio.sleep(0.3)
+        gate.set()  # the op finishes; its reply cannot be sent
+        assert await _gone(pid)
+    finally:
+        _kill(pid)
+        await srv.close()
+
+
+async def test_a_frame_that_is_not_an_object_is_ignored(runtime) -> None:
+    connect, _root, _url = runtime
+    conn = await connect()
+    pty_id = await conn.pty_open({"cmd": ["/bin/sh"]})
+    await conn.ws.send_json([1, 2, 3])
+    await conn.ws.send_json({"req_id": 50, "op": "watch_cancel", "args": [1]})
+    frame = await conn.reply(50)
+    assert frame["ok"] is False
+    assert frame["error"]["code"] == "EPROTOCOL"
+    assert (await conn.health())["ok"] is True
+    await conn.stdin(pty_id, b"echo fine-$((5+5))\n")
+    await conn.output_contains(pty_id, b"fine-10")
+    await conn.ws.close()
+
+
+# ---------------------------------------------------------------------------
+# GI-11: a peer that stops answering pings is dropped, and its terminals with it
+# ---------------------------------------------------------------------------
+
+
+async def test_a_silent_peer_is_dropped_and_its_terminal_freed(tmp_path: Path, monkeypatch) -> None:
+    from primer_runtime import server as server_mod
+
+    monkeypatch.setattr(server_mod, "_HEARTBEAT_S", 0.5)
+    root = tmp_path / "ws"
+    root.mkdir()
+    srv = TestServer(server_mod.build_app(token=_TOKEN, workspace_root=str(root)))
+    await srv.start_server()
+    pidfile = tmp_path / "pty.pid"
+    pid = None
+    try:
+        async with aiohttp.ClientSession() as http:
+            ws = await http.ws_connect(srv.make_url("/"), headers={"Authorization": f"Bearer {_TOKEN}"}, autoping=False)
+            conn = Conn(ws)
+            await ws.send_json({"req_id": 0, "op": "hello", "args": {"protocol": server_mod.PROTOCOL_VERSION}})
+            await conn.reply(0)
+            await conn.pty_open({"cmd": ["sh", "-c", f"echo $$ > {pidfile}; exec sleep 60"]})
+            pid = await _pid(pidfile)
+            # The client neither reads nor answers pings from here on, as a lost node would not.
+            assert await _gone(pid, within=15)
+    finally:
+        _kill(pid)
+        await srv.close()
