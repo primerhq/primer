@@ -203,5 +203,16 @@ async def test_an_idle_stream_waits_without_waking(with_abort: bool) -> None:
     assert await asyncio.wait_for(task, timeout=2) == [{"event": "a"}]
 
 
+# ---- W55k: a PTY open that could not be sent leaves nothing behind -------------------------------------------------------------
+
+
+async def test_a_pty_open_that_could_not_be_sent_leaves_no_stream() -> None:
+    client = RuntimeClient(url="ws://127.0.0.1:1/", token="t")
+    await client.aclose()       # closed: the send fails at once
+    with pytest.raises(RuntimeOpError):
+        await client.open_pty()
+    assert client._streams == {}
+
+
 async def _drain(client: RuntimeClient, q: asyncio.Queue, abort: asyncio.Event | None) -> list:
     return [item async for item in client._iter_stream(1, q, abort=abort)]

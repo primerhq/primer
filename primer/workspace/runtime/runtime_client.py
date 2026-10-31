@@ -601,7 +601,11 @@ class RuntimeClient:
         if env is not None:
             args["env"] = env
 
-        await self._send_raw(Request(req_id=req_id, op=OpName.PTY_OPEN, args=args))
+        try:
+            await self._send_raw(Request(req_id=req_id, op=OpName.PTY_OPEN, args=args))
+        except BaseException:
+            self._streams.pop(req_id, None)     # nobody will read this stream: the open never went out (review W55k)
+            raise
         return RuntimePtyHandle(self, req_id, q)
 
     # ------------------------------------------------------------------
