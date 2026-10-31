@@ -110,3 +110,83 @@ async def test_a_ranged_io_reads_only_the_new_bytes_each_tick():
     total = sum(len(t) for t in ticks)
     assert ranged.bytes_read == total, "each byte of the log is fetched once"
     assert whole.bytes_read > 20 * total, "the whole-file read is quadratic"
+
+
+# -- shared reads: subscribers of one workspace asking for the same window share one read -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_readers_of_the_same_window_share_one_read_and_get_their_own_events():
+    import asyncio
+
+    session = _session("s1")
+    io = _RangedIO()
+    io.files[_msg_path(session.id)] = _line(1) + _line(2) + _line(3)
+    gate = asyncio.Event()
+    original = io.read_file_from
+
+    async def slow(path, offset):
+        await gate.wait()
+        return await original(path, offset)
+
+    io.read_file_from = slow  # type: ignore[assignment]
+
+    boundary = len(_line(1))
+
+    async def read_at(after_seq):
+        return await read_session_since(
+            io, workspace_id="w1", session=session, after_seq=after_seq, selector=TapSelector(), from_offset=boundary,
+        )
+
+    first, second = asyncio.create_task(read_at(0)), asyncio.create_task(read_at(2))
+    await asyncio.sleep(0.02)
+    gate.set()
+    (a_events, a_off), (b_events, b_off) = await first, await second
+    assert [e.seq for e in a_events] == [2, 3] and [e.seq for e in b_events] == [3]
+    assert a_off == b_off == len(io.files[_msg_path(session.id)])
+    assert io.bytes_read == len(io.files[_msg_path(session.id)]) - boundary, "the window was fetched once for both"
+
+
+@pytest.mark.asyncio
+async def test_a_later_read_of_the_same_window_reads_again_and_sees_new_bytes():
+    session = _session("s1")
+    io = _RangedIO()
+    io.files[_msg_path(session.id)] = _line(1)
+    first, off = await read_session_since(io, workspace_id="w1", session=session, after_seq=0, selector=TapSelector(), from_offset=0)
+    io.files[_msg_path(session.id)] += _line(2)
+    second, off2 = await read_session_since(io, workspace_id="w1", session=session, after_seq=1, selector=TapSelector(), from_offset=off)
+    assert [e.seq for e in first] == [1] and [e.seq for e in second] == [2] and off2 > off
+
+
+@pytest.mark.asyncio
+async def test_a_reader_whose_leader_was_cancelled_reads_for_itself():
+    import asyncio
+
+    session = _session("s1")
+    io = _RangedIO()
+    boundary = len(_line(1))
+    io.files[_msg_path(session.id)] = _line(1) + _line(2)
+    gate = asyncio.Event()
+    original = io.read_file_from
+    calls = {"n": 0}
+
+    async def slow(path, offset):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await gate.wait()  # the leader hangs here and is cancelled
+        return await original(path, offset)
+
+    io.read_file_from = slow  # type: ignore[assignment]
+
+    def go():
+        return asyncio.create_task(read_session_since(
+            io, workspace_id="w1", session=session, after_seq=0, selector=TapSelector(), from_offset=boundary,
+        ))
+
+    leader, follower = go(), None
+    await asyncio.sleep(0.02)
+    follower = go()
+    await asyncio.sleep(0.02)
+    leader.cancel()
+    events, _ = await asyncio.wait_for(follower, 2)
+    assert [e.seq for e in events] == [2]

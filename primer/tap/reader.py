@@ -30,6 +30,7 @@ and :func:`~primer.tap.event.record_to_tap_event` — no parallel models.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
@@ -123,6 +124,37 @@ async def _read_raw(
             path, session_id, exc,
         )
         return None
+
+
+_IN_FLIGHT: dict[tuple, "asyncio.Future[bytes | None]"] = {}
+
+
+async def _single_flight(key: tuple, fetch: Any) -> bytes | None:
+    """Run ``fetch()`` once for every concurrent caller with the same ``key``; each gets the same result. Only calls that overlap in time share."""
+    pending = _IN_FLIGHT.get(key)
+    if pending is not None:
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            if not pending.cancelled():
+                raise  # this caller was cancelled, not the read it was waiting on
+            return await fetch()  # the caller that was reading went away: read for ourselves
+    future: asyncio.Future[bytes | None] = asyncio.get_running_loop().create_future()
+    _IN_FLIGHT[key] = future
+    try:
+        result = await fetch()
+    except asyncio.CancelledError:
+        future.cancel()
+        raise
+    except BaseException as exc:
+        future.set_exception(exc)
+        future.exception()  # retrieved here, so a read nobody else waited on does not log "never retrieved"
+        raise
+    else:
+        future.set_result(result)
+        return result
+    finally:
+        _IN_FLIGHT.pop(key, None)
 
 
 def _complete_lines(raw: bytes) -> tuple[list[bytes], int]:
@@ -241,15 +273,17 @@ async def read_session_since(
     # Only the bytes the log gained since the last tick: a workspace that can read from an offset is asked for the tail; one that cannot is read
     # whole and sliced, as before.
     ranged = getattr(workspace_io, "read_file_from", None) if from_offset else None
-    if ranged is not None:
-        window = await _read_raw(workspace_io, path, session.id, reader=lambda p: ranged(p, from_offset))
-        if window is None:
-            return [], from_offset
-    else:
+    # Subscribers of one workspace at the same offset ask for the same bytes in the same tick: one read serves them (single flight; nothing is kept
+    # once it lands, so the next tick reads afresh).
+    async def _fetch() -> bytes | None:
+        if ranged is not None:
+            return await _read_raw(workspace_io, path, session.id, reader=lambda p: ranged(p, from_offset))
         raw = await _read_raw(workspace_io, path, session.id)
-        if raw is None:
-            return [], from_offset
-        window = raw[from_offset:]
+        return None if raw is None else raw[from_offset:]
+
+    window = await _single_flight((id(workspace_io), session.id, from_offset), _fetch)
+    if window is None:
+        return [], from_offset
     if not window:
         return [], from_offset
 
