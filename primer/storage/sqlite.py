@@ -1101,6 +1101,36 @@ class SqliteStorage(Storage[ModelT]):
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         return await self._paged(predicate=predicate, page=page, order_by=order_by)
 
+    #: Rows per query of :meth:`find_ids`.
+    _IDS_PAGE = 2000
+
+    async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
+        """``(id, access)`` of every matching row: ``id`` and the ``access`` block only, keyset-paged on ``id``, no ``COUNT`` and no row decode."""
+        await self._ensure_table()
+        out: list[tuple[str, dict[str, Any] | None]] = []
+        last: str | None = None
+        while True:
+            translator = _SqlitePredicateTranslator(self._model)
+            where_sql = "1=1"
+            if predicate is not None:
+                where_sql, _ = translator.translate(predicate)
+            if last is not None:
+                translator.append_param(last)
+                where_sql = f"({where_sql}) AND id > ?"
+            translator.append_param(self._IDS_PAGE)
+            sql = f"SELECT id, json_extract(data, '$.access') FROM \"{self._table}\" WHERE {where_sql} ORDER BY id LIMIT ?"
+            try:
+                async with self._provider.read_snapshot():
+                    cur = await self._provider.connection.execute(sql, list(translator._params))  # noqa: SLF001
+                    rows = await cur.fetchall()
+            except Exception as exc:
+                raise _wrap_sqlite_error(exc, model_name=self._model.__name__, op="find_ids") from exc
+            for row_id, access in rows:
+                out.append((row_id, json.loads(access) if isinstance(access, str) else access))
+            if len(rows) < self._IDS_PAGE:
+                return out
+            last = rows[-1][0]
+
     async def _paged(
         self,
         *,

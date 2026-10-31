@@ -1129,6 +1129,37 @@ class PostgresStorage(Storage[ModelT]):
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         return await self._paged(predicate=predicate, page=page, order_by=order_by)
 
+    #: Rows per query of :meth:`find_ids`.
+    _IDS_PAGE = 2000
+
+    async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
+        """``(id, access)`` of every matching row: ``id`` and the ``access`` block only, keyset-paged on ``id``, no ``COUNT`` and no row decode."""
+        await self._ensure_table()
+        out: list[tuple[str, dict[str, Any] | None]] = []
+        last: str | None = None
+        while True:
+            translator = _PredicateTranslator(self._model)
+            where_sql = "TRUE"
+            if predicate is not None:
+                where_sql, _ = translator.translate(predicate)
+            if last is not None:
+                where_sql = f"({where_sql}) AND id > {translator.append_param(last)}"
+            limit_ph = translator.append_param(self._IDS_PAGE)
+            sql = f"SELECT id, data->'access' AS access FROM {self._qualified} WHERE {where_sql} ORDER BY id LIMIT {limit_ph}"
+            try:
+                async with self._provider.pool.acquire() as conn:
+                    rows = await conn.fetch(sql, *translator._params)  # noqa: SLF001
+            except Exception as exc:
+                raise self._wrap_db_error(exc) from exc
+            for row in rows:
+                access = row["access"]
+                if isinstance(access, str):  # asyncpg returns JSONB as text unless a codec is registered
+                    access = json.loads(access)
+                out.append((row["id"], access))
+            if len(rows) < self._IDS_PAGE:
+                return out
+            last = rows[-1]["id"]
+
     async def _paged(
         self,
         *,

@@ -154,6 +154,13 @@ class _InMemoryStorage(Generic[_T]):
             next_cursor = str(offset + page.length)
         return CursorPageResponse(next_cursor=next_cursor, items=sliced)
 
+    async def find_ids(self, predicate):
+        """``(id, access)`` of every match, ordered by id (the ``Storage.find_ids`` contract)."""
+        rows = [e for e in self._data.values() if predicate is None or _eval_predicate(e, predicate)]
+        return sorted(
+            ((e.id, e.access.model_dump(mode="json") if getattr(e, "access", None) is not None else None) for e in rows), key=lambda pair: pair[0],
+        )
+
     async def find(self, predicate, page, *, order_by=None):
         if predicate is None:
             return await self.list(page, order_by=order_by)
