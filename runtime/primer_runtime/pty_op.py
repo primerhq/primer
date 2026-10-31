@@ -74,6 +74,11 @@ _READ_CHUNK = 65536
 # degradation.
 _OUTPUT_QUEUE_MAX_CHUNKS = 256
 
+# Cap on stdin bytes queued for a program that is not reading them (GI-3). The master fd is non-blocking, so a paste
+# the pty cannot take yet waits here and the loop's writer callback drains it; a paste that would push the queue past
+# the cap is refused whole. 1 MiB is far beyond any typed or pasted input and small next to the runtime's memory.
+_STDIN_PENDING_MAX = 1024 * 1024
+
 
 def _enqueue_output(queue: "asyncio.Queue[bytes]", data: bytes) -> bool:
     """Put *data* on the bounded output *queue*, dropping the OLDEST buffered
@@ -145,30 +150,53 @@ class PtySession:
         self.proc = proc
         self.task: asyncio.Task[None] | None = None
         self._closed = False
+        self._pending = bytearray()  # stdin the pty could not take yet, drained by the loop's writer callback
 
     def write_stdin(self, data: bytes) -> None:
-        """Write *data* to the master fd (child stdin).
+        """Write *data* to the master fd (child stdin) without ever blocking the event loop.
 
-        ``os.write`` can accept fewer bytes than supplied when the pty input
-        buffer is full (a large paste), so loop over the remainder — the old
-        single call silently lost the tail. ``BlockingIOError`` (only on a
-        non-blocking fd) means "buffer full, retry"; ``OSError`` means the pty
-        is gone (child exited between frames) so we drop the write and let the
-        reader task emit ``exit`` and self-deregister.
+        The master fd is non-blocking: what the pty takes now is written (looping over short writes), and the rest
+        waits in ``_pending`` for the writer callback, so input stays in order and a program that is not reading
+        holds up only its own terminal (GI-3). ``OSError`` means the pty is gone (child exited between frames), so
+        the write is dropped and the reader task emits ``exit`` and self-deregisters.
+
+        Raises ``BufferError`` when the queued input would pass ``_STDIN_PENDING_MAX``; nothing of *data* is written.
         """
         if self._closed:
+            return
+        if len(self._pending) + len(data) > _STDIN_PENDING_MAX:
+            raise BufferError(
+                f"stdin refused: {len(self._pending)} bytes are already waiting for the program to read them, "
+                f"and the queue holds at most {_STDIN_PENDING_MAX}"
+            )
+        if self._pending:
+            self._pending += data  # behind what is already queued
             return
         mv = memoryview(data)
         while mv:
             try:
                 written = os.write(self.master_fd, mv)
             except BlockingIOError:
-                continue
+                self._pending += mv
+                asyncio.get_running_loop().add_writer(self.master_fd, self._drain_stdin)
+                return
             except OSError:
                 return
             if written <= 0:
                 return
             mv = mv[written:]
+
+    def _drain_stdin(self) -> None:
+        """Writer callback: hand the pty what it takes of the queued input; stop watching once it is all written."""
+        try:
+            written = os.write(self.master_fd, self._pending)
+        except BlockingIOError:
+            return
+        except OSError:
+            written = len(self._pending)  # pty gone: drop the rest
+        del self._pending[:written]
+        if not self._pending:
+            asyncio.get_running_loop().remove_writer(self.master_fd)
 
     def resize(self, cols: int, rows: int) -> None:
         """Change the terminal window size."""
@@ -333,6 +361,7 @@ async def _run_pty(
 
     # ---- Spawn the child attached to a pty ------------------------------
     master_fd, slave_fd = pty.openpty()
+    os.set_blocking(master_fd, False)  # a write the pty cannot take must never block the loop (GI-3)
 
     def _child_preexec() -> None:
         # Start a new session and make the pty slave the controlling
@@ -381,6 +410,8 @@ async def _run_pty(
         nonlocal dropped_chunks
         try:
             data = os.read(master_fd, _READ_CHUNK)
+        except BlockingIOError:
+            return  # nothing to read after all; not EOF
         except OSError:
             data = b""  # EIO on Linux after the child exits == EOF
         if _enqueue_output(queue, data):
@@ -413,6 +444,7 @@ async def _run_pty(
         # after cleanup so the cancellation propagates.
         session._closed = True
         loop.remove_reader(master_fd)
+        loop.remove_writer(master_fd)
         session.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
@@ -432,6 +464,7 @@ async def _run_pty(
         log.exception("Unexpected error in PTY session req_id=%d", req_id)
     finally:
         loop.remove_reader(master_fd)
+        loop.remove_writer(master_fd)
 
     # ---- Normal teardown: reap the child, emit exit ---------------------
     session._closed = True

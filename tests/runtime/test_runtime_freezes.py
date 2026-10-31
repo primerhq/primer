@@ -254,3 +254,84 @@ async def test_a_protocol_major_mismatch_closes_4400(runtime) -> None:
         msg = await asyncio.wait_for(ws.receive(), 10)
         assert msg.type == WSMsgType.CLOSE
         assert ws.close_code == 4400
+
+
+# ---------------------------------------------------------------------------
+# GI-3: a paste into a terminal whose command does not read stdin never blocks the runtime
+# ---------------------------------------------------------------------------
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+async def test_a_paste_into_a_busy_terminal_never_freezes_the_runtime(tmp_path: Path) -> None:
+    """The server runs in a subprocess: on the blocking code its whole loop freezes, which must not freeze this test."""
+    import subprocess
+
+    from primer_runtime.server import PROTOCOL_VERSION
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    port = _free_port()
+    env = dict(
+        os.environ, PRIMER_RUNTIME_TOKEN=_TOKEN, WORKSPACE_ROOT=str(root), RUNTIME_HOST="127.0.0.1",
+        RUNTIME_PORT=str(port), PYTHONPATH=str(Path(__file__).resolve().parents[2] / "runtime"),
+    )
+    server = subprocess.Popen(
+        [sys.executable, "-m", "primer_runtime.server"], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+    pidfile = tmp_path / "busy.pid"
+    pid = None
+    try:
+        async with aiohttp.ClientSession() as http:
+            async def connect() -> Conn:
+                deadline = time.monotonic() + 30
+                while True:
+                    try:
+                        ws = await http.ws_connect(f"http://127.0.0.1:{port}/", headers={"Authorization": f"Bearer {_TOKEN}"})
+                        break
+                    except aiohttp.ClientConnectorError:
+                        if time.monotonic() > deadline:
+                            raise
+                        await asyncio.sleep(0.1)
+                await ws.send_json({"req_id": 0, "op": "hello", "args": {"protocol": PROTOCOL_VERSION}})
+                assert (await asyncio.wait_for(ws.receive_json(), 10))["ok"] is True
+                return Conn(ws)
+
+            term = await connect()
+            other = await connect()
+            busy = await term.pty_open({"cmd": ["sh", "-c", f"echo $$ > {pidfile}; exec sleep 60"]})
+            pid = await _pid(pidfile)
+            shell = await term.pty_open({"cmd": ["/bin/sh"]})
+
+            paste = b"echo pasted line\n" * 4096  # 64 KiB, far past the pty's input buffer
+            assert (await term.stdin(busy, paste))["ok"] is True
+            assert (await other.health())["result"]["ok"] is True
+            assert (await term.health())["result"]["ok"] is True
+
+            # A sibling terminal on the same connection keeps working.
+            await term.stdin(shell, b"echo sibling-$((2+3))\n")
+            await term.output_contains(shell, b"sibling-5")
+
+            # Past the 1 MiB pending cap the paste is refused with an error frame, not queued without bound.
+            refused = await term.stdin(busy, b"x" * (1024 * 1024))
+            assert refused["ok"] is False
+            assert refused["error"]["code"] == "EPROTOCOL"
+            assert "stdin" in refused["error"]["message"]
+
+            # Killing the command frees the terminal: its exit arrives and the runtime still answers.
+            os.kill(pid, signal.SIGKILL)
+            await term.until(lambda f: f.get("req_id") == busy and f.get("event") == "exit")
+            assert (await other.health())["result"]["ok"] is True
+            await term.ws.close()
+            await other.ws.close()
+    finally:
+        _kill(pid)
+        os.killpg(server.pid, signal.SIGKILL)
+        server.wait()
