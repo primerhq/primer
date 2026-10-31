@@ -226,6 +226,8 @@ async def _seed_channel_trigger(sp: _SP, trigger_id: str = "trg-ch-1") -> Trigge
         config=ChannelTriggerConfig(provider_id="slack-1", channel_id="chan-1"),
         created_at=datetime.now(timezone.utc),
     )
+    # The trigger fires from chan-1: saving anything onto it asks read on that channel (access P3, decision 5), so the row must exist.
+    await sp.get_storage(Channel).create(_make_channel("chan-1"))
     await sp.get_storage(Trigger).create(trigger)
     return trigger
 
