@@ -400,7 +400,7 @@ class SandboxWorkspace(Workspace):
 
     async def list_files(
         self, path: str = ".", *, recursive: bool = False,
-        max_entries: int | None = None,
+        max_entries: int | None = None, skip_reserved: bool = False,
     ) -> list[FileEntry]:
         target = self._resolve_path(path)
         info = await self._sandbox.stat(target)
@@ -411,7 +411,14 @@ class SandboxWorkspace(Workspace):
 
         out: list[FileEntry] = []
         if recursive:
-            await self._walk(target, out, max_entries=max_entries)
+            skip = (
+                frozenset(
+                    f"{self._workspace_root.rstrip('/')}/{r.replace(chr(92), '/').strip('/')}"
+                    for r in (self._template.state_path, self._template.tmp_path) if r
+                )
+                if skip_reserved else frozenset()
+            )
+            await self._walk(target, out, max_entries=max_entries, skip=skip)
             out.sort(key=lambda fe: fe.path)
             return out
         for fs in await self._sandbox.list_dir(target):
@@ -426,7 +433,7 @@ class SandboxWorkspace(Workspace):
         return out
 
     async def _walk(
-        self, dir_abs: str, out: list[FileEntry], *, max_entries: int | None = None,
+        self, dir_abs: str, out: list[FileEntry], *, max_entries: int | None = None, skip: frozenset[str] = frozenset(),
     ) -> None:
         # Naive unbounded recursion otherwise -- max_entries stops both
         # appending AND descending into further subdirectories the
@@ -438,9 +445,11 @@ class SandboxWorkspace(Workspace):
                 return
             name = fs.path.rsplit("/", 1)[-1]
             child = f"{dir_abs}/{name}"
+            if child in skip:  # a reserved tree (W55c): neither listed nor descended into
+                continue
             out.append(self._file_entry_from_stat(fs, child))
             if fs.kind == "dir":
-                await self._walk(child, out, max_entries=max_entries)
+                await self._walk(child, out, max_entries=max_entries, skip=skip)
 
     async def read_file(self, path: str) -> bytes:
         target = self._resolve_path(path)

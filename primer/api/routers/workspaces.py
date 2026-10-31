@@ -2948,7 +2948,10 @@ async def list_files(
     max_entries = (
         min(offset + limit, _MAX_RECURSIVE_WALK_ENTRIES) + 1 if recursive else None
     )
-    entries = await ws.list_files(path, recursive=recursive, max_entries=max_entries)
+    # A non-admin's recursive walk never enters the reserved trees (W55c): they would fill the capped walk with entries the page drops.
+    entries = await ws.list_files(
+        path, recursive=recursive, max_entries=max_entries, **({} if _is_admin(user) else {"skip_reserved": True}),
+    )
     entries = [e for e in entries if not _is_runtime_marker(e.path)]
     # A recursive walk from the root descends into .state / .tmp: a
     # non-admin's page drops those entries (A-22), so it can come back

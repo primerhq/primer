@@ -2914,6 +2914,8 @@ def build_workspaces_toolset(
             entries = await ws.list_files(
                 args.path, recursive=args.recursive,
                 max_entries=(walk_cap + 1) if walk_cap is not None else None,
+                # A non-admin's walk never enters the reserved trees (W55c): they would fill the capped walk.
+                **({} if _caller_is_admin(ctx) else {"skip_reserved": True}),
             )
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")

@@ -347,6 +347,7 @@ class LocalWorkspace(Workspace):
         *,
         recursive: bool = False,
         max_entries: int | None = None,
+        skip_reserved: bool = False,
     ) -> list[FileEntry]:
         target = self._resolve_path(path)
         if not await asyncio.to_thread(target.exists):
@@ -354,9 +355,10 @@ class LocalWorkspace(Workspace):
         if not await asyncio.to_thread(target.is_dir):
             raise BadRequestError(f"{path!r} is not a directory")
 
+        reserved = _reserved_rel_paths(self._template) if skip_reserved else ()
         return await asyncio.to_thread(
             _walk_for_user, target, self._root,
-            recursive=recursive, max_entries=max_entries,
+            recursive=recursive, max_entries=max_entries, reserved=reserved,
         )
 
     async def read_file(self, path: str) -> bytes:
@@ -979,12 +981,45 @@ def _make_file_entry(target: Path, workspace_root: Path) -> FileEntry:
     )
 
 
+def _reserved_rel_paths(template) -> tuple[str, ...]:
+    """The reserved trees (``state_path``, ``tmp_path``) as root-relative POSIX paths."""
+    import posixpath
+
+    return tuple(
+        posixpath.normpath(str(raw).replace("\\", "/")).strip("/")
+        for raw in (template.state_path, template.tmp_path)
+        if raw
+    )
+
+
+def _walk_pruned(target: Path, root_resolved: Path, reserved: tuple[str, ...]):
+    """``target.rglob("*")`` that does not yield the ``reserved`` trees (root-relative) nor descend into them. Lazy, like rglob, so a cap stops it."""
+    stack = [target]
+    while stack:
+        directory = stack.pop()
+        try:
+            children = sorted(directory.iterdir(), key=lambda p: p.name)
+        except OSError:
+            continue
+        for child in children:
+            try:
+                rel = child.relative_to(root_resolved).as_posix()
+            except ValueError:
+                rel = child.name
+            if rel in reserved:
+                continue
+            yield child
+            if child.is_dir() and not child.is_symlink():
+                stack.append(child)
+
+
 def _walk_for_user(
     target: Path,
     workspace_root: Path,
     *,
     recursive: bool,
     max_entries: int | None = None,
+    reserved: tuple[str, ...] = (),
 ) -> list[FileEntry]:
     # `target` is already a resolved path (see _resolve_path). Resolve the
     # workspace root too so entries from `target.iterdir()` share a common
@@ -1014,7 +1049,8 @@ def _walk_for_user(
             # vendored node_modules, made every recursive=True call
             # here expensive regardless of how few entries the caller
             # actually wanted back).
-            walk = target.rglob("*")
+            # With reserved trees to skip the walk is ours (rglob cannot prune): never descend into them, so the cap is spent on real entries.
+            walk = _walk_pruned(target, root_resolved, reserved) if reserved else target.rglob("*")
             if max_entries is not None:
                 walk = itertools.islice(walk, max_entries)
             iterator = list(walk)
