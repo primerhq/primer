@@ -158,8 +158,6 @@ async def test_harness_contents_follow_the_harness(sp) -> None:
 
 
 async def test_default_workspace_becomes_an_ordinary_workspace_of_the_heir(sp) -> None:
-    if "default_workspace_id" not in User.model_fields:
-        pytest.skip("User.default_workspace_id arrives with Phase 2's per-user default workspace (the final chain)")
     await sp.get_storage(Workspace).create(_row(Workspace, "ws-gone", Access(owners=[GONE])))
     user = await sp.get_storage(User).get(GONE)
     await sp.get_storage(User).update(user.model_copy(update={"default_workspace_id": "ws-gone"}))

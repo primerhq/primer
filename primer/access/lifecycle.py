@@ -169,7 +169,8 @@ async def _rename_default_workspace(sp: Any, user_id: str) -> int:
     if row is None:
         return 0
     name = f"{user.username} (deleted user)"
-    return 1 if row.name == name or await storage.patch_if(workspace_id, {"name": name}, where={"id": [workspace_id]}) is not None else 0
+    # Guarded on the name just read (a rename in between wins; the id is a column and cannot be named in a guard).
+    return 1 if row.name == name or await storage.patch_if(workspace_id, {"name": name}, where={"name": [row.name]}) is not None else 0
 
 
 __all__ = ["GRANTABLE_KINDS", "OWNED_KINDS", "hand_over", "heir_for"]
