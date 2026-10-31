@@ -330,6 +330,9 @@ function MP_profileCard(row) {
       ? [row.provider_id, row.model_name].filter(Boolean).join(" · ")
       : members.length + " profile" + (members.length === 1 ? "" : "s") + " · " + MP_routingLabel(row.strategy),
     badge: single ? "imported" : "aggregated",
+    // ACL-P4-T7: who can use it, from the row's access (Public / N people /
+    // Admins only); the badge names the kind, the status names the access.
+    status: row.access ? { label: window.SHR_useBadge(row.access), tone: "muted" } : null,
     icon: single ? { path: MP_ICON_SINGLE, tone: "var(--text-2)" } : { path: MP_ICON_AGGREGATED, tone: "var(--accent)" },
     facts: facts,
   };
@@ -601,6 +604,7 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
         ),
       }}
     >
+      <SHR_UseShare plural="model_profiles" id={existing.id} title={existing.id} />
       {!dup && managed ? (
         <div data-testid="mp-single-managed">
           <Banner kind="info" title={"Managed by harness " + existing.harness_id + ". Re-run the harness to change it."} />
@@ -634,6 +638,9 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
   const [failoverOn, setFailoverOn] = React.useState(() => (isEdit && existing.failover_on) || MP_AGGREGATE_DEFAULTS.failover_on);
   const [saving, setSaving] = React.useState(false);
   const [refused, setRefused] = React.useState({ fields: {}, form: null });
+  // ACL-P4-T7: the create form's Public switch (off by default); the edit
+  // path changes who can use it through the Share dialog, not a switch.
+  const [pub, setPub] = React.useState(false);
   // Whether the overlay is still on screen (see MP_SingleProfileOverlay): a save that lands after it was dismissed closes nothing.
   const mountedRef = React.useRef(true);
   React.useEffect(() => {
@@ -685,8 +692,20 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
       return;
     }
     setSaving(false);
-    const id = isEdit ? existing.id : name.trim();
+    const id = isEdit ? existing.id : (row && row.id) || name.trim();
     api.toastPush({ kind: "success", text: isEdit ? "Saved " + id : "Created aggregated profile " + id });
+    // ACL-P4-T7: the POST cannot set the access (the server stamps a
+    // private one and ignores the body), so the Public switch follows it
+    // with the access PUT. A refusal here does not undo the created row:
+    // it stays private and the toast says so.
+    if (!isEdit && pub) {
+      try {
+        await window.SHR_makePublic("model_profiles", id);
+      } catch (err) {
+        var refusal = window.primerApi.readRefusal ? window.primerApi.readRefusal(err) : null;
+        api.toastPush({ kind: "error", title: "The profile was created but kept private", detail: (refusal && refusal.message) || (err && (err.detail || err.message)) || "" });
+      }
+    }
     // The row is saved, so the toast says so. A save that lands after the overlay was dismissed has nobody to report to, and onClose would close whatever the host shows by now.
     if (!mountedRef.current) return;
     if (onSaved) onSaved(row);
@@ -761,6 +780,15 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
           {MP_windowText(members, rows)}
         </div>
       </PK_Field>
+      {/* ACL-P4-T7: new rows default private; the switch makes the new profile usable by everyone. The POST cannot set the access (the server stamps a private one and ignores the body), so the save follows it with the access PUT. */}
+      {!isEdit ? (
+        <PK_Field label="Public" help="Off by default: a new profile is the admin's alone until they grant its use or make it public.">
+          <label htmlFor="mp-aggregate-public" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input type="checkbox" id="mp-aggregate-public" data-testid="mp-aggregate-public" checked={pub} onChange={(e) => setPub(e.target.checked)} />
+            <span>Everyone can use this profile</span>
+          </label>
+        </PK_Field>
+      ) : null}
     </>
   );
 
@@ -778,6 +806,7 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
         ),
       }}
     >
+      {isEdit ? <SHR_UseShare plural="model_profiles" id={existing.id} title={existing.id} /> : null}
       {managed ? (
         <div data-testid="mp-aggregate-managed">
           <Banner kind="info" title={"Managed by harness " + existing.harness_id + ". Re-run the harness to change it."} />

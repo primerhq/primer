@@ -59,10 +59,13 @@ class TestFormSendsTheProfileShape:
 
     def test_keeps_a_dangling_profile_selectable(self) -> None:
         """Editing an unrelated field must not silently repoint the agent
-        at whatever profile happens to sort first."""
+        at whatever profile happens to sort first. ACL-P4-T7: the form reads
+        the caller's own choices, so a stored profile outside them is not
+        deleted - it is not available to the caller."""
         src = _src()
         assert "profileMissing" in src
-        assert "(missing)" in src
+        assert "profileId + \" (not available to you)\"" in src
+        assert "This model profile is not available to you. An admin can grant its use." in src
 
 
 class TestListResolvesProfiles:

@@ -598,6 +598,18 @@ three REST read routes are GET `/v1/sessions/{session_id}/turn_log`
 backend by whether `run_id` resolves to a `WorkspaceSession` with a graph binding or
 to a `GraphThread`, and returns an empty page when the file or workspace is gone.
 
+### The platform event log's actor column
+
+Every row of the platform event log (`GET /v1/events`, admin-gated) carries an `actor`: the person behind the action
+as `user:<user id>`, or `system`. The storage layer writes it on every CRUD event (`_append_crud_event` in
+`primer/storage/postgres.py` and `primer/storage/sqlite.py`) and `EventRecorder.emit` (`primer/events/recorder.py`)
+on every action event, both from the acting person (`primer/access/acting.py`): the signed-in user of a request, the
+owner of a bearer token (never the token), the run's own person for a tool's write inside a run, and `system` for
+worker internals, trigger dispatch, the dispatcher and an auth-disabled install. A caller that passes `actor=`
+explicitly keeps it. The console's Activity view (`ui/components/shell/sh-activity.jsx`) shows a `user:<id>` actor as
+that user's username, read from `/v1/admin/users`, and any other actor as stored. The rules are in
+[access-control](access-control.md) (Event attribution).
+
 ## 7. Testing patterns
 
 Test isolation for metrics hinges on `reset_for_test()`

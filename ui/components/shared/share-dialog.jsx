@@ -54,15 +54,91 @@ window.SHR_useShareOpen = SHR_useShareOpen;
 // ---- badges the list rows and cards draw from the row's access -------------
 
 // "Public" when anyone can use it, "Shared" when a grant exists; private is
-// the default and says nothing.
+// the default and says nothing. The row's access is the Access model: grants
+// is the uid -> level map (the /access view's array shape only arrives
+// through the dialog), so a grant is counted by the map's keys.
 function SHR_accessBadges(access) {
   var out = [];
   if (!access) return out;
   if (access.public) out.push("Public");
-  if (Array.isArray(access.grants) && access.grants.length) out.push("Shared");
+  var grants = access.grants;
+  if (grants && (Array.isArray(grants) ? grants.length : Object.keys(grants).length)) out.push("Shared");
   return out;
 }
 window.SHR_accessBadges = SHR_accessBadges;
+
+// ACL-P3-T7: a row the harness installs (a non-null harness_id) answers 409
+// harness_managed to a direct share - its sharing is the harness's to change.
+// Its detail surface draws this INSTEAD of the Share button: it names the
+// harness and opens it, so the operator shares the harness instead.
+function SHR_HarnessShare({ harnessId, onOpen }) {
+  return (
+    <Btn
+      size="sm"
+      kind="ghost"
+      icon="book"
+      data-testid="shr-harness-share"
+      title="This is shared through its harness; share the harness instead"
+      onClick={onOpen}
+    >
+      Shared through harness <span className="mono">{harnessId}</span>
+    </Btn>
+  );
+}
+window.SHR_HarnessShare = SHR_HarnessShare;
+
+// ACL-P4-T7: the card badge of a grantable-infrastructure row (the seven
+// use-grant kinds): "Public" when anyone can use it, "N people" when a use
+// grant exists, else "Admins only" (new rows default private and the CRUD
+// is admin-tier, so a private row is the admin's alone). A row without an
+// access field says nothing.
+function SHR_useBadge(access) {
+  if (!access) return null;
+  if (access.public) return "Public";
+  if (Array.isArray(access.grants) && access.grants.length) return access.grants.length + " people";
+  return "Admins only";
+}
+window.SHR_useBadge = SHR_useBadge;
+
+// ACL-P4-T7: the create form's "Public" switch. The POST cannot set the
+// access (the server stamps a private Access and ignores the body), so the
+// switch follows the POST: read the stored view (its rev and owners) and
+// PUT public on it, with no grants (the row is new) and no public tools (a
+// use grant has none).
+window.SHR_makePublic = function (plural, id) {
+  return SH_api.getAccess(plural, id).then(function (view) {
+    return SH_api.setAccess(plural, id, {
+      owners: (view.owners || []).slice(),
+      grants: {},
+      public: true,
+      public_tools: [],
+      rev: view.rev,
+    });
+  });
+};
+
+// ACL-P4-T7: the "Who can use" affordance of the grantable-infrastructure
+// detail overlays: the button (the entity.share verb's pointer) and the
+// dialog's useOnly mode. The overlay subscribes through the same seam the
+// P1 surfaces do, so the palette verb reaches it. `plural`/`id` name the
+// row (the access router's plural, infra_access._KINDS); `title` names it
+// in the dialog.
+function SHR_UseShare(props) {
+  var open = window.SHR_useShareOpen();
+  return (
+    <>
+      <Btn size="sm" kind="ghost" data-testid="p4-who-can-use" data-verb="entity.share"
+        onClick={function () { open[1](true); }}>
+        Who can use
+      </Btn>
+      {open[0] && (
+        <SHR_ShareDialog plural={props.plural} id={props.id} title={props.title || props.id} useOnly
+          onClose={function () { open[1](false); }} />
+      )}
+    </>
+  );
+}
+window.SHR_UseShare = SHR_UseShare;
 
 // ---- the dialog -------------------------------------------------------------
 
@@ -92,7 +168,7 @@ function SHR_userOf(a, uid) {
   return null;
 }
 
-function SHR_ShareDialog({ plural, id, title, allowPublicTools, tools, onClose }) {
+function SHR_ShareDialog({ plural, id, title, allowPublicTools, tools, useOnly, onClose }) {
   var api = window.primerApi;
 
   var res = api.useResource(
@@ -101,7 +177,10 @@ function SHR_ShareDialog({ plural, id, title, allowPublicTools, tools, onClose }
     { pollMs: null, deps: [plural, id] }
   );
   var a = res.data;
-  var readOnly = !a || a.your_level !== "owner";
+  // ACL-P4-T7: a use grant has no owners (the admin is the editor by role),
+  // so the console's own role - not the view's your_level - decides read-only.
+  var con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  var readOnly = useOnly ? !(con && con.role === "admin") : !a || a.your_level !== "owner";
 
   var draftState = React.useState(null);
   var draft = draftState[0];
@@ -228,17 +307,17 @@ function SHR_ShareDialog({ plural, id, title, allowPublicTools, tools, onClose }
     if (readOnly || !draft || save.loading) return;
     setFieldErr(null);
     save.mutate({
-      owners: draft.owners,
+      owners: useOnly ? [] : draft.owners,
       grants: draft.grants,
       public: draft.public,
-      public_tools: draft.publicTools,
+      public_tools: useOnly ? [] : draft.publicTools,
       rev: a.rev,
     });
   }
 
   return (
     <Modal
-      title={"Share " + (title || id)}
+      title={useOnly ? "Who can use " + (title || id) : "Share " + (title || id)}
       testid="shr-dialog"
       onClose={onClose}
       footer={
@@ -264,7 +343,9 @@ function SHR_ShareDialog({ plural, id, title, allowPublicTools, tools, onClose }
       ) : !a ? null : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {readOnly && (
-            <div className="muted text-sm" data-testid="shr-readonly">Only owners can change sharing.</div>
+            <div className="muted text-sm" data-testid="shr-readonly">
+              {useOnly ? "Only an admin can change who can use this." : "Only owners can change sharing."}
+            </div>
           )}
           {stale && (
             <div role="alert" data-testid="shr-stale" style={{ color: "var(--red)" }}>
@@ -280,25 +361,27 @@ function SHR_ShareDialog({ plural, id, title, allowPublicTools, tools, onClose }
           {fieldErr && (
             <div role="alert" data-testid="shr-field-errors" style={{ color: "var(--red)" }}>{fieldErr}</div>
           )}
+          {!useOnly && (
+            <div>
+              <div className="muted text-sm">Owners</div>
+              <ul style={{ margin: "4px 0 0", paddingLeft: 18 }} data-testid="shr-owners">
+                {(a.owners || []).map(function (o) {
+                  return (
+                    <li key={o.id} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <span className="mono">{o.username}</span>
+                      {!readOnly && (
+                        <Btn size="sm" kind="ghost" data-testid={"shr-owner-remove-" + o.id} onClick={function () { removeOwner(o.id); }}>
+                          Remove
+                        </Btn>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
           <div>
-            <div className="muted text-sm">Owners</div>
-            <ul style={{ margin: "4px 0 0", paddingLeft: 18 }} data-testid="shr-owners">
-              {(a.owners || []).map(function (o) {
-                return (
-                  <li key={o.id} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <span className="mono">{o.username}</span>
-                    {!readOnly && (
-                      <Btn size="sm" kind="ghost" data-testid={"shr-owner-remove-" + o.id} onClick={function () { removeOwner(o.id); }}>
-                        Remove
-                      </Btn>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-          <div>
-            <div className="muted text-sm">People with access</div>
+            <div className="muted text-sm">{useOnly ? "People who can use" : "People with access"}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }} data-testid="shr-grants">
               {(!draft || Object.keys(draft.grants).length === 0) && (
                 <span className="muted text-sm">No one else yet.</span>
@@ -308,16 +391,18 @@ function SHR_ShareDialog({ plural, id, title, allowPublicTools, tools, onClose }
                 return (
                   <div key={uid} style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     <span className="mono">{who ? who.username : uid}</span>
-                    <select
-                      className="select"
-                      data-testid={"shr-grant-level-" + uid}
-                      value={draft.grants[uid]}
-                      onChange={function (e) { setGrantLevel(uid, e.target.value); }}
-                      disabled={readOnly}
-                    >
-                      <option value="read">read</option>
-                      <option value="full">full</option>
-                    </select>
+                    {!useOnly && (
+                      <select
+                        className="select"
+                        data-testid={"shr-grant-level-" + uid}
+                        value={draft.grants[uid]}
+                        onChange={function (e) { setGrantLevel(uid, e.target.value); }}
+                        disabled={readOnly}
+                      >
+                        <option value="read">read</option>
+                        <option value="full">full</option>
+                      </select>
+                    )}
                     {!readOnly && (
                       <Btn size="sm" kind="ghost" data-testid={"shr-grant-remove-" + uid} onClick={function () { removeGrant(uid); }}>
                         Remove
@@ -365,9 +450,9 @@ function SHR_ShareDialog({ plural, id, title, allowPublicTools, tools, onClose }
               onChange={function (e) { setPublic(e.target.checked); }}
               disabled={readOnly}
             />
-            <span>Public (any signed-in user can use it)</span>
+            <span>{useOnly ? "Everyone can use" : "Public (any signed-in user can use it)"}</span>
           </label>
-          {allowPublicTools && tools && tools.length > 0 && (
+          {!useOnly && allowPublicTools && tools && tools.length > 0 && (
             <div data-testid="shr-public-tools">
               <div className="muted text-sm">Public tools (usable without access to this toolset)</div>
               {tools.map(function (name) {

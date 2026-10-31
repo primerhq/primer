@@ -320,10 +320,14 @@ async def ensure_system_event_subscriptions(storage_provider) -> list[str]:
             id=SYSTEM_CDC_SUBSCRIPTION,
             description=(
                 "Converges the system collection page of every mutated "
-                "agent, graph and collection (the CDC path)."
+                "agent, graph, collection and workspace (the CDC path)."
             ),
             filter=EventFilter(
-                event_types=["agent.*", "graph.*", "collection.*"],
+                # The workspace CRUD verbs, not ``workspace.*``: that would also converge on every file change.
+                event_types=[
+                    "agent.*", "graph.*", "collection.*",
+                    "workspace.created", "workspace.updated", "workspace.deleted",
+                ],
             ),
             sink=ConvergeSink(),
             managed_by="system",

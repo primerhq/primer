@@ -354,8 +354,8 @@ class ToolContext:
     principal
         The principal STRING the outer dispatch received
         (``ToolExecutionManager.execute(call, principal=...)``), the
-        end-user identity a provider keys per-user state on (an MCP
-        toolset's OAuth token cache). Set by
+        end-user identity a provider may key caller-aware policy on (an
+        MCP toolset's OAuth token follows ``initiated_by`` instead). Set by
         :meth:`ToolExecutionManager.context_for`; worker turns pass
         ``None``. A tool that runs another tool for this run
         (``system__call_tool``, through

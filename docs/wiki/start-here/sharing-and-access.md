@@ -1,13 +1,13 @@
 ---
 title: "Sharing and access"
-summary: "Who may read, change, share or delete an agent, graph, toolset, workspace template or channel, and how to share one."
+summary: "Who may read, change, share or delete a shared item (agent, graph, toolset, channel, collection, trigger, harness), and who may use models and tools."
 tools: [system__get_entity_access, system__set_entity_access, system__lookup_users]
 related: [start-here/roles-and-approvals, agents/create-and-edit]
 order: 60
 ---
 ## What it is
 
-Agents, graphs, toolsets, workspace templates and channels belong to the users who own them. Each one is private until an owner shares it with chosen users or makes it public. These tools read and change that sharing.
+Agents, graphs, toolsets, workspace templates, channels, collections, triggers and harnesses belong to the users who own them. Each one is private until an owner shares it with chosen users or makes it public. These tools read and change that sharing.
 
 ## Concepts
 
@@ -17,6 +17,30 @@ Agents, graphs, toolsets, workspace templates and channels belong to the users w
 - **Admins** hold `owner` on everything. A `restricted` account reaches nothing.
 - **Your runs act as you.** An agent never brings access of its own: what a run can read or change is what the person behind it can.
 - **Not found means not yours.** An entity you cannot read answers exactly like one that does not exist.
+- **Some things share with their parent.** A document has the access of its collection, a subscription (or channel binding) the access of its trigger, and what a harness installed the access of the harness. Share the parent, never the child: sharing an installed row directly answers `type=conflict` (`harness_managed`).
+- **Sign in for yourself.** An MCP toolset that signs in through the browser keeps one sign-in per person. If it is shared with you, or one of its tools is public, you connect your own sign-in in the console (Toolsets, the toolset, Connect: "Your sign-in"), and your runs send only your token, never the owner's. A run whose person has not signed in is told to sign in. A toolset that signs in with client credentials has one shared sign-in ("Shared sign-in") that only people with full access can connect. `system__get_toolset_auth_status` reads your own status.
+- **What an MCP client sees.** A client connected to primer's MCP endpoint acts as the person behind its token and is offered only primer's built-in tools, never a tool of a toolset someone registered. Those tools check that person's access like any run does.
+- **The activity log names the person.** Every change records the user behind it (for an API token, its owner), so an admin's activity view shows who did what.
+
+
+## What each level allows
+
+| Kind | read | full | owner |
+|---|---|---|---|
+| Collection | list, read, grep and search its documents | write, move, delete and import documents | delete it, share it, turn search on or off |
+| Trigger | see it and its subscriptions, park on it | edit it, fire it now, manage its subscriptions and channel bindings | delete it, share it, rotate its webhook token |
+| Harness | see it and what it installed | (harness writes are admin-only for now) | share it |
+
+The platform wiki (the `system` collection) is public and read-only for everyone. A trigger on a channel needs `read` on that channel when you save it, and a trigger without a channel is admin-only. A trigger still runs as whoever saved it last.
+
+## Who can use
+
+Some things are not shared like your own entities: an admin decides who may **use** them.
+
+- **Models and providers.** A model profile and the providers behind your agents (the LLM provider, workspace providers, channel providers and the embedding, reranking and vector store providers a collection's search uses) carry a use grant. A new one is private to admins until an admin grants use to chosen users or makes it public. You can name a profile in an agent or graph only if you may use it; one you may not use answers as if it did not exist.
+- **A run uses them as the person it runs as.** If an agent runs for someone who may not use its profile, the turn does not run: the session pauses with the reason `model profile 'X' is not available to the person this turn runs as` (`model_profile_unusable`), and resumes once an admin grants use. Nothing is lost.
+- **Tools follow the same person.** A run only gets the tools its person may use: a toolset you cannot read is left out and the model is told `not available to you`, unless its owner marked single tools public, in which case just those tools are offered (`some tools not available to you`).
+- **Global settings.** Settings every feature already uses (web search and fetch, speech, artifact storage, canvas, MCP exposure) can be read by every user with secrets masked. Only an admin changes them.
 
 ## How to
 
@@ -44,6 +68,12 @@ Share the agent with that user at `read`, keeping yourself as owner:
 {"toolset_id": "system", "tool_name": "set_entity_access", "arguments": {"kind": "agent", "id": "agent-3f9a1c8d", "owners": ["user-1"], "grants": {"user-2": "read"}, "rev": 0}}
 ```
 
+Share a collection with a teammate who may edit its documents:
+
+```json
+{"toolset_id": "system", "tool_name": "set_entity_access", "arguments": {"kind": "collection", "id": "kb-onboarding", "owners": ["user-1"], "grants": {"user-2": "full"}, "rev": 0}}
+```
+
 Make two tools of a toolset public without sharing the rest:
 
 ```json
@@ -56,6 +86,9 @@ Make two tools of a toolset public without sharing the rest:
 - An entity always keeps at least one owner. To hand one over, list the new owner and, if you still want access, give yourself a grant.
 - `access` in a create or update body is ignored: sharing changes only through `set_entity_access`.
 - Only enabled full users can be owners or grantees; a restricted or disabled account is refused.
+- A collection's search settings change only through its search routes, by an owner: replacing the whole collection with a different `search` block is refused.
+- Profiles and providers are shared by use grants only: only an admin sets them, with `set_entity_access` kinds `model_profile`, `llm_provider`, `embedding_provider`, `cross_encoder_provider`, `semantic_search_provider`, `workspace_provider` and `channel_provider` (no owners, every grant `read`). You can read the sharing of one you may use, but it lists no one else.
+- Removing someone's access to an MCP toolset does not delete their sign-in, but their runs stop using it at once, and a sign-in they started before losing access connects nothing. Changing the toolset's URL or sign-in settings, or deleting it, forgets every person's sign-in.
 
 ## Related
 

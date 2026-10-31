@@ -19,6 +19,7 @@ import mcp.types as mcp_types
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from primer.access.person import person_for_tool
 from primer.common.log import redact_url_secrets
 from primer.common.mcp_errors import classify_mcp_exception
 from primer.int.toolset import ToolsetProvider
@@ -79,10 +80,16 @@ class McpToolsetProvider(ToolsetProvider):
     call (cheap; the SDK has no long-lived equivalent for stateless
     HTTP MCP).
 
-    For an HTTP toolset with an OAuth block, the shared OAuth service supplies
-    one bearer token for every caller. A rejected token is refreshed once by
-    the transport auth flow; a sign-in failure is surfaced after the SDK
-    transport closes so its internal task group cannot swallow the error.
+    For an HTTP toolset with an OAuth block, the OAuth service supplies the
+    bearer token of the person the dispatch acts for
+    (:func:`primer.access.person.person_for_tool`: the run's ``initiated_by``
+    when a ``ToolContext`` comes with the call, else the acting person), or
+    the shared token of a client-credentials toolset. The provider is cached
+    per toolset and shared by every caller, so the person is read per
+    dispatch, never stored. A dispatch for nobody gets no browser token. A
+    rejected token is refreshed once by the transport auth flow; a sign-in
+    failure is surfaced after the SDK transport closes so its internal task
+    group cannot swallow the error.
     """
 
     # Listing means a round trip to another process or host that can be down, can need a sign-in, or can accept the
@@ -241,10 +248,11 @@ class McpToolsetProvider(ToolsetProvider):
                 tool_name=tool_name,
                 arguments=arguments,
                 principal=principal,
+                ctx=ctx,
             )
             raise YieldToWorker(yielded, tool_call_id=ctx.tool_call_id)
 
-        async with self._open_session(principal=principal) as session:
+        async with self._open_session(principal=principal, ctx=ctx) as session:
             try:
                 result = await session.call_tool(tool_name, arguments=arguments)
             except Exception as exc:
@@ -260,6 +268,7 @@ class McpToolsetProvider(ToolsetProvider):
         tool_name: str,
         arguments: dict[str, Any],
         principal: str | None,
+        ctx: ToolContext | None = None,
     ) -> Yielded:
         """Issue a task-style tools/call and return a Yielded sentinel.
 
@@ -269,7 +278,7 @@ class McpToolsetProvider(ToolsetProvider):
         cross-process and so each MCP server has its own task
         namespace.
         """
-        async with self._open_session(principal=principal) as session:
+        async with self._open_session(principal=principal, ctx=ctx) as session:
             try:
                 result = await session.call_tool(
                     tool_name,
@@ -401,7 +410,7 @@ class McpToolsetProvider(ToolsetProvider):
     # ---------- session management ---------------------------------------
 
     @asynccontextmanager
-    async def _open_session(self, *, principal: str | None = None):
+    async def _open_session(self, *, principal: str | None = None, ctx: ToolContext | None = None):
         """Yield a ready :class:`mcp.ClientSession` for one dispatch.
 
         Stdio: starts a fresh subprocess + session at the start of the
@@ -410,7 +419,9 @@ class McpToolsetProvider(ToolsetProvider):
         error. The subprocess is local to this dispatch -- concurrent
         dispatches each get their own subprocess, so there is no shared
         cached session to stomp. HTTP: opens a fresh session per call.
-        ``principal`` remains accepted for the common provider interface.
+        ``principal`` remains accepted for the common provider interface; it
+        never selects an OAuth token. The token is that of
+        ``person_for_tool(ctx)``.
 
         Subclasses may override this entirely (used in tests to inject a
         pre-built session over in-memory streams).
@@ -442,7 +453,8 @@ class McpToolsetProvider(ToolsetProvider):
                         id=self._toolset_id,
                         provider=ToolsetProviderType.MCP,
                         config=self._config,
-                    )
+                    ),
+                    person_for_tool(ctx),
                 )
                 assert target is not None
                 token = await self._oauth.access_token(target)
@@ -498,7 +510,9 @@ class McpToolsetProvider(ToolsetProvider):
                 if auth is not None and auth.sign_in_required is not None:
                     from primer.model.mcp_oauth import McpSignInRequiredError
 
-                    raise McpSignInRequiredError(self._toolset_id, reason=auth.sign_in_required) from exc
+                    raise McpSignInRequiredError(
+                        self._toolset_id, reason=auth.sign_in_required, per_user=target.per_user,
+                    ) from exc
                 if auth is not None and auth.failure is not None:
                     raise auth.failure from exc
                 raise self._classified(exc) from exc

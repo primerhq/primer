@@ -576,7 +576,7 @@ async def enable_collection_search(
     cfg = CollectionSearchConfig(**body.model_dump())
     updated = await enable_search(
         request.app.state.storage_provider, registry, ssr,
-        collection_id=collection_id, cfg=cfg,
+        collection_id=collection_id, cfg=cfg, person=person_from_request(request),
     )
     return updated.model_dump(mode="json")
 
@@ -698,6 +698,14 @@ async def search_collection(
             f"semantic search is not enabled on collection {collection_id!r}; "
             "enable it with PUT /v1/collections/{id}/search. grep and the "
             "document tree remain available."
+        )
+    # The person searching must be able to use the providers the collection's search names (access-control P4 Task 6).
+    from primer.knowledge.search_use import unusable_search_provider
+
+    searcher = person_from_request(request)
+    if not searcher.is_admin and await unusable_search_provider(request.app.state.storage_provider, searcher, coll.search) is not None:
+        raise ConflictError(
+            f"semantic search is not available to you on collection {collection_id!r}; grep and the document tree remain available."
         )
     if coll.search.state == "error":
         raise ConfigError(

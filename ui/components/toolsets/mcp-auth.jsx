@@ -344,6 +344,9 @@ function TS_isNewAuthError(before, next) {
   return before.reason !== next.reason || before.refreshed_at !== next.refreshed_at || before.connected_at !== next.connected_at;
 }
 
+// The sign-in of one toolset, for the caller (access-control P5): a browser sign-in is "Your sign-in" and its buttons work for whoever the
+// status route answers (it answers only a person who may use the toolset); a client-credentials sign-in is "Shared sign-in" and its buttons
+// need full access on the toolset (your_level of the access view), else the panel says who can connect it.
 function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
   const api = window.primerApi;
   const status = api.useResource(
@@ -358,10 +361,14 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
     },
     { pollMs: 0, deps: [toolsetId] },
   );
-  const auth = api.useResource(
-    "auth-status",
-    function (signal) { return api.apiFetch("GET", "/auth/status", null, { signal: signal }); },
-    { pollMs: 0 },
+  const shared = !!(status.data && status.data.mode === "oauth_client_credentials");
+  // Only a shared sign-in needs the caller's level; a null key reads nothing.
+  const access = api.useResource(
+    shared ? "toolset-access:" + toolsetId : null,
+    function (signal) {
+      return api.apiFetch("GET", "/toolsets/" + encodeURIComponent(toolsetId) + "/access", null, { signal: signal });
+    },
+    { pollMs: 0, deps: [toolsetId] },
   );
   const [actionError, setActionError] = React.useState(null);
   // The Connect poll (G4-20): one chain at a time, its timer kept here so a new Connect, a result or closing the panel stops it. A chain
@@ -480,7 +487,9 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
   async function askDisconnect() {
     const ok = await window.confirmDialog({
       title: "Disconnect " + toolsetId + "?",
-      message: "Every agent that uses this toolset loses access to it until an admin connects it again.",
+      message: shared
+        ? "Every agent that uses this toolset loses access to it until someone with full access connects it again."
+        : "Your runs lose access to this toolset until you connect again.",
       confirmLabel: "Disconnect",
       danger: true,
     });
@@ -510,7 +519,8 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
   }
   const value = status.data || {};
   if (value.state === "not_applicable") return null;
-  const isAdmin = !!(auth.data && auth.data.role === "admin");
+  const level = access.data && access.data.your_level;
+  const canAct = !shared || level === "full" || level === "owner";
   const hasConnection = !!value.connected_at;
   let stateText = "Needs sign-in";
   if (value.state === "connected") stateText = "Connected " + TS_authExpiryText(value.expires_at);
@@ -519,15 +529,16 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
 
   return (
     <div data-testid="ts-auth-panel" style={compact ? { marginTop: 8 } : { marginBottom: 12 }}>
+      <div className="muted text-sm" data-testid="ts-auth-kind">{shared ? "Shared sign-in" : "Your sign-in"}</div>
       <div className="text-sm" data-testid="ts-auth-status">{stateText}</div>
       {actionError ? <div className="field-help warn" data-testid="ts-auth-action-error">{actionError}</div> : null}
       {/* Desktop only: the phone shell shows a toolset as a read-only fact sheet and never mounts this panel (lead ruling, G4-21). */}
-      <div data-testid="ts-auth-actions" style={{ display: "flex", gap: 8, marginTop: 8 }}>
+      <div data-testid="ts-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
         <Btn
           size="sm"
           kind="secondary"
           data-testid={hasConnection ? "ts-auth-reconnect" : "ts-auth-connect"}
-          disabled={!isAdmin}
+          disabled={!canAct}
           busy={start.loading}
           onClick={beginStart}
         >
@@ -538,14 +549,14 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
             size="sm"
             kind="danger"
             data-testid="ts-auth-disconnect"
-            disabled={!isAdmin}
+            disabled={!canAct}
             busy={disconnect.loading}
             onClick={askDisconnect}
           >Disconnect</Btn>
         ) : null}
       </div>
-      {!isAdmin ? (
-        <div className="field-help" data-testid="ts-auth-admin-note">Only an admin can connect this toolset.</div>
+      {shared && !canAct && !access.loading ? (
+        <div className="field-help" data-testid="ts-auth-full-note">Only people with full access can connect this toolset.</div>
       ) : null}
     </div>
   );
@@ -558,7 +569,8 @@ function TS_cardAuthStatus(row) {
   const state = row && row.auth && row.auth.state;
   let status = null;
   if (state === "connected") status = { label: "Connected", tone: "ok" };
-  else if (state === "needs_sign_in") status = { label: "Needs sign-in", tone: "warn" };
+  // The catalogue (/v1/tools) answers the caller's own state: a browser sign-in they have not made is theirs to make.
+  else if (state === "needs_sign_in") status = { label: row.auth.per_user ? "Needs your sign-in" : "Needs sign-in", tone: "warn" };
   else if (state === "error") status = { label: "Error", tone: "error" };
   if (!status || row.available !== false) return status;
   if (state === "connected") status = { label: "Connected, unreachable", tone: "error" };

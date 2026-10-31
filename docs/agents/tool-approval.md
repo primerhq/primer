@@ -176,6 +176,30 @@ The approval state lives on the session's parked-status fields:
 metadata embedded in the yield captures the original tool call. The
 worker picks all this back up when the resume event arrives.
 
+## What a policy and a judge see: the identity
+
+Every gate builds one input document for a Rego policy and for an LLM judge: `toolset_id`, `tool_name`, `arguments`, `agent_id`,
+`session_id`, `requested_at` and `identity`. The `identity` says who is acting:
+
+```json
+{"user": {"id": "u-7", "name": "bob", "role": "user"}, "actor": {"kind": "agent", "id": "agent-builder"}}
+```
+
+`user` is the person behind the run: the person who sent the turn (a steered turn is the peer's), an API token's owner (its
+username), or the user over MCP. `actor` is the innermost entity acting: `agent` (the session's agent, a graph agent node's
+agent or a sub-agent), `graph` (a ToolCall node's graph or a child graph), `user` (a direct MCP call) or `system` (an install
+with auth off, which also names `system` as the user). The same call has the same `identity` whether it arrives directly,
+through `system::call_tool` or over the MCP endpoint, so one rule decides it everywhere:
+
+```rego
+allow { input.identity.user.name == "bob" }
+```
+
+That rule lets Bob's runs through and stops everyone else's calls for an operator.
+
+The identity is information for the gate. Who may answer a card is still the policy's approver list, and the person's access
+to the tool is decided before the gate: a tool the person may not use never reaches it.
+
 ## What an approval card shows
 
 The Inbox card of a parked approval (the phone's Inbox tab, and the rail line on the desktop) draws the tool and a one-line preview of its arguments. The full call

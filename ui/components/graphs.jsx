@@ -514,6 +514,8 @@ function GraphDetail({ graphId, pushToast }) {
         status={status}
         onRefresh={() => { graph.refetch(); status.refetch(); }}
         onDelete={() => setConfirmDelete(true)}
+        harnessId={graph.data?.harness_id}
+        onOpenHarness={() => navigate("/harnesses/" + encodeURIComponent(graph.data.harness_id))}
         onShare={() => setShareOpen(true)}
       />
       <window.GB_Builder
@@ -560,7 +562,7 @@ function GraphDetail({ graphId, pushToast }) {
 // GR_GraphStatusPanel — 30s poll on /graphs/{id}/status
 // ============================================================================
 
-function GR_GraphStatusPanel({ id, status, onRefresh, onDelete, onShare }) {
+function GR_GraphStatusPanel({ id, status, onRefresh, onDelete, onShare, harnessId, onOpenHarness }) {
   const ok = status.data?.ok;
   const issues = status.data?.issues || [];
   const loading = status.loading && !status.data;
@@ -609,7 +611,13 @@ function GR_GraphStatusPanel({ id, status, onRefresh, onDelete, onShare }) {
           ))}
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          {onShare && <Btn size="sm" kind="ghost" data-testid="graph-share" data-verb="entity.share" onClick={onShare}>Share</Btn>}
+          {harnessId ? (
+            // ACL-P3-T7: a graph the harness installed answers 409 harness_managed
+            // to a direct share - the link to the harness replaces the Share button.
+            <SHR_HarnessShare harnessId={harnessId} onOpen={onOpenHarness} />
+          ) : (
+            onShare && <Btn size="sm" kind="ghost" data-testid="graph-share" data-verb="entity.share" onClick={onShare}>Share</Btn>
+          )}
           {onRefresh && <Btn size="sm" icon="refresh" kind="ghost" onClick={onRefresh}>Refresh</Btn>}
           {onDelete && <Btn size="sm" icon="trash" kind="danger" onClick={onDelete}>Delete</Btn>}
         </div>

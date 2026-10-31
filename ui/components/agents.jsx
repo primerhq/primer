@@ -682,7 +682,7 @@ function AG_toolsForSave(selected, stored) {
   return kept.concat(added);
 }
 
-function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading, onShare }) {
+function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading, onShare, onOpenHarness }) {
   // Same modal serves both create (existing == null) and edit
   // (existing == agent row). In edit mode the id field is locked,
   // submit PUT-replaces, and the success callback is just close().
@@ -940,15 +940,16 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     return { onChange: (e) => { set(e.target.value); note(e); }, onInput: note };
   };
 
-  // The model profile dropdown. A profile the agent names that is no longer in the list stays the selection (a native select would otherwise show its first
-  // option and the save would repoint the agent): it is the first option, marked "(missing)" when the list loaded and plain when the load failed.
+  // The model profile dropdown. The form reads the caller's own choices (user tier: the profiles THIS person may use), so a profile the agent names that
+  // is not in the list is not deleted - it is not available to the caller (ACL-P4-T7). It stays the selection (a native select would otherwise show its
+  // first option and the save would repoint the agent): it is the first option, marked "(not available to you)" when the list loaded and plain when it failed.
   const profilesFailed = !!profiles.error;
   const profileGone = !!profileId && !selectedProfile && !profiles.loading;
   // Said through the console's one reader of a failed request, so a refusal that carries only a code (forbidden_role) is said in words.
   const profilesLoadError = profilesFailed ? window.primerApi.readRefusal(profiles.error, "").message : "";
   const profileError = AG_fieldError(fieldErrors, "body.model")
     || (profilesFailed ? "Could not load the model profiles" + (profilesLoadError ? ": " + profilesLoadError : ".") : null)
-    || (profileMissing ? "This profile no longer exists. Pick another one." : null);
+    || (profileMissing ? "This model profile is not available to you. An admin can grant its use." : null);
   const profileHelp = !profiles.loading && !profilesFailed && profileOptions.length === 0
     ? "No model profiles yet. Register an LLM provider and import its models first."
     : "The default; a run can override it";
@@ -997,8 +998,14 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             {isEdit && onDelete && (
               <Btn kind="ghost" data-testid="agent-form-delete" onClick={onDelete} style={{ color: "var(--red)" }}>Delete</Btn>
             )}
-            {isEdit && onShare && (
-              <Btn kind="ghost" data-testid="agent-share" data-verb="entity.share" onClick={onShare}>Share</Btn>
+            {isEdit && existing?.harness_id ? (
+              // ACL-P3-T7: a row the harness installed answers 409 harness_managed
+              // to a direct share - the link to the harness replaces Share.
+              <SHR_HarnessShare harnessId={existing.harness_id} onOpen={onOpenHarness} />
+            ) : (
+              isEdit && onShare && (
+                <Btn kind="ghost" data-testid="agent-share" data-verb="entity.share" onClick={onShare}>Share</Btn>
+              )
             )}
           </>
         ),
@@ -1045,7 +1052,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             value={profileId}
             onChange={(e) => setProfileId(e.target.value)}
           >
-            {profileGone && <option value={profileId}>{profilesFailed ? profileId : profileId + " (missing)"}</option>}
+            {profileGone && <option value={profileId}>{profilesFailed ? profileId : profileId + " (not available to you)"}</option>}
             {profiles.loading && profileOptions.length === 0 && <option value="">Loading model profiles…</option>}
             {!profiles.loading && profileOptions.length === 0 && !profileId && <option value="">No model profiles yet</option>}
             {profileOptions.map((pr) => <option key={pr.id} value={pr.id}>{pr.id}</option>)}
@@ -1367,6 +1374,7 @@ function AgentDetail({ agentId, pushToast }) {
         onChat={startChat}
         chatLoading={startChatMut.loading}
         onShare={() => setShareOpen(true)}
+        onOpenHarness={() => navigate("/harnesses/" + encodeURIComponent(a.harness_id))}
         onDelete={() => { setDeleteError(null); setConfirmDelete(true); }}
         onClose={() => navigate("/agents")}
         onCreate={() => {

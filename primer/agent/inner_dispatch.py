@@ -20,8 +20,10 @@ It imports nothing from ``primer.toolset`` (which imports this package), so it b
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from typing import Any
 
+from primer.access.acting import acting_as
 from primer.access.person import person_for_tool
 from primer.access.tools import toolset_use
 from primer.authz import _role_allows
@@ -95,7 +97,7 @@ async def dispatch_inner_tool(
     revoke is refused too. A caller without one (tests) skips the check.
 
     The inner provider gets ``ctx`` itself (so a pausing tool parks under the caller's call id, and an owner-dependent tool sees the run's
-    identity) and ``ctx.principal`` as its principal. A :class:`primer.model.yield_.YieldToWorker` (the inner tool paused) and a
+    identity) and ``ctx.principal`` as its principal, and runs as the run's person (an approved re-run included: access-control P5 Task 1). A :class:`primer.model.yield_.YieldToWorker` (the inner tool paused) and a
     :class:`primer.model.except_.PrimerError` propagate to the caller, which decides how to report them.
     """
     refusal = inner_role_refusal(provider, toolset_id=toolset_id, tool_name=tool_name, ctx=ctx)
@@ -105,12 +107,13 @@ async def dispatch_inner_tool(
         refusal = await inner_access_refusal(storage_provider, toolset_id=toolset_id, tool_name=tool_name, ctx=ctx)
         if refusal is not None:
             return refusal
-    return await provider.call(
-        tool_name=tool_name,
-        arguments=arguments,
-        principal=ctx.principal if ctx is not None else None,
-        ctx=ctx,
-    )
+    with acting_as(person_for_tool(ctx)) if ctx is not None else nullcontext():
+        return await provider.call(
+            tool_name=tool_name,
+            arguments=arguments,
+            principal=ctx.principal if ctx is not None else None,
+            ctx=ctx,
+        )
 
 
 __all__ = ["FORBIDDEN_ERROR_TYPE", "dispatch_inner_tool", "inner_access_refusal", "inner_role_refusal", "run_principal"]

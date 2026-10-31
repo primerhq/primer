@@ -21,6 +21,15 @@ def _users(request: Request):
     return get_storage_provider(request).get_storage(User)
 
 
+def _harness_exists(request: Request):
+    from primer.model.harness import Harness
+
+    async def _exists(harness_id: str) -> bool:
+        return await get_storage_provider(request).get_storage(Harness).get(harness_id) is not None
+
+    return _exists
+
+
 def make_access_router(
     *,
     model_cls: type,
@@ -79,6 +88,7 @@ def make_access_router(
             allow_public_tools=allow_public_tools,
             after_write=(lambda row: after_write(request, row)) if after_write is not None else None,
             use_only=use_only,
+            harness_exists=_harness_exists(request),
         )
 
     return router

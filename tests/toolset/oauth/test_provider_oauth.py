@@ -3,12 +3,23 @@ from __future__ import annotations
 import pytest
 
 from primer.common.secret_box import SecretBox
+from primer.mcp.server import current_actor
 from primer.model.except_ import ProviderError
 from primer.model.mcp_oauth import McpSignInRequiredError
+from primer.model.principal import Principal
 from primer.toolset.mcp import McpToolsetProvider
 from primer.toolset.oauth.service import TOKEN_REJECTED, ToolsetOAuthService
 from tests._support.mock_oauth_mcp_fixtures import mock_oauth_mcp  # noqa: F401
-from tests.toolset.oauth._service_helpers import connect, make_toolset, target_of
+from tests.toolset.oauth._service_helpers import SYSTEM, connect, make_toolset, target_of
+
+
+@pytest.fixture(autouse=True)
+def _acting_as_the_system_person():
+    """These tests use the shared row: the provider lists and calls as the system person of an auth-disabled install (per-person sign-ins are
+    ``test_per_user_tokens.py``)."""
+    reset = current_actor.set(Principal(type="system", id="system", display="system", source="internal"))
+    yield
+    current_actor.reset(reset)
 
 
 async def _service(fake_storage_provider) -> ToolsetOAuthService:
@@ -83,7 +94,7 @@ async def test_a_server_that_rejects_the_refreshed_token_too_signs_the_toolset_o
             await provider.call(tool_name="echo", arguments={"text": "hello"})
         refreshes = [request["grant_type"] for request in mock_oauth_mcp.state.token_requests].count("refresh_token")
         assert refreshes == 1
-        status = await service.status(toolset)
+        status = await service.status(toolset, SYSTEM)
         assert (status.state, status.reason) == ("needs_sign_in", TOKEN_REJECTED)
         row = await service.store.get_tokens(toolset.id)
         assert (row.state, row.access_token_enc, row.refresh_token_enc) == ("needs_sign_in", None, None)
@@ -111,7 +122,7 @@ async def test_a_client_credentials_toolset_whose_fresh_token_is_rejected_recove
         with pytest.raises(ProviderError) as caught:
             await provider.call(tool_name="echo", arguments={"text": "hello"})
         assert not isinstance(caught.value, McpSignInRequiredError), "nobody needs to reconnect a client-credentials toolset"
-        status = await service.status(toolset)
+        status = await service.status(toolset, SYSTEM)
         assert (status.state, status.reason) == ("error", TOKEN_REJECTED)
         row = await service.store.get_tokens(toolset.id)
         assert (row.state, row.access_token_enc) == ("error", None)
@@ -121,7 +132,7 @@ async def test_a_client_credentials_toolset_whose_fresh_token_is_rejected_recove
         result = await provider.call(tool_name="echo", arguments={"text": "hello"})
         assert result.output == "hello"
         assert [request["grant_type"] for request in mock_oauth_mcp.state.token_requests].count("client_credentials") == exchanges + 1
-        assert (await service.status(toolset)).state == "connected"
+        assert (await service.status(toolset, SYSTEM)).state == "connected"
     finally:
         await service.aclose()
 

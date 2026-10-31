@@ -28,7 +28,7 @@ async def sp(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
 
 
 def test_registered_as_version_26():
-    assert MIGRATIONS[-1].version == 26 and isinstance(MIGRATIONS[-1], M026InfrastructurePublic)
+    assert MIGRATIONS[25].version == 26 and isinstance(MIGRATIONS[25], M026InfrastructurePublic)
 
 
 async def test_unset_rows_become_public_and_chosen_sharing_is_left(sp):

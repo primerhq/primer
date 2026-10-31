@@ -1047,6 +1047,8 @@ function ToolsetDetail({ toolsetId, pushToast }) {
         onInvalidate={() => invalidate.mutate()}
         onDelete={() => { setCascadeError(null); setConfirmDelete(true); }}
         onBack={() => navigate("/toolsets")}
+        harnessId={ts?.harness_id}
+        onOpenHarness={() => navigate("/harnesses/" + encodeURIComponent(ts.harness_id))}
         onShare={() => setShareOpen(true)}
       />
 
@@ -1139,11 +1141,17 @@ function ToolsetDetail({ toolsetId, pushToast }) {
 // Internal action bar — rendered INSIDE the page body so the outer
 // page-header (rendered by app.jsx) is supplemented by detail-level
 // actions without double-rendering the title.
-function TS_DetailActions({ onInvalidate, onDelete, onBack, onShare }) {
+function TS_DetailActions({ onInvalidate, onDelete, onBack, onShare, harnessId, onOpenHarness }) {
   return (
     <div className="page-header" style={{ marginBottom: 0, justifyContent: "flex-end" }}>
       <div className="page-actions">
-        {onShare && <Btn icon="send" kind="ghost" data-testid="toolset-share" data-verb="entity.share" onClick={onShare}>Share</Btn>}
+        {harnessId ? (
+          // ACL-P3-T7: a toolset the harness installed answers 409 harness_managed
+          // to a direct share - the link to the harness replaces the Share button.
+          <SHR_HarnessShare harnessId={harnessId} onOpen={onOpenHarness} />
+        ) : (
+          onShare && <Btn icon="send" kind="ghost" data-testid="toolset-share" data-verb="entity.share" onClick={onShare}>Share</Btn>
+        )}
         {onInvalidate && <Btn icon="refresh" kind="ghost" onClick={onInvalidate}>Invalidate</Btn>}
         {onDelete && <Btn icon="trash" kind="danger" onClick={onDelete}>Delete</Btn>}
         {onBack && <Btn icon="chevron-left" kind="ghost" onClick={onBack}>Back</Btn>}

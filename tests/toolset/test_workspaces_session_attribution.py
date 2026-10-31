@@ -195,7 +195,7 @@ def _seed_agent(sp, agent_id="code-reviewer") -> None:
 
 
 def _provider() -> WorkspaceProvider:
-    return WorkspaceProvider(
+    return WorkspaceProvider(access=Access(public=True), 
         id="local-1",
         provider=WorkspaceProviderType.LOCAL,
         config=LocalWorkspaceConfig(root_path="/tmp/x"),
@@ -242,10 +242,9 @@ def session_toolset(sp, workspace_registry):
 @pytest.fixture
 async def seeded(session_toolset, sp):
     """Seed provider + template + workspace + agent; return the workspace id."""
-    await session_toolset.call(
-        tool_name="create_workspace_provider",
-        arguments={"entity": _provider().model_dump(mode="json")},
-    )
+    # Straight to storage, public: a provider created through the tool is private (access-control P4 Task 5), and the template below is
+    # saved by a plain user who must be able to use it.
+    await sp.get_storage(WorkspaceProvider).create(_provider())
     await session_toolset.call(
         tool_name="create_workspace_template",
         arguments={
