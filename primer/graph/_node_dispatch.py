@@ -33,6 +33,7 @@ import json
 import uuid
 from typing import Any
 
+from primer.agent.invoke import InvocationDepthExceeded, invocation_depth_guard
 from primer.agent.parked_round import ParkedRound
 from primer.graph._node_identity import (
     current_graph_node_id,
@@ -467,9 +468,14 @@ class _NodeDispatchMixin:
                 # otherwise collide on) - see primer.graph._node_identity.
                 token = set_current_graph_node_id(node_id)
                 try:
-                    output = await self._stream_subgraph_node(
-                        node, context, queue, extra_scope=extra_scope
-                    )
+                    # AG-M11: the child run counts as a nested invocation, as the invoke_graph tool's does, so a graph that reaches
+                    # itself fails at the guard's depth instead of recursing until a path is too long.
+                    with invocation_depth_guard():
+                        output = await self._stream_subgraph_node(
+                            node, context, queue, extra_scope=extra_scope
+                        )
+                except InvocationDepthExceeded as exc:
+                    raise _SubgraphFailed(f"subgraph {node.graph_id!r} (node {node.id!r}) failed: {exc}") from exc
                 finally:
                     reset_current_graph_node_id(token)
             elif isinstance(node, _AgentNodeRef):
