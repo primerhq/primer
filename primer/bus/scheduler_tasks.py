@@ -126,6 +126,7 @@ class _BackgroundTask:
                 continue
             work: asyncio.Task | None = None
             lost: asyncio.Task | None = None
+            back_off = False
             try:
                 work = asyncio.create_task(self._run(), name=self._name)
                 lost = asyncio.create_task(
@@ -134,6 +135,20 @@ class _BackgroundTask:
                 await asyncio.wait(
                     {work, lost}, return_when=asyncio.FIRST_COMPLETED,
                 )
+                if work.done() and not work.cancelled():
+                    # work ended by itself (its _run raised or returned).
+                    # Without this the exception is only found by the GC,
+                    # and a _run that fails at once would spin
+                    # acquire/start/fail against the database with no
+                    # backoff (CORE-13).
+                    exc = work.exception()
+                    if exc is not None:
+                        logger.error(
+                            "background task %s ended with an error; "
+                            "backing off before re-acquiring",
+                            self._name, exc_info=exc,
+                        )
+                    back_off = True
             finally:
                 for t in (work, lost):
                     if t is not None and not t.done():
@@ -146,6 +161,11 @@ class _BackgroundTask:
                     await lease.release()
                 except Exception:  # noqa: BLE001
                     pass
+            if back_off:
+                try:
+                    await asyncio.sleep(retry_seconds)
+                except asyncio.CancelledError:
+                    return
 
     async def stop(self) -> None:
         self._stopping = True
