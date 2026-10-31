@@ -48,6 +48,15 @@ if TYPE_CHECKING:
     from primer.model.workspace_session import WorkspaceSession
 
 
+def _too_big_for_notify(event_key: str, envelope: dict) -> bool:
+    """Whether the wake envelope would exceed a NOTIFY body (the bus refuses one over the cap; a margin covers the wrapper)."""
+    import json
+
+    from primer.bus.postgres import MAX_NOTIFY_PAYLOAD_BYTES
+
+    return len(json.dumps({"event_key": event_key, "payload": envelope}).encode("utf-8")) > MAX_NOTIFY_PAYLOAD_BYTES - 200
+
+
 class _EventWindow:
     """A contiguous, forward-moving slice of the log shared by the subscriptions of one tick.
 
@@ -376,9 +385,19 @@ class EventDispatcher(_BackgroundTask):
         # What a user entered (a canvas.event's value and data) is removed from EVERY wake, whoever waits (an admin's wait_for_event and canvas_wait
         # included): the flip stamps this envelope on the waiting row, which any user may read, and the resume makes it the run's tool result. The
         # input never leaves the session it belongs to; canvas_wait restores it from that session's own canvas (audit G8-08, rulings on #872).
-        await self._bus.publish(
-            sink.event_key, with_wake_entry(with_wake_park(without_input(redact_event(event)).model_dump(mode="json"), parked_at), sub.id),
-        )
+        envelope = with_wake_entry(with_wake_park(without_input(redact_event(event)).model_dump(mode="json"), parked_at), sub.id)
+        if _too_big_for_notify(sink.event_key, envelope):
+            # A Postgres NOTIFY body is capped (about 8 KB) and a CRUD event carries the whole row, so a big envelope could never ride the bus: it
+            # failed until the event was skipped and the park never woke (core review finding 3). Wake through storage instead, with the guarded
+            # flip the bus listener runs on receipt, so the park and entry fences apply unchanged and a repeat is a no-op.
+            from primer.model.workspace_session import WorkspaceSession
+            from primer.session.yields import flip_sessions_parked_on
+
+            await flip_sessions_parked_on(
+                sink.event_key, envelope, session_storage=self._sp.get_storage(WorkspaceSession), engine=self._claim_engine,
+            )
+        else:
+            await self._bus.publish(sink.event_key, envelope)
         if sink.one_shot:
             await self._complete_one_shot(sub)
         return True
