@@ -92,6 +92,8 @@ class LocalWorkspace(Workspace):
         self._tools = tools
         self._sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
+        # The hourly retention sweep of the tool-output store (started by ``materialise``, cancelled by ``aclose``; W41).
+        self._cleanup_task: asyncio.Task[None] | None = None
         # ONE shared advisory write-lock table per workspace. The tools built
         # in ``materialise`` are handed the SAME table so an API-side
         # ``write_file``/``move_file`` and a tool ``write``/``exec`` to the
@@ -161,7 +163,7 @@ class LocalWorkspace(Workspace):
             Grep(root),
             Exec(root, env=env if env else None, locks=locks, strict=strict),
         ]
-        return cls(
+        workspace = cls(
             workspace_id=workspace_id,
             root=root,
             template=template,
@@ -171,6 +173,8 @@ class LocalWorkspace(Workspace):
             tools=tools,
             locks=locks,
         )
+        workspace._cleanup_task = cache.start_background_cleanup()
+        return workspace
 
     # ---- Workspace ABC --------------------------------------------------
 
@@ -804,6 +808,10 @@ class LocalWorkspace(Workspace):
         ``session.json`` (a wake raised ``ConflictError``, a reclaimed turn refused to run). A fresh handle reads each slot as it was.
         :meth:`end_all_sessions` is the call for a workspace that is going away (architecture review A-24).
         """
+        task, self._cleanup_task = self._cleanup_task, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         async with self._lock:
             self._sessions.clear()
 
