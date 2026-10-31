@@ -403,9 +403,16 @@ async def test_a_capped_run_that_creates_a_channel_binding_stays_capped(
     fake_storage_provider, deps, seeded_workspace, seeded_agent,
 ):
     session = await _capped_run(fake_storage_provider, deps, seeded_agent)
+    # The trigger fires from chan-1, public so the capped (user-rank) run may bind onto it (access P3, decision 5).
+    from primer.model.channel import Channel
+
+    await fake_storage_provider.get_storage(Channel).create(Channel(
+        id="chan-1", provider_id="cp-1", provider="slack", external_id="C12345",
+        access=Access(public=True),
+    ))
     await fake_storage_provider.get_storage(Trigger).create(Trigger(
         id="trg-ch-1", slug="ch-trigger", name="ch", created_at=datetime.now(timezone.utc),
-        config=ChannelTriggerConfig(provider_id="cp-1"), owner=_ref("u-admin", "admin"),
+        config=ChannelTriggerConfig(provider_id="cp-1", channel_id="chan-1"), owner=_ref("u-admin", "admin"),
     ))
     registry = ProviderRegistry(
         fake_storage_provider, llm_factory=lambda p: object(), embedder_factory=lambda p: object(),
