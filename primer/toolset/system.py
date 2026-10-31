@@ -167,7 +167,7 @@ from primer.artifact.checks import (
     check_artifact_provider_write,
     prepare_artifact_provider,
 )
-from primer.channel.checks import check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
+from primer.channel.checks import channel_for_binding, check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.knowledge.checks import (
     RESERVED_COLLECTION_ID_PREFIX,
@@ -497,12 +497,15 @@ def build_system_toolset(
         del existing  # the checks validate the incoming shape only
         await check_profile_on_update(entity, storage_provider=storage_provider)
 
-    async def _channel_pre_create(entity: Channel) -> None:
-        await check_channel_on_create(entity, storage_provider=storage_provider)
+    async def _channel_pre_create(entity: Channel, *, person: Any = None) -> None:
+        await check_channel_on_create(entity, storage_provider=storage_provider, person=person)
 
-    async def _channel_pre_update(entity: Channel, existing: Channel) -> None:
-        del existing  # the new pair is what counts: the row is rewritten whole
-        await check_channel_on_update(entity, storage_provider=storage_provider)
+    async def _channel_pre_update(entity: Channel, existing: Channel, *, person: Any = None) -> None:
+        # The new pair is what counts (the row is rewritten whole); the saver is asked only about a provider the update adds.
+        await check_channel_on_update(entity, storage_provider=storage_provider, person=person, existing=existing)
+
+    _channel_pre_create.takes_person = True  # type: ignore[attr-defined]
+    _channel_pre_update.takes_person = True  # type: ignore[attr-defined]
 
     async def _channel_provider_pre_create(entity: ChannelProvider) -> None:
         check_channel_provider_secrets(entity)
@@ -854,10 +857,9 @@ def build_system_toolset(
                 f"Workspace {args.workspace_id!r} does not exist",
                 error_type="not-found",
             )
-        channel = await _channel_storage.get(args.channel_id)
-        # The binding reads the channel it names: a channel the caller holds no level on answers exactly like a missing one,
-        # in the missing-channel words (access spec 9).
-        if channel is None or level_of(person_for_tool(ctx), channel.access) is None:
+        # The binding reads the channel it names and uses its provider: a channel the caller holds no level on, or on a provider they may
+        # not use, answers exactly like a missing one, in the missing-channel words (access spec 9; P4 Task 6).
+        if await channel_for_binding(storage_provider, person_for_tool(ctx), args.channel_id) is None:
             return _err(
                 f"Channel {args.channel_id!r} does not exist",
                 error_type="not-found",

@@ -47,6 +47,7 @@ from primer.api.routers._session_rank import refuse_outranked
 from primer.access.person import person_from_request
 from primer.access.workspaces import readable_workspace_ids, require_workspace
 from primer.api.routers.access import make_access_router
+from primer.channel.checks import channel_for_binding
 from primer.api.deps import (
     get_claim_engine,
     get_collection_storage,
@@ -704,14 +705,29 @@ async def _workspace_template_pre_delete(existing, request: Request) -> None:
         )
 
 
+async def _check_template_provider_use(entity, existing, request: Request) -> None:
+    """The saver may name only a workspace provider they may use; an unchanged provider is not re-checked (access-control P4 Task 5)."""
+    from primer.workspace.provider_use import provider_unusable, provider_unusable_message
+
+    if existing is not None and existing.provider_id == entity.provider_id:
+        return
+    if await provider_unusable(get_storage_provider(request), person_from_request(request), entity.provider_id):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "workspace_provider_not_found", "field": "provider_id", "message": provider_unusable_message(entity.provider_id)},
+        )
+
+
 async def _workspace_template_pre_create(entity, request: Request) -> None:
     await _reject_reserved_workspace_template_create(entity, request)
     _check_template_privilege(entity, None, request)
+    await _check_template_provider_use(entity, None, request)
 
 
 async def _workspace_template_pre_update(entity, existing, request: Request) -> None:
     await _reject_reserved_workspace_template_update(entity, existing, request)
     _check_template_privilege(entity, existing, request)
+    await _check_template_provider_use(entity, existing, request)
     # 01a11d32: the password of a url file source and the env values are served masked, and PUT is a full replace, so a client that sends the served body back keeps the stored ones: an
     # admin's password for the same scheme, host, port and user, a user's only for the whole unchanged URL (any other change that carries the mask is a 422 and nothing is stored). After the
     # 403s: a caller who may not write the template never learns what a mask could be restored to.
@@ -1055,6 +1071,16 @@ async def create_workspace(
     # in the body is ignored (sharing happens on PUT /{id}/access).
     person = person_from_request(request)
     access = Access.owned_by(person.user_id) if person.user_id else Access()
+    if body.reply_binding is not None and await channel_for_binding(storage_provider, person, body.reply_binding.channel_id) is None:
+        # The creator binds a channel they may use (and on a provider they may use): anything else reads as a missing channel, as the bind route.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "channel_not_found",
+                "channel_id": body.reply_binding.channel_id,
+                "message": f"Channel {body.reply_binding.channel_id!r} does not exist.",
+            },
+        )
     try:
         row = await registry.create(
             template=template,
@@ -1063,6 +1089,7 @@ async def create_workspace(
             name=body.name,
             reply_binding=body.reply_binding,
             access=access,
+            person=person,
         )
     except WorkspaceNotImplementedError as exc:
         raise HTTPException(
@@ -1221,11 +1248,9 @@ async def set_workspace_reply_binding(
                 ),
             },
         )
-    channel_storage = sp.get_storage(Channel)
-    channel = await channel_storage.get(body.channel_id)
-    # The binding reads the channel it names: a channel the caller holds no level on answers exactly like a missing one,
-    # in this route's own channel_not_found words (access spec 9).
-    if channel is None or level_of(person_from_request(request), channel.access) is None:
+    # The binding reads the channel it names and uses its provider: a channel the caller holds no level on, or on a provider they may not
+    # use, answers exactly like a missing one, in this route's own channel_not_found words (access spec 9; P4 Task 6).
+    if await channel_for_binding(sp, person_from_request(request), body.channel_id) is None:
         raise HTTPException(
             status_code=422,
             detail={
