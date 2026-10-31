@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from pathlib import Path
 
@@ -37,11 +38,12 @@ from primer.model.graph import (
     _StaticEdge,
     _ToolCallNode,
 )
+from primer.model.workspace_session import SessionStatus
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.observability.turn_log_writer import TurnLogWriter
 from tests.graph.test_max_iterations import _agent, _model
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
-from tests.graph.test_workspace_executor import _make_state_repo
+from tests.graph.test_workspace_executor import _RecordingHolder, _make_state_repo
 
 OBJ = {"type": "object"}
 
@@ -288,7 +290,7 @@ def _agent_graph() -> Graph:
     )
 
 
-async def _close_mid_run(tmp_path: Path):
+async def _close_mid_run(tmp_path: Path, **holder):
     """Start a workspace run whose agent node blocks, take events up to the node's first delta, then close the stream."""
     llm = _BlockingLLM()
 
@@ -301,7 +303,7 @@ async def _close_mid_run(tmp_path: Path):
     repo = await _make_state_repo(tmp_path)
     ex = WorkspaceGraphExecutor(
         graph=_agent_graph(), agent_resolver=agent_resolver, llm_resolver=llm_resolver,  # type: ignore[arg-type]
-        state_repo=repo, graph_session_id="gsid-close",
+        state_repo=repo, graph_session_id="gsid-close", **holder,
     )
     gen = ex.invoke([])
 
@@ -315,31 +317,51 @@ async def _close_mid_run(tmp_path: Path):
     return ex, llm
 
 
-async def _close_mid_run(tmp_path: Path):
-    """Run begin -> a (blocks after one delta) on a WorkspaceGraphExecutor and close its invoke at that delta."""
-    llm = _BlockingLLM()
-
-    async def agent_resolver(agent_id):
-        return _agent(agent_id)
-
-    async def llm_resolver(agent):
-        return (llm, _model())
-
-    repo = await _make_state_repo(tmp_path)
-    ex = WorkspaceGraphExecutor(
-        graph=_agent_graph(), agent_resolver=agent_resolver, llm_resolver=llm_resolver,  # type: ignore[arg-type]
-        state_repo=repo, graph_session_id="gsid-close",
-    )
-    gen = ex.invoke([])
-    async for ev in gen:
-        if getattr(getattr(ev, "extended", None), "inner_type", None) == "text_delta":
-            break
-    await gen.aclose()
-    return ex, llm
-
-
 @pytest.mark.asyncio
 async def test_closing_the_workspace_invoke_closes_the_run_at_once(tmp_path: Path):
     _, llm = await _close_mid_run(tmp_path)
 
     assert llm.cancelled, "the node task was not cancelled by aclose"
+
+
+@pytest.mark.asyncio
+async def test_a_closed_run_is_saved_ended_cancelled(tmp_path: Path):
+    ex, _ = await _close_mid_run(tmp_path)
+
+    st = await ex.load_state()
+    assert (st["status"], st["ended_reason"]) == ("ended", "cancelled")
+
+
+@pytest.mark.asyncio
+async def test_a_closed_run_leaves_the_session_holder_to_the_sessions_cancel_exit(tmp_path: Path):
+    holder = _RecordingHolder()
+    await _close_mid_run(tmp_path, workspace_session=holder, owns_session_lifecycle=True)
+
+    assert holder.status_calls == [], "a Stop rests the session WAITING; the graph's cancelled save must not end its holder"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_is_saved_ended_cancelled():
+    started = asyncio.Event()
+
+    async def dispatcher(node, arguments):
+        started.set()
+        await asyncio.Event().wait()
+
+    graph = _gated_graph()
+    threads, msgs = _InMemoryStorage(GraphThread), _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(graph=graph, thread_storage=threads)  # type: ignore[arg-type]
+    ex = _executor(graph, threads, msgs, thread.id, dispatcher=dispatcher)
+
+    async def consume():
+        async for _ in ex.invoke([]):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(started.wait(), timeout=10)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    t = await threads.get(thread.id)
+    assert (t.status, t.ended_reason) == (SessionStatus.ENDED, "cancelled")

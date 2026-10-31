@@ -1381,14 +1381,18 @@ class _BaseGraphExecutor(
         )
 
         # aclosing: a consumer that closes this generator cancels the node tasks NOW, in the closing task, not whenever the loop's finalizer gets scheduled.
-        async with contextlib.aclosing(self._run_superstep_loop(
-            context=context,
-            node_states=node_states,
-            ended_reason_in=self._pending_ended_reason,
-            ended_detail_in=self._pending_ended_detail,
-        )) as steps:
-            async for ev in steps:
-                yield ev
+        try:
+            async with contextlib.aclosing(self._run_superstep_loop(
+                context=context,
+                node_states=node_states,
+                ended_reason_in=self._pending_ended_reason,
+                ended_detail_in=self._pending_ended_detail,
+            )) as steps:
+                async for ev in steps:
+                    yield ev
+        except (GeneratorExit, asyncio.CancelledError):
+            await self._save_cancelled(context, node_states)
+            raise
 
     # ---- Subclass hooks --------------------------------------------------
 
@@ -1472,6 +1476,22 @@ class _BaseGraphExecutor(
                 extensions={"ended_detail": ended_detail},
             ))
         await _safe_graph_turn_log(w, event)
+
+    async def _save_cancelled(
+        self,
+        context: GraphContext,
+        node_states: dict[str, NodeRuntimeState],
+    ) -> None:
+        """A run closed or cancelled mid-flight is saved ENDED/cancelled, not left RUNNING (AG-L11c). Best effort: the close or cancel goes on regardless."""
+        try:
+            await self._save_state(
+                iteration=context.iteration,
+                node_states=node_states,
+                status=SessionStatus.ENDED,
+                ended_reason="cancelled",
+            )
+        except Exception:  # noqa: BLE001 -- must not mask the close or the cancel it runs for
+            logger.warning("GraphExecutor: could not save the cancelled run", extra={"graph_id": self._graph.id}, exc_info=True)
 
     async def _fold_successors_before_park(
         self,
@@ -1844,14 +1864,18 @@ class _BaseGraphExecutor(
         self._ready_set = ready
         self._node_states = node_states
 
-        async with contextlib.aclosing(self._run_superstep_loop(
-            context=context,
-            node_states=node_states,
-            ended_reason_in=self._pending_ended_reason,
-            ended_detail_in=self._pending_ended_detail,
-        )) as steps:
-            async for ev in steps:
-                yield ev
+        try:
+            async with contextlib.aclosing(self._run_superstep_loop(
+                context=context,
+                node_states=node_states,
+                ended_reason_in=self._pending_ended_reason,
+                ended_detail_in=self._pending_ended_detail,
+            )) as steps:
+                async for ev in steps:
+                    yield ev
+        except (GeneratorExit, asyncio.CancelledError):
+            await self._save_cancelled(context, node_states)
+            raise
 
     async def _run_superstep_loop(
         self,

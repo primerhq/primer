@@ -721,6 +721,7 @@ provider_registry: Any | None = None,
         # graph's terminal commit.
         if (
             status == SessionStatus.ENDED
+            and ended_reason != "cancelled"  # a closed or cancelled run (AG-L11c): the session's own cancel exit decides the session's status (a Stop rests it WAITING)
             and self._owns_session_lifecycle
             and self._workspace_session is not None
         ):
