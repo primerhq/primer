@@ -30,13 +30,12 @@ from uuid import uuid4
 
 from pydantic import SecretStr
 
-from primer.access.service import rewrite_keeping_access
 from primer.access.person import person_for_tool
 from primer.access.policy import level_of, visible_predicate
 from primer.model.access import Access
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
-from primer.model.common import refuse_served_masks
+from primer.model.common import dump_for_storage, refuse_served_masks
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.harness.enqueue import announce_enqueued
@@ -427,6 +426,27 @@ def _refuse_while_pending(harness: Harness, what: str) -> ToolCallResult | None:
     )
 
 
+async def _write_fields(
+    storage: Any, harness: Harness, changes: dict[str, Any], *, fenced: tuple[str, ...] = ("pending_operation",),
+) -> Harness | None:
+    """Write ``changes`` (field name to new value) alone, iff the ``fenced`` fields still hold what ``harness`` read (AG-L5).
+
+    Every caller refused a pending operation on its read. A whole-row write from that read put ``pending_operation`` back over one
+    enqueued in between (its lease left on a row the worker never runs) and undid any other field written meanwhile. ``None``: the
+    fence was refused, nothing was written.
+    """
+    read, dumped = dump_for_storage(harness), dump_for_storage(harness.model_copy(update=changes))
+    return await storage.patch_if(harness.id, {f: dumped[f] for f in changes}, where={f: [read[f]] for f in fenced})
+
+
+def _changed_meanwhile(harness_id: str) -> ToolCallResult:
+    return _err(
+        f"Harness {harness_id!r} changed while this call ran (an operation was enqueued, or its overrides changed); nothing was "
+        "changed, retry",
+        error_type="conflict",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Handler factories
 # ---------------------------------------------------------------------------
@@ -560,8 +580,6 @@ def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
         if refusal is not None:
             return refusal
 
-        overrides_dirty = harness.overrides_dirty
-
         name: str | None = arguments.get("name")
         description: str | None = arguments.get("description")
         ref: str | None = arguments.get("ref")
@@ -573,22 +591,26 @@ def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
                 validate_git_ref(ref)
             except ValueError as exc:
                 return _err(str(exc), error_type="validation-error")
+        changes: dict[str, Any] = {"overrides_dirty": harness.overrides_dirty}
         # This tool cannot move git_url, so only the token half of the REST rule applies: the served mask means "unchanged".
-        apply_git_token_update(harness, git_url_set=False, git_url=None, git_token=git_token_raw)
+        edited = harness.model_copy()
+        apply_git_token_update(edited, git_url_set=False, git_url=None, git_token=git_token_raw)
+        if edited.git_token is not harness.git_token:
+            changes["git_token"] = edited.git_token
 
         if name is not None:
-            harness.name = name
+            changes["name"] = name
         if description is not None:
-            harness.description = description
+            changes["description"] = description
         if ref is not None and ref != harness.ref:
-            harness.ref = ref
-            overrides_dirty = True
+            changes.update(ref=ref, overrides_dirty=True)
         if subpath is not None and subpath != harness.subpath:
-            harness.subpath = subpath
-            overrides_dirty = True
+            changes.update(subpath=subpath, overrides_dirty=True)
 
-        harness.overrides_dirty = overrides_dirty
-        updated = await rewrite_keeping_access(storage, harness, what="Harness")
+        # overrides_dirty is written as read (or True), so it is fenced too: an overrides change in between is not undone.
+        updated = await _write_fields(storage, harness, changes, fenced=("pending_operation", "overrides_dirty"))
+        if updated is None:
+            return _changed_meanwhile(harness_id)
         return _ok(_harness_dict(updated))
 
     return _handler
@@ -629,18 +651,18 @@ def _make_update_overrides_handler(storage_provider: "StorageProvider") -> ToolH
                 error_type="overrides-invalid",
             )
 
-        harness.overrides = overrides_body
-        harness.overrides_hash = hash_overrides(overrides_body)
+        overrides_hash = hash_overrides(overrides_body)
 
         # Recompute overrides_dirty against the HarnessRendering snapshot
         rendering_storage = storage_provider.get_storage(HarnessRendering)
         rendering = await rendering_storage.get(harness_id)
-        if rendering is not None:
-            harness.overrides_dirty = harness.overrides_hash != rendering.overrides_hash
-        else:
-            harness.overrides_dirty = False
+        overrides_dirty = rendering is not None and overrides_hash != rendering.overrides_hash
 
-        updated = await rewrite_keeping_access(storage, harness, what="Harness")
+        updated = await _write_fields(
+            storage, harness, {"overrides": overrides_body, "overrides_hash": overrides_hash, "overrides_dirty": overrides_dirty},
+        )
+        if updated is None:
+            return _changed_meanwhile(harness_id)
         return _ok(_harness_dict(updated))
 
     return _handler
@@ -674,13 +696,15 @@ def _make_enqueue_handler(
                 error_type="conflict",
             )
 
-        harness.pending_operation = operation
+        changes: dict[str, Any] = {"pending_operation": operation}
         if operation == HarnessOperation.UNINSTALL:
             # As the delete route's default: an inbound harness removes the objects it installed, an outbound one keeps
             # the objects it merely tracks. The model default (False) would leave everything an agent's uninstall
             # was meant to remove.
-            harness.uninstall_cascade = harness.direction == HarnessDirection.INBOUND
-        updated = await rewrite_keeping_access(storage, harness, what="Harness")
+            changes["uninstall_cascade"] = harness.direction == HarnessDirection.INBOUND
+        updated = await _write_fields(storage, harness, changes)
+        if updated is None:
+            return _changed_meanwhile(harness_id)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 
@@ -747,10 +771,13 @@ def _make_install_handler(
         if refusal is not None:
             return refusal
 
-        harness.pending_operation = HarnessOperation.INSTALL
-        harness.operation_requested_by = _requester(ctx)
-        harness.operation_inputs = operation_input_digests(harness)
-        updated = await rewrite_keeping_access(storage, harness, what="Harness")
+        updated = await _write_fields(storage, harness, {
+            "pending_operation": HarnessOperation.INSTALL,
+            "operation_requested_by": _requester(ctx),
+            "operation_inputs": operation_input_digests(harness),
+        })
+        if updated is None:
+            return _changed_meanwhile(harness_id)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 
@@ -797,10 +824,13 @@ def _make_sync_handler(
         if refusal is not None:
             return refusal
 
-        harness.pending_operation = HarnessOperation.SYNC
-        harness.operation_requested_by = _requester(ctx)
-        harness.operation_inputs = operation_input_digests(harness)
-        updated = await rewrite_keeping_access(storage, harness, what="Harness")
+        updated = await _write_fields(storage, harness, {
+            "pending_operation": HarnessOperation.SYNC,
+            "operation_requested_by": _requester(ctx),
+            "operation_inputs": operation_input_digests(harness),
+        })
+        if updated is None:
+            return _changed_meanwhile(harness_id)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 

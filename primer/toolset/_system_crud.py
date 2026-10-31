@@ -45,7 +45,7 @@ from primer.model.provider import Toolset
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import ok as _ok
 from primer.model.collection import Collection, Document
-from primer.model.common import Identifiable, preserve_masked_secrets, refuse_served_masks
+from primer.model.common import Identifiable, dump_for_storage, preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import (
     AccessDeniedError,
     AuthRequiredError,
@@ -2326,11 +2326,25 @@ def _document_write_tools(
                 "harness_id is set by the harness that manages a document and cannot be changed here",
                 error_type="bad-request",
             )
-        updated = existing.model_copy(update={"title": entity.title, "meta": entity.meta, "updated_at": datetime.now(UTC)})
+        # The changed fields alone, fenced on the place in the tree just checked (AG-L5): a whole-row write from this read undid a
+        # move_document that landed in between.
+        read = dump_for_storage(existing)
+        changed = dump_for_storage(
+            existing.model_copy(update={"title": entity.title, "meta": entity.meta, "updated_at": datetime.now(UTC)}),
+        )
         try:
-            updated = await docs.update(updated)
+            updated = await docs.patch_if(
+                entity_id, {f: changed[f] for f in ("title", "meta", "updated_at")},
+                where={f: [read[f]] for f in ("path", "slug", "parent_id", "collection_id", "harness_id")},
+            )
         except PrimerError as exc:
             return _document_error(exc)
+        if updated is None:
+            return _err(
+                f"Document {entity_id!r} was moved (or taken over by a harness) while it was being updated; nothing was "
+                "changed, retry",
+                error_type="conflict",
+            )
         return _ok(updated)
 
     out["update_document"] = (
