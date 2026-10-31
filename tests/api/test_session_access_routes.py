@@ -242,7 +242,7 @@ async def test_graph_run_reads_follow_the_session_workspace(world, app, client, 
     for tail in ("turn_log", "node_states"):
         refused = await cast.mallory.get(f"/v1/graphs/g-1/runs/ses-g/{tail}")
         assert refused.status_code == 404, (tail, refused.text)
-        assert refused.json()["detail"] == "Session 'ses-g' does not exist", refused.text
+        assert refused.json()["detail"] == "Graph run 'ses-g' does not exist", refused.text
         served = await cast.erin.get(f"/v1/graphs/g-1/runs/ses-g/{tail}")
         assert served.status_code == 200, (tail, served.text)
 
@@ -492,3 +492,58 @@ async def test_an_admin_still_clears_the_gates(world, app, client, cast, which):
     else:
         r = await client.get(f"/v1/sessions/{SID}")
     assert r.status_code == 200, r.text
+
+
+# ===========================================================================
+# Final access review F12: a hidden row answers byte-for-byte like a missing one on every door
+# ===========================================================================
+
+
+def _norm(resp: httpx.Response, *ids: str) -> tuple[int, str]:
+    """Status and body with the per-request fields dropped and the probed ids replaced, so a hidden and an unknown id compare equal."""
+    import json
+
+    body = resp.json()
+    body.pop("instance", None)
+    if isinstance(body.get("extensions"), dict):
+        body["extensions"].pop("request_id", None)
+    text = json.dumps(body, sort_keys=True)
+    for i in ids:
+        text = text.replace(i, "<ID>")
+    return resp.status_code, text
+
+
+async def test_four_more_doors_answer_a_hidden_row_like_an_unknown_one(world, app, client, cast):
+    from primer.model.workspace_session import PendingSessionMessage  # noqa: F401  (the dismiss reads it)
+
+    sp = app.state.storage_provider
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.carol_id], grants={}))  # carol's private ws-1
+    await sp.get_storage(Graph).create(Graph(id="g-pub", description="g", access=Access(owners=[cast.carol_id], public=True)))
+    await sp.get_storage(WorkspaceSession).create(_parked_row(SID, by=None, tool="_approval", metadata={}))
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="run-1", workspace_id=WS, binding=GraphSessionBinding(graph_id="g-pub"), status=SessionStatus.WAITING, turn_no=1, created_at=NOW,
+    ))
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.mallory_id], grants={}).model_copy(update={"id": "ws-m"}))
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="ses-m", workspace_id="ws-m", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.WAITING, turn_no=1,
+        created_at=NOW,
+    ))
+    m = cast.mallory
+    approve = {"tool_call_id": HUMAN_TC, "decision": "approved"}
+    pairs = {
+        "tool_approval/respond": (
+            await m.post(f"/v1/sessions/{SID}/tool_approval/respond", json=approve),
+            await m.post("/v1/sessions/ses-zzzz/tool_approval/respond", json=approve), SID, "ses-zzzz"),
+        "pending DELETE": (
+            await m.delete(f"/v1/workspaces/{WS}/sessions/{SID}/pending_messages/p1"),
+            await m.delete(f"/v1/workspaces/{WS}/sessions/ses-zzzz/pending_messages/p1"), SID, "ses-zzzz"),
+        "session PATCH": (
+            await m.patch(f"/v1/workspaces/{WS}/sessions/ses-m", json={"name": "x"}),
+            await m.patch("/v1/workspaces/ws-zz/sessions/ses-m", json={"name": "x"}), WS, "ws-zz"),
+    }
+    for tail in ("turn_log", "node_states", "nodes/n1/turn_log"):
+        pairs[f"graph run {tail}"] = (
+            await m.get(f"/v1/graphs/g-pub/runs/run-1/{tail}"), await m.get(f"/v1/graphs/g-pub/runs/run-zz/{tail}"), "run-1", "run-zz")
+
+    seen = {door: (_norm(hidden, hid, uid), _norm(unknown, hid, uid)) for door, (hidden, unknown, hid, uid) in pairs.items()}
+    assert {door: pair for door, pair in seen.items() if pair[0][0] != 404 or pair[0] != pair[1]} == {}

@@ -1612,8 +1612,14 @@ async def rename_session(
 
     Access (P2 Task 3): a rename is a full act in the session's workspace.
     """
-    # The gate decides first: a stranger answers the session's missing-row text.
-    await _require_session(request, session_id, AccessLevel.FULL)
+    # The gate decides first: a stranger answers the session's missing-row text. The path workspace must be the session's own before
+    # it is resolved, so a hidden workspace id reads like an unknown one (final access review F12).
+    row = await _require_session(request, session_id, AccessLevel.FULL)
+    if row.workspace_id != workspace_id:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
     ws = await registry.get_workspace(workspace_id)
     session = await ws.get_session(session_id)
     if session is None:
@@ -2777,16 +2783,15 @@ async def dismiss_pending_message(
     """
     from primer.model.workspace_session import PendingSessionMessage
 
-    sessions = storage_provider.get_storage(WorkspaceSession)
-    row = await sessions.get(session_id)
-    if row is None or row.workspace_id != workspace_id:
+    # Access (P2 Task 3): a dismiss drops a queued steer the session's next
+    # turn would run: full on the session's workspace (it inherits its access).
+    # The gate decides first, so a hidden session reads like an unknown one (final access review F12).
+    row = await _require_session(request, session_id, AccessLevel.FULL)
+    if row.workspace_id != workspace_id:
         raise NotFoundError(
             f"Session {session_id!r} does not exist on workspace "
             f"{workspace_id!r}"
         )
-    # Access (P2 Task 3): a dismiss drops a queued steer the session's next
-    # turn would run: full on the session's workspace (it inherits its access).
-    await _require_session(request, session_id, AccessLevel.FULL)
     storage = storage_provider.get_storage(PendingSessionMessage)
     pending = await storage.get(pending_id)
     if pending is None or pending.session_id != session_id:
