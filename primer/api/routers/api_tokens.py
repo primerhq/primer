@@ -295,6 +295,12 @@ async def revoke_api_token(
 # ---------------------------------------------------------------------------
 
 
+async def rename_token_row(storage, row: ApiToken, new_name: str) -> ApiToken | None:
+    """Write the token's ``name`` and nothing else (a whole-row write of the row read earlier would undo a revoke that landed since);
+    ``None`` when the token is gone."""
+    return await storage.patch_if(row.id, {"name": new_name}, where={"user_id": [row.user_id]})
+
+
 @api_tokens_router.put(
     "/{token_id}",
     response_model=ApiTokenSummary,
@@ -343,8 +349,12 @@ async def rename_api_token(
                 },
             )
 
-    updated = row.model_copy(update={"name": new_name})
-    saved = await storage.update(updated)
+    saved = await rename_token_row(storage, row, new_name)
+    if saved is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "token_not_found", "message": f"api token {token_id!r} does not exist"},
+        )
     return to_summary(saved)
 
 
