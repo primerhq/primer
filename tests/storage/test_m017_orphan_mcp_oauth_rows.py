@@ -3,7 +3,7 @@
 The system ``delete_toolset`` tool and the harness uninstall and sync used to delete a toolset and keep its token row, its registered client and its
 pending sign-ins, so a toolset created again under the same id came back connected on the old tokens. The step deletes every such row whose toolset
 no longer exists and never touches one whose toolset does. Run on real SQLite storage through ``run_migrations``, the way a boot runs it, on the chain
-as it stood before migration 27, which reshapes the same tables (per-person token rows, pending sign-ins dropped) and has its own tests.
+as it stood before migration 29, which reshapes the same tables (per-person token rows, pending sign-ins dropped) and has its own tests.
 """
 
 from __future__ import annotations
@@ -30,12 +30,12 @@ from primer.toolset.oauth.store import McpOAuthStore, pending_key
 NOW = datetime(2026, 10, 24, 12, 0, 0, tzinfo=UTC)
 KEY = "m017-test-key-0123456789"
 _OAUTH_MODELS = (McpOAuthTokenSet, McpOAuthClient, McpOAuthPendingSignIn)
-#: The last step of the chain these tests boot through (the one before m027).
-LATEST_VERSION = 26
+#: The last step of the chain these tests boot through (the one before m029).
+LATEST_VERSION = 28
 
 
 @pytest.fixture(autouse=True)
-def _chain_before_m027(monkeypatch):
+def _chain_before_m029(monkeypatch):
     monkeypatch.setattr(migrations, "MIGRATIONS", MIGRATIONS[:LATEST_VERSION])
     monkeypatch.setattr(migrations, "LATEST_VERSION", LATEST_VERSION)
 

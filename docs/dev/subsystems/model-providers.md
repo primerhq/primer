@@ -638,7 +638,7 @@ Model profiles and the LLM, embedding, cross-encoder, vector store, workspace an
 infrastructure: each row carries an `access` block (`Grantable`) of use grants (no owners, every grant `read`, plus
 `public`). Creating, editing and deleting stays admin-only and an edit never resets the grant; a new row is private, rows the
 platform writes (bootstrap, the default profile the seeded agents run on) and every row that existed before access control
-(migration 26) are public. An admin shares a row with `PUT /v1/{plural}/{id}/access` or `system__set_entity_access`
+(migration 28) are public. An admin shares a row with `PUT /v1/{plural}/{id}/access` or `system__set_entity_access`
 (`use_only`); a non-admin who may use it reads only `your_level` and `public`. The profile choices list is filtered to
 the rows the person may use.
 

@@ -111,6 +111,19 @@ function ToolsetsPage({ pushToast }) {
     return arr;
   }, [items, textFilter, kindFilter]);
 
+  // ACL-P6-T3: the marker's viewer + the looked-up owner names (one batched
+  // lookup for the page).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(() => {
+    const out = [];
+    items.forEach((t) => {
+      ((t.access && t.access.owners) || []).forEach((o) => { if (out.indexOf(o) < 0) out.push(o); });
+    });
+    return out;
+  }, [items]);
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="filter-bar">
@@ -216,16 +229,7 @@ function ToolsetsPage({ pushToast }) {
                 <tr key={t.id} onClick={() => navigate("/toolsets/" + t.id)} style={{ cursor: "pointer" }}>
                   <td className="mono">
                     {t.id}
-                    {SHR_accessBadges(t.access).map((b) => (
-                      <span
-                        key={b}
-                        className="pill pill-ended"
-                        data-testid={"toolset-access-badge-" + b}
-                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
-                      >
-                        <span className="dot"></span>{b}
-                      </span>
-                    ))}
+                    <SHR_AccessMarkers access={t.access} me={meId} names={ownerNames} />
                   </td>
                   <td>
                     <span className="pill" style={{ color: kindColor, borderColor: "var(--border)", background: "var(--bg-2)" }}>
@@ -963,6 +967,16 @@ function ToolsetDetail({ toolsetId, pushToast }) {
   // names for the per-tool public switches ride the same key TS_ToolsTab reads,
   // so an open Tools tab shares its cache entry instead of refetching.
   const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
+
+  // ACL-P6-T3: the marker row of the detail header (the toolset's own access).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(
+    () => ((detail.data && detail.data.access && detail.data.access.owners) || []),
+    [detail.data]
+  );
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   const tsTools = useResource(
     "toolset-tools:" + id,
     (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(id) + "/tools", null, { signal }),
@@ -1051,6 +1065,11 @@ function ToolsetDetail({ toolsetId, pushToast }) {
         onOpenHarness={() => navigate("/harnesses/" + encodeURIComponent(ts.harness_id))}
         onShare={() => setShareOpen(true)}
       />
+      {ts?.access && (
+        <div data-testid="toolset-access-markers">
+          <SHR_AccessMarkers access={ts.access} me={meId} names={ownerNames} />
+        </div>
+      )}
 
       <div className="panel">
         <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>

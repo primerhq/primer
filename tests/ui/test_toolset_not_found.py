@@ -31,6 +31,9 @@ globalThis.FormField = function (props) { return React.createElement("div", null
 globalThis.Banner = function (props) { return React.createElement("div", { "data-testid": "banner" }, props.title, props.detail, props.actions); };
 window.primerApi = {
   useResource: function (key) {
+    // A null key is an idle read (the real use-resource.js: enabled = cacheKey != null) -
+    // the marker's name lookup passes one when there is nothing to look up.
+    if (key == null) return { loading: false, data: null, error: null, refetch: function () {} };
     return key.indexOf("toolset-detail:") === 0 ? __detail : { loading: false, data: null, error: null, refetch: function () {} };
   },
   useMutation: function () { return { loading: false, mutate: function () { return Promise.resolve(); } }; },

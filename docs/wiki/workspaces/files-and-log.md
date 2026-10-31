@@ -10,7 +10,7 @@ Six `workspaces__*` tools reach a workspace's files from outside its sessions: y
 
 ## Concepts
 - Every call takes a `workspace_id`. Inside a session, prefer the [in-session file tools](workspaces/in-session-file-tools): they are bound to your own workspace, page large files and track what you have read.
-- The reach rule: from a session outside prime you reach only your own workspace, and any other id answers `not-found`, exactly like one that does not exist. From prime, or with no calling session, you reach every workspace.
+- The access rule: the tools act with your person's access, wherever your session runs. Reading files and the log needs `read` on the workspace; writing and deleting need `full`. A workspace you hold no access to answers `not-found`, exactly like one that does not exist, and too low a level answers `forbidden`.
 - `workspaces__list_workspace_files` lists `path` (the root by default), one level or the whole tree with `recursive: true`, in pages of `limit` (200 by default, 2000 at most) from `offset`. Each item is a file entry: `path`, `kind` (`file`, `dir` or `symlink`), `size_bytes` and `modified_at`. On a very large tree the walk is capped: the answer then carries `truncated: true` and a `note`, and `total` is a lower bound, not the true size.
 - `workspaces__get_workspace_file_info` answers one path's file entry.
 - `workspaces__read_workspace_file` answers `{path, encoding, content, size_bytes}`. `encoding` is `text` (UTF-8, the default) or `base64` (for binary files). A file that is not valid UTF-8 read as `text` is a `bad-request` that tells you to ask for `base64`.

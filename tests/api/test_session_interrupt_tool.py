@@ -235,9 +235,9 @@ async def test_a_session_can_stop_itself_the_tool_does_not_special_case_the_call
 
 
 async def test_the_route_and_the_tool_call_the_one_shared_helper(client, toolset, fake_storage_provider, monkeypatch):
-    """One implementation, not two: both surfaces reach ``session_factory.interrupt_session`` (imported at call time, as Cancel's). The route
-    carries the rank rule into the helper as its guard (ticket 01a16d3c-a8bc); the tool's refusal is its own access check (the caller's person's
-    full on the workspace, asked before the row, access-control P2 T6), so it passes no guard."""
+    """One implementation, not two: both surfaces reach ``session_factory.interrupt_session`` (imported at call time, as Cancel's). The route's
+    refusal is the workspace access gate (P2 Task 3) and the tool's is its own access check (the caller's person's full on the workspace, asked
+    before the row, access-control P2 T6), so neither passes a guard to the helper (ticket 01a16d3c-a8bc)."""
     import primer.workspace.session_factory as session_factory
 
     await _seed(fake_storage_provider, sid="s-one", status=SessionStatus.RUNNING)
@@ -253,4 +253,4 @@ async def test_the_route_and_the_tool_call_the_one_shared_helper(client, toolset
     await _stop("route", client, toolset, "s-one")
     await _stop("tool", client, toolset, "s-one")
 
-    assert calls == [(WID, "s-one", True), (WID, "s-one", False)]
+    assert calls == [(WID, "s-one", False), (WID, "s-one", False)]

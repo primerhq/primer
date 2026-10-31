@@ -13,7 +13,7 @@ is no longer the rule):
   subscription records) and logged, and starts and feeds no session. That covers a grant revoked after the save, and a parked or appended-to
   session that moved since the row was saved.
 
-A save with no identity (``owner`` ``None``) checks nothing at save time, but such a row never fires: migration 24 gave every subscription
+A save with no identity (``owner`` ``None``) checks nothing at save time, but such a row never fires: migration 26 gave every subscription
 saved before owners were recorded its trigger's owner, so a fire of a subscription with no owner is refused (fail closed, access-control P3
 Task 4).
 
@@ -169,7 +169,7 @@ async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> 
     (:func:`_refuse_lost_trigger_access`).
 
     The owner recorded on the row (``sub.owner``) must hold full on the target's workspace: the config's ``workspace_id`` for a fresh session,
-    the target session's workspace for ``session_append`` and ``parked_session``. A row with no owner is refused (fail closed: migration 24 gave
+    the target session's workspace for ``session_append`` and ``parked_session``. A row with no owner is refused (fail closed: migration 26 gave
     every legacy row its trigger's owner, so nobody could be checked), and a target session that no longer exists is not refused here: there is
     nothing to start or feed, and the dispatcher reports the missing session in its own words. A kind with no rule is refused (fail closed). The reason is stored on the subscription
     (``last_fire_error``), read by whoever may read the row.

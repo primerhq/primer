@@ -225,6 +225,7 @@ class ChannelInbox:
         return {
             "gate": gate,
             "agent_id": getattr(row.binding, "agent_id", None),
+            "workspace_id": row.workspace_id,
             "parked_at": getattr(row, "parked_at", None),
         }
 
@@ -353,6 +354,7 @@ class ChannelInbox:
                 reason=reason,
                 agent_id=captured["agent_id"],
                 session_id=env.session_id,
+                workspace_id=captured["workspace_id"],
                 requested_at=captured["parked_at"],
                 gate_event_key=gate.get("event_key") or event_key,
             )

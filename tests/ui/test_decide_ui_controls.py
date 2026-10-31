@@ -1,9 +1,9 @@
-"""Human-input controls mirror the server's session-creator rank floor.
+"""Human-input controls mirror the server's gate on a person's input into a session (access-control P2).
 
-The server remains authoritative, but the console must not offer Approve,
-Reject, Answer, Skip, or Cancel yield when it already knows the viewer is
-outranked. Unknown data fails open so a loading or failed read does not invent
-an authorization decision in the browser.
+Answering a question, deciding an approval and cancelling a yield need full access on the session's workspace on the server
+(``require_session`` FULL, with an approval's approver spec on top); the session's creator and its rank no longer decide. The
+console must not offer Approve, Reject, Answer, Skip or Cancel yield when it already knows the viewer holds only read, and an
+unknown level fails open so a loading or failed read does not invent an authorization decision in the browser.
 """
 
 from __future__ import annotations
@@ -70,73 +70,61 @@ def attention():
         ctx.close()
 
 
-def test_the_rank_helper_matches_admin_user_own_unknown_and_token_cases(attention) -> None:
+WORDS = "You need full access to this workspace to decide this."
+SYSTEM = {"type": "system", "id": "system", "display": "system", "role": None, "source": "internal"}
+
+
+def test_the_helper_decides_by_the_workspace_level_not_the_creator(attention) -> None:
     cases = [
-        (ADMIN, ADMIN_SESSION, True),
-        (USER, ADMIN_SESSION, False),
-        (USER, USER_SESSION, True),
-        ({**USER, "id": "user-alice"}, ADMIN_SESSION, False),
-        ({**USER, "id": "user-alice"}, {"initiated_by": {**ADMIN_SESSION["initiated_by"], "id": "user-alice"}}, True),
-        ({"type": "api_token", "id": "at-1", "display": "build", "role": "restricted"},
-         {"initiated_by": {"type": "api_token", "id": "at-1", "display": "build", "role": "admin", "source": "internal"}}, True),
-        ({"type": "api_token", "id": "at-2", "display": "build", "role": "user"}, ADMIN_SESSION, False),
-        ({"type": "system", "id": "system", "display": "system", "role": None}, ADMIN_SESSION, True),
-        ({**USER, "role": None}, ADMIN_SESSION, True),
-        (USER, None, True),
-        (USER, {"initiated_by": None}, True),
-        (USER, {"initiated_by": {"role": "admin"}}, True),
+        (USER, ADMIN_SESSION, "full", True),   # an admin started it: the creator no longer outranks a full-access peer
+        (USER, USER_SESSION, "owner", True),
+        (USER, USER_SESSION, "read", False),
+        (USER, USER_SESSION, None, False),     # no level at all
+        (USER, ADMIN_SESSION, "__unknown__", True),  # the level has not loaded: fail open
+        (ADMIN, USER_SESSION, "read", True),   # admins always may
+        (SYSTEM, USER_SESSION, None, True),
+        (None, USER_SESSION, "read", True),    # no viewer: fail open
     ]
-    for viewer, session, expected in cases:
-        got = _js(attention, f"SH_mayDecideFor({json.dumps(viewer)}, {json.dumps(session)})")
-        assert got is expected, (viewer, session, got)
-
-    assert _js(attention, f"SH_rankDecisionWords({json.dumps(ADMIN_SESSION)})") == "Only an admin can decide this."
-    assert _js(attention, f"SH_rankDecisionWords({json.dumps(USER_SESSION)})") == "Only a user or admin can decide this."
-
-
-def test_a_session_with_no_recorded_creator_ranks_as_a_user(attention) -> None:
-    """A loaded row carries ``initiated_by: null`` and the server ranks its runs as an ordinary user (``principal_rank(None)``), so a
-    restricted viewer is outranked and a user or admin viewer is not. A row that has not loaded yet (no key at all, or no session) fails
-    open, as unknown data does."""
-    restricted = {
-        "type": "user",
-        "id": "user-restricted",
-        "display": "restricted",
-        "role": "restricted",
-        "source": "local",
-    }
-    admin = {
-        "type": "user",
-        "id": "user-admin-3",
-        "display": "admin",
-        "role": "admin",
-        "source": "local",
-    }
-    cases = [
-        (restricted, {"initiated_by": None}, False),
-        (USER, {"initiated_by": None}, True),
-        (admin, {"initiated_by": None}, True),
-        (restricted, {}, True),
-        (restricted, None, True),
-    ]
-    for viewer, session, expected in cases:
-        got = _js(attention, f"SH_mayDecideFor({json.dumps(viewer)}, {json.dumps(session)})")
-        assert got is expected, (viewer, session, got)
+    for viewer, session, level, expected in cases:
+        arg = "undefined" if level == "__unknown__" else json.dumps(level)
+        got = _js(attention, f"SH_mayDecideFor({json.dumps(viewer)}, {json.dumps(session)}, {arg})")
+        assert got is expected, (viewer, session, level)
+    assert _js(attention, f"SH_mayDecideFor({json.dumps(USER)}, null, 'read')") is True
+    assert _js(attention, "SH_accessDecisionWords()") == WORDS
 
 
-def test_an_unattributed_session_reads_the_user_floor(attention) -> None:
-    """A loaded row with no recorded creator (the key present with null) ranks as a user on the server (``principal_rank(None)``), so its
-    floor line reads the user words, as for a user-role creator. A row still loading (no key) and a system creator keep the admin wording."""
-    assert _js(attention, 'SH_rankDecisionWords({"initiated_by": null})') == "Only a user or admin can decide this."
-    assert _js(attention, "SH_rankDecisionWords({})") == "Only an admin can decide this."
-    assert _js(attention, 'SH_rankDecisionWords({"initiated_by": {"type": "system", "id": "system", "display": "system", "role": null}})') == "Only an admin can decide this."
+def test_the_level_of_a_workspace_row_mirrors_level_of(attention) -> None:
+    def level(viewer, access):
+        row = {"id": "ws-1"} if access is None else {"id": "ws-1", "access": access}
+        return _js(attention, f"SH_workspaceLevel({json.dumps(viewer)}, {json.dumps(row)}) || 'none'")
+
+    carol = {**USER, "user_id": "user-carol"}
+    assert level(carol, {"owners": ["user-carol"], "grants": {}}) == "owner"
+    assert level(carol, {"owners": ["u-x"], "grants": {"user-carol": "full"}}) == "full"
+    assert level(carol, {"owners": ["u-x"], "grants": {"user-carol": "read"}}) == "read"
+    assert level(carol, {"owners": ["u-x"], "grants": {}, "public": True}) == "read"
+    assert level({**carol, "role": "restricted"}, {"owners": ["u-x"], "grants": {}, "public": True}) == "none"
+    assert level(carol, {"owners": ["u-x"], "grants": {}}) == "none"
+    assert level(ADMIN, {"owners": ["u-x"], "grants": {}}) == "owner"
+    assert _js(attention, f"SH_workspaceLevel({json.dumps(carol)}, {{'id': 'ws-1'}}) === undefined") is True
+
+
+def test_the_helper_no_longer_reads_the_creator_or_a_rank() -> None:
+    start = ATTENTION.index("function SH_mayDecideFor")
+    body = ATTENTION[start:ATTENTION.index("\n}\n", start)]
+    assert "initiated_by" not in body and "RANK" not in body
+    assert "SH_ROLE_RANK" not in ATTENTION and "SH_rankDecisionWords" not in ATTENTION
+    doc = DOC.read_text(encoding="utf-8")
+    assert doc.count("SH_mayDecideFor(con.viewer, props.session, con.wsLevel || undefined)") == 2
+    assert "SH_mayDecideFor(who, it, level)" in MOBILE and "SH_mayDecideFor(viewer, it, level)" in MOBILE
 
 
 _CARD_PRELUDE = r"""
 var window = globalThis;
 var VIEWER = null;
+var LEVEL = null;
 function NV_useConsole() {
-  return { username: "carol", role: "user", viewer: VIEWER, toast: function () {} };
+  return { username: "carol", role: "user", viewer: VIEWER, wsLevel: LEVEL, toast: function () {} };
 }
 function SH_looksLikeDiff() { return false; }
 function SH_diffLineTone() { return "ctx"; }
@@ -148,9 +136,9 @@ var SH_api = {
 """
 
 
-def _card(component: str, item: dict, viewer: dict, session: dict):
+def _card(component: str, item: dict, viewer: dict, session: dict, level: str | None):
     ctx = mini_react_context(transpile(DOC), "var window = globalThis;\n" + ATTENTION + "\n" + _CARD_PRELUDE)
-    ctx.eval("VIEWER = " + json.dumps(viewer) + ";")
+    ctx.eval("VIEWER = " + json.dumps(viewer) + "; LEVEL = " + json.dumps(level) + ";")
     ctx.eval(
         f"MR.mount({component}, {{ item: {json.dumps(item)}, session: {json.dumps(session)}, ended: false, onResolved: function () {{}} }});"
     )
@@ -166,12 +154,12 @@ def _card(component: str, item: dict, viewer: dict, session: dict):
          ("nv-ask-submit", "nv-ask-answer"), "nv-ask-rank-note"),
     ],
 )
-def test_desktop_cards_hide_human_input_when_the_viewer_is_outranked(component, item, buttons, note) -> None:
-    ctx = _card(component, item, USER, ADMIN_SESSION)
+def test_desktop_cards_hide_human_input_from_a_reader(component, item, buttons, note) -> None:
+    ctx = _card(component, item, USER, USER_SESSION, "read")
     try:
         for testid in buttons:
             assert ctx.eval(f"MR.find({json.dumps(testid)}) === null") is True
-        assert ctx.eval(f"MR.find({json.dumps(note)}).props.children") == "Only an admin can decide this."
+        assert ctx.eval(f"MR.find({json.dumps(note)}).props.children") == WORDS
     finally:
         ctx.close()
 
@@ -183,8 +171,8 @@ def test_desktop_cards_hide_human_input_when_the_viewer_is_outranked(component, 
         ("NV_AskCard", {"toolCallId": "tc-1", "sessionId": "s-1", "title": "Continue?", "preview": "Continue?"}, "nv-ask-submit"),
     ],
 )
-def test_desktop_cards_keep_human_input_at_the_same_rank(component, item, button) -> None:
-    ctx = _card(component, item, USER, USER_SESSION)
+def test_desktop_cards_keep_human_input_at_full_whoever_started_it(component, item, button) -> None:
+    ctx = _card(component, item, USER, ADMIN_SESSION, "full")
     try:
         assert ctx.eval(f"MR.find({json.dumps(button)}) !== null") is True
     finally:
@@ -206,7 +194,7 @@ def _mobile_view_ctx():
     return ctx
 
 
-def test_mobile_inbox_hides_approve_and_deny_at_the_rank_floor() -> None:
+def test_mobile_inbox_hides_approve_and_deny_from_a_reader() -> None:
     row = {
         "kind": "approval",
         "tool_call_id": "tc-1",
@@ -215,19 +203,19 @@ def test_mobile_inbox_hides_approve_and_deny_at_the_rank_floor() -> None:
     }
     ctx = _mobile_view_ctx()
     try:
-        blocked = _js(ctx, f"NV_mobileInboxView({json.dumps(row)}, {json.dumps(USER)}, false)")
+        blocked = _js(ctx, f"NV_mobileInboxView({json.dumps({**row, **USER_SESSION})}, {json.dumps(USER)}, false, 'read')")
         assert blocked["canApprove"] is False and blocked["canDeny"] is False
         assert blocked["rankBlocked"] is True
-        assert blocked["note"] == "Only an admin can decide this."
+        assert blocked["note"] == WORDS
 
-        allowed = _js(ctx, f"NV_mobileInboxView({json.dumps({**row, **USER_SESSION})}, {json.dumps(USER)}, false)")
+        allowed = _js(ctx, f"NV_mobileInboxView({json.dumps(row)}, {json.dumps(USER)}, false, 'full')")
         assert allowed["canApprove"] is True and allowed["canDeny"] is True
         assert allowed["rankBlocked"] is False
     finally:
         ctx.close()
 
 
-def test_mobile_inbox_decision_function_refuses_an_outranked_viewer_before_the_request() -> None:
+def test_mobile_inbox_decision_function_refuses_a_reader_before_the_request() -> None:
     row = {
         "kind": "approval",
         "session_id": "s-1",
@@ -246,7 +234,7 @@ def test_mobile_inbox_decision_function_refuses_an_outranked_viewer_before_the_r
         ctx.eval(
             "NV_inboxDecide('approve', " + json.dumps(row)
             + ", toast, function () {}, " + json.dumps(USER)
-            + ").then(function (value) { RESULT = value; });"
+            + ", 'read').then(function (value) { RESULT = value; });"
         )
         assert ctx.eval("CALLS") == 0
         assert _js(ctx, "RESULT") == {"blocked": True}
@@ -254,27 +242,27 @@ def test_mobile_inbox_decision_function_refuses_an_outranked_viewer_before_the_r
         ctx.close()
 
 
-def _banner(viewer: dict, session: dict):
+def _banner(viewer: dict, session: dict, level: str | None):
     ctx = mini_react_context(_transpile_source(_banner_source(), "approval-banner.jsx"), _BANNER_STUBS + ATTENTION)
     data = {"tool_call_id": "tc-1", "tool_name": "write", "arguments": {}}
     ctx.eval(
         "MR.mount(ApprovalBanner, { data: " + json.dumps(data)
         + ", scope: 'sessions', id: 's-1', viewer: " + json.dumps(viewer)
-        + ", session: " + json.dumps(session) + " });"
+        + ", session: " + json.dumps(session) + ", level: " + json.dumps(level) + " });"
     )
     return ctx
 
 
-def test_legacy_approval_banner_hides_decisions_at_the_rank_floor() -> None:
-    ctx = _banner(USER, ADMIN_SESSION)
+def test_legacy_approval_banner_hides_decisions_from_a_reader() -> None:
+    ctx = _banner(USER, USER_SESSION, "read")
     try:
         assert ctx.eval("MR.find('approval-banner-approve') === null") is True
         assert ctx.eval("MR.find('approval-banner-reject') === null") is True
-        assert ctx.eval("MR.find('approval-banner-rank-note').props.children") == "Only an admin can decide this."
+        assert ctx.eval("MR.find('approval-banner-rank-note').props.children") == WORDS
     finally:
         ctx.close()
 
-    ctx = _banner(USER, USER_SESSION)
+    ctx = _banner(USER, ADMIN_SESSION, "full")
     try:
         assert ctx.eval("MR.find('approval-banner-approve') !== null") is True
         assert ctx.eval("MR.find('approval-banner-reject') !== null") is True
@@ -282,27 +270,27 @@ def test_legacy_approval_banner_hides_decisions_at_the_rank_floor() -> None:
         ctx.close()
 
 
-def _ask_panel(viewer: dict, session: dict):
+def _ask_panel(viewer: dict, session: dict, level: str | None):
     ctx = mini_react_context(_transpile_source(_panel_source(), "ask-user-panel.jsx"), _PANEL_STUBS + ATTENTION)
     pending = {"tool_call_id": "tc-1", "prompt": "Continue?", "response_schema": None}
     ctx.eval("PENDING.data = " + json.dumps(pending) + ";")
     ctx.eval(
         "MR.mount(AskUserPanel, { sid: 's-1', sessionStatus: 'waiting', pushToast: pushToast, viewer: "
-        + json.dumps(viewer) + ", session: " + json.dumps(session) + " });"
+        + json.dumps(viewer) + ", session: " + json.dumps(session) + ", level: " + json.dumps(level) + " });"
     )
     return ctx
 
 
-def test_legacy_question_panel_hides_answer_and_skip_at_the_rank_floor() -> None:
-    ctx = _ask_panel(USER, ADMIN_SESSION)
+def test_legacy_question_panel_hides_answer_and_skip_from_a_reader() -> None:
+    ctx = _ask_panel(USER, USER_SESSION, "read")
     try:
         for testid in ("ask-user-input", "ask-user-submit", "ask-user-skip"):
             assert ctx.eval(f"MR.find({json.dumps(testid)}) === null") is True
-        assert ctx.eval("MR.find('ask-user-rank-note').props.children") == "Only an admin can decide this."
+        assert ctx.eval("MR.find('ask-user-rank-note').props.children") == WORDS
     finally:
         ctx.close()
 
-    ctx = _ask_panel(USER, USER_SESSION)
+    ctx = _ask_panel(USER, ADMIN_SESSION, "full")
     try:
         assert ctx.eval("MR.find('ask-user-submit') !== null") is True
         assert ctx.eval("MR.find('ask-user-skip') !== null") is True
@@ -321,15 +309,15 @@ window.primerApi = {
 """
 
 
-def test_cancel_yield_hides_the_button_at_the_rank_floor() -> None:
+def test_cancel_yield_hides_the_button_from_a_reader() -> None:
     ctx = mini_react_context(_transpile_source(_cancel_yield_btn_source(), "cancel-yield-btn.jsx"), _CANCEL_STUBS + ATTENTION)
     try:
         ctx.eval(
             "MR.mount(CancelYieldBtn, { sid: 's-1', tcid: 'tc-1', toolName: 'sleep', viewer: "
-            + json.dumps(USER) + ", session: " + json.dumps(ADMIN_SESSION) + " });"
+            + json.dumps(USER) + ", session: " + json.dumps(USER_SESSION) + ", level: 'read' });"
         )
         assert ctx.eval("MR.find('cancel-yield') === null") is True
-        assert ctx.eval("MR.find('yield-rank-note').props.children") == "Only an admin can decide this."
+        assert ctx.eval("MR.find('yield-rank-note').props.children") == WORDS
     finally:
         ctx.close()
 
@@ -344,15 +332,15 @@ window.primerApi = {
 """
 
 
-def test_external_wait_hides_cancel_at_the_rank_floor() -> None:
+def test_external_wait_hides_cancel_from_a_reader() -> None:
     ctx = mini_react_context(transpile(EXTERNAL), _EXTERNAL_STUBS + ATTENTION)
     try:
         ctx.eval(
             "MR.mount(window.ExternalPendingBanner, { sessionId: 's-1', viewer: "
-            + json.dumps(USER) + ", session: " + json.dumps(ADMIN_SESSION) + " });"
+            + json.dumps(USER) + ", session: " + json.dumps(USER_SESSION) + ", level: 'read' });"
         )
         assert ctx.eval("MR.find('external-cancel') === null") is True
-        assert ctx.eval("MR.find('external-rank-note').props.children") == "Only an admin can decide this."
+        assert ctx.eval("MR.find('external-rank-note').props.children") == WORDS
     finally:
         ctx.close()
 
@@ -362,4 +350,5 @@ def test_shell_context_carries_the_principal_returned_by_auth_status() -> None:
 
 
 def test_legacy_wrappers_pass_the_viewer_and_session_to_the_controls() -> None:
-    assert "viewer={viewer} session={session}" in SESSION_DETAIL
+    assert "viewer={viewer} session={session} level={level}" in SESSION_DETAIL
+    assert "session={session} viewer={con.viewer} level={con.wsLevel || undefined}" in DOC.read_text(encoding="utf-8")

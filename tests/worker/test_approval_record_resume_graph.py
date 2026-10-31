@@ -128,6 +128,7 @@ def _mixed_agent_yields_checkpoint(session_id: str) -> dict:
 def _session(session_id: str) -> SimpleNamespace:
     return SimpleNamespace(
         id=session_id,
+        workspace_id="ws-1",
         binding=AgentSessionBinding(kind="agent", agent_id="agt-graph"),
         parked_at=datetime.now(timezone.utc) - timedelta(seconds=5),
     )

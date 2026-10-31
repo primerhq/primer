@@ -95,7 +95,7 @@ async def test_a_call_without_an_identity_records_no_owner(fake_storage_provider
 async def test_the_mcp_door_records_the_mcp_principal_as_owner(fake_storage_provider) -> None:
     """Ticket 01a16ee4: the MCP endpoint's own call (no ``ToolContext``) records the MCP person's actor, so what it saves fires at
     most at the person's rank. A call inside a delegated run (a subagent started over MCP, ``_RUN_ID`` set) is not the MCP person
-    and records no owner."""
+    holds none of the person's levels (it is unattributed, as the lead ruled on #927), so it cannot even see the person's trigger."""
     from primer.agent.invoke import _RUN_ID
     from primer.mcp.server import current_actor
     from primer.model.principal import Principal
@@ -110,7 +110,7 @@ async def test_the_mcp_door_records_the_mcp_principal_as_owner(fake_storage_prov
 
         assert _owner(await fake_storage_provider.get_storage(Trigger).get(tid)) == ("user", "u-mcp", "user")
 
-        # The delegated run acts with the MCP person's access (it owns the trigger) but records no run-as owner.
+        # The delegated run is not the MCP person: the trigger the person owns is unknown to it, and nothing changes.
         _RUN_ID.set("run-1")
         try:
             upd = await tools.call(tool_name="update", arguments={"id": tid, "name": "by a delegated run"}, ctx=None)
@@ -118,8 +118,9 @@ async def test_the_mcp_door_records_the_mcp_principal_as_owner(fake_storage_prov
             _RUN_ID.set(None)
     finally:
         current_actor.reset(token)
-    assert not upd.is_error, upd.output
-    assert (await fake_storage_provider.get_storage(Trigger).get(tid)).owner is None, "a delegated run is not the MCP person"
+    assert upd.is_error and json.loads(upd.output)["type"] == "trigger_not_found", upd.output
+    row = await fake_storage_provider.get_storage(Trigger).get(tid)
+    assert (row.name, _owner(row)) == (json.loads(created.output)["name"], ("user", "u-mcp", "user")), "a delegated run is not the MCP person"
 
 
 async def test_create_channel_binding_records_the_owner(fake_storage_provider) -> None:

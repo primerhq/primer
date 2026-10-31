@@ -8,7 +8,7 @@
 (function () {
   const { useResource, apiFetch } = window.primerApi;
 
-  function ExternalPendingBanner({ sessionId, chatId, session, viewer, pushToast, pollMs = 5000 }) {
+  function ExternalPendingBanner({ sessionId, chatId, session, viewer, level, pushToast, pollMs = 5000 }) {
     const owner = sessionId || chatId;
     const base = sessionId ? `/sessions/${sessionId}` : `/chats/${chatId}`;
     const res = useResource(
@@ -18,7 +18,7 @@
       { pollMs },
     );
     const items = (res.data && res.data.items) || [];
-    const mayDecide = !sessionId || !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session);
+    const mayDecide = !sessionId || !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session, level);
     if (!items.length) return null;
 
     async function cancel(tcid) {
@@ -98,7 +98,7 @@
         ))}
         {sessionId && !mayDecide ? (
           <div style={{ fontSize: 11, color: "var(--text-4)" }} data-testid="external-rank-note">
-            {window.SH_rankDecisionWords(session)}
+            {window.SH_accessDecisionWords()}
           </div>
         ) : null}
         <div style={{ fontSize: 11, color: "var(--text-4)" }}>

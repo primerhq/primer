@@ -54,7 +54,7 @@ async def _seed_user(sp, uid: str, role: str, *, disabled: bool = False) -> Prin
 async def _seed(sp, *, kind: str, target_id: str, trigger_owner, sub_owner) -> Subscription:
     """Write the trigger and subscription rows as stored documents; ``None`` owner = a row saved before owners were recorded."""
     now = datetime.now(timezone.utc).isoformat()
-    # Access as migration 24 leaves it: the trigger's owner owns it, and shared it full with the subscription's owner (subscribing needs
+    # Access as migration 26 leaves it: the trigger's owner owns it, and shared it full with the subscription's owner (subscribing needs
     # full on the trigger, access-control P3 Task 4), so the rank question these tests ask is the one that decides.
     access = (
         Access(owners=[trigger_owner.id], grants={sub_owner.id: "full"} if sub_owner is not None else {})
@@ -189,7 +189,7 @@ async def test_an_admin_owned_trigger_run_still_creates_a_stdio_toolset(fake_sto
 
 @both_kinds
 async def test_a_legacy_ownerless_trigger_run_is_refused(fake_storage_provider, deps, seeded_workspace, target):
-    """Since access-control P3 Task 4 an ownerless subscription (migration 24 gives every legacy one its trigger's owner) never fires:
+    """Since access-control P3 Task 4 an ownerless subscription (migration 26 gives every legacy one its trigger's owner) never fires:
     no session is made, so its run cannot reach an admin-only tool."""
     kind, target_id = target
     sub = await _seed(fake_storage_provider, kind=kind, target_id=target_id, trigger_owner=None, sub_owner=None)
@@ -424,7 +424,7 @@ async def test_a_capped_run_that_creates_a_channel_binding_stays_capped(
     await fake_storage_provider.get_storage(Trigger).create(Trigger(
         id="trg-ch-1", slug="ch-trigger", name="ch", created_at=datetime.now(timezone.utc),
         config=ChannelTriggerConfig(provider_id="cp-1", channel_id="chan-1"), owner=_ref("u-admin", "admin"),
-        # As migration 24 leaves it: the user behind the run-as owner owns it, so the capped run (that user, at user rank) may bind.
+        # As migration 26 leaves it: the user behind the run-as owner owns it, so the capped run (that user, at user rank) may bind.
         access=Access(owners=["u-admin"]),
     ))
     registry = ProviderRegistry(

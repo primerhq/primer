@@ -9,8 +9,8 @@ of not-yet-resolved ids (the route's one query over at most 200 ids, unknown
 ids absent), a module cache so an id resolved once is never fetched again for
 the page, and the id itself as the answer while it is loading or when it names
 no user. The fetch goes through ``SH_api`` (the one file that names a URL);
-this file proves it with the real source in MiniRacer and pins the one place
-the hook is wired in: the agents list's owner badge tooltip ("Owned by alice").
+this file proves it with the real source in MiniRacer and pins where the hook
+is wired in: the agents list's ownership markers (ACL-P6-T3).
 """
 
 from __future__ import annotations
@@ -45,13 +45,13 @@ def test_the_ids_fetch_lives_in_sh_api() -> None:
     assert "window.SHR_useUserNames = SHR_useUserNames" in share
 
 
-def test_the_agents_list_names_the_owner_in_the_badge_tooltip() -> None:
-    """The one place the hook is wired in (the rest of Phase 6 Task 3 comes
-    after the phases are combined): the agents list badges the row's owner,
-    and the tooltip says the username, not the id."""
+def test_the_agents_list_says_who_owns_each_row() -> None:
+    """ACL-P6-T3: the one place the hook is wired in: the agents list's
+    owner badge is the shared marker row (the owner's names from this
+    lookup, "Owned by you" when it is ours)."""
     assert "window.SHR_useUserNames(ownerIds)" in AGENTS
-    assert '"Owned by "' in AGENTS
-    assert 'data-testid="agent-owner-badge"' in AGENTS
+    assert "SHR_AccessMarkers access={a.access}" in AGENTS
+    assert "names={ownerNames}" in AGENTS
 
 
 # ---- the hook's behavior (the real file in MiniRacer) -------------------------

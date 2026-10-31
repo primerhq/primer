@@ -159,38 +159,25 @@ async def test_a_backend_that_cannot_be_resolved_puts_the_phase_back(sp, wsr, wi
 
 @pytest.mark.asyncio
 async def test_the_phase_put_back_is_the_one_read_at_the_mark(sp, wsr, wid, monkeypatch) -> None:  # noqa: F811
-    """Round 2 of #917, item 8: the probe failed the workspace while the rank scan ran (after destroy's first read, before the mark), and
-    the backend then could not be resolved: the phase put back is the one the mark replaced (``failed``), not the stale ``running``."""
+    """Round 2 of #917, item 8: the probe failed the workspace after destroy's first read and before the mark, and the backend then could
+    not be resolved: the phase put back is the one the mark replaced (``failed``), not the stale ``running``."""
+    real_mark = wsr._mark_terminating
 
-    async def _probe_fails_it_meanwhile():
+    async def _probe_fails_it_then_mark(workspace_id):
         await sp.get_storage(Workspace).patch_if(wid, {"phase": "failed", "failure_reason": "runtime unreachable"}, where={"phase": ["running"]})
+        return await real_mark(workspace_id)
 
     async def _unresolvable(provider_id):
         raise ProviderError("the provider's backend could not be built")
 
     monkeypatch.setattr(wsr, "get_backend", _unresolvable)
+    monkeypatch.setattr(wsr, "_mark_terminating", _probe_fails_it_then_mark)
 
     with pytest.raises(ProviderError):
-        await wsr.destroy(wid, before_teardown=_probe_fails_it_meanwhile)
+        await wsr.destroy(wid)
 
     row = await _row(sp, wid)
     assert (row.phase, row.failure_reason) == ("failed", "runtime unreachable")
-
-
-@pytest.mark.asyncio
-async def test_a_refused_rank_scan_never_marks_the_row(sp, wsr, wid) -> None:  # noqa: F811
-    phases: list[str] = []
-
-    async def _refuse():
-        phases.append((await _row(sp, wid)).phase)
-        raise PermissionError("outranked")
-
-    with pytest.raises(PermissionError):
-        await wsr.destroy(wid, before_teardown=_refuse)
-
-    assert phases == ["running"], "the rank scan runs before the mark: a refused delete never shows terminating"
-    assert (await _row(sp, wid)).phase == "running"
-    assert (await _session(sp)).status == SessionStatus.RUNNING
 
 
 @pytest.mark.asyncio

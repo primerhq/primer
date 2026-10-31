@@ -673,6 +673,12 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # many pre-migration records with no gate_event_key at all do not
         # collide with each other or with anything else.
         ("gate_event_key_uniq", True, "((data->>'gate_event_key'))"),
+        # The records list filters `workspace_id IN <readable>` for non-admins (access-control P2 Task 5).
+        ("workspace_id", False, "((data->>'workspace_id'))"),
+    ],
+    "externaltoolcall": [
+        # Same filter on the global external tool call list (access-control P2 Task 5).
+        ("workspace_id", False, "((data->>'workspace_id'))"),
     ],
     "toolset": [
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
