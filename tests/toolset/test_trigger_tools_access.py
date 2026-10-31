@@ -175,3 +175,70 @@ async def test_an_mcp_call_acts_as_the_request_actor(env):
         finally:
             current_actor.reset(token)
         assert is_err is not readable, body
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# The channel-binding tools of the system toolset: a binding is a subscription, so it inherits its trigger's access
+# --------------------------------------------------------------------------------------------------------------------
+
+BIND_TID, BIND_SID = "tr-bind", "sb-bind"
+
+
+@pytest_asyncio.fixture
+async def bindings(env):
+    """A channel trigger on a public channel (Task 5's channel READ passes for everyone), shared like tr-1, with one binding."""
+    from primer.model.channel import Channel
+    from primer.toolset.system import build_system_toolset
+    from tests.toolset.test_wiki_tools import _Registry
+
+    sp = env.sp
+    await sp.get_storage(Channel).create(Channel(
+        id="ch-1", provider_id="cp-1", provider="slack", external_id="C1", access=Access(public=True),
+    ))
+    await sp.get_storage(Trigger).create(Trigger(
+        id=BIND_TID, slug="bound", name="b", created_at=NOW, owner=_ref(ALICE),
+        config=ChannelTriggerConfig(provider_id="cp-1", channel_id="ch-1"),
+        access=Access(owners=[ALICE], grants={BOB: "read", CAROL: "full"}),
+    ))
+    await sp.get_storage(Subscription).create(Subscription(
+        id=BIND_SID, trigger_id=BIND_TID, created_at=NOW, owner=_ref(ALICE),
+        config=AgentFreshSubConfig(workspace_id="ws-1", agent_id="ag-1"),
+    ))
+    system = build_system_toolset(storage_provider=sp, provider_registry=_Registry(None))
+
+    async def call(tool: str, args: dict, uid: str) -> tuple[bool, Any]:
+        r = await system.call(tool_name=tool, arguments=args, ctx=_ctx(uid))
+        return r.is_error, json.loads(r.output)
+
+    return call
+
+
+_BIND_READ = [("list_channel_bindings", {"trigger_id": BIND_TID})]
+_BIND_FULL = [
+    ("create_channel_binding", {"trigger_id": BIND_TID, "config": _SUB}),
+    ("delete_channel_binding", {"trigger_id": BIND_TID, "subscription_id": BIND_SID}),
+]
+
+
+@pytest.mark.parametrize(("tool", "args"), _BIND_READ + _BIND_FULL, ids=_ids(_BIND_READ + _BIND_FULL))
+async def test_a_binding_tool_on_an_unreadable_trigger_answers_as_a_missing_trigger(bindings, tool, args):
+    is_err, body = await bindings(tool, args, DAVE)
+    assert _refused_as_missing(is_err, body), body
+
+
+@pytest.mark.parametrize(("tool", "args"), _BIND_READ, ids=_ids(_BIND_READ))
+async def test_a_reader_lists_the_bindings(bindings, tool, args):
+    is_err, body = await bindings(tool, args, BOB)
+    assert not is_err and [s["id"] for s in body] == [BIND_SID], body
+
+
+@pytest.mark.parametrize(("tool", "args"), _BIND_FULL, ids=_ids(_BIND_FULL))
+async def test_a_reader_cannot_create_or_delete_a_binding(bindings, tool, args):
+    is_err, body = await bindings(tool, args, BOB)
+    assert is_err and body["type"] == "forbidden", body
+
+
+@pytest.mark.parametrize(("tool", "args"), _BIND_READ + _BIND_FULL, ids=_ids(_BIND_READ + _BIND_FULL))
+async def test_a_full_grantee_manages_the_bindings(bindings, tool, args):
+    is_err, body = await bindings(tool, args, CAROL)
+    assert not is_err, body
