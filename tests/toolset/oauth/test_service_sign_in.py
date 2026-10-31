@@ -73,7 +73,8 @@ def store(fake_storage_provider, box) -> McpOAuthStore:
 
 @pytest.fixture
 async def svc(fake_storage_provider, box, clock):
-    service = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=box, clock=clock, owner_id="pod-a")
+    # SYSTEM, the person these tests act as, holds the shared browser row only on an auth-disabled install.
+    service = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=box, clock=clock, owner_id="pod-a", auth_enabled=False)
     yield service
     await service.aclose()
 

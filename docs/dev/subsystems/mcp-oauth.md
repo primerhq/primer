@@ -37,7 +37,13 @@ call of a run, whatever its task inherited; `dispatch_inner_tool` sets it from i
 context (an approved re-run); and the MCP task bridge polls a parked task call as
 that session's turn person, else its initiator. A call that acts for nobody (an
 unattributed run, a graph ToolCall node's unattributed fallback) gets no browser
-token: it answers sign-in required and never falls back to another row. The `principal` string
+token: it answers sign-in required and never falls back to another row. So does
+the system person when auth is enabled (a system-owned trigger's fire, a session
+created while auth was off and resumed later, the graph fallback): the shared
+browser row is the system person's only on an auth-disabled install, which the
+service learns from `config.auth.enabled` (`ToolsetOAuthService(auth_enabled=...)`;
+a sign-in started for nobody while auth was off cannot finish once it is on;
+review finding 2). Client-credentials rows stay shared for every caller. The `principal` string
 passed through a toolset provider remains dispatch context only and never selects
 a token.
 

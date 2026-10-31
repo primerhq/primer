@@ -329,8 +329,11 @@ class ToolsetOAuthService:
         http: httpx.AsyncClient | None = None,
         clock: Callable[[], datetime] = _utc_now,
         owner_id: str | None = None,
+        auth_enabled: bool = True,
     ) -> None:
         self._sp = storage_provider
+        #: ``config.auth.enabled``: only an auth-disabled install hands the system person the shared browser row (review finding 2).
+        self._auth_enabled = auth_enabled
         self._store = McpOAuthStore(storage_provider, secret_box)
         self._public_url = public_url.rstrip("/") if public_url else None
         self._owns_http = http is None
@@ -526,13 +529,13 @@ class ToolsetOAuthService:
 
     async def _may_complete(self, pending: McpOAuthPendingSignIn, caller: Person | None) -> bool:
         """Whether the callback of ``pending`` may write its person's row (Decision 5): the person still exists, is enabled and full, and may use
-        the toolset; and no other person is signed in on the callback's request. A pending sign-in that names nobody is the system person's (auth
-        disabled)."""
+        the toolset; and no other person is signed in on the callback's request. A pending sign-in that names nobody is the system person's, and
+        completes only while auth is disabled."""
         user_id = pending.user_id
         if caller is not None and caller.user_id is not None and caller.user_id != user_id:
             return False
         if user_id is None:
-            return True
+            return not self._auth_enabled
         user = await self._sp.get_storage(User).get(user_id)
         if user is None or user.disabled or user.role not in ("user", "admin"):
             return False
@@ -632,9 +635,10 @@ class ToolsetOAuthService:
         return self._status_from(target, await self._row(target), now=self._clock(), redirect_uri=redirect_uri)
 
     async def _row(self, target: OAuthTarget) -> McpOAuthTokenSet | None:
-        """The token row of ``target``'s person (the shared row for client credentials and the system person); ``None`` when there is none, when it
-        names another pair, or when the target acts for nobody."""
-        if target.key is None:
+        """The token row of ``target``'s person (the shared row for client credentials, and for the system person of an auth-disabled install);
+        ``None`` when there is none, when it names another pair, or when the target acts for nobody. With auth enabled the system person (a
+        system-owned trigger's fire, a session made while auth was off) acts for nobody on a browser sign-in (review finding 2)."""
+        if target.key is None or (self._auth_enabled and target.per_user and target.user_id is None):
             return None
         return await self._store.get_tokens(target.key, toolset_id=target.toolset_id, user_id=target.user_id)
 
