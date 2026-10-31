@@ -130,7 +130,7 @@ class TelegramChannelAdapter(ChannelAdapter):
         if envelope.kind == "inform":
             msgs = [
                 await self._app.bot.send_message(chat_id=self._channel.external_id, text=part)
-                for part in split_text(header + envelope.prompt, _TELEGRAM_TEXT_MAX)
+                for part in split_text(header + envelope.prompt, _TELEGRAM_TEXT_MAX, utf16=True)
             ]
             return {"message_id": getattr(msgs[0], "message_id", 0)}
         if envelope.kind == "ask_user":

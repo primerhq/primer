@@ -90,14 +90,14 @@ def utf16_fit(text: str, limit: int) -> int:
     return len(text)
 
 
-def split_text(text: str, limit: int) -> list[str]:
-    """``text`` as consecutive posts of at most ``limit`` UTF-16 code units, in order.
+def split_text(text: str, limit: int, *, utf16: bool = False) -> list[str]:
+    """``text`` as consecutive posts of at most ``limit`` characters, in order.
 
-    UTF-16 units are Telegram's measure and never more than the characters Slack and Discord count. A post
+    ``utf16`` counts UTF-16 code units instead, Telegram's measure (Slack and Discord count characters). A post
     is cut after the last newline, else space, that fits (that separator is dropped), else at the limit.
     """
     parts: list[str] = []
-    while (fit := utf16_fit(text, limit)) < len(text):
+    while (fit := utf16_fit(text, limit) if utf16 else min(limit, len(text))) < len(text):
         cut = text.rfind("\n", 1, fit + 1)
         if cut < 0:
             cut = text.rfind(" ", 1, fit + 1)

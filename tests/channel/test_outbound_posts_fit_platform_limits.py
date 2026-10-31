@@ -88,4 +88,5 @@ def test_split_text_keeps_short_text_whole() -> None:
     assert split_text("", 3) == [""]
     assert split_text("ab cd", 2) == ["ab", "cd"]
     assert split_text("abcdef", 4) == ["abcd", "ef"]
-    assert split_text("\U0001F600\U0001F600x", 3) == ["\U0001F600", "\U0001F600x"]
+    assert split_text("\U0001F600\U0001F600x", 3, utf16=True) == ["\U0001F600", "\U0001F600x"]
+    assert split_text("\U0001F600\U0001F600x", 3) == ["\U0001F600\U0001F600x"]
