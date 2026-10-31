@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from primer.model.principal import PrincipalRef
 from primer.api.routers.sessions import resume_session
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind
@@ -157,7 +158,7 @@ async def test_cancel_in_flight_blocks_resume_then_converges_ended(
     resume_task = asyncio.create_task(
         resume_session(
             # The route takes the request for its access gate (P2 Task 3); the auth-disabled system actor is an admin, which clears it.
-            request=SimpleNamespace(state=SimpleNamespace(actor=SimpleNamespace(type="system"))),
+            request=SimpleNamespace(state=SimpleNamespace(actor=PrincipalRef.system())),
             workspace_id="ws-1",
             session_id=sid,
             sessions=storage,
@@ -213,7 +214,7 @@ async def test_resume_in_flight_blocks_cancel_then_cancel_is_honored(
     resume_task = asyncio.create_task(
         resume_session(
             # The route takes the request for its access gate (P2 Task 3); the auth-disabled system actor is an admin, which clears it.
-            request=SimpleNamespace(state=SimpleNamespace(actor=SimpleNamespace(type="system"))),
+            request=SimpleNamespace(state=SimpleNamespace(actor=PrincipalRef.system())),
             workspace_id="ws-1",
             session_id=sid,
             sessions=storage,

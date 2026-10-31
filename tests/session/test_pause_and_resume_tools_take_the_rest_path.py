@@ -384,12 +384,14 @@ async def test_the_tool_answers_and_writes_exactly_as_the_rest_route_in_every_st
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("verb", ["resume", "pause"])
-async def test_an_unknown_session_is_answered_in_the_rest_route_s_words(verb, tmp_path):
+async def test_an_unknown_session_is_not_found_on_both_surfaces(verb, tmp_path):
     api, _, row, closers = await _world(tmp_path)
     try:
         ghost = row.model_copy(update={"id": "ses-ghost"})
-        assert await _tool(api, f"{verb}_workspace_session", ghost) == await _rest(api, verb, ghost) == (
+        # The tool names the workspace; the route answers the access gate's missing-row text first (P2 Task 3, spec 9).
+        assert await _tool(api, f"{verb}_workspace_session", ghost) == (
             "not-found", f"Session 'ses-ghost' does not exist on workspace {row.workspace_id!r}",
         )
+        assert await _rest(api, verb, ghost) == ("not-found", "Session 'ses-ghost' does not exist")
     finally:
         await _close(closers)

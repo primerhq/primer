@@ -135,11 +135,8 @@ async def _rest_env(app, admin, sp, path: str, scenario: str) -> Env:
             Predicate(left=FieldRef(name="username"), op=Op.EQ, right=Value(value="carol")), OffsetPage(offset=0, length=1),
         )
         owner = "u-root" if scenario == "outranked" else page.items[0].id
-        await sp.get_storage(Workspace).create(
-            Workspace(id=target_workspace, template_id="tpl-1", provider_id="local-1", created_at=NOW,
-                      runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
-                      access=Access(owners=[owner])),
-        )
+        row = await sp.get_storage(Workspace).get(target_workspace)  # _seed made it; the REST rows swap in the access they test
+        await sp.get_storage(Workspace).update(row.model_copy(update={"access": Access(owners=[owner])}))
     return Env(world=world, rest=client, target_workspace=target_workspace)
 
 

@@ -202,6 +202,8 @@ async def _seed(world: World, path: str, scenario: str) -> str:
     # holds full on the target, and to u-ada otherwise, where the person holds no level and the target answers as one that does not exist.
     ws2_owner = "u-user" if scenario == P else "u-ada"
     for wid, owner in (("ws-1", "u-user"), ("ws-2", ws2_owner)):
+        if await world.sp.get_storage(Workspace).get(wid) is not None:
+            continue  # a REST row seeded the target's workspace with the access it tests
         await world.sp.get_storage(Workspace).create(Workspace(
             id=wid, name=wid, template_id="tpl", provider_id="local-1", created_at=NOW, phase="running",
             runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
@@ -901,12 +903,14 @@ PERSONS_FOR_OWN = {"ws-1": USER, "ws-2": ADA_REF, "ws-prime": ADA_REF}
 
 
 async def _call(
-    world: WsWorld, toolset: str, tool: str, arguments: dict, *, own: str | None, door: str, run_as: PrincipalRef = USER,
+    world: WsWorld, toolset: str, tool: str, arguments: dict, *, own: str | None, door: str, run_as: PrincipalRef | None = None,
     actor: Principal = MCP_USER,
 ) -> tuple[str, dict]:
     """``toolset``'s ``tool`` from a session in ``own`` (its run ranked ``run_as``) through ``door``: the tool by its scoped name in the real
     tool manager, or ``system__call_tool``. With ``own`` None it is the MCP endpoint's own call (``invoke_one``, no context, ``actor`` on
     ``current_actor``)."""
+    if own is not None and run_as is None:
+        run_as = PERSONS_FOR_OWN[own]  # the person the calling session's workspace stands for (access-control P2 T6)
     if own is None:
         token = current_actor.set(actor)
         try:
@@ -1108,8 +1112,8 @@ SUB_DOORS: dict[str, tuple[str, str, Callable[[str], dict], tuple[str, str]]] = 
         lambda t: {"trigger_id": CHANNEL_TRIGGER, "config": {"kind": "session_append", "session_id": t}}, _SES_TARGET,
     ),
 }
-#: Who calls -> the reach recorded on what it saves: the calling session's workspace outside prime, ``None`` (every workspace) otherwise.
-RECORDED = {"own workspace": "ws-2", P: None, "no session": None}
+#: Who calls -> the reach recorded on what it saves: none of them records one any more (access-control P2 T6: the owner's level on the target decides).
+RECORDED = {"own workspace": None, P: None, "no session": None}
 
 
 async def _seed_triggers(world: WsWorld) -> None:
@@ -1678,7 +1682,7 @@ _FIRE_WORDS_REQUEST = (
 )
 _FIRE_WORDS_RUN = "trigger 'tr-r' runs at a higher rank ({owner}) than this session ({caller}); a session may fire only triggers at or below its own rank"
 _FIRE_WORDS_RUN_OUTSIDE = "trigger 'tr-r' runs at a higher rank ({owner}) than this run ({caller}); a run may fire only triggers at or below its own rank"
-ADA = Principal(type="user", id="u-ada", display="ada", role="user", source="local")
+ADA = Principal(type="user", id="u-ada", display="ada", role="user", source="local", user_id="u-ada")
 
 
 async def _fire_events(sp) -> list:
@@ -1701,12 +1705,13 @@ async def _fired(sp) -> bool:
     return row.last_fired_id is not None and row.last_fired_at is not None and [e.entity_id for e in events] == [FIRE_TRIGGER]
 
 
-async def _rank_world(owner: PrincipalRef | None) -> WsWorld:
+async def _rank_world(owner: PrincipalRef | None, *, user_full_on_ws2: bool = True) -> WsWorld:
     """The rule-table world, a trigger ``tr-r`` owned by ``owner`` with one subscription of it that starts a session in ws-2 (in reach of the calling
     session ``ses-o`` in ws-2), and an API token of ada's (``at-ada``) for the rows where a token acts as its owner. ws-2 grants full to the two
     ordinary accounts, so a fire the rank rule accepts is never held back by the subscription owner's level on the target (P2 T6)."""
     world = await _ws_world()
-    ws2 = (await world.sp.get_storage(Workspace).get("ws-2")).model_copy(update={"access": Access(owners=["u-ada"], grants={"u-user": "full", "u-root": "full"})})
+    grants = {"u-user": "full", "u-root": "full"} if user_full_on_ws2 else {"u-root": "full"}
+    ws2 = (await world.sp.get_storage(Workspace).get("ws-2")).model_copy(update={"access": Access(owners=["u-ada"], grants=grants)})
     await world.sp.get_storage(Workspace).update(ws2)
     await world.sp.get_storage(Trigger).create(Trigger(
         id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
@@ -1724,17 +1729,17 @@ async def _rank_world(owner: PrincipalRef | None) -> WsWorld:
 #: recorded while she was an admin; she is a user now.
 FIRE_CALLERS: dict[str, tuple[PrincipalRef | None, Principal | PrincipalRef, bool]] = {
     "MCP: a user on an admin's trigger": (ADMIN, MCP_USER, False),
-    "MCP: an admin on a user's trigger": (USER, Principal(type="user", id="u-root", display="root", role="admin", source="local"), True),
-    "MCP: a user on their own trigger": (USER, Principal(type="user", id="u-user", display="user", role="user", source="local"), True),
+    "MCP: an admin on a user's trigger": (USER, Principal(type="user", id="u-root", display="root", role="admin", source="local", user_id="u-root"), True),
+    "MCP: a user on their own trigger": (USER, Principal(type="user", id="u-user", display="user", role="user", source="local", user_id="u-user"), True),
     "MCP: a demoted admin on their own trigger": (ADA_THEN, ADA, True),
     "MCP: a user's token on an admin's trigger": (
-        ADMIN, Principal(type="api_token", id="at-user", display="automation", role="user", source="internal"), False,
+        ADMIN, Principal(type="api_token", id="at-user", display="automation", role="user", source="internal", user_id="u-user"), False,
     ),
     "MCP: an admin's token on a user's trigger": (
-        USER, Principal(type="api_token", id="at-root", display="automation", role="admin", source="internal"), True,
+        USER, Principal(type="api_token", id="at-root", display="automation", role="admin", source="internal", user_id="u-root"), True,
     ),
     "MCP: a demoted admin's token on their own trigger": (
-        ADA_THEN, Principal(type="api_token", id="at-ada", display="automation", role="user", source="internal"), True,
+        ADA_THEN, Principal(type="api_token", id="at-ada", display="automation", role="user", source="internal", user_id="u-ada"), True,
     ),
     "MCP: a user on a trigger saved before owners were recorded": (None, MCP_USER, True),
     "MCP: a user on a system trigger": (PrincipalRef.system(), MCP_USER, False),
@@ -1779,19 +1784,29 @@ async def test_fire_now_fires_a_trigger_only_when_the_caller_ranks_with_its_owne
 
 
 @pytest.mark.parametrize("door", DOORS)
-@pytest.mark.parametrize("run_as", [pytest.param(USER, id="a user's run"), pytest.param(ADMIN, id="an admin's run")])
-async def test_fire_now_on_an_out_of_reach_trigger_answers_as_an_unknown_one_before_any_rank(run_as, door):
-    """The reach rule (#874) is asked first: from ws-1, an admin's trigger whose subscription starts a session in ws-2 is unknown, not forbidden, for a
-    user's run too, and nothing fires."""
-    world = await _rank_world(ADMIN)
+async def test_fire_now_on_an_out_of_reach_trigger_answers_as_an_unknown_one_before_any_rank(door):
+    """The access rule is asked first: an admin's trigger whose subscription starts a session in ws-2, where the user holds no full, is unknown, not
+    forbidden, for a user's run, and nothing fires."""
+    world = await _rank_world(ADMIN, user_full_on_ws2=False)
     before = await _fire_rows(world.sp)
 
-    outcome, body = await asyncio.wait_for(_call(world, "trigger", "fire_now", {"id": FIRE_TRIGGER}, own="ws-1", door=door, run_as=run_as), 30)
+    outcome, body = await asyncio.wait_for(_call(world, "trigger", "fire_now", {"id": FIRE_TRIGGER}, own="ws-1", door=door, run_as=USER), 30)
 
     assert (outcome, body) == ("trigger_not_found", {"type": "trigger_not_found", "message": FIRE_TRIGGER}), body
     assert await _fire_rows(world.sp) == before
-    _, unknown = await _call(world, "trigger", "fire_now", {"id": "tr-nope"}, own="ws-1", door=door, run_as=run_as)
+    _, unknown = await _call(world, "trigger", "fire_now", {"id": "tr-nope"}, own="ws-1", door=door, run_as=USER)
     assert json.dumps(body).replace(FIRE_TRIGGER, "<id>") == json.dumps(unknown).replace("tr-nope", "<id>"), (body, unknown)
+
+
+@pytest.mark.parametrize("door", DOORS)
+async def test_an_admins_run_fires_a_trigger_whatever_workspaces_it_targets(door):
+    """An admin clears the access rule (it holds every level), so the same trigger an unprivileged user cannot see fires for an admin's run."""
+    world = await _rank_world(ADMIN, user_full_on_ws2=False)
+
+    outcome, body = await asyncio.wait_for(_call(world, "trigger", "fire_now", {"id": FIRE_TRIGGER}, own="ws-1", door=door, run_as=ADMIN), 30)
+
+    assert outcome == D, body
+    assert await _fired(world.sp), body
 
 
 async def test_the_clock_fires_an_admins_trigger_with_no_caller_to_rank():
@@ -1945,6 +1960,8 @@ async def test_fire_now_over_the_real_mcp_endpoint_fires_a_trigger_only_when_the
         "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
         "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
     }[owner_name]
+    # The workspace the subscription starts a session in: carol holds full on it (the access rule asks the caller's person; an admin clears it).
+    await sp.get_storage(Workspace).create(_ws_row("ws-x", Access(owners=[carol_id])))
     await sp.get_storage(Trigger).create(Trigger(
         id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
@@ -2322,12 +2339,14 @@ TARGETS: dict[str, object] = {
     "fresh-prime": AgentFreshSubConfig(workspace_id="ws-prime", agent_id="planner"),
     "append-gone": SessionAppendSubConfig(session_id="ses-gone"),
 }
-#: the calling session's workspace (None: no calling session) -> the subscriptions it reaches.
+#: the calling session's workspace (None: no calling session) -> the subscriptions its person holds full on the target of (access-control P2 T6):
+#: u-user holds ws-1 only; u-ada (ws-2, ws-prime and the MCP call) holds ws-2 and ws-prime. A target session that is gone is in no workspace: none see it.
+_ADA_SEES = {"fresh-ws2", "graph-ws2", "append-ws2", "parked-ws2", "fresh-prime"}
 VISIBLE: dict[str | None, set[str]] = {
     "ws-1": {"fresh-ws1", "append-ws1"},
-    "ws-2": {"fresh-ws2", "graph-ws2", "append-ws2", "parked-ws2"},
-    "ws-prime": set(TARGETS),
-    None: set(TARGETS),
+    "ws-2": _ADA_SEES,
+    "ws-prime": _ADA_SEES,
+    None: _ADA_SEES,
 }
 
 
@@ -2413,14 +2432,14 @@ async def test_get_and_delete_from_outside_prime_act_on_a_subscription_in_its_ow
 @pytest.mark.parametrize("door_name", list(ONE_DOORS))
 @pytest.mark.parametrize("own", ["ws-1", "ws-2"])
 async def test_a_subscription_whose_target_session_is_gone_is_out_of_reach_from_outside_prime(door_name, own):
-    """The save check's classification: a session that does not exist is in no workspace, so get and delete answer as an unknown id from a
-    session outside prime, and act from prime."""
+    """The save check's classification: a session that does not exist is in no workspace, so get and delete answer as an unknown id for every
+    person who is not an admin (an admin holds every level and acts)."""
     world = await _subscription_world()
     toolset, tool, trigger_id = ONE_DOORS[door_name]
     sid = _sid(trigger_id, "append-gone")
 
     refused = await _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": sid}, own=own, door="tool manager")
-    acted = await _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": sid}, own="ws-prime", door="tool manager")
+    acted = await _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": sid}, own="ws-prime", door="tool manager", run_as=ADMIN)
 
     assert refused == ("subscription_not_found", {"type": "subscription_not_found", "message": sid})
     assert acted[0] == D, acted
@@ -2429,17 +2448,17 @@ async def test_a_subscription_whose_target_session_is_gone_is_out_of_reach_from_
 @pytest.mark.parametrize("door_name", list(LIST_DOORS))
 @pytest.mark.parametrize(("own", "door"), [("ws-1", "tool manager"), ("ws-1", "system__call_tool"), ("ws-prime", "tool manager"), (None, "MCP")])
 async def test_a_filtered_list_of_more_than_two_pages_skips_and_repeats_no_subscription(door_name, own, door):
-    """Ruling 5: the service reads a trigger's subscriptions in pages of ``_LIST_PAGE_SIZE``. With more than two pages of rows in and out of
-    ws-1's reach, interleaved, a session in ws-1 gets every row it reaches, once, in storage order (no page short of in-reach rows ends the read,
-    and none is skipped); prime and MCP get every row."""
+    """Ruling 5: the service reads a trigger's subscriptions in pages of ``_LIST_PAGE_SIZE``. With more than two pages of rows the person holds
+    full on and rows they do not, interleaved, a session in ws-1 (u-user: ws-1 only) gets every row it reaches, once, in storage order (no page
+    short of reachable rows ends the read, and none is skipped); a session in prime and the MCP call (u-ada: ws-2 and prime) get theirs."""
     world = await _seed_world_for_subscriptions()
     toolset, tool, trigger_id = LIST_DOORS[door_name]
     cycle = [
-        ("in", AgentFreshSubConfig(workspace_id="ws-1", agent_id="planner")),
-        ("out", AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner")),
-        ("out", SessionAppendSubConfig(session_id="ses-t")),
-        ("in", SessionAppendSubConfig(session_id="ses-a")),
-        ("out", AgentFreshSubConfig(workspace_id="ws-prime", agent_id="planner")),
+        ("u-user", AgentFreshSubConfig(workspace_id="ws-1", agent_id="planner")),
+        ("u-ada", AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner")),
+        ("u-ada", SessionAppendSubConfig(session_id="ses-t")),
+        ("u-user", SessionAppendSubConfig(session_id="ses-a")),
+        ("u-ada", AgentFreshSubConfig(workspace_id="ws-prime", agent_id="planner")),
     ]
     store = world.sp.get_storage(Subscription)
     seeded: list[tuple[str, str]] = []
@@ -2452,7 +2471,7 @@ async def test_a_filtered_list_of_more_than_two_pages_skips_and_repeats_no_subsc
     outcome, body = await asyncio.wait_for(_call(world, toolset, tool, {"trigger_id": trigger_id}, own=own, door=door), 60)
 
     assert outcome == D, body
-    wanted = [sid for sid, where in seeded if own is None or own == "ws-prime" or where == "in"]
+    wanted = [sid for sid, holder in seeded if holder == ("u-user" if own == "ws-1" else "u-ada")]
     assert [item["id"] for item in body] == wanted
 
 

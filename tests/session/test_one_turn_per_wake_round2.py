@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+from primer.model.principal import PrincipalRef
 from primer.api.routers.sessions import pause_session, resume_session
 from primer.bus.scheduler_tasks import SessionMessagingSweeper
 from primer.int.claim import ClaimKind
@@ -42,7 +43,7 @@ from tests.session.test_one_turn_per_wake import _AnsweringExecutor, _dispatch_d
 
 BOUND_S = 20.0
 #: The auth-disabled system actor is an admin: it clears the routes' access gate (P2 Task 3).
-REQ = SimpleNamespace(state=SimpleNamespace(actor=SimpleNamespace(type="system")))
+REQ = SimpleNamespace(state=SimpleNamespace(actor=PrincipalRef.system()))
 
 
 class _Engine(FakeEngine):
