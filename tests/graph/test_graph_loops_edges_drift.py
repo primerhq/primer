@@ -287,3 +287,39 @@ async def test_a_loop_back_fans_in_only_this_passes_results():
     assert [e.text for e in events if isinstance(e, _GraphEndOutputEvent)] == ["z"]
     assert thread.ended_reason == "completed"
     assert ex._fanout_target_expected_count["t"] == 1
+
+
+# ---- AG-M10: on_max_iterations into a cycle --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_max_iterations_into_a_cycle_ends_max_iterations_exceeded():
+    graph = Graph(
+        id="g-cap-cycle", description="cap routes into the cycle", max_iterations=3, on_max_iterations="a",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="a", tool_id="x__a", arguments={}),
+            _ToolCallNode(id="b", tool_id="x__b", arguments={}),
+            _EndNode(id="end", output_template="done"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="a"),
+            _StaticEdge(from_node="a", to_node="b"),
+            _StaticEdge(from_node="b", to_node="a"),
+        ],
+    )
+    n = {"calls": 0}
+
+    async def dispatcher(node, arguments):
+        n["calls"] += 1
+        if n["calls"] > 200:
+            raise RuntimeError("safety stop: 200 tool calls")
+        return ToolResultPart(id="x", output="ok")
+
+    ex, events, exc, thread = await _run(graph, dispatcher)
+
+    assert exc is None
+    assert (thread.ended_reason, thread.ended_detail) == ("max_iterations_exceeded", "max_iterations_exceeded")
+    assert ex._context.iteration == graph.max_iterations + len(graph.nodes)
+    assert n["calls"] == 6, "a and b before the cap, then the rerouted cycle until the bound"
+    assert [e.code for e in events if isinstance(e, _GraphErrorEvent)] == ["max_iterations_exceeded"]

@@ -1890,13 +1890,14 @@ class _BaseGraphExecutor(
             # reader of the outcome treats it as a failure: last_done_reason
             # maps any outcome but ``completed`` to ``graph_failed``, and the
             # child readers match on ``FAILED_ENDED_REASONS``.
-            if (
-                self._graph.max_iterations is not None
-                and context.iteration >= self._graph.max_iterations
-                and not self._max_iter_routed
+            # AG-M10: after the reroute an acyclic finishing tail ends within len(graph.nodes) supersteps; a landing node inside a cycle would
+            # otherwise loop for ever, so past that bound the run ends ``max_iterations_exceeded`` after all.
+            cap = self._graph.max_iterations
+            if cap is not None and context.iteration >= cap and not (
+                self._max_iter_routed and context.iteration < cap + len(self._graph.nodes)
             ):
                 route_to = self._graph.on_max_iterations
-                if route_to is not None and route_to in self._nodes_by_id:
+                if not self._max_iter_routed and route_to is not None and route_to in self._nodes_by_id:
                     # Graceful landing: route once to the configured node
                     # (typically a finalize/report node) instead of failing.
                     # ``_max_iter_routed`` keeps the cap from re-tripping while
