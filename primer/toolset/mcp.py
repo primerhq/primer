@@ -203,6 +203,10 @@ class McpToolsetProvider(ToolsetProvider):
         del tool_name  # uniform floor across this toolset's tools
         return "user"
 
+    def is_yielding(self, tool_name: str) -> bool:
+        """A task-mode tool parks the turn (:meth:`call` raises ``YieldToWorker``); known from the latest listing."""
+        return tool_name in self._task_tools
+
     async def list_tools(
         self,
         *,
@@ -667,6 +671,7 @@ class McpToolsetProvider(ToolsetProvider):
             description=t.description or "",
             toolset_id=self._toolset_id,
             args_schema=t.input_schema or {"type": "object", "properties": {}},
+            yields=is_mcp_task_tool(t),
         )
 
     def _mcp_call_result_to_primer(
