@@ -1192,6 +1192,7 @@ async def _fire_world(ws2_owner: str = "u-ada") -> World:
     await world.sp.get_storage(Graph).create(_runnable_graph())
     await world.sp.get_storage(Trigger).create(Trigger(
         id="tr-fire", slug="tr-fire", name="f", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW),
+        access=Access(owners=["u-user"]),  # the run-as owner holds the access the fire-time check asks of them (P3 SEC)
     ))
     await seed_session(world, sid="ses-t", workspace_id="ws-2", turn_no=1, created_at=NOW, initiated_by=USER)
     key = "trigger:ses-pk:tr-fire"
@@ -1655,6 +1656,7 @@ async def _rank_world(owner: PrincipalRef | None) -> WsWorld:
     await world.sp.get_storage(Workspace).update(ws2)
     await world.sp.get_storage(Trigger).create(Trigger(
         id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
+        access=Access(owners=[owner.id] if owner is not None and owner.type == "user" else []),  # P3 SEC: the owner holds the access the fire asks of them
     ))
     await world.sp.get_storage(Subscription).create(Subscription(
         id="sb-r", trigger_id=FIRE_TRIGGER, config=AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner"), created_at=NOW, owner=owner,
