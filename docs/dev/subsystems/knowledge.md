@@ -118,6 +118,12 @@ The regenerator writes through the service directly rather than the API, because
 
 **Access (access-control Phase 3).** A collection is owned (`Collection` mixes in `Owned`); a document has no access of its own and is checked against its collection on every door: read lists, reads, greps and searches, full writes, moves, deletes and imports, owner deletes the collection, shares it and turns search on or off. The REST routes ask `_require_collection` (`primer/api/routers/knowledge.py`, which keeps the `system` write refusal), the flat `/v1/documents` router uses `make_crud_router`'s `row_guard` and `list_filter` (`collection_id IN` the readable collections), and the tools ask `collection_for` (`primer/toolset/_collection_access.py`), so the two doors answer alike (not found for a collection the caller cannot read, 403 `access_denied` / `type=forbidden` below the level). The `system` collection is public and every regeneration keeps it public; `_internal_*` collections carry no owners and are admin-only; the `this-install/` live map lists only public entities. The platform writers patch their own fields (`write_collection_fields`, `primer/knowledge/row_writes.py`): `_write_search`, internal-collection materialisation and the wiki's title never put back a sharing change made meanwhile. The per-door table, the search-block rule and the migration are in [access control](../architecture/access-control.md) (6.8, 6.9, 6.13, 6.14).
 
+### Search provider use (access control, Phase 4)
+
+A collection's semantic search needs the embedder, the vector store and the cross-encoder to be usable by whoever enables it and
+by whoever searches; grep and the document tree never need a grant. See [semantic-search](semantic-search.md) and
+[access control](../architecture/access-control.md).
+
 ## 10. Testing patterns
 
 Tree behaviour is tested against a real sqlite provider rather than a fake, because the transactional pairing and the `UNIQUE` constraint are the things under test.

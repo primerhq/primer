@@ -870,6 +870,13 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
     }
   };
 
+  // ACL-P6-T3: the marker row of the detail header (the collection's own
+  // access). Unconditional hooks: a missing access block draws nothing.
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = ((collection && collection.access && collection.access.owners) || []);
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   // uiv2 Wave 2 ("Collection — {name}" header row, type/state/doc-count
   // facts inline, Import zip + close): doc count is only shown when the
   // search-status fetch actually serves one (documents_total, once
@@ -881,6 +888,9 @@ function KN_CollectionDetail({ collection, embedProviders, sspProviders, cerProv
       Collection — {cid}
       <span className="pc-modal-chip mono text-sm muted" style={{ marginLeft: 10, marginBottom: 0, verticalAlign: "middle" }}>
         {readOnly ? "read-only" : st ? (st.state === "ready" ? "semantic" : st.state) : "…"}
+      </span>
+      <span data-testid="collection-access-markers" style={{ marginLeft: 10, display: "inline-flex", gap: 6, verticalAlign: "middle" }}>
+        <SHR_AccessMarkers access={collection.access} me={meId} names={ownerNames} />
       </span>
       {st && st.state !== "disabled" ? (
         <span className="muted text-sm" style={{ marginLeft: 8 }}>{st.documents_total} documents</span>
@@ -1147,6 +1157,19 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
   );
   const rows = list.data?.items ?? [];
 
+  // ACL-P6-T3: the marker's viewer + the looked-up owner names (one batched
+  // lookup for the page).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(() => {
+    const out = [];
+    rows.forEach((c) => {
+      ((c.access && c.access.owners) || []).forEach((o) => { if (out.indexOf(o) < 0) out.push(o); });
+    });
+    return out;
+  }, [rows]);
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   // A freshly-POSTed row, held only until the list refetch below catches
   // up with it. onCreate bumps reloadKey to pick up the new row for the
   // list view, but useResource keys its cache by reloadKey - a bump mints
@@ -1273,16 +1296,7 @@ function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
                     <td className="mono">
                       {c.id}
                       {c.system ? <Icon name="lock" /> : null}
-                      {SHR_accessBadges(c.access).map((b) => (
-                        <span
-                          key={b}
-                          className="pill pill-ended"
-                          data-testid={"collection-access-badge-" + b}
-                          style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
-                        >
-                          <span className="dot"></span>{b}
-                        </span>
-                      ))}
+                      <SHR_AccessMarkers access={c.access} me={meId} names={ownerNames} />
                     </td>
                     <td className="muted text-sm">{c.description}</td>
                     <td className="mono muted text-sm">

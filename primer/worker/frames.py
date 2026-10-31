@@ -691,7 +691,7 @@ async def apply_leaf(
         decision, reason, _kind = classify_approval_payload(payload)
         if decision == "approved":
             tool_manager = await services.build_subagent_toolmanager(
-                inner_frame.context
+                inner_frame.context, agent_id=inner_frame.agent_id,
             )
             # A gate ``system__call_tool`` raised parks the INNER tool's bare
             # name, which the subagent's manager cannot route (its tools need

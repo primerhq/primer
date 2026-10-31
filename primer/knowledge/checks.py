@@ -20,10 +20,12 @@ id is left alone.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from primer.common.entity_checks import EntityCheckError
 from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
 from primer.model.collection import Collection
+from primer.model.except_ import ConflictError
 from primer.model.graph import Graph
 
 SYSTEM_FLAG_PROTECTED = "system_flag_protected"
@@ -130,6 +132,21 @@ def check_collection_search_unchanged(entity: Collection, existing: Collection) 
     entity.search = existing.search
 
 
+async def check_collection_search_use(entity: Collection, *, storage_provider: Any, person: Any) -> None:
+    """Refuse a create whose ``search`` names a provider the saver may not use, with the not-registered answer ``enable_search`` gives
+    (security review of P4, finding 2): the same use check, so a body cannot carry what the enable route refuses. A provider that does
+    not exist is not this check's (no person: internal callers, unchecked)."""
+    from primer.knowledge.lifecycle import validate_search_config
+    from primer.knowledge.search_use import unusable_search_provider
+
+    if entity.search is None or person is None or await unusable_search_provider(storage_provider, person, entity.search) is None:
+        return
+    try:
+        await validate_search_config(storage_provider, entity.search, person)
+    except ConflictError as exc:
+        raise EntityCheckError("conflict", str(exc), field="search") from exc
+
+
 __all__ = [
     "COLLECTION_ID_INVALID",
     "COLLECTION_SEARCH_PROTECTED",
@@ -139,6 +156,7 @@ __all__ = [
     "SYSTEM_FLAG_PROTECTED",
     "check_collection_id",
     "check_collection_search_unchanged",
+    "check_collection_search_use",
     "check_collection_system_flag",
     "check_graph_id",
     "is_reserved_collection_id",

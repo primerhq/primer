@@ -35,7 +35,10 @@ WID = "shared"
 async def world(tmp_path: Path):
     sp = _SP()
     await sp.get_storage(WorkspaceProvider).create(
-        WorkspaceProvider(id="local-1", provider=WorkspaceProviderType.LOCAL, config=LocalWorkspaceConfig(root_path=str(tmp_path)))
+        WorkspaceProvider(
+            id="local-1", provider=WorkspaceProviderType.LOCAL, config=LocalWorkspaceConfig(root_path=str(tmp_path)),
+            access=Access(public=True),  # usable by the anonymous caller too (access-control P4 Task 5)
+        )
     )
     # Public: the tool is called with no context (an anonymous caller), which reads only public templates.
     template = WorkspaceTemplate(access=Access(public=True), id="tpl-1", description="t", provider_id="local-1")

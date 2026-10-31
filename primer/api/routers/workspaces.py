@@ -45,6 +45,7 @@ from primer.access.person import person_from_request
 from primer.access.policy import level_of, require
 from primer.access.workspaces import readable_workspace_ids, require_session, require_workspace, scope_to_readable_workspaces
 from primer.api.routers.access import make_access_router
+from primer.channel.checks import channel_for_binding
 from primer.api.deps import (
     get_claim_engine,
     get_collection_storage,
@@ -91,6 +92,7 @@ from primer.api.routers._references import ReferenceCheck
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.model.except_ import (
+    AccessDeniedError,
     ConfigError,
     BadRequestError,
     ConflictError,
@@ -531,6 +533,7 @@ def _ref_workspace_storage(request: Request):
 
 provider_router = make_crud_router(
     model_cls=WorkspaceProvider,
+    grantable=True,
     storage_dep=get_workspace_provider_storage,
     plural="workspace_providers",
     tag="workspace-providers",
@@ -571,6 +574,7 @@ provider_choices_router = APIRouter(tags=["workspace-providers"])
     responses=common_responses(500),
 )
 async def list_workspace_provider_choices(
+    request: Request,
     storage=Depends(get_workspace_provider_storage),
 ) -> WorkspaceProviderChoices:
     """Every workspace provider as ``{id, kind, label, default_image}``, sorted by id.
@@ -579,7 +583,7 @@ async def list_workspace_provider_choices(
     ``containerd`` or ``Kubernetes``). ``default_image`` is the image a container provider runs when a template names none, and ``null``
     for the other kinds. The provider's configuration is never part of the answer.
     """
-    return await list_provider_choices(storage)
+    return await list_provider_choices(storage, person_from_request(request))
 
 
 # ===========================================================================
@@ -699,6 +703,19 @@ async def _workspace_template_pre_delete(existing, request: Request) -> None:
         )
 
 
+async def _check_template_provider_use(entity, existing, request: Request) -> None:
+    """The saver may name only a workspace provider they may use; an unchanged provider is not re-checked (access-control P4 Task 5)."""
+    from primer.workspace.provider_use import provider_unusable, provider_unusable_message
+
+    if existing is not None and existing.provider_id == entity.provider_id:
+        return
+    if await provider_unusable(get_storage_provider(request), person_from_request(request), entity.provider_id):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "workspace_provider_not_found", "field": "provider_id", "message": provider_unusable_message(entity.provider_id)},
+        )
+
+
 async def _refuse_unreadable_document_mounts(entity, request: Request) -> None:
     """The saver must read the collection of every ``document`` file source of a template (access-control P3 SEC, finding 4); refused like a missing document."""
     from primer.workspace.resolvers import refuse_unreadable_document_mounts
@@ -709,12 +726,14 @@ async def _refuse_unreadable_document_mounts(entity, request: Request) -> None:
 async def _workspace_template_pre_create(entity, request: Request) -> None:
     await _reject_reserved_workspace_template_create(entity, request)
     _check_template_privilege(entity, None, request)
+    await _check_template_provider_use(entity, None, request)
     await _refuse_unreadable_document_mounts(entity, request)
 
 
 async def _workspace_template_pre_update(entity, existing, request: Request) -> None:
     await _reject_reserved_workspace_template_update(entity, existing, request)
     _check_template_privilege(entity, existing, request)
+    await _check_template_provider_use(entity, existing, request)
     await _refuse_unreadable_document_mounts(entity, request)
     # 01a11d32: the password of a url file source and the env values are served masked, and PUT is a full replace, so a client that sends the served body back keeps the stored ones: an
     # admin's password for the same scheme, host, port and user, a user's only for the whole unchanged URL (any other change that carries the mask is a 422 and nothing is stored). After the
@@ -1077,6 +1096,16 @@ async def create_workspace(
     # in the body is ignored (sharing happens on PUT /{id}/access).
     person = person_from_request(request)
     access = Access.owned_by(person.user_id) if person.user_id else Access()
+    if body.reply_binding is not None and await channel_for_binding(storage_provider, person, body.reply_binding.channel_id) is None:
+        # The creator binds a channel they may use (and on a provider they may use): anything else reads as a missing channel, as the bind route.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "channel_not_found",
+                "channel_id": body.reply_binding.channel_id,
+                "message": f"Channel {body.reply_binding.channel_id!r} does not exist.",
+            },
+        )
     try:
         row = await registry.create(
             template=template,
@@ -1244,11 +1273,9 @@ async def set_workspace_reply_binding(
                 ),
             },
         )
-    channel_storage = sp.get_storage(Channel)
-    channel = await channel_storage.get(body.channel_id)
-    # The binding reads the channel it names: a channel the caller holds no level on answers exactly like a missing one,
-    # in this route's own channel_not_found words (access spec 9).
-    if channel is None or level_of(person_from_request(request), channel.access) is None:
+    # The binding reads the channel it names and uses its provider: a channel the caller holds no level on, or on a provider they may not
+    # use, answers exactly like a missing one, in this route's own channel_not_found words (access spec 9; P4 Task 6).
+    if await channel_for_binding(sp, person_from_request(request), body.channel_id) is None:
         raise HTTPException(
             status_code=422,
             detail={
@@ -1684,6 +1711,7 @@ async def compact_session_endpoint(
     from primer.model.agent import Agent
     from primer.model.chat import Message, TextPart
     from primer.model.graph import build_execution_context
+    from primer.authz import ProfileUnusable
     from primer.model_profile import resolve_llm
     from primer.session.compaction import (
         append_compaction_marker,
@@ -1720,7 +1748,11 @@ async def compact_session_endpoint(
             provider_registry,
             default_profile_id=agent.model.profile_id,
             override_profile_id=getattr(row.binding, "profile_id", None),
+            person=person_from_request(request),
         )
+    except ProfileUnusable as exc:
+        # Compacting spends the model as the requester: a profile they may not use is a refusal (403), not a misconfiguration.
+        raise AccessDeniedError(exc.message) from exc
     except (NotFoundError, ConfigError) as exc:
         raise ConfigError(
             f"Agent {agent.id!r} names model profile "

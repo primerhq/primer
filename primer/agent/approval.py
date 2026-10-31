@@ -58,6 +58,8 @@ class ApprovalContext:
     session_id: str | None
     chat_id: str | None
     requested_at: datetime  # tz-aware UTC
+    # The run's composite identity ``{user, actor}`` (``primer.access.person.identity_doc``); None where a gate has none to give.
+    identity: dict[str, Any] | None = None
 
     def to_input_doc(self) -> dict[str, Any]:
         """Shape sent to Rego / LLM judge."""
@@ -69,6 +71,7 @@ class ApprovalContext:
             "session_id": self.session_id,
             "chat_id": self.chat_id,
             "requested_at": self.requested_at.isoformat(),
+            "identity": self.identity,
         }
 
 

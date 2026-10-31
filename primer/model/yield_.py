@@ -42,7 +42,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from primer.model.principal import PrincipalRef
+from primer.model.principal import ActorRef, PrincipalRef
 
 
 if TYPE_CHECKING:
@@ -370,6 +370,10 @@ class ToolContext:
         the gate's :class:`~primer.agent.approval.ApprovalContext`, so a
         Rego or LLM-judge policy that reads ``input.agent_id`` decides the
         call through the door as it decides the direct one (audit G6-7).
+    actor
+        The innermost entity acting in the run (the session's agent, a graph agent node's agent, a sub-agent, a ToolCall node's graph or a
+        child graph), set by :meth:`ToolExecutionManager.context_for`. With ``initiated_by`` it is the run's composite identity
+        (:func:`primer.access.person.identity_doc`), which a door that gates another tool hands to the approval input. It never adds access.
     """
 
     tool_call_id: str
@@ -383,6 +387,7 @@ class ToolContext:
     turn_no: int | None = None
     principal: str | None = None
     agent_id: str | None = None
+    actor: ActorRef | None = None
 
 
 # ===========================================================================

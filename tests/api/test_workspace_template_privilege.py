@@ -31,7 +31,12 @@ from primer.auth.passwords import hash_password
 from primer.model.storage import OffsetPage
 from primer.model.user import User
 from primer.model.workspace import Workspace, WorkspaceRuntimeMeta, WorkspaceTemplate
+from tests._support.workspace_providers import seed_public_workspace_providers
 from tests.api.conftest import app, fake_provider_registry  # noqa: F401
+
+@pytest.fixture(autouse=True)
+async def _template_providers(app):
+    await seed_public_workspace_providers(app.state.storage_provider, "p-1")
 
 
 @pytest.fixture

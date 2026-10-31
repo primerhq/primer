@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 from pydantic_core import to_jsonable_python
 
+from primer.authz import ProfileUnusable
 from primer.int.claim import ClaimKind, ReleaseOutcome
 from primer.int.claim import Lease as ClaimLease
 from primer.int.scheduler import (
@@ -1115,6 +1116,20 @@ class WorkerPool:
                 outcome = await pause_session_for_refused_workspace(
                     self._storage.get_storage(WorkspaceSession), sid, refused,
                 )
+        except ProfileUnusable as unusable:
+            # A resume whose handler cannot build its executor because the parked turn's person may not use the model profile: the turn
+            # fails and the session stays resumable with its park kept (a grant, then /resume), never ended.
+            if self._storage is not None:
+                session_storage = self._storage.get_storage(WorkspaceSession)
+                unusable_row = await session_storage.get(sid)
+                if unusable_row is not None and unusable_row.status != SessionStatus.ENDED:
+                    from primer.session.dispatch import pause_session_for_unusable_profile
+
+                    io_shim = _WorkspaceIOShim(workspace_registry=self._workspace_registry)
+                    io_shim.register_session(sid, unusable_row.workspace_id)
+                    outcome = await pause_session_for_unusable_profile(
+                        session_storage, io_shim, unusable_row, unusable, event_bus=self._event_bus,
+                    )
         except executor_builders.RunRefused as refused:
             # The session's creator is deleted, disabled or revoked (G6-6, G7 ruling 2): a resume does not run the
             # parked call, approved or not, at any rank. A normal turn already ends failed when its executor cannot

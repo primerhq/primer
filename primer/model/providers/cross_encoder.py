@@ -12,6 +12,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field, PositiveInt, SecretStr
 
+from primer.model.access import Grantable
 from primer.model.common import Identifiable
 from primer.model.providers._shared import Limits
 
@@ -67,7 +68,7 @@ class CrossEncoderModel(BaseModel):
     )
 
 
-class CrossEncoderProvider(Identifiable):
+class CrossEncoderProvider(Grantable, Identifiable):
     """A configured cross-encoder reranker provider entry.
 
     One ``CrossEncoderProvider`` describes a single reranker backend

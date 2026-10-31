@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from primer.access.person import Person
+from primer.access.policy import visible_predicate
 from primer.model.storage import CursorPage, OrderBy
 from primer.model.workspace import (
     DOCKER_RUNTIME_IMAGE,
@@ -43,16 +45,20 @@ def provider_choice(row: WorkspaceProvider) -> WorkspaceProviderChoice:
     return WorkspaceProviderChoice(id=row.id, kind="local", label="Local")
 
 
-async def list_provider_choices(storage: Any) -> WorkspaceProviderChoices:
+async def list_provider_choices(storage: Any, person: Person | None = None) -> WorkspaceProviderChoices:
     """Every provider in ``storage`` as a choice, sorted by id.
 
     The rows are read a page at a time by cursor, so a provider deleted between two pages cannot move another across the boundary
-    (an offset walk would skip it), and sorted here as well, so the order does not depend on the backend's collation.
+    (an offset walk would skip it), and sorted here as well, so the order does not depend on the backend's collation. A ``person`` is offered
+    the providers they may use (a use grant, or public; admins all), filtered in the storage query.
     """
+    visible = visible_predicate(person) if person is not None else None
     rows: list[WorkspaceProvider] = []
     cursor: str | None = None
     while True:
-        page = await storage.list(CursorPage(cursor=cursor, length=_PAGE), order_by=[OrderBy(field="id", direction="asc")])
+        request = CursorPage(cursor=cursor, length=_PAGE)
+        order = [OrderBy(field="id", direction="asc")]
+        page = await storage.list(request, order_by=order) if visible is None else await storage.find(visible, request, order_by=order)
         rows.extend(page.items)
         if page.next_cursor is None:
             break

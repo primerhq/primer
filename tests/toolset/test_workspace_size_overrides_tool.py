@@ -72,15 +72,15 @@ async def sp() -> _SP:
     # The caller's run (``caller``) is in the default workspace (prime): a session outside it may not create a workspace (review of #870, F4).
     await store.set_default_workspace_id(caller().workspace_id)
     providers, templates = store.get_storage(WorkspaceProvider), store.get_storage(WorkspaceTemplate)
-    await providers.create(WorkspaceProvider(id="loc", provider=WorkspaceProviderType.LOCAL, config=LocalWorkspaceConfig(root_path="/tmp/x")))
-    await providers.create(WorkspaceProvider(
+    await providers.create(WorkspaceProvider(access=Access(public=True), id="loc", provider=WorkspaceProviderType.LOCAL, config=LocalWorkspaceConfig(root_path="/tmp/x")))
+    await providers.create(WorkspaceProvider(access=Access(public=True), 
         id="dock", provider=WorkspaceProviderType.CONTAINER,
         config=ContainerWorkspaceConfig(
             runtime="docker", connection=ContainerConnectionSocket(socket_path="/var/run/docker.sock"),
             reachability=ContainerReachabilityHostPort(),
         ),
     ))
-    await providers.create(WorkspaceProvider(
+    await providers.create(WorkspaceProvider(access=Access(public=True), 
         id="k3s", provider=WorkspaceProviderType.KUBERNETES,
         config=KubernetesWorkspaceConfig(connection=K8sConnectionInCluster(), namespace="ns", reachability=K8sReachabilityInCluster()),
     ))

@@ -32,7 +32,11 @@ from pydantic import BaseModel, ValidationError
 
 from primer.api.errors import common_responses
 from primer.llm._failure import scrubbed_event_text
-from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.routers._crud import (
+    make_crud_router,
+    preserve_masked_secrets_on_update,
+    read_write_routers,
+)
 from primer.api.routers._probe_text import draft_error
 from primer.model.web_search import (
     ACTIVE_WEB_SEARCH_CONFIG_ID,
@@ -331,8 +335,30 @@ async def put_active_config(
     return new_row
 
 
+# ACL-P4 Task 9: global settings readable by everyone. Each router splits
+# into a read part (its GETs: the _types metadata, the provider list/get,
+# the active-config read) and a write part (create / update / delete, the
+# _test probe, POST /find, the active-config PUT). The read part mounts at
+# the user tier with every secret masked by the models' SecretStr
+# serialization; the write part stays admin.
+web_search_providers_read_router, web_search_providers_write_router = read_write_routers(
+    web_search_providers_router,
+)
+web_search_providers_helpers_read_router, web_search_providers_helpers_write_router = read_write_routers(
+    web_search_providers_helpers_router,
+)
+web_search_active_config_read_router, web_search_active_config_write_router = read_write_routers(
+    web_search_active_config_router,
+)
+
+
 __all__ = [
+    "web_search_active_config_read_router",
     "web_search_active_config_router",
+    "web_search_active_config_write_router",
+    "web_search_providers_helpers_read_router",
     "web_search_providers_helpers_router",
-    "web_search_providers_router",
+    "web_search_providers_helpers_write_router",
+    "web_search_providers_read_router",
+    "web_search_providers_write_router",
 ]

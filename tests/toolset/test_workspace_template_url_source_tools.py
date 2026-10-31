@@ -20,6 +20,7 @@ from primer.model.workspace import WorkspaceTemplate
 from primer.model.yield_ import ToolContext
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.toolset.workspaces import build_workspaces_toolset
+from tests._support.workspace_providers import seed_public_workspace_providers
 from tests.toolset.test_workspaces import _StubBackend
 
 MASK = "**********"
@@ -35,6 +36,7 @@ CTX = ToolContext(
 async def world(tmp_path: Path):
     sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
     await sp.initialize()
+    await seed_public_workspace_providers(sp, "p-1")
     toolset = build_workspaces_toolset(storage_provider=sp, workspace_registry=WorkspaceRegistry(sp, factory=_StubBackend))
     yield sp, toolset
     await sp.aclose()

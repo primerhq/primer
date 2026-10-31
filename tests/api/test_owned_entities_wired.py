@@ -208,6 +208,9 @@ async def _create_template(a, client, tmp_path: Path) -> None:
         },
     )
     assert r.status_code == 201, r.text
+    # A new provider is private; the template's saver must be able to use it, so the admin makes it public.
+    r = await client.put("/v1/workspace_providers/p-loc/access", json={"owners": [], "grants": {}, "public": True})
+    assert r.status_code == 200, r.text
     r = await a.post(
         "/v1/workspace_templates", json={"id": "tpl-a", "provider_id": "p-loc", "description": "d"}
     )
@@ -227,6 +230,8 @@ async def test_channel_row_hidden_from_b_until_shared(actors, client):
         json={"id": "cp-discord", "provider": "discord", "config": {"bot_token": "x" * 60}},
     )
     assert r.status_code == 201, r.text
+    r = await client.put("/v1/channel_providers/cp-discord/access", json={"owners": [], "grants": {}, "public": True})
+    assert r.status_code == 200, r.text
     r = await a.post(
         "/v1/channels",
         json={"id": "ch-a", "provider_id": "cp-discord", "provider": "discord", "external_id": "C1"},

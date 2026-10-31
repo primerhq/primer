@@ -41,7 +41,8 @@ async def stub_materialise(app, monkeypatch):
         )
     calls: list[str] = []
 
-    async def materialise(*, template, overrides=None, workspace_id=None):
+    async def materialise(*, template, overrides=None, workspace_id=None, person=None):
+        assert person is not None and person.user_id and workspace_id.endswith(person.user_id), person  # made as its user
         calls.append(workspace_id)
         return _Live(workspace_id)
 

@@ -11,7 +11,17 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
 
 from primer.access.person import person_from_request
-from primer.access.service import LOOKUP_MAX, AccessUpdate, AccessView, UserRef, get_access_view, lookup_users, set_access
+from primer.access.service import (
+    LOOKUP_MAX,
+    NAMES_MAX,
+    AccessUpdate,
+    AccessView,
+    UserRef,
+    get_access_view,
+    lookup_user_names,
+    lookup_users,
+    set_access,
+)
 from primer.api.deps import get_storage_provider
 from primer.api.errors import common_responses
 from primer.model.user import User
@@ -38,10 +48,13 @@ def make_access_router(
     tag: str,
     allow_public_tools: bool = False,
     after_write: Callable[[Request, Any], Awaitable[None]] | None = None,
+    use_only: bool = False,
 ) -> APIRouter:
     """``GET`` / ``PUT /{plural}/{entity_id}/access`` for an owned model. Include it BEFORE the model's CRUD router.
 
-    ``after_write(request, row)`` runs once a PUT has landed (a harness fans its access out to what it installed).
+    ``after_write(request, row)`` runs once a PUT has landed (a harness fans its access out to what it installed). ``use_only`` is the
+    grantable-infrastructure shape (:func:`primer.access.service.set_access`): the route is on the user tier, and the service lets only
+    admins change it.
     """
     router = APIRouter(tags=[tag])
     name = model_cls.__name__
@@ -58,7 +71,9 @@ def make_access_router(
         storage=Depends(storage_dep),
         users=Depends(_users),
     ) -> AccessView:
-        return await get_access_view(storage, users, entity_id, person_from_request(request), what=f"{name} {entity_id!r}")
+        return await get_access_view(
+            storage, users, entity_id, person_from_request(request), what=f"{name} {entity_id!r}", use_only=use_only,
+        )
 
     @router.put(
         f"/{plural}/{{entity_id}}/access",
@@ -82,6 +97,7 @@ def make_access_router(
             what=f"{name} {entity_id!r}",
             allow_public_tools=allow_public_tools,
             after_write=(lambda row: after_write(request, row)) if after_write is not None else None,
+            use_only=use_only,
             harness_exists=_harness_exists(request),
         )
 
@@ -94,16 +110,20 @@ users_lookup_router = APIRouter(tags=["users"])
 @users_lookup_router.get(
     "/users/lookup",
     response_model=list[UserRef],
-    summary="Find users to share with by username prefix",
-    responses=common_responses(403, 500),
+    summary="Find users to share with by username prefix, or name the ids the console's badges show",
+    responses=common_responses(403, 422, 500),
 )
 async def _lookup_users(
     request: Request,
     q: str = Query(default="", max_length=64, description="Username prefix, case-insensitive."),
     limit: int = Query(default=10, ge=1, le=LOOKUP_MAX),
+    ids: str = Query(default="", description=f"Comma-separated user ids to name (the badges); at most {NAMES_MAX}."),
     users=Depends(_users),
 ) -> list[UserRef]:
-    return await lookup_users(users, person_from_request(request), q, limit)
+    person = person_from_request(request)
+    if ids:
+        return await lookup_user_names(users, person, [part for part in (p.strip() for p in ids.split(",")) if part])
+    return await lookup_users(users, person, q, limit)
 
 
 __all__ = ["make_access_router", "users_lookup_router"]

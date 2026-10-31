@@ -25,6 +25,7 @@ from primer.api.registries import (
     WorkspaceRegistry,
 )
 from primer.api.routers.workspaces import WorkspaceCreateBody, create_workspace
+from primer.model.access import Access
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
@@ -478,7 +479,7 @@ async def client(app):
 
 
 def _provider() -> WorkspaceProvider:
-    return WorkspaceProvider(
+    return WorkspaceProvider(access=Access(public=True), 
         id="local-1",
         provider=WorkspaceProviderType.LOCAL,
         config=LocalWorkspaceConfig(root_path="/tmp/primer-ws-tests"),
@@ -537,7 +538,7 @@ class TestWorkspaceProviderRouter:
         # Seed the reserved 'local' provider directly through storage
         # (POST is also blocked for reserved ids) so the PUT can hit the
         # pre-update guard.
-        reserved = WorkspaceProvider(
+        reserved = WorkspaceProvider(access=Access(public=True), 
             id="local",
             provider=WorkspaceProviderType.LOCAL,
             config=LocalWorkspaceConfig(root_path="/tmp/primer-reserved"),

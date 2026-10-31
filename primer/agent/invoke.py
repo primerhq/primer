@@ -11,6 +11,7 @@ import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from primer.access.person import Person, person_from_ref
 from primer.agent.call_scope import current_interrupt
 from primer.model.chat import Message, TextPart, ToolTurnCapReached
 
@@ -69,7 +70,7 @@ class _SubagentSession:
     workspace_tools: list = []
 
     def __init__(
-        self, *, session_id: str, workspace_id: str | None, agent_id: str
+        self, *, session_id: str, workspace_id: str | None, agent_id: str | None
     ) -> None:
         self.session_id = session_id
         self.workspace_id = workspace_id
@@ -94,6 +95,7 @@ def _depth_set(depth: int):
 async def build_subagent_toolmanager(
     context: Any,
     *,
+    agent_id: str | None = None,
     storage_provider: Any = None,
     provider_registry: Any,
     approval_resolver: Any | None = None,
@@ -113,7 +115,8 @@ async def build_subagent_toolmanager(
     ``context`` is an :class:`~primer.worker.frames.AgentResumeContext`
     (``session_id``, ``workspace_id``, ``chat_id``, ``principal``, ``tools``).
     The manager runs as ``context.initiated_by``, else as an unattributed user,
-    never as the system principal.
+    never as the system principal. ``agent_id`` is the subagent's own id: the
+    shim's ``agent_id`` and the run's actor (``ToolContext.actor``).
     ``storage_provider`` wires the platform event recorder so nested
     subagent tool calls land ``tool.called`` / ``llm.called`` like
     top-level ones (None keeps the manager recorder-less).
@@ -123,7 +126,7 @@ async def build_subagent_toolmanager(
     approved original_call), so the manager wiring lives in exactly one place.
     """
     from primer.agent.tool_manager import ToolExecutionManager
-    from primer.model.principal import PrincipalRef
+    from primer.model.principal import ActorRef, PrincipalRef
     from primer.worker.pool import _toolset_ids_from_scoped
 
     tools = list(context.tools or [])
@@ -137,7 +140,7 @@ async def build_subagent_toolmanager(
         _SubagentSession(
             session_id=session_id,
             workspace_id=context.workspace_id,
-            agent_id=getattr(context, "agent_id", None) or "subagent",
+            agent_id=agent_id,
         )
         if session_id is not None
         else None
@@ -170,6 +173,8 @@ async def build_subagent_toolmanager(
         initiated_by=initiated_by,
         event_recorder=recorder,
         turn_no=turn_no,
+        # Set even on a chat (no shim to read the agent from): the subagent acts, for its parent run's person.
+        actor=ActorRef(kind="agent", id=agent_id) if agent_id else None,
     )
 
 
@@ -290,6 +295,8 @@ async def run_subagent(
     agent, llm, llm_model = await _resolve_agent_runtime(
         agent_id, storage_provider=storage_provider,
         provider_registry=provider_registry,
+        # The sub-agent spends the model as the person the parent run acts as (no identity: an internal caller, unchecked).
+        **({"person": person_from_ref(identity)} if identity is not None else {}),
     )
 
     # Wire the manager the same way the worker wires a normal turn (the
@@ -327,6 +334,7 @@ async def run_subagent(
     )
     tool_manager = await build_subagent_toolmanager(
         context,
+        agent_id=agent.id,
         storage_provider=storage_provider,
         provider_registry=provider_registry,
         approval_resolver=approval_resolver,
@@ -419,8 +427,12 @@ async def _resolve_agent_runtime(
     *,
     storage_provider: Any,
     provider_registry: Any,
+    person: Person | None = None,
 ) -> tuple[Any, Any, Any]:
     """Resolve ``(agent, llm, llm_model)`` for a subagent run.
+
+    ``person`` is the person the run acts as: the agent's profile (and the providers behind it) must be usable by them, else
+    :class:`~primer.authz.ProfileUnusable` (access-control P4 Task 4).
 
     Shared by :func:`run_subagent` and :func:`resume_subagent` so both
     paths resolve the agent definition, its LLM client and the concrete
@@ -440,6 +452,7 @@ async def _resolve_agent_runtime(
     llm, llm_model = await resolve_llm(
         storage_provider, provider_registry,
         default_profile_id=agent.model.profile_id,
+        person=person,
     )
     return agent, llm, llm_model
 
@@ -503,10 +516,12 @@ async def resume_subagent(
     agent, llm, llm_model = await _resolve_agent_runtime(
         agent_id, storage_provider=storage_provider,
         provider_registry=provider_registry,
+        **({"person": person_from_ref(context.initiated_by)} if getattr(context, "initiated_by", None) is not None else {}),
     )
 
     tool_manager = await build_subagent_toolmanager(
         context,
+        agent_id=agent.id,
         storage_provider=storage_provider,
         provider_registry=provider_registry,
         approval_resolver=approval_resolver,

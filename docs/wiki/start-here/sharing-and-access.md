@@ -1,6 +1,6 @@
 ---
 title: "Sharing and access"
-summary: "Who may read, change, share or delete an agent, graph, toolset, template, channel, collection, trigger, harness or workspace, and how to share one."
+summary: "Who may read, change, share or delete a shared item (agent, graph, toolset, channel, collection, trigger, harness, workspace), and who may use models and tools."
 tools: [system__get_entity_access, system__set_entity_access, system__lookup_users]
 related: [start-here/roles-and-approvals, agents/create-and-edit, workspaces/prime, sessions/control-a-session]
 order: 60
@@ -44,6 +44,15 @@ The platform wiki (the `system` collection) is public and read-only for everyone
 - Every full user gets their own private default workspace the first time they sign in as one (first login, or the first one after an admin promotes them from `restricted`). Its id is `ws-<user id>`, you own it, and your operator session (`main`) is waiting in it.
 - `workspaces__list_workspaces` and `workspaces__get_workspace` mark it with `is_default: true` for you; another user sees their own there. The install's original default workspace, prime, is the first admin's.
 - It can never be deleted (`reserved_workspace`), but you can share it or make it public like any workspace.
+
+## Who can use
+
+Some things are not shared like your own entities: an admin decides who may **use** them.
+
+- **Models and providers.** A model profile and the providers behind your agents (the LLM provider, workspace providers, channel providers and the embedding, reranking and vector store providers a collection's search uses) carry a use grant. A new one is private to admins until an admin grants use to chosen users or makes it public. You can name a profile in an agent or graph only if you may use it; one you may not use answers as if it did not exist.
+- **A run uses them as the person it runs as.** If an agent runs for someone who may not use its profile, the turn does not run: the session pauses with the reason `model profile 'X' is not available to the person this turn runs as` (`model_profile_unusable`), and resumes once an admin grants use. Nothing is lost.
+- **Tools follow the same person.** A run only gets the tools its person may use: a toolset you cannot read is left out and the model is told `not available to you`, unless its owner marked single tools public, in which case just those tools are offered (`some tools not available to you`).
+- **Global settings.** Settings every feature already uses (web search and fetch, speech, artifact storage, canvas, MCP exposure) can be read by every user with secrets masked. Only an admin changes them.
 
 ## How to
 
@@ -96,6 +105,7 @@ Make two tools of a toolset public without sharing the rest:
 - `access` in a create or update body is ignored: sharing changes only through `set_entity_access`.
 - Only enabled full users can be owners or grantees; a restricted or disabled account is refused.
 - A collection's search settings change only through its search routes, by an owner: replacing the whole collection with a different `search` block is refused.
+- Profiles and providers are shared by use grants only: only an admin sets them, with `set_entity_access` kinds `model_profile`, `llm_provider`, `embedding_provider`, `cross_encoder_provider`, `semantic_search_provider`, `workspace_provider` and `channel_provider` (no owners, every grant `read`). You can read the sharing of one you may use, but it lists no one else.
 - Sharing a workspace at `full` lets the peer change its `agents.md`, which every agent in it reads: share at `read` unless they need to act.
 
 ## Related

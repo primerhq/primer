@@ -42,6 +42,7 @@ from primer.model.chat import (
     ToolCallStart,
     ToolResultPart,
 )
+from primer.model.access import Access
 from primer.model.model_profile import ModelProfile, ModelProfileConfig
 from primer.model_profile import ResolvedModel
 from primer.session.delegation import DelegationRecorder, reset_delegation_sink, set_delegation_sink
@@ -93,6 +94,7 @@ class _Storage:
 
 def _profile(profile_id: str, provider_id: str, model_name: str) -> ModelProfile:
     return ModelProfile(
+        access=Access(public=True),  # usable by the run's person (access-control P4)
         id=profile_id, description="Test profile.", provider_id=provider_id, model_name=model_name, context_length=128_000,
     )
 

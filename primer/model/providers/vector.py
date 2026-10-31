@@ -16,6 +16,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field, PositiveInt, model_validator
 
+from primer.model.access import Grantable
 from primer.model.common import Identifiable
 from primer.model.providers.storage import _PostgresBaseConfig
 
@@ -291,7 +292,7 @@ _SSP_CONFIG_CLASS_BY_PROVIDER: dict["SemanticSearchProviderType", type[BaseModel
 }
 
 
-class SemanticSearchProvider(Identifiable):
+class SemanticSearchProvider(Grantable, Identifiable):
     """Operator-managed semantic-search backend backing collections
     and the internal collections subsystem.
 

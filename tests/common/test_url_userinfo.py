@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from primer.common.url_userinfo import MASK, MaskCannotBeRestored, carries_mask, mask_userinfo, restore_userinfo
+from primer.common.url_userinfo import strip_userinfo
 
 
 @pytest.mark.parametrize(
@@ -144,3 +145,15 @@ def test_a_url_that_carries_no_mask_is_left_as_sent(incoming: str, stored: str) 
 )
 def test_carries_mask_says_whether_the_userinfo_is_the_served_mask(url: str, expected: bool) -> None:
     assert carries_mask(url) is expected
+
+
+@pytest.mark.parametrize(("url", "served"), [
+    ("http://svc:pw@host:8080/v1?q=1", "http://host:8080/v1?q=1"),
+    ("https://TOKEN@host/", "https://host/"),
+    ("http://svc:p@ss@host/", "http://host/"),
+    ("http://host/a@b", "http://host/a@b"),  # an @ after the authority is not userinfo
+    ("not a url", "not a url"),
+])
+def test_strip_userinfo_removes_the_whole_userinfo(url, served):
+    """What a non-admin's read of a global setting serves (security review of P4, finding 6)."""
+    assert strip_userinfo(url) == served

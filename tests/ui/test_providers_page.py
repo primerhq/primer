@@ -49,6 +49,11 @@ window.ChannelProviderDetail = function (props) {
 // The catalog aborts its reads when it closes (#923, round 2): the stand-in the browser's AbortController is for MiniRacer, which has none.
 globalThis.AbortController = function () { var s = { aborted: false }; this.signal = s; this.abort = function () { s.aborted = true; }; };
 
+// ACL-P4 Task 9: the catalog gates its writes (Register, a card's Open and the Delete menu) on the console role; these
+// tests exercise the admin's editable catalog.
+var CONSOLE = { role: "admin" };
+function NV_useConsole() { return CONSOLE; }
+
 var PROVIDER_FIXTURES = {};
 var FAIL_CLASSES = {};
 window.__FAIL_DELETE = null;

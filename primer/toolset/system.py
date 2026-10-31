@@ -87,9 +87,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from primer.access.person import person_for_tool
 from primer.access.policy import level_of
-from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks
+from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks, check_graph_node_profiles
 from primer.agent.approval import ApprovalResolver
 from primer.agent.approval_checks import check_policy
+from primer.authz import ProfileUnusable
 from primer.agent.tool_schemas import find_tool_schema
 from primer.agent.invoke import (
     InvocationDepthExceeded,
@@ -166,12 +167,13 @@ from primer.artifact.checks import (
     check_artifact_provider_write,
     prepare_artifact_provider,
 )
-from primer.channel.checks import check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
+from primer.channel.checks import channel_for_binding, check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.knowledge.checks import (
     RESERVED_COLLECTION_ID_PREFIX,
     check_collection_id,
     check_collection_search_unchanged,
+    check_collection_search_use,
     check_collection_system_flag,
     check_graph_id,
 )
@@ -496,12 +498,15 @@ def build_system_toolset(
         del existing  # the checks validate the incoming shape only
         await check_profile_on_update(entity, storage_provider=storage_provider)
 
-    async def _channel_pre_create(entity: Channel) -> None:
-        await check_channel_on_create(entity, storage_provider=storage_provider)
+    async def _channel_pre_create(entity: Channel, *, person: Any = None) -> None:
+        await check_channel_on_create(entity, storage_provider=storage_provider, person=person)
 
-    async def _channel_pre_update(entity: Channel, existing: Channel) -> None:
-        del existing  # the new pair is what counts: the row is rewritten whole
-        await check_channel_on_update(entity, storage_provider=storage_provider)
+    async def _channel_pre_update(entity: Channel, existing: Channel, *, person: Any = None) -> None:
+        # The new pair is what counts (the row is rewritten whole); the saver is asked only about a provider the update adds.
+        await check_channel_on_update(entity, storage_provider=storage_provider, person=person, existing=existing)
+
+    _channel_pre_create.takes_person = True  # type: ignore[attr-defined]
+    _channel_pre_update.takes_person = True  # type: ignore[attr-defined]
 
     async def _channel_provider_pre_create(entity: ChannelProvider) -> None:
         check_channel_provider_secrets(entity)
@@ -511,16 +516,26 @@ def build_system_toolset(
         del existing
         check_channel_provider_secrets(entity)
 
-    async def _collection_pre_create(entity: Collection) -> None:
+    async def _collection_pre_create(entity: Collection, *, person: Any = None) -> None:
         check_collection_id(entity)
         check_collection_system_flag(entity)
+        await check_collection_search_use(entity, storage_provider=storage_provider, person=person)
+
+    _collection_pre_create.takes_person = True  # type: ignore[attr-defined]
 
     async def _collection_pre_update(entity: Collection, existing: Collection) -> None:
         check_collection_system_flag(entity, existing)
         check_collection_search_unchanged(entity, existing)
 
-    async def _graph_pre_create(entity: Graph) -> None:
+    async def _graph_pre_create(entity: Graph, *, person: Any = None) -> None:
         check_graph_id(entity)
+        await check_graph_node_profiles(entity, storage_provider=storage_provider, person=person)
+
+    async def _graph_pre_update(entity: Graph, existing: Graph, *, person: Any = None) -> None:
+        await check_graph_node_profiles(entity, storage_provider=storage_provider, person=person, existing=existing)
+
+    _graph_pre_create.takes_person = True  # type: ignore[attr-defined]
+    _graph_pre_update.takes_person = True  # type: ignore[attr-defined]
 
     async def _artifact_provider_pre_create(entity: ArtifactStorageProvider) -> None:
         # The reserved default must name a kind the factory can build, on a create (its row went missing) as on an update; the REST route
@@ -536,7 +551,7 @@ def build_system_toolset(
 
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "collection": (_collection_pre_create, _collection_pre_update),
-        "graph": (_graph_pre_create, None),
+        "graph": (_graph_pre_create, _graph_pre_update),
         # The agent's profile and toolset references are looked up before the write, as the REST route does (A-09); the builder's
         # ``crud`` toolset takes the same pair from the same function.
         "agent": agent_pre_checks(storage_provider),
@@ -559,6 +574,11 @@ def build_system_toolset(
     # channels, and the toolset row itself) -> user. ``owned`` (the
     # last element) turns on the access-control enforcement the REST
     # ``owned=True`` routers apply to the five owned entities.
+    # The infrastructure rows that carry a use grant (access-control P4 Task 3): created private, edited without resetting it, shared
+    # through ``set_entity_access`` by admins only.
+    _GRANTABLE_LABELS = frozenset({
+        "llm_provider", "model_profile", "embedding_provider", "cross_encoder_provider", "semantic_search_provider", "channel_provider",
+    })
     crud_specs = [
         ("llm_provider", "llm_providers", LLMProvider, None, _inv_llm, _inv_llm, "admin", False),
         # A profile names a provider and its API-level tunables, so it is
@@ -715,6 +735,7 @@ def build_system_toolset(
                 on_delete=on_d,
                 required_role=role,
                 owned=owned,
+                grantable=label in _GRANTABLE_LABELS,
                 guards=guards_by_label.get(label),
                 pre_create=pre_create,
                 pre_update=pre_update,
@@ -840,10 +861,9 @@ def build_system_toolset(
                 f"Workspace {args.workspace_id!r} does not exist",
                 error_type="not-found",
             )
-        channel = await _channel_storage.get(args.channel_id)
-        # The binding reads the channel it names: a channel the caller holds no level on answers exactly like a missing one,
-        # in the missing-channel words (access spec 9).
-        if channel is None or level_of(person_for_tool(ctx), channel.access) is None:
+        # The binding reads the channel it names and uses its provider: a channel the caller holds no level on, or on a provider they may
+        # not use, answers exactly like a missing one, in the missing-channel words (access spec 9; P4 Task 6).
+        if await channel_for_binding(storage_provider, person_for_tool(ctx), args.channel_id) is None:
             return _err(
                 f"Channel {args.channel_id!r} does not exist",
                 error_type="not-found",
@@ -1388,6 +1408,9 @@ def build_system_toolset(
             )
         except ValueError as exc:
             return _err(str(exc), error_type="bad-request")
+        except ProfileUnusable as exc:
+            # The model profile of the sub-agent is not usable by the person this run acts as: the call fails, not the parent session.
+            return _err(exc.message, error_type="forbidden")
         except ToolTurnCapReached as exc:
             # 01a1095e: the subagent stopped at its own max_tool_turns. Its last text is not a result: the call is an
             # error, and the text it had so far travels in the body for the parent model to use or discard.

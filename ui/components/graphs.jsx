@@ -243,6 +243,19 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
       || (g.description || "").toLowerCase().includes(textFilter.toLowerCase()),
   );
 
+  // ACL-P6-T3: the marker's viewer + the looked-up owner names (one batched
+  // lookup for the page).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(() => {
+    const out = [];
+    items.forEach((g) => {
+      ((g.access && g.access.owners) || []).forEach((o) => { if (out.indexOf(o) < 0) out.push(o); });
+    });
+    return out;
+  }, [items]);
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   // Per-row status — batched fetch of /v1/graphs/{id}/status.
   // Triggered when the list payload changes (or on first paint).
   const [perRowStatus, setPerRowStatus] = React.useState({});
@@ -380,16 +393,7 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
                 <tr key={g.id} onClick={() => onOpen(g.id)} style={{ cursor: "pointer" }}>
                   <td className="mono">
                     {g.id}
-                    {SHR_accessBadges(g.access).map((b) => (
-                      <span
-                        key={b}
-                        className="pill pill-ended"
-                        data-testid={"graph-access-badge-" + b}
-                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
-                      >
-                        <span className="dot"></span>{b}
-                      </span>
-                    ))}
+                    <SHR_AccessMarkers access={g.access} me={meId} names={ownerNames} />
                   </td>
                   <td className="muted text-sm" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {g.description || <span style={{ color: "var(--text-4)" }}>—</span>}
@@ -489,6 +493,15 @@ function GraphDetail({ graphId, pushToast }) {
   // palette's entity.share verb dispatches to it while this surface is open).
   const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
 
+  // ACL-P6-T3: the marker row of the detail header (the graph's own access).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(
+    () => ((graph.data && graph.data.access && graph.data.access.owners) || []),
+    [graph.data]
+  );
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   if (graph.loading && !graph.data) {
     return <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>;
   }
@@ -518,6 +531,11 @@ function GraphDetail({ graphId, pushToast }) {
         onOpenHarness={() => navigate("/harnesses/" + encodeURIComponent(graph.data.harness_id))}
         onShare={() => setShareOpen(true)}
       />
+      {graph.data?.access && (
+        <div data-testid="graph-access-markers">
+          <SHR_AccessMarkers access={graph.data.access} me={meId} names={ownerNames} />
+        </div>
+      )}
       <window.GB_Builder
         graphId={id}
         loaded={graph.data}

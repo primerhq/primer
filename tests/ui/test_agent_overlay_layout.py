@@ -515,11 +515,14 @@ def test_picking_another_profile_is_what_is_saved(ctx):
     assert calls(ctx)[0]["body"]["model"] == {"profile_id": "slow"}
 
 
-def test_a_deleted_profile_stays_selected_and_says_so(ctx):  # Review Focus 2
+def test_a_profile_outside_the_choices_stays_selected_and_says_so(ctx):  # Review Focus 2
+    """ACL-P4-T7: the form reads the caller's own choices, so a stored profile outside them is
+    not deleted - it is not available to the caller. The selection keeps the id (a save must not
+    repoint the agent) and says so."""
     mount(ctx, existing={**FULL, "model": {"profile_id": "gone"}})
-    assert options(ctx, "agent-model-profile")[0] == {"value": "gone", "text": "gone (missing)"}
+    assert options(ctx, "agent-model-profile")[0] == {"value": "gone", "text": "gone (not available to you)"}
     assert prop(ctx, "agent-model-profile", "value") == "gone"
-    assert prop(ctx, "field:Model profile", "data-error") == "This profile no longer exists. Pick another one."
+    assert prop(ctx, "field:Model profile", "data-error") == "This model profile is not available to you. An admin can grant its use."
 
 
 def test_the_profile_list_says_when_it_is_loading_empty_or_broken():
@@ -534,7 +537,7 @@ def test_the_profile_list_says_when_it_is_loading_empty_or_broken():
         assert options(ctx, "agent-model-profile") == [{"value": "", "text": "No model profiles yet"}]
         assert prop(ctx, "field:Model profile", "data-help") == "No model profiles yet. Register an LLM provider and import its models first."
         assert prop(ctx, "agent-form-submit", "disabled") is True
-    with agent_form() as ctx:  # a failed load is said as the error, never as "no longer exists"
+    with agent_form() as ctx:  # a failed load is said as the error, never as the not-available note
         set_resource(ctx, PROFILE_CHOICES_KEY, {"data": None, "loading": False, "error": {"detail": "upstream down"}})
         mount(ctx, existing=FULL)
         assert options(ctx, "agent-model-profile") == [{"value": "slow", "text": "slow"}]
@@ -565,10 +568,10 @@ def test_a_profile_the_server_refuses_is_said_under_the_dropdown(ctx):  # audit 
     assert recorded(ctx)["toasts"] == []
 
 
-def test_the_servers_refusal_of_the_profile_comes_ahead_of_the_missing_note(ctx):
+def test_the_servers_refusal_of_the_profile_comes_ahead_of_the_unavailable_note(ctx):
     reject_with(ctx, real_refusal({"model": {"profile_id": "gone-too"}}))
     mount(ctx, existing={**FULL, "model": {"profile_id": "gone"}})
-    assert prop(ctx, "field:Model profile", "data-error") == "This profile no longer exists. Pick another one."
+    assert prop(ctx, "field:Model profile", "data-error") == "This model profile is not available to you. An admin can grant its use."
     click(ctx, "agent-form-submit")
     assert prop(ctx, "field:Model profile", "data-error").startswith("ModelProfile 'gone-too' does not exist")
 

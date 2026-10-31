@@ -22,6 +22,13 @@ from tests.toolset.test_system_crud_guards import world  # noqa: F401  (world is
 
 _TOOL = "list_model_profile_choices"
 
+def _pub(row):
+    """The row a user may use: these suites check the shape of a user's choices, so every row is public."""
+    from primer.model.access import Access
+
+    return row.model_copy(update={"access": Access(public=True)})
+
+
 
 def _ctx(role: str) -> ToolContext:
     return ToolContext(
@@ -83,8 +90,8 @@ async def test_the_full_profile_tools_stay_admin_only(world) -> None:
 async def test_a_user_run_lists_the_choices_sorted_by_id_and_nothing_else(world) -> None:
     sp, toolset, _ = world
     for row in (_single("zz-b", context_length=8192), _single("aa-a")):
-        await sp.get_storage(ModelProfile).create(row)
-    await sp.get_storage(ModelProfile).create(ModelProfile(id="mm-pool", description="a pool", kind="aggregated", members=["aa-a", "zz-b"]))
+        await sp.get_storage(ModelProfile).create(_pub(row))
+    await sp.get_storage(ModelProfile).create(_pub(ModelProfile(id="mm-pool", description="a pool", kind="aggregated", members=["aa-a", "zz-b"])))
 
     is_error, answer = await _call(toolset)
 
@@ -105,7 +112,7 @@ async def test_the_tool_answers_what_the_route_answers(world) -> None:
 
     sp, toolset, _ = world
     for n in (3, 1, 2):
-        await sp.get_storage(ModelProfile).create(_single(f"p-{n}"))
+        await sp.get_storage(ModelProfile).create(_pub(_single(f"p-{n}")))
 
     _, answer = await _call(toolset, limit=2, offset=1)
     direct = await list_model_profile_choices(sp.get_storage(ModelProfile), OffsetPage(offset=1, length=2))
@@ -117,7 +124,7 @@ async def test_the_tool_answers_what_the_route_answers(world) -> None:
 async def test_the_tool_pages_by_offset_and_by_cursor(world) -> None:
     sp, toolset, _ = world
     for n in (3, 1, 2, 5, 4):
-        await sp.get_storage(ModelProfile).create(_single(f"p-{n}"))
+        await sp.get_storage(ModelProfile).create(_pub(_single(f"p-{n}")))
     every = await _every_id(sp)
 
     _, first = await _call(toolset, limit=2)

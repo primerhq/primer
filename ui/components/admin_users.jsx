@@ -731,6 +731,11 @@ function ADM_EditUserDialog({ user, onClose, onSaved }) {
             <span>Disabled <span className="muted text-sm">— blocks sign-in without deleting the account.</span></span>
           </label>
         </div>
+        {(role !== "user" || disabled) && (
+          <div className="field-help" data-testid="adm-edit-lifecycle-note">
+            A restricted or disabled user keeps their entities and cannot use them until restored.
+          </div>
+        )}
         <div className="field">
           <label className="field-label" htmlFor="adm-edit-password">
             Reset password <span className="hint">optional · leave blank to keep current</span>
@@ -813,6 +818,9 @@ function ADM_DeleteUserDialog({ user, onClose, onDeleted }) {
       <div data-testid="adm-delete-confirm">
         <p>This permanently removes <span className="mono">{user.username}</span>. Their sessions stay for audit.</p>
         <ul>
+          <li>Their entities move to you: ownership passes to the admin who deletes them, so nothing is left without an owner.</li>
+          <li>Their sharing grants and MCP sign-ins are removed: nothing they were given survives them.</li>
+          <li>Triggers that run as them are switched off until someone with full access edits them.</li>
           <li>New requests from this account are refused starting with the very next one, so their browser sign-in stops working; a connection already open, such as a terminal, is not cut off.</li>
           <li>The server refuses this if it would remove the last enabled admin.</li>
           <li>This action cannot be undone.</li>

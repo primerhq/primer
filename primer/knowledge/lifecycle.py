@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from primer.access.person import Person
 from primer.knowledge.indexing import index_documents
 from primer.knowledge.row_writes import write_collection_fields
 from primer.model.collection import Collection, CollectionSearchConfig, Document
@@ -27,12 +28,17 @@ class SearchStatus(BaseModel):
 
 
 async def validate_search_config(
-    storage_provider, cfg: CollectionSearchConfig
+    storage_provider, cfg: CollectionSearchConfig, person: Person | None = None
 ) -> None:
+    """Every provider the config names must be registered, and (with a ``person``, the owner enabling search) usable by them: a provider
+    they hold no use grant on is answered exactly like an unregistered one (access-control P4 Task 6)."""
+    from primer.knowledge.search_use import unusable_search_provider
+
+    unusable = await unusable_search_provider(storage_provider, person, cfg) if person is not None else None
     emb = await storage_provider.get_storage(EmbeddingProvider).get(
         cfg.embedder.provider_id
     )
-    if emb is None:
+    if emb is None or unusable == (EmbeddingProvider, cfg.embedder.provider_id):
         raise ConflictError(
             f"embedding provider {cfg.embedder.provider_id!r} is not "
             "registered; register it under /v1/embedding_providers (extras "
@@ -41,7 +47,7 @@ async def validate_search_config(
     ssp = await storage_provider.get_storage(SemanticSearchProvider).get(
         cfg.vector_store_provider_id
     )
-    if ssp is None:
+    if ssp is None or unusable == (SemanticSearchProvider, cfg.vector_store_provider_id):
         raise ConflictError(
             f"semantic search provider {cfg.vector_store_provider_id!r} is "
             "not registered; register it under /v1/ssp and retry"
@@ -50,7 +56,7 @@ async def validate_search_config(
         ce = await storage_provider.get_storage(CrossEncoderProvider).get(
             cfg.cross_encoder.provider_id
         )
-        if ce is None:
+        if ce is None or unusable == (CrossEncoderProvider, cfg.cross_encoder.provider_id):
             raise ConflictError(
                 f"cross-encoder provider {cfg.cross_encoder.provider_id!r} "
                 "is not registered; register it under "
@@ -81,12 +87,13 @@ async def _write_search(storage_provider, collection: Collection,
 
 async def enable_search(storage_provider, provider_registry, ssr, *,
                         collection_id: str,
-                        cfg: CollectionSearchConfig) -> Collection:
+                        cfg: CollectionSearchConfig,
+                        person: Person | None = None) -> Collection:
     colls = storage_provider.get_storage(Collection)
     collection = await colls.get(collection_id)
     if collection is None:
         raise NotFoundError(f"Collection {collection_id!r} does not exist")
-    await validate_search_config(storage_provider, cfg)
+    await validate_search_config(storage_provider, cfg, person)
     collection = await _write_search(
         storage_provider, collection,
         cfg.model_copy(update={"state": "indexing", "error": None}),
@@ -107,6 +114,7 @@ async def enable_search(storage_provider, provider_registry, ssr, *,
             provider_registry=provider_registry,
             semantic_search_registry=ssr,
             content_store=content_store,
+            storage_provider=storage_provider,
         )
     except Exception as exc:  # noqa: BLE001 - partial index stays intact
         logger.exception("backfill failed for collection %s", collection_id)

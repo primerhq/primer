@@ -71,7 +71,7 @@ def daemon() -> _FakeDocker:
 @pytest.fixture
 async def sp() -> _SP:
     store = _SP()
-    await store.get_storage(WorkspaceProvider).create(WorkspaceProvider(
+    await store.get_storage(WorkspaceProvider).create(WorkspaceProvider(access=Access(public=True), 
         id="dock", provider=WorkspaceProviderType.CONTAINER,
         config=ContainerWorkspaceConfig(
             runtime="docker", connection=ContainerConnectionSocket(socket_path="/var/run/docker.sock"),

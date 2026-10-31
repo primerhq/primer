@@ -434,6 +434,7 @@ async def seed_model_profile(
     pre-seeding does not apply), or needing a profile with non-default
     config. Idempotent: returns the existing row if one is already there.
     """
+    from primer.model.access import Access
     from primer.model.model_profile import ModelProfile, ModelProfileConfig
 
     store = storage_provider.get_storage(ModelProfile)
@@ -449,6 +450,7 @@ async def seed_model_profile(
             model_name=model_name,
             context_length=context_length,
             config=config or ModelProfileConfig(),
+            access=Access(public=True),  # a test fixture stands in for a platform-written row (access-control P4)
         )
     )
 
@@ -478,6 +480,7 @@ class _FakeStorageProvider:
         against a real storage backend rather than this fake, should call
         :func:`seed_model_profile` explicitly.
         """
+        from primer.model.access import Access
         from primer.model.model_profile import ModelProfile
 
         store = self.get_storage(ModelProfile)
@@ -489,6 +492,8 @@ class _FakeStorageProvider:
                 provider_id=provider_id,
                 model_name=model_name,
                 context_length=128_000,
+                # The standard vocabulary stands in for platform-written and pre-existing rows, which are public (access-control P4).
+                access=Access(public=True),
             )
 
     def get_storage(self, model_class: type[_T]) -> _InMemoryStorage[_T]:

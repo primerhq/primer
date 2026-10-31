@@ -278,6 +278,19 @@ function TR_TriggerList() {
 
   const items = list.items;
 
+  // ACL-P6-T3: the marker's viewer + the looked-up owner names (one batched
+  // lookup for the page).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(() => {
+    const out = [];
+    items.forEach((t) => {
+      ((t.access && t.access.owners) || []).forEach((o) => { if (out.indexOf(o) < 0) out.push(o); });
+    });
+    return out;
+  }, [items]);
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   const onCreated = (trigger) => {
     setCreateOpen(false);
     list.refetch();
@@ -342,6 +355,8 @@ function TR_TriggerList() {
                 <TR_TriggerRow
                   key={t.id}
                   trigger={t}
+                  me={meId}
+                  names={ownerNames}
                   onOpen={() => navigate("/triggers/" + t.id)}
                   onChanged={list.refetch}
                 />
@@ -416,7 +431,7 @@ function TR_focusAfterRowGone(tr) {
   if (focusTarget) focusTarget.focus();
 }
 
-function TR_TriggerRow({ trigger, onOpen, onChanged }) {
+function TR_TriggerRow({ trigger, me, names, onOpen, onChanged }) {
   const { apiFetch } = window.primerApi;
   const kind = trigger?.config?.kind || "—";
   const enabled = !!trigger.enabled;
@@ -510,16 +525,7 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
       <td>
         <div style={{ fontWeight: 600 }}>{trigger.name || trigger.slug}</div>
         <div className="mono muted text-sm" style={{ fontSize: 11 }}>{trigger.slug}</div>
-        {SHR_accessBadges(trigger.access).map((b) => (
-          <span
-            key={b}
-            className="pill pill-ended"
-            data-testid={"trigger-access-badge-" + b}
-            style={{ fontSize: 10.5, marginTop: 2 }}
-          >
-            <span className="dot"></span>{b}
-          </span>
-        ))}
+        <SHR_AccessMarkers access={trigger.access} me={me} names={names} />
         {trigger.last_fire_error && (
           <span
             className="pill pill-failed"
@@ -1624,6 +1630,20 @@ function TR_TriggerDetail({ id }) {
   // palette's entity.share verb dispatches to it while this surface is open).
   const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
 
+  // ACL-P6-T3: the marker row (the trigger's own access) and "Runs as" (the
+  // trigger's owner field: the user its fires run as) both go through one
+  // batched lookup.
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(() => {
+    const out = [];
+    const t = detail.data;
+    ((t && t.access && t.access.owners) || []).forEach((o) => { if (out.indexOf(o) < 0) out.push(o); });
+    if (t && t.owner && t.owner.user_id && out.indexOf(t.owner.user_id) < 0) out.push(t.owner.user_id);
+    return out;
+  }, [detail.data]);
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   const refetchAll = React.useCallback(() => {
     detail.refetch();
     subs.refetch();
@@ -1721,6 +1741,11 @@ function TR_TriggerDetail({ id }) {
   const gates = TR_writeGates(access.data?.your_level);
   // The reason a disabled control says (never hidden silently): read-only first, then owner-only.
   const gateNote = (own) => (gates.ro ? TR_RO_NOTE : (gates.ownerOnly ? TR_OWNER_NOTE : own));
+  // ACL-P6-T3: who the fires run as. The lookup answers the id while it is
+  // out and for an id that names no user (deleted), so a name that came back
+  // equal to the id is the deleted-user case, not a name.
+  const runsAsId = t && t.owner && t.owner.user_id ? t.owner.user_id : null;
+  const runsAsName = runsAsId && ownerNames[runsAsId] !== runsAsId ? ownerNames[runsAsId] : null;
 
   return (
     <div className="col" data-testid="trigger-detail" style={{ gap: 14 }}>
@@ -1742,6 +1767,9 @@ function TR_TriggerDetail({ id }) {
             style={{ fontSize: 10.5 }}
           >
             {t.enabled ? "enabled" : "disabled"}
+          </span>
+          <span data-testid="trigger-access-markers" style={{ display: "inline-flex", gap: 6 }}>
+            <SHR_AccessMarkers access={t.access} me={meId} names={ownerNames} />
           </span>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
@@ -1792,6 +1820,12 @@ function TR_TriggerDetail({ id }) {
             <dd>{t.name || <span className="muted">—</span>}</dd>
             <dt>Kind</dt>
             <dd className="mono">{kind}</dd>
+            <dt>Runs as</dt>
+            <dd data-testid="trigger-runs-as">
+              {runsAsName ? "Runs as " + runsAsName
+                : runsAsId ? "Runs as a deleted user: edit it to take it over"
+                : "Runs as an ordinary user"}
+            </dd>
             {kind === "delayed" && t.config?.fire_at && (
               <>
                 <dt>Fire at</dt>

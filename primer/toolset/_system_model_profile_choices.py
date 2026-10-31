@@ -15,10 +15,12 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.access.person import person_for_tool
 from primer.model.chat import Tool, ToolExample
 from primer.model.except_ import PrimerError
 from primer.model.model_profile import ModelProfile
 from primer.model.storage import CursorPage, OffsetPage
+from primer.model.yield_ import ToolContext
 from primer.model_profile.choices import list_model_profile_choices
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
@@ -43,7 +45,7 @@ class _ListModelProfileChoicesArgs(BaseModel):
 
 
 def _handler(storage_provider: StorageProvider) -> ToolHandler:
-    async def handler(arguments: dict[str, Any]) -> Any:
+    async def handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> Any:
         try:
             args = _ListModelProfileChoicesArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -54,7 +56,7 @@ def _handler(storage_provider: StorageProvider) -> ToolHandler:
             offset=args.offset or 0, length=args.limit,
         )
         try:
-            return _ok(await list_model_profile_choices(storage_provider.get_storage(ModelProfile), page))
+            return _ok(await list_model_profile_choices(storage_provider.get_storage(ModelProfile), page, person_for_tool(ctx)))
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
 

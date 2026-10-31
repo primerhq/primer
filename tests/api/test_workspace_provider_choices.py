@@ -22,6 +22,13 @@ from tests.api.conftest import app, fake_provider_registry  # noqa: F401
 
 _TOKEN = "sa-token-that-must-never-be-served"
 
+def _pub(row):
+    """The row a user may use: these suites check the shape of a user's choices, so every row is public."""
+    from primer.model.access import Access
+
+    return row.model_copy(update={"access": Access(public=True)})
+
+
 
 @pytest.fixture
 async def admin(app) -> AsyncIterator[httpx.AsyncClient]:  # noqa: F811
@@ -93,7 +100,7 @@ def _local(provider_id: str) -> WorkspaceProvider:
 
 async def _seed(app, *rows: WorkspaceProvider) -> None:  # noqa: F811
     for row in rows:
-        await app.state.storage_provider.get_storage(WorkspaceProvider).create(row)
+        await app.state.storage_provider.get_storage(WorkspaceProvider).create(_pub(row))
 
 
 @pytest.mark.asyncio

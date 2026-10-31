@@ -779,10 +779,8 @@ class TestHarnessToolsetMounts:
             async def list(self, page):
                 return _Page()
 
-            async def find(self, predicate, page):
-                # A call that names nobody lists only public harnesses (access-control P3 Task 6): the filter runs as a find.
-                del predicate
-                return _Page()
+            async def find(self, predicate, page, **kwargs):
+                return _Page()  # a person's list adds the access filter (access-control P3 T6)
 
         class _SP:
             def get_storage(self, model):

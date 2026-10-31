@@ -19,6 +19,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, PositiveInt, model_validator
 
+from primer.model.access import Grantable
 from primer.model.common import Describeable
 
 
@@ -97,7 +98,7 @@ class ModelProfileConfig(BaseModel):
     )
 
 
-class ModelProfile(Describeable):
+class ModelProfile(Grantable, Describeable):
     """One registered configuration of one model on one provider, OR an
     ordered aggregation of two or more other ModelProfiles.
 

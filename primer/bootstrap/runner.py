@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from primer.common.optional import has_extra
+from primer.model.access import Access
 from primer.model.except_ import ConfigError, ConflictError
 from primer.bootstrap.defaults import (
     RESERVED_CROSS_ENCODERS,
@@ -223,6 +224,7 @@ class BootstrapRunner:
             raw_spec = RESERVED_WORKSPACE_PROVIDERS[reserved_id]
             spec = self._resolve_wp_paths(copy.deepcopy(raw_spec))
             entity = WorkspaceProvider(**spec)
+            entity.access = Access(public=True)  # platform-written infrastructure is public (access-control P4)
             await self._wp_storage.create(entity)
             result.created.append(reserved_id)
             logger.debug("bootstrap: created workspace provider %r", reserved_id)
@@ -301,6 +303,7 @@ class BootstrapRunner:
 
             spec = copy.deepcopy(RESERVED_EMBEDDERS[reserved_id])
             entity = EmbeddingProvider(**spec)
+            entity.access = Access(public=True)  # platform-written infrastructure is public (access-control P4)
             await self._embedder_storage.create(entity)
             result.created.append(reserved_id)
             logger.debug("bootstrap: created embedder %r", reserved_id)
@@ -397,6 +400,7 @@ class BootstrapRunner:
                     provider="pgvector",
                     config=cfg,
                 )
+                entity.access = Access(public=True)  # platform-written infrastructure is public (access-control P4)
                 await self._ssp_storage.create(entity)
                 result.created.append(reserved_id)
                 logger.debug("bootstrap: created SSP %r", reserved_id)
@@ -451,6 +455,7 @@ class BootstrapRunner:
             raw_spec = RESERVED_SSPS[reserved_id]
             spec = self._resolve_ssp_paths(copy.deepcopy(raw_spec))
             entity = SemanticSearchProvider(**spec)
+            entity.access = Access(public=True)  # platform-written infrastructure is public (access-control P4)
             await self._ssp_storage.create(entity)
             result.created.append(reserved_id)
             logger.debug("bootstrap: created SSP %r", reserved_id)
@@ -495,6 +500,7 @@ class BootstrapRunner:
 
             spec = copy.deepcopy(RESERVED_CROSS_ENCODERS[reserved_id])
             entity = CrossEncoderProvider(**spec)
+            entity.access = Access(public=True)  # platform-written infrastructure is public (access-control P4)
             await self._cross_encoder_storage.create(entity)
             result.created.append(reserved_id)
             logger.debug("bootstrap: created cross-encoder %r", reserved_id)

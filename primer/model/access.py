@@ -32,6 +32,10 @@ class AccessLevel(StrEnum):
 LEVEL_RANK = {AccessLevel.READ: 1, AccessLevel.FULL: 2, AccessLevel.OWNER: 3}
 
 
+#: The derived member token of a row that has public tools (``catalogue_predicate``).
+TOOLS_PUBLIC_TOKEN = "tools:public"
+
+
 class Access(BaseModel):
     """Ownership and sharing for one entity row (spec 6.1).
 
@@ -67,6 +71,10 @@ class Access(BaseModel):
             # public_tools opens individual tools (Phase 4's tool_is_public) and
             # must NOT leak the row itself into everyone's list.
             tokens.add("public")
+        if self.public_tools:
+            # A separate token: ``visible_predicate`` never matches it (the row stays unlisted and unreadable),
+            # only the tool catalogues add it to their predicate (``catalogue_predicate``).
+            tokens.add(TOOLS_PUBLIC_TOKEN)
         self.members = sorted(tokens)
         return self
 
@@ -74,6 +82,21 @@ class Access(BaseModel):
     def owned_by(cls, user_id: str) -> Access:
         """A fresh private row owned by ``user_id`` (the creator)."""
         return cls(owners=[user_id])
+
+
+class Grantable(BaseModel):
+    """Mixin for grantable infrastructure: model profiles and the providers a user-owned entity references (spec 6.1, 6.2).
+
+    The block is an :class:`Access` with ``owners = []``, every grant ``read`` (meaning *use*) and ``public``; admins hold ``owner`` by role,
+    so only they edit it. It says who may USE the row (reference it from their own entities, and run through it); creating, editing and
+    deleting the row stays admin-only. A new row is private; rows the platform writes, and every row that existed before access control, are
+    public.
+    """
+
+    access: Access = Field(
+        default_factory=Access,
+        description="Who may use this row (use grants and public); admins only edit it. Its derived members are indexed.",
+    )
 
 
 class Owned(BaseModel):

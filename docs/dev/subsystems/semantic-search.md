@@ -367,6 +367,14 @@ Python: `CollectionSearcher` (`primer/search/searcher.py`), the `VectorStore` an
   (`primer/api/registries/provider_registry.py`) gate the router create / delete
   paths.
 
+### Use grants on search providers (access control, Phase 4)
+
+The embedding, cross-encoder and vector store providers of a collection's `search` block are grantable infrastructure.
+Enabling search needs use of all of them by the owner (else the existing not-registered 409), and every search needs it
+by the person searching (`primer/knowledge/search_use.py`): REST answers 409 and points to grep and the tree, the
+`collections` tool falls back to fulltext on `auto` and refuses `semantic`. Background indexing is not a use of its own.
+See [access control](../architecture/access-control.md).
+
 ## 10. Testing patterns
 
 - `tests/search/test_searcher.py` drives `CollectionSearcher` against

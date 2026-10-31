@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
 from types import MappingProxyType
 from typing import Any, ClassVar
 from uuid import uuid4
@@ -68,6 +69,11 @@ class Describeable(Identifiable):
 # The ``context`` of the dump that writes a row to storage (and of anything that needs the row's IDENTITY): a field type that masks something in the JSON-mode dump
 # (the password of a provider ``url`` or of a template's url file source, :class:`primer.model.masked_url.MaskedUserinfoUrl`) returns the real value when its serializer sees this key.
 STORAGE_DUMP_CONTEXT: dict[str, Any] = {"storage": True}
+
+# Set for the duration of a non-admin's read of a global setting (``primer.api.deps.serve_global_settings``): the masking serializers then
+# serve every API key with no trailing characters and every URL with no userinfo at all (security review of P4, finding 6). Admins, the
+# storage dump and everything else keep their view. A ContextVar because FastAPI serializes a response model with no dump context.
+SERVING_NON_ADMIN: ContextVar[bool] = ContextVar("primer_serving_non_admin", default=False)
 
 # The ``context`` the storage backends validate a row they read back with (``SqliteStorage._from_row`` and ``PostgresStorage._from_row``; ``patch_if``
 # decodes the document it wrote through the same method). A validator added after rows were stored, which such a row may fail, asks
@@ -438,6 +444,7 @@ def _preserve_dict(name: str, new_map: dict[Any, Any], old_map: Any, moved: bool
 __all__ = [
     "REENTER_KEY",
     "REENTER_URL",
+    "SERVING_NON_ADMIN",
     "STORAGE_DUMP_CONTEXT",
     "STORAGE_LOAD_CONTEXT",
     "Describeable",

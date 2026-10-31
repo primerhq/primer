@@ -228,6 +228,13 @@ The factory contract is `AdapterFactory = Callable[[ChannelProvider, Channel, ob
 
 **A channel trigger needs read on its channel (access-control Phase 3, Decision 5).** A channel trigger's events are the channel's content, so whoever saves one or binds a subscription onto one must hold `read` on the `Channel` its `ChannelTriggerConfig.channel_id` names: `require_channel_trigger_access` (`primer/trigger/channel_access.py`) runs on the REST trigger create and update, the `trigger` tools (re-exported by `crud`) and `system::create_channel_binding`, before anything is stored. A channel the person cannot read answers exactly like a missing one (`NotFoundError`: REST 404, tool `type=not-found`); a provider-wide trigger (`channel_id` null, listening to every channel of the provider) is admin-only (403 `access_denied`). The check at save time is the gate: `primer/channel/event_dispatch.py` resolves and fires the bound triggers without asking again, and a channel-thread message keeps running as the session's creator. A binding is also a subscription of its trigger, so it needs full on the trigger (read to list the bindings); see the triggers subsystem doc and [access control](../architecture/access-control.md) 6.10 and 6.11. Pinned by `tests/trigger/test_channel_trigger_access.py`.
 
+### Use grants on channel providers (access control, Phase 4)
+
+A `ChannelProvider` is grantable infrastructure (a use grant set by an admin; new rows private). Saving a channel needs use
+of its provider (`check_channel_on_create` / `check_channel_on_update` with the saver), and binding a channel (a workspace's
+reply binding, a channel trigger) needs it too (`channel_for_binding`); a channel on a provider the person may not use reads
+as missing. See [access control](../architecture/access-control.md).
+
 ## 10. Testing patterns
 
 `NullChannelAdapter` (`primer/channel/null_adapter.py`) is the in-process stand-in: `verify` is a no-op and `post_prompt` records the envelope in `posted` and returns `{"posted": True, "kind": ...}`. `clear_factories_for_tests` resets the module-level factory registry between tests.

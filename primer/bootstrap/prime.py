@@ -265,6 +265,7 @@ async def _create_user_default(
     storage_provider: Any, workspace_registry: Any, user: User, workspace_id: str, template_id: str | None,
 ) -> None:
     """Materialise ``workspace_id`` and write its row owned by ``user``; a row that already exists (adopted, or a concurrent creator's) is left."""
+    from primer.access.person import Person
     from primer.api.registries.workspace_registry import new_workspace_row
     from primer.bootstrap.defaults import RESERVED_LOCAL_WORKSPACE_TEMPLATE
     from primer.model.access import Access
@@ -278,7 +279,10 @@ async def _create_user_default(
     template = await storage_provider.get_storage(WorkspaceTemplate).get(wanted)
     if template is None:
         raise NotFoundError(f"WorkspaceTemplate {wanted!r} does not exist")
-    live = await workspace_registry.materialise(template=template, workspace_id=workspace_id)
+    # As the user the workspace is made for: the template's provider must be usable by them and a document mount is read as them (access-control P4).
+    live = await workspace_registry.materialise(
+        template=template, workspace_id=workspace_id, person=Person(user.id, user.role),
+    )
     try:
         await workspaces.create(
             new_workspace_row(

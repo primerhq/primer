@@ -43,9 +43,11 @@ class _Live:
 class _Registry:
     def __init__(self) -> None:
         self.calls = 0
+        self.persons: list = []
 
-    async def materialise(self, *, template, overrides=None, workspace_id=None):
+    async def materialise(self, *, template, overrides=None, workspace_id=None, person=None):
         self.calls += 1
+        self.persons.append(person)
         await asyncio.sleep(0)  # a yield point, so concurrent sign-ins interleave
         return _Live(workspace_id)
 
@@ -230,3 +232,93 @@ async def test_an_owned_install_default_is_never_adopted(fake_storage_provider):
 
     assert await ensure_user_default_workspace(sp, reg, b) == "ws-user-b"
     assert (await sp.get_storage(Workspace).get("prime")).access.owners == ["user-a"]
+
+
+async def test_the_default_workspace_is_materialised_as_the_user(fake_storage_provider):
+    """Access-control P4 follow-up: the provider-use and document-mount checks of ``materialise`` apply to the user the workspace is made for."""
+    sp = fake_storage_provider
+    reg = await _setup(sp)
+
+    await ensure_user_default_workspace(sp, reg, await _user(sp, "user-ada"))
+
+    assert reg.persons == [Person("user-ada", "user")]
+
+
+class _Backend:
+    def __init__(self, provider) -> None:
+        pass
+
+    async def initialize(self) -> None:
+        return None
+
+    async def create(self, template, *, overrides=None, workspace_id=None, resolvers=None):
+        return _Live(workspace_id)
+
+
+async def _real_registry_world(sp, *, provider_access):
+    from primer.api.registries.workspace_registry import WorkspaceRegistry
+    from primer.bootstrap.defaults import RESERVED_LOCAL_WORKSPACE_PROVIDER
+    from primer.bootstrap.defaults import RESERVED_WORKSPACE_PROVIDERS
+    from primer.model.workspace import WorkspaceProvider
+
+    template = WorkspaceTemplate(**RESERVED_WORKSPACE_TEMPLATES[RESERVED_LOCAL_WORKSPACE_TEMPLATE])
+    await sp.get_storage(WorkspaceProvider).create(
+        WorkspaceProvider(**RESERVED_WORKSPACE_PROVIDERS[RESERVED_LOCAL_WORKSPACE_PROVIDER], access=provider_access)
+    )
+    await sp.get_storage(WorkspaceTemplate).create(template)
+    await sp.get_storage(Agent).create(
+        Agent(id=RESERVED_OPERATOR_AGENT, description="op", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[])
+    )
+    return WorkspaceRegistry(sp, factory=_Backend)
+
+
+async def test_a_first_full_sign_in_still_creates_the_default_workspace_on_a_public_provider(fake_storage_provider):
+    """Pin: the bootstrap publishes the default template's workspace provider, so the use check of the person-aware materialise lets a
+    non-admin's first sign-in through (the default workspace and its operator session exist afterwards)."""
+    sp = fake_storage_provider
+    reg = await _real_registry_world(sp, provider_access=Access(public=True))
+
+    wid = await ensure_user_default_workspace(sp, reg, await _user(sp, "user-ada"))
+
+    assert wid == "ws-user-ada" and (await sp.get_storage(Workspace).get(wid)).access.owners == ["user-ada"]
+    assert len(await _sessions(sp, wid)) == 1
+
+
+async def test_a_private_provider_refuses_a_users_default_workspace_as_a_missing_one(fake_storage_provider):
+    from primer.model.except_ import NotFoundError
+
+    sp = fake_storage_provider
+    reg = await _real_registry_world(sp, provider_access=Access(owners=["someone-else"]))
+
+    with pytest.raises(NotFoundError):
+        await ensure_user_default_workspace(sp, reg, await _user(sp, "user-ada"))
+    assert await sp.get_storage(Workspace).get("ws-user-ada") is None
+
+
+async def test_a_fresh_installs_first_user_gets_a_default_workspace_and_can_use_the_operator_profile(fake_storage_provider):
+    """Agreement of P2's per-user default workspace with P4's seed rule (publish the default profile only at first setup): after the setup
+    pass a non-admin's first sign-in creates their workspace through the person-aware materialise AND the seeded operator's profile and
+    LLM provider are usable by them, so their operator session can run."""
+    from pydantic import SecretStr
+
+    from primer.access.person import Person
+    from primer.bootstrap.seed import default_profile_id, ensure_seeded_agents
+    from primer.model.model_profile import ModelProfile
+    from primer.model.provider import AnthropicConfig, Limits, LLMProvider, LLMProviderType
+    from primer.model_profile.resolver import require_profile_use
+
+    sp = fake_storage_provider
+    sp.get_storage(ModelProfile)._data.clear()  # the fixture seeds profiles of its own; the seed binds agents to the first one it finds
+    sp.get_storage(Agent)._data.clear()
+    await sp.get_storage(LLMProvider).create(
+        LLMProvider(id="prov", provider=LLMProviderType.ANTHROPIC, config=AnthropicConfig(api_key=SecretStr("k")), limits=Limits(max_concurrency=1))
+    )
+    await sp.get_storage(ModelProfile).create(ModelProfile(id="prof", description="d", provider_id="prov", model_name="m", context_length=1000))
+    reg = await _real_registry_world(sp, provider_access=Access(public=True))
+    sp.get_storage(Agent)._data.clear()  # let the setup pass write the whole roster for the first time
+
+    await ensure_seeded_agents(sp)
+    wid = await ensure_user_default_workspace(sp, reg, await _user(sp, "user-ada"))
+
+    assert (await sp.get_storage(Workspace).get(wid)) is not None and len(await _sessions(sp, wid)) == 1
+    await require_profile_use(sp, Person("user-ada", "user"), await sp.get_storage(ModelProfile).get(await default_profile_id(sp)))

@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
 from primer.bootstrap.prime import is_user_default_workspace, resolve_default_workspace_id
+from primer.access.person import Person
+from primer.access.policy import level_of
 from primer.model.access import Access
 from primer.model.common import dump_for_storage
 from primer.model.except_ import ConflictError, NotFoundError, ValidationError
@@ -54,7 +56,6 @@ from primer.workspace.size_overrides import (
 
 if TYPE_CHECKING:
     from primer.int.secret_provider import SecretProvider
-    from primer.access.person import Person
     from primer.int.storage_provider import StorageProvider
     from primer.int.workspace import Workspace, WorkspaceBackend
 
@@ -316,12 +317,15 @@ class WorkspaceRegistry:
         template: WorkspaceTemplate,
         overrides: WorkspaceTemplateOverrides | None = None,
         workspace_id: str | None = None,
-        person: "Person | None" = None,
+        person: Person | None = None,
     ) -> "Workspace":
         """Create a new live workspace via the right backend.
 
-        ``person`` is who the workspace is created for: a ``document`` file mount (the template's or an override's) is read as them, so a document they
-        cannot read answers as missing (access-control P3 SEC, finding 4). ``None`` (the bootstrap seed) checks nothing.
+        ``person`` is the creator (access-control P4 Task 5): they must be able to USE the template's workspace provider (a use grant, or a
+        public provider; admins any). An unusable provider answers exactly like a missing one (the 404 :meth:`get_backend` raises), and
+        nothing is built. ``None`` (the bootstrap seed, internal callers) checks nothing.
+        It is also who the workspace is created for for the file mounts (access-control P3 SEC, finding 4): a ``document`` file mount (the template's or an
+        override's) is read as them, so a document they cannot read answers as missing.
 
         ``workspace_id`` pins the live instance to a caller-supplied id
         (typically the same id the durable row is keyed by). Forwarding
@@ -370,6 +374,8 @@ class WorkspaceRegistry:
         # The provider's own refusal first, before any input of the request is judged: nothing on this provider is built, whatever the request.
         # A provider that does not exist is get_backend's 404, not these checks'.
         provider = await self._sp.get_storage(WorkspaceProvider).get(template.provider_id)
+        if person is not None and provider is not None and level_of(person, provider.access) is None:
+            raise NotFoundError(f"WorkspaceProvider {template.provider_id!r} does not exist")
         if provider is not None and provider.config.kind == "kubernetes" and getattr(provider.config, "variant", "system") == "agent_sandbox":
             raise WorkspaceNotImplementedError(provider.id)
         # The request's own inputs, all before any backend runs (lead ruling 17): an environment variable name the cluster would
@@ -404,7 +410,7 @@ class WorkspaceRegistry:
         name: str | None = None,
         reply_binding: WorkspaceChannelLink | None = None,
         access: Access | None = None,
-        person: "Person | None" = None,
+        person: Person | None = None,
     ) -> WorkspaceRow:
         """Create a workspace: the live instance, then its durable row. The one create path of ``POST /v1/workspaces`` and the ``create_workspace``
         tool (ticket 01a16d72): every refusal of :meth:`materialise` applies to both, and both write the same row (:func:`new_workspace_row`, so the
@@ -427,9 +433,7 @@ class WorkspaceRegistry:
         the instance is this create's own and is torn down as before.
         """
         if workspace_id is None:
-            return await self._create(
-                template=template, overrides=overrides, workspace_id=None, name=name, reply_binding=reply_binding, access=access, person=person,
-            )
+            return await self._create(template=template, overrides=overrides, workspace_id=None, name=name, reply_binding=reply_binding, access=access, person=person)
         lock, holders = self._creating.setdefault(workspace_id, (asyncio.Lock(), [0]))
         holders[0] += 1
         try:
@@ -454,7 +458,7 @@ class WorkspaceRegistry:
         name: str | None,
         reply_binding: WorkspaceChannelLink | None,
         access: Access | None = None,
-        person: "Person | None" = None,
+        person: Person | None = None,
     ) -> WorkspaceRow:
         """:meth:`create`'s body: materialise, then the row, with the rollback."""
         live = await self.materialise(template=template, overrides=overrides, workspace_id=workspace_id, person=person)
