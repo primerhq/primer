@@ -4,7 +4,7 @@
 const GB_api = (() => {
   const api = () => window.primerApi;
 
-  // The default workspace: the ONE row GET /workspaces flags is_default (a response-only flag, PR #770).
+  // The caller's default workspace: the ONE row GET /workspaces flags is_default (a response-only flag, set per person, PR #770).
   // The list is paged until the flagged row is found or the list ends, because an install with more
   // workspaces than one page may hold the flagged row beyond the first. The first request is
   // /workspaces?limit=200 with no offset. Resolves to the row, or null when no row on any page is
@@ -41,6 +41,9 @@ const GB_api = (() => {
     listGraphs: (params, signal) => api().apiFetch("GET", `/graphs${qs(params)}`, null, { signal }),
     graphStatus: (id, signal) => api().apiFetch("GET", `/graphs/${encodeURIComponent(id)}/status`, null, { signal }),
     listAgents: (params, signal) => api().apiFetch("GET", `/agents${qs(params)}`, null, { signal }),
+    // The profiles a caller may USE (user tier: a use grant or public; admins all), as the agent
+    // form reads them: the first page of the same route the form pages through (PR_fetchAllPages).
+    modelProfileChoices: (signal) => api().apiFetch("GET", "/model_profiles/choices?limit=200&offset=0", null, { signal }),
     agentStatus: (id, signal) => api().apiFetch("GET", `/agents/${encodeURIComponent(id)}/status`, null, { signal }),
     toolCatalogue: (signal) => api().apiFetch("GET", "/tools/catalogue", null, { signal }),
     nodeStates: (graphId, runId, signal) =>

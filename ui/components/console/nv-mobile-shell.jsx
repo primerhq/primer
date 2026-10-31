@@ -77,7 +77,7 @@ function NV_mobileMayDecide(approvers, who) {
 // do what the call does). Blindness is read from the RAW `hidden_keys`: an argument named "" counts, a list of garbage counts, a `hidden_keys`
 // that is not a list counts, and so does a value withheld whole (a bare string or list as the arguments: `arguments` is "<hidden>" and the
 // server has no names to send). An older server sends neither key: the card is as it always was.
-function NV_mobileInboxView(it, who, shownAll) {
+function NV_mobileInboxView(it, who, shownAll, level) {
   var view = { kindLabel: "Parked", line: "", args: "", truncated: false, canApprove: false, canDeny: false, notApprover: false, rankBlocked: false, note: "", withheld: "", blind: false };
   if (it.kind === "approval") {
     var a = it.approval;
@@ -100,14 +100,14 @@ function NV_mobileInboxView(it, who, shownAll) {
       }
     }
     var decidable = !!(a && a.tool_name && it.tool_call_id);
-    var rankMay = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(who, it);
+    var rankMay = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(who, it, level);
     var specMay = NV_mobileMayDecide(it.approvers, who);
     var may = rankMay && specMay;
     view.canApprove = decidable && may && (!view.blind || !!shownAll);
     view.canDeny = decidable && may;
     view.notApprover = decidable && rankMay && !specMay;
     view.rankBlocked = decidable && !rankMay;
-    if (view.rankBlocked) view.note = SH_rankDecisionWords(it);
+    if (view.rankBlocked) view.note = SH_accessDecisionWords();
     else if (view.notApprover) view.note = "Only its approvers can decide this. You can still open it.";
     else if (decidable && view.blind && !shownAll) {
       var declared = a.preview === "tool" || a.preview === "policy";
@@ -133,9 +133,9 @@ function NV_mobileInboxHeading(count, known) {
 // something else answers 404 gate_not_pending instead of having that other call approved (it used to fetch the session's first pending
 // yield AFTER the tap and approve whatever that was). Every outcome reaches the toast; a card whose gate moved on is refreshed away.
 // Resolves {ok}, {stale} or {failed}; never rejects.
-function NV_inboxDecide(decision, it, toast, onResolved, viewer) {
+function NV_inboxDecide(decision, it, toast, onResolved, viewer, level) {
   var verb = decision === "approve" ? "Approve" : "Deny";
-  if (typeof SH_mayDecideFor === "function" && !SH_mayDecideFor(viewer, it)) {
+  if (typeof SH_mayDecideFor === "function" && !SH_mayDecideFor(viewer, it, level)) {
     return Promise.resolve({ blocked: true });
   }
   if (!it.tool_call_id) {
@@ -204,7 +204,7 @@ function NV_MobileDecisionButton(props) {
       onClick={function (ev) {
         ev.stopPropagation();
         setBusy(true);
-        NV_inboxDecide(props.decision, it, con.toast, props.onResolved, props.viewer).then(function () { setBusy(false); });
+        NV_inboxDecide(props.decision, it, con.toast, props.onResolved, props.viewer, props.level).then(function () { setBusy(false); });
       }}>{busy ? (approve ? "Approving…" : "Denying…") : (approve ? "Approve" : "Deny")}</button>
   );
 }
@@ -217,7 +217,11 @@ function NV_MobileInboxCard(props) {
   var setFull = fullState[1];
   var shownAll = !!(full && full.text !== undefined);
   var viewer = Object.assign({ username: con.username, role: con.role }, con.viewer || {});
-  var view = NV_mobileInboxView(it, viewer, shownAll);
+  // ACL-P2: deciding needs full on the item's workspace; the level comes from the workspace rows the shell holds (unknown fails open).
+  var level = typeof SH_workspaceLevel === "function"
+    ? SH_workspaceLevel(viewer, (con.workspaces || []).filter(function (w) { return w.id === it.workspace_id; })[0])
+    : undefined;
+  var view = NV_mobileInboxView(it, viewer, shownAll, level);
   var ident = NV_identity(it.agent_binding);
 
   function review() {
@@ -281,10 +285,10 @@ function NV_MobileInboxCard(props) {
       ) : null}
       <div className="nv-mobile-inbox-actions">
         {view.canApprove ? (
-          <NV_MobileDecisionButton decision="approve" item={it} viewer={viewer} onResolved={props.onResolved} />
+          <NV_MobileDecisionButton decision="approve" item={it} viewer={viewer} level={level} onResolved={props.onResolved} />
         ) : null}
         {view.canDeny ? (
-          <NV_MobileDecisionButton decision="deny" item={it} viewer={viewer} onResolved={props.onResolved} />
+          <NV_MobileDecisionButton decision="deny" item={it} viewer={viewer} level={level} onResolved={props.onResolved} />
         ) : null}
         <button type="button"
           className={(openToReview ? "nv-btn-primary" : "nv-btn-secondary") + " touch-target"}
@@ -569,6 +573,12 @@ function NV_MobileSpaces(props) {
   var sessions = (sessRes.data && sessRes.data.items) || [];
   var inboxItems = (inboxRes.data && inboxRes.data.items) || [];
 
+  // ACL-P6-T3: the phone's Spaces switcher keeps the desktop rail's
+  // ownership groups (NV_wsGroupOf, nv-rail.jsx): Mine / Shared with me /
+  // Public, so a phone says whose each workspace is too.
+  var viewerId = con.viewer && (con.viewer.user_id || con.viewer.id) || null;
+  var wsGroups = [["mine", "Mine"], ["shared", "Shared with me"], ["public", "Public"]];
+
   var sessionsByWs = {};
   sessions.forEach(function (s) {
     var wid = s.workspace_id;
@@ -625,7 +635,13 @@ function NV_MobileSpaces(props) {
         ) : !workspaces.length ? (
           <div className="card-list-empty">No workspaces yet.</div>
         ) : null}
-        {workspaces.map(function (w) {
+        {wsGroups.map(function (g) {
+          var rows = workspaces.filter(function (w) { return window.NV_wsGroupOf(w, viewerId) === g[0]; });
+          if (!rows.length) return null;
+          return (
+            <div key={g[0]}>
+              <div className="nv-mob-ws-group-label" data-testid={"nv-mob-ws-group:" + g[0]}>{g[1]}</div>
+              {rows.map(function (w) {
           var isOpen = !!expanded[w.id];
           var wsSessions = sessionsByWs[w.id] || [];
           // The exact count the workspace's row carries (session_count, every status); the install-wide feed is the newest 200 only.
@@ -698,6 +714,9 @@ function NV_MobileSpaces(props) {
                   </React.Fragment>); }} />
                 </div>
               ) : null}
+            </div>
+              );
+            })}
             </div>
           );
         })}

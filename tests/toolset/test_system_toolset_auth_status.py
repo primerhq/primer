@@ -1,4 +1,4 @@
-"""The system status tool reports the shared MCP sign-in without exposing credentials."""
+"""The system status tool reports an MCP sign-in (the run's person's own, or the shared one) without exposing credentials."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from primer.access.person import Person
 from primer.model.access import Access
 from primer.api.registries import ProviderRegistry
 from primer.common.secret_box import SecretBox
@@ -13,6 +14,7 @@ from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.model.provider import Toolset
 from primer.toolset.oauth.service import ToolsetOAuthService
 from primer.toolset.system import build_system_toolset
+from tests._support.caller import caller
 from tests.conftest import _FakeStorageProvider
 from tests.toolset.oauth._service_helpers import make_toolset, target_of, token_row
 
@@ -48,8 +50,8 @@ async def world():
     await oauth.aclose()
 
 
-async def _call(system, tool_name: str, arguments: dict):
-    result = await system.call(tool_name=tool_name, arguments=arguments)
+async def _call(system, tool_name: str, arguments: dict, ctx=None):
+    result = await system.call(tool_name=tool_name, arguments=arguments, ctx=ctx)
     return result, json.loads(result.output)
 
 
@@ -75,6 +77,7 @@ async def test_the_status_of_an_unconnected_oauth_toolset(world) -> None:
         "refreshed_at": None,
         "scope": None,
         "redirect_uri": None,
+        "per_user": True,
     }
 
 
@@ -120,9 +123,10 @@ async def test_the_answer_never_holds_a_token(world) -> None:
     system, storage_provider, oauth = world
     row = make_toolset(URL, oauth={})
     await _store(storage_provider, row)
-    await oauth.store.replace_tokens(token_row(oauth.store, target_of(row)))
+    # A browser sign-in is a person's: the tool reads the run's person's row (access-control P5 Task 2).
+    await oauth.store.replace_tokens(token_row(oauth.store, target_of(row, Person("user-1", "user"))))
 
-    result, answer = await _call(system, "get_toolset_auth_status", {"toolset_id": "kb"})
+    result, answer = await _call(system, "get_toolset_auth_status", {"toolset_id": "kb"}, ctx=caller("user"))
 
     assert not result.is_error and answer["state"] == "connected"
     assert "at-plain" not in result.output and "rt-plain" not in result.output

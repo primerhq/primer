@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from primer.model.principal import PrincipalRef
 from primer.api.routers.sessions import resume_session
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind
@@ -156,13 +157,14 @@ async def test_cancel_in_flight_blocks_resume_then_converges_ended(
 
     resume_task = asyncio.create_task(
         resume_session(
-            # The route takes the request for its rank rule (review of #853); the session names no creator, so any caller may resume it.
-            request=SimpleNamespace(state=SimpleNamespace(actor=None)),
+            # The route takes the request for its access gate (P2 Task 3); the auth-disabled system actor is an admin, which clears it.
+            request=SimpleNamespace(state=SimpleNamespace(actor=PrincipalRef.system())),
             workspace_id="ws-1",
             session_id=sid,
             sessions=storage,
             scheduler=scheduler,
             engine=engine,
+            storage_provider=provider,
         )
     )
     await asyncio.sleep(0.02)  # let resume run (it should be blocked on the lock)
@@ -211,13 +213,14 @@ async def test_resume_in_flight_blocks_cancel_then_cancel_is_honored(
 
     resume_task = asyncio.create_task(
         resume_session(
-            # The route takes the request for its rank rule (review of #853); the session names no creator, so any caller may resume it.
-            request=SimpleNamespace(state=SimpleNamespace(actor=None)),
+            # The route takes the request for its access gate (P2 Task 3); the auth-disabled system actor is an admin, which clears it.
+            request=SimpleNamespace(state=SimpleNamespace(actor=PrincipalRef.system())),
             workspace_id="ws-1",
             session_id=sid,
             sessions=storage,
             scheduler=scheduler,
             engine=engine,
+            storage_provider=provider,
         )
     )
     await storage.at_gate.wait()  # resume is inside its critical section

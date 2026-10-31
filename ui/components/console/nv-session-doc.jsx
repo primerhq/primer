@@ -195,6 +195,16 @@ function NV_restedWithFailure(session) {
   return !!(session && session.last_turn_error && session.status !== "ended" && (!session.turn_status || session.turn_status === "idle"));
 }
 
+// ACL-P4-T7: a session that rests PAUSED because its model profile is not available to the person who sent it (the run-time check's code
+// model_profile_unusable, access-control P4 Task 4) says its own words. The failed turn's ERROR record draws its own message, so this line
+// says the viewer's part only: what the pause means, and what undoes it (an admin's grant, then Resume). null for any other code, any other
+// status, or no session.
+function NV_pausedUnusableBanner(session) {
+  var err = session && session.last_turn_error;
+  if (!session || session.status !== "paused" || !err || err.code !== "model_profile_unusable") return null;
+  return "This turn did not run: its model profile is not available to the person who sent it. An admin can grant its use, then Resume.";
+}
+
 // A session that RESTS after a transport failure (C-024: status waiting, ended_reason null) serves last_turn_error {code, at}, cleared when its next turn starts. NV_endedLine runs
 // for status "ended" only, so the advice of NV_failureWords (what to do about THAT failure) was shown nowhere for a session that is still alive. The error card above the note already
 // says what happened, so `why` names the STATE ("This session is waiting: its last turn failed.") and `next` is the failure's own advice; a code the table does not know is shown in the
@@ -1199,7 +1209,8 @@ function NV_LifecycleRow(props) {
 function NV_DecisionCard(props) {
   var con = NV_useConsole();
   var item = props.item;
-  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session);
+  // ACL-P2: deciding needs full on the session's workspace, the open one (con.wsLevel; null until read reads as unknown and fails open).
+  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session, con.wsLevel || undefined);
   var rejState = React.useState(false);
   var rejOpen = rejState[0];
   var setRej = rejState[1];
@@ -1240,7 +1251,7 @@ function NV_DecisionCard(props) {
         ) : null}
         {!mayDecide ? (
           <div className="nv-card-note" data-testid="nv-decision-rank-note">
-            {SH_rankDecisionWords(props.session)}
+            {SH_accessDecisionWords()}
           </div>
         ) : null}
         {mayDecide ? (
@@ -1540,7 +1551,8 @@ function NV_toolCallWithRows(row, resultFor, running) {
 function NV_AskCard(props) {
   var con = NV_useConsole();
   var item = props.item;
-  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session);
+  // ACL-P2: deciding needs full on the session's workspace, the open one (con.wsLevel; null until read reads as unknown and fails open).
+  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session, con.wsLevel || undefined);
   // Wave 6 (audit A item 15 render half): SH_askOptionsOf (shell-
   // attention.js, wave 3) normalizes _AskUserArgs.response_schema's
   // {enum: [...]} into a radio-friendly list, or null for the SAME
@@ -1591,7 +1603,7 @@ function NV_AskCard(props) {
         <div className="nv-ask-prompt">{item.preview || item.title}</div>
         {!mayDecide ? (
           <div className="nv-card-note" data-testid="nv-ask-rank-note">
-            {SH_rankDecisionWords(props.session)}
+            {SH_accessDecisionWords()}
           </div>
         ) : options ? (
           <div className="nv-ask-options" data-testid="nv-ask-options">
@@ -3642,7 +3654,7 @@ function NV_SessionDoc(props) {
         : null}
       {typeof window.ExternalPendingBanner === "function" ? (
         <window.ExternalPendingBanner sessionId={sid}
-          session={session} viewer={con.viewer}
+          session={session} viewer={con.viewer} level={con.wsLevel || undefined}
           pollMs={calm ? NV_CALM_POLL_MS : 5000}
           pushToast={window.primerApi.toastPush} />
       ) : null}
@@ -3677,6 +3689,17 @@ function NV_SessionDoc(props) {
           </div>
           <button type="button" className="nv-btn-secondary"
             onClick={function () { history.refetch(); }}>Try again</button>
+        </div>
+      ) : null}
+      {/* ACL-P4-T7: the paused session whose turn failed on a model profile the sender cannot use.
+          The ERROR record of the failed turn renders its own message; this line says the
+          viewer's part (what the pause means and what undoes it). */}
+      {NV_pausedUnusableBanner(session) ? (
+        <div className="nv-doc-problem" role="alert"
+          data-testid="nv-profile-unusable-banner">
+          <div className="nv-doc-problem-body">
+            <div>{NV_pausedUnusableBanner(session)}</div>
+          </div>
         </div>
       ) : null}
       {nodeFilter ? (

@@ -11,6 +11,7 @@ from primer.api.deps import get_storage_provider
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
 from primer.api.routers.access import make_access_router
+from primer.access.person import person_from_request
 from primer.channel.checks import check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
 from primer.common.entity_checks import EntityCheckError
 from primer.model.channel import (
@@ -186,7 +187,7 @@ async def _channel_on_pre_create(entity: Channel, request: Request) -> None:
     # The check is shared with the system tools (primer/channel/checks.py); this re-raises exactly what it always raised: a 422 whose
     # detail is a plain string for a refused body, a ConflictError for a duplicate.
     try:
-        await check_channel_on_create(entity, storage_provider=get_storage_provider(request))
+        await check_channel_on_create(entity, storage_provider=get_storage_provider(request), person=person_from_request(request))
     except EntityCheckError as exc:
         raise _as_rest_error(exc) from exc
 
@@ -198,9 +199,11 @@ async def _channel_on_pre_update(entity: Channel, existing: Channel, request: Re
     The router had no pre-update hook, so a PUT could move a channel to another platform, onto a provider that does not exist, or onto
     another channel's pair (a 409 now, where create always refused it).
     """
-    del existing  # the new pair is what counts: the row is rewritten whole
+    # The new pair is what counts (the row is rewritten whole); the saver is asked only about a provider the update adds.
     try:
-        await check_channel_on_update(entity, storage_provider=get_storage_provider(request))
+        await check_channel_on_update(
+            entity, storage_provider=get_storage_provider(request), person=person_from_request(request), existing=existing,
+        )
     except EntityCheckError as exc:
         raise _as_rest_error(exc) from exc
 

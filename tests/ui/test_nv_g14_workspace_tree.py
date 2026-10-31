@@ -235,8 +235,10 @@ def rail():
 
 @pytest.fixture
 def spaces():
+    # nv-rail.jsx loads first, as ui/index.html does: the Spaces tab's ownership
+    # groups (ACL-P6-T3) come from its NV_wsGroupOf.
     c = mini_react_context(
-        _code(SH_API, UI / "components" / "console" / "nv-mobile-shell.jsx"),
+        _code(SH_API, UI / "components" / "console" / "nv-rail.jsx", UI / "components" / "console" / "nv-mobile-shell.jsx"),
         _PRELUDE
         + "\n" + _ERRTEXT + "\n" + _EMPTYTEXT
         + "\nvar RETRIES = 0;"

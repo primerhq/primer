@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -594,17 +595,10 @@ _CREATE_WORKSPACE_WHEN = (
     "runtime in the container does not answer within 30 seconds the create fails (``type=backend-error``, REST 503) with a "
     "message that names the image, and nothing is left behind. "
     f"A custom image must contain the primer workspace runtime: build it FROM ``{DOCKER_RUNTIME_IMAGE}``. "
-    "Refused (``type=forbidden``) from a session outside the default workspace (prime): create workspaces from a session in prime or "
-    "from the console. "
+    "Needs read access on the template; you become the new workspace's owner, and it is private until you share it "
+    "(``system__set_entity_access`` with ``kind`` ``workspace``). "
     "A template on a Kubernetes provider with ``variant: agent_sandbox`` is refused (``type=not-implemented``, REST 501): no backend "
     "builds that variant yet, and nothing is created."
-)
-
-#: What ``create_workspace`` answers a session outside the default workspace (review of #870, F4, lead ruling): such a session could not reach
-#: the workspace it made, and creating one is the management plane's work.
-REFUSE_CREATE_WORKSPACE = (
-    "create_workspace is refused from a session outside the default workspace (prime); "
-    "create workspaces from a session in prime or from the console"
 )
 
 # Appended to the `when` of create_workspace_template and update_workspace_template: which backend field a provider reads, who may set it, and the limits.
@@ -706,8 +700,8 @@ _RestoreSecrets = Callable[[Any, Any, "ToolContext | None"], None] | None
 _StampAccess = Callable[["ToolContext | None"], Access] | None
 
 
-#: ``(page or row) -> payload``: what a list or get tool serves instead of the stored page or row (a response-only field added to each row).
-_Served = Callable[[Any], Awaitable[Any]] | None
+#: ``(page or row, ctx) -> payload``: what a list or get tool serves instead of the stored page or row (a response-only field added to each row).
+_Served = Callable[[Any, "ToolContext | None"], Awaitable[Any]] | None
 #: ``ctx -> predicate or None``: the rows a caller's listing is confined to, ``None`` for every row (the access of the calling person).
 _ListScope = Callable[["ToolContext | None"], Awaitable[Predicate | None]] | None
 #: ``(ctx, id) -> bool``: whether the caller may see the row ``id``; a row it may not is answered exactly as a row that does not exist.
@@ -737,7 +731,7 @@ def _make_list_handler(
                 listed = await storage.list(page, order_by=order_by)
             else:
                 listed = await storage.find(confined, page, order_by=order_by)
-            return _ok(await served(listed) if served is not None else listed)
+            return _ok(await served(listed, ctx) if served is not None else listed)
         except BadRequestError as exc:
             # A bad cursor (forged, or not this request's) is a client error,
             # answered like the secret-field refusal above (ticket 01a1212a).
@@ -764,7 +758,7 @@ def _make_get_handler(
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
-        return _ok(await served(row) if served is not None else row)
+        return _ok(await served(row, ctx) if served is not None else row)
 
     return _handler
 
@@ -793,6 +787,8 @@ def _make_create_handler(
         refusal = refuse_create(guards, entity)
         if refusal is None and privilege_check is not None:
             refusal = privilege_check(entity, None, ctx)
+            if inspect.isawaitable(refusal):
+                refusal = await refusal
         if refusal is not None:
             return refusal
         # A create has nothing stored to restore a mask from: the copy-a-row move (get_*, a new id, create_*) would store the served masks as the values.
@@ -849,6 +845,8 @@ def _make_update_handler(
         # The access check runs before the guards' refusals: a row the caller holds no level on answers exactly like a
         # missing one, whatever the guards would say of it (a reserved id, a managing harness) (spec 9).
         refusal = privilege_check(entity, existing, ctx) if privilege_check is not None else None
+        if inspect.isawaitable(refusal):
+            refusal = await refusal
         if refusal is None:
             refusal = refuse_update(guards, entity, existing)
         if refusal is not None:
@@ -1237,7 +1235,24 @@ def build_workspaces_toolset(
 
         return _refusal
 
-    def _template_write_access_check(
+    async def _template_provider_refusal(
+        entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
+    ) -> ToolCallResult | None:
+        """A template may name only a workspace provider its saver may use (access-control P4 Task 5): as a missing one, unchanged ones unchecked."""
+        from primer.workspace.provider_use import provider_unusable, provider_unusable_message
+
+        if existing is not None and existing.provider_id == entity.provider_id:
+            return None
+        if await provider_unusable(storage_provider, person_for_tool(ctx), entity.provider_id):
+            return _err(provider_unusable_message(entity.provider_id), error_type="not-found")
+        return None
+
+    async def _template_create_check(
+        entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
+    ) -> ToolCallResult | None:
+        return _template_refusal(entity, existing, ctx) or await _template_provider_refusal(entity, existing, ctx)
+
+    async def _template_write_access_check(
         entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
     ) -> ToolCallResult | None:
         """``full`` before the admin-field checks (spec 9: a row the caller cannot reach answers as a missing one)."""
@@ -1246,7 +1261,7 @@ def build_workspaces_toolset(
         denial = _template_access_refusal(AccessLevel.FULL)(entity, existing, ctx)
         if denial is not None:
             return denial
-        return _template_refusal(entity, existing, ctx)
+        return _template_refusal(entity, existing, ctx) or await _template_provider_refusal(entity, existing, ctx)
 
     def _template_delete_access_check(
         _entity: None, existing: WorkspaceTemplate, ctx: ToolContext | None,
@@ -1501,7 +1516,7 @@ def build_workspaces_toolset(
         _CreateTemplateArgs,
         _make_create_handler(
             _CreateTemplateArgs, _template_storage, "WorkspaceTemplate", guards=template_guards,
-            privilege_check=_template_refusal, stamp_access=_template_access_of,
+            privilege_check=_template_create_check, stamp_access=_template_access_of,
         ),
         examples=[
             ToolExample(
@@ -1598,22 +1613,23 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     # ------------------- Workspace CRUD (no update) -------------------
-    async def _default_workspace_id() -> str | None:
+    async def _default_workspace_id(ctx: ToolContext | None) -> str | None:
+        """The caller's own default workspace (access-control spec 6.7); an id-less person (auth disabled) gets the install-wide one."""
         from primer.bootstrap.prime import resolve_default_workspace_id
 
-        return await resolve_default_workspace_id(storage_provider)
+        return await resolve_default_workspace_id(storage_provider, person_for_tool(ctx))
 
     def _with_is_default(row: WorkspaceRow, default_id: str | None) -> dict[str, Any]:
         """A served workspace row: the stored row plus ``is_default``, the response-only flag the REST rows carry (G7-09, lead ruling 5): an
         agent finds the default workspace (prime) by it, never by its name, which is a label anyone may give any workspace."""
         return {**row.model_dump(mode="json"), "is_default": row.id == default_id}
 
-    async def _workspace_page_served(page: Any) -> dict[str, Any]:
-        default_id = await _default_workspace_id()
+    async def _workspace_page_served(page: Any, ctx: ToolContext | None) -> dict[str, Any]:
+        default_id = await _default_workspace_id(ctx)
         return {**page.model_dump(mode="json"), "items": [_with_is_default(row, default_id) for row in page.items]}
 
-    async def _workspace_row_served(row: WorkspaceRow) -> dict[str, Any]:
-        return _with_is_default(row, await _default_workspace_id())
+    async def _workspace_row_served(row: WorkspaceRow, ctx: ToolContext | None) -> dict[str, Any]:
+        return _with_is_default(row, await _default_workspace_id(ctx))
 
     async def _access_guard(ctx: ToolContext | None, workspace_id: str, need: AccessLevel) -> ToolCallResult | None:
         """What the caller's person holds on ``workspace_id`` (access-control P2 T6), asked at the point a tool would look the workspace up.
@@ -1720,7 +1736,7 @@ def build_workspaces_toolset(
             person = person_for_tool(ctx)
             access = Access.owned_by(person.user_id) if person.user_id else Access()
             row = await workspace_registry.create(
-                template=template, overrides=args.overrides, workspace_id=args.id, access=access,
+                template=template, overrides=args.overrides, workspace_id=args.id, access=access, person=person,
             )
         except PrimerValidationError as exc:
             # A refusal of the request itself (a size the provider cannot honour, master Review Focus 5): the message
@@ -2197,15 +2213,15 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "find_sessions",
         (
-            "Find sessions across every workspace by workspace, agent, "
-            "state or initiator, newest first."
+            "Find sessions across the workspaces you can read by workspace, "
+            "agent, state or initiator, newest first."
         ),
         (
             "Use when you manage sessions in OTHER workspaces, as the "
-            "operator in prime does; not for listing one workspace's "
-            "sessions (use ``list_workspace_sessions``). From a session "
-            "outside the default workspace (prime) it finds only your own "
-            "workspace's sessions."
+            "operator does; not for listing one workspace's sessions (use "
+            "``list_workspace_sessions``). It finds sessions only in the "
+            "workspaces your person can read, wherever your session runs; "
+            "a ``workspace_id`` you cannot read answers type=not-found."
         ),
         _FindSessionsArgs,
         _find_sessions,
@@ -3391,7 +3407,7 @@ def build_workspaces_toolset(
     return InternalToolsetProvider(toolset_id=toolset_id, registry=registry)
 
 
-__all__ = ["REFUSE_CREATE_WORKSPACE", "WORKSPACES_TOOLSET_ID", "build_workspaces_toolset"]
+__all__ = ["WORKSPACES_TOOLSET_ID", "build_workspaces_toolset"]
 
 
 # Register yielding-tool resume hooks at import time. The worker's

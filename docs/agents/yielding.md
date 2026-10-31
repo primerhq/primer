@@ -292,14 +292,19 @@ session.
   `{"path": "session_id", "op": "eq", "value": "<your session id>"}`
   (or `workspace_id` with your workspace id); without one, or with
   another workspace's or session's id, it is refused with
-  `type=forbidden`. Sessions and their transcripts are a shared read in
-  this install by design: any user may open any session. So the event
-  log does not hide another session's canvas events from you; it hides
-  what a user ENTERED, which never leaves the session it belongs to
-  through the event log. The session itself is a shared read: the
-  console's canvas view shows anyone who opens a session its canvas
-  values and newest events with what was entered, as its transcript
-  shows the clicks it was handed. A
+  `type=forbidden`. A run that is not an admin's also waits only on
+  workspaces its person can read: an `eq` matcher on `workspace_id`
+  must name one (another answers `type=forbidden`), and a wait with
+  none is pinned to the run's own workspace, so an event with no
+  workspace (`session.wake` among them) never wakes it; a grant revoked
+  while the wait is parked stops delivery too. Anyone who can read a
+  workspace can open its sessions, so the event log does not hide the
+  canvas events of a readable workspace's other sessions from you; it
+  hides what a user ENTERED, which never leaves the session it belongs
+  to through the event log. The console's canvas view shows anyone who
+  can read the workspace a session's canvas values and newest events
+  with what was entered, as its transcript shows the clicks it was
+  handed. A
   `canvas.event` wakes every `wait_for_event`, an admin's included,
   and reaches every non-admin reader of `GET /v1/events`, without its
   `value` (a Select's or an Html element's value) and its `data` (an

@@ -58,7 +58,7 @@ Reference: [`workspace_ext__invoke_graph`](reference/tools/workspace_ext/invoke_
 ## Gotchas
 - `invoke_graph` sends its `input` as one user message, so the child's `initial_input` is a list of messages. The `begin` node's `input_schema` is not checked, and a template that reads `initial_input.text` fails. Invoke graphs whose templates use the default `input_template` or `nodes.<begin id>.text`.
 - `invoke_graph` works only inside a workspace session: not over MCP, and not from a caller with no session. Invocations nest at most 8 deep by default; past that the call is refused.
-- A session outside the default workspace can start sessions only in its own workspace. Another workspace answers `not-found`, as an unknown id does.
+- Starting a session needs `full` access to its workspace for the person behind your run, wherever your session runs. A workspace that person holds no access to answers `not-found`, as an unknown id does.
 - A message to a graph session (`workspaces__message_session`) restarts the graph once the current run is over, or reopens it when it ended. The run takes its input from the stored `graph_input` only: the message is recorded in the transcript, but it is not the graph's input. With no stored `graph_input`, the input is an empty list. See [messaging other sessions](sessions/messaging-other-sessions).
 - A Stop on a graph session takes effect only between graph events, not in the middle of a node. To end the run, cancel the session.
 - A graph session reads the stored graph when its run starts, and each `graph` node reads its child when it runs. Editing a graph mid-run reaches the next run, not the current step.

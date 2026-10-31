@@ -81,6 +81,7 @@ def stores(pools) -> tuple[McpOAuthStore, McpOAuthStore]:
 def _token_row(store: McpOAuthStore, **over) -> McpOAuthTokenSet:
     base = {
         "id": "kb",
+        "toolset_id": "kb",
         "grant": "authorization_code",
         "access_token_enc": store.seal("tok-plain"),
         "refresh_token_enc": store.seal("ref-plain"),

@@ -1,4 +1,4 @@
-"""The MCP toolset overlay owns the shared sign-in lifecycle."""
+"""The MCP toolset overlay owns the sign-in lifecycle (the caller's own browser sign-in, or the shared client-credentials one)."""
 
 from __future__ import annotations
 
@@ -110,11 +110,14 @@ def test_admin_buttons_follow_the_state(panel) -> None:
     assert panel.eval("MR.find('ts-auth-disconnect') !== null")
 
 
-def test_a_non_admin_sees_no_enabled_buttons(panel) -> None:
+def test_a_non_admin_connects_their_own_browser_sign_in(panel) -> None:
+    """Access-control P5: a browser sign-in is the caller's own, so the role no longer gates the buttons (the status route answered, so the
+    caller may use the toolset). tests/ui/test_p5_oauth_ui.py covers the shared client-credentials rule."""
     panel.eval("ROLE = 'user'")
     _mount(panel)
-    assert panel.eval("!!MR.find('ts-auth-connect').props.disabled")
-    assert "Only an admin can connect this toolset." in _texts(panel)
+    assert panel.eval("!MR.find('ts-auth-connect').props.disabled")
+    assert "Only an admin can connect this toolset." not in _texts(panel)
+    assert "Your sign-in" in _texts(panel)
 
 
 def test_connect_opens_the_sign_in_and_polls(panel) -> None:

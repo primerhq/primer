@@ -126,6 +126,16 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
     { deps: [wid] }
   );
 
+  // ACL-P6-T3: the marker row of the detail header (the workspace's own
+  // access). Unconditional hooks: a missing access block draws nothing.
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(
+    () => ((ws.data && ws.data.access && ws.data.access.owners) || []),
+    [ws.data]
+  );
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   // Only used to flag the Sessions tab badge: same key, reader and poll
   // cadence as the tab body itself (every page, 5 s per page read) so the
   // count stays in sync with the rows.
@@ -203,6 +213,11 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
         />
       )}
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        {ws.data && ws.data.access && (
+          <div data-testid="workspace-access-markers" style={{ marginRight: "auto" }}>
+            <SHR_AccessMarkers access={ws.data.access} me={meId} names={ownerNames} />
+          </div>
+        )}
         <Btn
           size="sm"
           kind="ghost"

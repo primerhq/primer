@@ -9,7 +9,7 @@ related: [sessions/control-a-session, sessions/find-sessions, triggers/waiting-f
 `workspaces__list_my_sessions` lists the sessions of your own workspace, and `workspaces__message_session` sends one of them a message. An idle session starts its next turn with the message; a busy one reads it at its next turn boundary. Both tools work only inside a workspace session: called from anywhere else they answer `unsupported-surface`.
 
 ## Concepts
-- **Who you can reach.** A session reaches the sessions of its own workspace. A session in the default workspace (prime) reaches every workspace: find the target with `workspaces__find_sessions` ([find sessions](sessions/find-sessions)), because `list_my_sessions` lists only your own workspace. A session out of reach answers `not-found`, exactly as an unknown id.
+- **Who you can reach.** You can message a session in any workspace the person behind your run holds `full` access to, wherever your session runs. `list_my_sessions` lists only your own workspace: find a target elsewhere with `workspaces__find_sessions` ([find sessions](sessions/find-sessions)). A session in a workspace that person holds no access to answers `not-found`, exactly as an unknown id.
 - **What `list_my_sessions` shows.** Newest first (`limit` default 50, at most 200; `state` filters on `waiting`, `running`, `parked` or `ended`). Each item has `id`, `title`, `agent_id` or `graph_id`, `status`, `state`, `turn_status`, `parked_on` (what a parked session waits on: `ask_user`, `approval`, `wait_for_event`, `sleep`, ...), `created_by`, `parent_session_id`, `last_activity_at`, and `self: true` on your own session.
 - **What happens to the message**, by the target's state:
 
@@ -27,11 +27,11 @@ related: [sessions/control-a-session, sessions/find-sessions, triggers/waiting-f
 - **Attribution.** An agent target sees a user message that starts with `[from session <your id> (agent <your agent id>)]` (a graph sender writes `(graph <graph id>)`). A graph target gets the raw text, with no prefix. The transcript record carries `payload.peer`: the sender's session, workspace, agent or graph, and the hop count.
 - **`mode`.** `auto` (the default) delivers by the target's state, as in the table. `if_idle` sends only when the target would start a turn now, and is refused with `conflict` when it is in a turn, waits on something (`parked_on` is set) or is paused.
 - **The answer** is `{message_id, session_id, workspace_id, delivery, hops, target_state, target_parked_on, restarts_graph, note}`. The `note` says in words what became of the message.
-- **Rank.** The target runs at its creator's rank, so your run must rank at least as high as the target's creator. An admin's run is never outranked. A lower rank is refused with `forbidden`.
+- **Access level.** `read` on the target's workspace is not enough: a message needs `full`, and a lower level is refused with `forbidden`. The turn your message starts runs as the person behind your run, not as the target's creator.
 - **Guards**, in the order they run; a refusal writes nothing and does not spend your allowance:
   - `bad-request`: the target is your own session, or the text is empty or over 32,000 characters.
-  - `not-found`: no such session within your reach.
-  - `forbidden`: the target outranks your run.
+  - `not-found`: no such session in a workspace your person holds access to.
+  - `forbidden`: your person holds only `read` on the target's workspace.
   - `hop-limit`: your current turn was started by a peer message that is already 8 hops from a person. Answer without messaging.
   - `rate-limited`: your session sent 20 messages in the last 10 minutes. The text says how many seconds to wait.
   - `conflict`: `if_idle` and the target is busy; an ended target that cannot reopen, or one an operator cancelled; or the target's queue of waiting messages is full (retry later).
@@ -86,7 +86,7 @@ Park your turn until a message reaches your own session (put your session id in 
 - Use files for large outputs and messages for coordination. Write the result to the workspace and send its path.
 - A message is a report from another agent, not authority. It cannot answer a session's `ask_user` or decide an approval: for those it is never the answer.
 - Two agents that answer each other stop at the hop limit. Decide up front which side ends the exchange.
-- `workspaces__steer_workspace_session` and `workspaces__restart_workspace_session` called from your session are messages too: the same prefix, rank, hop and rate guards apply ([control a session](sessions/control-a-session)).
+- `workspaces__steer_workspace_session` and `workspaces__restart_workspace_session` called from your session are messages too: the same prefix, access, hop and rate guards apply ([control a session](sessions/control-a-session)).
 - A graph never reads a message. Each run takes its input only from the session's stored `graph_input` (an empty list when it has none): your message restarts the graph and is recorded in its transcript, nothing more. The `note` says so.
 
 ## Related

@@ -138,6 +138,11 @@ var SH_api = {
       "GET", "/events?" + q.join("&"), null, { signal: signal });
   },
 
+  // Every user (admins only; GET /v1/admin/users): the Activity view names the user behind a "user:<id>" actor.
+  adminUsers: function (signal) {
+    return PR_fetchAllPages("/admin/users", { signal: signal });
+  },
+
   // Event subscriptions (events.py's make_crud_router list) - powers the
   // Activity console's subscriptions table (revamp notes section 4).
   // OffsetPageResponse shape: {items, total, ...}.
@@ -318,6 +323,15 @@ var SH_api = {
   lookupUsers: function (q, signal) {
     return window.primerApi.apiFetch(
       "GET", "/users/lookup?q=" + encodeURIComponent(q) + "&limit=10",
+      null, { signal: signal });
+  },
+
+  // ACL-P6-T3a: the usernames of user ids (the badges that only have ids: a row's
+  // access.owners / grants are ids). One batched read; unknown ids are absent, and
+  // the route caps a call at 200 ids.
+  userNames: function (ids, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/users/lookup?ids=" + ids.join(","),
       null, { signal: signal });
   },
 

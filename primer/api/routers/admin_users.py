@@ -433,15 +433,34 @@ async def update_admin_user(
     summary="Delete a user account",
 )
 async def delete_admin_user(
+    request: Request,
     user_id: str = Path(..., description="User id."),
     storage=Depends(get_user_storage),
 ) -> None:
+    """Delete an account, handing over what it owned (access-control Phase 6 Task 1).
+
+    The sequence is idempotent: the last-admin guard, then the account is disabled (new requests refused, sessions ended), then its sharing is
+    handed over (:func:`primer.access.lifecycle.hand_over`: sole-owned rows to the deleting admin, its grants dropped everywhere, the triggers that run as
+    it disabled), then its MCP sign-ins are forgotten, then the row is deleted. A failure part way leaves a disabled account that still names its
+    leftovers; repeating the DELETE finishes the job.
+    """
+    from primer.access.lifecycle import hand_over, heir_for
+    from primer.access.person import person_from_request
+    from primer.api.deps import get_storage_provider
+    from primer.toolset.oauth.store import forget_user_sign_ins
+
     existing = await _get_or_404(storage, user_id)
     if _is_protected_admin(existing):
         if await _count_protected_admins(storage) <= 1:
             _raise_last_admin()
+    sp = get_storage_provider(request)
+    if not existing.disabled:
+        await write_user_fields(storage, user_id, {"disabled": True}, bump_epoch=True)
+    heir = await heir_for(sp, person_from_request(request))
+    summary = await hand_over(sp, user_id, heir)
+    await forget_user_sign_ins(sp, user_id)
     await storage.delete(user_id)
-    logger.info("admin_users.delete id=%s", user_id)
+    logger.info("admin_users.delete id=%s heir=%s handed_over=%s", user_id, heir, summary)
 
 
 __all__ = ["admin_users_router", "AdminUserOut", "AdminUserListResponse"]

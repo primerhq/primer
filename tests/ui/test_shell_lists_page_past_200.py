@@ -126,7 +126,9 @@ def palette():
 
 @pytest.fixture
 def spaces():
-    c = _ctx(SH_API, MOBILE, extra="window.NV_sessionStateChipView = function () { return {}; };"
+    # RAIL first, as ui/index.html loads it: the Spaces tab's ownership groups
+    # (ACL-P6-T3) come from the rail's NV_wsGroupOf.
+    c = _ctx(SH_API, RAIL, MOBILE, extra="window.NV_sessionStateChipView = function () { return {}; };"
              " window.Fab = function () { return null; }; window.BottomSheet = function () { return null; };")
     try:
         yield c

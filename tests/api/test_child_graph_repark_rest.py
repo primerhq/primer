@@ -9,12 +9,27 @@ and the other tool_call gate was not decidable at all.
 
 from __future__ import annotations
 
-import pytest
+from datetime import UTC, datetime
 
+import pytest
+from pydantic import SecretStr
+
+from primer.model.access import Access
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import WorkspaceSession
 from tests.api.conftest import raw_client as auth_client  # noqa: F401
 from tests.api.test_approver_routing import _login_user, _register_admin
 from tests.worker.test_child_graph_repark_three_gates import G, SID, _scenario
+
+
+async def _ws(app) -> None:
+    """The workspace row the respond route gates on (P2 Task 3): bob and alice hold full on it, so the gate
+    clears and the gate's own approver spec decides each decision."""
+    await app.state.storage_provider.get_storage(Workspace).create(
+        Workspace(id="ws-1", template_id="tpl-1", provider_id="local-1", created_at=datetime.now(UTC),
+                  runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                  access=Access(grants={"user-bob": "full", "user-alice": "full"})),
+    )
 
 
 @pytest.mark.asyncio
@@ -25,6 +40,7 @@ async def test_bob_cannot_decide_the_alice_only_primary_after_a_sibling_answer(a
     await _register_admin(auth_client)
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(row.model_copy(update={"parked_state": dict(row.parked_state)}))
+    await _ws(app)
     await _login_user(auth_client, app, "bob")
 
     resp = await auth_client.post(f"/v1/sessions/{SID}/tool_approval/respond",
@@ -42,6 +58,7 @@ async def test_the_other_tool_call_gate_is_not_decidable_in_the_console_after_a_
     await _register_admin(auth_client)
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(row.model_copy(update={"parked_state": dict(row.parked_state)}))
+    await _ws(app)
     await _login_user(auth_client, app, "alice")
     resp = await auth_client.post(f"/v1/sessions/{SID}/tool_approval/respond",
                                   json={"tool_call_id": f"u-{other}", "gate_id": G[other], "decision": "approved"})

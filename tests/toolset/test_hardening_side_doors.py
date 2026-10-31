@@ -88,7 +88,7 @@ class _FakeToolsetProvider:
 
 
 class _FakeOAuth:
-    async def status(self, toolset: Toolset) -> ToolsetAuthStatus:
+    async def status(self, toolset: Toolset, person) -> ToolsetAuthStatus:
         return ToolsetAuthStatus(toolset_id=toolset.id, mode="none", state="not_applicable")
 
 

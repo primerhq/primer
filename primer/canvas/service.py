@@ -617,7 +617,7 @@ class CanvasService:
                 "canvas.updated",
                 workspace_id=workspace_id,
                 session_id=session_id,
-                actor=by,
+                # actor omitted: the acting person's standard label (user:<id>), like every other event; ``by`` is the display name.
                 payload={
                     "rev": written.rev, "source": source, "by": by, "changed": summary, "element_count": after.element_count(),
                 },
@@ -788,8 +788,7 @@ class CanvasService:
                 "canvas.event",
                 workspace_id=workspace_id,
                 session_id=session_id,
-                actor=event.by,
-                payload=event.public(),
+                payload=event.public(),         # actor omitted: the acting person's user:<id>, not ``event.by``'s display name
             )
         except Exception:  # noqa: BLE001 - the event is written; its announcement is advisory
             logger.warning("canvas %s: canvas.event could not be recorded", session_id, exc_info=True)

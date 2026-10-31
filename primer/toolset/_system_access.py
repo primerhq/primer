@@ -29,7 +29,7 @@ from primer.model.providers.toolset import Toolset
 from primer.model.providers.vector import SemanticSearchProvider
 from primer.model.trigger import Trigger
 from primer.model.user import User
-from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
+from primer.model.workspace import Workspace, WorkspaceProvider, WorkspaceTemplate
 from primer.model.yield_ import ToolContext
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err, ok
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
 
 EntityKind = Literal[
-    "agent", "graph", "toolset", "workspace_template", "channel", "collection", "trigger", "harness",
+    "agent", "graph", "toolset", "workspace_template", "channel", "collection", "trigger", "harness", "workspace",
     "model_profile", "llm_provider", "embedding_provider", "cross_encoder_provider", "semantic_search_provider",
     "workspace_provider", "channel_provider",
 ]
@@ -55,6 +55,8 @@ _KINDS: dict[str, tuple[type, str, bool]] = {
     "collection": (Collection, "Collection", False),
     "trigger": (Trigger, "Trigger", False),
     "harness": (Harness, "Harness", False),
+    # Sharing a workspace shares everything in it (sessions, files, canvas, events); no per-tool flags, as on the REST route.
+    "workspace": (Workspace, "Workspace", False),
     "model_profile": (ModelProfile, "ModelProfile", False),
     "llm_provider": (LLMProvider, "LLMProvider", False),
     "embedding_provider": (EmbeddingProvider, "EmbeddingProvider", False),
@@ -115,6 +117,11 @@ def access_tools(*, storage_provider: "StorageProvider") -> dict[str, tuple[Tool
             return _refusal(exc)
         return ok(view.model_dump(mode="json"))
 
+    async def _harness_exists(harness_id: str) -> bool:
+        from primer.model.harness import Harness
+
+        return await storage_provider.get_storage(Harness).get(harness_id) is not None
+
     async def _set(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _SetAccessArgs.model_validate(arguments)
@@ -134,6 +141,7 @@ def access_tools(*, storage_provider: "StorageProvider") -> dict[str, tuple[Tool
                 use_only=args.kind in _USE_ONLY,
                 # A shared harness hands its new access to everything it installed.
                 after_write=(lambda row: apply_harness_access(storage_provider, row)) if args.kind == "harness" else None,
+                harness_exists=_harness_exists,
             )
         except (NotFoundError, AccessDeniedError, ConflictError, PrimerValidationError) as exc:
             return _refusal(exc)
@@ -153,7 +161,7 @@ def access_tools(*, storage_provider: "StorageProvider") -> dict[str, tuple[Tool
     get_tool = make_tool(
         id="get_entity_access",
         toolset_id=SYSTEM_TOOLSET_ID,
-        purpose="Read who an agent, graph, toolset, workspace template, channel, collection, trigger, harness, model profile or provider is shared with.",
+        purpose="Read who an agent, graph, toolset, workspace template, channel, collection, trigger, harness, workspace, model profile or provider is shared with.",
         when=(
             "Use when checking an entity's owners, the people it is shared with and at what level (read or full), whether it is "
             "public, and your own level. Needs read access; an entity you cannot read answers type=not-found."
@@ -171,12 +179,14 @@ def access_tools(*, storage_provider: "StorageProvider") -> dict[str, tuple[Tool
     set_tool = make_tool(
         id="set_entity_access",
         toolset_id=SYSTEM_TOOLSET_ID,
-        purpose="Change who an agent, graph, toolset, workspace template, channel, collection, trigger, harness, model profile or provider is shared with (owners only).",
+        purpose="Change who an agent, graph, toolset, workspace template, channel, collection, trigger, harness, workspace, model profile or provider is shared with (owners only).",
         when=(
             "Use when sharing an entity with other users, making it public, handing ownership to someone else, or marking single "
             "toolset tools public. Send the whole desired state (owners, grants, public, public_tools) and the rev you read; a stale "
-            "rev answers type=conflict. Owners only (type=forbidden otherwise); at least one owner; only full, enabled users. A model profile or "
-            "provider is shared by USE grants: owners is empty, every grant is read, and only admins change it."
+            "rev answers type=conflict. Owners only (type=forbidden otherwise); at least one owner; only full, enabled users. Sharing a "
+            "workspace shares everything in it: read lets a person view its files and sessions, full lets them write files and drive "
+            "its sessions. A model profile or provider is shared by USE grants: owners is empty, every grant is read, and only admins "
+            "change it."
         ),
         args_schema=_SetAccessArgs.model_json_schema(),
         examples=[

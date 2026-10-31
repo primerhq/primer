@@ -187,7 +187,7 @@ def build_collections_toolset(
                 "id": c.id,
                 "description": c.description,
                 "system": c.system,
-                "search": _capability(c),
+                "search": (await _capability(c, ctx))[0],
             }
             for c in sorted(rows, key=lambda c: c.id)
         ]})
@@ -325,13 +325,17 @@ def build_collections_toolset(
                 break
         return out, None
 
-    def _capability(coll: Collection) -> str:
-        """Best rung this collection offers right now."""
+    async def _capability(coll: Collection, ctx: ToolContext | None) -> tuple[str, bool]:
+        """Best rung this collection offers right now, and whether it is the person's providers that hold semantic back."""
         if (coll.search is not None and coll.search.state == "ready"
                 and provider_registry is not None
                 and semantic_search_registry is not None):
-            return "semantic"
-        return "fulltext"
+            from primer.knowledge.search_use import unusable_search_provider
+
+            if await unusable_search_provider(storage_provider, person_for_tool(ctx), coll.search) is not None:
+                return "fulltext", True
+            return "semantic", False
+        return "fulltext", False
 
     async def _search(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         args, error = _parse(_SearchArgs, arguments)
@@ -341,15 +345,23 @@ def build_collections_toolset(
         if error is not None:
             return error
 
-        best = _capability(coll)
+        best, not_yours = await _capability(coll, ctx)
         mode = args.mode
         note = None
         if mode == "auto":
             mode = best
-            if best != "semantic" and coll.search is not None:
+            if not_yours:
+                note = "semantic search is not available to you on this collection; fell back to fulltext"
+            elif best != "semantic" and coll.search is not None:
                 note = (f"semantic index is {coll.search.state}; "
                         "fell back to fulltext")
         elif mode == "semantic" and best != "semantic":
+            if not_yours:
+                return _err(
+                    f"semantic search is not available to you on {args.collection!r}; "
+                    "available: fulltext, literal, regex",
+                    error_type="conflict",
+                )
             return _err(
                 f"semantic search is not enabled on {args.collection!r}; "
                 "available: fulltext, literal, regex",

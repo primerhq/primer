@@ -70,6 +70,7 @@ from primer.int.document_content import (
     ContentRow,
     DocumentContentStore,
 )
+from primer.access.acting import acting_person, actor_label
 from primer.events.registry import kind_for_model
 from primer.int.event_store import EventStore
 from primer.int.storage import Storage
@@ -672,6 +673,12 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # many pre-migration records with no gate_event_key at all do not
         # collide with each other or with anything else.
         ("gate_event_key_uniq", True, "((data->>'gate_event_key'))"),
+        # The records list filters `workspace_id IN <readable>` for non-admins (access-control P2 Task 5).
+        ("workspace_id", False, "((data->>'workspace_id'))"),
+    ],
+    "externaltoolcall": [
+        # Same filter on the global external tool call list (access-control P2 Task 5).
+        ("workspace_id", False, "((data->>'workspace_id'))"),
     ],
     "toolset": [
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
@@ -707,13 +714,14 @@ async def _append_crud_event(
     """Append one CRUD event on ``conn`` inside the caller's transaction.
 
     The payload is the row's own JSON dump, so the event carries
-    exactly what was stored.
+    exactly what was stored. The actor is the acting person
+    (``user:<id>``), else ``system`` (access-control P5 Task 1).
     """
     await conn.execute(
         f'INSERT INTO "{schema}".events '
         "(event_type, actor, entity_kind, entity_id, payload) "
-        "VALUES ($1, 'system', $2, $3, $4::jsonb)",
-        event_type, entity_kind, entity_id, payload_json,
+        "VALUES ($1, $2, $3, $4, $5::jsonb)",
+        event_type, actor_label(acting_person()), entity_kind, entity_id, payload_json,
     )
 
 

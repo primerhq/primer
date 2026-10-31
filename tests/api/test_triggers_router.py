@@ -20,6 +20,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import pytest_asyncio
+
+from tests.api._sub_targets import seed_sub_targets
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +110,11 @@ def _assert_text_pattern_validation_problem(response) -> None:
 # ---------------------------------------------------------------------------
 # Create — happy paths
 # ---------------------------------------------------------------------------
+
+@pytest_asyncio.fixture(autouse=True)
+async def _sub_targets(app):
+    await seed_sub_targets(app.state.storage_provider)
+
 
 
 @pytest.mark.asyncio

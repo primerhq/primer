@@ -82,6 +82,9 @@
     // ACL-P2-T10: a 403 whose code is access_denied (the require() refusal of the access routes: a level
     // below the one the write needs). With the server's own words it says them; bare, it says this.
     access_denied: "You don't have enough access for this.",
+    // ACL-P3-T7: a 409 (harness_managed) on a row the harness installed: its sharing is the harness's to change, so
+    // a direct share or share-edit of it is refused by name.
+    harness_managed: "This is shared through its harness; share the harness instead.",
   };
 
   // "in_use_by: 1 agent(s) reference 'p-1' (first: 'builder')" (primer/api/routers/_references.py): the count is the size of a one-row page, so it only
