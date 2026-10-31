@@ -18,6 +18,7 @@ from primer.knowledge.system_collection import (
     regenerate_system_collection,
 )
 from primer.knowledge.tree import DocumentTreeService
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 from primer.model.event import EventSubscription
 from primer.model.except_ import NotFoundError
@@ -65,7 +66,8 @@ async def test_storage_mutation_converges_via_the_subscription(sp):
 
     # Create: never touches a router; the old hooks would have missed it.
     await sp.get_storage(Agent).create(
-        Agent(id="agent-ev", description="a converged purpose",
+        # Public: the live map lists only public entities (access-control P3 Decision 7).
+        Agent(access=Access(public=True), id="agent-ev", description="a converged purpose",
               model=AgentModel(profile_id="prov--m"))
     )
     assert await dispatcher.drain_once() >= 1

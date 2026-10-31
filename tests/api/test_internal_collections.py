@@ -161,6 +161,20 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        # The field-scoped writers (collection materialisation, the system wiki's title) patch rather than replace.
+        from primer.model.common import dump_for_storage
+        from primer.storage._patch import document_matches
+
+        current = self._data.get(id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {id!r}")
+        stored = dump_for_storage(current)
+        if not document_matches(stored, where):
+            return None
+        self._data[id] = type(current).model_validate({**stored, **(patch or {})})
+        return self._data[id]
+
     async def delete(self, id, *, conn=None):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")

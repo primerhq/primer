@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
+from primer.knowledge.row_writes import write_collection_fields
 from primer.model.agent import Agent
 from primer.model.chat import TextPart
 from primer.model.embedding import ExtendedEmbeddingConfig
@@ -648,6 +649,7 @@ class InternalCollectionsSubsystem:
     async def _materialise_collection_rows(self) -> None:
         collections = self._sp.get_storage(Collection)
         for entity_type, coll_id in INTERNAL_COLLECTION_IDS.items():
+            # No owners, not public: admin-only (P3 Decision 7).
             row = Collection(
                 id=coll_id,
                 description=(
@@ -659,8 +661,11 @@ class InternalCollectionsSubsystem:
             existing = await collections.get(coll_id)
             if existing is None:
                 await collections.create(row)
-            else:
-                await collections.update(row)
+            elif (existing.description, existing.system) != (row.description, row.system):
+                # Its own fields only: an admin's sharing of the row survives a re-bootstrap (P3 Decision 8).
+                await write_collection_fields(
+                    collections, existing, {"description": row.description, "system": row.system},
+                )
 
     async def _probe_embedding_dim(self) -> int:
         vec = await self._embed_text("dimensionality probe")

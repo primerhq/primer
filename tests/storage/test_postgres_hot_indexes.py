@@ -34,12 +34,12 @@ from primer.storage.sqlite import _SQLITE_HOT_FIELD_INDEXES
 def test_registry_declares_the_hot_tables():
     """token_hash / session status / channel routing / useridentity
     uniqueness / webhook recovery / tool-approval-record gate key /
-    artifact-location routing / the six access-members GIN indexes are
-    all registered."""
+    artifact-location routing / document collection reads / the seven
+    access-members GIN indexes are all registered."""
     assert set(_HOT_FIELD_INDEXES) == {
         "apitoken", "sessions", "channel", "useridentity",
-        "webhookdelivery", "toolapprovalrecord", "artifactlocation",
-        "agent", "graph", "toolset", "workspacetemplate", "workspace",
+        "webhookdelivery", "toolapprovalrecord", "artifactlocation", "document",
+        "agent", "graph", "toolset", "workspacetemplate", "workspace", "collection",
     }
 
 
@@ -90,6 +90,15 @@ def test_sessions_workspace_id_index_is_a_plain_btree_on_the_scalar():
     assert expr == "((data->>'workspace_id'))"
 
 
+def test_document_collection_id_index_is_a_plain_btree_on_the_scalar():
+    """Collection reads and the flat document lists (access-control P3) filter
+    documents on ``collection_id``; index-backed."""
+    (suffix, unique, expr), = _HOT_FIELD_INDEXES["document"]
+    assert suffix == "collection_id"
+    assert unique is False
+    assert expr == "((data->>'collection_id'))"
+
+
 def test_channel_index_covers_provider_id_and_external_id():
     (suffix, unique, expr), = _HOT_FIELD_INDEXES["channel"][:1]
     assert suffix == "provider_external"
@@ -125,6 +134,7 @@ def test_session_model_maps_to_the_sessions_table():
         ("sessions", ["sessions_status", "sessions_workspace_id"]),
         ("channel", ["channel_provider_external", "channel_access_members"]),
         ("artifactlocation", ["artifactlocation_provider_id"]),
+        ("document", ["document_collection_id"]),
         ("unindexed_table", []),
     ],
 )
@@ -183,6 +193,7 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
     from primer.model.api_token import ApiToken
     from primer.model.artifact import ArtifactLocation
     from primer.model.channel import Channel
+    from primer.model.collection import Document
     from primer.model.workspace_session import WorkspaceSession
 
     sp = postgres_storage_provider
@@ -191,9 +202,11 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
     await sp.get_storage(WorkspaceSession).get("__bootstrap__")
     await sp.get_storage(Channel).get("__bootstrap__")
     await sp.get_storage(ArtifactLocation).get("__bootstrap__")
+    await sp.get_storage(Document).get("__bootstrap__")
 
     assert "apitoken_token_hash_uniq" in await _index_names(sp, "apitoken")
     assert "sessions_status" in await _index_names(sp, "sessions")
     assert "sessions_workspace_id" in await _index_names(sp, "sessions")
     assert "channel_provider_external" in await _index_names(sp, "channel")
     assert "artifactlocation_provider_id" in await _index_names(sp, "artifactlocation")
+    assert "document_collection_id" in await _index_names(sp, "document")

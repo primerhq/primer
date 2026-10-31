@@ -28,6 +28,7 @@ from typing import Any
 
 from primer.ai_docs_path import resolve_ai_docs_dir
 from primer.knowledge.importer import slugify_segment
+from primer.knowledge.row_writes import write_collection_fields
 from primer.knowledge.indexing import (
     make_document_indexer,
     make_document_unindexer,
@@ -41,6 +42,7 @@ from primer.knowledge.wiki.pages import (
     resolve_wiki_dir,
 )
 from primer.knowledge.wiki.stamp import claim, decide, read_stamp, still_mine
+from primer.model.access import Access
 from primer.model.agent import Agent
 from primer.model.collection import Collection, Document
 from primer.model.except_ import ConflictError, NotFoundError, PrimerError
@@ -131,10 +133,13 @@ async def _ensure_collection(storage_provider) -> Collection:
     existing = await colls.get(SYSTEM_COLLECTION_ID)
     if existing is None:
         try:
+            # Public (P3 Decision 7): every full user reads the wiki, and the wiki tools depend on it; the system flag
+            # keeps it read-only for everyone.
             return await colls.create(Collection(
                 id=SYSTEM_COLLECTION_ID,
                 description=WIKI_TITLE,
                 system=True,
+                access=Access(public=True),
             ))
         except ConflictError:
             # A fresh install starts the API and every worker at once and they
@@ -147,10 +152,34 @@ async def _ensure_collection(storage_provider) -> Collection:
         # A pre-wiki install holds "Primer system reference". The title is
         # the platform's (the table of contents is the page it points at);
         # the operator's search block travels with the model copy.
-        existing = await colls.update(
-            existing.model_copy(update={"description": WIKI_TITLE}),
-        )
+        existing = await write_collection_fields(colls, existing, {"description": WIKI_TITLE})
+    if not existing.access.public:
+        existing = await _make_public(colls, existing)
     return existing
+
+
+async def _make_public(colls, row: Collection) -> Collection:
+    """Turn ``public`` on, keeping the rest of the row's sharing; guarded on its ``rev`` like every sharing write.
+
+    A sharing change that lands in between wins this boot (the row is returned as stored); the next boot retries.
+    """
+    current = row.access
+    new = Access(**{**current.model_dump(), "public": True, "rev": current.rev + 1})
+    guard = [current.rev, None] if current.rev == 0 else [current.rev]
+    written = await colls.patch_if(row.id, {"access": new.model_dump(mode="json")}, where={("access", "rev"): guard})
+    return written if written is not None else await colls.get(row.id) or row
+
+
+def _listed(row) -> bool:
+    """Whether the live map lists ``row``: only public rows of an owned kind (P3 Decision 7), never the wiki itself.
+
+    The map is public (the system collection is), so a private entity's name and description must not reach it. Kinds
+    with no ``access`` of their own (the providers) are listed as before.
+    """
+    if isinstance(row, Collection) and row.id == SYSTEM_COLLECTION_ID:
+        return False
+    access = getattr(row, "access", None)
+    return access is None or access.public
 
 
 def _quote_user_text(text: str | None) -> str:
@@ -257,7 +286,7 @@ async def _workspaces_map(storage_provider, *, root: str = "") -> dict[str, str]
     from primer.model.workspace import Workspace
 
     prefix = f"{root}/" if root else ""
-    rows = await _all_rows(storage_provider, Workspace)
+    rows = [r for r in await _all_rows(storage_provider, Workspace) if _listed(r)]
     out: dict[str, str] = {}
     lines = ["# Workspaces", "", "Places sessions run. One page each.", ""]
     for row in rows:
@@ -389,10 +418,10 @@ def _live_page(path: str, body: str, *, summary: str = "") -> WikiPage:
 # table of contents that links to it cannot drift.
 _LIVE_INDEX_SUMMARIES: dict[str, str] = {
     LIVE_ROOT: LIVE_SUMMARY,
-    f"{LIVE_ROOT}/agents": "every agent on this install",
-    f"{LIVE_ROOT}/graphs": "every graph on this install",
-    f"{LIVE_ROOT}/collections": "every collection on this install",
-    f"{LIVE_ROOT}/workspaces": "every workspace and its phase",
+    f"{LIVE_ROOT}/agents": "every public agent on this install",
+    f"{LIVE_ROOT}/graphs": "every public graph on this install",
+    f"{LIVE_ROOT}/collections": "every public collection on this install",
+    f"{LIVE_ROOT}/workspaces": "every public workspace and its phase",
     f"{LIVE_ROOT}/providers": "LLM, embedding and search backends",
     f"{LIVE_ROOT}/providers/llm": "chat/completion backends",
     f"{LIVE_ROOT}/providers/model-profiles": "what agents bind to",
@@ -406,11 +435,12 @@ def _this_install_body() -> str:
         "# This install\n\n"
         "This is the map of THIS install. It is rebuilt from live state at "
         "every startup (and agent, graph and collection pages update on "
-        "change), and it is read-only: grep it, read it, do not write to it.\n\n"
-        f"- [agents]({LIVE_ROOT}/agents) - every agent, its purpose and its model\n"
-        f"- [graphs]({LIVE_ROOT}/graphs) - every graph and what it orchestrates\n"
-        f"- [collections]({LIVE_ROOT}/collections) - every collection on this install\n"
-        f"- [workspaces]({LIVE_ROOT}/workspaces) - every workspace and its phase\n"
+        "change), and it is read-only: grep it, read it, do not write to it. It lists only what is public; "
+        "your own and shared entities are in the console and the CRUD tools.\n\n"
+        f"- [agents]({LIVE_ROOT}/agents) - every public agent, its purpose and its model\n"
+        f"- [graphs]({LIVE_ROOT}/graphs) - every public graph and what it orchestrates\n"
+        f"- [collections]({LIVE_ROOT}/collections) - every public collection on this install\n"
+        f"- [workspaces]({LIVE_ROOT}/workspaces) - every public workspace and its phase\n"
         f"- [providers]({LIVE_ROOT}/providers) - LLM, embedding and search backends\n"
     )
 
@@ -424,29 +454,26 @@ async def _live_pages(storage_provider) -> dict[str, WikiPage]:
             path, body, summary=_LIVE_INDEX_SUMMARIES.get(path, ""),
         )
 
-    agents = await _list_all(storage_provider, Agent)
+    agents = [a for a in await _list_all(storage_provider, Agent) if _listed(a)]
     for a in agents:
         put(f"{LIVE_ROOT}/agents/{_live_slug(a.id)}", _agent_body(a))
     put(LIVE_ROOT + "/agents", _index_body(
         "Agents", [(f"{LIVE_ROOT}/agents/{_live_slug(a.id)}", a.id) for a in agents],
     ))
 
-    graphs = await _list_all(storage_provider, Graph)
+    graphs = [g for g in await _list_all(storage_provider, Graph) if _listed(g)]
     for g in graphs:
         put(f"{LIVE_ROOT}/graphs/{_live_slug(g.id)}", _graph_body(g))
     put(LIVE_ROOT + "/graphs", _index_body(
         "Graphs", [(f"{LIVE_ROOT}/graphs/{_live_slug(g.id)}", g.id) for g in graphs],
     ))
 
-    colls = await _list_all(storage_provider, Collection)
+    colls = [c for c in await _list_all(storage_provider, Collection) if _listed(c)]
     for c in colls:
-        if c.id == SYSTEM_COLLECTION_ID:
-            continue
         put(f"{LIVE_ROOT}/collections/{_live_slug(c.id)}", _collection_body(c))
     put(LIVE_ROOT + "/collections", _index_body(
         "Collections",
-        [(f"{LIVE_ROOT}/collections/{_live_slug(c.id)}", c.id)
-         for c in colls if c.id != SYSTEM_COLLECTION_ID],
+        [(f"{LIVE_ROOT}/collections/{_live_slug(c.id)}", c.id) for c in colls],
     ))
 
     for path, body in (
@@ -648,7 +675,7 @@ async def _live_entity_for_path(
             if _live_slug(candidate.id) == slug:
                 row = candidate
                 break
-    if row is None or (entity_type == "collection" and row.id == SYSTEM_COLLECTION_ID):
+    if row is None or not _listed(row):
         return False, None, None
     return True, entity_type, row.id
 
@@ -1009,11 +1036,9 @@ async def converge_entity(
         path = f"{subtree}/{_live_slug(entity_id)}"
         wrote_page = False
 
-        if entity is None or (
-            entity_type == "collection" and entity_id == SYSTEM_COLLECTION_ID
-        ):
-            # Gone (or the system collection itself, which never lists
-            # itself): drop the page if one is there.
+        if entity is None or not _listed(entity):
+            # Gone, not public (any more), or the system collection itself,
+            # which never lists itself: drop the page if one is there.
             try:
                 await tree.delete(
                     collection_id=SYSTEM_COLLECTION_ID, path=path,
@@ -1045,10 +1070,7 @@ async def converge_entity(
 
         # Re-render the subtree index so its links match what is there.
         rows = await _list_all(storage_provider, model_cls)
-        children = [
-            (f"{subtree}/{_live_slug(r.id)}", r.id) for r in rows
-            if not (entity_type == "collection" and r.id == SYSTEM_COLLECTION_ID)
-        ]
+        children = [(f"{subtree}/{_live_slug(r.id)}", r.id) for r in rows if _listed(r)]
         index_body = _index_body(title, children)
         index = _live_page(
             subtree, index_body, summary=_LIVE_INDEX_SUMMARIES.get(subtree, ""),
