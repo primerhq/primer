@@ -84,6 +84,7 @@ from primer.common.entity_checks import EntityCheckError
 from primer.common.log import redact_url_secrets
 from primer.model.common import preserve_masked_secrets
 from primer.toolset.toolset_checks import (
+    check_mcp_url_resolves_public,
     check_oauth_resource_uri,
     check_python_toolset,
     oauth_settings_changed,
@@ -1629,6 +1630,7 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
             },
         )
     _refuse_a_resource_uri_elsewhere(entity)
+    await _refuse_a_name_that_resolves_internal(entity, request)
     if _toolset_probe_bypassed(request):
         return
     if entity.provider == ToolsetProviderType.PYTHON:
@@ -1643,6 +1645,16 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     ):
         return
     await _probe_mcp_reachable(entity, request)
+
+
+async def _refuse_a_name_that_resolves_internal(entity: Toolset, request: Request) -> None:
+    """403 ``forbidden_role`` when a caller below admin saves an http / sse MCP toolset whose URL NAME resolves to an internal address
+    (:func:`primer.toolset.toolset_checks.check_mcp_url_resolves_public`; the system tools run the same check). Run on every save, the probe bypass
+    included: a grantee of an admin-owned toolset must not repoint it at an internal name."""
+    try:
+        await check_mcp_url_resolves_public(entity, person_from_request(request))
+    except EntityCheckError as exc:
+        raise HTTPException(status_code=403, detail={"error": "forbidden_role", "message": exc.message}) from exc
 
 
 def _refuse_a_resource_uri_elsewhere(entity: Toolset) -> None:
@@ -1706,6 +1718,7 @@ async def _toolset_on_pre_update(
         _require_admin_for_toolset(request, reason)
     preserve_masked_secrets(entity, existing)
     _refuse_a_resource_uri_elsewhere(entity)
+    await _refuse_a_name_that_resolves_internal(entity, request)
     if entity.provider == ToolsetProviderType.PYTHON:
         _validate_python_toolset(entity)
         own_python_source_version(entity, existing)
