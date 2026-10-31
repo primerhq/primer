@@ -188,6 +188,7 @@ async def apply_tool_results(
         # elsewhere and the graph parked on another entry under the same raw id): the wake would land there all the same (no entry waits on its key, so
         # the entry fence admits it) and the resume would answer that entry by the raw id. Then neither the wake nor its publish happens; the row is
         # still written (#707 review round 2, N1).
+        won = False
         if woken is session or _pending_targets(woken).get(r.tool_call_id) == (event_key, entry_row_id):
             if not await durably_wake_session(
                 woken,
@@ -199,6 +200,7 @@ async def apply_tool_results(
             ):
                 refused.append(r.tool_call_id)
                 continue
+            won = True
             if storage_provider is not None:
                 from primer.events.wake import emit_session_wake
 
@@ -219,7 +221,7 @@ async def apply_tool_results(
             )
         landed = await resolve_external_row(
             call_storage, row_id,
-            status="completed", result=r.result, is_error=bool(r.is_error),
+            status="completed", result=r.result, is_error=bool(r.is_error), replace_timed_out=won,
         )
         if landed is None:
             logger.info(

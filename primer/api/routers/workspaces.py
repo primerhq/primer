@@ -2324,6 +2324,7 @@ async def steer_session(
         cancel_pending_external,
     )
     from primer.model.principal import PrincipalRef
+    from primer.session.external_calls import flip_external_row
     from primer.session.pending_messages import store_pending_steer
     from primer.session.steer_routing import ROUTE_PENDING, route_steer
     from primer.session.yields import durably_wake_session
@@ -2392,6 +2393,7 @@ async def steer_session(
         # result landed first) keeps its result and the steer answers 409 already_decided.
         pending_rows, _ = await _rows_by_tcid(call_storage, session_id=session_id)
         refused: list[str] = []
+        won: dict[str, str] = {}  # tool_call_id -> the call row the park entry names
         if row is not None:
             # The cancel names the park whose calls it read (``row``, refreshed above): delivered by key alone and at least once, a copy that arrives after
             # the session re-parked under the same key must not cancel the new call (ticket 01a1208d, #702 review B2).
@@ -2423,15 +2425,22 @@ async def steer_session(
                 ):
                     refused.append(tcid)
                     continue
+                won[tcid] = entry_row_id or pending_rows[tcid].id
                 try:
                     await event_bus.publish(key, payload)
                 except Exception:  # noqa: BLE001 - durable flip landed
                     logger.exception(
                         "external tool cancel publish failed for %r", key
                     )
-        # The rows follow: every pending call except one whose park refused the cancel (its winner writes that row).
+        # The rows follow. A call whose park took the cancel: its row, which may replace a timeout the lazy sweep wrote once the park
+        # moved on. Every other pending call, except one whose park refused the cancel (its winner writes that row).
+        for row_id in won.values():
+            await flip_external_row(
+                call_storage, row_id=row_id, status="cancelled",
+                result={"cancelled": True, "reason": CANCEL_REASON_SUPERSEDED}, replace_timed_out=True,
+            )
         await cancel_pending_external(
-            call_storage=call_storage, session_id=session_id, tool_call_ids=set(pending_rows) - set(refused),
+            call_storage=call_storage, session_id=session_id, tool_call_ids=set(pending_rows) - set(refused) - set(won),
         )
         if refused:
             raise AlreadyDecidedError(

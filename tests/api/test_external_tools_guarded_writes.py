@@ -208,6 +208,42 @@ async def test_a_sweep_after_a_result_took_the_park_leaves_the_row_to_the_result
     assert session.parked_state["resume_event_payload"]["result"] == RESULT
 
 
+async def test_a_result_that_took_the_park_replaces_a_timeout_the_sweep_wrote_after_the_park_moved_on(
+    app, client, wsr, sp, monkeypatch,
+) -> None:
+    """GS-6 ruling, the last window. The steer carrying the result takes the park and is held at its ``completed`` row write; the
+    worker resumes the session meanwhile, so no park waits on the call any more, and a GET list sweeps the expired row: with nobody
+    left to decide the call, the sweep times it out. Released, the result's row write must still land, because its park step won:
+    a row write whose park step won replaces a ``timed_out`` as well as a ``pending``."""
+    app.state.event_bus = _RecordingBus()
+    wid = await _parked_external_session(client, wsr, sp, due=True)
+    calls = sp.get_storage(ExternalToolCall)
+    sessions = sp.get_storage(WorkspaceSession)
+    now = datetime.now(UTC)
+    await calls.create(ExternalToolCall(
+        id=ROW_ID, session_id="sess-1", tool_call_id="tc-1", tool_name="lookup_customer",
+        arguments={}, created_at=now - timedelta(minutes=2), timeout_at=now - timedelta(seconds=1),
+    ))
+    held = hold_write(monkeypatch, calls, row_id=ROW_ID, status="completed")
+
+    result = asyncio.create_task(_steer_result(client, wid))
+    await held.wait_arrived()
+    resumed = await sessions.get("sess-1")
+    await sessions.update(resumed.model_copy(update={
+        "parked_status": None, "parked_state": None, "parked_event_key": None, "parked_at": None, "parked_until": None,
+    }))
+    listed = await client.get("/v1/external_tool_calls?session_id=sess-1")
+    swept = await calls.get(ROW_ID)
+    await held.release()
+    r_s = await result
+
+    assert listed.status_code == 200, listed.text
+    assert swept.status == "timed_out", "precondition: no park waits on the call, so the sweep timed it out"
+    assert 200 <= r_s.status_code < 300, r_s.text
+    row = await calls.get(ROW_ID)
+    assert (row.status, row.result, row.is_error) == ("completed", RESULT, False)
+
+
 async def test_a_sweep_times_out_a_pending_row_past_its_deadline(app, client, wsr, sp) -> None:
     """The lazy timeout itself, through the guarded write: a ``pending`` row whose ``timeout_at`` passed is stored
     and reported ``timed_out``, and drops out of the session's pending list. The park's own deadline has passed too, so

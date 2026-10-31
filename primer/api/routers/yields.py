@@ -774,6 +774,7 @@ async def post_cancel_yielded_tool(
                 "cancelled": True,
                 "reason": body.reason or "cancelled by operator",
             },
+            replace_timed_out=True,  # its park step won (_durable_wake raised otherwise)
         )
     return {"status": "accepted"}
 
