@@ -203,9 +203,6 @@ MODEL_PROFILE_GRAPH_REFERENCE = ReferenceSpec(
     "graph", Graph, "nodes[].profile_id", lookup=first_graph_with_profile_override,
 )
 
-# What blocks an LLM provider's deletion: a model profile naming it (its save validates the provider exists).
-LLM_PROVIDER_REFERENCES: tuple[ReferenceSpec, ...] = (ReferenceSpec("model_profile", ModelProfile, "provider_id"),)
-
 GRAPH_REFERENCES: tuple[ReferenceSpec, ...] = (
     ReferenceSpec("graph", Graph, "nodes[].graph_id", lookup=first_graph_with_subgraph_node),
     ReferenceSpec("session", WorkspaceSession, "binding.graph_id", lookup=first_live_session_bound_to_graph),
@@ -272,7 +269,6 @@ async def default_agent_refusal(storage_provider: Any, agent_id: str, *, exempt:
 __all__ = [
     "AGENT_REFERENCES",
     "GRAPH_REFERENCES",
-    "LLM_PROVIDER_REFERENCES",
     "MODEL_PROFILE_GRAPH_REFERENCE",
     "Lookup",
     "ReferenceSpec",

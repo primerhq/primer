@@ -9,8 +9,6 @@ from tests.api.test_providers import _llm
 
 async def test_the_row_is_gone_when_the_delete_hook_runs(client, app) -> None:
     await client.post("/v1/llm_providers", json=dump_for_storage(_llm()))
-    for profile in (await client.get("/v1/model_profiles?limit=200")).json()["items"]:
-        await client.delete(f"/v1/model_profiles/{profile['id']}")
     registry = app.state.provider_registry
     seen: dict[str, object] = {}
     real = registry.invalidate_llm
