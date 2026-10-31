@@ -50,6 +50,15 @@ class WorkerConfig(BaseModel):
     heartbeat_interval_seconds: int = Field(default=10, ge=1, le=60)
     lease_ttl_seconds: int = Field(default=30, ge=5, le=300)
     poll_interval_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
+    deltas_in_process_only: bool = Field(
+        default=False,
+        description=(
+            "Send the live token-delta and phase frames of a turn to this process's own subscribers only, with no cross-process publish (on Postgres, "
+            "no NOTIFY). Set it ONLY when this process also serves every tap / SSE reader of the sessions it runs (one API+worker process): in a "
+            "split API / worker deployment, or with a second API replica, live tokens would stop reaching readers in the other processes. Ticks and "
+            "every other event are unaffected. Default off: frames cross processes."
+        ),
+    )
     drain_timeout_seconds: int = Field(default=120, ge=1)
     max_attempts: int = Field(default=5, ge=1, le=100)
     base_backoff_seconds: float = Field(default=2.0, ge=0.1)

@@ -89,6 +89,15 @@ class EventBus(ABC):
         ``payload=None`` is shorthand for an empty dict.
         """
 
+    async def publish_local(self, event_key: str, payload: dict[str, Any] | None = None) -> None:
+        """Publish ``payload`` to THIS process's subscribers only (no cross-process delivery).
+
+        For a frame whose only readers are in the publishing process (a token delta shown by this process's tap), where a cross-process publish (the
+        Postgres NOTIFY) is cost with no reader. The default is :meth:`publish`, which reaches this process's subscribers too; a transport that
+        crosses processes overrides it.
+        """
+        await self.publish(event_key, payload)
+
     @abstractmethod
     def subscribe(
         self,

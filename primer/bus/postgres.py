@@ -501,6 +501,12 @@ class PostgresEventBus(EventBus):
                 body,
             )
 
+    async def publish_local(self, event_key: str, payload: dict[str, Any] | None = None) -> None:
+        """Deliver to this process's subscriptions without a NOTIFY (no other process hears it; ``publish`` still crosses processes)."""
+        if self._closed:
+            raise RuntimeError("publish on closed PostgresEventBus")
+        self._fan_out(Event(event_key=event_key, payload=dict(payload or {}), published_at=datetime.now(timezone.utc)))
+
     def subscribe(
         self,
         *,

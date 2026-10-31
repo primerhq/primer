@@ -1011,6 +1011,7 @@ class WorkerPool:
             artifact_registry=self._artifact_storage_registry,
             scheduler=self._scheduler,
             claim_engine=self._engine,
+            deltas_in_process_only=self.config.deltas_in_process_only,
         )
 
         outcome = ReleaseOutcome(success=False, drop_lease=True)
