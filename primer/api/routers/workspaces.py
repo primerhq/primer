@@ -93,6 +93,7 @@ from primer.api.routers._references import ReferenceCheck
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.model.except_ import (
+    AccessDeniedError,
     ConfigError,
     BadRequestError,
     ConflictError,
@@ -1628,6 +1629,7 @@ class CompactSessionResponse(BaseModel):
     responses=common_responses(404, 409, 413, 422, 500),
 )
 async def compact_session_endpoint(
+    request: Request,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
@@ -1654,6 +1656,7 @@ async def compact_session_endpoint(
     from primer.model.agent import Agent
     from primer.model.chat import Message, TextPart
     from primer.model.graph import build_execution_context
+    from primer.authz import ProfileUnusable
     from primer.model_profile import resolve_llm
     from primer.session.compaction import (
         append_compaction_marker,
@@ -1689,7 +1692,11 @@ async def compact_session_endpoint(
             provider_registry,
             default_profile_id=agent.model.profile_id,
             override_profile_id=getattr(row.binding, "profile_id", None),
+            person=person_from_request(request),
         )
+    except ProfileUnusable as exc:
+        # Compacting spends the model as the requester: a profile they may not use is a refusal (403), not a misconfiguration.
+        raise AccessDeniedError(exc.message) from exc
     except (NotFoundError, ConfigError) as exc:
         raise ConfigError(
             f"Agent {agent.id!r} names model profile "

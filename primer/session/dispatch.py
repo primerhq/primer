@@ -65,7 +65,7 @@ from primer.model.turn_log import (
     TurnLogYielded,
 )
 from primer.model.yield_ import CANCEL_REASON_PREEMPTED, YIELD_KIND_PREFIXES, ToolWaitPark, YieldToWorker
-from primer.authz import RUN_REFUSED_CODE, RUN_REFUSED_MESSAGE, RunRefused
+from primer.authz import PROFILE_UNUSABLE_CODE, RUN_REFUSED_CODE, RUN_REFUSED_MESSAGE, ProfileUnusable, RunRefused
 from primer.session.autonomy import session_is_autonomous
 from primer.session.enqueue import SessionWakeDeps
 from primer.session.delegation import (
@@ -381,6 +381,9 @@ async def run_one_session_turn(
         # session: its workspace is intact and usable once moved, so the turn fails and the session stays
         # resumable instead of ending ``failed``.
         return await pause_session_for_refused_workspace(session_storage, session_id, refused)
+    except ProfileUnusable as unusable:
+        # The person this turn runs as may not use its model profile: the turn fails, the session stays resumable (park kept).
+        return await pause_session_for_unusable_profile(session_storage, deps.workspace_io, flipped, unusable, event_bus=deps.event_bus)
     except Exception as build_error:
         if isinstance(build_error, RunRefused):
             # The session's creator can no longer run it (G6-6; review of #853, N5): not a fault, so a warning without a traceback, and the
@@ -2661,16 +2664,14 @@ class _NoTap:
         return None
 
 
-async def record_refused_run(session_storage: Any, workspace_io: Any, session: WorkspaceSession, *, event_bus: Any = None) -> None:
-    """Record that a run of ``session`` was refused because its creator can no longer run it (``RunRefused``; review of #853, N5).
-
-    ``last_turn_error`` (code :data:`~primer.authz.RUN_REFUSED_CODE`) on the row, and an ERROR record whose ``message`` is the fixed
-    :data:`~primer.authz.RUN_REFUSED_MESSAGE` (it names nobody) in the transcript, at a seq reserved on the row first. Called by the turn's exit
-    when the executor cannot be built for it, and by the worker pool when a resume is refused, before either ends the session ``failed``.
-    Best effort: a failure is logged and the session still ends.
-    """
+async def record_turn_refusal(
+    session_storage: Any, workspace_io: Any, session: WorkspaceSession, *, message: str, code: str, event_bus: Any = None,
+) -> None:
+    """Record a refused turn: ``last_turn_error`` (``code``) on the row and an ERROR record carrying ``message`` in the transcript, at a seq
+    reserved on the row first. Best effort: a failure is logged and the caller's exit still lands. The shared body of
+    :func:`record_refused_run` and :func:`pause_session_for_unusable_profile`."""
     try:
-        await _record_last_turn_error(session_storage, session.id, RUN_REFUSED_CODE, session.binding_epoch)
+        await _record_last_turn_error(session_storage, session.id, code, session.binding_epoch)
         reserved = await reserve_next_seq(session_storage, session.id)
         if reserved is None:
             return
@@ -2679,11 +2680,56 @@ async def record_refused_run(session_storage: Any, workspace_io: Any, session: W
         await _flush_and_tick(_TickOnly(event_bus), writer, session.id, SessionMessageRecord(  # type: ignore[arg-type]
             seq=1,  # overwritten by the writer's counter
             kind=SessionMessageKind.ERROR,
-            payload={"message": RUN_REFUSED_MESSAGE, "code": RUN_REFUSED_CODE},
+            payload={"message": message, "code": code},
             created_at=_now(),
         ))
-    except Exception:  # noqa: BLE001 -- the record says why; the end must land whatever happens to it
-        logger.warning("session %s: the record of its refused run could not be written", session.id, exc_info=True)
+    except Exception:  # noqa: BLE001 -- the record says why; the exit must land whatever happens to it
+        logger.warning("session %s: the record of its refused turn could not be written", session.id, exc_info=True)
+
+
+async def pause_session_for_unusable_profile(
+    session_storage: Any, workspace_io: Any, session: WorkspaceSession, unusable: ProfileUnusable, *, event_bus: Any = None,
+) -> ReleaseOutcome:
+    """Fail the TURN of a session whose model profile the person it runs as may not use, and leave the session resumable (access-control P4 Task 4).
+
+    Unlike ``RunRefused`` this never ends the session: a peer without the grant who steers must not end the owner's session. An ERROR record
+    (the reason) goes into the transcript and ``last_turn_error.code`` is stamped ``model_profile_unusable``; the session goes PAUSED with its
+    park kept (only the fields below are written, in ONE ``patch_if`` guarded on the row not being ENDED), so ``/resume`` re-runs the turn once
+    an admin grants use, or the owner's next turn runs as the owner. The lease is given back with ``entity_noop`` (the adapter's release
+    would clear the park and bump ``turn_no`` for a turn that never ran).
+    """
+    logger.warning("session %s: its turn failed and the session is paused, resumable: %s", session.id, unusable.message)
+    await record_turn_refusal(
+        session_storage, workspace_io, session, message=unusable.message, code=PROFILE_UNUSABLE_CODE, event_bus=event_bus,
+    )
+    patch = to_jsonable_python({
+        "status": SessionStatus.PAUSED,
+        "interrupt_requested": False,
+        "turn_status": "idle",
+        "turn_started_at": None,
+        "agent_phase": None,
+        "agent_phase_turn_no": None,
+        "agent_phase_stamped_at": None,
+    })
+    async with session_lifecycle_lock().acquire(session.id):
+        try:
+            await session_storage.patch_if(session.id, patch, where={"status": NON_ENDED_STATUSES()})
+        except NotFoundError:
+            logger.warning("session %s vanished before its refused turn could pause it", session.id)
+    return ReleaseOutcome(success=False, drop_lease=True, entity_noop=True)
+
+
+async def record_refused_run(session_storage: Any, workspace_io: Any, session: WorkspaceSession, *, event_bus: Any = None) -> None:
+    """Record that a run of ``session`` was refused because its creator can no longer run it (``RunRefused``; review of #853, N5).
+
+    ``last_turn_error`` (code :data:`~primer.authz.RUN_REFUSED_CODE`) on the row, and an ERROR record whose ``message`` is the fixed
+    :data:`~primer.authz.RUN_REFUSED_MESSAGE` (it names nobody) in the transcript, at a seq reserved on the row first. Called by the turn's exit
+    when the executor cannot be built for it, and by the worker pool when a resume is refused, before either ends the session ``failed``.
+    Best effort: a failure is logged and the session still ends.
+    """
+    await record_turn_refusal(
+        session_storage, workspace_io, session, message=RUN_REFUSED_MESSAGE, code=RUN_REFUSED_CODE, event_bus=event_bus,
+    )
 
 
 async def _record_last_turn_error(session_storage, session_id: str, code: str, binding_epoch: int) -> bool:

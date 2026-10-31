@@ -16,7 +16,7 @@ dependency tree at startup.
 
 from __future__ import annotations
 
-from primer.access.person import person_from_ref
+from primer.access.person import Person, person_from_ref
 from primer.access.policy import level_of
 
 import logging
@@ -245,7 +245,7 @@ def build_graph_invocation_services(
         return row
 
     async def llm_resolver(agent, profile_id: str | None = None):
-        return await resolve_llm_and_model(pool, agent, profile_id)
+        return await resolve_llm_and_model(pool, agent, profile_id, person=person_from_ref(initiated_by))
 
     async def tool_manager_resolver(agent):
         toolset_ids = _toolset_ids_from_scoped(agent.tools)
@@ -343,9 +343,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # context_length compaction needs, and any API-level tunables.
     # binding.profile_id overrides the agent's default for THIS run; the
     # agent definition is unchanged and other sessions are unaffected.
-    llm, llm_model = await resolve_llm_and_model(
-        pool, agent, getattr(binding, "profile_id", None),
-    )
+    # (The adapter is resolved below, once the run's person is known: use of the profile is checked as that person.)
 
     # agent.tools holds scoped tool ids (toolset_id__tool_name).
     # Derive the unique toolset prefixes so we only resolve the
@@ -395,6 +393,11 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         live_agent = agent if binding.agent_snapshot is None else (await pool._storage.get_storage(Agent).get(binding.agent_id) or agent)
         if live_agent is None or level_of(person_from_ref(initiated_by), live_agent.access) is None:
             raise NotFoundError(f"Agent {binding.agent_id!r} not found")
+    # The profile the turn runs on (the session's override, else the agent's), used as the turn's person: it and the LLM providers behind it
+    # must be usable by them, else the turn is refused (ProfileUnusable, access-control P4 Task 4).
+    llm, llm_model = await resolve_llm_and_model(
+        pool, agent, getattr(binding, "profile_id", None), person=person_from_ref(initiated_by),
+    )
     gis = pool._build_graph_invocation_services(
         workspace=workspace,
         workspace_session=agent_session,
@@ -541,7 +544,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     run_profile_id = binding.profile_id
 
     async def llm_resolver(agent, profile_id: str | None = None):
-        return await resolve_llm_and_model(pool, agent, profile_id or run_profile_id)
+        return await resolve_llm_and_model(pool, agent, profile_id or run_profile_id, person=person_from_ref(initiated_by))
 
     # (4) Holder AgentSession allocated by POST /workspaces/{id}/sessions
     # (Phase 2). Optional - fall back to None for legacy graph-
@@ -680,7 +683,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
 
 
 async def resolve_llm_and_model(
-    pool: "WorkerPool", agent, override_profile_id: str | None = None,
+    pool: "WorkerPool", agent, override_profile_id: str | None = None, person: Person | None = None,
 ):
     """Resolve both the adapter and the model facts for one turn.
 
@@ -693,6 +696,15 @@ async def resolve_llm_and_model(
     docstring on why that field is null), which is exactly the loud
     failure that told us this seam needed migrating.
     """
+    # ``person`` makes this a USE of the profile: asked first, so an unusable profile is refused before any adapter is built. The member
+    # recursion below the resolver carries no person (an aggregate's grant covers its members; their providers are checked here too).
+    if person is not None and pool._storage is not None:
+        from primer.model.model_profile import ModelProfile
+        from primer.model_profile.resolver import require_profile_use
+
+        row = await pool._storage.get_storage(ModelProfile).get(override_profile_id or agent.model.profile_id)
+        if row is not None:
+            await require_profile_use(pool._storage, person, row)
     # Through pool._resolve_llm, not the module function directly: this
     # module's contract is that builders route via the pool so a test
     # monkeypatching pool._resolve_llm still steers resolution.

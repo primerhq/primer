@@ -556,7 +556,8 @@ def _crud_tools_for(
             return _err(exc.message, error_type="validation-error")
         if pre_create is not None:
             try:
-                await pre_create(entity)
+                # A hook that says it takes the person (an agent's or graph's reference checks) is asked as the caller: the saver is checked.
+                await pre_create(entity, **({"person": _owned_person(ctx)} if getattr(pre_create, "takes_person", False) else {}))
             except EntityCheckError as exc:
                 return _err(exc.tool_message(), error_type=exc.tool_error_type)
         existing = await storage.get(entity.id)
@@ -670,7 +671,9 @@ def _crud_tools_for(
             return _err(exc.message, error_type="validation-error")
         if pre_update is not None:
             try:
-                await pre_update(entity, existing)
+                await pre_update(
+                    entity, existing, **({"person": _owned_person(ctx)} if getattr(pre_update, "takes_person", False) else {}),
+                )
             except EntityCheckError as exc:
                 return _err(exc.tool_message(), error_type=exc.tool_error_type)
         try:

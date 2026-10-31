@@ -120,6 +120,26 @@ class RunRefused(PrimerError):
     ``last_turn_error.code`` :data:`RUN_REFUSED_CODE`."""
 
 
+#: The code a refused turn stamps (``last_turn_error.code``) when the person it runs as may not use its model profile (access-control P4 Task 4).
+PROFILE_UNUSABLE_CODE = "model_profile_unusable"
+
+
+class ProfileUnusable(PrimerError):
+    """A turn's model profile (or an LLM provider it resolves to) is not usable by the person the turn runs as (access-control P4 Task 4).
+
+    It fails the TURN, never the session: a peer without the grant who steers must not end the owner's session. The session is paused with
+    its park kept and the ERROR record carries this message; ``/resume`` re-runs the turn once an admin grants use. The message names the
+    profile id, which the agent definition already shows to anyone who can read it.
+    """
+
+    def __init__(self, profile_id: str) -> None:
+        super().__init__(
+            f"model profile {profile_id!r} is not available to the person this turn runs as; an admin can grant its use",
+            code=PROFILE_UNUSABLE_CODE,
+        )
+        self.profile_id = profile_id
+
+
 def rank_label(ref: "Principal | PrincipalRef | None") -> str:
     """The rank of ``ref`` in words, without naming who it is.
 
@@ -162,4 +182,4 @@ def _role_allows(actor: "Principal | PrincipalRef | None", need: str) -> bool:
     return _ROLE_RANK.get(actor.role, -1) >= _ROLE_RANK.get(need, 99)
 
 
-__all__ = ["OUTRANKED_MESSAGE", "RUN_REFUSED_CODE", "RUN_REFUSED_MESSAGE", "RunRefused", "_ROLE_RANK", "_role_allows", "may_drive", "principal_rank", "rank_label", "same_principal"]
+__all__ = ["OUTRANKED_MESSAGE", "PROFILE_UNUSABLE_CODE", "ProfileUnusable", "RUN_REFUSED_CODE", "RUN_REFUSED_MESSAGE", "RunRefused", "_ROLE_RANK", "_role_allows", "may_drive", "principal_rank", "rank_label", "same_principal"]
