@@ -13,11 +13,12 @@ acts as ``user`` with no ``user_id``, so it reads nothing.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Request
 
-from primer.model.principal import PrincipalRef
+from primer.model.principal import ActorRef, Principal, PrincipalRef
+from primer.model.user import User
 
 if TYPE_CHECKING:
     from primer.model.yield_ import ToolContext
@@ -84,3 +85,48 @@ def person_for_tool(ctx: "ToolContext | None") -> Person:
     if actor.type == "system":
         return Person(None, "system")
     return Person(actor.user_id, actor.role or "user")
+
+
+def identity_doc(principal_or_ref: Principal | PrincipalRef | None, actor: ActorRef | None, *, username: str | None = None) -> dict[str, Any]:
+    """The composite identity ``{user, actor}`` an approval input carries (access-control spec 6.3).
+
+    ``user`` is the person as :func:`person_from_ref` reads it; ``name`` is ``username`` (an API token's owner, read by
+    :func:`gate_identity`), else the ref's ``display``, and ``None`` for a ref that names nobody. The system principal (auth disabled) is
+    ``system`` throughout. ``actor`` is ``None`` when no agent, graph or user acts (a chat-only manager).
+    """
+    person = person_from_ref(principal_or_ref)
+    if person.role == "system":
+        user = {"id": "system", "name": "system", "role": "system"}
+    else:
+        name = (username or getattr(principal_or_ref, "display", None)) if person.user_id is not None else None
+        user = {"id": person.user_id, "name": name, "role": person.role}
+    return {"user": user, "actor": actor.model_dump() if actor is not None else None}
+
+
+def direct_actor(principal: Principal | None) -> ActorRef | None:
+    """The actor of a direct (MCP) call: the person themselves (a token's owner), or ``system`` on an auth-disabled install."""
+    if principal is None:
+        return None
+    if principal.type == "system":
+        return ActorRef(kind="system", id="system")
+    return ActorRef(kind="user", id=principal.user_id or principal.id)
+
+
+async def gate_identity(principal_or_ref: Principal | PrincipalRef | None, actor: ActorRef | None, storage_provider: Any) -> dict[str, Any]:
+    """:func:`identity_doc` for an approval gate that fires: an API token names only itself, so its owner's username is read from the User row."""
+    username = None
+    if principal_or_ref is not None and principal_or_ref.type == "api_token" and principal_or_ref.user_id and storage_provider is not None:
+        row = await storage_provider.get_storage(User).get(principal_or_ref.user_id)
+        username = getattr(row, "username", None)
+    return identity_doc(principal_or_ref, actor, username=username)
+
+
+async def tool_identity(ctx: "ToolContext | None", storage_provider: Any) -> dict[str, Any]:
+    """:func:`gate_identity` of a tool call, read as :func:`person_for_tool` reads the person: the run's person and actor from the
+    ``ToolContext``, else the MCP request's actor acting directly."""
+    if ctx is not None:
+        return await gate_identity(ctx.initiated_by, ctx.actor, storage_provider)
+    from primer.mcp.server import current_actor  # lazy: the MCP server module is heavy and optional on this path
+
+    actor = current_actor.get()
+    return await gate_identity(actor, direct_actor(actor), storage_provider)

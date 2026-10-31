@@ -167,7 +167,7 @@ class _Subagent:
     def __init__(self) -> None:
         self.child_results: list[ToolResultPart] = []
 
-    async def _build_subagent_toolmanager(self, context):
+    async def _build_subagent_toolmanager(self, context, *, agent_id=None):
         return _YieldingToolManager()
 
     async def _resume_subagent(self, *, agent_id, context, llm_messages, child_result, depth, invoke_tool_call_id):
