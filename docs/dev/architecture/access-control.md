@@ -374,7 +374,9 @@ other fields with `rewrite_keeping_access`, never the access. Sharing the harnes
 installed row, ordered by `access.rev` (a row already at a higher rev is left alone, and each write is fenced on the rev
 it read, so two racing fan-outs cannot resurrect a revoked grant) and only while the row still belongs to the harness.
 Sharing an installed row directly answers 409 `harness_managed`. Harness writes (create, update, install, sync, build,
-push, uninstall) stay admin-only in this phase; list, get and the bundle need read, and list filters in storage. The
+push, uninstall) stay admin-only in this phase; list, get and the bundle need read, and list filters in storage. A
+non-admin reader (REST list and get, the `list` and `get` tools) is served `overrides` with every value masked
+(`Harness.served_to`): they are the install form's values, secrets among them, and only an admin may change them. The
 outbound export strips `access` from the templates it writes.
 
 ### 6.13 Whole-row writers
