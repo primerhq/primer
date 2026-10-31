@@ -18,7 +18,9 @@ from primer.model.external_tool import (
     validate_external_tool_defs,
 )
 
-from primer.api.routers._session_rank import refuse_outranked
+from primer.access.person import person_from_request
+from primer.access.workspaces import require_session, require_workspace
+from primer.model.access import AccessLevel
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
@@ -172,6 +174,11 @@ async def create_session(
     5. If ``auto_start``: bump status to ``RUNNING``, stamp
        ``started_at``, and enqueue with the scheduler.
     """
+    # Access (P2 Task 3): creating a session is a full act in the target
+    # workspace: a stranger answers its missing-row text, a reader a 403.
+    await require_workspace(
+        storage_provider, person_from_request(request), workspace_id, AccessLevel.FULL,
+    )
     from primer.model.principal import PrincipalRef
     from primer.workspace.session_factory import (
         SessionFactoryDeps,
@@ -234,6 +241,7 @@ async def resume_session(
     sessions=Depends(get_session_storage),
     scheduler=Depends(get_scheduler),
     engine=Depends(get_claim_engine),
+    storage_provider=Depends(get_storage_provider),
 ) -> WorkspaceSession:
     """Idempotent start-or-resume.
 
@@ -242,20 +250,24 @@ async def resume_session(
       ``started_at`` if unset, clears the pause flag, and enqueues with
       the scheduler.
     * 409 when the session is ENDED.
-    * 403 ``forbidden_rank`` when the session's creator outranks the caller
-      (review of #853; ``primer.api.routers._session_rank``), before anything
-      is written.
+    * 404 when the session's workspace is the caller's missing-row text (a
+      stranger to it), and 403 when the caller holds a level below full
+      (P2 Task 3: the session inherits its workspace's access), before
+      anything is written.
 
     Delegates to :func:`primer.workspace.session_factory.resume_session`, the
     one path the ``resume_workspace_session`` tool takes too (ticket
     01a16d3c-9984); its docstring holds the write's fencing.
+
+    Access (P2 Task 3): a resume is a full act in the session's workspace,
+    which the session inherits; the rank floor under it is gone.
     """
     from primer.model.principal import PrincipalRef
     from primer.workspace.session_factory import resume_session as _resume_session_helper
 
+    await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.FULL)
     return await _resume_session_helper(
         workspace_id=workspace_id, session_id=session_id, sessions=sessions, scheduler=scheduler, claim_engine=engine,
-        guard=lambda row: refuse_outranked(request, row),
         # The person whose input starts the turn (spec §13 Q1): the request's resolved actor. A resume of a parked turn keeps the parked
         # turn's person (the helper writes nothing when the row already has one).
         by=PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None,
@@ -273,6 +285,7 @@ async def pause_session(
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
+    storage_provider=Depends(get_storage_provider),
 ) -> None:
     """Soft pause.
 
@@ -285,18 +298,23 @@ async def pause_session(
       (ticket 01a16d9f; an autonomous session whose turn ends it still
       ends).
     * 409 when the session is already ENDED.
-    * 403 ``forbidden_rank`` when the session's creator outranks the caller
-      (ticket 01a16d3c-a8bc; ``primer.api.routers._session_rank``), before
-      anything is written: a pause stops a run at the creator's rank.
+    * 404 as the session's missing-row text when the caller is a stranger
+      to its workspace, and 403 when the caller holds a level below full
+      (P2 Task 3: the session inherits its workspace's access), before
+      anything is written: a pause stops a run the caller may not drive.
 
     Delegates to :func:`primer.workspace.session_factory.pause_session`, the
     one path the ``pause_workspace_session`` tool takes too (ticket
     01a16d3c-9984).
+
+    Access (P2 Task 3): a pause is a full act in the session's workspace,
+    which the session inherits; the rank floor under it is gone.
     """
     from primer.workspace.session_factory import pause_session as _pause_session_helper
 
+    await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.FULL)
     await _pause_session_helper(
-        workspace_id=workspace_id, session_id=session_id, sessions=sessions, guard=lambda row: refuse_outranked(request, row),
+        workspace_id=workspace_id, session_id=session_id, sessions=sessions,
     )
 
 
@@ -327,22 +345,24 @@ async def cancel_session(
       legacy ``scheduler.signal_cancel`` for backward compat with the
       pre-engine claim path.
     * 409 when the session is already ENDED.
-    * 403 ``forbidden_rank`` when the session's creator outranks the caller
-      (review of #853), before anything is written.
+    * 404 as the session's missing-row text when the caller is a stranger
+      to its workspace, and 403 when the caller holds a level below full
+      (P2 Task 3: the session inherits its workspace's access), before
+      anything is written.
 
     Delegates to :func:`primer.workspace.session_factory.cancel_session`
     so the REST route and the ``cancel_workspace_session`` MCP tool share
     one canonical path.
+
+    Access (P2 Task 3): a cancel is a full act in the session's workspace,
+    which the session inherits; the rank floor under it is gone.
     """
     from primer.workspace.session_factory import (
         SessionCancelDeps,
         cancel_session as _cancel_session_helper,
     )
 
-    target = await storage_provider.get_storage(WorkspaceSession).get(session_id)
-    if target is not None and target.workspace_id == workspace_id:
-        # A missing session (or one on another workspace) is the 404 the helper raises, in its own words.
-        refuse_outranked(request, target)
+    await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.FULL)
     deps = SessionCancelDeps(
         storage_provider=storage_provider,
         scheduler=scheduler,
@@ -410,20 +430,22 @@ async def delete_session(
     unreachable (e.g. its backing storage was wiped), the row is
     still removed.
 
-    403 ``forbidden_rank`` when the session's creator outranks the caller
-    and the session is not the caller's own (ticket 01a16d9f;
-    ``primer.api.routers._session_rank``): a delete ends a live session
-    and, forced, cancels a running one, so it follows the Cancel route's
-    rule, decided first as Cancel decides it (whatever the status), before
-    anything is resolved, written or published.
+    404 as the session's missing-row text when the caller is a stranger to
+    the session's workspace, and 403 when the caller holds a level below
+    full (P2 Task 3: the session inherits its workspace's access): a delete
+    ends a live session and, forced, cancels a running one, so it follows
+    the Cancel route's gate, decided first as Cancel decides it (whatever
+    the status), before anything is resolved, written or published.
     """
+    # The gate decides first (before the workspace-scope 404): a stranger
+    # answers the session's missing-row text.
+    await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.FULL)
     s = await sessions.get(session_id)
     if s is None or s.workspace_id != workspace_id:
         raise NotFoundError(
             f"Session {session_id!r} does not exist on workspace "
             f"{workspace_id!r}"
         )
-    refuse_outranked(request, s)
     # Resolve any still-pending invoker-supplied tool calls before the
     # row goes away (the audit rows outlive the session).
     from primer.session.external_tools import cancel_pending_external
@@ -1022,14 +1044,15 @@ async def _session_context_length(
     responses=common_responses(404, 500),
 )
 async def get_session_by_id(
+    request: Request,
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
     storage_provider=Depends(get_storage_provider),
     workspace_registry=Depends(get_workspace_registry),
 ) -> SessionDetail:
-    s = await sessions.get(session_id)
-    if s is None:
-        raise NotFoundError(f"Session {session_id!r} does not exist")
+    # Access (P2 Task 3): the session inherits its workspace's access; a
+    # stranger answers the session's missing-row text.
+    s = await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.READ)
 
     pending: list[PendingSessionMessage] = []
     try:
@@ -1080,11 +1103,13 @@ async def get_session_by_id(
     responses=common_responses(404, 500, 503),
 )
 async def get_session_turn_log(
+    request: Request,
     session_id: str = Path(..., description="Session id"),
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     since_seq: int | None = Query(default=None, ge=0),
     sessions=Depends(get_session_storage),
+    storage_provider=Depends(get_storage_provider),
     workspace_registry=Depends(get_workspace_registry),
 ) -> dict:
     """Return the JSONL-encoded turn-log events for this session.
@@ -1093,10 +1118,10 @@ async def get_session_turn_log(
     workspace runtime's :meth:`read_file`. Pagination is offset-based;
     ``since_seq`` skips events with ``seq <= since_seq`` so polling
     clients can ask for "everything new since the last frame".
+    Access (P2 Task 3): the session inherits its workspace's access; a
+    stranger answers the session's missing-row text.
     """
-    sess = await sessions.get(session_id)
-    if sess is None:
-        raise NotFoundError(f"Session {session_id!r} does not exist")
+    sess = await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.READ)
     workspace = await workspace_registry.get_workspace(sess.workspace_id)
     if workspace is None:
         # Workspace gone (deleted, lost). Surface an empty log instead
@@ -1438,6 +1463,7 @@ async def _read_workspace_turn_log(
     responses=common_responses(404, 500, 503),
 )
 async def get_session_messages(
+    request: Request,
     session_id: str = Path(..., description="Session id"),
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
@@ -1462,6 +1488,7 @@ async def get_session_messages(
         ),
     ),
     sessions=Depends(get_session_storage),
+    storage_provider=Depends(get_storage_provider),
     workspace_registry=Depends(get_workspace_registry),
 ) -> dict:
     """Return the recorded ``messages.jsonl`` rows for this session.
@@ -1469,10 +1496,11 @@ async def get_session_messages(
     This serves the full recorded history for any status, so the console
     can render the output of a finished run. Reuses the generic JSONL reader; a missing
     file or absent workspace yields an empty log rather than a 5xx.
+
+    Access (P2 Task 3): the session inherits its workspace's access; a
+    stranger answers the session's missing-row text.
     """
-    sess = await sessions.get(session_id)
-    if sess is None:
-        raise NotFoundError(f"Session {session_id!r} does not exist")
+    sess = await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.READ)
     workspace = await workspace_registry.get_workspace(sess.workspace_id)
     if workspace is None:
         return {"items": [], "total": 0, "offset": offset, "limit": limit}
@@ -1501,9 +1529,11 @@ async def get_session_messages(
     responses=common_responses(404, 500, 503),
 )
 async def get_session_turn_timeline(
+    request: Request,
     session_id: str = Path(..., description="Session id"),
     turn_no: int = Path(..., ge=0, description="Turn index (0-based)"),
     sessions=Depends(get_session_storage),
+    storage_provider=Depends(get_storage_provider),
     workspace_registry=Depends(get_workspace_registry),
 ) -> dict:
     """Fold this turn's records into a tree: model calls, tool round-trips,
@@ -1520,10 +1550,10 @@ async def get_session_turn_timeline(
     a turn_no already in circulation; the response echoes the window's
     ``terminal_seq`` for callers that want to re-resolve it. Works on any
     historical session.
+    Access (P2 Task 3): the session inherits its workspace's access; a
+    stranger answers the session's missing-row text.
     """
-    sess = await sessions.get(session_id)
-    if sess is None:
-        raise NotFoundError(f"Session {session_id!r} does not exist")
+    sess = await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.READ)
     workspace = await workspace_registry.get_workspace(sess.workspace_id)
     if workspace is None:
         raise NotFoundError(

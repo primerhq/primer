@@ -20,10 +20,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field
 
-from primer.api.deps import get_external_tool_call_storage
+from primer.access.person import person_from_request
+from primer.access.workspaces import require_session
+from primer.model.access import AccessLevel
+from primer.api.deps import get_external_tool_call_storage, get_storage_provider
 from primer.api.errors import common_responses
 from primer.model.external_tool import ExternalToolCall
 from primer.model.storage import OffsetPage
@@ -95,9 +98,15 @@ async def _pending_for(storage, *, field: str, value: str) -> dict:
     responses=common_responses(500),
 )
 async def session_pending(
+    request: Request,
     session_id: str = Path(...),
     storage=Depends(get_external_tool_call_storage),
+    storage_provider=Depends(get_storage_provider),
 ) -> dict:
+    # Access (P2 Task 3): the pending list is a read of the session (it
+    # names its tool calls and their arguments), so it needs read on the
+    # workspace the session lives in; a stranger answers the missing-row text.
+    await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.READ)
     return await _pending_for(storage, field="session_id", value=session_id)
 
 

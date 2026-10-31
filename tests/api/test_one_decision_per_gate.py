@@ -25,6 +25,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport
+from pydantic import SecretStr
 
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
@@ -33,6 +34,7 @@ from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.graph.executor import GraphExecutor
 from primer.int.claim import ClaimKind
+from primer.model.access import Access
 from primer.model.chat import ToolResultPart
 from primer.model.graph import GraphNodeMessage, GraphThread
 from primer.model.provider import SqliteConfig
@@ -40,6 +42,7 @@ from primer.model.scheduler import WorkerConfig
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalRecord
 from primer.model.user import User
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import GraphSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import Yielded, YieldToWorker, new_gate_id
 from primer.session.persistence import _CoalesceState, stash_graph_scoped_ids, translate_stream_event
@@ -68,6 +71,13 @@ async def sp(tmp_path) -> AsyncIterator[SqliteStorageProvider]:
     provider = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "one-decision.sqlite")))
     await provider.initialize()
     await provider._ensure_events_schema()  # noqa: SLF001 - the routes' wake and audit events append to it, as in production
+    # The workspace row the URL-path lister gates on (P2 Tasks 2/3); ``otheruser`` (the second operator of the
+    # refusal test) holds full on it, so the access gate clears and the one-decision rule answers.
+    await provider.get_storage(Workspace).create(
+        Workspace(id=WID, template_id="tpl-1", provider_id="local-1", created_at=datetime.now(UTC),
+                  runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                  access=Access(grants={"user-otheruser": "full"})),
+    )
     try:
         yield provider
     finally:
