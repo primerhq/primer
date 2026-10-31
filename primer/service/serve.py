@@ -120,6 +120,12 @@ class ArtifactLRU:
         blob = await artifacts.get(artifact_id)
         if blob is None:
             return None
+        # A concurrent miss for the same id may have inserted the entry while
+        # we awaited: count the size once (KN-16).
+        hit = self._entries.get(artifact_id)
+        if hit is not None:
+            self._entries.move_to_end(artifact_id)
+            return hit
         size = len(blob.data)
         if size <= self._max:
             self._entries[artifact_id] = blob
