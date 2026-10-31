@@ -369,6 +369,20 @@ class LocalWorkspace(Workspace):
             raise BadRequestError(f"{path!r} is not a file")
         return await asyncio.to_thread(target.read_bytes)
 
+    async def read_file_from(self, path: str, offset: int) -> bytes:
+        target = self._resolve_path(path)
+        if not await asyncio.to_thread(target.exists):
+            raise NotFoundError(f"{path!r} not found")
+        if not await asyncio.to_thread(target.is_file):
+            raise BadRequestError(f"{path!r} is not a file")
+
+        def _tail() -> bytes:
+            with target.open("rb") as handle:
+                handle.seek(offset)
+                return handle.read()
+
+        return await asyncio.to_thread(_tail)
+
     async def download_archive(
         self,
         paths: list[str] | None = None,

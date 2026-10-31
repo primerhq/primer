@@ -511,6 +511,19 @@ class SandboxWorkspace(Workspace):
             raise BadRequestError(f"{path!r} is {kind} and cannot be read")
         return await self._sandbox.read_file(target)
 
+    async def read_file_from(self, path: str, offset: int) -> bytes:
+        """:meth:`read_file` from byte ``offset``: the same checks, then the sandbox's ranged read (a runtime at protocol 1.5 sends only the tail)."""
+        target = self._resolve_path(path)
+        info = await self._sandbox.stat(target)
+        if info is None:
+            raise NotFoundError(f"{path!r} not found")
+        if info.kind != "file":
+            raise BadRequestError(f"{path!r} is not a file")
+        if not stat.S_ISREG(info.mode):
+            kind = "a FIFO" if stat.S_ISFIFO(info.mode) else "not a regular file (a socket or a device)"
+            raise BadRequestError(f"{path!r} is {kind} and cannot be read")
+        return await self._sandbox.read_file_from(target, offset)
+
     async def write_file(self, path: str, content: bytes) -> None:
         await self._refuse_reserved_resolved(path)
         target = self._resolve_path(path)

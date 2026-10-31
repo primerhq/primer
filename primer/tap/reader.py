@@ -103,7 +103,7 @@ def _messages_path(workspace_io: Any, session_id: str) -> str:
 
 
 async def _read_raw(
-    workspace_io: _WorkspaceReadIO, path: str, session_id: str,
+    workspace_io: _WorkspaceReadIO, path: str, session_id: str, *, reader: Any = None,
 ) -> bytes | None:
     """Read *path*; return ``None`` when the file is missing (or unreadable).
 
@@ -114,7 +114,7 @@ async def _read_raw(
     from primer.model.except_ import NotFoundError
 
     try:
-        return await workspace_io.read_file(path)
+        return await (reader(path) if reader is not None else workspace_io.read_file(path))
     except NotFoundError:
         return None
     except Exception as exc:  # noqa: BLE001 — any read failure → treat as empty
@@ -238,14 +238,20 @@ async def read_session_since(
         missing log file yields ``([], from_offset)``.
     """
     path = _messages_path(workspace_io, session.id)
-    raw = await _read_raw(workspace_io, path, session.id)
-    if raw is None:
+    # Only the bytes the log gained since the last tick: a workspace that can read from an offset is asked for the tail; one that cannot is read
+    # whole and sliced, as before.
+    ranged = getattr(workspace_io, "read_file_from", None) if from_offset else None
+    if ranged is not None:
+        window = await _read_raw(workspace_io, path, session.id, reader=lambda p: ranged(p, from_offset))
+        if window is None:
+            return [], from_offset
+    else:
+        raw = await _read_raw(workspace_io, path, session.id)
+        if raw is None:
+            return [], from_offset
+        window = raw[from_offset:]
+    if not window:
         return [], from_offset
-
-    # Slice off everything before the caller's offset so we never re-scan.
-    if from_offset >= len(raw):
-        return [], from_offset
-    window = raw[from_offset:]
 
     lines, consumed = _complete_lines(window)
     next_offset = from_offset + consumed

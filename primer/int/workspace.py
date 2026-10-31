@@ -260,6 +260,13 @@ class Workspace(ABC):
         binary.
         """
 
+    async def read_file_from(self, path: str, offset: int) -> bytes:
+        """The file's bytes from byte ``offset`` (empty at or past the end): what a log reader asks for each tick instead of the whole file.
+
+        The default reads the whole file and slices; a backend that can seek overrides it.
+        """
+        return (await self.read_file(path))[offset:]
+
     @abstractmethod
     def download_archive(
         self,

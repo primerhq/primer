@@ -763,3 +763,38 @@ async def test_server_exec_stderr_via_ws(server: ServerFixture):
 
     assert exit_code == 1
     assert b"oops" in stderr_data
+
+
+# ---------------------------------------------------------------------------
+# read_file with an offset (protocol 1.5): the tap reads only what a log gained
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_file_from_an_offset_returns_the_rest_of_the_file(tmp_path):
+    f = tmp_path / "log.jsonl"
+    f.write_bytes(b"0123456789")
+    for offset, want in ((0, b"0123456789"), (4, b"456789"), (10, b""), (99, b"")):
+        result = await read_file({"path": str(f), "offset": offset}, str(tmp_path))
+        assert from_b64(result["content_b64"]) == want, offset
+
+
+@pytest.mark.asyncio
+async def test_read_file_without_an_offset_is_unchanged(tmp_path):
+    f = tmp_path / "log.jsonl"
+    f.write_bytes(b"abc")
+    assert from_b64((await read_file({"path": str(f)}, str(tmp_path)))["content_b64"]) == b"abc"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [-1, "4", 1.5, True, None])
+async def test_read_file_refuses_an_offset_that_is_not_a_non_negative_integer(tmp_path, bad):
+    f = tmp_path / "log.jsonl"
+    f.write_bytes(b"abc")
+    args = {"path": str(f), "offset": bad}
+    if bad is None:
+        assert from_b64((await read_file(args, str(tmp_path)))["content_b64"]) == b"abc"  # an explicit null means "from the start"
+        return
+    with pytest.raises(OpError) as exc_info:
+        await read_file(args, str(tmp_path))
+    assert exc_info.value.code == ErrorCode.EPROTOCOL
