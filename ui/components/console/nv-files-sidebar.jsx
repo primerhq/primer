@@ -15,6 +15,9 @@
 
 function NV_FileContextMenu(props) {
   var con = NV_useConsole();
+  // ACL-P2-T10: the row's write actions (rename, delete) are disabled at read level with the reason;
+  // the reads (open, download, copy path) stay live.
+  var wsRo = con && con.wsReadonly;
   var f = props.entry;
   var rows = [];
   if (!f.is_dir) {
@@ -22,6 +25,7 @@ function NV_FileContextMenu(props) {
   }
   rows.push({
     label: "Rename",
+    disabled: wsRo,
     fn: function () {
       promptDialog({
         title: "Rename " + f.path, defaultValue: f.path,
@@ -32,7 +36,7 @@ function NV_FileContextMenu(props) {
     },
   });
   rows.push({
-    label: "Delete", danger: true,
+    label: "Delete", danger: true, disabled: wsRo,
     fn: function () {
       confirmDialog({
         title: "Delete " + f.path,
@@ -72,6 +76,8 @@ function NV_FileContextMenu(props) {
         return (
           <button type="button" key={r.label} className="nv-menu-row"
             data-danger={r.danger ? "true" : "false"}
+            disabled={r.disabled}
+            title={r.disabled ? con.wsRoNote : undefined}
             onClick={function () { props.onClose(); r.fn(); }}>
             {r.label}
           </button>
@@ -108,6 +114,8 @@ function NV_FilesSubtree(props) {
 
 function NV_FilesSidebar() {
   var con = NV_useConsole();
+  // ACL-P2-T10: the header's write actions (new file, upload) are disabled at read level.
+  var wsRo = con && con.wsReadonly;
   var filesPollMs = NV_useFilesPollMs(con.wid);
   var tree = window.primerApi.useResource(
     SH_api.keys.tree(con.wid, "."),
@@ -239,16 +247,18 @@ function NV_FilesSidebar() {
         <span>Files</span>
         <span className="nv-rail-section-ws mono">{(ws && (ws.name || ws.id)) || con.wid}</span>
         <div style={{ flex: 1 }} />
-        <button type="button" className="nv-rail-iconbtn" title="New file"
+        <button type="button" className="nv-rail-iconbtn" title={wsRo ? con.wsRoNote : "New file"}
           data-testid="nv-file-new"
+          disabled={wsRo}
           onClick={function () {
             promptDialog({ title: "New file path" }).then(function (p) {
               if (!p) return;
               SH_api.fileWrite(con.wid, p, "").then(refetch);
             });
           }}>+</button>
-        <button type="button" className="nv-rail-iconbtn" title="Upload"
+        <button type="button" className="nv-rail-iconbtn" title={wsRo ? con.wsRoNote : "Upload"}
           data-testid="nv-file-upload"
+          disabled={wsRo}
           onClick={function () {
             var input = document.createElement("input");
             input.type = "file";

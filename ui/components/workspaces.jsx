@@ -116,6 +116,9 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
   };
 
   const [diagOpen, setDiagOpen] = React.useState(false);
+  // The share seam (plan 06): the Settings overlay subscribes, so the palette's
+  // entity.share verb finds it when it is open.
+  const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
 
   const ws = useResource(
     `workspace-detail:${wid}`,
@@ -203,6 +206,14 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
         <Btn
           size="sm"
           kind="ghost"
+          icon="send"
+          data-testid="ws-share"
+          data-verb="entity.share"
+          onClick={() => setShareOpen(true)}
+        >Share</Btn>
+        <Btn
+          size="sm"
+          kind="ghost"
           icon="pause"
           disabled
           title="Workspace pause is reserved (501) — coming soon"
@@ -275,6 +286,14 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
       )}
       {diagOpen && (
         <WS_DiagnosticModal workspaceId={wid} onClose={() => setDiagOpen(false)} />
+      )}
+      {shareOpen && (
+        <SHR_ShareDialog
+          plural="workspaces"
+          id={wid}
+          title={(ws.data && ws.data.name) || wid}
+          onClose={() => setShareOpen(false)}
+        />
       )}
     </div>
   );
