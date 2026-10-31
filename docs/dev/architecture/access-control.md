@@ -170,8 +170,8 @@ the lower of their current roles (`principal_for_fire`, `primer/trigger/owner.py
 run-as owner and acts as themselves; a save that changes the run-as owner of a webhook trigger mints a new token.
 `view_for` still masks the webhook token and reduces the owner to `display` and `role` for anyone but the run-as owner
 or an admin. A subscription with no owner is refused at fire time (`refuse_fire_out_of_reach`, error code
-`target_out_of_reach`; fail closed after the migration gave every legacy row an owner), and an admin or system owner
-passes that check without a workspace lookup.
+`target_out_of_reach`; fail closed: the migration gave every legacy row an owner and disabled it until that owner
+re-enables it), and an admin or system owner passes that check without a workspace lookup.
 
 ### 6.11 Channel triggers
 
@@ -211,8 +211,10 @@ an owner's sharing change made in between is never undone:
 - `m023_collection_ownership`: an unset collection is owned by the first enabled admin, `system` becomes public,
   `_internal_*` stays unset (admin-only).
 - `m024_trigger_ownership`: an unset trigger is owned by the user behind its run-as owner (a token resolves to its user),
-  else the first enabled admin; an ownerless subscription gets its trigger's run-as owner, or the first admin when the
-  trigger has none.
+  else the first enabled admin. An ownerless subscription gets its trigger's run-as owner (the first admin when the
+  trigger has none) so that owner can see it, and is DISABLED: nobody recorded who saved it, and any adopted identity
+  would give a possibly planted row the owner's role and reach (their private workspaces and sessions). The trigger's
+  owner re-enables it with an ordinary update, which needs full and makes the re-enabler its owner.
 - `m025_harness_ownership`: an unset harness is owned by the first enabled admin; every installed row takes a copy of
   its harness's access.
 

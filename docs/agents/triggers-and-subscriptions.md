@@ -513,10 +513,14 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   and are not checked. A fire still runs as the trigger's last saver
   and each subscription's owner, whoever fires it, and a save makes you
   the owner its runs act as.
-- **A subscription with no owner does not fire.** Every subscription
-  saved before owners were recorded was given its trigger's owner by
-  the upgrade; a fire of one that still has none fails with
-  `target_out_of_reach` and starts or feeds no session.
+- **Subscriptions saved before owners were recorded are disabled on
+  upgrade.** The upgrade gives each one its trigger's owner and sets
+  `enabled: false`, because nobody knows who saved it. The trigger's
+  owner reviews it and turns it back on with `trigger__update_subscription`
+  and `enabled: true`; that needs `full` on the trigger and makes
+  whoever re-enables it the subscription's owner. A fire of a
+  subscription that still has no owner fails with `target_out_of_reach`
+  and starts or feeds no session.
 - **A fresh-session subscription whose owner is gone does not fire.**
   When the account that saved the subscription is deleted or disabled,
   or the API token it was saved with is revoked or has expired, an
