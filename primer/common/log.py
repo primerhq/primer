@@ -100,7 +100,7 @@ _USERINFO = re.compile(r'(\b[a-z][a-z0-9]*://)[^/?#\s"]*@', re.IGNORECASE)
 # The query of an MCP toolset's OAuth callback (``/v1/toolsets/{id}/oauth/callback?code=...&state=...``, audit G4-13): the authorization code and the
 # state are capabilities until they are spent, and uvicorn's access line and httpx's request line would write them out. Masked on that path only: a
 # ``code`` or ``state`` parameter of any other URL is ordinary. The query runs to a quote, a space, a ``#``, ``<``, ``>`` or a backslash (a JSON escape).
-_OAUTH_CALLBACK_QUERY = re.compile(r"(/oauth/callback\?)([^\s'\"<>#\\]*)")
+_OAUTH_CALLBACK_QUERY = re.compile(r"(/oauth/callback\?|/auth/sso/[^/\s'\"<>\\?#]{1,256}/callback\?)([^\s'\"<>#\\]*)")
 _OAUTH_CALLBACK_SECRET = re.compile(r"(?i)((?:^|&)(?:code|state)=)[^&]*")
 
 
@@ -115,7 +115,7 @@ def redact_url_secrets(text: str) -> str:
     # Userinfo needs both "://" and "@": a substring test is far cheaper than the regex on the text of every record.
     if "@" in text and "://" in text:
         text = _USERINFO.sub(r"\1[REDACTED]@", text)
-    if "/oauth/callback?" in text:
+    if "/callback?" in text:
         text = _OAUTH_CALLBACK_QUERY.sub(_mask_oauth_callback, text)
     for pattern, repl in _URL_SECRET_PATTERNS:
         text = pattern.sub(repl, text)

@@ -46,10 +46,11 @@ async def test_an_sso_session_reports_the_providers_name(app):
     assert (body["sign_in_method"], body["sign_in_provider"]) == ("sso", "Okta")
 
 
-async def test_an_sso_session_whose_provider_is_gone_reports_its_id(app):
+async def test_an_sso_session_whose_provider_is_gone_is_signed_out(app):
+    """A cookie lives only as long as the provider that minted it (T112, GS-37)."""
     async with await _sso_client(app, "oidc-gone") as c:
         body = (await c.get("/v1/auth/status")).json()
-    assert (body["sign_in_method"], body["sign_in_provider"]) == ("sso", "oidc-gone")
+    assert body["authenticated"] is False
 
 
 async def test_a_bearer_key_reports_api_token(client, app):
@@ -84,7 +85,18 @@ async def test_an_sso_session_still_answers_when_the_provider_read_fails(app, mo
     async def unreachable(*_args, **_kwargs):
         raise RuntimeError("provider table unreachable")
 
-    monkeypatch.setattr(app.state.storage_provider.get_storage(OidcProvider), "get", unreachable)
+    storage = app.state.storage_provider.get_storage(OidcProvider)
+    await storage.create(OidcProvider(
+        id="oidc-okta", name="Okta", discovery_url="https://idp.example/.well-known/openid-configuration", client_id="primer"))
+    real_get, reads = storage.get, []
+
+    async def second_read_fails(*args, **kwargs):
+        reads.append(args)
+        if len(reads) == 1:  # the middleware's own read (a failure there signs the session out)
+            return await real_get(*args, **kwargs)
+        return await unreachable()
+
+    monkeypatch.setattr(storage, "get", second_read_fails)
     with caplog.at_level(logging.ERROR, logger="primer.api.routers.auth"):
         async with await _sso_client(app, "oidc-okta") as c:
             r = await c.get("/v1/auth/status")

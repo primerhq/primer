@@ -13,6 +13,7 @@ from tests.conftest import _FakeStorageProvider
 
 from primer.api.middleware.auth import AuthMiddleware
 from primer.auth.tokens import sign_session
+from primer.model.oidc import OidcProvider
 from primer.model.user import User
 
 
@@ -68,6 +69,8 @@ async def _make_user(storage, *, user_id="user-a", username="alice"):
 async def test_sso_cookie_resolves_actor_source_to_provider_id():
     storage = _FakeStorageProvider()
     await _make_user(storage)
+    await storage.get_storage(OidcProvider).create(OidcProvider(
+        id="oidc-provider-1", name="P1", discovery_url="https://idp.example/.well-known/openid-configuration", client_id="c"))
     app_obj = _make_app_obj(storage)
     token = sign_session(
         user_id="user-a", username="alice", secret="test-secret",

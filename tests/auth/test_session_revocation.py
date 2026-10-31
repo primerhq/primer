@@ -242,6 +242,11 @@ async def test_an_admin_reset_with_an_explicit_password_ends_the_users_sessions(
 async def test_change_password_keeps_the_sso_src_on_the_reissued_cookie(client, app):
     await _register_admin(client)
     user = await _user(app.state.storage_provider, "alice")
+    from primer.model.oidc import OidcProvider
+    # An SSO cookie lives only while its provider exists and is enabled, so the provider it names is seeded.
+    await app.state.storage_provider.get_storage(OidcProvider).create(
+        OidcProvider(id="oidc-corp", name="Corp", discovery_url="https://idp.example.com/.well-known/openid-configuration",
+                     client_id="c", client_secret=None))
     sso_cookie = sign_session(
         user_id=user.id, username="alice", secret=app.state.session_secret, src="oidc-corp", epoch=0,
     )
