@@ -301,13 +301,15 @@ class AppConfig(BaseSettings):
     workspace_allow_private_url_sources: bool = Field(
         default=False,
         description=(
-            "Let a workspace template's kind=url file source fetch from private, loopback, link-local and other "
-            "non-global addresses (refused by default: the platform fetches the URL, so any template author could "
-            "otherwise read an internal endpoint such as the cloud metadata service). Turn it on only when every "
+            "Let a workspace template's kind=url file source fetch from private and loopback addresses (refused by "
+            "default, with link-local and the other non-global ranges: the platform fetches the URL, so any template author could "
+            "otherwise read an internal endpoint). Link-local and cloud-metadata addresses (169.254.0.0/16, fe80::/10, "
+            "169.254.169.254, fd00:ec2::254) stay refused even when this is on. Turn it on only when every "
             "template author is trusted with the platform's network position, e.g. a deployment seeding workspaces "
             "from an internal file server, or the e2e suite. The same switch covers the OAuth endpoints an MCP server names on "
             "another host than its own (its protected-resource and authorization-server metadata, token, registration and revocation "
-            "URLs): refused on such addresses by default, allowed when this is on. Env: PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES."
+            "URLs): refused on such addresses by default, private and loopback ones allowed when this is on (never link-local or metadata). "
+            "Env: PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES."
         ),
     )
 

@@ -16,7 +16,7 @@ none):
   :class:`primer.common.ssrf.BlockedDestinationError`, which :mod:`primer.toolset.oauth.protocol` turns into a refusal naming the endpoint.
 
 The operator's opt-in for that policy, ``workspace_allow_private_url_sources`` (``PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES``), lets private
-addresses through here too; no other setting exists for it.
+and loopback addresses through here too (never link-local or cloud-metadata ones, ruling D19); no other setting exists for it.
 
 The endpoints a request may reach directly are those of the toolset the call is FOR: :func:`calls_for` sets them for the code inside it (a context
 variable, so the concurrent calls of other toolsets keep their own, and a task started inside it inherits them). Outside any toolset nothing is
