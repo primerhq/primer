@@ -58,7 +58,7 @@ class _Pool:
 
 def _scheduler(pool: _Pool) -> PostgresScheduler:
     return PostgresScheduler(
-        storage_provider=SimpleNamespace(pool=pool),  # type: ignore[arg-type]
+        storage_provider=SimpleNamespace(pool=pool, schema="public"),  # type: ignore[arg-type]
         config=PostgresSchedulerConfig(),
     )
 
