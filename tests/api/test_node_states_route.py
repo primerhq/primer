@@ -364,7 +364,8 @@ async def test_node_states_read_failure_is_an_error_not_pending(
     r = await client.get("/v1/graphs/g-rf/runs/run-rf/node_states")
     assert r.status_code == 500, r.text
     assert "run-rf" in r.json()["detail"]
-    assert "ConnectionError" in r.json()["detail"]
+    # The 500 names the run, not what the backend said (a path, an address): that goes to the log (GS-31).
+    assert "ConnectionError" not in r.json()["detail"] and "websocket" not in r.json()["detail"]
 
 
 @pytest.mark.asyncio
