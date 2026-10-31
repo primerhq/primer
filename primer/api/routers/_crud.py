@@ -553,9 +553,10 @@ def make_crud_router(
                 )
             if on_pre_delete is not None:
                 await on_pre_delete(existing, request)
+            # The row goes first, then the hook: a cache the hook drops is not refilled from the row before it is gone (GS-23).
+            await storage.delete(entity_id)
             if on_delete is not None:
                 await on_delete(entity_id, request)
-            await storage.delete(entity_id)
 
         # ---- GET /{parent_path_segment}/{parent_id}/{plural}  (list) ------
         _scope_predicate = Predicate(
@@ -779,9 +780,10 @@ def make_crud_router(
                 await row_guard(existing, request, True)
             if on_pre_delete is not None:
                 await on_pre_delete(existing, request)
+            # The row goes first, then the hook: a cache the hook drops is not refilled from the row before it is gone (GS-23).
+            await storage.delete(entity_id)
             if on_delete is not None:
                 await on_delete(entity_id, request)
-            await storage.delete(entity_id)
 
         # ---- GET /<plural>  (list) ---------------------------------------
         @router.get(

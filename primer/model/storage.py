@@ -248,6 +248,10 @@ class OrderBy(BaseModel):
 # ===========================================================================
 
 
+# The largest offset a backend can bind: past a signed 64-bit integer the database driver raises, and the caller sees a 500.
+MAX_OFFSET = 2**63 - 1
+
+
 class OffsetPage(BaseModel):
     """Offset+length pagination request.
 
@@ -262,6 +266,7 @@ class OffsetPage(BaseModel):
     offset: int = Field(
         default=0,
         ge=0,
+        le=MAX_OFFSET,
         description="Number of items to skip from the start of the result set.",
     )
     length: int = Field(
