@@ -569,6 +569,12 @@ function NV_MobileSpaces(props) {
   var sessions = (sessRes.data && sessRes.data.items) || [];
   var inboxItems = (inboxRes.data && inboxRes.data.items) || [];
 
+  // ACL-P6-T3: the phone's Spaces switcher keeps the desktop rail's
+  // ownership groups (NV_wsGroupOf, nv-rail.jsx): Mine / Shared with me /
+  // Public, so a phone says whose each workspace is too.
+  var viewerId = con.viewer && (con.viewer.user_id || con.viewer.id) || null;
+  var wsGroups = [["mine", "Mine"], ["shared", "Shared with me"], ["public", "Public"]];
+
   var sessionsByWs = {};
   sessions.forEach(function (s) {
     var wid = s.workspace_id;
@@ -625,7 +631,13 @@ function NV_MobileSpaces(props) {
         ) : !workspaces.length ? (
           <div className="card-list-empty">No workspaces yet.</div>
         ) : null}
-        {workspaces.map(function (w) {
+        {wsGroups.map(function (g) {
+          var rows = workspaces.filter(function (w) { return window.NV_wsGroupOf(w, viewerId) === g[0]; });
+          if (!rows.length) return null;
+          return (
+            <div key={g[0]}>
+              <div className="nv-mob-ws-group-label" data-testid={"nv-mob-ws-group:" + g[0]}>{g[1]}</div>
+              {rows.map(function (w) {
           var isOpen = !!expanded[w.id];
           var wsSessions = sessionsByWs[w.id] || [];
           // The exact count the workspace's row carries (session_count, every status); the install-wide feed is the newest 200 only.
@@ -698,6 +710,9 @@ function NV_MobileSpaces(props) {
                   </React.Fragment>); }} />
                 </div>
               ) : null}
+            </div>
+              );
+            })}
             </div>
           );
         })}
