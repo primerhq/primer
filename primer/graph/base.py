@@ -610,16 +610,19 @@ class _BaseGraphExecutor(
         self._pending_tool_waits = [e for e in tw_all if e not in tw_pending]
         completed_ids: list[str] = []
         for entry in tc_pending:
-            node_def = self._resolve_node_def(entry.node_id)
+            try:
+                node_def = self._resolve_node_def(entry.node_id)
+            except KeyError:
+                node_def = None             # AG-M7: the edited graph no longer has the node; the same drift exit
             if not isinstance(node_def, _ToolCallNode):
                 # Topology drifted between checkpoint + resume: the graph was edited while it was parked and this pending ToolCall entry
                 # now resolves to another kind of node, which cannot be resumed. The run FAILS, like the other failure exits of this method
                 # (01a125a1-3591, T1 of the #701 round 4 review): this branch used to mark the node FAILED and carry on, so the main loop ran
                 # to its tail with nothing failed in the superstep and ended the run "completed". A terminal error event (a resumed child
                 # graph is judged by the error event it yields), the node's balanced exit, and ENDED/failed with the detail.
-                drift = (
-                    f"resume: pending ToolCall node id {entry.node_id!r} "
-                    f"resolves to {type(node_def).__name__!r}, not _ToolCallNode"
+                drift = f"resume: pending ToolCall node id {entry.node_id!r} " + (
+                    "no longer exists in the graph" if node_def is None
+                    else f"resolves to {type(node_def).__name__!r}, not _ToolCallNode"
                 )
                 node_states[entry.node_id] = NodeRuntimeState(
                     status=NodeRuntimeStatus.FAILED,

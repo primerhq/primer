@@ -176,7 +176,14 @@ class _NodeDispatchMixin:
         ``fanout_index`` and ``fanout_item``.
         """
         instance = self._fanout_instances.get(node_id)
-        node = self._nodes_by_id[instance.target_node_id if instance is not None else node_id]
+        try:
+            node = self._resolve_node_def(node_id)
+        except KeyError:
+            # AG-M7: the graph was edited while parked and no longer has this ready node. Fail it: the superstep drain waits for a _NodeDone per node.
+            await queue.put(_NodeDone(
+                node_id=node_id, output=None, error=f"node {node_id!r} no longer exists in the graph", ended_detail="topology_drift",
+            ))
+            return
         extra_scope = _fanout_scope(instance)
         try:
             if isinstance(node, _FanOutNode):
