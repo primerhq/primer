@@ -183,6 +183,13 @@ async def list_remote_toolset(provider: ToolsetProvider, *, principal: str | Non
     if not done:
         task.cancel()
         await _unwind(task, label)
+        # A provider that remembers failures is told, so the next turn is not made to wait the whole bound again for a server that has not come back.
+        noter = getattr(provider, "note_list_timeout", None)
+        if callable(noter):
+            try:
+                await noter()
+            except Exception:  # noqa: BLE001 - a note that cannot be taken changes nothing about this turn
+                logger.debug("toolset %s: could not note the listing timeout", label, exc_info=True)
         return ToolListing(tools=[], reason=f"did not list its tools within {timeout_s:g}s", state=TIMED_OUT)
     if task.cancelled():
         # Cancelled, yet the wait above was not: not the caller's. The SDK's own scope ended the listing.
