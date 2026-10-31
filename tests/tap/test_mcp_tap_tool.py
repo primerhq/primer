@@ -377,3 +377,62 @@ class TestWorkspaceTapTool:
         assert "workspace_tap" in tools
         ok, reason = is_exposable(tools["workspace_tap"], provider=ts)
         assert ok, f"workspace_tap not MCP-exposable: {reason}"
+
+
+class TestTapToolSelectorAndLongPoll:
+    """Part 2 Task 76 (W26, W57f)."""
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_selector_field_is_a_bad_request_not_a_stuck_cursor(self) -> None:
+        provider = _Provider()
+        io = _FakeWorkspaceIO()
+        await _seed_session(provider.store, "s1")
+        io.write(_msg_path("s1"), _line(1, "user_input"))
+        ts = _build(provider, io)
+        selector = {"events": {"left": {"kind": "field", "name": "bogus"}, "op": "=", "right": {"kind": "value", "value": 1}}}
+        result = await ts.call(tool_name="workspace_tap", arguments={"workspace_id": _WID, "selector": selector})
+        assert result.is_error and json.loads(result.output)["type"] == "bad-request"
+
+    @pytest.mark.asyncio
+    async def test_a_like_selector_over_events_without_that_key_keeps_draining(self) -> None:
+        provider = _Provider()
+        io = _FakeWorkspaceIO()
+        await _seed_session(provider.store, "s1")
+        io.write(_msg_path("s1"), _line(1, "tool_call", name="x") + _line(2, "user_input", text="please hello") + _line(3, "tool_call", name="y"))
+        ts = _build(provider, io)
+        like = {"events": {"left": {"kind": "field", "name": "payload.text"}, "op": "~=", "right": {"kind": "value", "value": "%hello%"}}}
+        result = await ts.call(tool_name="workspace_tap", arguments={"workspace_id": _WID, "selector": like})
+        body = json.loads(result.output)
+        assert not result.is_error, result.output
+        assert [e["seq"] for e in body["events"]] == [2] and body["next_cursor"]
+
+    @pytest.mark.asyncio
+    async def test_a_tick_that_lands_during_the_first_drain_wakes_the_long_poll_at_once(self) -> None:
+        provider = _Provider()
+        io = _FakeWorkspaceIO()
+        router = _FakeTapRouter()
+        await _seed_session(provider.store, "s1")
+        calls = {"n": 0}
+        real_read = io.read_file
+
+        async def read_file(path: str) -> bytes:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # the session writes a record and ticks while the first drain is reading: the drain returns the old bytes
+                data = await real_read(path) if path in io._files else b""
+                io.write(path, data + _line(1, "user_input"))
+                router.publish(WorkspaceTick(session_id="s1", seq=1))
+                if not data:
+                    from primer.model.except_ import NotFoundError
+
+                    raise NotFoundError(path)
+                return data
+            return await real_read(path)
+
+        io.read_file = read_file  # type: ignore[assignment]
+        ts = _build(provider, io, tap_router=router)
+        result = await asyncio.wait_for(
+            ts.call(tool_name="workspace_tap", arguments={"workspace_id": _WID, "wait_seconds": 5}), timeout=1.5,
+        )
+        body = json.loads(result.output)
+        assert [e["seq"] for e in body["events"]] == [1], "the tick was queued by a subscription opened BEFORE the first drain"
