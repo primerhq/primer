@@ -299,3 +299,25 @@ async def test_W56h_clear_gate_writes_only_the_gate_fields(tmp_path: Path):
         assert row.updated_at is not None
     finally:
         await sp.aclose()
+
+
+# --------------------------------------------------------------------------- W56i
+
+
+async def test_W56i_the_trigger_scan_reads_only_the_events_provider():
+    sp = _FakeStorageProvider()
+    await _seed(sp, triggers=[("t-mine", "cp-1", None)] + [(f"t-x{i}", "cp-2", None) for i in range(250)])
+    storage = sp.get_storage(Trigger)
+    real_find = storage.find
+    decoded = {"rows": 0}
+
+    async def _counting_find(*a, **k):
+        page = await real_find(*a, **k)
+        decoded["rows"] += len(page.items)
+        return page
+
+    storage.find = _counting_find
+    fires = _Fires(sp, start_sessions=False)
+    await _router(sp, fires).route_event(event=_event(1, surface="channel"), channel=None)
+    assert [c["trigger_id"] for c in fires.calls] == ["t-mine"]
+    assert decoded["rows"] == 1

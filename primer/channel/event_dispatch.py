@@ -581,7 +581,9 @@ class ChannelEventRouter:
         """Page ``kind="channel"`` triggers for *provider_id*, keeping those
         whose ``channel_id`` is unset (provider-wide) or equal to *channel_id*."""
         storage = self._sp.get_storage(Trigger)
-        q = Q(Trigger).where_op("config.kind", Op.EQ, "channel")
+        # The provider is filtered in the query: decoding every channel trigger of every provider per inbound message
+        # was the cost (W56i).
+        q = Q(Trigger).where_op("config.kind", Op.EQ, "channel").where_op("config.provider_id", Op.EQ, provider_id)
         matched: list[Trigger] = []
         offset = 0
         while offset < 10_000:
@@ -589,10 +591,7 @@ class ChannelEventRouter:
                 q.build(), OffsetPage(offset=offset, length=200),
             )
             for trigger in page.items:
-                cfg = trigger.config
-                if getattr(cfg, "provider_id", None) != provider_id:
-                    continue
-                cfg_channel = getattr(cfg, "channel_id", None)
+                cfg_channel = getattr(trigger.config, "channel_id", None)
                 if cfg_channel is None or cfg_channel == channel_id:
                     matched.append(trigger)
             if len(page.items) < 200:
