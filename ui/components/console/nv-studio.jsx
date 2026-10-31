@@ -85,8 +85,10 @@ function NV_renderStudioDoc(con, tab) {
   if (tab.kind === "session" && typeof window.NV_SessionDoc === "function") {
     return <window.NV_SessionDoc key={tab.ref} sid={tab.ref} />;
   }
+  // A file tab's ref is its path only and tabs are global across workspaces: keyed by the workspace too, a switch remounts the doc,
+  // so a draft is never shown in, or saved over, the same path in another workspace (gap review GU-1).
   if (tab.kind === "file" && typeof window.NV_FileDoc === "function") {
-    return <window.NV_FileDoc key={tab.ref} path={tab.ref} />;
+    return <window.NV_FileDoc key={con.wid + ":" + tab.ref} path={tab.ref} />;
   }
   if (tab.kind === "diff" && typeof window.NV_DiffDoc === "function") {
     return <window.NV_DiffDoc key={tab.ref} sha={tab.ref} />;
