@@ -7,7 +7,7 @@ from typing import Any
 
 from primer.channel.adapter import (
     BoundedDict, ChannelAdapter, PromptEnvelope,
-    attribution_header, format_tool_args, session_thread_label,
+    attribution_header, format_tool_args, session_thread_label, split_text,
 )
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import ApprovalView
@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Discord message content caps at 2000 chars; keep args well under it.
 _DISCORD_ARGS_MAX = 1700
+# A message's content is at most 2000 characters (discord.com/developers/docs/resources/message#create-message).
+_DISCORD_MESSAGE_MAX = 2000
 
 
 def format_approval_content(envelope: PromptEnvelope) -> str:
@@ -116,6 +118,7 @@ class DiscordChannelAdapter(ChannelAdapter):
         thread = await self._session_thread(
             channel, envelope.session_id,
             getattr(envelope, "thread_anchor", None),
+            workspace_id=envelope.workspace_id,
         )
         await self._post_thread_media(thread, envelope)
         header = attribution_header(envelope)
@@ -151,13 +154,13 @@ class DiscordChannelAdapter(ChannelAdapter):
                     )
             return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         elif envelope.kind == "inform":
-            msg = await thread.send(content=header + envelope.prompt)
-            return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
+            msgs = [await thread.send(content=part) for part in split_text(header + envelope.prompt, _DISCORD_MESSAGE_MAX)]
+            return {"message_id": getattr(msgs[0], "id", 0), "thread_id": thread.id}
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
 
     async def _session_thread(
-        self, channel: Any, session_id: str, anchor: str | None = None,
+        self, channel: Any, session_id: str, anchor: str | None = None, *, workspace_id: str = "",
     ) -> Any:
         """Get-or-create the one conversation thread for this session.
 
@@ -201,6 +204,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             name=label[:100], auto_archive_duration=60,
         )
         self._session_threads[session_id] = thread.id
+        await self._map_session_thread(str(thread.id), workspace_id=workspace_id, session_id=session_id)
         return thread
 
 

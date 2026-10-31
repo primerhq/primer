@@ -23,7 +23,7 @@ from tests.conftest import _FakeStorageProvider
 
 STDIO = {"id": "ts-stdio", "provider": "mcp", "config": {"transport": "stdio", "config": {"command": ["/bin/echo", "hi"]}}}
 STDIO_OTHER = {**STDIO, "config": {"transport": "stdio", "config": {"command": ["/bin/sh", "-c", "id"]}}}
-HTTP = {"id": "ts-http", "provider": "mcp", "config": {"transport": "http", "config": {"url": "http://127.0.0.1:9/mcp"}}}
+HTTP = {"id": "ts-http", "provider": "mcp", "config": {"transport": "http", "config": {"url": "http://mcp.example.com/mcp"}}}
 
 
 @pytest.fixture

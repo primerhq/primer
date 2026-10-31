@@ -57,6 +57,7 @@ class ChannelRegistry:
         self._artifact_registry = artifact_registry
         self._workspace_registry = workspace_registry
         self._scheduler = scheduler
+        self._stt_registry: object | None = None
         self._adapters: dict[str, ChannelAdapter] = {}
         self._lock = asyncio.Lock()
 
@@ -70,6 +71,7 @@ class ChannelRegistry:
 
     def set_session_wiring(
         self, *, workspace_registry: object | None, scheduler: object | None,
+        stt_registry: object | None = None,
     ) -> None:
         """Late-bind the session collaborators (built after this registry).
 
@@ -78,6 +80,7 @@ class ChannelRegistry:
         """
         self._workspace_registry = workspace_registry
         self._scheduler = scheduler
+        self._stt_registry = stt_registry
 
     def peek_adapter(self, channel_id: str) -> ChannelAdapter | None:
         """Return the already-built adapter for ``channel_id``, or None.
@@ -119,6 +122,7 @@ class ChannelRegistry:
                 workspace_registry=self._workspace_registry,
                 scheduler=self._scheduler,
             )
+            adapter.stt_registry = self._stt_registry
             await adapter.initialize()
             self._adapters[channel_id] = adapter
             return adapter

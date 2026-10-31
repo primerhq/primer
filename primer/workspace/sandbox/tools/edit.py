@@ -56,6 +56,8 @@ class SandboxEdit(WorkspaceTool):
         assert isinstance(args, EditArgs)
         if args.old_string == args.new_string:
             raise BadRequestError("old_string and new_string are identical")
+        if not args.old_string:   # "" matches between every character
+            raise BadRequestError("old_string must not be empty")
         target = resolve_sandbox_path(self._root, args.path)
         info = await self._sandbox.stat(target)
         if info is None:
@@ -63,8 +65,9 @@ class SandboxEdit(WorkspaceTool):
         if info.kind != "file":
             raise BadRequestError(f"{args.path!r} is not a file")
 
+        # surrogateescape round-trips bytes that are not UTF-8, so the write changes only the replaced text.
         original = (await self._sandbox.read_file(target)).decode(
-            "utf-8", errors="replace",
+            "utf-8", errors="surrogateescape",
         )
         count = original.count(args.old_string)
         if count == 0:
@@ -80,7 +83,7 @@ class SandboxEdit(WorkspaceTool):
         else:
             updated = original.replace(args.old_string, args.new_string, 1)
 
-        await self._sandbox.write_file(target, updated.encode("utf-8"))
+        await self._sandbox.write_file(target, updated.encode("utf-8", errors="surrogateescape"))
 
         diff_lines = list(
             difflib.unified_diff(
@@ -91,7 +94,9 @@ class SandboxEdit(WorkspaceTool):
                 lineterm="",
             )
         )
-        return ToolResult(output="\n".join(diff_lines))
+        # The diff shows an undecodable byte as U+FFFD, as it did before the round-trip.
+        output = "\n".join(diff_lines).encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+        return ToolResult(output=output)
 
 
 __all__ = ["SandboxEdit"]

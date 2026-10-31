@@ -109,12 +109,11 @@ def _make_lifespan(config: AppConfig):
         # only ever transforms rows that were already there. A fresh install
         # baselines straight to LATEST_VERSION instead of running the chain
         # against an empty database.
-        from primer.storage.migrations import run_migrations
+        from primer.storage.migrations import is_fresh_install, run_migrations
 
-        _state = await storage_provider.get_system_state()
         await run_migrations(
             storage_provider,
-            is_fresh_install=_state.bootstrap_completed_at is None,
+            is_fresh_install=await is_fresh_install(storage_provider),
         )
 
         from primer.model.provider import SecretProviderConfig
@@ -240,6 +239,7 @@ def _make_lifespan(config: AppConfig):
             toolset_factory=_build_default_toolset_factory(
                 allowed_stdio_commands=allowlist,
                 oauth=mcp_oauth,
+                storage_provider=storage_provider,
             ),
             trace_llm_io=config.observability.trace_llm_io,
         )
@@ -723,6 +723,7 @@ def _make_lifespan(config: AppConfig):
         channel_registry.set_claim_engine(claim_engine)
         channel_registry.set_session_wiring(
             workspace_registry=workspace_registry, scheduler=scheduler,
+            stt_registry=getattr(app.state, "stt_registry", None),
         )
 
         # Only a process that OWNS inbound may open channel gateways. Warming a

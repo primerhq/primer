@@ -15,7 +15,7 @@ import httpx
 
 from primer.channel.adapter import (
     BoundedDict, ChannelAdapter, PromptEnvelope,
-    attribution_header, session_thread_label,
+    attribution_header, session_thread_label, split_text,
 )
 from primer.channel.slack.connection import SLACK_CONNECTIONS
 from primer.channel.slack.render import (
@@ -29,6 +29,9 @@ from primer.model.except_ import ProviderError
 
 
 logger = logging.getLogger(__name__)
+
+# Slack truncates message text after 40,000 characters (api.slack.com/methods/chat.postMessage, "Truncating content").
+_SLACK_TEXT_MAX = 40_000
 
 
 def _get_web_client(conn: Any) -> Any:
@@ -144,6 +147,7 @@ class SlackChannelAdapter(ChannelAdapter):
         root_ts = await self._session_root_ts(
             client, envelope.session_id,
             getattr(envelope, "thread_anchor", None),
+            workspace_id=envelope.workspace_id,
         )
         media = getattr(envelope, "media", None)
         if media and self._artifacts is not None:
@@ -153,11 +157,12 @@ class SlackChannelAdapter(ChannelAdapter):
                 await self.post_thread_media(parts, thread_ts=root_ts)
         header = attribution_header(envelope)
         if envelope.kind == "inform":
-            await client.chat_postMessage(
-                channel=self._channel.external_id,
-                thread_ts=root_ts,
-                text=header + envelope.prompt,
-            )
+            for part in split_text(header + envelope.prompt, _SLACK_TEXT_MAX):
+                await client.chat_postMessage(
+                    channel=self._channel.external_id,
+                    thread_ts=root_ts,
+                    text=part,
+                )
             return {"ts": "", "channel": self._channel.external_id, "thread_ts": root_ts}
         if envelope.kind == "ask_user":
             body = build_ask_user_message(
@@ -236,7 +241,7 @@ class SlackChannelAdapter(ChannelAdapter):
         await client.files_upload_v2(**kwargs)
 
     async def _session_root_ts(
-        self, client: Any, session_id: str, anchor: str | None = None,
+        self, client: Any, session_id: str, anchor: str | None = None, *, workspace_id: str = "",
     ) -> str:
         """Get-or-create the root message ts for this session's thread.
 
@@ -258,6 +263,7 @@ class SlackChannelAdapter(ChannelAdapter):
         )
         ts = resp.get("ts", "")
         self._session_threads[session_id] = ts
+        await self._map_session_thread(ts, workspace_id=workspace_id, session_id=session_id)
         return ts
 
     # ----- inbound helpers (called from handlers in factory.py) -----------
@@ -292,6 +298,9 @@ class SlackChannelAdapter(ChannelAdapter):
         for f in files:
             url = f.get("url_private_download") or f.get("url_private")
             if not url:
+                continue
+            if not url.startswith("https://files.slack.com/"):   # the bot token goes to Slack's file host only
+                logger.warning("slack: not fetching a file outside https://files.slack.com: %s", url)
                 continue
             try:
                 async with httpx.AsyncClient() as client:

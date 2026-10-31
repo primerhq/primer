@@ -152,6 +152,36 @@ MIGRATIONS: tuple[Migration, ...] = (
 LATEST_VERSION: int = len(MIGRATIONS)
 
 
+async def is_fresh_install(sp: StorageProvider) -> bool:
+    """Whether the database is a new install with nothing to migrate, decided from what it holds.
+
+    The bootstrap marker alone cannot say: it stays empty on an install booted with ``auto_bootstrap: false`` and on one whose first bootstrap had errors,
+    and treating those as fresh stamped the latest version over migrations they had never run (core review finding 5). An install is fresh only when
+    no boot ever stamped a migration (``last_migration_at``), the bootstrap never completed, and none of the user-reachable entity tables holds a row.
+    """
+    from primer.model.api_token import ApiToken
+    from primer.model.agent import Agent
+    from primer.model.channel import Channel
+    from primer.model.collection import Collection, Document
+    from primer.model.graph import Graph
+    from primer.model.storage import CursorPage
+    from primer.model.providers.toolset import Toolset
+    from primer.model.trigger import Trigger
+    from primer.model.user import User
+    from primer.model.workspace import Workspace, WorkspaceTemplate
+    from primer.model.workspace_session import WorkspaceSession
+
+    state = await sp.get_system_state()
+    if state.bootstrap_completed_at is not None or state.last_migration_at is not None:
+        return False
+    for model in (User, Agent, Graph, Toolset, Collection, Document, Workspace, WorkspaceSession, WorkspaceTemplate, Channel, Trigger, ApiToken):
+        # find, not list: boot recovery pins that session reads go through find (index-friendly), and a cursor page needs no COUNT.
+        page = await sp.get_storage(model).find(None, CursorPage(length=1))
+        if page.items:
+            return False
+    return True
+
+
 async def run_migrations(
     sp: StorageProvider, *, is_fresh_install: bool,
 ) -> int:
@@ -159,8 +189,8 @@ async def run_migrations(
 
     A fresh install has no rows to transform, so it baselines straight to
     :data:`LATEST_VERSION` rather than running the chain against an empty
-    database. ``is_fresh_install`` is decided by the caller from
-    ``bootstrap_completed_at IS NULL``.
+    database. ``is_fresh_install`` is decided by the caller with
+    :func:`is_fresh_install` (from the data, not the bootstrap marker alone).
 
     When the database reports a version NEWER than this build understands,
     the runner logs a warning and returns without touching anything. Primer
@@ -208,4 +238,4 @@ async def run_migrations(
     return current
 
 
-__all__ = ["LATEST_VERSION", "MIGRATIONS", "Migration", "run_migrations"]
+__all__ = ["LATEST_VERSION", "MIGRATIONS", "Migration", "is_fresh_install", "run_migrations"]

@@ -284,7 +284,13 @@ class FakeSandbox(Sandbox):
         host = self._host_path(path)
         if not await asyncio.to_thread(host.exists):
             return None
-        return self._stat_from_path(host, self._root)
+        info = self._stat_from_path(host, self._root)
+        # The runtime's ``stat`` answers the RESOLVED path (it follows symlinks): the platform classifies reserved trees on it (W55d).
+        try:
+            resolved = host.resolve().relative_to(self._root.resolve()).as_posix() or "."
+        except ValueError:
+            resolved = host.resolve().name
+        return info.model_copy(update={"path": resolved})
 
     def _stat_from_path(self, host: Path, anchor: Path) -> FileStat:
         st = host.stat()

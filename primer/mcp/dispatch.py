@@ -81,7 +81,8 @@ async def list_exposed_tools(
         return []
     allowed = set(exposure.allowed_tools)
     out: list[tuple[Tool, object]] = []
-    async for tool, provider in _iter_catalogue(deps):
+    # Built-ins only: a user toolset's tools are never exposable, and walking one can hang (W10).
+    async for tool, provider in _iter_catalogue(deps, reserved_only=True):
         scoped = tool_scoped_id(tool)
         if scoped not in allowed:
             continue
@@ -231,7 +232,8 @@ async def invoke_exposed(
         raise NotExposed(scoped_id, reason="not_in_allowlist")
     if "__" not in scoped_id:
         raise NotExposed(scoped_id, reason="malformed_id")
-    routing = await build_routing_map(deps)
+    # Built-ins only (W10). A user toolset's scoped id misses and takes the split below; it is refused either way.
+    routing = await build_routing_map(deps, reserved_only=True)
     entry = routing.get(scoped_id)
     if entry is not None:
         toolset_id, bare_name = entry

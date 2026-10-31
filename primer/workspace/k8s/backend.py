@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import os
 import secrets
 import uuid
 from collections.abc import Awaitable
@@ -359,6 +360,11 @@ def _build_statefulset_manifest(
 class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
     """Materialises workspaces as single-replica StatefulSets."""
 
+    # What ``initialize`` built and ``aclose`` must release (review W20): the API client (an aiohttp session) and the service
+    # account's CA bundle written to a temp file. None when the APIs were injected.
+    _api_client: Any = None
+    _ca_file: str | None = None
+
     def __init__(
         self,
         config: KubernetesWorkspaceConfig,
@@ -405,12 +411,14 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                 )
                 ca_file.write(conn.ca_data)
                 ca_file.close()
+                self._ca_file = ca_file.name
                 cfg.ssl_ca_cert = ca_file.name
                 api_client = client.ApiClient(configuration=cfg)
             else:
                 raise ConfigError(
                     f"unknown k8s connection kind {conn.kind!r}"
                 )
+            self._api_client = api_client
             if self._core_v1 is None:
                 self._core_v1 = client.CoreV1Api(api_client)
             if self._apps_v1 is None:
@@ -426,7 +434,24 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                     await ws.aclose()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("aclose on workspace failed: %s", exc)
+                # The handle's aclose only releases it; the runtime connection is its sandbox's (review W20).
+                await close_shielded(ws.sandbox, what=f"workspace {ws.id} runtime client on backend close")
             self._workspaces.clear()
+            if self._api_client is not None:
+                try:
+                    await self._api_client.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("closing the kubernetes API client failed: %s", exc)
+                # The APIs were built on it: a later initialize builds them again.
+                self._api_client = self._core_v1 = self._apps_v1 = self._custom_objects = None
+            if self._ca_file is not None:
+                try:
+                    os.unlink(self._ca_file)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    logger.warning("removing the kubernetes CA file %s failed: %s", self._ca_file, exc)
+                self._ca_file = None
             self._initialised = False
 
     async def create(
@@ -1020,9 +1045,10 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
         """Tear down a workspace's Pod, Service, Secret, STS and PVC.
 
         Best-effort: missing objects are silently skipped so partial
-        creates roll back cleanly. Raises :class:`NotFoundError` only
-        when the StatefulSet itself doesn't exist (the canonical
-        existence signal).
+        creates roll back cleanly, and a Service or Secret delete that
+        fails is logged; a PVC delete that fails raises. Raises
+        :class:`NotFoundError` only when the StatefulSet itself doesn't
+        exist (the canonical existence signal), after deleting the rest.
         """
         if not self._initialised:
             await self.initialize()
@@ -1047,32 +1073,37 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
 
         obj_name = k8s_object_name(workspace_id)
         ns = self._config.namespace
+        sts_gone = False
         try:
             await self._apps_v1.delete_namespaced_stateful_set(
                 name=obj_name, namespace=ns,
             )
         except Exception as exc:  # noqa: BLE001
-            if "404" in str(exc):
-                if ws is None:
-                    raise NotFoundError(
-                        f"workspace {workspace_id!r} not found"
-                    )
-            else:
+            if "404" not in str(exc):
                 raise
-        # Best-effort cleanup of the Headless Service, Secret, and PVC.
+            sts_gone = ws is None
+        # The rest is deleted even when the StatefulSet was already gone (review W51): a Secret left behind fails a same-id
+        # create with a 409. The Service and the Secret are best effort; a PVC that could not be deleted fails the destroy,
+        # because the workspace's data would outlive its row.
         for delete_call, name, kind in (
             (self._core_v1.delete_namespaced_service, obj_name, "service"),
             (self._core_v1.delete_namespaced_secret, obj_name, "secret"),
-            (
-                self._core_v1.delete_namespaced_persistent_volume_claim,
-                _pvc_name_for(obj_name), "pvc",
-            ),
         ):
             await self._delete_best_effort(delete_call, name, kind, during="destroy")
+        pvc_error: Exception | None = None
+        try:
+            await self._core_v1.delete_namespaced_persistent_volume_claim(name=_pvc_name_for(obj_name), namespace=ns)
+        except Exception as exc:  # noqa: BLE001 -- raised below, after the HTTPRoute
+            if "404" not in str(exc):
+                pvc_error = exc
 
         # Best-effort cleanup of the per-workspace HTTPRoute (gateway mode).
         if isinstance(self._config.reachability, K8sReachabilityGateway):
             await self._destroy_httproute(obj_name)
+        if pvc_error is not None:
+            raise pvc_error
+        if sts_gone:
+            raise NotFoundError(f"workspace {workspace_id!r} not found")
 
 
 __all__ = ["KubernetesWorkspaceBackend"]

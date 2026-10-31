@@ -27,6 +27,7 @@ Models" button. They build a transient adapter, call its
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -84,6 +85,7 @@ from primer.common.entity_checks import EntityCheckError
 from primer.common.log import redact_url_secrets
 from primer.model.common import preserve_masked_secrets
 from primer.toolset.toolset_checks import (
+    check_mcp_url_resolves_public,
     check_oauth_resource_uri,
     check_python_toolset,
     oauth_settings_changed,
@@ -1375,6 +1377,13 @@ def _toolset_unreachable(
 # handshake + tools/list, which is well under a second on a LAN.
 _CATALOGUE_PROBE_TIMEOUT_S = 5.0
 
+# The catalogue's per-row work (the probe, and the OAuth status of a row that
+# signs in with OAuth) is independent per row, so it overlaps instead of
+# serializing one toolset behind the next. The bound caps how many rows' worth
+# of work run at once: the page still waits for every row, but a page of 200
+# rows costs roughly page_size / bound probes, not page_size.
+_CATALOGUE_CONCURRENCY = 8
+
 
 async def _catalogue_tools(
     registry: Any, tid: str, principal: Any,
@@ -1534,16 +1543,19 @@ async def _probe_mcp_reachable(entity: Toolset, request: Request) -> None:
     """
     import asyncio
 
-    from primer.toolset.mcp import McpToolsetProvider
+    from primer.toolset.mcp import McpEgressRefused, McpToolsetProvider
 
     principal = getattr(request.state, "principal", None)
     # Transient provider: this path is only reached for http transport, so the
     # stdio allowlist is irrelevant (None). McpToolsetProvider.list_tools opens
     # and closes its own short-lived session per call, so nothing leaks.
+    # The probe connects from the server: for a caller below admin it goes through the egress guard (a name that resolves to an internal address
+    # is refused, as a literal one already was by ``toolset_admin_reason``), so it cannot scan the internal network (review of workspaces, W25).
     provider = McpToolsetProvider(
         toolset_id=entity.id,
         config=entity.config,  # type: ignore[arg-type]  # http => McpConfig set
         allowed_stdio_commands=None,
+        egress_guard=not person_from_request(request).is_admin,
     )
     try:
         async with asyncio.timeout(8):
@@ -1553,6 +1565,12 @@ async def _probe_mcp_reachable(entity: Toolset, request: Request) -> None:
         # asyncio.timeout raises TimeoutError; the mcp transport raises a
         # classified PrimerError (often wrapped in a BaseExceptionGroup).
         leaf = _informative_leaf(exc)
+        if isinstance(leaf, McpEgressRefused):
+            # Not "create anyway": the row would be guarded at connect time, but nobody below admin points a toolset at an internal address.
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "forbidden_role", "message": f"{leaf.message}. Pointing an MCP toolset at an internal address requires the admin role."},
+            ) from exc
         if _is_connection_failure(leaf):
             raise _toolset_unreachable(
                 entity, leaf, timed_out=isinstance(leaf, TimeoutError)
@@ -1620,6 +1638,7 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
             },
         )
     _refuse_a_resource_uri_elsewhere(entity)
+    await _refuse_a_name_that_resolves_internal(entity, request)
     if _toolset_probe_bypassed(request):
         return
     if entity.provider == ToolsetProviderType.PYTHON:
@@ -1634,6 +1653,16 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     ):
         return
     await _probe_mcp_reachable(entity, request)
+
+
+async def _refuse_a_name_that_resolves_internal(entity: Toolset, request: Request) -> None:
+    """403 ``forbidden_role`` when a caller below admin saves an http / sse MCP toolset whose URL NAME resolves to an internal address
+    (:func:`primer.toolset.toolset_checks.check_mcp_url_resolves_public`; the system tools run the same check). Run on every save, the probe bypass
+    included: a grantee of an admin-owned toolset must not repoint it at an internal name."""
+    try:
+        await check_mcp_url_resolves_public(entity, person_from_request(request))
+    except EntityCheckError as exc:
+        raise HTTPException(status_code=403, detail={"error": "forbidden_role", "message": exc.message}) from exc
 
 
 def _refuse_a_resource_uri_elsewhere(entity: Toolset) -> None:
@@ -1697,6 +1726,7 @@ async def _toolset_on_pre_update(
         _require_admin_for_toolset(request, reason)
     preserve_masked_secrets(entity, existing)
     _refuse_a_resource_uri_elsewhere(entity)
+    await _refuse_a_name_that_resolves_internal(entity, request)
     if entity.provider == ToolsetProviderType.PYTHON:
         _validate_python_toolset(entity)
         own_python_source_version(entity, existing)
@@ -2020,13 +2050,15 @@ async def list_all_tools(
 
     out: list[dict] = []
 
-    # 1. Built-in toolsets (every id in _BUILTIN_TOOLSETS).
+    # 1. Built-in toolsets (every id in _BUILTIN_TOOLSETS). The per-row probe
+    # is independent per row, so the rows overlap under the bound; the output
+    # keeps the list's order.
     ic = await _internal_search_on(storage_provider)
     canvas_on = await _canvas_tools_on(storage_provider)
-    for spec in _BUILTIN_TOOLSETS:
+    sem = asyncio.Semaphore(_CATALOGUE_CONCURRENCY)
+
+    async def _builtin_entry(spec: dict) -> dict:
         tid = spec["id"]
-        if tid == "canvas" and not canvas_on:
-            continue
         entry: dict = {
             "id": tid,
             "builtin": True,
@@ -2037,13 +2069,20 @@ async def list_all_tools(
         }
         if tid == "collections":
             entry["internal_search"] = ic
-        tools, reason = await _catalogue_tools(registry, tid, principal)
+        async with sem:
+            tools, reason = await _catalogue_tools(registry, tid, principal)
         if reason is None:
             entry["tools"] = tools
         else:
             entry["available"] = False
             entry["unavailable_reason"] = reason
-        out.append(entry)
+        return entry
+
+    specs = [
+        spec for spec in _BUILTIN_TOOLSETS
+        if not (spec["id"] == "canvas" and not canvas_on)
+    ]
+    out.extend(await asyncio.gather(*(_builtin_entry(spec) for spec in specs)))
 
     # 2. User-defined Toolset rows. Page through storage so the
     # catalogue scales beyond the default 200-row cap. Rows the caller
@@ -2058,29 +2097,29 @@ async def list_all_tools(
     seen_user_ids: set[str] = set()
     offset = 0
     page_size = 200
-    while True:
-        page = await ts_storage.find(
-            access_pred,
-            OffsetPage(offset=offset, length=page_size),
-        )
-        for row in page.items:
-            if row.id in seen_user_ids:
-                continue
-            seen_user_ids.add(row.id)
-            entry = {
-                "id": row.id,
-                "builtin": False,
-                "label": row.id,
-                # Toolset rows inherit Identifiable (no `description`
-                # field); use a getattr-guard so we don't 500 when the
-                # row is built-in-style (id only).
-                "tagline": getattr(row, "description", "") or "",
-                "available": True,
-                "tools": [],
-            }
-            from primer.toolset.oauth.service import OAuthTarget
+    # The per-row work (the OAuth status, then the probe) is independent per
+    # row, so the page's rows overlap under the bound; the output keeps the
+    # storage order. A row's OAuth status and probe run inside the bound, so
+    # a page of rows costs roughly page_size / bound probes, not page_size.
+    from primer.toolset.oauth.service import OAuthTarget
 
-            readable = level_of(person, row.access) is not None
+    async def _user_entry(row: Toolset) -> dict | None:
+        if row.id in seen_user_ids:
+            return None
+        seen_user_ids.add(row.id)
+        entry = {
+            "id": row.id,
+            "builtin": False,
+            "label": row.id,
+            # Toolset rows inherit Identifiable (no `description`
+            # field); use a getattr-guard so we don't 500 when the
+            # row is built-in-style (id only).
+            "tagline": getattr(row, "description", "") or "",
+            "available": True,
+            "tools": [],
+        }
+        readable = level_of(person, row.access) is not None
+        async with sem:
             # The caller's own sign-in (the shared one for client credentials), for whoever may use a tool of it: a public tool needs the
             # caller's own token too (access-control P5 Task 3).
             if (readable or row.access.public_tools) and OAuthTarget.from_toolset(row, person) is not None:
@@ -2092,12 +2131,25 @@ async def list_all_tools(
             tools, reason = await _catalogue_tools(
                 registry, row.id, principal,
             )
-            if reason is None:
-                entry["tools"] = tools if readable else [t for t in tools if t["id"] in row.access.public_tools]
-            else:
-                entry["available"] = False
-                entry["unavailable_reason"] = reason
-            out.append(entry)
+        if reason is None:
+            entry["tools"] = tools if readable else [t for t in tools if t["id"] in row.access.public_tools]
+        else:
+            entry["available"] = False
+            entry["unavailable_reason"] = reason
+        return entry
+
+    while True:
+        page = await ts_storage.find(
+            access_pred,
+            OffsetPage(offset=offset, length=page_size),
+        )
+        out.extend(
+            entry
+            for entry in await asyncio.gather(
+                *(_user_entry(row) for row in page.items)
+            )
+            if entry is not None
+        )
         if len(page.items) < page_size:
             break
         offset += page_size

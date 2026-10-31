@@ -336,11 +336,36 @@ servers that send them are named by the MCP server's metadata (audit G4-15). A
 larger document is not used, and a larger token or registration answer is a
 temporary server error; a revocation answer's body is never read.
 
+Who may point an MCP toolset at an internal address (review of workspaces, W25).
+An http / sse MCP toolset is user-tier, and the server sends requests to its URL on
+create (the probe) and on every listing. A URL that writes an internal address out
+(a loopback, link-local, private or cloud-metadata IP literal, or `localhost`) is
+admin-only to save: `toolset_admin_reason` (`primer/toolset/toolset_checks.py`)
+returns the reason on the REST route, the system tools and a harness install alike.
+A name that resolves to an internal address is caught at connect time:
+`McpToolsetProvider` connects through `primer/toolset/mcp_egress.py`
+(`GuardedNetworkBackend` on the SDK's `httpx2` pool: the name is resolved on every new
+connection, any internal answer is refused with `McpEgressRefused`, and the connection
+goes to the address that passed, so a name re-bound after the save is refused too)
+unless an admin authored the toolset (`author_is_trusted`: an enabled admin owns it, or
+it has no owner, as a platform-seeded or harness-installed row; read per dispatch, so
+a role change applies at once). The create probe for a caller below admin goes through
+the same guard and answers 403 `forbidden_role` instead of a port scan. A save by a caller
+below admin also resolves the URL's host once (`check_mcp_url_resolves_public`, bounded
+at 2 s, off the loop, `PRIMER_EGRESS_ALLOW` honoured, a failed lookup refuses nothing)
+and is refused with the same reason when any answer is internal: this closes a full
+grantee of an admin-owned toolset repointing it at a name that resolves internal (its
+admin author makes it trusted, so the connect-time guard does not run). Active DNS
+rebinding against such a toolset remains (the name can be re-bound after the snapshot);
+it needs a hostile grantee the admin chose and the attacker's DNS. The operator's
+`PRIMER_EGRESS_ALLOW` opts internal servers back in for everyone.
+
 The OAuth client does not call private addresses an MCP server names (audit
 G4-08). Its transport (`primer/toolset/oauth/egress.py`) routes each request by
 host and port: the MCP URL's own host and port, and those of a token endpoint the
-toolset configures, are reached directly (the MCP URL is chosen by the toolset's
-author and is not guarded); any other host or port (another service on the MCP
+toolset configures, are reached directly by the OAuth client (the MCP client's own
+connection to the MCP URL is guarded unless an admin authored the toolset: below);
+any other host or port (another service on the MCP
 server's machine, the protected-resource document a 401 points at, the
 authorization server's metadata, token, registration and revocation endpoints)
 passes `primer.common.ssrf`'s private-destination policy at connect time

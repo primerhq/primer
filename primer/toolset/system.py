@@ -159,6 +159,7 @@ from primer.model.workspace import (
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.session.peer_messages import ACCESS_NOTE
+from primer.session.mutation_lock import session_lifecycle_lock
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
 from primer.artifact.checks import (
     ARTIFACT_DEFAULT_WRITE_NOTE,
@@ -181,6 +182,7 @@ from primer.knowledge.checks import (
 from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
 from primer.knowledge.lifecycle import purge_collection
 from primer.toolset.toolset_checks import (
+    check_mcp_url_resolves_public,
     check_toolset_on_create,
     check_toolset_on_update,
     oauth_settings_changed,
@@ -483,14 +485,21 @@ def build_system_toolset(
             tool_schema_of=_tool_schema_of,
         )
 
-    async def _toolset_pre_create(entity: Toolset) -> None:
+    async def _toolset_pre_create(entity: Toolset, *, person: Any = None) -> None:
         # Not the router's reachability probe (an 8 s outbound call for http / sse MCP toolsets): a tool runs inside an agent turn.
         check_toolset_on_create(entity)
+        if person is not None:
+            await check_mcp_url_resolves_public(entity, person)  # a name that resolves internal, below admin (the REST route does the same)
 
-    async def _toolset_pre_update(entity: Toolset, existing: Toolset) -> None:
+    async def _toolset_pre_update(entity: Toolset, existing: Toolset, *, person: Any = None) -> None:
         check_toolset_on_update(entity, existing)
+        if person is not None:
+            await check_mcp_url_resolves_public(entity, person)
         if mcp_oauth is not None and oauth_settings_changed(entity, existing):
             await mcp_oauth.forget(entity.id)
+
+    _toolset_pre_create.takes_person = True  # type: ignore[attr-defined]
+    _toolset_pre_update.takes_person = True  # type: ignore[attr-defined]
 
     async def _profile_pre_create(entity: ModelProfile) -> None:
         await check_profile_on_create(entity, storage_provider=storage_provider)
@@ -1598,21 +1607,30 @@ def build_system_toolset(
                             error_type="not-found")
 
         sessions = storage_provider.get_storage(WorkspaceSession)
-        row = await sessions.get(ctx.session_id)
-        if row is None:
-            return _err(f"session {ctx.session_id!r} does not exist",
-                        error_type="not-found")
-
-        await sessions.update(row.model_copy(update={
-            "pending_binding_switch": {
-                "kind": args.kind,
-                "agent_id": args.agent_id,
-                "graph_id": args.graph_id,
-                "profile_id": args.profile_id,
-                "actor": "agent",
-                "reason": args.reason,
-            },
-        }))
+        # As the REST twin (AG-M13): the queued switch ALONE, under the lifecycle lock, fenced on the turn_status and last_seq
+        # read inside it. A whole-row write from this mid-turn read erased a Stop, a Cancel or a seq a steer reserved in between.
+        async with session_lifecycle_lock().acquire(ctx.session_id):
+            row = await sessions.get(ctx.session_id)
+            if row is None:
+                return _err(f"session {ctx.session_id!r} does not exist",
+                            error_type="not-found")
+            written = await sessions.patch_if(
+                ctx.session_id,
+                {"pending_binding_switch": {
+                    "kind": args.kind,
+                    "agent_id": args.agent_id,
+                    "graph_id": args.graph_id,
+                    "profile_id": args.profile_id,
+                    "actor": "agent",
+                    "reason": args.reason,
+                }},
+                where={"turn_status": [row.turn_status], "last_seq": [row.last_seq]},
+            )
+        if written is None:
+            return _err(
+                f"session {ctx.session_id!r} changed while the switch was being queued; nothing was changed, retry",
+                error_type="conflict",
+            )
         target = args.graph_id if args.kind == "graph" else args.agent_id
         return ToolCallResult(
             output=(

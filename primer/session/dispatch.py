@@ -77,6 +77,7 @@ from primer.session.graph_end import graph_end_for
 from primer.session.mutation_lock import IN_LOCK_IO_TIMEOUT_S, session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
 from primer.session.seq_reservation import reserve_next_seq
+from primer.session.slot_view import rows_for_session_ids
 from primer.storage import raw_generation
 from primer.storage.cas import patch_if_checked
 from primer.session.turns import has_open_turn
@@ -194,6 +195,18 @@ class SessionDispatchDeps:
     # checkpoint that does have the wiring.
     scheduler: Any | None = None
     claim_engine: Any | None = None
+
+    # Send the turn's delta and phase frames to this process's subscribers only (``EventBus.publish_local``: no NOTIFY on Postgres). Set from
+    # ``WorkerConfig.deltas_in_process_only``, only by an operator whose one process also serves every tap/SSE reader.
+    deltas_in_process_only: bool = False
+
+
+def _delta_publish(deps: "SessionDispatchDeps") -> Any:
+    """The bus call the turn's delta and phase frames use: ``publish_local`` when the deployment keeps them in process, else ``publish``."""
+    bus = deps.event_bus
+    if deps.deltas_in_process_only and hasattr(bus, "publish_local"):
+        return bus.publish_local
+    return bus.publish
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +499,7 @@ async def run_one_session_turn(
     from primer.tap.delta import publish_phase_frame
     if deps.event_bus is not None:
         await publish_phase_frame(
-            deps.event_bus.publish, session_id=session_id,
+            _delta_publish(deps), session_id=session_id,
             phase=_agent_phase, turn_no=session.turn_no,
         )
     await _safe_turn_log(turn_log, TurnLogPhase(
@@ -578,7 +591,7 @@ async def run_one_session_turn(
     # the durable record still completes each part (UI falls back gracefully).
     from primer.tap.delta import DeltaBuffer
     delta_buffer = (
-        DeltaBuffer(session_id=session_id, publish=deps.event_bus.publish)
+        DeltaBuffer(session_id=session_id, publish=_delta_publish(deps))
         if deps.event_bus is not None else None
     )
     if delta_buffer is not None:
@@ -766,7 +779,7 @@ async def run_one_session_turn(
                 )
                 if deps.event_bus is not None:
                     await publish_phase_frame(
-                        deps.event_bus.publish, session_id=session_id,
+                        _delta_publish(deps), session_id=session_id,
                         phase=_agent_phase, turn_no=session.turn_no,
                     )
                 await _safe_turn_log(turn_log, TurnLogPhase(
@@ -858,7 +871,7 @@ async def run_one_session_turn(
             )
             if deps.event_bus is not None:
                 await publish_phase_frame(
-                    deps.event_bus.publish, session_id=session_id,
+                    _delta_publish(deps), session_id=session_id,
                     phase=_agent_phase, turn_no=session.turn_no,
                 )
             await _safe_turn_log(turn_log, TurnLogPhase(
@@ -1124,7 +1137,7 @@ async def run_one_session_turn(
             )
             if deps.event_bus is not None:
                 await publish_phase_frame(
-                    deps.event_bus.publish, session_id=session_id,
+                    _delta_publish(deps), session_id=session_id,
                     phase=_agent_phase, turn_no=session.turn_no,
                 )
             await _safe_turn_log(turn_log, TurnLogPhase(
@@ -3731,7 +3744,9 @@ async def _watch_bus_for_cancel(
     event_bus: EventBus, session_id: str, cancel_event: asyncio.Event,
 ) -> None:
     try:
-        sub = event_bus.subscribe()
+        # Only this session's cancel key, and only the newest of it: a stop request is never lost behind a backlog and the watcher reads nothing else.
+        sub = event_bus.subscribe(key=f"session:{session_id}:cancel", coalesce=True)
+        await sub.ready()
     except Exception as exc:  # noqa: BLE001 - the row poll is the fallback
         logger.warning(
             "session %s: cannot subscribe to the bus for Stop/Cancel (%s); "
@@ -3762,7 +3777,10 @@ async def _poll_row_for_interrupt(
     first_read = True
     while True:
         try:
-            row = await session_storage.get(session_id)
+            # The shared batched read (one ``id IN`` query, a single id here):
+            # the cancel reconciler and this poll read the row the same way.
+            rows = await rows_for_session_ids(session_storage, (session_id,))
+            row = rows.get(session_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - retried next interval

@@ -25,6 +25,7 @@ from urllib.parse import urlparse, urlunparse
 import yaml
 
 from primer.harness.hashes import hash_bundle
+from primer.harness.paths import symlink_reason
 from primer.model.harness import file_git_urls_allowed, validate_git_ref, validate_git_url
 
 
@@ -286,11 +287,15 @@ async def fetch_harness_metadata(
         # Bundle hash: every non-.git file under target, path relative to target.
         files: list[tuple[str, bytes]] = []
         for p in sorted(target.rglob("*")):
-            if not p.is_file():
-                continue
             rel = p.relative_to(target)
             parts = rel.parts
             if parts and parts[0] == ".git":
+                continue
+            # A symlink in the repository could name any file the server can read: refused, not followed.
+            reason = symlink_reason(target, p)
+            if reason is not None:
+                raise HarnessGitError("harness_symlink_refused", f"{rel.as_posix()}: {reason}")
+            if not p.is_file():
                 continue
             files.append((rel.as_posix(), p.read_bytes()))
         bundle_hash = hash_bundle(files)

@@ -93,24 +93,37 @@ async def overlay_row_on_slot_info(
     return overlay_row_on_info(info, row, workspace_id=workspace_id)
 
 
+async def rows_for_session_ids(
+    session_storage: Any, session_ids: Iterable[str],
+) -> dict[str, WorkspaceSession]:
+    """The rows of ``session_ids``: one ``id IN`` query per 200 ids, never one read per id.
+
+    An id with no row is simply absent from the result. Callers that must
+    TOLERATE a failed batch (serve the rest as-is, retry the read) keep the
+    try/except around this; a raised storage error is not swallowed here.
+    """
+    ids = _unique(session_ids)
+    rows: dict[str, WorkspaceSession] = {}
+    for start in range(0, len(ids), _MAX_PAGE):
+        chunk = ids[start : start + _MAX_PAGE]
+        page = await session_storage.find(
+            Predicate(left=FieldRef(name="id"), op=Op.IN, right=Value(value=chunk)),
+            OffsetPage(offset=0, length=len(chunk)),
+        )
+        rows.update((r.id, r) for r in page.items)
+    return rows
+
+
 async def overlay_rows_on_infos(
     infos: Sequence[SessionInfo], session_storage: Any, *, workspace_id: str | None = None,
 ) -> list[SessionInfo]:
     """:func:`overlay_row_on_info` for a page of sessions: one query per 200 sessions, never one per session."""
     if not infos:
         return []
-    ids = _unique(i.session_id for i in infos)
-    rows: dict[str, WorkspaceSession] = {}
     try:
-        for start in range(0, len(ids), _MAX_PAGE):
-            chunk = ids[start : start + _MAX_PAGE]
-            page = await session_storage.find(
-                Predicate(left=FieldRef(name="id"), op=Op.IN, right=Value(value=chunk)),
-                OffsetPage(offset=0, length=len(chunk)),
-            )
-            rows.update((r.id, r) for r in page.items)
+        rows = await rows_for_session_ids(session_storage, (i.session_id for i in infos))
     except Exception:  # noqa: BLE001 -- advisory: the slots are still an answer
-        logger.warning("session slot view: reading the rows of %d sessions failed; serving the slots as they are", len(ids), exc_info=True)
+        logger.warning("session slot view: reading the rows of %d sessions failed; serving the slots as they are", len(infos), exc_info=True)
         return list(infos)
     return [overlay_row_on_info(i, rows.get(i.session_id), workspace_id=workspace_id) for i in infos]
 
@@ -119,4 +132,4 @@ def _unique(values: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
-__all__ = ["overlay_row_on_info", "overlay_row_on_slot_info", "overlay_rows_on_infos"]
+__all__ = ["overlay_row_on_info", "overlay_row_on_slot_info", "overlay_rows_on_infos", "rows_for_session_ids"]

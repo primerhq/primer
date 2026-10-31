@@ -35,6 +35,7 @@ from primer.harness.dependencies import (
     canonical_key,
     walk_dependencies,
 )
+from primer.harness.paths import symlink_reason
 from primer.harness.git import (
     HarnessGitError,
     _redact,
@@ -88,13 +89,17 @@ logger = logging.getLogger(__name__)
 
 
 def _collect_bundle_files(base: Path) -> list[tuple[str, bytes]]:
-    """Walk ``base`` and return (relative_path, bytes) for every non-.git file."""
+    """Walk ``base`` and return (relative_path, bytes) for every non-.git file; a symlink is refused (``harness_symlink_refused``)."""
     result: list[tuple[str, bytes]] = []
     for p in sorted(base.rglob("*")):
         # Skip the .git directory and everything inside it
         parts = p.relative_to(base).parts
         if parts and parts[0] == ".git":
             continue
+        # A symlink in the repository could name any file the server can read (and a large one is read whole): refused, not followed.
+        reason = symlink_reason(base, p)
+        if reason is not None:
+            raise HarnessGitError("harness_symlink_refused", f"{p.relative_to(base).as_posix()}: {reason}")
         if p.is_file():
             rel = str(p.relative_to(base))
             result.append((rel, p.read_bytes()))
@@ -228,12 +233,15 @@ async def run_one_harness_operation(
         elif operation == HarnessOperation.SYNC:
             next_status, error_json = await _do_sync(deps, harness)
         elif operation == HarnessOperation.UNINSTALL:
-            await _do_uninstall(deps, harness)
-            # Row is gone, skip release, just publish done.
-            await deps.event_bus.publish(
-                f"harness:{harness_id}:done", {"harness_id": harness_id},
-            )
-            return
+            error_json = await _do_uninstall(deps, harness)
+            if error_json is None:
+                # Row is gone, skip release, just publish done.
+                await deps.event_bus.publish(
+                    f"harness:{harness_id}:done", {"harness_id": harness_id},
+                )
+                return
+            # It stopped part-way and kept the harness and its snapshot: released as ERROR, a retry finishes it.
+            next_status = HarnessStatus.ERROR
         elif operation == HarnessOperation.BUILD:
             next_status, error_json = await _do_build(deps, harness)
         elif operation == HarnessOperation.PUSH:
@@ -1184,19 +1192,23 @@ async def _do_sync(
 async def _do_uninstall(
     deps: HarnessDispatchDeps,
     harness: Harness,
-) -> None:
-    """Delete all managed entities, rendering, and harness row.
+) -> str | None:
+    """Delete all managed entities, rendering, and harness row; the error JSON when it stopped part-way, else None.
 
-    Caller must NOT call release_harness after this (row is gone).
+    On None the caller must NOT call release_harness (row is gone). On an error the harness row and its rendering are kept
+    (KN-5), so the caller releases the operation as ERROR and a retried uninstall finishes it.
     """
     try:
         await apply_uninstall(
             storage_provider=deps.storage_provider,
             harness=harness,
             cascade=harness.uninstall_cascade,
+            semantic_search_registry=deps.semantic_search_registry,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("_do_uninstall error for harness %s", harness.id)
+        return json.dumps({"code": "uninstall_failed", "message": str(exc)})
+    return None
 
 
 # ---------------------------------------------------------------------------

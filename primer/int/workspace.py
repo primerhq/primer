@@ -228,6 +228,7 @@ class Workspace(ABC):
         *,
         recursive: bool = False,
         max_entries: int | None = None,
+        skip_reserved: bool = False,
     ) -> list[FileEntry]:
         """List files in the workspace (user-facing, NOT a tool).
 
@@ -243,6 +244,11 @@ class Workspace(ABC):
         preserving the exact pre-existing behaviour for any caller that
         doesn't pass it. Ignored when ``recursive=False`` (a one-level
         ``iterdir`` is already bounded by the directory's own size).
+
+        ``skip_reserved`` makes a recursive walk never DESCEND into the runtime's reserved trees (``state_path`` and ``tmp_path``, normally
+        ``.state`` and ``.tmp``): the listing a non-admin gets. Pruning during the walk, not after, matters because the walk is capped at the
+        page's size: a state repo with thousands of git objects would otherwise fill the whole capped walk with entries the page then drops
+        (review of workspaces, W55c). Default ``False``: the walk lists everything, as an admin sees it.
         """
 
     @abstractmethod

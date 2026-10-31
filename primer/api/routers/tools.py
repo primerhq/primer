@@ -30,7 +30,7 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.api.registries import ProviderRegistry
-from primer.api.routers.providers import _BUILTIN_TOOLSETS
+from primer.api.routers.providers import _BUILTIN_TOOLSETS, _CATALOGUE_CONCURRENCY
 from primer.model.chat import tool_catalogue_flags
 from primer.model.storage import OffsetPage
 
@@ -78,28 +78,33 @@ async def list_tools(
     items: list[dict] = []
     seen_ids: set[str] = set()
 
-    async def _emit(toolset_id: str, only: frozenset[str] | None = None) -> None:
+    # The per-row work (get_toolset + enumerate) is independent per row, so
+    # the rows overlap under the bound instead of serializing one toolset
+    # behind the next. A row answers its OWN list; the route merges the lists
+    # into ``items``/``seen_ids`` in row order (builtins first, then user rows
+    # in page order), so the first row to expose a scoped id still wins.
+    sem = asyncio.Semaphore(_CATALOGUE_CONCURRENCY)
+
+    async def _tools_for(toolset_id: str, only: frozenset[str] | None = None) -> list[dict]:
+        own: list[dict] = []
         try:
-            async with asyncio.timeout(_ENUMERATE_TIMEOUT_S):
-                provider = await registry.get_toolset(toolset_id)
-                async for tool in provider.list_tools(principal=principal):
-                    if only is not None and tool.id not in only:
-                        continue  # a row the caller cannot read shows only its public tools
-                    scoped = f"{toolset_id}__{tool.id}"
-                    if scoped in seen_ids:
-                        continue
-                    seen_ids.add(scoped)
-                    items.append({
-                        "id": scoped,
-                        "description": tool.description or "",
-                        "input_schema": tool.args_schema or {},
-                        # y/w/r/n capability badges, excluded from Tool's own
-                        # wire serialisation (chat.py) since they must never
-                        # reach the LLM-facing tool schema;
-                        # tool_catalogue_flags() is the one seam every
-                        # "list tools" route re-adds them from.
-                        **tool_catalogue_flags(tool),
-                    })
+            async with sem:
+                async with asyncio.timeout(_ENUMERATE_TIMEOUT_S):
+                    provider = await registry.get_toolset(toolset_id)
+                    async for tool in provider.list_tools(principal=principal):
+                        if only is not None and tool.id not in only:
+                            continue  # a row the caller cannot read shows only its public tools
+                        own.append({
+                            "id": f"{toolset_id}__{tool.id}",
+                            "description": tool.description or "",
+                            "input_schema": tool.args_schema or {},
+                            # y/w/r/n capability badges, excluded from Tool's own
+                            # wire serialisation (chat.py) since they must never
+                            # reach the LLM-facing tool schema;
+                            # tool_catalogue_flags() is the one seam every
+                            # "list tools" route re-adds them from.
+                            **tool_catalogue_flags(tool),
+                        })
         except TimeoutError:
             # An unreachable MCP server accepts the connection and then
             # never answers; it does not raise. Without this bound one
@@ -118,15 +123,25 @@ async def list_tools(
                 "list_tools: enumerate %r failed: %s: %s",
                 toolset_id, type(exc).__name__, exc,
             )
+        return own
+
+    def _merge(tools: list[dict]) -> None:
+        for t in tools:
+            if t["id"] in seen_ids:
+                continue
+            seen_ids.add(t["id"])
+            items.append(t)
 
     # 1. Built-in toolsets (resolved by the registry without a row).
     from primer.api.routers.providers import _canvas_tools_on
 
     canvas_on = await _canvas_tools_on(storage_provider)
-    for tid in _BUILTIN_TOOLSET_IDS:
-        if tid == "canvas" and not canvas_on:
-            continue
-        await _emit(tid)
+    builtin_ids = [
+        tid for tid in _BUILTIN_TOOLSET_IDS
+        if not (tid == "canvas" and not canvas_on)
+    ]
+    for tools in await asyncio.gather(*(_tools_for(tid) for tid in builtin_ids)):
+        _merge(tools)
 
     # 2. User-defined Toolset rows. Page so the catalogue scales beyond
     # the default 200-row cap. Rows the caller may not read stay out (spec
@@ -143,8 +158,15 @@ async def list_tools(
                 access_pred,
                 OffsetPage(offset=offset, length=page_size),
             )
-            for row in page.items:
-                await _emit(row.id, None if level_of(person, row.access) is not None else frozenset(row.access.public_tools))
+            onlys = [
+                None if level_of(person, row.access) is not None
+                else frozenset(row.access.public_tools)
+                for row in page.items
+            ]
+            for tools in await asyncio.gather(
+                *(_tools_for(row.id, only) for row, only in zip(page.items, onlys))
+            ):
+                _merge(tools)
             if len(page.items) < page_size:
                 break
             offset += page_size

@@ -316,12 +316,21 @@ class PostgresStorageProvider(StorageProvider):
                 f'  PRIMARY KEY (kind, entity_id)'
                 f')',
             )
+            # The claim query reads two disjoint kinds of candidate per kind (unclaimed; claimed but expired), each served by its own partial index.
+            # They supersede the earlier (priority_score, next_attempt_at) index, which had no kind prefix and could not serve the expired branch.
             await execute_create_idempotent(
                 conn,
-                f'CREATE INDEX IF NOT EXISTS leases_claim_order '
-                f'ON "{self._schema}"."leases" (priority_score, next_attempt_at) '
+                f'CREATE INDEX IF NOT EXISTS leases_unclaimed_by_kind '
+                f'ON "{self._schema}"."leases" (kind, priority_score, next_attempt_at) '
                 f'WHERE claimed_by IS NULL',
             )
+            await execute_create_idempotent(
+                conn,
+                f'CREATE INDEX IF NOT EXISTS leases_expiry_by_kind '
+                f'ON "{self._schema}"."leases" (kind, expires_at) '
+                f'WHERE claimed_by IS NOT NULL',
+            )
+            await conn.execute(f'DROP INDEX IF EXISTS "{self._schema}".leases_claim_order')
             await execute_create_idempotent(
                 conn,
                 f'CREATE TABLE IF NOT EXISTS "{self._schema}"."system_state" ('
@@ -1120,6 +1129,37 @@ class PostgresStorage(Storage[ModelT]):
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         return await self._paged(predicate=predicate, page=page, order_by=order_by)
 
+    #: Rows per query of :meth:`find_ids`.
+    _IDS_PAGE = 2000
+
+    async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
+        """``(id, access)`` of every matching row: ``id`` and the ``access`` block only, keyset-paged on ``id``, no ``COUNT`` and no row decode."""
+        await self._ensure_table()
+        out: list[tuple[str, dict[str, Any] | None]] = []
+        last: str | None = None
+        while True:
+            translator = _PredicateTranslator(self._model)
+            where_sql = "TRUE"
+            if predicate is not None:
+                where_sql, _ = translator.translate(predicate)
+            if last is not None:
+                where_sql = f"({where_sql}) AND id > {translator.append_param(last)}"
+            limit_ph = translator.append_param(self._IDS_PAGE)
+            sql = f"SELECT id, data->'access' AS access FROM {self._qualified} WHERE {where_sql} ORDER BY id LIMIT {limit_ph}"
+            try:
+                async with self._provider.pool.acquire() as conn:
+                    rows = await conn.fetch(sql, *translator._params)  # noqa: SLF001
+            except Exception as exc:
+                raise self._wrap_db_error(exc) from exc
+            for row in rows:
+                access = row["access"]
+                if isinstance(access, str):  # asyncpg returns JSONB as text unless a codec is registered
+                    access = json.loads(access)
+                out.append((row["id"], access))
+            if len(rows) < self._IDS_PAGE:
+                return out
+            last = rows[-1]["id"]
+
     async def _paged(
         self,
         *,
@@ -1783,6 +1823,17 @@ class PostgresEventStore(EventStore):
             rows = await conn.fetch(sql, *params)
         return [self._row_to_event(r) for r in rows]
 
+    async def read_horizon(self) -> tuple[int, int] | None:
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    'SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS lo, pg_snapshot_xmax(pg_current_snapshot())::text AS hi',
+                )
+        except Exception:  # noqa: BLE001 - a server without the snapshot functions (before 13): ids are then read as they always were
+            logger.warning("events: the transaction horizon is unavailable; out-of-order commits cannot be detected", exc_info=True)
+            return None
+        return int(row["lo"]), int(row["hi"])
+
     async def max_id(self) -> int:
         async with self._pool.acquire() as conn:
             value = await conn.fetchval(
@@ -1822,6 +1873,30 @@ class PostgresEventStore(EventStore):
                 'ON CONFLICT (subscriber_id) DO UPDATE SET '
                 'cursor = excluded.cursor, updated_at = excluded.updated_at',
                 subscriber_id, event_id,
+            )
+
+    async def get_cursors(self, subscriber_ids: list[str]) -> dict[str, int]:
+        if not subscriber_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT subscriber_id, cursor FROM {self._qualified_cursors} '
+                'WHERE subscriber_id = ANY($1::text[])',
+                list(subscriber_ids),
+            )
+        return {r["subscriber_id"]: int(r["cursor"]) for r in rows}
+
+    async def set_cursors(self, cursors: dict[str, int]) -> None:
+        if not cursors:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f'INSERT INTO {self._qualified_cursors} '
+                '(subscriber_id, cursor, updated_at) '
+                'SELECT s, c, now() FROM unnest($1::text[], $2::bigint[]) AS t(s, c) '
+                'ON CONFLICT (subscriber_id) DO UPDATE SET '
+                'cursor = excluded.cursor, updated_at = excluded.updated_at',
+                list(cursors), list(cursors.values()),
             )
 
     async def delete_cursor(self, subscriber_id: str) -> None:

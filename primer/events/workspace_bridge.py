@@ -102,14 +102,19 @@ class WorkspaceEventBridge(_BackgroundTask):
 
     async def _scan_once(self) -> None:
         """Reconcile held streams with the opted-in workspace set."""
-        page = await self._sp.get_storage(Workspace).list(
-            OffsetPage(length=200),
-        )
-        wanted: dict[str, WorkspaceEventsConfig] = {
-            row.id: row.events
-            for row in page.items
-            if row.events is not None and row.events.enabled
-        }
+        # Every workspace, paged: reading one page left the opted-in workspaces past it without a stream (and cancelled the live stream of one
+        # that drifted past it as rows were added).
+        storage = self._sp.get_storage(Workspace)
+        wanted: dict[str, WorkspaceEventsConfig] = {}
+        offset = 0
+        while True:
+            page = await storage.list(OffsetPage(offset=offset, length=200))
+            wanted.update(
+                {row.id: row.events for row in page.items if row.events is not None and row.events.enabled}
+            )
+            if len(page.items) < 200:
+                break
+            offset += 200
         for workspace_id in list(self._streams):
             if workspace_id not in wanted:
                 self._streams.pop(workspace_id).cancel()

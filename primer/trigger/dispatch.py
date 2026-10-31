@@ -156,19 +156,21 @@ async def _record_delivery_outcomes(
 async def enabled_subscriptions(storage_provider, trigger_id: str) -> list[Subscription]:
     """Every enabled subscription of ``trigger_id``.
 
-    Pages in batches of 200 (OffsetPage max). Real-world fan-out is small
-    (<10 subs per trigger), but the loop is bounded defensively at 10k to
-    avoid an infinite walk if the storage layer ever misbehaves.
+    The ``enabled`` flag is pushed into the predicate (M9), so disabled rows
+    are never read: the page walk sees only enabled rows and ends when a page
+    comes back short. Real-world fan-out is small (<10 subs per trigger), but
+    the loop is bounded defensively at 10k to avoid an infinite walk if the
+    storage layer ever misbehaves.
     """
     subs_storage = storage_provider.get_storage(Subscription)
-    q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger_id)
+    q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger_id).where_op("enabled", Op.EQ, True)
     enabled: list[Subscription] = []
     offset = 0
     while offset < 10_000:
         subs_page = await subs_storage.find(
             q.build(), OffsetPage(offset=offset, length=200),
         )
-        enabled.extend(s for s in subs_page.items if s.enabled)
+        enabled.extend(subs_page.items)
         if len(subs_page.items) < 200:
             break
         offset += 200

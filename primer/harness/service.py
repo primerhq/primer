@@ -24,7 +24,7 @@ import logging
 from primer.harness.diff import diff_renderings
 from primer.harness.hashes import hash_rendered_payload, hash_template_source
 from primer.harness.template import RenderedFile
-from primer.model.except_ import ConflictError
+from primer.model.except_ import ConflictError, NotFoundError
 from primer.access.service import rewrite_keeping_access
 from primer.model.access import Access
 from primer.model.harness import Harness, HarnessRendering, RenderedEntry
@@ -635,6 +635,42 @@ async def _index_installed_document(
         )
 
 
+async def _delete_installed(storage_provider: Any, entry: RenderedEntry, semantic_search_registry: Any | None) -> None:
+    """Delete one installed row as the REST door does, for a sync that drops it and for uninstall.
+
+    A row already gone is done (KN-3: a retried sync or uninstall meets the rows an earlier attempt removed). A collection's
+    documents (its users' too), their content rows and its vectors go first, through ``purge_collection`` (KN-4); a document's
+    content row and chunks go after it. Any other error raises.
+    """
+    from primer.knowledge.indexing import remove_document_index  # noqa: PLC0415 - knowledge pulls in the vector stack
+    from primer.knowledge.lifecycle import purge_collection  # noqa: PLC0415
+    from primer.model.collection import Collection  # noqa: PLC0415
+
+    storage = _storage_for_kind(storage_provider, entry.kind)
+    if entry.kind == "collection":
+        row = await storage.get(entry.resolved_id)
+        if row is not None:
+            await purge_collection(storage_provider, semantic_search_registry, collection=row)
+    try:
+        await storage.delete(entry.resolved_id)
+    except NotFoundError:
+        pass
+    if entry.kind != "document":
+        return
+    # A document also owns a content-store row keyed by the same stable id: an orphan would trip the content store's
+    # UNIQUE(collection_id, path) on a later reinstall at the same path. No-op if absent.
+    await _delete_document_content(storage_provider=storage_provider, document_id=entry.resolved_id)
+    collection_id = entry.rendered_payload.get("collection_id")
+    collection = await storage_provider.get_storage(Collection).get(collection_id) if collection_id else None
+    if collection is not None and semantic_search_registry is not None:
+        try:
+            await remove_document_index(
+                document_id=entry.resolved_id, collection=collection, semantic_search_registry=semantic_search_registry,
+            )
+        except NotFoundError:
+            pass  # the vector store provider is gone, and its chunks with it
+
+
 # ---------------------------------------------------------------------------
 # apply_install
 # ---------------------------------------------------------------------------
@@ -726,7 +762,7 @@ async def apply_install(
                         existing_harness_id is not None
                         and existing_harness_id != harness.id
                     ):
-                        # Roll back any rows already written in this attempt.
+                        # Roll back any rows already written in this attempt (a document's content row too).
                         for rb_kind, rb_id in reversed(created):
                             try:
                                 await _storage_for_kind(
@@ -734,6 +770,11 @@ async def apply_install(
                                 ).delete(rb_id)
                             except Exception:
                                 pass
+                            if rb_kind == "document":
+                                try:
+                                    await _delete_document_content(storage_provider=storage_provider, document_id=rb_id)
+                                except Exception:
+                                    pass
                         return json.dumps({
                             "code": "apply_id_conflict",
                             "message": (
@@ -852,17 +893,8 @@ async def apply_sync(
 
     # Process deletes first (reverse uninstall order: graph → ... → toolset)
     for entry in _sorted_by_kind(diff.deletes, _UNINSTALL_ORDER):
-        storage = _storage_for_kind(storage_provider, entry.kind)
         try:
-            await storage.delete(entry.resolved_id)
-            # A removed document's body must be deleted too, else the content
-            # row is orphaned (it would later trip the content store's UNIQUE
-            # (collection_id, path) constraint on a re-add at the same path).
-            if entry.kind == "document":
-                await _delete_document_content(
-                    storage_provider=storage_provider,
-                    document_id=entry.resolved_id,
-                )
+            await _delete_installed(storage_provider, entry, semantic_search_registry)
             if entry.kind == "toolset":
                 await _forget_toolset_sign_in(storage_provider, entry.resolved_id)
         except Exception as exc:
@@ -892,13 +924,29 @@ async def apply_sync(
         try:
             # Entity row + (document) content row in ONE transaction so a
             # failure in either rolls both back - no torn write.
-            await _write_entity_with_body(
-                storage_provider=storage_provider,
-                storage=storage,
-                entity=entity,
-                content=doc_content if entry.kind == "document" else None,
-                is_update=False,
-            )
+            try:
+                await _write_entity_with_body(
+                    storage_provider=storage_provider,
+                    storage=storage,
+                    entity=entity,
+                    content=doc_content if entry.kind == "document" else None,
+                    is_update=False,
+                )
+            except ConflictError:
+                # A row of THIS harness holds the id: an earlier sync created it and then failed, so the snapshot it kept
+                # does not list it (KN-3). Apply it as the update it is; a row anyone else holds still fails.
+                existing = await storage.get(entry.resolved_id)
+                if existing is None or getattr(existing, "harness_id", None) != harness.id:
+                    raise
+                if entry.kind == "toolset":
+                    await _forget_sign_in_on_oauth_change(storage_provider, storage, entity)
+                await _write_entity_with_body(
+                    storage_provider=storage_provider,
+                    storage=storage,
+                    entity=entity,
+                    content=doc_content if entry.kind == "document" else None,
+                    is_update=True,
+                )
         except Exception as exc:
             apply_errors.append(
                 {"kind": entry.kind, "id": entry.resolved_id, "error": str(exc)}
@@ -1001,11 +1049,13 @@ async def apply_uninstall(
     storage_provider: Any,
     harness: Harness,
     cascade: bool = True,
+    semantic_search_registry: Any | None = None,
 ) -> None:
     """Remove the harness. When ``cascade`` is True (default), also delete
     every managed entity in reverse-DAG order (graph → agent → document →
     collection → toolset); when False, delete ONLY the harness row and its
-    rendering, leaving the tracked entities intact.
+    rendering, leaving the tracked entities intact and no longer managed
+    (their ``harness_id`` is cleared, so they are ordinary rows again).
 
     ``cascade`` rides in on the harness row (``harness.uninstall_cascade``,
     chosen at delete time). It defaults to True here so a direct call keeps
@@ -1013,7 +1063,8 @@ async def apply_uninstall(
     delete path defaults it to False so deleting a harness never unexpectedly
     wipes the user's own tracked objects.
 
-    Tolerates "not found" for already-removed entities.
+    Tolerates "not found" for already-removed entities. Any other error stops the uninstall BEFORE the rendering and
+    the harness row are deleted, and raises, so a retry finishes it (KN-5).
     """
     rendering_storage = storage_provider.get_storage(HarnessRendering)
     rendering = await rendering_storage.get(harness.id)
@@ -1027,29 +1078,23 @@ async def apply_uninstall(
 
             for kind in _UNINSTALL_ORDER:
                 for entry in entries_by_kind.get(kind, []):
-                    storage = _storage_for_kind(storage_provider, kind)
-                    try:
-                        await storage.delete(entry.resolved_id)
-                    except Exception:
-                        pass  # tolerate "not found"
+                    await _delete_installed(storage_provider, entry, semantic_search_registry)
                     if kind == "toolset":
                         try:
                             await _forget_toolset_sign_in(storage_provider, entry.resolved_id)
                         except Exception:
                             logger.warning("harness %s: the OAuth sign-in of the uninstalled toolset %s could not be forgotten", harness.id,
                                            entry.resolved_id, exc_info=True)
-                    # Documents also own a content-store row keyed by the same
-                    # stable id; delete it so no orphan body leaks (which would
-                    # trip the content store's UNIQUE(collection_id, path) on a
-                    # later reinstall at the same path). No-op if absent.
-                    if kind == "document":
-                        try:
-                            await _delete_document_content(
-                                storage_provider=storage_provider,
-                                document_id=entry.resolved_id,
-                            )
-                        except Exception:
-                            pass
+        else:
+            # Nothing is left to manage the kept rows, so they become ordinary rows (D12): stamped with a deleted harness
+            # they would answer 409 managed_entity to every edit and delete. Only rows this harness still holds.
+            for entry in rendering.entries:
+                try:
+                    await _storage_for_kind(storage_provider, entry.kind).patch_if(
+                        entry.resolved_id, {"harness_id": None}, where={"harness_id": [harness.id]},
+                    )
+                except NotFoundError:
+                    pass
 
         # Delete the rendering row
         try:

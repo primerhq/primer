@@ -133,6 +133,8 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
                     await ws.aclose()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("aclose on workspace failed: %s", exc)
+                # The handle's aclose only releases it; the runtime connection is its sandbox's (review W20).
+                await close_shielded(ws.sandbox, what=f"workspace {ws.id} runtime client on backend close")
             self._workspaces.clear()
             await self._adapter.aclose()
             self._initialised = False
@@ -408,7 +410,11 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         else:
             sandbox = await self._adapter.get_sandbox(name)
         if sandbox is None:
-            raise NotFoundError(f"workspace {workspace_id!r} not found")
+            # Not handed out (not running, no token, no answer), which does not mean gone: remove the container and its volume
+            # by name, or a same-id create reuses the volume and the old data comes back (review W19).
+            if not await self._adapter.remove_by_name(name, volume):
+                raise NotFoundError(f"workspace {workspace_id!r} not found")
+            return
         # Either way the connection is this destroy's to close, whatever the teardown does: the cached workspace has just
         # left the cache, and ``get_sandbox`` hands out a new sandbox with a connection of its own on every call. ``stop()``
         # and ``remove()`` only reach the container daemon; left open, the client keeps reconnecting to a container that no

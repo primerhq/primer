@@ -89,13 +89,29 @@ class EventBus(ABC):
         ``payload=None`` is shorthand for an empty dict.
         """
 
+    async def publish_local(self, event_key: str, payload: dict[str, Any] | None = None) -> None:
+        """Publish ``payload`` to THIS process's subscribers only (no cross-process delivery).
+
+        For a frame whose only readers are in the publishing process (a token delta shown by this process's tap), where a cross-process publish (the
+        Postgres NOTIFY) is cost with no reader. The default is :meth:`publish`, which reaches this process's subscribers too; a transport that
+        crosses processes overrides it.
+        """
+        await self.publish(event_key, payload)
+
     @abstractmethod
     def subscribe(
         self,
         *,
         on_reconnect: "Callable[[], None] | None" = None,
+        key: str | None = None,
+        prefix: str | None = None,
+        suffix: str | None = None,
+        coalesce: bool = False,
     ) -> "EventSubscription":
-        """Subscribe to ALL events on the bus.
+        """Subscribe to the events on the bus: all of them, or only ``key`` (exact), or only keys starting with ``prefix`` and/or ending with ``suffix``.
+
+        ``coalesce`` keeps only the NEWEST undelivered event (a stop request such as a cancel is never lost behind a backlog). Every subscription's
+        queue is bounded: when a subscriber stops reading, its oldest events are dropped (and counted), never the bus's memory grown.
 
         Returns an :class:`EventSubscription` async-iterator the
         caller iterates with ``async for``. The subscription owns
@@ -144,6 +160,15 @@ class EventSubscription(ABC):
     async def aclose(self) -> None:
         """Release the subscription. Idempotent. After aclose()
         further __anext__ calls raise StopAsyncIteration."""
+
+    async def ready(self, timeout: float | None = None) -> None:
+        """Return once the subscription is actually receiving events.
+
+        ``subscribe()`` is synchronous, so a transport that connects in the background (the Postgres LISTEN) is not listening yet when it returns;
+        a caller that publishes right after subscribing awaits this first. The default is already listening. A transport that cannot be reached
+        within ``timeout`` returns anyway (the subscription keeps trying; callers have their own fallbacks).
+        """
+        return None
 
 
 __all__ = [

@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 from primer.access.acting import acting_as
 from primer.access.person import person_from_ref
 from primer.access.tools import user_may_use_toolset
-from primer.bus.scheduler_tasks import _BackgroundTask
+from primer.bus.scheduler_tasks import _BackgroundTask, _iter_parks
 from primer.common.log import redact_credentials
 from primer.int.coordinator import ROLE_MCP_BRIDGE
 from primer.int.event_bus import EventBus
@@ -223,56 +223,7 @@ async def _find_parked_mcp_task_keys(scheduler) -> list[dict]:
     skipped — they've already been published once; the worker pool
     is responsible for claiming them.
     """
-    from primer.scheduler.in_memory import InMemoryScheduler
-    from primer.scheduler.postgres import PostgresScheduler
-
-    out: list[dict] = []
-
-    if isinstance(scheduler, InMemoryScheduler):
-        async with scheduler._lock:
-            for sess in scheduler._sessions.values():
-                if (
-                    sess.parked_status == "parked"
-                    and sess.parked_event_key is not None
-                    and sess.parked_event_key.startswith("mcp_task:")
-                ):
-                    out.append(_extract_mcp_park(sess))
-        return out
-
-    if isinstance(scheduler, PostgresScheduler):
-        sql = """
-            SELECT data->>'parked_event_key' AS event_key,
-                   data->'parked_state'      AS parked_state,
-                   data->'turn_person'       AS turn_person,
-                   data->'initiated_by'      AS initiated_by
-              FROM sessions
-             WHERE data->>'parked_status' = 'parked'
-               AND data->>'parked_event_key' LIKE 'mcp_task:%'
-             LIMIT 200
-        """
-        async with scheduler._storage.pool.acquire() as conn:
-            rows = await conn.fetch(sql)
-        for row in rows:
-            # asyncpg returns JSONB as a string unless a codec is
-            # registered — parse defensively.
-            raw_blob = row["parked_state"]
-            if isinstance(raw_blob, str):
-                import json as _json
-                raw_blob = _json.loads(raw_blob)
-            blob = raw_blob or {}
-            yielded = blob.get("yielded") or {}
-            meta = yielded.get("resume_metadata") or {}
-            out.append(
-                {
-                    "event_key": row["event_key"],
-                    "toolset_id": meta.get("toolset_id"),
-                    "task_id": meta.get("task_id"),
-                    "person": _run_person(_json_of(row["turn_person"]), _json_of(row["initiated_by"])),
-                }
-            )
-        return out
-
-    return []
+    return [_extract_mcp_park(sess) async for sess in _iter_parks(scheduler, "mcp_task:")]
 
 
 def _extract_mcp_park(sess) -> dict:
