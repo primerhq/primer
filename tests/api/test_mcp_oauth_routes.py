@@ -3,13 +3,14 @@ from __future__ import annotations
 import pytest
 
 from primer.api.registries.provider_registry import _build_default_toolset_factory
+from primer.access.person import Person
 from primer.common.secret_box import SecretBox
 from primer.model.access import Access
 from primer.model.provider import Toolset
 from primer.toolset.oauth.service import ToolsetOAuthService
 from tests._support.mock_oauth_mcp_fixtures import mock_oauth_mcp  # noqa: F401
 from tests.api.test_require_user_admin import _login, _seed
-from tests.toolset.oauth._service_helpers import authorize, connect, make_toolset
+from tests.toolset.oauth._service_helpers import authorize, connect, make_toolset, target_of
 
 
 CONNECT_ADMIN_REASON = (
@@ -288,14 +289,19 @@ async def test_disconnect_is_admin_only(raw_client, oauth_app, mock_oauth_mcp) -
 
 
 async def test_disconnect_deletes_the_tokens(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    """The admin's Disconnect ends the admin's own browser sign-in (access-control P5 Task 2); the shared row of another sign-in is not theirs."""
     toolset = make_toolset(mock_oauth_mcp.mcp_url, oauth={})
     await _store(oauth_app, toolset)
+    admin = Person("u-admin", "admin")
+    await connect(oauth_app.state.mcp_oauth, toolset, person=admin)
     await connect(oauth_app.state.mcp_oauth, toolset)
     await _login_as(raw_client, oauth_app, "admin")
     response = await raw_client.post("/v1/toolsets/kb/oauth/disconnect")
     assert response.status_code == 200, response.text
     assert response.json()["state"] == "needs_sign_in"
-    assert await oauth_app.state.mcp_oauth.store.get_tokens("kb") is None
+    store = oauth_app.state.mcp_oauth.store
+    assert await store.get_tokens(target_of(toolset, admin).key, toolset_id="kb", user_id="u-admin") is None
+    assert await store.get_tokens("kb") is not None
 
 
 async def test_deleting_a_toolset_forgets_its_sign_in(raw_client, oauth_app, mock_oauth_mcp) -> None:
@@ -317,7 +323,7 @@ async def test_a_listing_that_needs_sign_in_is_409(raw_client, oauth_app, mock_o
     assert response.status_code == 409, response.text
     body = response.json()
     assert body["type"] == "/errors/mcp-sign-in-required"
-    assert body["detail"] == "the MCP server kb needs an operator to reconnect it"
+    assert body["detail"] == "the MCP server kb needs the person this run acts for to sign in (Toolsets > kb > Connect in the console)"
     assert body["extensions"]["toolset_id"] == "kb"
 
 
@@ -331,7 +337,31 @@ async def test_the_catalogue_carries_the_auth_state(raw_client, oauth_app, mock_
     entry = next(item for item in response.json()["items"] if item["id"] == "kb")
     assert entry["auth"]["state"] == "needs_sign_in"
     assert entry["available"] is False
-    assert entry["unavailable_reason"] == "the MCP server kb needs an operator to reconnect it"
+    assert entry["unavailable_reason"] == "the MCP server kb needs the person this run acts for to sign in (Toolsets > kb > Connect in the console)"
+
+
+async def test_a_rest_listing_sends_the_signed_in_users_token(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    """The auth middleware makes the signed-in user the acting person (access-control P5 Task 1), so a REST listing of a browser-OAuth toolset
+    sends that user's own token, never the admin's that is stored beside it."""
+    ts = make_toolset(mock_oauth_mcp.mcp_url, oauth={})
+    ts.access = Access(grants={"u-user": "read"})
+    await _store(oauth_app, ts)
+    service = oauth_app.state.mcp_oauth
+    user, admin = Person("u-user", "user"), Person("u-admin", "admin")
+    await connect(service, ts, person=admin)
+    await connect(service, ts, person=user)
+    row = await service.store.get_tokens(target_of(ts, user).key, toolset_id="kb", user_id="u-user")
+    mock_oauth_mcp.state.seen_tokens.clear()
+    await _login_as(raw_client, oauth_app, "user")
+
+    listed = await raw_client.get("/v1/toolsets/kb/tools")
+    catalogue = await raw_client.get("/v1/tools")
+
+    assert listed.status_code == 200, listed.text
+    assert catalogue.status_code == 200, catalogue.text
+    entry = next(item for item in catalogue.json()["items"] if item["id"] == "kb")
+    assert entry["available"] is True and entry["auth"]["state"] == "connected"
+    assert set(mock_oauth_mcp.state.seen_tokens) == {service.store.unseal(row.access_token_enc)}
 
 
 async def test_the_post_callback_is_gone(raw_client, oauth_app) -> None:

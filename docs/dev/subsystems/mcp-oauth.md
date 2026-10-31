@@ -3,37 +3,52 @@
 ## 1. Purpose
 
 MCP OAuth lets an HTTP or SSE MCP toolset authenticate to its upstream server.
-Primer keeps one shared sign-in per toolset. Every agent and API caller that uses
-the toolset acts through that same upstream identity, so only an admin can
-connect, reconnect, or disconnect it. The provider and agent integration is
-described in [provider-pattern](../architecture/provider-pattern.md) and
-[agents](agents.md).
+A browser (`authorization_code`) sign-in belongs to one person: its tokens are
+keyed by (toolset, user), and a call or a listing sends only the token of the
+person it acts for, never another person's (access-control spec 6.5). A
+client-credentials sign-in is one shared row per toolset, used by every caller,
+and so is any sign-in of the system person of an auth-disabled install. The
+sign-in routes still require the admin role; they act on the caller's own
+sign-in. The provider and agent integration is described in
+[provider-pattern](../architecture/provider-pattern.md) and [agents](agents.md);
+the person rules in [access-control](../architecture/access-control.md).
 
 ## 2. Conceptual model
 
 The toolset row describes how to authenticate. A browser grant uses
 `authorization_code`; a machine-to-machine grant uses `client_credentials`.
 The sign-in state is separate from the toolset row and is shared by every API
-and worker process. Its public status has four values:
+and worker process. Its public status, read for one person (the shared row for
+client credentials), has four values:
 
-- `connected`: a usable shared token exists.
-- `needs_sign_in`: no usable token exists and an admin must connect again.
+- `connected`: a usable token exists for that person (or the shared one).
+- `needs_sign_in`: no usable token exists and that person (an operator, for
+  client credentials) must connect again.
 - `error`: the last OAuth operation failed and the reason is safe to show.
 - `not_applicable`: the toolset does not use OAuth.
 
-A caller identity never selects an OAuth token. The `principal` passed through a
-toolset provider remains dispatch context only.
+The person of a call is `person_for_tool(ctx)`: the run's `initiated_by` when the
+call carries a `ToolContext`, else the acting person of the request or listing. A
+call that acts for nobody (an unattributed run, a graph ToolCall node's
+unattributed fallback, a background listing) gets no browser token: it answers
+sign-in required and never falls back to another row. The `principal` string
+passed through a toolset provider remains dispatch context only and never selects
+a token.
 
 ## 3. Architecture patterns implemented
 
 The subsystem follows the [provider pattern](../architecture/provider-pattern.md):
-`McpToolsetProvider` asks one `ToolsetOAuthService` for the shared token and
-`McpBearerAuth` attaches it to upstream requests. It uses the
+`McpToolsetProvider` (cached per toolset and shared by every caller) builds an
+`OAuthTarget` for the toolset and the call's person on every dispatch, asks one
+`ToolsetOAuthService` for that target's token, and `McpBearerAuth` attaches it to
+upstream requests. It uses the
 [storage](../architecture/storage.md) abstraction for tokens, dynamically
 registered clients, pending browser grants, and refresh leases. The
 [REST API](../architecture/rest-api.md) exposes RFC 7807 errors and role-gated
 routes. Cross-process refresh uses a storage lease plus compare-and-set writes so
-one pod refreshes while its peers wait for the winning token row.
+one pod refreshes while its peers wait for the winning token row. Lease, fence
+and the in-process lock are per token row, so two people refreshing the same
+toolset never wait on or write each other's row.
 
 ## 4. Code layout
 
@@ -56,30 +71,42 @@ one pod refreshes while its peers wait for the winning token row.
   sign-in-required error.
 - `primer/storage/migrations/m017_orphan_mcp_oauth_rows.py` removes the sign-ins
   that toolsets deleted before #852 left behind.
+- `primer/storage/migrations/m027_mcp_oauth_per_user.py` turns the shared browser
+  token sets of an upgraded install into per-person ones.
 
 ## 5. Data model
 
-`McpOAuthTokenSet` is keyed by toolset id and stores encrypted access and refresh
-tokens plus expiry and scope metadata. `McpOAuthClient` stores dynamic client
+`McpOAuthTokenSet` stores encrypted access and refresh tokens plus expiry and scope
+metadata. A person's browser sign-in is stored under
+`token_key(toolset_id, user_id)` (`"u-"` and the SHA-256 of the two ids joined by a
+NUL, so no pair collides with another or with a bare toolset id); the shared row
+(client credentials, the system person) under the bare toolset id. Every row names
+its `toolset_id` and `user_id` (`None` for the shared row), and
+`McpOAuthStore.get_tokens` returns nothing for a row whose fields name another
+pair. `connected_by` is the user id of the person who connected it (a row from
+before per-person sign-ins holds a username). `McpOAuthClient` stores dynamic client
 registration metadata; only a client secret issued by dynamic registration is
 encrypted in this row. A static client secret typed into the toolset configuration
 stays in the toolset row and follows its existing masking and origin-binding rules.
 `McpOAuthPendingSignIn` is keyed by a hash of the browser state value and stores an
-encrypted PKCE verifier until the callback consumes it. The public
+encrypted PKCE verifier until the callback consumes it, and the `user_id` of the
+person whose row the callback writes. The registered client stays per toolset: it
+is primer's registration, not a person's. The public
 `ToolsetAuthStatus` never includes a token or client secret.
 
 ## 6. Lifecycle
 
-For a browser grant, an admin starts sign-in, Primer discovers the upstream
-metadata, creates or reuses a client, records one short-lived state and PKCE
-verifier, and returns the authorization URL. `PRIMER_PUBLIC_URL` supplies the
+For a browser grant, a person starts their own sign-in (a browser sign-in for
+nobody is refused), Primer discovers the upstream metadata, creates or reuses the
+toolset's client, records one short-lived state and PKCE verifier naming that
+person, and returns the authorization URL. `PRIMER_PUBLIC_URL` supplies the
 stable callback origin in deployments where request-derived URLs are not safe.
 The start answer also sets the `primer_mcp_oauth` cookie: a fresh nonce,
 HttpOnly, `SameSite=Lax`, scoped to the callback path, living as long as the
 pending sign-in (600 s), and `Secure` when the callback is https. The pending row
 keeps only the nonce's SHA-256. The public callback takes the state back only with
-that cookie, then exchanges the code, stores the shared token, clears the cookie
-and returns to the console. A callback without the cookie, or with another
+that cookie, then exchanges the code, stores the token as the sign-in of the person
+the pending row names, clears the cookie and returns to the console. A callback without the cookie, or with another
 browser's, is `invalid_state` and does not spend the sign-in, so an authorize URL
 that leaks (a browser history, a shared link, a provider-side log) and is
 completed with another account at the provider connects nothing (audit G4-01). A
@@ -94,8 +121,8 @@ uses: with `PRIMER_PUBLIC_URL` set, open the console at that URL, or the cookie
 is set for one host and the callback lands on another.
 
 For client credentials, an admin starts sign-in and Primer obtains the shared token
-immediately. During normal MCP traffic, `McpBearerAuth` sends that token on every
-request. A 401 triggers at most one refresh and one retry. When the server
+immediately. During normal MCP traffic, `McpBearerAuth` sends the call's token (its
+person's, or the shared one) on every request. A 401 triggers at most one refresh and one retry. When the server
 rejects the refreshed token too, a browser sign-in is signed out with the reason
 `The MCP server rejected the access token.` (`ToolsetOAuthService.sign_out_rejected`,
 fenced on the version that holds that token, so a reconnect or a newer token
@@ -106,11 +133,13 @@ refresh follows too): its row is marked `error` with that reason and only the
 access token is dropped, the call fails as a temporary provider error, and the
 next call exchanges the credentials again. Refresh is coordinated
 under a lease across pods, and a compare-and-set write prevents a late refresher
-from replacing newer credentials. Disconnect first ends the toolset's pending
-sign-ins (a Reconnect left open on the provider's page would otherwise connect the
-toolset again when completed), attempts revocation and then removes the local
-sign-in. Every path that deletes a toolset forgets its sign-in (its
-tokens, its registered client and its pending sign-ins): the REST delete and the
+from replacing newer credentials. Disconnect ends the caller's own sign-in (the
+shared row for client credentials) and leaves every other person's alone: it first
+ends that person's pending sign-ins (a Reconnect left open on the provider's page
+would otherwise connect them again when completed), attempts revocation and then
+removes their token row. Every path that deletes a toolset forgets all its
+sign-ins (every person's tokens and the shared ones, its registered client and its
+pending sign-ins): the REST delete and the
 system `delete_toolset` tool through `ToolsetOAuthService.forget` (the tool forgets
 before it deletes the row, and a forget that fails answers `storage-error` and
 leaves the toolset in place), and a harness
@@ -123,14 +152,28 @@ deletes, on an upgraded install, every token row, registered client and pending
 sign-in whose toolset no longer exists. It never touches a row whose toolset
 exists (read through its own frozen view, so a stored toolset of an older shape
 still counts) or a pending sign-in that names no toolset, and a second run
-deletes nothing more.
+deletes nothing more. The keyless `forget_user_sign_ins(storage_provider, user_id)`
+removes one person's token rows and pending sign-ins on every toolset (the shared
+rows and registered clients stay), for removing a user.
+
+Migration 27 (`primer/storage/migrations/m027_mcp_oauth_per_user.py`) makes an
+upgraded install's sign-ins per person. A browser token set stored under the bare
+toolset id moves, with its sealed tokens as stored, to the user its `connected_by`
+names (by username, else by id), else to the first admin (the oldest admin); with
+no users at all (the auth-disabled shape) it stays under the bare id. Not the
+toolset's owner: the token is an upstream account, and handing it to someone who
+never held it would be an escalation through a credential. Client-credentials rows
+stay the shared row. Every token row is stamped with `toolset_id` and `user_id`,
+every pending sign-in is dropped (ten-minute TTL), registered clients are left
+alone, every row is read before any is written, and a second run changes nothing.
+Every other user's runs then ask that user to sign in.
 
 Changing an OAuth toolset's URL or any OAuth setting requires an admin. An accepted
 change signs the toolset out, even when the typed secret makes the change safe from
 the separate masked-secret repoint guard. An unchanged save and a refused save keep
 the existing sign-in. Every update path applies the one predicate,
 `toolset_checks.oauth_settings_changed`, against the stored row and forgets the
-sign-in before it writes the row: the REST update and the system `update_toolset`
+sign-in, every person's, before it writes the row: the REST update and the system `update_toolset`
 tool in their pre-update hooks, and a harness sync for each toolset it changes
 (`primer/harness/service.py::_forget_sign_in_on_oauth_change`, through the same
 keyless `forget_sign_in`; ticket 01a16a36, L4 of the #852 review). A sync's forget
@@ -167,26 +210,31 @@ the rest of the deployment, so API and worker pods observe one shared state.
 
 The REST surface is:
 
-- `POST /v1/toolsets/{id}/oauth/start`, admin only, starts or restarts sign-in.
+- `POST /v1/toolsets/{id}/oauth/start`, admin only, starts or restarts the
+  caller's own browser sign-in, or connects the shared client-credentials one.
 - `GET /v1/toolsets/{id}/oauth/callback`, public, consumes an authorization-code
   callback without requiring the browser to hold a Primer session; it requires the
   `primer_mcp_oauth` cookie the start answer set in the same browser.
-- `GET /v1/toolsets/{id}/oauth/status`, user tier, returns
+- `GET /v1/toolsets/{id}/oauth/status`, user tier, returns the caller's
   `ToolsetAuthStatus`.
-- `POST /v1/toolsets/{id}/oauth/disconnect`, admin only, ends the pending
-  sign-ins, revokes when possible and deletes the stored sign-in.
+- `POST /v1/toolsets/{id}/oauth/disconnect`, admin only, ends the caller's
+  pending sign-ins, revokes when possible and deletes the caller's sign-in (the
+  shared one for client credentials).
 
 The callback returns a 303 to the console for a browser request whose `Accept`
 header includes `text/html`; other clients receive JSON or an RFC 7807 problem.
 `system::get_toolset_auth_status` is a user-tier, read-only system tool that returns
-the same status without credentials. A direct MCP call that needs a sign-in maps to
+the run's person's status without credentials. A direct MCP call that needs a sign-in maps to
 409 `/errors/mcp-sign-in-required`.
 
 ## 9. Internal contracts
 
 The provider checks for a usable token before opening the upstream transport. If an
-MCP call cannot authenticate, its tool error says exactly
-`the MCP server <id> needs an operator to reconnect it`. A remote toolset that cannot
+MCP call cannot authenticate, its tool error says exactly, for a browser sign-in,
+`the MCP server <id> needs the person this run acts for to sign in (Toolsets > <id> > Connect in the console)`
+(`McpSignInRequiredError(per_user=True)`), and for client credentials
+`the MCP server <id> needs an operator to reconnect it`. The error is in the
+transcript of whoever sent the turn. A remote toolset that cannot
 list is omitted from the current turn. The model receives the heading
 `Toolsets unavailable this turn, so their tools are not offered:` followed by a
 bullet naming the toolset and its state in a fixed word (`needs sign-in`,
@@ -243,7 +291,11 @@ does not apply `HTTP(S)_PROXY` to these calls.
 ## 10. Testing patterns
 
 `tests/toolset/oauth/` covers discovery, client exchanges, encryption, leases,
-refresh races, bearer retry, provider preflight, and retired-library imports.
+refresh races, bearer retry, provider preflight, and retired-library imports;
+`tests/toolset/oauth/test_per_user_tokens.py` covers per-person token sets (whose
+token a call or listing sends, no person no token, the shared rows, per-row lease
+and lock, forget rules), and `tests/storage/test_m027_mcp_oauth_per_user.py` the
+migration.
 `tests/api/test_mcp_oauth_routes.py` covers route tiers, browser and JSON callbacks,
 state failures, status, and disconnect. The mock server in
 `tests/_support/mock_oauth_mcp_fixtures.py` drives the real HTTP flow without an
@@ -252,10 +304,13 @@ tests under `tests/api/` and `tests/toolset/`.
 
 ## 11. Historical decisions
 
-- **The sign-in is shared by toolset, not selected per user.** The previous
+- **The sign-in was shared by toolset, then became per person.** The previous
   in-memory, per-user OAuth library was never wired end to end and could not share
-  state across API and worker pods. Persisting one operator-owned identity makes
-  the access model explicit and restart-safe.
+  state across API and worker pods, so a persisted, operator-owned identity per
+  toolset replaced it. Access control (Phase 5) keys browser sign-ins by
+  (toolset, user) in the same persisted store, because a shared upstream account
+  let every user of a toolset act as whoever connected it; client credentials,
+  which name no person, stay shared.
 - **Browser callbacks live on the Primer API.** The public callback can complete an
   upstream redirect without a Primer session, and the browser returns to the
   console. The state record alone was first taken as the binding ("public like

@@ -447,13 +447,13 @@ async def test_a_steer_with_no_known_caller_is_refused_and_sends_nothing():
 
 
 async def test_session_steered_on_the_mcp_endpoint_is_attributed_to_the_requests_actor():
-    """No ToolContext is the MCP endpoint: the access check asks the token's user (access-control P2 T6), and the event still
-    names the request's actor."""
+    """No ToolContext is the MCP endpoint: the access check asks the token's user (access-control P2 T6), and the event names that
+    user, never the token (access-control P5 Task 1)."""
     actor = Principal(type="api_token", id="tok-1", display="ci", role="user", source="internal", user_id="u1")
     world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", turn_no=1)
     await _steer(world, "ses-b", actor=actor)
-    assert [e.actor for e in await _steered_events(world)] == ["api_token:tok-1"]
+    assert [e.actor for e in await _steered_events(world)] == ["user:u1"]
 
 
 # ---- the tool's declaration -------------------------------------------------------------------------------------------------------

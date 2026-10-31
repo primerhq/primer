@@ -46,7 +46,7 @@ class Event(BaseModel):
     occurred_at: datetime
     actor: str = Field(
         default="system",
-        description="Principal id that performed the action, or 'system'.",
+        description="The user behind the action (`user:<id>`), or `system`.",
     )
     entity_kind: str | None = None
     entity_id: str | None = None

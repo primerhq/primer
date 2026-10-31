@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from primer.access.acting import acting_person, actor_label
 from primer.events.catalog import is_known_event_type
 
 if TYPE_CHECKING:
@@ -44,7 +45,7 @@ class EventRecorder:
         event_type: str,
         *,
         payload: dict[str, Any] | None = None,
-        actor: str = "system",
+        actor: str | None = None,
         entity_kind: str | None = None,
         entity_id: str | None = None,
         workspace_id: str | None = None,
@@ -54,7 +55,10 @@ class EventRecorder:
     ) -> int | None:
         """Append one action event; return its id (None on swallowed
         failure). Unknown ``event_type`` raises ValueError always - a
-        typo is a programming error, not an operational hiccup."""
+        typo is a programming error, not an operational hiccup.
+
+        ``actor=None`` names the acting person (``user:<id>``, else
+        ``system``: access-control P5 Task 1); an explicit actor wins."""
         if not is_known_event_type(event_type):
             raise ValueError(
                 f"unknown event type {event_type!r}: add it to "
@@ -67,7 +71,7 @@ class EventRecorder:
         try:
             event_id = await self._store.append(
                 event_type=event_type,
-                actor=actor,
+                actor=actor if actor is not None else actor_label(acting_person()),
                 payload=payload,
                 entity_kind=entity_kind,
                 entity_id=entity_id,
@@ -110,8 +114,13 @@ def actor_of(ref: Any) -> str:
     """Compact actor string for the event envelope.
 
     Accepts a PrincipalRef-shaped object (``type`` + ``id``) or None;
-    anything else degrades to "system" rather than raising.
+    anything else degrades to "system" rather than raising. A ref that
+    carries a ``user_id`` names that user (``user:<id>``): for a bearer
+    token its owner, never the token (access-control P5 Task 1).
     """
+    user_id = getattr(ref, "user_id", None)
+    if isinstance(user_id, str) and user_id:
+        return f"user:{user_id}"
     ref_type = getattr(ref, "type", None)
     ref_id = getattr(ref, "id", None)
     if ref_type and ref_id:

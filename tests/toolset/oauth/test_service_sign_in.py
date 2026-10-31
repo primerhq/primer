@@ -38,6 +38,7 @@ from primer.toolset.oauth.service import (
 from primer.toolset.oauth.store import McpOAuthStore, pending_key
 from tests._support.mock_oauth_mcp_fixtures import mock_oauth_mcp  # noqa: F401 - the fixture
 from tests.toolset.oauth._service_helpers import (
+    SYSTEM,
     BINDING,
     KEY,
     NOW,
@@ -100,9 +101,9 @@ def test_the_target_of_a_toolset(mock_oauth_mcp):
     assert (target.toolset_id, target.server_url, target.oauth.scopes) == ("kb", mock_oauth_mcp.mcp_url, ["a"])
     assert target.headers == {"X-Tenant": "t1"}, "header values are unwrapped and a configured Authorization is never sent"
     assert "t1" not in repr(target) and "configured" not in repr(target)
-    assert OAuthTarget.from_toolset(make_toolset(mock_oauth_mcp.mcp_url, oauth=None, headers={"A": "b"})) is None
-    assert OAuthTarget.from_toolset(Toolset(id="kb", provider="internal")) is None
-    assert OAuthTarget.from_toolset(Toolset(id="kb", provider="mcp", config={"transport": "stdio", "config": {"command": ["x"]}})) is None
+    assert OAuthTarget.from_toolset(make_toolset(mock_oauth_mcp.mcp_url, oauth=None, headers={"A": "b"}), SYSTEM) is None
+    assert OAuthTarget.from_toolset(Toolset(id="kb", provider="internal"), SYSTEM) is None
+    assert OAuthTarget.from_toolset(Toolset(id="kb", provider="mcp", config={"transport": "stdio", "config": {"command": ["x"]}}), SYSTEM) is None
 
 
 def test_the_fingerprint_covers_the_sign_in_settings_and_not_the_secret(mock_oauth_mcp):
@@ -453,7 +454,7 @@ async def test_disconnect_revokes_and_deletes(svc, kb, store, mock_oauth_mcp):
     await connect(svc, kb)
     row = await store.get_tokens("kb")
     refresh, access = store.unseal(row.refresh_token_enc), store.unseal(row.access_token_enc)
-    status = await svc.disconnect(kb)
+    status = await svc.disconnect(kb, SYSTEM)
     assert mock_oauth_mcp.state.revocations == [refresh]
     assert await store.get_tokens("kb") is None and (status.state, status.reason, status.connected_at) == ("needs_sign_in", NOT_CONNECTED, None)
     assert mcp_answers(mock_oauth_mcp.mcp_url, access) == 401, "revoking the refresh token ended its access token too"
@@ -463,7 +464,7 @@ async def test_disconnect_revokes_the_access_token_when_there_is_no_refresh_toke
     toolset = _cc_toolset(mock_oauth_mcp)
     await svc.connect_client_credentials(target_of(toolset), connected_by="admin")
     access = store.unseal((await store.get_tokens("kb")).access_token_enc)
-    await svc.disconnect(toolset)
+    await svc.disconnect(toolset, SYSTEM)
     assert mock_oauth_mcp.state.revocations == [access] and await store.get_tokens("kb") is None
 
 
@@ -473,7 +474,7 @@ async def test_disconnect_without_a_revocation_endpoint_still_deletes(svc, kb, s
     await connect(svc, kb)
     row = await store.get_tokens("kb")
     await store.patch_tokens("kb", {"revocation_endpoint": None}, where={"version": [raw_generation(row, "version")]})
-    await svc.disconnect(kb)
+    await svc.disconnect(kb, SYSTEM)
     assert mock_oauth_mcp.state.revocations == [] and await store.get_tokens("kb") is None
 
 
@@ -483,12 +484,12 @@ async def test_disconnect_deletes_whatever_the_revocation_answers(svc, kb, store
     await connect(svc, kb)
     row = await store.get_tokens("kb")
     await store.patch_tokens("kb", {"revocation_endpoint": "http://127.0.0.1:9/revoke"}, where={"version": [raw_generation(row, "version")]})
-    await svc.disconnect(kb)
+    await svc.disconnect(kb, SYSTEM)
     assert await store.get_tokens("kb") is None
 
 
 async def test_disconnect_of_a_toolset_that_is_not_connected_is_a_no_op(svc, kb, mock_oauth_mcp):
-    status = await svc.disconnect(kb)
+    status = await svc.disconnect(kb, SYSTEM)
     assert status.state == "needs_sign_in" and mock_oauth_mcp.state.revocations == []
 
 
@@ -499,7 +500,7 @@ async def test_a_sign_in_started_before_a_disconnect_cannot_reconnect_after_it(s
     assert (await connect(svc, kb)).state == "connected"
     start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
-    assert (await svc.disconnect(kb)).state == "needs_sign_in"
+    assert (await svc.disconnect(kb, SYSTEM)).state == "needs_sign_in"
     pending = fake_storage_provider.get_storage(McpOAuthPendingSignIn)
     assert await pending.get(pending_key(back["state"])) is None, "the pending sign-in outlived the disconnect"
     exchanges = len(mock_oauth_mcp.state.token_requests)
@@ -512,7 +513,7 @@ async def test_a_sign_in_started_before_a_disconnect_cannot_reconnect_after_it(s
 async def test_disconnect_keeps_the_pending_sign_ins_of_other_toolsets(svc, kb, store, mock_oauth_mcp):
     other = make_toolset(mock_oauth_mcp.mcp_url, oauth={}, toolset_id="other")
     await svc.start_sign_in(target_of(other), redirect_uri=REDIRECT.replace("/kb/", "/other/"), started_by="admin", browser_binding=BINDING)
-    await svc.disconnect(kb)
+    await svc.disconnect(kb, SYSTEM)
     assert await store.purge_pending("other", now=NOW + timedelta(days=1)) == 1
 
 
@@ -566,7 +567,7 @@ async def test_a_registration_that_issues_a_secret_is_sealed_and_used(svc, kb, t
     assert all("client_secret" not in request for request in mock_oauth_mcp.state.token_requests), "Basic, not the form"
 
     refresh = store.unseal((await store.get_tokens("kb")).refresh_token_enc)
-    await svc.disconnect(kb)
+    await svc.disconnect(kb, SYSTEM)
     assert mock_oauth_mcp.state.revocations == [refresh], "the revocation authenticated with the registered secret"
 
 
@@ -578,7 +579,7 @@ async def test_status_rules(case, svc, store, fake_storage_provider):
     url = "https://m.example/mcp"
     if case in ("none", "header"):
         toolset = make_toolset(url, oauth=None, headers={"Authorization": "Bearer x"} if case == "header" else None)
-        status = await svc.status(toolset)
+        status = await svc.status(toolset, SYSTEM)
         assert (status.mode, status.state, status.reason) == (case, "not_applicable", None)
         return
     toolset = make_toolset(url, oauth={})
@@ -595,7 +596,7 @@ async def test_status_rules(case, svc, store, fake_storage_provider):
     other = McpOAuthStore(fake_storage_provider, SecretBox.from_key_material(OTHER_KEY))
     if case != "no_row":
         await (other if case == "key" else store).replace_tokens(rows[case]())
-    status = await svc.status(toolset, redirect_uri=REDIRECT)
+    status = await svc.status(toolset, SYSTEM, redirect_uri=REDIRECT)
     expected = {
         "no_row": ("needs_sign_in", NOT_CONNECTED),
         "fingerprint": ("needs_sign_in", SETTINGS_CHANGED),
@@ -617,7 +618,7 @@ async def test_status_rules(case, svc, store, fake_storage_provider):
 async def test_the_status_never_carries_a_token(svc, kb, store):
     await connect(svc, kb)
     row = await store.get_tokens("kb")
-    served = (await svc.status(kb)).model_dump_json()
+    served = (await svc.status(kb, SYSTEM)).model_dump_json()
     assert store.unseal(row.access_token_enc) not in served and store.unseal(row.refresh_token_enc) not in served
 
 
@@ -661,7 +662,7 @@ async def test_no_token_code_or_verifier_reaches_the_log(caplog, svc, kb, store,
                       toolset_id="cc")
     await svc.connect_client_credentials(target_of(cc), connected_by="admin")
     secrets_seen += ["cc-secret", store.unseal((await store.get_tokens("cc")).access_token_enc)]
-    await svc.disconnect(kb)
+    await svc.disconnect(kb, SYSTEM)
 
     assert any(record.name.startswith("primer.toolset.oauth") for record in caplog.records), "the service logged nothing, so the check proves nothing"
     assert any(record.name.startswith("httpcore") for record in caplog.records), "the traces of the service's own HTTP calls are in the checked log"

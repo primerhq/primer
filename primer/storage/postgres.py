@@ -70,6 +70,7 @@ from primer.int.document_content import (
     ContentRow,
     DocumentContentStore,
 )
+from primer.access.acting import acting_person, actor_label
 from primer.events.registry import kind_for_model
 from primer.int.event_store import EventStore
 from primer.int.storage import Storage
@@ -707,13 +708,14 @@ async def _append_crud_event(
     """Append one CRUD event on ``conn`` inside the caller's transaction.
 
     The payload is the row's own JSON dump, so the event carries
-    exactly what was stored.
+    exactly what was stored. The actor is the acting person
+    (``user:<id>``), else ``system`` (access-control P5 Task 1).
     """
     await conn.execute(
         f'INSERT INTO "{schema}".events '
         "(event_type, actor, entity_kind, entity_id, payload) "
-        "VALUES ($1, 'system', $2, $3, $4::jsonb)",
-        event_type, entity_kind, entity_id, payload_json,
+        "VALUES ($1, $2, $3, $4, $5::jsonb)",
+        event_type, actor_label(acting_person()), entity_kind, entity_id, payload_json,
     )
 
 

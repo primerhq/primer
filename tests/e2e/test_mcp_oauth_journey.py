@@ -162,7 +162,7 @@ async def test_a_lost_sign_in_is_a_tool_error_and_the_session_completes(
         )
         expected = (
             f"toolset {toolset_id} is unavailable this turn: "
-            f"the MCP server {toolset_id} needs an operator to reconnect it"
+            f"the MCP server {toolset_id} needs the person this run acts for to sign in (Toolsets > {toolset_id} > Connect in the console)"
         )
 
         assert final.get("session_state") == "parked", final

@@ -38,6 +38,8 @@ from http.cookies import SimpleCookie
 
 from starlette.datastructures import State
 
+from primer.access.acting import acting_as
+from primer.access.person import Person
 from primer.auth.api_tokens import PLAINTEXT_PREFIX, hash_token
 from primer.auth.tokens import verify_session
 from primer.model.principal import Principal
@@ -118,7 +120,9 @@ class AuthMiddleware:
                 # treat it as admin, never as a user row.
                 user_id=None,
             )
-            await self.app(scope, receive, send)
+            # The acting person (access-control P5 Task 1): what the OAuth token pick and the event writers read.
+            with acting_as(Person(None, "system")):
+                await self.app(scope, receive, send)
             return
 
         storage_provider = getattr(app_state, "storage_provider", None)
@@ -177,18 +181,22 @@ class AuthMiddleware:
         # shell, a tap or MCP stream) is re-checked against its account at that interval and ended when the account stops being valid
         # (security ticket 01a11b97; see :mod:`primer.api.middleware.revalidate`). A request that finishes sooner never has a watcher.
         interval_s = float(getattr(config.auth, "revalidate_interval_s", 0) or 0)
-        if user is not None and interval_s > 0:
-            from primer.api.middleware.revalidate import AuthSnapshot, run_with_revalidation
-
-            await run_with_revalidation(
-                self.app, scope, receive, send,
-                storage_provider=storage_provider,
-                snapshot=AuthSnapshot.of(user, api_token, session_expires_at),
-                interval_s=interval_s,
-            )
+        if user is None:
+            await self.app(scope, receive, send)        # nobody authenticated: nobody acts
             return
+        # The acting person is the user, for a bearer token its owner, never the token (access-control P5 Task 1).
+        with acting_as(Person(user.id, user.role)):
+            if interval_s > 0:
+                from primer.api.middleware.revalidate import AuthSnapshot, run_with_revalidation
 
-        await self.app(scope, receive, send)
+                await run_with_revalidation(
+                    self.app, scope, receive, send,
+                    storage_provider=storage_provider,
+                    snapshot=AuthSnapshot.of(user, api_token, session_expires_at),
+                    interval_s=interval_s,
+                )
+                return
+            await self.app(scope, receive, send)
 
     async def _try_cookie_auth(self, scope, app_state, config, storage_provider):
         """Existing cookie path. Returns (User, session src, when the cookie's lifetime ends) or (None, None, None)."""

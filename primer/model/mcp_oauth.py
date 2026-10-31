@@ -1,10 +1,15 @@
-"""The stored shapes of an MCP toolset's shared OAuth sign-in (plan 07, Task 5; design 12.5 and 12.6).
+"""The stored shapes of an MCP toolset's OAuth sign-ins (plan 07, Task 5; design 12.5 and 12.6; access-control plan P5 Task 2).
 
-A toolset has ONE sign-in, shared by every agent that uses it, and three kinds of row hold it:
+A browser (``authorization_code``) sign-in belongs to ONE person: its tokens are keyed by (toolset, user), and a call sends only the token of the person
+it acts for. A client-credentials sign-in is one shared row per toolset, and so is the sign-in of the system person of an auth-disabled install. Three
+kinds of row hold them:
 
-* :class:`McpOAuthTokenSet`: the tokens (id = the toolset id), their status and the cross-process refresh lease;
-* :class:`McpOAuthClient`: the client a dynamic registration made at the authorization server (id = the toolset id);
-* :class:`McpOAuthPendingSignIn`: one started browser sign-in, waiting for the provider's redirect (stored under a hash of its ``state`` value).
+* :class:`McpOAuthTokenSet`: the tokens, their status and the cross-process refresh lease. A shared row's id is the toolset id; a person's row is stored
+  under :func:`primer.toolset.oauth.store.token_key` of (toolset, user), and its ``toolset_id`` / ``user_id`` are checked on every read;
+* :class:`McpOAuthClient`: the client a dynamic registration made at the authorization server (id = the toolset id). It is primer's registration, not a
+  person's, so it stays per toolset;
+* :class:`McpOAuthPendingSignIn`: one started browser sign-in, waiting for the provider's redirect (stored under a hash of its ``state`` value). It names
+  the person whose row the callback writes.
 
 Every secret in them is CIPHERTEXT: the ``*_enc`` fields hold what :class:`primer.common.secret_box.SecretBox` sealed, held in a ``SecretStr`` so that a
 serialisation, a log line or a ``repr`` shows a mask. Plaintext exists only in memory, between the store's ``unseal`` and the request it goes into.
@@ -50,8 +55,20 @@ _AUTH_METHOD_DESCRIPTION = (
 
 
 class McpOAuthTokenSet(Identifiable):
-    """A toolset's tokens and the facts needed to use and refresh them. The id is the toolset id."""
+    """One sign-in's tokens and the facts needed to use and refresh them. The id is the toolset id for the shared row, else
+    :func:`~primer.toolset.oauth.store.token_key` of (``toolset_id``, ``user_id``)."""
 
+    toolset_id: str | None = Field(
+        default=None,
+        description="The toolset the tokens are for. A read checks it: a row that names another toolset (or none) is never served.",
+    )
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "The person the tokens were issued to: only that person's calls send them. None for the shared row (client credentials, or the system "
+            "person of an auth-disabled install)."
+        ),
+    )
     grant: OAuthGrant = Field(..., description="How the toolset signed in.")
     access_token_enc: SecretStr | None = Field(
         ...,
@@ -87,7 +104,9 @@ class McpOAuthTokenSet(Identifiable):
     refresh_lease_until: datetime | None = Field(default=None, description="The refresh lease: until when one process may exchange the refresh token. None when free.")
     refresh_lease_owner: str | None = Field(default=None, description="The process holding the refresh lease.")
     connected_at: datetime = Field(..., description="When the toolset was connected.")
-    connected_by: str | None = Field(default=None, description="The admin who connected it. Every agent that uses the toolset acts as this sign-in.")
+    connected_by: str | None = Field(
+        default=None, description="The user id of the person who connected it (a row connected before sign-ins were per person holds a username).",
+    )
     refreshed_at: datetime | None = Field(default=None, description="When the access token was last refreshed.")
 
 
@@ -131,23 +150,34 @@ class McpOAuthPendingSignIn(Identifiable):
             "before the binding existed, which no callback can complete."
         ),
     )
-    started_by: str | None = Field(default=None, description="The admin who started it.")
+    started_by: str | None = Field(default=None, description="The user id of the person who started it.")
+    user_id: str | None = Field(
+        default=None,
+        description="The person the sign-in is for: the callback writes that person's token row. None for the system person of an auth-disabled install.",
+    )
     created_at: datetime = Field(..., description="When it started.")
     expires_at: datetime = Field(..., description="When it stops being valid.")
 
 
 class McpSignInRequiredError(PrimerError):
-    """The MCP toolset has no usable sign-in: it was never connected, its settings changed, the provider refused its refresh token, or the key that sealed its tokens changed.
+    """The MCP toolset has no usable sign-in for this call: it was never connected (for a browser sign-in: by the person the call acts for, or the call
+    acts for nobody), its settings changed, the provider refused its refresh token, or the key that sealed its tokens changed.
 
-    The message is the text a tool answers with, exactly: ``the MCP server <id> needs an operator to reconnect it``. ``reason`` is the longer account (what
-    the toolset's status shows); it is not part of the message. The error carries no ``code`` and no ``status_code``, so ``str()`` is the message; the API maps
-    the class itself to its own problem type.
+    The message is the text a tool answers with, exactly: for a browser sign-in (``per_user``) ``the MCP server <id> needs the person this run acts for
+    to sign in (Toolsets > <id> > Connect in the console)``, for client credentials ``the MCP server <id> needs an operator to reconnect it``. ``reason``
+    is the longer account (what the toolset's status shows); it is not part of the message. The error carries no ``code`` and no ``status_code``, so
+    ``str()`` is the message; the API maps the class itself to its own problem type.
     """
 
-    def __init__(self, toolset_id: str, *, reason: str | None = None) -> None:
-        super().__init__(f"the MCP server {toolset_id} needs an operator to reconnect it")
+    def __init__(self, toolset_id: str, *, reason: str | None = None, per_user: bool = False) -> None:
+        if per_user:
+            message = f"the MCP server {toolset_id} needs the person this run acts for to sign in (Toolsets > {toolset_id} > Connect in the console)"
+        else:
+            message = f"the MCP server {toolset_id} needs an operator to reconnect it"
+        super().__init__(message)
         self.toolset_id = toolset_id
         self.reason = reason
+        self.per_user = per_user
 
     @property
     def problem_extensions(self) -> dict[str, object]:

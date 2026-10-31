@@ -41,7 +41,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from primer.access.person import gate_identity
+from primer.access.acting import acting_as
+from primer.access.person import gate_identity, person_from_ref
 from primer.agent import tool_listing
 from primer.agent.approval import (
     ApprovalContext,
@@ -448,7 +449,14 @@ class ToolExecutionManager:
         list is LEFT OUT instead of failing the turn, and
         :meth:`unavailable_toolsets` says why. Cancelling this call cancels those
         listings and is never absorbed.
+
+        The listing acts as the run's person (``initiated_by``), whoever the calling task inherited (access-control P5 Task 1): an MCP toolset
+        sends that person's OAuth token, and nobody else's.
         """
+        with acting_as(person_from_ref(self._initiated_by)):
+            return await self._list_tools(principal=principal)
+
+    async def _list_tools(self, *, principal: str | None) -> list[Tool]:
         async with self._index_lock:
             if self._catalogue is not None:
                 return list(self._catalogue)
@@ -763,7 +771,14 @@ class ToolExecutionManager:
         If ``bypass_approval`` is True, the approval gate is skipped even
         when a resolver is configured. The worker's resume path sets this
         after the operator has approved the call.
+
+        The call acts as the run's person (``initiated_by``), whoever the calling task inherited (access-control P5 Task 1): its writes are
+        attributed to that person and an MCP toolset sends that person's OAuth token.
         """
+        with acting_as(person_from_ref(self._initiated_by)):
+            return await self._execute(call, principal=principal, bypass_approval=bypass_approval)
+
+    async def _execute(self, call: ToolCallPart, *, principal: str | None, bypass_approval: bool) -> ToolResultPart:
         import time as _time
         _tracer = _tracing.get_tracer("primer.tool")
         _t0 = _time.monotonic()

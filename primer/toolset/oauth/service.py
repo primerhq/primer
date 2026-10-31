@@ -1,32 +1,39 @@
-"""One shared OAuth sign-in per MCP toolset (plan 07, Tasks 7 and 8; design 12.3 to 12.6 and 20 Q2).
+"""MCP toolset OAuth sign-ins, one per person for a browser sign-in (plan 07, Tasks 7 and 8; design 12.3 to 12.6; access-control plan P5 Task 2).
 
-A toolset that signs in with OAuth has ONE sign-in, owned by the toolset and used by every agent and caller of it. :class:`ToolsetOAuthService` (one
-per server process) is the only code that starts, finishes, uses or ends one:
+A browser (``authorization_code``) sign-in belongs to ONE person: its tokens are keyed by (toolset, user) and a call or a listing sends only the token
+of the person it acts for (:func:`primer.access.person.person_for_tool`). A call that acts for nobody (an unattributed run, a background listing) gets
+no browser token: it answers sign-in required and never falls back to another person's row or the shared one. A client-credentials sign-in is one
+shared row per toolset, used by every caller, and so is any sign-in of the system person of an auth-disabled install (today's behaviour there).
+:class:`OAuthTarget` carries the toolset AND the person, and its ``key`` names the row (:func:`primer.toolset.oauth.store.token_key`, the bare
+toolset id for a shared row, ``None`` for a browser sign-in with nobody to act for). :class:`ToolsetOAuthService` (one per server process) is the
+only code that starts, finishes, uses or ends one:
 
 * **Browser sign-in** (``authorization_code``). :meth:`~ToolsetOAuthService.start_sign_in` discovers the authorization server
   (:mod:`primer.toolset.oauth.protocol`), refuses one without PKCE S256, picks the client (the toolset's static client, else its earlier registration
-  when the issuer and redirect URI still match, else a new dynamic registration), stores a pending sign-in (the PKCE verifier sealed, single use, ten
-  minutes) and returns the authorize URL. The pending sign-in is bound to the browser that started it: it keeps the digest of a nonce that browser holds
-  as an HttpOnly cookie, and :meth:`~ToolsetOAuthService.complete_sign_in` takes it back by its ``state`` only with that nonce, then exchanges the code.
-  A callback whose state is unknown, used, expired or another toolset's, or that comes from another browser, ends as ``invalid_state``; one the provider
-  declined as ``access_denied``; one for a toolset whose URL or OAuth settings changed since the start as ``settings_changed``; a refused or failed code
-  exchange as ``exchange_failed``. None of them writes a token.
+  when the issuer and redirect URI still match, else a new dynamic registration; the registration is per toolset, never per person), stores a pending
+  sign-in naming the person (the PKCE verifier sealed, single use, ten minutes) and returns the authorize URL. The pending sign-in is bound to the
+  browser that started it: it keeps the digest of a nonce that browser holds as an HttpOnly cookie, and :meth:`~ToolsetOAuthService.complete_sign_in`
+  takes it back by its ``state`` only with that nonce, exchanges the code and writes the token row of the person the pending sign-in names. A callback
+  whose state is unknown, used, expired or another toolset's, or that comes from another browser, ends as ``invalid_state``; one the provider declined
+  as ``access_denied``; one for a toolset whose URL or OAuth settings changed since the start as ``settings_changed``; a refused or failed code exchange
+  as ``exchange_failed``. None of them writes a token.
 * **Client credentials**. :meth:`~ToolsetOAuthService.connect_client_credentials` exchanges the toolset's client id and secret at once, at the
-  configured token endpoint or the discovered one.
-* **Disconnect** ends the toolset's pending sign-ins, revokes the refresh token (else the access token) where the server advertises RFC 7009
-  revocation, best effort, and deletes the tokens whatever the answer. :meth:`~ToolsetOAuthService.forget` removes everything stored for a toolset (its
-  deletion, a change of its settings).
-* **Status** (:meth:`~ToolsetOAuthService.status`) says ``connected``, ``needs_sign_in`` or ``error`` with the reason and expiry, or ``not_applicable``
-  for a toolset without OAuth. It never carries a token.
+  configured token endpoint or the discovered one, into the shared row.
+* **Disconnect** ends one person's sign-in (the shared row for client credentials): their pending sign-ins, then a revocation of the refresh token
+  (else the access token) where the server advertises RFC 7009 revocation, best effort, and the token row whatever the answer. Other people's sign-ins
+  are left alone. :meth:`~ToolsetOAuthService.forget` removes everything stored for a toolset, every person's sign-in included (its deletion, a change of
+  its settings).
+* **Status** (:meth:`~ToolsetOAuthService.status`) says, for one person, ``connected``, ``needs_sign_in`` or ``error`` with the reason and expiry, or
+  ``not_applicable`` for a toolset without OAuth. It never carries a token.
 * **Using the token** (:meth:`~ToolsetOAuthService.access_token`, :meth:`~ToolsetOAuthService.refresh_after_401`). A token that expires within
-  :data:`REFRESH_SKEW`, or that the MCP server rejected, is refreshed under a LEASE: the process that wins a compare-and-set on the token row's version
-  and lease exchanges the refresh token, and the others wait for its answer (reading the row every :data:`LEASE_POLL_S`, for at most
-  :data:`LEASE_WAIT_S`), so a rotating refresh token is spent once and every process ends with the new one. Every write of the lease holder is fenced
-  by the version it leased and its own lease token, so a reconnect, a disconnect or the takeover of a dead lease is never overwritten. A refused refresh
-  signs the toolset out; a token endpoint that cannot be reached keeps the tokens and marks the state ``error``. The exchange runs to its end even when
-  its caller is cancelled, so a Stop never loses a refresh token the server already rotated. A process whose encryption key cannot open the stored
-  sign-in fails its own call (:data:`KEY_CHANGED`) with an ERROR line and changes nothing: the other processes keep the shared tokens (lead ruling on
-  audit G4-10).
+  :data:`REFRESH_SKEW`, or that the MCP server rejected, is refreshed under a LEASE on its own row: the process that wins a compare-and-set on the row's
+  version and lease exchanges the refresh token, and the others wait for its answer (reading the row every :data:`LEASE_POLL_S`, for at most
+  :data:`LEASE_WAIT_S`), so a rotating refresh token is spent once and every process ends with the new one. Lease, fence and the in-process lock are
+  per row, so two people refreshing the same toolset never wait on or write each other's row. Every write of the lease holder is fenced by the version
+  it leased and its own lease token, so a reconnect, a disconnect or the takeover of a dead lease is never overwritten. A refused refresh signs the row
+  out; a token endpoint that cannot be reached keeps the tokens and marks the state ``error``. The exchange runs to its end even when its caller is
+  cancelled, so a Stop never loses a refresh token the server already rotated. A process whose encryption key cannot open the stored sign-in fails its
+  own call (:data:`KEY_CHANGED`) with an ERROR line and changes nothing: the other processes keep the tokens (lead ruling on audit G4-10).
 
 The tokens are bound to the settings they were obtained for: :func:`config_fingerprint` hashes the URL and the OAuth settings, and a toolset whose
 settings no longer hash to the stored value has no usable sign-in, so a token is never sent to a URL it was not issued for.
@@ -46,7 +53,7 @@ import secrets
 import socket
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, ParamSpec, TypeVar
@@ -55,6 +62,7 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, Field
 
+from primer.access.person import Person
 from primer.common.error_codes import safe_code
 from primer.common.origin import origin_of
 from primer.common.secret_box import SecretBox, SecretBoxError
@@ -65,7 +73,7 @@ from primer.model.provider import HttpConfig, McpConfig, OAuthConfig, Toolset, T
 from primer.storage import raw_generation
 from primer.toolset.oauth import egress, protocol
 from primer.toolset.oauth.protocol import ClientAuth, Discovery
-from primer.toolset.oauth.store import McpOAuthStore, binding_digest
+from primer.toolset.oauth.store import McpOAuthStore, binding_digest, token_key
 
 __all__ = [
     "EXPIRED_NO_REFRESH",
@@ -161,28 +169,46 @@ def _http_config(toolset: Toolset | None) -> HttpConfig | None:
 
 @dataclass(frozen=True, repr=False)
 class OAuthTarget:
-    """What the service needs of a toolset that signs in with OAuth: its id, server URL, OAuth settings and extra headers.
+    """What the service needs of a toolset that signs in with OAuth, for one person: its id, server URL, OAuth settings, extra headers, and which token
+    row is theirs.
 
     ``headers`` holds the toolset's header VALUES in plaintext (sent with the discovery probe), with any ``Authorization`` left out, so the ``repr`` shows
-    the toolset id only.
+    the toolset id and the user only. ``user_id`` is the person a browser sign-in belongs to (``None`` for a shared row). ``key`` is the token row's id:
+    the bare toolset id for client credentials and for the system person, :func:`~primer.toolset.oauth.store.token_key` for a person's browser sign-in,
+    and ``None`` for a browser sign-in with nobody to act for, which has no row and so no token.
     """
 
     toolset_id: str
     server_url: str
     oauth: OAuthConfig
     headers: dict[str, str]
+    user_id: str | None = None
+    key: str | None = None
 
     @classmethod
-    def from_toolset(cls, toolset: Toolset) -> OAuthTarget | None:
-        """The target of an http or sse MCP toolset with an ``oauth`` block; ``None`` for any other toolset."""
+    def from_toolset(cls, toolset: Toolset, person: Person) -> OAuthTarget | None:
+        """The target of an http or sse MCP toolset with an ``oauth`` block, for ``person``; ``None`` for any other toolset."""
         http_config = _http_config(toolset)
         if http_config is None or http_config.oauth is None or not toolset.id:
             return None
         headers = {name: value.get_secret_value() for name, value in http_config.headers.items() if name.lower() != "authorization"}
-        return cls(toolset_id=toolset.id, server_url=str(http_config.url), oauth=http_config.oauth, headers=headers)
+        user_id, key = None, toolset.id
+        if http_config.oauth.grant == "authorization_code" and person.role != "system":
+            user_id = person.user_id
+            key = token_key(toolset.id, user_id) if user_id else None
+        return cls(toolset_id=toolset.id, server_url=str(http_config.url), oauth=http_config.oauth, headers=headers, user_id=user_id, key=key)
+
+    @property
+    def per_user(self) -> bool:
+        """A browser sign-in: the person a call acts for signs in for themselves (the sign-in required message says so)."""
+        return self.oauth.grant == "authorization_code"
+
+    def sign_in_required(self, reason: str) -> McpSignInRequiredError:
+        """The error a call of this target raises when it has no usable sign-in."""
+        return McpSignInRequiredError(self.toolset_id, reason=reason, per_user=self.per_user)
 
     def __repr__(self) -> str:
-        return f"OAuthTarget(toolset_id={self.toolset_id!r})"
+        return f"OAuthTarget(toolset_id={self.toolset_id!r}, user_id={self.user_id!r})"
 
 
 def config_fingerprint(target: OAuthTarget) -> str:
@@ -300,7 +326,7 @@ class ToolsetOAuthService:
         self._http = http if http is not None else egress.oauth_http_client(timeout=HTTP_TIMEOUT_S)
         self._clock = clock
         self._owner_id = owner_id or f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(3)}"
-        #: One lock per toolset: the callers of ONE process take turns at the lease, so a process makes at most one exchange at a time per toolset.
+        #: One lock per token row: the callers of ONE process take turns at a row's lease, so a process makes at most one exchange at a time per row.
         self._locks: dict[str, asyncio.Lock] = {}
         #: Lease-and-exchange tasks still running, kept referenced until they end (a cancelled caller does not cancel them).
         self._inflight: set[asyncio.Task[Any]] = set()
@@ -346,6 +372,8 @@ class ToolsetOAuthService:
             raise BadRequestError(f"the MCP toolset {target.toolset_id} signs in with client credentials, so it connects without a browser sign-in")
         if not browser_binding:
             raise ValueError("a browser sign-in is bound to the browser that starts it: browser_binding is required")
+        if target.key is None:
+            raise BadRequestError(f"a browser sign-in of the MCP toolset {target.toolset_id} belongs to a person: sign in to primer first")
         self._require_resource_on_the_server(target)
         now = self._clock()
         await self._store.purge_pending(target.toolset_id, now=now)
@@ -374,6 +402,7 @@ class ToolsetOAuthService:
             config_fingerprint=config_fingerprint(target),
             browser_binding=binding_digest(browser_binding),
             started_by=started_by,
+            user_id=target.user_id,
             created_at=now,
             expires_at=expires_at,
         ))
@@ -382,7 +411,7 @@ class ToolsetOAuthService:
             code_challenge=challenge, resource=resource,
         )
         logger.info("MCP toolset %s: a browser sign-in was started (client: %s)", target.toolset_id, source)
-        status = self._status_from(target, await self._store.get_tokens(target.toolset_id), now=now, redirect_uri=redirect_uri)
+        status = self._status_from(target, await self._row(target), now=now, redirect_uri=redirect_uri)
         return SignInStart(authorize_url=url, redirect_uri=redirect_uri, expires_at=expires_at, status=status)
 
     async def complete_sign_in(
@@ -413,7 +442,9 @@ class ToolsetOAuthService:
         if error:
             logger.info("MCP toolset %s: the authorization server ended the sign-in with %s", toolset_id, safe_code(error))
             raise SignInError("access_denied" if error == "access_denied" else "exchange_failed", toolset_id)
-        target = OAuthTarget.from_toolset(toolset) if toolset is not None and toolset.id == toolset_id else None
+        # The callback carries no session: the pending sign-in names whose row it writes (None: the system person, auth disabled).
+        person = Person(pending.user_id, "user") if pending.user_id else Person(None, "system")
+        target = OAuthTarget.from_toolset(toolset, person) if toolset is not None and toolset.id == toolset_id else None
         if target is None or target.oauth.grant != "authorization_code" or config_fingerprint(target) != pending.config_fingerprint:
             logger.info("MCP toolset %s: its settings changed during the sign-in, so the code is not exchanged", toolset_id)
             raise SignInError("settings_changed", toolset_id)
@@ -438,8 +469,11 @@ class ToolsetOAuthService:
         except PrimerError as exc:
             logger.warning("MCP toolset %s: the code exchange failed (%s)", toolset_id, type(exc).__name__)
             raise SignInError("exchange_failed", toolset_id) from None
+        assert target.key is not None
         stored = await self._store.replace_tokens(McpOAuthTokenSet(
-            id=toolset_id,
+            id=target.key,
+            toolset_id=toolset_id,
+            user_id=target.user_id,
             grant="authorization_code",
             access_token_enc=self._store.seal(grant.access_token),
             refresh_token_enc=self._store.seal(grant.refresh_token) if grant.refresh_token else None,
@@ -491,6 +525,7 @@ class ToolsetOAuthService:
             raise BadRequestError(f"the token endpoint refused the client credentials ({exc.error or f'HTTP {exc.status}'})") from None
         stored = await self._store.replace_tokens(McpOAuthTokenSet(
             id=target.toolset_id,
+            toolset_id=target.toolset_id,
             grant="client_credentials",
             access_token_enc=self._store.seal(grant.access_token),
             refresh_token_enc=None,
@@ -513,45 +548,51 @@ class ToolsetOAuthService:
 
     # ---- disconnect and forget ------------------------------------------------------------------------------------------------------------------------------------------
 
-    async def disconnect(self, toolset: Toolset) -> ToolsetAuthStatus:
-        """End the toolset's sign-in: drop its pending sign-ins, revoke it where the server supports revocation (best effort), then delete the tokens
-        whatever the answer.
+    async def disconnect(self, toolset: Toolset, person: Person) -> ToolsetAuthStatus:
+        """End ``person``'s sign-in of the toolset (the shared row for client credentials): drop their pending sign-ins, revoke it where the server
+        supports revocation (best effort), then delete their tokens whatever the answer. Other people's sign-ins are left alone.
 
         The pending sign-ins go first (audit G4-06): a Reconnect left open on the provider's page would otherwise stay valid for its ten minutes, and
         completing it after the Disconnect would connect the toolset again.
         """
         assert toolset.id is not None
-        dropped = await self._store.drop_pending(toolset.id)
+        target = OAuthTarget.from_toolset(toolset, person)
+        if target is None or target.key is None:
+            return await self.status(toolset, person)
+        dropped = await self._store.drop_pending(toolset.id, target.user_id)
         if dropped:
             logger.info("MCP toolset %s: %d pending sign-in(s) ended by the disconnect", toolset.id, dropped)
-        row = await self._store.get_tokens(toolset.id)
+        row = await self._row(target)
         if row is not None:
-            target = OAuthTarget.from_toolset(toolset)
-            http_config = _http_config(toolset)
-            calls: AbstractContextManager[None] = (
-                _calls_for(target) if target is not None else egress.calls_for(str(http_config.url)) if http_config is not None else nullcontext()
-            )
-            with calls:
+            with _calls_for(target):
                 revoked = await self._revoke(target, row)
-            await self._store.delete_tokens(toolset.id)
+            await self._store.delete_tokens(target.key)
             logger.info("MCP toolset %s: disconnected (revoked at the authorization server: %s)", toolset.id, revoked)
-        return await self.status(toolset)
+        return await self.status(toolset, person)
 
     async def forget(self, toolset_id: str) -> None:
-        """Remove everything stored for the toolset: its tokens, its registered client and its pending sign-ins."""
+        """Remove everything stored for the toolset: every person's tokens and the shared ones, its registered client and its pending sign-ins."""
         await self._store.forget(toolset_id)
 
     # ---- status ---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-    async def status(self, toolset: Toolset, *, redirect_uri: str | None = None) -> ToolsetAuthStatus:
-        """The toolset's sign-in status (see :class:`ToolsetAuthStatus`). ``redirect_uri`` is shown for a browser sign-in."""
+    async def status(self, toolset: Toolset, person: Person, *, redirect_uri: str | None = None) -> ToolsetAuthStatus:
+        """``person``'s sign-in status of the toolset, the shared one for client credentials (see :class:`ToolsetAuthStatus`). ``redirect_uri`` is
+        shown for a browser sign-in."""
         assert toolset.id is not None
-        target = OAuthTarget.from_toolset(toolset)
+        target = OAuthTarget.from_toolset(toolset, person)
         if target is None:
             http_config = _http_config(toolset)
             mode: AuthMode = "header" if http_config is not None and http_config.headers else "none"
             return ToolsetAuthStatus(toolset_id=toolset.id, mode=mode, state="not_applicable")
-        return self._status_from(target, await self._store.get_tokens(target.toolset_id), now=self._clock(), redirect_uri=redirect_uri)
+        return self._status_from(target, await self._row(target), now=self._clock(), redirect_uri=redirect_uri)
+
+    async def _row(self, target: OAuthTarget) -> McpOAuthTokenSet | None:
+        """The token row of ``target``'s person (the shared row for client credentials and the system person); ``None`` when there is none, when it
+        names another pair, or when the target acts for nobody."""
+        if target.key is None:
+            return None
+        return await self._store.get_tokens(target.key, toolset_id=target.toolset_id, user_id=target.user_id)
 
     def _status_from(self, target: OAuthTarget, row: McpOAuthTokenSet | None, *, now: datetime, redirect_uri: str | None = None) -> ToolsetAuthStatus:
         mode = _mode_of(target)
@@ -583,16 +624,16 @@ class ToolsetOAuthService:
         signed out) or this process's key cannot read it (:data:`KEY_CHANGED`, the row left as it is), and :class:`~primer.model.except_.ProviderError`
         for a failure that may pass (the token endpoint cannot be reached, another process holds the lease for too long), which keeps the tokens.
         """
-        row = self._require_usable(target, await self._store.get_tokens(target.toolset_id))
-        access = self._readable_access(row)
+        row = self._require_usable(target, await self._row(target))
+        access = self._readable_access(target, row)
         now = self._clock()
         if access and _fresh(row, now):
             return access
         if row.grant == "authorization_code" and row.refresh_token_enc is None:
             if access and (row.expires_at is None or row.expires_at > now):
                 return access                           # nothing can refresh it, so it serves until it expires
-            await self._sign_out(row, EXPIRED_NO_REFRESH)
-            raise McpSignInRequiredError(target.toolset_id, reason=EXPIRED_NO_REFRESH)
+            await self._sign_out(target, row, EXPIRED_NO_REFRESH)
+            raise target.sign_in_required(EXPIRED_NO_REFRESH)
         return await self._refresh(target, observed=row, forced=False)
 
     @_for_its_target
@@ -600,13 +641,13 @@ class ToolsetOAuthService:
         """A replacement for the access token ``rejected``, which the MCP server answered with 401: the stored token when another caller or process
         already replaced it, else a forced refresh (whatever the stored expiry says). A browser sign-in without a refresh token is signed out with
         :data:`TOKEN_REJECTED`. Raises like :meth:`access_token`."""
-        row = self._require_usable(target, await self._store.get_tokens(target.toolset_id))
-        access = self._readable_access(row)
+        row = self._require_usable(target, await self._row(target))
+        access = self._readable_access(target, row)
         if row.state == "connected" and access and access != rejected:
             return access
         if row.grant == "authorization_code" and row.refresh_token_enc is None:
-            await self._sign_out(row, TOKEN_REJECTED)
-            raise McpSignInRequiredError(target.toolset_id, reason=TOKEN_REJECTED)
+            await self._sign_out(target, row, TOKEN_REJECTED)
+            raise target.sign_in_required(TOKEN_REJECTED)
         challenge_error = protocol.parse_www_authenticate(www_authenticate).get("error")
         logger.info("MCP toolset %s: the MCP server rejected the access token (%s); refreshing it", target.toolset_id, safe_code(challenge_error) or "no error code")
         return await self._refresh(target, observed=row, forced=True)
@@ -621,7 +662,7 @@ class ToolsetOAuthService:
         call makes a fresh exchange. The write is fenced on the version that holds ``rejected`` (and on its lease as read): a reconnect, or a newer
         token another caller or process stored meanwhile, is left alone. A row this process cannot read is left alone too (:data:`KEY_CHANGED`).
         """
-        row = await self._store.get_tokens(target.toolset_id)
+        row = await self._row(target)
         if row is None or row.state != "connected" or row.config_fingerprint != config_fingerprint(target):
             return
         try:
@@ -631,10 +672,10 @@ class ToolsetOAuthService:
         if current != rejected:
             return
         if row.grant != "client_credentials":
-            await self._sign_out(row, TOKEN_REJECTED)
+            await self._sign_out(target, row, TOKEN_REJECTED)
             return
         marked = await self._store.patch_tokens(
-            row.id or target.toolset_id,
+            row.id,
             {"access_token_enc": None, "state": "error", "reason": TOKEN_REJECTED, "version": row.version + 1},
             where={"version": [raw_generation(row, "version")], "refresh_lease_until": [raw_generation(row, "refresh_lease_until")]},
         )
@@ -644,17 +685,18 @@ class ToolsetOAuthService:
     async def _refresh(self, target: OAuthTarget, *, observed: McpOAuthTokenSet, forced: bool) -> str:
         """Refresh the token set ``observed`` was read from, or take the token another caller or process stored meanwhile.
 
-        Under the per-toolset lock of this process, until :data:`LEASE_WAIT_S` has passed: read the row; a connected, fresh token is returned (for a
+        Under this process's lock of the row (one per person for a browser sign-in), until :data:`LEASE_WAIT_S` has passed: read the row; a connected, fresh token is returned (for a
         FORCED refresh only a newer version than the observed one: the observed token was rejected, whatever its expiry says); a free or expired lease is
         taken by compare-and-set on the version and the lease as read, and the winner exchanges; anyone else polls every :data:`LEASE_POLL_S`.
         """
-        async with self._lock_for(target.toolset_id):
+        assert target.key is not None
+        async with self._lock_for(target.key):
             deadline = time.monotonic() + LEASE_WAIT_S
             while True:
-                row = self._require_usable(target, await self._store.get_tokens(target.toolset_id))
+                row = self._require_usable(target, await self._row(target))
                 now = self._clock()
                 if row.state == "connected" and (row.version > observed.version or not forced) and _fresh(row, now):
-                    access = self._readable_access(row)
+                    access = self._readable_access(target, row)
                     if access:
                         return access
                 if row.refresh_lease_until is None or row.refresh_lease_until <= now:
@@ -671,7 +713,7 @@ class ToolsetOAuthService:
         """Take the refresh lease of ``row`` (``None`` when another caller or process took it first), then exchange and store."""
         owner = f"{self._owner_id}#{secrets.token_hex(4)}"         # one lease token per lease: the fence of every write this exchange makes
         won = await self._store.patch_tokens(
-            target.toolset_id,
+            row.id,
             {"refresh_lease_until": now + LEASE_TTL, "refresh_lease_owner": owner},
             where={"version": [raw_generation(row, "version")], "refresh_lease_until": [raw_generation(row, "refresh_lease_until")]},
         )
@@ -689,7 +731,7 @@ class ToolsetOAuthService:
         :class:`~primer.model.mcp_oauth.McpSignInRequiredError`. A token endpoint that cannot be reached, or does not answer within
         :data:`TOKEN_CALL_TIMEOUT_S`, keeps the tokens, marks the state ``error`` and raises :class:`~primer.model.except_.ProviderError`.
         """
-        toolset_id = target.toolset_id
+        toolset_id, key = target.toolset_id, won.id
         fence = {"version": [raw_generation(won, "version")], "refresh_lease_owner": [owner]}
         try:
             client = await self._client_of(target, toolset_id=toolset_id, client_id=won.client_id, source=won.client_source,
@@ -698,9 +740,9 @@ class ToolsetOAuthService:
         except SecretBoxError:
             # Lead ruling on audit G4-10: this process's key cannot open what another process sealed. Only this call fails; the shared tokens stay
             # for the processes that can open them, and the lease this process took is given back untouched otherwise.
-            await self._store.patch_tokens(toolset_id, {"refresh_lease_until": None, "refresh_lease_owner": None}, where={"refresh_lease_owner": [owner]})
+            await self._store.patch_tokens(key, {"refresh_lease_until": None, "refresh_lease_owner": None}, where={"refresh_lease_owner": [owner]})
             self._key_differs(toolset_id)
-            raise McpSignInRequiredError(toolset_id, reason=KEY_CHANGED) from None
+            raise target.sign_in_required(KEY_CHANGED) from None
         if won.grant == "authorization_code" and refresh_token is None:
             return await self._signed_out_or_newer(target, won, fence, TOKEN_REJECTED if forced else EXPIRED_NO_REFRESH, state="needs_sign_in")
         now = self._clock()
@@ -740,7 +782,7 @@ class ToolsetOAuthService:
             patch["refresh_token_enc"] = self._store.seal(grant.refresh_token)
         if grant.scope:
             patch["scope"] = grant.scope
-        if await self._store.patch_tokens(toolset_id, patch, where=fence) is not None:
+        if await self._store.patch_tokens(key, patch, where=fence) is not None:
             logger.info("MCP toolset %s: refreshed its access token", toolset_id)
             return grant.access_token
         newer = await self._newer_token(target, won)
@@ -761,20 +803,20 @@ class ToolsetOAuthService:
         meanwhile, a newer connected token stored by someone else is the answer instead."""
         patch = {"access_token_enc": None, "refresh_token_enc": None, "state": state, "reason": reason, "version": won.version + 1,
                  "refresh_lease_until": None, "refresh_lease_owner": None}
-        if await self._store.patch_tokens(target.toolset_id, patch, where=fence) is None:
+        if await self._store.patch_tokens(won.id, patch, where=fence) is None:
             newer = await self._newer_token(target, won)
             if newer is not None:
                 return newer
         else:
             logger.warning("MCP toolset %s lost its sign-in: %s", target.toolset_id, reason)
-        raise McpSignInRequiredError(target.toolset_id, reason=reason)
+        raise target.sign_in_required(reason)
 
     async def _kept_after_outage(self, target: OAuthTarget, won: McpOAuthTokenSet, owner: str, detail: str) -> str:
         """The token endpoint could not answer: keep the tokens, mark the state ``error``, release the lease and raise a temporary
         :class:`~primer.model.except_.ProviderError`; when the row moved on meanwhile, a newer connected token is the answer instead."""
         reason = f"The authorization server could not be reached: {detail}"
         kept = await self._store.patch_tokens(
-            target.toolset_id,
+            won.id,
             {"state": "error", "reason": reason, "refresh_lease_until": None, "refresh_lease_owner": None},
             where={"refresh_lease_owner": [owner]},
         )
@@ -787,9 +829,9 @@ class ToolsetOAuthService:
 
     async def _newer_token(self, target: OAuthTarget, won: McpOAuthTokenSet) -> str | None:
         """A connected token stored after ``won`` was leased (a reconnect, a holder that took over), or ``None``. Raises when the sign-in is gone."""
-        row = self._require_usable(target, await self._store.get_tokens(target.toolset_id))
+        row = self._require_usable(target, await self._row(target))
         if row.version > won.version and row.state == "connected":
-            return self._readable_access(row)
+            return self._readable_access(target, row)
         return None
 
     @staticmethod
@@ -797,14 +839,14 @@ class ToolsetOAuthService:
         """``row`` when the toolset can use it; else :class:`~primer.model.mcp_oauth.McpSignInRequiredError`: no row, settings that no longer hash to
         the row's fingerprint (the token is never sent to a URL it was not issued for), or a signed-out row."""
         if row is None:
-            raise McpSignInRequiredError(target.toolset_id, reason=NOT_CONNECTED)
+            raise target.sign_in_required(NOT_CONNECTED)
         if row.config_fingerprint != config_fingerprint(target):
-            raise McpSignInRequiredError(target.toolset_id, reason=SETTINGS_CHANGED)
+            raise target.sign_in_required(SETTINGS_CHANGED)
         if row.state == "needs_sign_in":
-            raise McpSignInRequiredError(target.toolset_id, reason=row.reason or NOT_CONNECTED)
+            raise target.sign_in_required(row.reason or NOT_CONNECTED)
         return row
 
-    def _readable_access(self, row: McpOAuthTokenSet) -> str | None:
+    def _readable_access(self, target: OAuthTarget, row: McpOAuthTokenSet) -> str | None:
         """The row's access token. One the current key cannot open fails THIS call with :data:`KEY_CHANGED` and leaves the row as it is.
 
         Lead ruling on audit G4-10: the row is shared by every process, and a process whose key differs (a worker with another or no
@@ -815,8 +857,8 @@ class ToolsetOAuthService:
         try:
             return self._store.unseal(row.access_token_enc)
         except SecretBoxError:
-            self._key_differs(row.id or "")
-            raise McpSignInRequiredError(row.id or "", reason=KEY_CHANGED) from None
+            self._key_differs(target.toolset_id)
+            raise target.sign_in_required(KEY_CHANGED) from None
 
     @staticmethod
     def _key_differs(toolset_id: str) -> None:
@@ -827,7 +869,7 @@ class ToolsetOAuthService:
             toolset_id,
         )
 
-    async def _sign_out(self, row: McpOAuthTokenSet, reason: str) -> None:
+    async def _sign_out(self, target: OAuthTarget, row: McpOAuthTokenSet, reason: str) -> None:
         """Drop the tokens of ``row`` (read without a lease) with ``reason``, unless the row changed or was leased since it was read."""
         signed_out = await self._store.patch_tokens(
             row.id,
@@ -835,7 +877,7 @@ class ToolsetOAuthService:
             where={"version": [raw_generation(row, "version")], "refresh_lease_until": [raw_generation(row, "refresh_lease_until")]},
         )
         if signed_out is not None:
-            logger.warning("MCP toolset %s lost its sign-in: %s", row.id, reason)
+            logger.warning("MCP toolset %s lost its sign-in: %s", target.toolset_id, reason)
 
     async def _shielded(self, work: Coroutine[Any, Any, str | None]) -> str | None:
         """Run ``work`` (a lease and its exchange) to its end even when the caller is cancelled: an exchange the token endpoint already answered with a
@@ -851,10 +893,11 @@ class ToolsetOAuthService:
         if not task.cancelled():
             task.exception()                            # retrieved: the outcome of an exchange whose caller left is in the store, not lost
 
-    def _lock_for(self, toolset_id: str) -> asyncio.Lock:
-        lock = self._locks.get(toolset_id)
+    def _lock_for(self, key: str) -> asyncio.Lock:
+        """This process's lock of one token row (``key``): one per person for a browser sign-in, one per toolset for a shared row."""
+        lock = self._locks.get(key)
         if lock is None:
-            lock = self._locks[toolset_id] = asyncio.Lock()
+            lock = self._locks[key] = asyncio.Lock()
         return lock
 
     # ---- helpers --------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -937,7 +980,7 @@ class ToolsetOAuthService:
         secret = self._store.unseal(registered.client_secret_enc) if registered is not None and registered.client_id == client_id else None
         return _client_auth(client_id, secret, method)
 
-    async def _revoke(self, target: OAuthTarget | None, row: McpOAuthTokenSet) -> bool:
+    async def _revoke(self, target: OAuthTarget, row: McpOAuthTokenSet) -> bool:
         """Revoke the row's refresh token, else its access token, where the server advertised revocation. Best effort: ``False`` for anything but a
         2xx, and when the tokens or the client secret cannot be read."""
         if not row.revocation_endpoint:
@@ -945,7 +988,7 @@ class ToolsetOAuthService:
         try:
             refresh = self._store.unseal(row.refresh_token_enc)
             access = self._store.unseal(row.access_token_enc)
-            client = await self._client_of(target, toolset_id=row.id, client_id=row.client_id, source=row.client_source,
+            client = await self._client_of(target, toolset_id=target.toolset_id, client_id=row.client_id, source=row.client_source,
                                            method=row.token_endpoint_auth_method)
         except SecretBoxError:
             return False

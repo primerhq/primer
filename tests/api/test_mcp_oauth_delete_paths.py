@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from primer.api.registries.provider_registry import _build_default_toolset_factory
+from primer.access.person import Person
 from primer.common.secret_box import SecretBox
 from primer.harness.service import apply_sync, apply_uninstall
 from primer.model.harness import Harness, HarnessRendering, RenderedEntry
@@ -26,11 +27,12 @@ from primer.toolset.oauth.store import pending_key
 from primer.toolset.system import build_system_toolset
 from tests._support.caller import caller
 from tests.api.test_require_user_admin import _login, _seed
-from tests.toolset.oauth._service_helpers import target_of, token_row
+from tests.toolset.oauth._service_helpers import SYSTEM, target_of, token_row
 
 NOW = datetime(2026, 10, 18, 12, 0, 0, tzinfo=UTC)
 HARNESS_ID = "acme-id"
 STATE = "pending-state-of-the-deleted-toolset"
+PERSON = Person("u-a", "user")
 
 
 def _payload() -> dict:
@@ -55,9 +57,11 @@ async def oauth_app(app, fake_storage_provider, fake_provider_registry):
 
 
 async def _connected(service: ToolsetOAuthService, toolset: Toolset) -> None:
-    """A connected sign-in with everything a sign-in stores: the tokens, the registered client and a pending sign-in (a Reconnect left open)."""
+    """A connected sign-in with everything a sign-in stores: the shared tokens and a person's, the registered client and a pending sign-in (a
+    Reconnect left open)."""
     store, target = service.store, target_of(toolset)
     await store.replace_tokens(token_row(store, target))
+    await store.replace_tokens(token_row(store, target_of(toolset, PERSON)))
     await store.put_client(McpOAuthClient(
         id=toolset.id, issuer="https://as.example", redirect_uri="https://primer.example/cb", client_id="c1", registered_at=NOW,
     ))
@@ -66,7 +70,7 @@ async def _connected(service: ToolsetOAuthService, toolset: Toolset) -> None:
         issuer="https://as.example", token_endpoint="https://as.example/token", client_id="c1", client_source="registered",
         config_fingerprint=config_fingerprint(target), created_at=NOW, expires_at=NOW + timedelta(minutes=10),
     ))
-    assert (await service.status(toolset)).state == "connected"
+    assert (await service.status(toolset, SYSTEM)).state == "connected"
 
 
 async def _by_rest(app, raw_client, toolset: Toolset) -> None:
@@ -139,13 +143,16 @@ async def test_every_toolset_delete_path_forgets_the_sign_in(path, oauth_app, ra
 
     assert await storage_provider.get_storage(Toolset).get(toolset.id) is None, "the path did not delete the toolset"
     assert await service.store.get_tokens(toolset.id) is None, "the tokens outlived the toolset"
+    person_key = target_of(toolset, PERSON).key
+    assert await service.store.get_tokens(person_key, toolset_id=toolset.id, user_id="u-a") is None, "a person's tokens outlived the toolset"
     assert await service.store.get_client(toolset.id) is None, "the registered client outlived the toolset"
     assert await storage_provider.get_storage(McpOAuthPendingSignIn).get(pending_key(STATE)) is None, "a pending sign-in outlived the toolset"
 
     again = _toolset(toolset.id)
     await storage_provider.get_storage(Toolset).create(again)
-    status = await service.status(again)
-    assert (status.state, status.connected_at) == ("needs_sign_in", None), "a toolset created again came back on the old sign-in"
+    for person in (SYSTEM, PERSON):
+        status = await service.status(again, person)
+        assert (status.state, status.connected_at) == ("needs_sign_in", None), "a toolset created again came back on the old sign-in"
 
 
 def _system_tools(app):

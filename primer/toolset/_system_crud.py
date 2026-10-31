@@ -1099,8 +1099,9 @@ def _toolset_auth_status_tool(
             )
         # The sign-in status reads the toolset row: a row the run holds no level on answers exactly like a missing one
         # (access spec 9).
+        person = _owned_person(ctx)
         denied = _access_refusal(
-            _owned_person(ctx), toolset.access, AccessLevel.READ, f"Toolset {args.toolset_id!r}",
+            person, toolset.access, AccessLevel.READ, f"Toolset {args.toolset_id!r}",
         )
         if denied is not None:
             return denied
@@ -1109,7 +1110,7 @@ def _toolset_auth_status_tool(
                 "the MCP OAuth service is unavailable in this process",
                 error_type="unavailable",
             )
-        status = await oauth.status(toolset)
+        status = await oauth.status(toolset, person)
         return _ok(status.model_dump(mode="json"))
 
     name = "get_toolset_auth_status"

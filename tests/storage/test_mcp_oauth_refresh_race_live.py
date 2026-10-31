@@ -24,6 +24,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from primer.access.person import Person
 from primer.common.secret_box import SecretBox
 from primer.model.mcp_oauth import McpOAuthTokenSet
 from primer.model.provider import PoolConfig, PostgresConfig, Toolset
@@ -101,8 +102,9 @@ async def pools() -> AsyncIterator[tuple[PostgresStorageProvider, PostgresStorag
 
 def _target() -> OAuthTarget:
     toolset = Toolset(id="kb", provider="mcp", config={"transport": "http", "config": {"url": "https://m.example/mcp", "oauth": {}}})
-    target = OAuthTarget.from_toolset(toolset)
-    assert target is not None
+    # One person's browser sign-in: its row, lease and fence are that person's (access-control P5 Task 2).
+    target = OAuthTarget.from_toolset(toolset, Person("u-a", "user"))
+    assert target is not None and target.key is not None
     return target
 
 
@@ -118,7 +120,7 @@ async def test_two_postgres_pools_refresh_once(pools):
     try:
         async with asyncio.timeout(_BOUND_S):
             await store.replace_tokens(McpOAuthTokenSet(
-                id="kb", grant="authorization_code", access_token_enc=store.seal("at-0"), refresh_token_enc=store.seal("rt-0"),
+                id=target.key, toolset_id="kb", user_id="u-a", grant="authorization_code", access_token_enc=store.seal("at-0"), refresh_token_enc=store.seal("rt-0"),
                 expires_at=now + timedelta(seconds=10), token_endpoint=TOKEN_ENDPOINT, client_id="client-1", client_source="registered",
                 config_fingerprint=config_fingerprint(target), connected_at=now,
             ))
@@ -126,11 +128,11 @@ async def test_two_postgres_pools_refresh_once(pools):
                 tokens = await asyncio.gather(*(services[n % 2].access_token(target) for n in range(8)))
                 assert set(tokens) == {f"at-{round_number}"}, "every caller of both processes got the one new access token"
                 assert (endpoint.exchanges, endpoint.refused) == (round_number, 0), "one exchange per round, and no refresh token was spent twice"
-                row = await store.get_tokens("kb")
+                row = await store.get_tokens(target.key, toolset_id="kb", user_id="u-a")
                 assert store.unseal(row.refresh_token_enc) == f"rt-{round_number}", "the stored refresh token is the rotated one"
                 assert (row.state, row.version, row.refresh_lease_until, row.refresh_lease_owner) == ("connected", round_number + 1, None, None)
                 # The next round starts from the rotated token, close to its expiry again.
-                await store.patch_tokens("kb", {"expires_at": datetime.now(UTC) + timedelta(seconds=10)}, where={"version": [raw_generation(row, "version")]})
+                await store.patch_tokens(target.key, {"expires_at": datetime.now(UTC) + timedelta(seconds=10)}, where={"version": [raw_generation(row, "version")]})
     finally:
         for service in services:
             await service.aclose()
