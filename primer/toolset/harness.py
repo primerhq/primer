@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from pydantic import SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from primer.access.person import person_for_tool
 from primer.access.policy import level_of, visible_predicate
@@ -62,6 +62,7 @@ from primer.model.storage import (
     Value,
 )
 from primer.toolset._helpers import err as _err, ok_json as _ok
+from primer.toolset._system_common import _err_from_validation
 from primer.toolset.admin_gates import apply_admin_gate_previews
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
@@ -448,18 +449,55 @@ def _changed_meanwhile(harness_id: str) -> ToolCallResult:
 
 
 # ---------------------------------------------------------------------------
+# Argument models: the types the handlers read (AG-M14). A missing or ill-typed argument is a validation-error answer, not a KeyError or a
+# TypeError out of the handler. Only types (and the page bounds OffsetPage enforces): what a call could do before it still does. ``overrides``
+# stays a raw read, the handlers already answer a missing or wrong one.
+# ---------------------------------------------------------------------------
+
+
+class _IdArgs(BaseModel):
+    id: str
+
+
+class _ListArgs(BaseModel):
+    slug: str | None = None
+    status: str | None = None
+    offset: int = Field(0, ge=0)
+    length: int = Field(50, ge=1, le=200)
+
+
+class _RegisterArgs(BaseModel):
+    name: str
+    slug: str
+    git_url: str
+    ref: str | None = None
+    subpath: str | None = None
+    git_token: str | None = None
+    description: str | None = None
+
+
+class _UpdateArgs(_IdArgs):
+    name: str | None = None
+    description: str | None = None
+    ref: str | None = None
+    subpath: str | None = None
+    git_token: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Handler factories
 # ---------------------------------------------------------------------------
 
 
 def _make_list_handler(storage_provider: "StorageProvider") -> ToolHandler:
     async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
+        try:
+            args = _ListArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
-        slug: str | None = arguments.get("slug")
-        status_raw: str | None = arguments.get("status")
-        offset: int = int(arguments.get("offset", 0))
-        length: int = int(arguments.get("length", 50))
-        page = OffsetPage(offset=offset, length=length)
+        slug, status_raw = args.slug, args.status
+        page = OffsetPage(offset=args.offset, length=args.length)
 
         predicates: list[Predicate] = []
         if slug is not None:
@@ -496,7 +534,10 @@ def _make_list_handler(storage_provider: "StorageProvider") -> ToolHandler:
 
 def _make_get_handler(storage_provider: "StorageProvider") -> ToolHandler:
     async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            harness_id = _IdArgs.model_validate(arguments).id
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
         # A harness the caller cannot read answers exactly as a missing one.
@@ -509,15 +550,15 @@ def _make_get_handler(storage_provider: "StorageProvider") -> ToolHandler:
 
 def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
     async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
+        try:
+            args = _RegisterArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
 
-        name: str = arguments["name"]
-        slug: str = arguments["slug"]
-        git_url: str = arguments["git_url"]
-        ref: str = arguments.get("ref") or "main"
-        subpath: str | None = arguments.get("subpath")
-        git_token_raw: str | None = arguments.get("git_token")
-        description: str | None = arguments.get("description")
+        name, slug, git_url = args.name, args.slug, args.git_url
+        ref: str = args.ref or "main"
+        subpath, git_token_raw, description = args.subpath, args.git_token, args.description
 
         # The REST body's rules: https only, no value git could read as an option (AUTHZ-04).
         try:
@@ -543,20 +584,23 @@ def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
             )
 
         harness_id = f"hns_{uuid4().hex[:12]}"
-        harness = Harness(
-            id=harness_id,
-            slug=slug,
-            name=name,
-            description=description,
-            git_url=git_url,
-            git_token=SecretStr(git_token_raw) if git_token_raw else None,
-            ref=ref,
-            subpath=subpath,
-            status=HarnessStatus.DRAFT,
-            created_at=datetime.now(timezone.utc),
-            # The registering admin owns it (an id-less admin or the system principal: admin-managed).
-            access=Access.owned_by(owner_id) if (owner_id := person_for_tool(ctx).user_id) is not None else Access(),
-        )
+        try:
+            harness = Harness(
+                id=harness_id,
+                slug=slug,
+                name=name,
+                description=description,
+                git_url=git_url,
+                git_token=SecretStr(git_token_raw) if git_token_raw else None,
+                ref=ref,
+                subpath=subpath,
+                status=HarnessStatus.DRAFT,
+                created_at=datetime.now(timezone.utc),
+                # The registering admin owns it (an id-less admin or the system principal: admin-managed).
+                access=Access.owned_by(owner_id) if (owner_id := person_for_tool(ctx).user_id) is not None else Access(),
+            )
+        except ValidationError as exc:  # the row's own bounds (slug and name length, ...)
+            return _err_from_validation(exc)
         # A create has nothing stored to restore a mask from: the copy-a-harness move (harness__get, a new slug, harness__register) would store the served git_token mask as the token, as
         # POST /v1/harnesses refuses to (01a1212a, round 3 of #711).
         try:
@@ -571,7 +615,11 @@ def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
 
 def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            args = _UpdateArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        harness_id = args.id
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
         if harness is None:
@@ -580,11 +628,7 @@ def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
         if refusal is not None:
             return refusal
 
-        name: str | None = arguments.get("name")
-        description: str | None = arguments.get("description")
-        ref: str | None = arguments.get("ref")
-        subpath: str | None = arguments.get("subpath")
-        git_token_raw: str | None = arguments.get("git_token")
+        name, description, ref, subpath, git_token_raw = args.name, args.description, args.ref, args.subpath, args.git_token
 
         if ref is not None:
             try:
@@ -618,7 +662,10 @@ def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
 
 def _make_update_overrides_handler(storage_provider: "StorageProvider") -> ToolHandler:
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            harness_id = _IdArgs.model_validate(arguments).id
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         overrides_body: dict[str, Any] = arguments.get("overrides", {})
 
         storage = storage_provider.get_storage(Harness)
@@ -677,7 +724,10 @@ def _make_enqueue_handler(
     """Build a handler for FETCH or UNINSTALL (simple enqueue with 409 guard)."""
 
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            harness_id = _IdArgs.model_validate(arguments).id
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
         if harness is None:
@@ -717,7 +767,10 @@ def _make_install_handler(
     _INSTALL_ALLOWED = {HarnessStatus.DRAFT, HarnessStatus.READY, HarnessStatus.OUTDATED}
 
     async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            harness_id = _IdArgs.model_validate(arguments).id
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
         if harness is None:
@@ -790,7 +843,10 @@ def _make_sync_handler(
     _SYNC_ALLOWED = {HarnessStatus.INSTALLED, HarnessStatus.OUTDATED}
 
     async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            harness_id = _IdArgs.model_validate(arguments).id
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
         if harness is None:
