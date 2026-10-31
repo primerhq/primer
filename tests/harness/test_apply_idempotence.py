@@ -207,9 +207,90 @@ async def test_a_sync_delete_of_a_row_already_gone_is_done(sp):
     assert await _sync(sp, h, [_agent("b")]) is None
     assert await _snapshot_ids(sp, h) == ("b1", ["acme__b"])
 
+
+# ---------------------------------------------------------------------------
+# KN-4: uninstall and sync deletes go through the collection purge and the index
+# ---------------------------------------------------------------------------
+
+
+async def test_uninstall_purges_the_collection_its_user_documents_and_vectors(sp):
+    store = _Store()
+    h = _h()
+    await _install(sp, h, [_coll(search=True), _doc("d1", "acme__kb")], _files(d1="harness body"))
+    tree = DocumentTreeService(sp)
+    user_doc = await tree.create(collection_id="acme__kb", parent="", slug="notes", body="user notes")
+    await apply_uninstall(storage_provider=sp, harness=h, cascade=True, semantic_search_registry=_Registry(store))
+    assert await sp.get_storage(Collection).get("acme__kb") is None
+    assert await sp.get_storage(Document).get(user_doc.id) is None
+    assert await sp.get_content_store().get(user_doc.id) is None
+    assert "acme__kb" in store.dropped
+    assert ("acme__kb", "acme__d1") in store.deleted
+    # a reinstall under the same id starts empty
+    h2 = _h()
+    await _install(sp, h2, [_coll()])
+    assert [n.path for n in await tree.tree(collection_id="acme__kb")] == []
+
+
+async def test_a_sync_that_drops_a_document_removes_its_chunks(sp):
+    store = _Store()
+    h = _h()
+    await sp.get_storage(Collection).create(Collection(id="shared", description="shared", search=_SEARCH))
+    await _install(sp, h, [_doc("d1", "shared"), _doc("d2", "shared")], _files(d1="one", d2="two"))
+    assert await _sync(sp, h, [_doc("d2", "shared")], files=_files(d2="two"),
+                       semantic_search_registry=_Registry(store)) is None
+    assert ("shared", "acme__d1") in store.deleted
+    assert await sp.get_storage(Collection).get("shared") is not None
+
+
+async def test_a_sync_that_drops_a_collection_purges_it(sp):
+    store = _Store()
+    h = _h()
+    await _install(sp, h, [_coll(search=True), _agent("a")])
+    user_doc = await DocumentTreeService(sp).create(collection_id="acme__kb", parent="", slug="n", body="x")
+    assert await _sync(sp, h, [_agent("a")], semantic_search_registry=_Registry(store)) is None
+    assert await sp.get_storage(Collection).get("acme__kb") is None
+    assert await sp.get_storage(Document).get(user_doc.id) is None
+    assert "acme__kb" in store.dropped
+
+
 # ---------------------------------------------------------------------------
 # KN-5: a real delete error stops the uninstall; cascade=False releases the kept rows
 # ---------------------------------------------------------------------------
+
+
+async def test_an_uninstall_that_cannot_delete_a_row_keeps_the_snapshot_and_the_harness(sp):
+    h = _h()
+    await _install(sp, h, [_agent("a")])
+    st = sp.get_storage(Agent)
+    orig = st.delete
+
+    async def boom(*a, **k):
+        raise RuntimeError("database is locked")
+
+    st.delete = boom
+    try:
+        with pytest.raises(RuntimeError):
+            await apply_uninstall(storage_provider=sp, harness=h, cascade=True)
+    finally:
+        st.delete = orig
+    assert await sp.get_storage(HarnessRendering).get(h.id) is not None
+    assert await sp.get_storage(Harness).get(h.id) is not None
+    # a retry finishes
+    await apply_uninstall(storage_provider=sp, harness=h, cascade=True)
+    assert await st.get("acme__a") is None and await sp.get_storage(Harness).get(h.id) is None
+
+
+async def test_uninstall_without_cascade_releases_the_kept_rows(sp):
+    h = _h()
+    await _install(sp, h, [_agent("a")])
+    await sp.get_storage(Agent).create(
+        Agent(id="acme__x", description="x", model={"profile_id": "p--m"}, harness_id="other-id"))
+    await apply_uninstall(storage_provider=sp, harness=h, cascade=False)
+    assert await sp.get_storage(Harness).get(h.id) is None
+    assert await sp.get_storage(HarnessRendering).get(h.id) is None
+    kept = await sp.get_storage(Agent).get("acme__a")
+    assert kept is not None and kept.harness_id is None
+    assert (await sp.get_storage(Agent).get("acme__x")).harness_id == "other-id"
 
 
 class _Bus:
@@ -235,6 +316,35 @@ async def test_the_uninstall_operation_removes_the_harness_and_publishes_done(sp
     await run_one_harness_operation(HarnessDispatchDeps(storage_provider=sp, event_bus=bus), harness_id=h.id, worker_id="w")
     assert await sp.get_storage(Harness).get(h.id) is None
     assert bus.events == [f"harness:{h.id}:done"]
+
+
+async def test_an_uninstall_operation_that_fails_is_released_as_error(sp):
+    h = _h()
+    await _install(sp, h, [_agent("a")])
+    await _enqueue_uninstall(sp, h)
+    st = sp.get_storage(Agent)
+
+    async def boom(*a, **k):
+        raise RuntimeError("database is locked")
+
+    st.delete = boom
+    bus = _Bus()
+    await run_one_harness_operation(HarnessDispatchDeps(storage_provider=sp, event_bus=bus), harness_id=h.id, worker_id="w")
+    row = await sp.get_storage(Harness).get(h.id)
+    assert row is not None and row.status == HarnessStatus.ERROR and row.pending_operation is None
+    assert "database is locked" in row.last_operation_error
+    assert await sp.get_storage(HarnessRendering).get(h.id) is not None
+    assert bus.events == [f"harness:{h.id}:done"]
+
+
+async def test_the_uninstall_operation_hands_the_search_registry_to_the_purge(sp):
+    store = _Store()
+    h = _h()
+    await _install(sp, h, [_coll(search=True)])
+    await _enqueue_uninstall(sp, h)
+    deps = HarnessDispatchDeps(storage_provider=sp, event_bus=_Bus(), semantic_search_registry=_Registry(store))
+    await run_one_harness_operation(deps, harness_id=h.id, worker_id="w")
+    assert store.dropped and set(store.dropped) == {"acme__kb"}
 
 
 # ---------------------------------------------------------------------------
