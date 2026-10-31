@@ -27,9 +27,11 @@ jobs:
     # native/uninterruptible call (a socket, a subprocess, or a Docker-backend
     # op) is NOT killed by the pytest --timeout-method=thread, so without this
     # the job runs to GitHub's 6-hour default. 40 min cancelled a healthy run
-    # (PR #673, run 37988241353, 40m15s); 60 min leaves room for a slow runner
+    # (PR #673, run 37988241353, 40m15s); 60 min then cancelled a healthy run
+    # at 95% (PR #983, run 41212475045, 1h0m21s: the sweep is now ~34,000
+    # tests and 57-60 min with coverage). 90 min leaves room for a slow runner
     # and still fails a real hang well before that default.
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
