@@ -1,6 +1,6 @@
 """pgvector-backed :class:`VectorStoreProvider` and :class:`VectorStore`.
 
-One vector table per collection (``<schema>.embeddings_<sanitised>``)
+One vector table per collection (``<schema>.embeddings_<slug>_<hash>``)
 with an HNSW index on the vector column (default) and a GIN index on
 the ``meta`` JSONB column for fast metadata-containment queries. The
 collection catalogue (``<schema>.primer_collections``) records the
@@ -52,6 +52,7 @@ from primer.model.except_ import (
 )
 from primer.model.provider import PgVectorConfig
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
+from primer.vector.names import table_name_for_collection
 from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_options
 
 
@@ -89,7 +90,6 @@ async def probe_postgres_reachable(config: PgVectorConfig) -> None:
 
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_COLLECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _sanitize_schema(name: str) -> str:
@@ -101,17 +101,8 @@ def _sanitize_schema(name: str) -> str:
 
 
 def _table_name_for_collection(collection_id: str) -> str:
-    """Map a collection id to a vector table name.
-
-    Allows ``[A-Za-z0-9_-]``; hyphens are translated to underscores
-    so the result is a bare SQL identifier without quoting concerns.
-    """
-    if not _COLLECTION_ID_RE.match(collection_id):
-        raise BadRequestError(
-            f"collection_id {collection_id!r} must match "
-            f"{_COLLECTION_ID_RE.pattern} (alphanumeric / underscore / hyphen)"
-        )
-    return "embeddings_" + collection_id.replace("-", "_")
+    """The table name of a NEW collection (:func:`primer.vector.names.table_name_for_collection`); an existing one keeps its stored name."""
+    return table_name_for_collection(collection_id)
 
 
 _DISTANCE_OPCLASS: dict[str, str] = {
@@ -597,7 +588,7 @@ class PgVectorStore(VectorStore):
                 # provider's current use_halfvec flag, so dimension validation
                 # (which depends on that flag) only applies to NEW collections.
                 existing = await conn.fetchrow(
-                    f'SELECT dimensions, distance, vector_type FROM '
+                    f'SELECT table_name, index_name, dimensions, distance, vector_type FROM '
                     f'"{self._schema}".primer_collections '
                     f'WHERE collection_id = $1',
                     collection_id,
@@ -614,9 +605,10 @@ class PgVectorStore(VectorStore):
                             f"requested dimensions={dimensions}, "
                             f"distance={distance!r}"
                         )
+                    # The names the catalogue STORED, not freshly computed ones: a collection made under an older naming keeps its table.
                     self._collections[collection_id] = _CollectionMeta(
-                        table_name=table_name,
-                        index_name=index_name,
+                        table_name=existing["table_name"],
+                        index_name=existing["index_name"],
                         dimensions=dimensions,
                         distance=distance,
                         vector_type=existing["vector_type"] or "vector",

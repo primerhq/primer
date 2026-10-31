@@ -262,7 +262,7 @@ Vector data is physically persisted by the SSP backend:
   `~/.primer/vector` for the reserved row). A catalogue table `_primer_collections`
   co-locates with the per-collection tables and records
   `{collection_id, table_name, dimensions, distance, indexed}`. Per-collection
-  tables are named `embeddings_<sanitised collection_id>` with a PyArrow schema of
+  tables are named `embeddings_<slug>_<hash>` (a slug of the collection id plus a hash of the exact id, `primer/vector/names.py`; a collection made before keeps the table its catalogue row stored) with a PyArrow schema of
   `{document_id, chunk_id, text, vector: FixedSizeList(float32, dims), meta: utf8}`;
   `meta` is a JSON string because Arrow has no open-ended struct type. `put()`
   upserts via `merge_insert` on `(document_id, chunk_id)` and lazily builds an ANN

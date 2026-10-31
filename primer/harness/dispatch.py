@@ -35,6 +35,7 @@ from primer.harness.dependencies import (
     canonical_key,
     walk_dependencies,
 )
+from primer.harness.paths import symlink_reason
 from primer.harness.git import (
     HarnessGitError,
     _redact,
@@ -88,13 +89,17 @@ logger = logging.getLogger(__name__)
 
 
 def _collect_bundle_files(base: Path) -> list[tuple[str, bytes]]:
-    """Walk ``base`` and return (relative_path, bytes) for every non-.git file."""
+    """Walk ``base`` and return (relative_path, bytes) for every non-.git file; a symlink is refused (``harness_symlink_refused``)."""
     result: list[tuple[str, bytes]] = []
     for p in sorted(base.rglob("*")):
         # Skip the .git directory and everything inside it
         parts = p.relative_to(base).parts
         if parts and parts[0] == ".git":
             continue
+        # A symlink in the repository could name any file the server can read (and a large one is read whole): refused, not followed.
+        reason = symlink_reason(base, p)
+        if reason is not None:
+            raise HarnessGitError("harness_symlink_refused", f"{p.relative_to(base).as_posix()}: {reason}")
         if p.is_file():
             rel = str(p.relative_to(base))
             result.append((rel, p.read_bytes()))

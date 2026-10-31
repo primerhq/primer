@@ -49,6 +49,7 @@ from primer.model.except_ import (
 )
 from primer.model.provider import LanceConfig
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
+from primer.vector.names import table_name_for_collection
 
 
 logger = logging.getLogger(__name__)
@@ -156,7 +157,6 @@ def _escape_sql_string(value: str) -> str:
     return value.replace("'", "''")
 
 
-_COLLECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CATALOGUE_TABLE = "_primer_collections"
 
 # Map the VectorStore ABC's distance vocabulary to LanceDB's.
@@ -168,13 +168,8 @@ _DISTANCE_LANCE: dict[str, str] = {
 
 
 def _table_name_for_collection(collection_id: str) -> str:
-    """Map a collection id to a Lance table name. Same convention as pgvector."""
-    if not _COLLECTION_ID_RE.match(collection_id):
-        raise BadRequestError(
-            f"collection_id {collection_id!r} must match "
-            f"{_COLLECTION_ID_RE.pattern} (alphanumeric / underscore / hyphen)"
-        )
-    return "embeddings_" + collection_id.replace("-", "_")
+    """The Lance table name of a NEW collection (:func:`primer.vector.names.table_name_for_collection`); an existing one keeps its stored name."""
+    return table_name_for_collection(collection_id)
 
 
 def _catalogue_schema() -> pa.Schema:

@@ -36,7 +36,7 @@ from pydantic import BaseModel
 
 from primer.int.document_content import ContentListEntry, DocumentContentStore
 from primer.int.storage import Storage
-from primer.model.collection import Document
+from primer.model.collection import Document, _utcnow
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
@@ -201,18 +201,33 @@ class DocumentService:
                 collection_id, path, conn=conn
             )
             doc_id = existing_id or _new_document_id()
-            doc = Document(
-                id=doc_id,
-                collection_id=collection_id,
-                slug=path.rsplit("/", 1)[-1],
-                path=path,
-                title=title,
-                meta=meta or {},
-            )
-            if existing_id is None:
-                await self._docs.create(doc, conn=conn)
-            else:
+            stored = await self._docs.get(existing_id, conn=conn) if existing_id else None
+            if stored is not None:
+                if stored.harness_id:
+                    # As the entity doors refuse it: the harness owns this row (its sync would overwrite the edit, uninstall would delete it).
+                    raise ConflictError(
+                        f"the document at {path!r} is managed by harness {stored.harness_id!r}; change it through the harness",
+                        code="harness_managed",
+                    )
+                # An update keeps every field the body does not set (parent, harness lock, created_at ...): the row just read, with only the
+                # title and meta the caller named, in the same transaction.
+                doc = stored.model_copy(update={
+                    "title": stored.title if title is None else title,
+                    "meta": stored.meta if meta is None else meta,
+                    "updated_at": _utcnow(),
+                })
                 await self._docs.update(doc, conn=conn)
+            else:
+                doc = Document(
+                    id=doc_id,
+                    collection_id=collection_id,
+                    parent_id=await self._parent_id(collection_id, path, conn=conn),
+                    slug=path.rsplit("/", 1)[-1],
+                    path=path,
+                    title=title,
+                    meta=meta or {},
+                )
+                await self._docs.create(doc, conn=conn)
             await self._content.upsert(
                 document_id=doc_id,
                 collection_id=collection_id,
@@ -223,6 +238,13 @@ class DocumentService:
         if self._indexer is not None:
             await self._indexer(document=doc, content=content)
         return doc
+
+    async def _parent_id(self, collection_id: str, path: str, *, conn: Any = None) -> str | None:
+        """The id of the document at ``path``'s parent path, so a new nested document sits under it in the tree; ``None`` for a root path
+        (and for a parent path that holds no document: an import may write leaves first, and no parent is invented)."""
+        if "/" not in path:
+            return None
+        return await self._content.resolve_id(collection_id, path.rsplit("/", 1)[0], conn=conn)
 
     async def read(self, *, collection_id: str, path: str) -> ReadResult:
         """Return the body + entity for ``(collection_id, path)``.
@@ -282,34 +304,22 @@ class DocumentService:
             await self._unindexer(document_id=doc_id, collection_id=collection_id)
 
     async def move(self, *, collection_id: str, src: str, dst: str) -> None:
-        """Move the document from ``src`` to ``dst`` within a collection.
+        """Move the document from ``src`` to ``dst`` within a collection, as the tree's move route does.
 
-        Updates the authoritative content-store path and the entity's path
-        mirror in ONE transaction. ``DocumentContentStore.move`` raises
-        :class:`~primer.model.except_.ConflictError` if ``dst`` is already
-        taken; that aborts the transaction so the entity path is unchanged.
-        Raises :class:`NotFoundError` when ``src`` does not exist.
+        ``dst``'s parent path becomes the parent, its leaf the slug, and every descendant follows (parent, slug and path, content paths, chunk
+        metadata), in one transaction (a ``dst`` directory with no row of its own is kept as a plain path prefix, as :meth:`upsert` allows one). Raises :class:`NotFoundError` when ``src`` does not exist and
+        :class:`~primer.model.except_.ConflictError` when ``dst`` is taken, both before anything changes.
         """
-        doc_id = await self._content.resolve_id(collection_id, src)
-        if doc_id is None:
+        from primer.knowledge.tree import DocumentTreeService
+
+        if await self._content.resolve_id(collection_id, src) is None:
             raise NotFoundError(
                 f"no document at path {src!r} in collection {collection_id!r}"
             )
-        async with self._sp.transaction() as conn:
-            # Move the content row first: it owns the UNIQUE(collection_id,
-            # path) constraint, so a collision raises ConflictError here and
-            # aborts before the entity mirror is touched.
-            await self._content.move(doc_id, dst, conn=conn)
-            doc = await self._docs.get(doc_id, conn=conn)
-            if doc is None:
-                raise NotFoundError(
-                    f"document entity {doc_id!r} missing for path {src!r}"
-                )
-            moved = doc.model_copy(update={"path": dst})
-            await self._docs.update(moved, conn=conn)
-        # Chunk metadata carries the path, so a move rewrites it (metadata only: the vectors are unchanged, nothing re-embeds).
-        if self._path_rewriter is not None:
-            await self._path_rewriter(document_id=doc_id, collection_id=collection_id, new_path=dst)
+        parent_path, _, leaf = dst.rpartition("/")
+        await DocumentTreeService(self._sp, path_rewriter=self._path_rewriter).move(  # type: ignore[arg-type]
+            collection_id=collection_id, path=src, new_parent=parent_path, new_slug=leaf, strict_slugs=False, allow_missing_parent=True,
+        )
 
 
 __all__ = ["DocumentService", "ReadResult"]
