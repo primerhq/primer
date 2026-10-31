@@ -193,3 +193,65 @@ async def test_a_tick_that_passes_during_the_fire_is_fired_by_the_next_claim(sp,
     await run_engine_trigger(pool, lease)  # type: ignore[arg-type]
     assert await _fired(sp) == [t.isoformat() for t in [TICK, *then_fired]]
 
+
+# ---------------------------------------------------------------------------
+# W48: a delayed trigger whose fire raised
+# ---------------------------------------------------------------------------
+
+
+async def _delayed(sp, monkeypatch):
+    clock, engine, pool = _on_a_fake_clock(monkeypatch, sp, TICK - timedelta(hours=1))
+    pool.config = SimpleNamespace(base_backoff_seconds=2.0, max_backoff_seconds=300.0)
+    made = await service.create_trigger(
+        slug="once", name="o", description=None, config=DelayedTriggerConfig(fire_at=TICK),
+        deps=service.ServiceDeps(storage_provider=sp, claim_engine=engine),
+    )
+    return clock, engine, pool, made
+
+
+async def test_a_delayed_fire_with_a_failed_delivery_still_disables_the_trigger(sp, monkeypatch) -> None:
+    clock, engine, pool, made = await _delayed(sp, monkeypatch)
+    real = dispatch_mod.fire_trigger
+
+    async def _fire(**kwargs):
+        result = await real(**kwargs)
+        result.results.append({"subscription_id": "sb-x", "ok": False, "error_code": "dispatch_failed"})
+        return result
+
+    monkeypatch.setattr(dispatch_mod, "fire_trigger", _fire)
+    clock["now"] = TICK + timedelta(seconds=1)
+    [lease] = await engine.claim_due("w", max_count=5)
+    await run_engine_trigger(pool, lease)  # type: ignore[arg-type]
+    row = await sp.get_storage(Trigger).get(made.id)
+    assert (row.enabled, row.next_fire_at) == (False, None)
+    assert not await engine.has_lease(ClaimKind.TRIGGER, made.id)
+
+
+async def test_a_delayed_fire_that_raised_before_dispatch_stays_armed_and_fires_later(sp, monkeypatch) -> None:
+    clock, engine, pool, made = await _delayed(sp, monkeypatch)
+    real = dispatch_mod.fire_trigger
+    calls = {"n": 0}
+
+    async def _fire(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("storage hiccup")
+        return await real(**kwargs)
+
+    monkeypatch.setattr(dispatch_mod, "fire_trigger", _fire)
+    clock["now"] = TICK + timedelta(seconds=1)
+    [lease] = await engine.claim_due("w", max_count=5)
+    await run_engine_trigger(pool, lease)  # type: ignore[arg-type]
+    row = await sp.get_storage(Trigger).get(made.id)
+    assert (row.enabled, row.next_fire_at) == (True, TICK)
+    assert await engine.has_lease(ClaimKind.TRIGGER, made.id)
+    assert await engine.claim_due("w", max_count=5) == [], "requeued with a backoff, not at once"
+
+    clock["now"] += timedelta(minutes=10)
+    [lease] = await engine.claim_due("w", max_count=5)
+    await run_engine_trigger(pool, lease)  # type: ignore[arg-type]
+    assert await _fired(sp) == [TICK.isoformat()]
+    row = await sp.get_storage(Trigger).get(made.id)
+    assert (row.enabled, row.next_fire_at) == (False, None)
+    assert not await engine.has_lease(ClaimKind.TRIGGER, made.id)
+

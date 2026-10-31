@@ -142,7 +142,7 @@ def _not_fired_yet(trigger, ticks: list[datetime | None]) -> list[datetime | Non
 
 
 async def _lease_after_the_fire(
-    pool: "WorkerPool", trigger_id: str, *, fired_tick: datetime | None,
+    pool: "WorkerPool", engine_lease: "ClaimLease", *, fired_tick: datetime | None, success: bool,
 ) -> tuple[bool, timedelta | None]:
     """How a claim that fired gives its lease back: ``(drop_lease, requeue_after)`` (ticket 01a16ddb, review of #915).
 
@@ -151,19 +151,26 @@ async def _lease_after_the_fire(
     is claimable at once when that tick passed during the fire (W47). Without the requeue the in-memory claim engine, which did
     not evaluate the adapter's eligibility then, re-claimed a released trigger at once, and every scheduled trigger re-fired in a loop on a
     SQLite deployment; it now applies the trigger's eligibility too (ticket 01a16e79), and the requeue keeps the lease out of each claim's
-    entity reads until its tick. A trigger with no next tick (a ``delayed`` trigger that fired, a disabled or deleted one, an unreadable cron) drops the
+    entity reads until its tick. A ``delayed`` trigger whose fire raised before it finished stays armed (the release leaves it), so its lease is
+    requeued with the worker's retry backoff (W48). A trigger with no next tick (a ``delayed`` trigger that fired, a disabled or deleted one, an unreadable cron) drops the
     lease: the save that lets it fire again upserts a new one (``primer.trigger.service._upsert_claim_if_eligible``). A row that cannot be
     read leaves the lease as the engine would.
     """
+    from primer.claim.adapters.triggers import delayed_fire_finished
     from primer.model.trigger import Trigger
     from primer.trigger.cron import next_fire_at
 
+    trigger_id = engine_lease.entity_id
     try:
         trigger = await pool._storage.get_storage(Trigger).get(trigger_id)
     except Exception:
         logger.exception("trigger %s: could not read it to requeue its lease", trigger_id)
         return False, None
-    if trigger is None or not trigger.enabled or trigger.config.kind != "scheduled":
+    if trigger is None or not trigger.enabled:
+        return True, None
+    if trigger.config.kind == "delayed" and not delayed_fire_finished(trigger, success=success):
+        return False, timedelta(seconds=_tool_call_backoff_seconds(pool.config, engine_lease.attempt_count + 1))
+    if trigger.config.kind != "scheduled":
         return True, None
     now = _now()
     try:
@@ -285,7 +292,7 @@ async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
                 success=True, entity_noop=True, requeue_after=max(early_until - now, timedelta(0)),
             )
         else:
-            drop, requeue_after = await _lease_after_the_fire(pool, engine_lease.entity_id, fired_tick=due_tick)
+            drop, requeue_after = await _lease_after_the_fire(pool, engine_lease, fired_tick=due_tick, success=success)
             outcome = ReleaseOutcome(
                 success=success, drop_lease=drop, requeue_after=requeue_after, last_error=last_error, fired_tick=due_tick,
             )

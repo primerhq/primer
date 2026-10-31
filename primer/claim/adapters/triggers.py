@@ -7,8 +7,9 @@ loop; event-based kinds (e.g. a future ``channel`` kind) are excluded.
 
 ``on_release`` recomputes ``next_fire_at`` from the trigger's source:
 
-* ``delayed``  — one-off; disable + null the next-fire pointer so the
-  row never re-fires.
+* ``delayed``  — one-off; once its fire finished (:func:`delayed_fire_finished`),
+  disable + null the next-fire pointer so the row never re-fires. A fire
+  that raised before it finished leaves the row armed.
 * ``scheduled`` — advance to the cron occurrence after the tick the claim
   fired (``outcome.fired_tick``; after now when it is not given), in the
   trigger's timezone. A tick that passed during the fire is left due.
@@ -27,6 +28,15 @@ from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome, read_for_e
 from primer.int.storage import Storage
 from primer.model.trigger import Trigger
 from primer.trigger.cron import next_fire_at as _cron_next
+
+
+def delayed_fire_finished(trigger: Trigger, *, success: bool) -> bool:
+    """Whether a ``delayed`` trigger's one fire is over: the claim succeeded, or the row carries that fire's marker (``last_fired_id``, which
+    ``fire_trigger`` records after its fan-out, so a fire whose deliveries failed has it). A fire that raised before then has not, and the
+    trigger stays armed for a retry (W48)."""
+    from primer.trigger.fire_id import make_fire_id
+
+    return success or trigger.last_fired_id == make_fire_id(trigger.id, trigger.config.fire_at)
 
 
 class TriggerClaimAdapter(ClaimAdapter):
@@ -90,6 +100,9 @@ class TriggerClaimAdapter(ClaimAdapter):
         now = datetime.now(timezone.utc)
         kind = trigger.config.kind
         if kind == "delayed":
+            if not delayed_fire_finished(trigger, success=outcome.success):
+                # Its fire raised before it finished: the row stays armed and the handler requeued the lease with a backoff (W48).
+                return
             # One-off: disable + null the next-fire pointer so the engine
             # doesn't re-claim it. The trigger row stays for audit.
             changes: dict = {"enabled": False, "next_fire_at": None}
