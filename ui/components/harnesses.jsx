@@ -256,6 +256,16 @@ function HarnessList() {
                         )}
                       </div>
                       <div className="mono muted text-sm" style={{ fontSize: 11 }}>{h.slug}</div>
+                      {SHR_accessBadges(h.access).map((b) => (
+                        <span
+                          key={b}
+                          className="pill pill-ended"
+                          data-testid={"harness-access-badge-" + b}
+                          style={{ fontSize: 10.5, marginTop: 2 }}
+                        >
+                          <span className="dot"></span>{b}
+                        </span>
+                      ))}
                       {errText && (
                         <div
                           className="text-sm"
@@ -361,6 +371,10 @@ function HarnessDetail({ id }) {
   const [confirmUninstall, setConfirmUninstall] = React.useState(false);
   const [cascadeDelete, setCascadeDelete] = React.useState(false);
   const [editTrackedOpen, setEditTrackedOpen] = React.useState(false);
+
+  // ACL-P3-T7: the Share dialog (the action bar's Share button or the
+  // palette's entity.share verb dispatches to it while this surface is open).
+  const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
 
   const detail = useResource(
     "harness-detail:" + id,
@@ -495,6 +509,16 @@ function HarnessDetail({ id }) {
           )}
         </div>
         <div style={{ display: "flex", gap: 6 }}>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="send"
+            data-testid="harness-share"
+            data-verb="entity.share"
+            onClick={() => setShareOpen(true)}
+          >
+            Share
+          </Btn>
           {!isOutbound && (
             <>
               <Btn
@@ -732,6 +756,17 @@ function HarnessDetail({ id }) {
             <span>Also delete the entities this harness tracks (cascade). Leave off to remove only the harness.</span>
           </label>
         </Modal>
+      )}
+
+      {/* ACL-P3-T7: the share dialog (no public-tools section - a harness
+          has no per-tool public exposure). */}
+      {shareOpen && (
+        <SHR_ShareDialog
+          plural="harnesses"
+          id={id}
+          title={h.name || h.slug}
+          onClose={() => setShareOpen(false)}
+        />
       )}
     </div>
   );

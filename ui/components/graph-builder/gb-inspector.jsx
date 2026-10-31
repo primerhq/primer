@@ -75,6 +75,48 @@ function GB_DeleteStep({ node, dispatch }) {
   );
 }
 
+// ACL-P4-T7: the agent node's model profile override (primer/model/graph.py:
+// an optional profile that overrides the agent's own default for this step
+// only). It reads the same user-tier choices the agent form reads
+// (/model_profiles/choices: the profiles THIS person may use). A named
+// profile that is not in the list is not deleted - it is not available to
+// the caller: the id stays the selection, it is named, and the warning says
+// who can fix it.
+function GB_ProfileField({ node, patch, readOnly }) {
+  const api = window.primerApi || {};
+  // The user-tier choices the agent form reads (gb-api names the URL; the builder's one reader).
+  const choices = api.useResource
+    ? api.useResource("gb:model-profile-choices", function (signal) {
+      return window.GB_api.modelProfileChoices(signal);
+    }, { pollMs: null })
+    : { data: null, error: null };
+  const items = (choices.data && choices.data.items) || [];
+  const profileId = node.profile_id || "";
+  const usable = !!profileId && items.some((p) => p.id === profileId);
+  const loaded = !!choices.data && !choices.error;
+  return (
+    <>
+      <select
+        className="select mono"
+        data-testid="gb-profile-picker"
+        aria-label="Model profile"
+        value={profileId}
+        disabled={readOnly}
+        onChange={(e) => patch({ profile_id: e.target.value || null })}
+      >
+        <option value="">(the agent's profile)</option>
+        {profileId && !usable ? <option value={profileId}>{profileId + " (not available to you)"}</option> : null}
+        {items.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+      </select>
+      {profileId && loaded && !usable ? (
+        <div className="field-help" role="alert" data-testid="gb-profile-unusable">
+          This profile is not available to you. An admin can grant its use.
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function GB_Inspector(props) {
   const {
     draft, node, edgeIdx, dispatch, tools, catalogue, readOnly, problems,
@@ -199,6 +241,9 @@ function GB_Inspector(props) {
                 placeholder="Search agents…"
                 testid="gb-agent-picker"
               />
+            </GB_Section>
+            <GB_Section title="Model profile" hint="optional · overrides the agent's default for this step">
+              <GB_ProfileField node={node} patch={patch} readOnly={readOnly} />
             </GB_Section>
             <GB_Section title="What it gets" hint="from earlier steps">
               <GB_RefEditor

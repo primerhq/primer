@@ -9,8 +9,11 @@ may see or change it. A trigger whose ``access`` block is absent or empty (no ow
   ``User`` with the oldest ``created_at``); with no such admin the row is left as it is (admins reach every row regardless).
 
 A subscription saved before owners were recorded (``owner`` absent) gets its trigger's run-as owner, or the first admin when the
-trigger has none either (its fires stay capped at ``user`` by the ownerless trigger, as before). After this step the fire-time
-check refuses a subscription with no owner (:func:`primer.trigger.reach.refuse_fire_out_of_reach`, fail closed).
+trigger has none, so that owner can see and manage it, AND it is disabled (``enabled=false``): nobody recorded who saved it, so
+it may have been planted by another user, and the adopted identity would hand it the owner's role and reach (their private
+workspaces and sessions). The trigger's owner reviews it and re-enables it; the re-enable is an ordinary update, which needs
+full on the trigger and makes the re-enabler the subscription's owner. After this step the fire-time check refuses a
+subscription with no owner (:func:`primer.trigger.reach.refuse_fire_out_of_reach`, fail closed).
 
 A row that already carries owners, grants or ``public`` (a subscription that already has an owner) is left alone, so re-running
 converges. Rows are read in full before any write, through migration-local views with ``extra="allow"``, as ``m021`` does.
@@ -46,6 +49,7 @@ class Trigger(_View):  # noqa: N801
 class Subscription(_View):  # noqa: N801
     trigger_id: str
     owner: dict[str, Any] | None = None
+    enabled: bool = True
 
 
 class User(_View):  # noqa: N801
@@ -129,10 +133,16 @@ class M024TriggerOwnership:
             owner = run_as.get(sub.trigger_id) or admin_ref
             if owner is None:
                 continue
-            await subs.update(sub.model_copy(update={"owner": owner}))
+            # Disabled as well: the adopted identity must not run a row nobody can vouch for until its owner re-enables it.
+            await subs.update(sub.model_copy(update={"owner": owner, "enabled": False}))
             adopted += 1
-        if stamped or adopted:
-            logger.info("gave existing triggers and subscriptions an owner", extra={"triggers": stamped, "subscriptions": adopted})
+        if stamped:
+            logger.info("gave existing triggers an owner", extra={"triggers": stamped})
+        if adopted:
+            logger.warning(
+                "disabled legacy subscriptions that had no owner; their triggers' owners must review and re-enable them",
+                extra={"subscriptions": adopted},
+            )
 
 
 __all__ = ["M024TriggerOwnership"]

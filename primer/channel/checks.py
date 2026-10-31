@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from primer.access.person import Person
+from primer.access.policy import level_of
 from primer.common.entity_checks import EntityCheckError
 from primer.model.channel import Channel, ChannelProvider, channel_token_problem
 from primer.model.common import refuse_served_masks
@@ -35,8 +37,14 @@ def _platform(value: object) -> object:
     return getattr(value, "value", value)
 
 
-async def _stored_provider(entity: Channel, storage_provider: "StorageProvider") -> ChannelProvider:
+async def _stored_provider(
+    entity: Channel, storage_provider: "StorageProvider", person: Person | None = None,
+) -> ChannelProvider:
+    """The provider the channel names. With a ``person`` (the saver or binder, access-control P4 Task 6) a provider they hold no use grant on
+    reads exactly like a missing one."""
     provider = await storage_provider.get_storage(ChannelProvider).get(entity.provider_id)
+    if provider is not None and person is not None and level_of(person, provider.access) is None:
+        provider = None
     if provider is None:
         raise EntityCheckError("validation", f"ChannelProvider {entity.provider_id!r} does not exist")
     return provider
@@ -53,13 +61,30 @@ def _check_platform_matches(entity: Channel, provider: ChannelProvider) -> None:
         )
 
 
-async def check_channel_on_create(entity: Channel, *, storage_provider: "StorageProvider") -> None:
+async def channel_for_binding(storage_provider: "StorageProvider", person: Person, channel_id: str) -> Channel | None:
+    """The channel ``person`` may BIND to something (a workspace's reply binding, a channel trigger), else ``None``.
+
+    The binder must hold a level on the channel AND be able to use the channel's provider (a use grant, or public; access-control P4 Task 6):
+    a channel on a provider they may not use reads exactly like a missing channel (spec 9). Admins bind any channel that exists.
+    """
+    channel = await storage_provider.get_storage(Channel).get(channel_id)
+    if channel is None or level_of(person, channel.access) is None:
+        return None
+    provider = await storage_provider.get_storage(ChannelProvider).get(channel.provider_id)
+    if provider is not None and level_of(person, provider.access) is None:
+        return None
+    return channel
+
+
+async def check_channel_on_create(
+    entity: Channel, *, storage_provider: "StorageProvider", person: Person | None = None,
+) -> None:
     """Enforce provider existence, the platform match, and ``(provider_id, external_id)`` uniqueness, in that order.
 
     Also defaults ``entity.provider`` from the referenced ChannelProvider row when the caller omitted it (mutates ``entity``; the
     model requires the field, so this branch only matters for an entity built without validation).
     """
-    provider = await _stored_provider(entity, storage_provider)
+    provider = await _stored_provider(entity, storage_provider, person)
     if entity.provider is None:
         object.__setattr__(entity, "provider", provider.provider)
     _check_platform_matches(entity, provider)
@@ -91,13 +116,18 @@ async def _refuse_if_pair_taken(
         )
 
 
-async def check_channel_on_update(entity: Channel, *, storage_provider: "StorageProvider") -> None:
+async def check_channel_on_update(
+    entity: Channel, *, storage_provider: "StorageProvider", person: Person | None = None, existing: Channel | None = None,
+) -> None:
     """Enforce provider existence, the platform match and pair uniqueness on a replace, in that order.
 
     The row is rewritten whole, so the new pair is what counts; the row's own id is ignored, so a channel that keeps its pair does not
     conflict with itself (the body ``id`` equals the path ``id`` by the time a hook runs).
     """
-    provider = await _stored_provider(entity, storage_provider)
+    # A provider the channel already names is not re-checked for use (the binder was checked when it was bound; the run-time checks protect
+    # every user): only a provider the update ADDS is asked as the saver.
+    asked = None if existing is not None and existing.provider_id == entity.provider_id else person
+    provider = await _stored_provider(entity, storage_provider, asked)
     _check_platform_matches(entity, provider)
     await _refuse_if_pair_taken(entity, storage_provider, ignore_id=entity.id)
 
@@ -129,4 +159,4 @@ def check_channel_provider_secrets(entity: ChannelProvider) -> None:
         raise EntityCheckError("validation", message, field=f"config.{name}")
 
 
-__all__ = ["check_channel_on_create", "check_channel_on_update", "check_channel_provider_secrets"]
+__all__ = ["channel_for_binding", "check_channel_on_create", "check_channel_on_update", "check_channel_provider_secrets"]

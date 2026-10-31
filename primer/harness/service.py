@@ -536,6 +536,14 @@ async def _write_entity_with_body(
                 content=content,
                 conn=conn,
             )
+    if hasattr(entity, "access") and not is_update:
+        # An install racing a revoke: the harness's access was read inside the transaction, but the revoke's fan-out ran before this row was committed, so it
+        # missed it. Read the harness again now that the row is visible and copy what changed (access-control P3 SEC, finding 11a); a no-op when it did not.
+        from primer.harness.access import apply_harness_access
+
+        latest = await storage_provider.get_storage(Harness).get(entity.harness_id)
+        if latest is not None and latest.access != entity.access:
+            await apply_harness_access(storage_provider, latest)
 
 
 async def _delete_document_content(
