@@ -860,7 +860,7 @@ async def _ws_world() -> WsWorld:
     sp = _FakeStorageProvider()
     await sp.set_default_workspace_id("ws-prime")
     await sp.get_storage(WorkspaceProvider).create(
-        WorkspaceProvider(id="local-1", provider=WorkspaceProviderType.LOCAL, config=LocalWorkspaceConfig(root_path="/nonexistent")),
+        WorkspaceProvider(access=Access(public=True), id="local-1", provider=WorkspaceProviderType.LOCAL, config=LocalWorkspaceConfig(root_path="/nonexistent")),
     )
     for wid, access in (
         ("ws-1", Access.owned_by("u-user")),
