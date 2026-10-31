@@ -2283,6 +2283,9 @@ async def steer_session(
     # Before anything is routed, written or announced: a results-only body resumes the run too.
     # Access (P2 Task 3): full on the session's workspace (it inherits its access).
     await _require_session(request, session_id, AccessLevel.FULL)
+    # The person whose input this is (spec §13 Q1): the request's resolved actor (absent only when auth is off). The turn this steer starts
+    # runs as them, now or when the queue realizes it.
+    by = PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None
     row = await sessions.get(session_id)
     if row is None or row.workspace_id != workspace_id:
         raise NotFoundError(
@@ -2401,6 +2404,7 @@ async def steer_session(
                 text=body.instruction,
                 workspace_registry=registry,
                 event_bus=event_bus,
+                by=by,
             )
             return await sessions.get(session_id)
 
@@ -2485,8 +2489,7 @@ async def steer_session(
             extra_payload=extra_payload,
             receipt=routing_receipt,
             deps=deps,
-            # The person whose input starts this turn (spec §13 Q1): the request's resolved actor (absent only when auth is off).
-            by=PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None,
+            by=by,
         )
         # G12-09: the response names the dropped attachments (response-only,
         # like MainSessionOut.created): the send succeeded, the row is
