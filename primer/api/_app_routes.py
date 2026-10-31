@@ -62,7 +62,7 @@ def _mount_routers(
     not serve external traffic.
     """
     from fastapi import Depends
-    from primer.api.deps import require_admin, require_user
+    from primer.api.deps import require_admin, require_user, serve_global_settings
 
     prefix = f"/{API_VERSION}"
     # Always-on routers — health probes + worker observability/drain.
@@ -110,12 +110,15 @@ def _mount_routers(
     # store, canvas settings, MCP exposure) are split by verb at the source
     # (read_write_routers): their read parts mount at the user tier with
     # secrets masked, their write parts stay at the admin tier (ACL-P4 Task 9).
+    # settings_read_dep also serves a non-admin every key with no tail and
+    # every URL with no userinfo (security review of P4, finding 6).
     # Restricted users (role == "restricted") reach NO entity router.
     # WebSocket routes are NOT gated here: FastAPI injects request=None for
     # the WS scope and require_user/require_admin short-circuit to None for
     # it, so the WS handlers enforce roles themselves (see Task 8).
     admin_dep = [Depends(require_admin)]
     user_dep = [Depends(require_user)]
+    settings_read_dep = [*user_dep, Depends(serve_global_settings)]
 
     # API token CRUD — sibling of the auth router under /v1/auth/tokens.
     # Cookie-only by router-internal check; bearer-authenticated callers
@@ -227,9 +230,9 @@ def _mount_routers(
     # (list/get, _types, the active-config read) mount at the user tier with
     # secrets masked; the write parts stay admin. helpers BEFORE CRUD so the
     # literal path wins over /{id}, same ordering rule as the providers above.
-    app.include_router(artifact_storage_helpers_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(artifact_storage_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(artifact_storage_active_config_read_router, prefix=prefix, dependencies=user_dep)
+    app.include_router(artifact_storage_helpers_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(artifact_storage_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(artifact_storage_active_config_read_router, prefix=prefix, dependencies=settings_read_dep)
     app.include_router(artifact_storage_helpers_write_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(artifact_storage_write_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(artifact_storage_active_config_write_router, prefix=prefix, dependencies=admin_dep)
@@ -238,12 +241,12 @@ def _mount_routers(
     # secrets masked; the write parts stay admin. The read and write helper
     # routers MUST be registered before their CRUD parts so the literal
     # /_types + /_test routes win over the CRUD GET-by-id.
-    app.include_router(web_search_providers_helpers_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(web_search_providers_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(web_search_active_config_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(web_fetch_providers_helpers_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(web_fetch_providers_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(web_fetch_active_config_read_router, prefix=prefix, dependencies=user_dep)
+    app.include_router(web_search_providers_helpers_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(web_search_providers_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(web_search_active_config_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(web_fetch_providers_helpers_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(web_fetch_providers_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(web_fetch_active_config_read_router, prefix=prefix, dependencies=settings_read_dep)
     app.include_router(web_search_providers_helpers_write_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(web_search_providers_write_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(web_search_active_config_write_router, prefix=prefix, dependencies=admin_dep)
@@ -264,11 +267,11 @@ def _mount_routers(
         tts_providers_read_router,
         tts_providers_write_router,
     )
-    app.include_router(stt_providers_helpers_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(stt_providers_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(tts_providers_helpers_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(tts_providers_read_router, prefix=prefix, dependencies=user_dep)
-    app.include_router(speech_active_config_read_router, prefix=prefix, dependencies=user_dep)
+    app.include_router(stt_providers_helpers_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(stt_providers_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(tts_providers_helpers_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(tts_providers_read_router, prefix=prefix, dependencies=settings_read_dep)
+    app.include_router(speech_active_config_read_router, prefix=prefix, dependencies=settings_read_dep)
     app.include_router(stt_providers_helpers_write_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(stt_providers_write_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(tts_providers_helpers_write_router, prefix=prefix, dependencies=admin_dep)
@@ -331,7 +334,7 @@ def _mount_routers(
     app.include_router(canvas_router, prefix=prefix, dependencies=user_dep)
     # Canvas settings are global settings (ACL-P4 Task 9): read at the user
     # tier, the PUT stays admin.
-    app.include_router(canvas_settings_read_router, prefix=prefix, dependencies=user_dep)
+    app.include_router(canvas_settings_read_router, prefix=prefix, dependencies=settings_read_dep)
     app.include_router(canvas_settings_write_router, prefix=prefix, dependencies=admin_dep)
     # Workspace tap — read-only SSE (workspace feature) => require_user.
     # (WS role gate lives in the handler — Task 8.)
@@ -396,12 +399,12 @@ def _mount_routers(
         mcp_exposure_read_router,
         mcp_exposure_write_router,
     )
-    # The exposure singleton is global settings (ACL-P4 Task 9): the reads
-    # (the row, /available) mount at the user tier; the PUT stays admin (it
-    # carries its own route-level require_admin on top). The split routes
+    # The exposure singleton is global settings (ACL-P4 Task 9): its read
+    # (the row) mounts at the user tier; the PUT and the /available catalogue
+    # (exposure administration, it contacts every toolset) stay admin. The split routes
     # already carry the router's own /mcp_exposure prefix, so the mount
     # prefix is the API prefix alone.
-    app.include_router(mcp_exposure_read_router, prefix=prefix, dependencies=user_dep)
+    app.include_router(mcp_exposure_read_router, prefix=prefix, dependencies=settings_read_dep)
     app.include_router(mcp_exposure_write_router, prefix=prefix, dependencies=admin_dep)
     # Admin users CRUD — operator-only account management (RBAC). Mounted
     # at /v1/admin/users and gated by require_admin (stricter than the
