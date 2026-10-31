@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 CANCEL_REASON_SUPERSEDED = "superseded by new user message"
 
 
+class AlreadyDecidedError(ConflictError):
+    """409 ``already_decided``: the park no longer waits for this result (a cancel, or another result, decided it first)."""
+
+    problem_extensions = {"code": "already_decided"}
+
+
 def _pending_targets(session: Any) -> dict[str, tuple[str, str | None]]:
     """Map tool_call_id -> (event_key, call row id) for every external call
     parked on this session (single-agent park OR graph checkpoint entries).
@@ -134,12 +140,17 @@ async def apply_tool_results(
     that is no longer pending is resolved, whatever other pending row
     shares its raw id. Returns the number of applied results.
 
-    Each call's row is then marked ``completed`` through the guarded
-    :func:`resolve_external_row`: a row that left ``pending`` after the
-    validation (a cancel or the lazy timeout won the race) keeps the
-    status it reached and is not overwritten. The row is the one the
-    pending entry names (its ``external_call_row_id``), not whichever
-    pending row of the raw id the lookup kept.
+    Each result first takes the park through the guarded flip
+    (:func:`durably_wake_session`), the transition the yield cancel uses
+    too, so the first decision wins (GS-6). Only a result the park took
+    marks its row ``completed``; one the park refused (a cancel or another
+    result decided it after the validation) writes nothing and the call
+    ends with :class:`AlreadyDecidedError` (results applied before it in
+    the same request stay applied). The row write is the guarded
+    :func:`resolve_external_row`, so a row that left ``pending`` meanwhile
+    keeps the status it reached. The row is the one the pending entry
+    names (its ``external_call_row_id``), not whichever pending row of the
+    raw id the lookup kept.
     """
     targets = _pending_targets(session)
     rows, pending_ids = await _rows_by_tcid(call_storage, session_id=session.id)
@@ -158,6 +169,7 @@ async def apply_tool_results(
             f"{session.id!r}; nothing was applied"
         )
     woken = None
+    refused: list[str] = []
     for r in results:
         event_key, entry_row_id = targets[r.tool_call_id]
         # The call row the pending ENTRY names: several pending rows can share a raw id (a stale one whose park hit the yield cap with no timeout), and
@@ -176,15 +188,19 @@ async def apply_tool_results(
         # elsewhere and the graph parked on another entry under the same raw id): the wake would land there all the same (no entry waits on its key, so
         # the entry fence admits it) and the resume would answer that entry by the raw id. Then neither the wake nor its publish happens; the row is
         # still written (#707 review round 2, N1).
+        won = False
         if woken is session or _pending_targets(woken).get(r.tool_call_id) == (event_key, entry_row_id):
-            await durably_wake_session(
+            if not await durably_wake_session(
                 woken,
                 event_key=event_key,
                 payload=payload,
                 session_storage=session_storage,
                 engine=engine,
                 by=by,
-            )
+            ):
+                refused.append(r.tool_call_id)
+                continue
+            won = True
             if storage_provider is not None:
                 from primer.events.wake import emit_session_wake
 
@@ -205,7 +221,7 @@ async def apply_tool_results(
             )
         landed = await resolve_external_row(
             call_storage, row_id,
-            status="completed", result=r.result, is_error=bool(r.is_error),
+            status="completed", result=r.result, is_error=bool(r.is_error), replace_timed_out=won,
         )
         if landed is None:
             logger.info(
@@ -213,6 +229,11 @@ async def apply_tool_results(
                 "result was recorded; its row keeps the status it reached",
                 r.tool_call_id, session.id,
             )
+    if refused:
+        raise AlreadyDecidedError(
+            f"external tool call(s) {refused!r} on session {session.id!r} were already decided (cancelled, or "
+            f"answered by another result); this result was not applied"
+        )
     return len(results)
 
 
@@ -269,6 +290,7 @@ async def cancel_pending_external(
 
 
 __all__ = [
+    "AlreadyDecidedError",
     "CANCEL_REASON_SUPERSEDED",
     "apply_tool_results",
     "cancel_pending_external",

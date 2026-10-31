@@ -234,6 +234,7 @@ async def _durable_wake(
     event_bus: EventBus,
     storage_provider=None,
     by=None,
+    kind: str = "ask_user",
 ) -> bool:
     """Durably flip the parked row to resumable, then wake the bus (``by``: the answer's sender, who the resumed turn runs as).
 
@@ -252,8 +253,8 @@ async def _durable_wake(
     instead of handing back a 202 for a session the claim loop can never pick
     up. A prompt takes ONE answer (ticket 01a12606): when the flip did not
     land (it already holds another answer, or the park moved on) nothing is
-    published and the route answers 409 ``already_decided``. Returns True
-    when the row holds this reply.
+    published and the route answers 409 ``already_decided`` (worded for
+    ``kind``). Returns True when the row holds this reply.
     """
     did = await durably_wake_session(
         session,
@@ -264,7 +265,7 @@ async def _durable_wake(
         by=by,
     )
     if not did:
-        raise decided_gate_error("ask_user")
+        raise decided_gate_error(kind)
     if storage_provider is not None:
         from primer.events.wake import emit_session_wake
 
@@ -660,6 +661,8 @@ async def post_cancel_yielded_tool(
     event_bus: EventBus = Depends(get_event_bus),
     call_storage=Depends(get_external_tool_call_storage),
     user=Depends(require_user),
+    # Annotated with a plain default: the route function is also called in-process, without the engine (the flip still lands; no lease re-arm).
+    engine: Annotated[ClaimEngine | None, Depends(get_claim_engine)] = None,
 ) -> dict[str, str]:
     """Cancel a single yield without terminating the whole session.
 
@@ -750,9 +753,15 @@ async def post_cancel_yielded_tool(
         payload = with_wake_entry(
             with_wake_park(payload, sess.parked_at), entry_id_of(gate["resume_metadata"] if gate is not None else yielded.get("resume_metadata")),
         )
-    await event_bus.publish(event_key, payload)
+    # A durable wake like the respond routes' (GS-6): the row is stamped first, so a cancel survives a listener outage, and a gate that
+    # already holds a decision answers 409 ``already_decided`` instead of a 202 for a cancel that never applies.
+    by = PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None
+    await _durable_wake(
+        session=sess, event_key=event_key, payload=payload, session_storage=session_storage, engine=engine,
+        event_bus=event_bus, by=by, kind=_cancel_kind(resolved_tool),
+    )
     # An _external park additionally resolves its audit row so the
-    # pending endpoints and the global list reflect the cancel.
+    # pending endpoints and the global list reflect the cancel (only once the cancel landed).
     if yielded.get("tool_name") == "_external":
         from primer.session.external_calls import flip_external_row
 
@@ -765,6 +774,7 @@ async def post_cancel_yielded_tool(
                 "cancelled": True,
                 "reason": body.reason or "cancelled by operator",
             },
+            replace_timed_out=True,  # its park step won (_durable_wake raised otherwise)
         )
     return {"status": "accepted"}
 
