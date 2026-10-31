@@ -13,6 +13,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from jinja2.exceptions import SecurityError
+
+from primer.common.bounded_template import off_loop
 from primer.model.channel_event import ChannelEvent
 from primer.model.event_matcher import EventTextBudget, current_event_text_budget, match_outcome
 from primer.model.principal import PrincipalRef
@@ -375,8 +378,8 @@ async def fire_trigger(
                 })
                 continue
         try:
-            rendered = render_payload(sub.payload_template, fire_context)
-        except PayloadTemplateError as exc:
+            rendered = await off_loop(render_payload, sub.payload_template, fire_context)
+        except (PayloadTemplateError, SecurityError) as exc:  # SecurityError: off_loop's backstop
             results.append({
                 "subscription_id": sub.id,
                 "ok": False,
