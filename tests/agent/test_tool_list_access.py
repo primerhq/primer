@@ -144,6 +144,7 @@ async def test_graph_toolcall_without_identity_is_not_system(sp) -> None:
     executor._workspace_session = SimpleNamespace(session_id="s1", workspace_id="w1", agent_id=None, workspace_tools={})  # noqa: SLF001
     executor._approval_resolver = None  # noqa: SLF001
     executor._identity = None  # noqa: SLF001
+    executor._graph = SimpleNamespace(id="g1")  # noqa: SLF001  (the ToolCall manager acts as its graph, P4 T1)
     executor._provider_registry = SimpleNamespace(storage_provider=sp)  # noqa: SLF001
 
     manager = await executor._manager_for(SimpleNamespace(tool_id="workspace__read"))  # noqa: SLF001
