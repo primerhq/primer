@@ -170,6 +170,28 @@ async def test_parking_on_a_trigger_needs_read_on_it(env, factory, trigger_id):
     assert isinstance(parked, Yielded), parked
 
 
+async def test_parking_on_a_channel_trigger_needs_read_on_its_channel_through_both_doors(env):
+    """Final review F7: ``subscribe_to_trigger`` asks the channel READ ``subscribe_to_channel_event`` asks; a provider-wide trigger is admin-only."""
+    from primer.model.yield_ import Yielded
+    from primer.toolset.trigger import _make_subscribe_channel_handler, _make_subscribe_handler
+
+    await env.sp.get_storage(Channel).create(Channel(id="ch-alice", provider_id="cp-1", provider="slack", external_id="CPRIV", access=Access.owned_by(ALICE)))
+    await env.sp.get_storage(Trigger).create(Trigger(
+        id="tr-priv", slug="dm", name="dms", created_at=NOW, owner=_ref(ALICE),
+        config=ChannelTriggerConfig(provider_id="cp-1", channel_id="ch-alice"), access=Access(owners=[ALICE], grants={BOB: "read"}),
+    ))
+    await env.sp.get_storage(Trigger).create(Trigger(
+        id="tr-all", slug="all", name="every channel", created_at=NOW, owner=_ref(ROOT),
+        config=ChannelTriggerConfig(provider_id="cp-1", channel_id=None), access=Access(owners=[ROOT], public=True),
+    ))
+    for factory in (_make_subscribe_handler, _make_subscribe_channel_handler):
+        for tid in ("tr-priv", "tr-all"):
+            refused = await factory(env.sp)({"trigger_id": tid}, ctx=_ctx(BOB, session="s-1"))
+            assert not isinstance(refused, Yielded) and refused.is_error, (factory.__name__, tid)
+    admin = await _make_subscribe_handler(env.sp)({"trigger_id": "tr-all"}, ctx=_ctx(ROOT, session="s-1"))
+    assert isinstance(admin, Yielded)
+
+
 async def test_an_mcp_call_acts_as_the_request_actor(env):
     for uid, readable in ((DAVE, False), (BOB, True)):
         token = current_actor.set(Principal(type="api_token", id="tok", display="t", role="user", source="local", user_id=uid))

@@ -22,6 +22,7 @@ import httpx
 import pytest_asyncio
 from httpx import ASGITransport
 
+from tests.events._users import seed_account_of
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
 from primer.auth.passwords import hash_password
@@ -80,6 +81,7 @@ async def _seed_workspace(sp: SqliteStorageProvider, ws_id: str, *, owners: list
 
 
 async def _park(sp: SqliteStorageProvider, session_id: str, workspace_id: str, person: PrincipalRef, event_key: str) -> None:
+    await seed_account_of(sp, person)
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id=session_id, workspace_id=workspace_id,
         binding=AgentSessionBinding(agent_id="agent-a"),

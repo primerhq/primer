@@ -129,6 +129,19 @@ async def subscription_reaches_outside(storage_provider: Any, reach: Person | No
     return await _target_refusal(storage_provider, reach, config) is not None
 
 
+async def current_person(ref: PrincipalRef, storage_provider: Any) -> Person:
+    """The person ``ref`` is NOW: its recorded role capped by the role it holds today (:func:`primer.trigger.owner.resolve_current_role`).
+
+    A demoted admin or a user since restricted does not keep the reach of the role they saved with. An owner that cannot be resolved (deleted,
+    disabled, revoked token) keeps the recorded role here: the callers that must refuse such an owner do it in their own words.
+    """
+    from primer.trigger.owner import resolve_current_role
+
+    recorded = person_from_ref(ref)
+    role = await resolve_current_role(ref, storage_provider)
+    return recorded if role is None else Person(recorded.user_id, "admin" if role == "system" else role)
+
+
 async def _refuse_lost_trigger_access(sub: Subscription, storage_provider: Any) -> str | None:
     """Why a fire of ``sub`` must not run because someone lost access to its TRIGGER, else ``None`` (access-control P3 SEC, findings 3 and 7).
 
@@ -152,7 +165,7 @@ async def _refuse_lost_trigger_access(sub: Subscription, storage_provider: Any) 
     for ref, need, reason in checks:
         if ref is None or ref.type == "system" or (ref.type, ref.id) == (PrincipalRef.unattributed().type, PrincipalRef.unattributed().id):
             continue
-        person = person_from_ref(ref)
+        person = await current_person(ref, storage_provider)
         if person.is_admin:
             continue
         held = level_of(person, trigger.access)
@@ -181,7 +194,10 @@ async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> 
     if owner is None:
         logger.warning("trigger %s subscription %s refused: it has no owner; the fire starts and feeds no session", sub.trigger_id, sub.id)
         return "this subscription has no owner, so nobody can be checked on its target; the fire starts and feeds no session (re-save it)"
-    if person_from_ref(owner).is_admin:
+    # Judged by the role the owner holds NOW, capped by the one recorded (a demoted admin or a user since restricted does not keep the reach of the role
+    # they saved with), the rule every later run of the owner follows (access-control P6 Task 2).
+    person = await current_person(owner, storage_provider)
+    if person.is_admin:
         return None  # an admin or system owner reaches every workspace, one whose row is gone included (as require_session)
     config = sub.config
     if isinstance(config, AgentFreshSubConfig | GraphFreshSubConfig):
@@ -193,7 +209,7 @@ async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> 
         target = row.workspace_id
     else:
         target = None  # a kind with no rule here: refused (fail closed)
-    level = await workspace_level(storage_provider, person_from_ref(owner), target) if target is not None else None
+    level = await workspace_level(storage_provider, person, target) if target is not None else None
     if target is not None and _full(level):
         return None
     logger.warning(

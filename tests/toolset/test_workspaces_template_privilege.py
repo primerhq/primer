@@ -211,6 +211,25 @@ async def test_an_mcp_admin_can_create_a_template_with_an_admin_only_field(world
 
 
 @pytest.mark.asyncio
+async def test_a_delegated_run_over_mcp_does_not_keep_the_admins_rank(world) -> None:
+    """Final access review F14: a subagent an admin started over MCP is unattributed for every access check (``person_for_tool``, the
+    ``_RUN_ID`` rung), so the admin-only template fields are refused to it too: the admin check asks the same person."""
+    from primer.agent.invoke import _RUN_ID
+
+    sp, toolset = world
+    token = current_actor.set(Principal(type="user", id="a", display="a", role="admin", source="local", user_id="a"))
+    run = _RUN_ID.set("run-sub-1")
+    try:
+        is_error, answer = await _call(toolset, "create_workspace_template", entity=_PRIVILEGED["extra_mounts"])
+    finally:
+        _RUN_ID.reset(run)
+        current_actor.reset(token)
+
+    assert is_error and answer["type"] == "forbidden", answer
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-c") is None
+
+
+@pytest.mark.asyncio
 async def test_a_call_with_no_known_caller_fails_closed(world) -> None:
     sp, toolset = world
 
@@ -308,3 +327,27 @@ async def test_a_user_run_may_delete_an_admin_free_template(world) -> None:
 
     assert not is_error, answer
     assert await sp.get_storage(WorkspaceTemplate).get("tpl-p") is None
+
+
+@pytest.mark.asyncio
+async def test_the_template_tools_refuse_a_document_mount_the_saver_cannot_read(world) -> None:
+    """Final access review F15: create_ and update_workspace_template run the REST hooks' document-mount check
+    (``refuse_unreadable_document_mounts``): a document in a collection the saver cannot read answers like a missing document."""
+    from primer.model.access import Access
+    from primer.model.collection import Collection, Document
+
+    sp, toolset = world
+    await sp.get_storage(Collection).create(Collection(id="kb-alice", description="private", access=Access.owned_by("alice")))
+    await sp.get_storage(Document).create(Document(id="doc-1", collection_id="kb-alice", slug="secret", path="secret", title="s"))
+    loot = [{"path": "loot.md", "source": {"kind": "document", "collection_id": "kb-alice", "document_id": "doc-1"}}]
+    plain = {"id": "tpl-u", "provider_id": "p-1", "description": "d"}
+
+    created = await _call(toolset, "create_workspace_template", ctx=_ctx("user"), entity={**plain, "id": "tpl-loot", "files": loot})
+    assert not (await _call(toolset, "create_workspace_template", ctx=_ctx("user"), entity=plain))[0]
+    updated = await _call(toolset, "update_workspace_template", ctx=_ctx("user"), id="tpl-u", entity={**plain, "files": loot})
+
+    for is_error, answer in (created, updated):
+        assert is_error and answer["type"] == "not-found", answer
+        assert answer["message"] == "FileSource path='loot.md' kind=document: document 'doc-1' not found"
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-loot") is None
+    assert (await sp.get_storage(WorkspaceTemplate).get("tpl-u")).files == []

@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
+from tests.events._users import seed_account_of
 from primer.events.dispatcher import EventDispatcher
 from primer.model.event import EventFilter, EventSubscription, FieldMatcher, SessionWakeSink
 from primer.model.principal import PrincipalRef
@@ -249,6 +250,7 @@ async def test_a_session_waiting_on_session_messaged_is_woken_and_the_message_st
     world = await _world()
     key = "evwait:ses-b:call_w"
     # The waiter is a session of a user who reads ws-1 (the dispatcher re-checks that before it wakes a non-admin park, access-control P2 T7).
+    await seed_account_of(world.sp, USER)
     await seed_session(world, sid="ses-b", turn_no=1, parked_status="parked", parked_event_key=key, parked_at=NOW, initiated_by=USER)
     sub = EventSubscription(
         id="evsub-1",
@@ -277,6 +279,7 @@ async def test_a_message_wakes_only_the_wait_on_its_own_target():
     world = await _world()
     keys = {"ses-b": "evwait:ses-b:call_w", "ses-c": "evwait:ses-c:call_w"}
     store = world.sp.get_event_store()
+    await seed_account_of(world.sp, USER)
     for sid, key in keys.items():
         await seed_session(world, sid=sid, turn_no=1, parked_status="parked", parked_event_key=key, parked_at=NOW, initiated_by=USER)
         sub = EventSubscription(

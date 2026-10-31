@@ -193,6 +193,14 @@ def user_default_workspace_id(user_id: str) -> str:
     return f"ws-{user_id}"
 
 
+async def is_reserved_user_default_id(storage_provider: Any, workspace_id: str) -> bool:
+    """Whether a client-chosen workspace id is in the per-user default id space (final access review F2): any ``ws-user-...`` id
+    (every account id is ``user-<hex>``, so this covers users not created yet) or ``ws-<an existing user's id>``."""
+    if not workspace_id.startswith("ws-"):
+        return False
+    return workspace_id.startswith(user_default_workspace_id("user-")) or await storage_provider.get_storage(User).get(workspace_id[3:]) is not None
+
+
 async def ensure_user_default_workspace(
     storage_provider: Any,
     workspace_registry: Any,
@@ -225,7 +233,7 @@ async def ensure_user_default_workspace(
         if workspace_id is None or await storage_provider.get_storage(Workspace).get(workspace_id) is None:
             workspace_id = workspace_id or await _adopt_install_default(storage_provider, user)
             workspace_id = workspace_id or user_default_workspace_id(user.id)
-            await _create_user_default(storage_provider, workspace_registry, user, workspace_id, template_id)
+            workspace_id = await _create_user_default(storage_provider, workspace_registry, user, workspace_id, template_id)
         if stored is not None and stored.default_workspace_id != workspace_id:
             await write_user_fields(users, user.id, {"default_workspace_id": workspace_id}, bump_epoch=False)
         await ensure_main_operator_session(
@@ -261,10 +269,18 @@ async def _adopt_install_default(storage_provider: Any, user: User) -> str | Non
     return install_id if adopted is not None else None
 
 
+def _is_users_own(row: Workspace, user: User) -> bool:
+    return row.access.owners == [user.id] and not row.access.grants and not row.access.public
+
+
 async def _create_user_default(
     storage_provider: Any, workspace_registry: Any, user: User, workspace_id: str, template_id: str | None,
-) -> None:
-    """Materialise ``workspace_id`` and write its row owned by ``user``; a row that already exists (adopted, or a concurrent creator's) is left."""
+) -> str:
+    """Materialise ``workspace_id`` and write its row owned by ``user``; returns the id used.
+
+    A row that already exists is adopted only when it is the user's alone and private (adopted install default, or a concurrent creator's):
+    anything else (a squat made before the id space was reserved, final access review F2) is left as it is, and ``-1``, ``-2``... is tried.
+    """
     from primer.access.person import Person
     from primer.api.registries.workspace_registry import new_workspace_row
     from primer.bootstrap.defaults import RESERVED_LOCAL_WORKSPACE_TEMPLATE
@@ -273,8 +289,16 @@ async def _create_user_default(
     from primer.model.workspace import WorkspaceTemplate
 
     workspaces = storage_provider.get_storage(Workspace)
-    if await workspaces.get(workspace_id) is not None:
-        return
+    base, n = workspace_id, 0
+    while (row := await workspaces.get(workspace_id)) is not None:
+        if _is_users_own(row, user):
+            return workspace_id
+        logger.warning(
+            "prime: a workspace holding the user's default id is not theirs alone; not adopted",
+            extra={"workspace_id": workspace_id, "user_id": user.id, "owners": row.access.owners},
+        )
+        n += 1
+        workspace_id = f"{base}-{n}"
     wanted = template_id or RESERVED_LOCAL_WORKSPACE_TEMPLATE
     template = await storage_provider.get_storage(WorkspaceTemplate).get(wanted)
     if template is None:
@@ -290,9 +314,13 @@ async def _create_user_default(
             )
         )
     except ConflictError:
+        row = await workspaces.get(workspace_id)
+        if row is None or not _is_users_own(row, user):
+            raise
         logger.debug("prime: user default workspace row created concurrently", extra={"workspace_id": workspace_id})
-        return
+        return workspace_id
     logger.info("prime: created a user's default workspace", extra={"workspace_id": workspace_id, "user_id": user.id})
+    return workspace_id
 
 
 def main_session_id(workspace_id: str, n: int) -> str:

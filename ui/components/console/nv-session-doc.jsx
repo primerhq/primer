@@ -3771,7 +3771,7 @@ function NV_SessionDoc(props) {
             {pending.map(function (row) {
               // A queued canvas click (pivot P5, Task 22) shows its chip label,
               // not its raw block text: the block is the session's own input and
-              // holds what the user entered, which the shared reader must not see.
+              // holds what the user entered, which a reader of the workspace must not see.
               var canvasEvent = row.attribution && row.attribution.canvas_event;
               var text = canvasEvent
                 ? window.SA_canvasChipLabel({ kind: "user_input", payload: { canvas_event: canvasEvent } })

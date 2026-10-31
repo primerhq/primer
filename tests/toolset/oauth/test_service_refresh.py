@@ -36,7 +36,7 @@ from primer.toolset.oauth.service import (
 )
 from primer.toolset.oauth.store import McpOAuthStore
 from tests._support.mock_oauth_mcp_fixtures import mock_oauth_mcp  # noqa: F401 - the fixture
-from tests.toolset.oauth._service_helpers import KEY, OTHER_KEY, Clock, connect, make_toolset, mcp_answers, target_of, token_row
+from tests.toolset.oauth._service_helpers import SYSTEM, KEY, OTHER_KEY, Clock, connect, make_toolset, mcp_answers, target_of, token_row
 
 CC = {"grant": "client_credentials", "static_client": {"client_id": "cc-client", "client_secret": "cc-secret"}}
 #: Every wait in this file is bounded, so a refresh that never ends fails its test instead of hanging the lane.
@@ -64,7 +64,8 @@ async def services(fake_storage_provider, box, clock):
     made: list[ToolsetOAuthService] = []
 
     def make(owner_id: str = "pod-a", *, secret_box: SecretBox | None = None) -> ToolsetOAuthService:
-        service = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=secret_box or box, clock=clock, owner_id=owner_id)
+        service = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=secret_box or box, clock=clock, owner_id=owner_id,
+                                      auth_enabled=False)  # SYSTEM: the shared row of an auth-disabled install
         made.append(service)
         return service
 
@@ -139,7 +140,7 @@ async def test_a_fresh_token_is_returned_without_a_request(svc, kb, target, stor
 async def test_an_unconnected_toolset_needs_sign_in(svc, target, mock_oauth_mcp):
     with pytest.raises(McpSignInRequiredError) as caught:
         await svc.access_token(target)
-    assert str(caught.value) == "the MCP server kb needs an operator to reconnect it" and caught.value.reason == NOT_CONNECTED
+    assert str(caught.value) == "the MCP server kb needs the person this run acts for to sign in (Toolsets > kb > Connect in the console)" and caught.value.reason == NOT_CONNECTED
     assert mock_oauth_mcp.state.token_requests == []
 
 
@@ -173,7 +174,7 @@ async def test_two_pods_refreshing_at_once_make_one_exchange(services, kb, targe
     assert store.unseal(row.refresh_token_enc) != old_refresh and (row.state, row.version) == ("connected", 2)
     assert row.refresh_lease_until is None and row.refresh_lease_owner is None
     assert mcp_answers(mock_oauth_mcp.mcp_url, tokens[0]) == 200
-    assert (await b.status(kb)).state == "connected"
+    assert (await b.status(kb, SYSTEM)).state == "connected"
 
 
 async def test_a_waiting_pod_takes_the_token_the_lease_holder_stores(svc, kb, target, store, mock_oauth_mcp, clock, monkeypatch):
@@ -276,10 +277,10 @@ async def test_a_refused_refresh_signs_the_toolset_out(svc, kb, target, store, m
     with pytest.raises(McpSignInRequiredError) as caught:
         await svc.access_token(target)
     reason = "The authorization server refused the refresh token (invalid_grant)."
-    assert str(caught.value) == "the MCP server kb needs an operator to reconnect it" and caught.value.reason == reason
+    assert str(caught.value) == "the MCP server kb needs the person this run acts for to sign in (Toolsets > kb > Connect in the console)" and caught.value.reason == reason
     row = await store.get_tokens("kb")
     assert (row.state, row.reason, row.access_token_enc, row.refresh_token_enc, row.refresh_lease_until) == ("needs_sign_in", reason, None, None, None)
-    status = await svc.status(kb)
+    status = await svc.status(kb, SYSTEM)
     assert (status.state, status.reason) == ("needs_sign_in", reason)
     requests = len(mock_oauth_mcp.state.token_requests)
     with pytest.raises(McpSignInRequiredError):
@@ -300,7 +301,7 @@ async def test_a_token_endpoint_outage_keeps_the_refresh_token(svc, kb, target, 
     row = await store.get_tokens("kb")
     assert row.state == "error" and store.unseal(row.refresh_token_enc) == old_refresh and row.refresh_lease_until is None
     assert row.reason.startswith("The authorization server could not be reached: token endpoint answered 503")
-    assert (await svc.status(kb)).model_dump(include={"state", "reason"}) == {"state": "error", "reason": row.reason}
+    assert (await svc.status(kb, SYSTEM)).model_dump(include={"state", "reason"}) == {"state": "error", "reason": row.reason}
     mock_oauth_mcp.state.token_status_override = None
     recovered = await svc.access_token(target)
     assert recovered != old_access
@@ -438,7 +439,7 @@ async def test_a_rejected_refreshed_token_signs_out_the_version_that_holds_it(sv
     row = await store.get_tokens("kb")
     assert (row.state, row.reason, row.access_token_enc, row.refresh_token_enc) == ("needs_sign_in", TOKEN_REJECTED, None, None)
     assert row.version == before.version + 1
-    assert (await svc.status(kb)).state == "needs_sign_in"
+    assert (await svc.status(kb, SYSTEM)).state == "needs_sign_in"
 
 
 async def test_a_rejected_client_credentials_token_marks_error_and_keeps_the_sign_in(svc, store, mock_oauth_mcp):

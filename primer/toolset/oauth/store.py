@@ -1,4 +1,4 @@
-"""Typed access to the three tables of an MCP toolset's shared sign-in, with the sealing done here (plan 07, Task 5; design 12.5 and 12.6).
+"""Typed access to the three tables of MCP toolset sign-ins, with the sealing done here (plan 07, Task 5; design 12.5 and 12.6; access-control P5 Task 2).
 
 :class:`McpOAuthStore` is the only code that reads or writes :class:`~primer.model.mcp_oauth.McpOAuthTokenSet`, :class:`~primer.model.mcp_oauth.McpOAuthClient`
 and :class:`~primer.model.mcp_oauth.McpOAuthPendingSignIn`. It owns three guarantees the rest of the OAuth code leans on:
@@ -10,6 +10,9 @@ and :class:`~primer.model.mcp_oauth.McpOAuthPendingSignIn`. It owns three guaran
   twice or lose an update silently. This is what lets several processes share one refresh lease.
 * **A pending sign-in is single use.** :meth:`take_pending` claims the row with a compare-and-set on ``consumed`` before it returns it, so of any number of
   concurrent callers exactly one gets it, and an expired or already-claimed row is never given out.
+* **A token row is served only to the pair it names.** A person's row is stored under :func:`token_key` of (toolset, user) and the shared row
+  (client credentials, the system person) under the bare toolset id; :meth:`get_tokens` returns ``None`` for a row whose ``toolset_id`` / ``user_id``
+  name another pair, so a damaged or misfiled row is never sent for somebody else.
 * **A pending sign-in is stored under a hash of its state.** The ``state`` is a capability while the sign-in is pending, and storage code prints row ids
   (the drift tripwire of :func:`~primer.storage.cas.patch_if_checked` logs the id it was given), so :meth:`put_pending` stores the row under
   :func:`pending_key` of the state and :meth:`take_pending` looks it up by the state: the state itself is never a row id.
@@ -39,7 +42,7 @@ from primer.storage import raw_generation
 from primer.storage.cas import patch_if_checked
 from primer.storage.q import Q
 
-__all__ = ["McpOAuthStore", "binding_digest", "forget_sign_in", "pending_key"]
+__all__ = ["McpOAuthStore", "binding_digest", "forget_sign_in", "forget_user_sign_ins", "pending_key", "token_key"]
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +84,12 @@ def pending_key(state: str) -> str:
     return hashlib.sha256(state.encode("utf-8")).hexdigest()
 
 
+def token_key(toolset_id: str, user_id: str) -> str:
+    """The id a person's token row is stored under: ``u-`` and the SHA-256 hex of the toolset id and the user id joined by a NUL, which no toolset id
+    contains, so no pair can collide with another pair or with a bare toolset id (the shared row's id)."""
+    return "u-" + hashlib.sha256(f"{toolset_id}\0{user_id}".encode()).hexdigest()
+
+
 def binding_digest(nonce: str) -> str:
     """What a pending sign-in keeps of the browser-binding nonce (``browser_binding``): its SHA-256 hex, so a reader of the table cannot forge the
     cookie that finishes the sign-in."""
@@ -101,28 +110,36 @@ async def _delete_quietly(storage: Any, row_id: str) -> bool:
     return True
 
 
-async def _pending_rows(pending: Any, toolset_id: str) -> list[McpOAuthPendingSignIn]:
-    """Every pending sign-in of one toolset, live and expired, read page by page."""
-    predicate = Q(McpOAuthPendingSignIn).where("toolset_id", toolset_id).build()
-    rows: list[McpOAuthPendingSignIn] = []
+async def _rows_where(storage: Any, model: type, field: str, value: str) -> list[Any]:
+    """Every row of ``storage`` whose ``field`` is ``value``, read in full (page by page) before the caller deletes any."""
+    predicate = Q(model).where(field, value).build()
+    rows: list[Any] = []
     cursor: str | None = None
     while True:
-        page = await pending.find(predicate, CursorPage(cursor=cursor, length=_PAGE))
+        page = await storage.find(predicate, CursorPage(cursor=cursor, length=_PAGE))
         rows.extend(page.items)
         cursor = page.next_cursor
         if cursor is None:
             return rows
 
 
+async def _pending_rows(pending: Any, toolset_id: str) -> list[McpOAuthPendingSignIn]:
+    """Every pending sign-in of one toolset, live and expired."""
+    return await _rows_where(pending, McpOAuthPendingSignIn, "toolset_id", toolset_id)
+
+
 async def _forget(tokens: Any, clients: Any, pending: Any, toolset_id: str) -> None:
-    await _delete_quietly(tokens, toolset_id)
+    await _delete_quietly(tokens, toolset_id)          # the shared row, and one written before rows named their toolset
+    for row in await _rows_where(tokens, McpOAuthTokenSet, "toolset_id", toolset_id):
+        await _delete_quietly(tokens, row.id)
     await _delete_quietly(clients, toolset_id)
     for row in await _pending_rows(pending, toolset_id):
         await _delete_quietly(pending, row.id)
 
 
 async def forget_sign_in(storage_provider: StorageProvider, toolset_id: str) -> None:
-    """Remove everything stored for a toolset's shared sign-in: its tokens, its registered client and every pending sign-in, live ones included.
+    """Remove everything stored for a toolset's sign-ins: every person's tokens and the shared ones, its registered client and every pending sign-in,
+    live ones included.
 
     The same as :meth:`McpOAuthStore.forget`, without a key: nothing is sealed or opened. Every path that deletes a toolset calls one of the two
     (G4-02), so a toolset created again under the same id and settings is never connected on the sign-in of the one that was deleted. The harness
@@ -134,6 +151,16 @@ async def forget_sign_in(storage_provider: StorageProvider, toolset_id: str) -> 
         storage_provider.get_storage(McpOAuthPendingSignIn),
         toolset_id,
     )
+
+
+async def forget_user_sign_ins(storage_provider: StorageProvider, user_id: str) -> None:
+    """Remove every sign-in of one person, on every toolset: their token rows and their pending sign-ins. The shared rows and the registered clients
+    are not theirs and stay. Keyless, like :func:`forget_sign_in` (nothing is sealed or opened); removing a user calls it (access-control Phase 6)."""
+    tokens = storage_provider.get_storage(McpOAuthTokenSet)
+    pending = storage_provider.get_storage(McpOAuthPendingSignIn)
+    for storage, model in ((tokens, McpOAuthTokenSet), (pending, McpOAuthPendingSignIn)):
+        for row in await _rows_where(storage, model, "user_id", user_id):
+            await _delete_quietly(storage, row.id)
 
 
 class McpOAuthStore:
@@ -159,8 +186,13 @@ class McpOAuthStore:
 
     # ---- the token row ------------------------------------------------------------------------------------------------------------------------------------------------
 
-    async def get_tokens(self, toolset_id: str) -> McpOAuthTokenSet | None:
-        return await self._tokens.get(toolset_id)
+    async def get_tokens(self, key: str, *, toolset_id: str | None = None, user_id: str | None = None) -> McpOAuthTokenSet | None:
+        """The token row stored under ``key``, only when it names the pair it is read for: ``toolset_id`` (default: ``key``, the shared row's id) and
+        ``user_id`` (``None`` for the shared row). A row that names another pair is ``None``, as if there were none."""
+        row = await self._tokens.get(key)
+        if row is None or row.toolset_id != (toolset_id or key) or row.user_id != user_id:
+            return None
+        return row
 
     async def replace_tokens(self, row: McpOAuthTokenSet) -> McpOAuthTokenSet:
         """Store ``row`` as the toolset's tokens: created when there is none, else it REPLACES the stored row with ``version = stored.version + 1``.
@@ -185,9 +217,9 @@ class McpOAuthStore:
                 continue                                # deleted between the read and the write: create it
             if replaced is not None:
                 return replaced
-        raise ConflictError(f"the sign-in of MCP toolset {row.id} was changed by other writers {_REPLACE_ATTEMPTS} times in a row")
+        raise ConflictError(f"the sign-in of MCP toolset {row.toolset_id or row.id} was changed by other writers {_REPLACE_ATTEMPTS} times in a row")
 
-    async def patch_tokens(self, toolset_id: str, patch: Mapping[str, Any], *, where: Mapping[str, Sequence[Any]]) -> McpOAuthTokenSet | None:
+    async def patch_tokens(self, key: str, patch: Mapping[str, Any], *, where: Mapping[str, Sequence[Any]]) -> McpOAuthTokenSet | None:
         """Write only the named fields of the token row, iff every ``where`` clause matches its CURRENT document (``Storage.patch_if`` through the drift tripwire).
 
         ``patch`` takes the model's own types: a ``SecretStr`` is written as its ciphertext, a ``datetime`` as the ISO form the model stores, ``None`` as null.
@@ -200,13 +232,13 @@ class McpOAuthStore:
         document = {key: _json_ready(value) for key, value in patch.items()}
         guard = {key: [_json_ready(value) for value in allowed] for key, allowed in where.items()}
         try:
-            return await patch_if_checked(self._tokens, toolset_id, document, where=guard)
+            return await patch_if_checked(self._tokens, key, document, where=guard)
         except NotFoundError:
             return None
 
-    async def delete_tokens(self, toolset_id: str) -> bool:
-        """Remove the toolset's token row. ``True`` when there was one; deleting nothing is not an error."""
-        return await _delete_quietly(self._tokens, toolset_id)
+    async def delete_tokens(self, key: str) -> bool:
+        """Remove the token row stored under ``key``. ``True`` when there was one; deleting nothing is not an error."""
+        return await _delete_quietly(self._tokens, key)
 
     # ---- the registered client ----------------------------------------------------------------------------------------------------------------------------------------
 
@@ -271,18 +303,18 @@ class McpOAuthStore:
                 removed += 1
         return removed
 
-    async def drop_pending(self, toolset_id: str) -> int:
-        """Delete every pending sign-in of the toolset, live ones included; the number deleted. A disconnect does this, so a sign-in started before
-        it cannot connect the toolset again after it."""
+    async def drop_pending(self, toolset_id: str, user_id: str | None) -> int:
+        """Delete every pending sign-in of the toolset for one person (``None``: the system person), live ones included; the number deleted. A
+        disconnect does this, so a sign-in that person started before it cannot connect them again after it. Other people's are left alone."""
         removed = 0
         for row in await self._pending_of(toolset_id):
-            if await self._drop_pending(row.id):
+            if row.user_id == user_id and await self._drop_pending(row.id):
                 removed += 1
         return removed
 
     async def forget(self, toolset_id: str) -> None:
-        """Remove everything stored for the toolset: its tokens, its registered client and every pending sign-in, live ones included
-        (:func:`forget_sign_in`)."""
+        """Remove everything stored for the toolset: every person's tokens and the shared ones, its registered client and every pending sign-in, live
+        ones included (:func:`forget_sign_in`)."""
         await _forget(self._tokens, self._clients, self._pending, toolset_id)
 
     async def _pending_of(self, toolset_id: str) -> list[McpOAuthPendingSignIn]:

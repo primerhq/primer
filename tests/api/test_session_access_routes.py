@@ -242,7 +242,7 @@ async def test_graph_run_reads_follow_the_session_workspace(world, app, client, 
     for tail in ("turn_log", "node_states"):
         refused = await cast.mallory.get(f"/v1/graphs/g-1/runs/ses-g/{tail}")
         assert refused.status_code == 404, (tail, refused.text)
-        assert refused.json()["detail"] == "Session 'ses-g' does not exist", refused.text
+        assert refused.json()["detail"] == "Graph run 'ses-g' does not exist", refused.text
         served = await cast.erin.get(f"/v1/graphs/g-1/runs/ses-g/{tail}")
         assert served.status_code == 200, (tail, served.text)
 
@@ -363,6 +363,60 @@ async def test_human_input_into_a_parked_session_follows_the_full_gate(world, ap
     assert (await sp.get_storage(WorkspaceSession).get(SID)).parked_status == "resumable"
 
 
+def _carol_ref(c: SimpleNamespace) -> PrincipalRef:
+    return PrincipalRef(type="user", id=c.carol_id, display="carol", role="user", source="local", user_id=c.carol_id)
+
+
+async def test_a_peers_ask_user_answer_runs_the_resumed_turn_as_the_peer(world, app, client, cast):
+    """Final access review F6 (lead ruling): an answer is model input, like a steer, so a full peer's answer re-attributes the resumed turn to
+    the peer (``turn_person``), and the resume-time workspace check then judges them, never the owner's identity; the owner's own answer keeps it."""
+    from primer.worker.executor_builders import session_run_principal
+
+    sp = app.state.storage_provider
+    carol = _carol_ref(cast)
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.carol_id], grants={cast.dave_id: "full"}))
+    await sp.get_storage(WorkspaceSession).create(
+        _parked_row(SID, by=carol, tool="ask_user", metadata={"prompt": "which file?"}).model_copy(update={"turn_person": carol})
+    )
+    await sp.get_storage(WorkspaceSession).create(
+        _parked_row("ses-own", by=carol, tool="ask_user", metadata={"prompt": "which file?"}).model_copy(update={"turn_person": carol})
+    )
+
+    r = await cast.dave.post(f"/v1/sessions/{SID}/ask_user/respond", json={"tool_call_id": HUMAN_TC, "response": "read hr-notes"})
+    own = await cast.carol.post("/v1/sessions/ses-own/ask_user/respond", json={"tool_call_id": HUMAN_TC, "response": "a.txt"})
+
+    assert r.status_code == 202 and own.status_code == 202, (r.text, own.text)
+    after = await sp.get_storage(WorkspaceSession).get(SID)
+    assert after.parked_status == "resumable" and session_run_principal(after).id == cast.dave_id
+    assert session_run_principal(await sp.get_storage(WorkspaceSession).get("ses-own")).id == cast.carol_id
+
+
+async def test_a_peers_external_tool_results_run_the_resumed_turn_as_the_peer(world, app, client, cast):
+    """F6, the other door of a parked turn: ``tool_results`` on the steer route re-attribute the resumed turn to the submitter, as a steer does."""
+    from primer.model.external_tool import ExternalToolCall
+    from primer.worker.executor_builders import session_run_principal
+
+    sp = app.state.storage_provider
+    carol = _carol_ref(cast)
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.carol_id], grants={cast.dave_id: "full"}))
+    key = f"external_tool:{SID}:tc-1"
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id=SID, workspace_id=WS, binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.RUNNING, turn_no=1,
+        created_at=NOW, initiated_by=carol, turn_person=carol, parked_status="parked", parked_at=NOW, parked_event_key=key,
+        parked_state={"tool_call_id": "tc-1", "yielded": {"tool_name": "_external", "event_key": key, "resume_metadata": {
+            "original_call": {"id": "tc-1", "name": "lookup", "arguments": {}}, "external_call_row_id": "etool-1"}}},
+    ))
+    await sp.get_storage(ExternalToolCall).create(ExternalToolCall(
+        id="etool-1", session_id=SID, tool_call_id="tc-1", tool_name="lookup", arguments={}, created_at=NOW,
+    ))
+
+    r = await cast.dave.post(f"/v1/workspaces/{WS}/sessions/{SID}/steer", json={"tool_results": [{"tool_call_id": "tc-1", "result": "x"}]})
+
+    assert r.status_code == 200, r.text
+    after = await sp.get_storage(WorkspaceSession).get(SID)
+    assert after.parked_status == "resumable" and session_run_principal(after).id == cast.dave_id
+
+
 async def test_an_approval_decision_needs_full_and_keeps_the_approver_spec(world, app, client, cast):
     """The access gate replaces the rank floor under the gate's approver spec: full lets the spec decide, the spec still refuses the wrong user."""
     sp = app.state.storage_provider
@@ -438,3 +492,97 @@ async def test_an_admin_still_clears_the_gates(world, app, client, cast, which):
     else:
         r = await client.get(f"/v1/sessions/{SID}")
     assert r.status_code == 200, r.text
+
+
+# ===========================================================================
+# Final access review F12: a hidden row answers byte-for-byte like a missing one on every door
+# ===========================================================================
+
+
+def _norm(resp: httpx.Response, *ids: str) -> tuple[int, str]:
+    """Status and body with the per-request fields dropped and the probed ids replaced, so a hidden and an unknown id compare equal."""
+    import json
+
+    body = resp.json()
+    body.pop("instance", None)
+    if isinstance(body.get("extensions"), dict):
+        body["extensions"].pop("request_id", None)
+    text = json.dumps(body, sort_keys=True)
+    for i in ids:
+        text = text.replace(i, "<ID>")
+    return resp.status_code, text
+
+
+async def test_four_more_doors_answer_a_hidden_row_like_an_unknown_one(world, app, client, cast):
+    from primer.model.workspace_session import PendingSessionMessage  # noqa: F401  (the dismiss reads it)
+
+    sp = app.state.storage_provider
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.carol_id], grants={}))  # carol's private ws-1
+    await sp.get_storage(Graph).create(Graph(id="g-pub", description="g", access=Access(owners=[cast.carol_id], public=True)))
+    await sp.get_storage(WorkspaceSession).create(_parked_row(SID, by=None, tool="_approval", metadata={}))
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="run-1", workspace_id=WS, binding=GraphSessionBinding(graph_id="g-pub"), status=SessionStatus.WAITING, turn_no=1, created_at=NOW,
+    ))
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.mallory_id], grants={}).model_copy(update={"id": "ws-m"}))
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="ses-m", workspace_id="ws-m", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.WAITING, turn_no=1,
+        created_at=NOW,
+    ))
+    m = cast.mallory
+    approve = {"tool_call_id": HUMAN_TC, "decision": "approved"}
+    pairs = {
+        "tool_approval/respond": (
+            await m.post(f"/v1/sessions/{SID}/tool_approval/respond", json=approve),
+            await m.post("/v1/sessions/ses-zzzz/tool_approval/respond", json=approve), SID, "ses-zzzz"),
+        "pending DELETE": (
+            await m.delete(f"/v1/workspaces/{WS}/sessions/{SID}/pending_messages/p1"),
+            await m.delete(f"/v1/workspaces/{WS}/sessions/ses-zzzz/pending_messages/p1"), SID, "ses-zzzz"),
+        "session PATCH": (
+            await m.patch(f"/v1/workspaces/{WS}/sessions/ses-m", json={"name": "x"}),
+            await m.patch("/v1/workspaces/ws-zz/sessions/ses-m", json={"name": "x"}), WS, "ws-zz"),
+    }
+    for tail in ("turn_log", "node_states", "nodes/n1/turn_log"):
+        pairs[f"graph run {tail}"] = (
+            await m.get(f"/v1/graphs/g-pub/runs/run-1/{tail}"), await m.get(f"/v1/graphs/g-pub/runs/run-zz/{tail}"), "run-1", "run-zz")
+
+    seen = {door: (_norm(hidden, hid, uid), _norm(unknown, hid, uid)) for door, (hidden, unknown, hid, uid) in pairs.items()}
+    assert {door: pair for door, pair in seen.items() if pair[0][0] != 404 or pair[0] != pair[1]} == {}
+
+
+# ===========================================================================
+# Final access review F10: a delete's 409 names only what the caller can read
+# ===========================================================================
+
+
+async def test_a_delete_conflict_does_not_name_a_row_the_caller_cannot_read(world, app, client, cast):
+    """Carol's public agent is bound by a session in Mallory's private workspace: the 409 says another entity references it and names
+    nothing (REST and the system ``delete_agent`` tool alike); a referencing row she can read is still named."""
+    import json
+
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.yield_ import ToolContext
+    from primer.toolset.system import build_system_toolset
+
+    sp = app.state.storage_provider
+    await sp.get_storage(Agent).create(Agent(
+        id="ag-pub", description="d", model=AgentModel(profile_id="p--m"), access=Access(owners=[cast.carol_id], public=True),
+    ))
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.mallory_id], grants={}))
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="ses-mallory-secret", workspace_id=WS, binding=AgentSessionBinding(agent_id="ag-pub"), status=SessionStatus.WAITING,
+        turn_no=1, created_at=NOW,
+    ))
+    tools = build_system_toolset(storage_provider=sp, provider_registry=app.state.provider_registry)
+    ctx = ToolContext(tool_call_id="tc", session_id=None, workspace_id=None, initiated_by=_carol_ref(cast))
+
+    rest = await cast.carol.delete("/v1/agents/ag-pub")
+    tool = await tools.call(tool_name="delete_agent", arguments={"id": "ag-pub"}, ctx=ctx)
+
+    assert rest.status_code == 409, rest.text
+    assert rest.json()["detail"] == "in_use_by: 1 other entity references 'ag-pub'"
+    assert tool.is_error and json.loads(tool.output)["message"] == rest.json()["detail"]
+
+    await sp.get_storage(Workspace).delete(WS)
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.carol_id], grants={}))
+    readable = await cast.carol.delete("/v1/agents/ag-pub")
+    assert readable.json()["detail"] == "in_use_by: 1 session(s) reference 'ag-pub' (first: 'ses-mallory-secret')"

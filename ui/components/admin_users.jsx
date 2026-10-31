@@ -180,16 +180,20 @@ function ADM_AdminUsersPage() {
 // What "Disable" asks before it fires (admin review ADM-26): null for an
 // already-disabled account, because Enable only restores access. The auth
 // middleware (primer/api/middleware/auth.py) treats a disabled account as
-// unauthenticated, on the cookie path, the API-key path and over MCP alike,
-// but it checks ONCE when a request or a connection opens, and the disable
-// writes one field only (PATCH /admin/users/{id}: `disabled`, no epoch bump).
-// So the prompt says that new requests and connections are refused starting
-// with the very next one (an API key of theirs included), that a connection
-// already open, such as a terminal, is NOT cut off, nor is work already
-// running for them (their triggers, running sessions, scheduled fires), and
-// that nothing is deleted. It does not claim the session is destroyed: the
-// middleware refuses the requests, it does not end the session, so the
-// existing sign-in works again after Enable.
+// unauthenticated for every request it checks, on the cookie path, the
+// API-key path and over MCP alike, and the revalidate watcher
+// (primer/api/middleware/revalidate.py) re-reads the account on a connection
+// that stays open, every auth.revalidate_interval_s (default 5 s), and ends
+// it when the account stops being valid, so a connection already open, such
+// as a terminal, is signed out within a few seconds; the disable writes one
+// field only (PATCH /admin/users/{id}: `disabled`, no epoch bump), so work
+// already running for them (their triggers, running sessions, scheduled
+// fires) is not stopped. So the prompt says that new requests and
+// connections are refused starting with the very next one (an API key of
+// theirs included), that a connection already open, such as a terminal, is
+// signed out within a few seconds, and that nothing is deleted. It does not
+// claim the session is destroyed: the middleware refuses the requests, it
+// does not end the session, so the existing sign-in works again after Enable.
 // Pure: tests/ui/test_admin_users_disable_confirm.py runs it in MiniRacer.
 function ADM_toggleConfirm(user) {
   if (user.disabled) return null;
@@ -197,10 +201,11 @@ function ADM_toggleConfirm(user) {
     title: "Disable " + user.username + "?",
     message: "New requests and connections from this account are refused "
       + "starting with the very next one, including with an API key; a "
-      + "connection already open, such as a terminal, is not cut off, and "
-      + "neither is work already running for them (their triggers, running "
-      + "sessions and scheduled fires). Nothing is deleted: Enable restores "
-      + "access, and their existing sign-in works again.",
+      + "connection already open, such as a terminal, is signed out within a "
+      + "few seconds, and work already running for them is not stopped "
+      + "(their triggers, running sessions and scheduled fires). Nothing is "
+      + "deleted: Enable restores access, and their existing sign-in works "
+      + "again.",
     confirmLabel: "Disable",
     danger: true,
   };
@@ -821,7 +826,7 @@ function ADM_DeleteUserDialog({ user, onClose, onDeleted }) {
           <li>Their entities move to you: ownership passes to the admin who deletes them, so nothing is left without an owner.</li>
           <li>Their sharing grants and MCP sign-ins are removed: nothing they were given survives them.</li>
           <li>Triggers that run as them are switched off until someone with full access edits them.</li>
-          <li>New requests from this account are refused starting with the very next one, so their browser sign-in stops working; a connection already open, such as a terminal, is not cut off.</li>
+          <li>New requests from this account are refused starting with the very next one, so their browser sign-in stops working; a connection already open, such as a terminal, is signed out within a few seconds.</li>
           <li>The server refuses this if it would remove the last enabled admin.</li>
           <li>This action cannot be undone.</li>
         </ul>

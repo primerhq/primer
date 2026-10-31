@@ -250,6 +250,13 @@ async def test_a_caller_who_cannot_manage_a_trigger_sees_only_the_owner_display_
     full = (await client.get(f"/v1/triggers/{tid}")).json()["owner"]
     assert {"type", "id", "display", "role"} <= set(full)
 
+    # The subscription routes serve only subscriptions whose target the caller holds full on (final review F1): the user owns ws-1.
+    from primer.model.workspace import Workspace
+
+    workspaces = app.state.storage_provider.get_storage(Workspace)
+    ws = await workspaces.get("ws-1")
+    assert ws is not None
+    await workspaces.update(ws.model_copy(update={"access": ws.access.model_copy(update={"grants": {"user-tok": "full"}})}))
     await _as_user(client)
     rows = [
         (await client.get(f"/v1/triggers/{tid}")).json(),

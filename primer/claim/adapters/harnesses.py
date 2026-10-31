@@ -57,12 +57,16 @@ class HarnessClaimAdapter(ClaimAdapter):
             new_status = HarnessStatus.ERROR
             last_error = outcome.last_error
 
-        updated = harness.model_copy(update={
+        # Only the operation's own fields, guarded on the operation still being the one read: a whole-row write from this read would put back an
+        # owner's share that landed in between (final review F18).
+        patch = {
             "pending_operation": None,
             # The inputs the operation was asked for belong to it (ticket 01a16a29): cleared with it, as _release_harness does.
             "operation_inputs": None,
-            "status": new_status,
-            "last_operation_at": now,
+            "status": new_status.value,
+            "last_operation_at": now.isoformat(),
             "last_operation_error": last_error,
-        })
-        await self._storage.update(updated, conn=conn)
+        }
+        await self._storage.patch_if(
+            entity_id, patch, where={"pending_operation": [harness.pending_operation.value]}, conn=conn,
+        )

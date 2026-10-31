@@ -6,21 +6,20 @@ tool result, so a run whose principal is not an admin may wait only on those sam
 this module, so the two cannot drift. Prefixes and exact names, checked against the event type: the allowlist bounds the SHAPE of what a
 non-admin sees, redaction (:mod:`primer.events.redaction`) bounds the values.
 
-The canvas events (``canvas.updated`` and ``canvas.event``, pivot P5) are visible like the session events: the canvas is part of every
-user's chat in the shared install. Their values are bounded where they are recorded (``primer.canvas.service``) and masked by the same
+The canvas events (``canvas.updated`` and ``canvas.event``, pivot P5) are visible like the session events: the canvas belongs to
+the session, and the session is read through the workspace's access. Their values are bounded where they are recorded (``primer.canvas.service``) and masked by the same
 redaction as the rest. ``canvas.event`` is the first user-safe kind that carries what a user ENTERED (a value, Html emit data), so a
 non-admin ``wait_for_event`` on it must also name the workspace or the session it is for (:func:`needs_scope`; audit G8-08).
 
-The input never leaves the session it belongs to through the event log (audit G8-08, the lead's rulings on #872). Sessions and their
-transcripts are a shared read in this install by design (the user's G7-02 decision): every user may open every session, so the event log
-does not scope canvas events to sessions; it drops the input. :data:`INPUT_KEYS` names it: a ``canvas.event``'s ``value`` and ``data``
+The input never leaves the session it belongs to through the event log (audit G8-08, the lead's rulings on #872). A session and its
+transcript are read through the workspace's access, so the event log does not scope canvas events to sessions; it drops the input. :data:`INPUT_KEYS` names it: a ``canvas.event``'s ``value`` and ``data``
 (the Html emit ``name`` is chosen by the Html code, not typed by the user, and is kept). The keys are removed, not masked:
 
 * ``GET /v1/events`` removes them for every non-admin reader, whoever's session the event is from (:func:`without_input`). An admin reads
   the full event there; it is the one door that serves another session's input.
 * Every session wake removes them, for every park (an admin's ``wait_for_event`` and ``canvas_wait`` included), BEFORE the dispatcher
-  publishes: the flip stamps the published envelope on the waiting row (``parked_state``, which ``GET /v1/sessions/{id}`` serves to any
-  user) and the resume makes it the run's tool result. ``canvas_wait``'s resume restores the input from the stored event on the calling
+  publishes: the flip stamps the published envelope on the waiting row (``parked_state``, which ``GET /v1/sessions/{id}`` serves to
+  every reader of the session's workspace) and the resume makes it the run's tool result. ``canvas_wait``'s resume restores the input from the stored event on the calling
   session's own canvas, so a session's own input reaches its own tool result (accepted: the transcript is the session's own); an event
   the canvas ring evicted before the resume comes back without it, beside the canvas's current ``values``.
 * ``wait_for_event``'s resume hook removes them again (:func:`payload_without_input`), as defence in depth.

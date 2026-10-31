@@ -75,7 +75,7 @@ async def test_a_second_401_after_refresh_records_sign_in() -> None:
     async with httpx2.AsyncClient(transport=httpx2.MockTransport(lambda request: httpx2.Response(401)), auth=auth) as client:
         response = await client.get("https://mcp.example/mcp")
     assert response.status_code == 401
-    assert auth.sign_in_required == "the MCP server kb needs an operator to reconnect it"
+    assert auth.sign_in_required == "the MCP server kb needs the person this run acts for to sign in (Toolsets > kb > Connect in the console)"
     assert service.sign_outs == ["tok-2"], "the refreshed token the server also rejected signs the toolset out (audit G4-11)"
 
 
@@ -110,7 +110,7 @@ async def test_a_sign_out_that_fails_is_not_raised_into_the_transport() -> None:
     async with httpx2.AsyncClient(transport=httpx2.MockTransport(lambda request: httpx2.Response(401)), auth=auth) as client:
         response = await client.get("https://mcp.example/mcp")
     assert response.status_code == 401
-    assert auth.sign_in_required == "the MCP server kb needs an operator to reconnect it" and auth.failure is None
+    assert auth.sign_in_required == "the MCP server kb needs the person this run acts for to sign in (Toolsets > kb > Connect in the console)" and auth.failure is None
 
 
 async def test_other_refresh_failures_are_recorded_not_raised() -> None:

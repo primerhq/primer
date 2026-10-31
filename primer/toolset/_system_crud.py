@@ -778,7 +778,7 @@ def _crud_tools_for(
                 return denied
         refusal = refuse_delete(guards, existing)
         if refusal is None:
-            refusal = await refuse_delete_if_referenced(guards, existing, storage_provider)
+            refusal = await refuse_delete_if_referenced(guards, existing, storage_provider, person_for_tool(ctx))
         if refusal is not None:
             return refusal
         if pre_delete is not None:
@@ -1097,19 +1097,22 @@ def _toolset_auth_status_tool(
                 f"Toolset {args.toolset_id!r} does not exist",
                 error_type="not-found",
             )
-        # The sign-in status reads the toolset row: a row the run holds no level on answers exactly like a missing one
-        # (access spec 9).
-        denied = _access_refusal(
-            _owned_person(ctx), toolset.access, AccessLevel.READ, f"Toolset {args.toolset_id!r}",
-        )
-        if denied is not None:
-            return denied
+        # The run's person's own sign-in (the shared one for client credentials), for a person who may use the toolset: one who may not
+        # gets exactly the missing answer (access-control P5 Task 3).
+        person = _owned_person(ctx)
+        from primer.access.tools import may_use_toolset
+
+        if not await may_use_toolset(storage_provider, person, args.toolset_id):
+            return _err(
+                f"Toolset {args.toolset_id!r} does not exist",
+                error_type="not-found",
+            )
         if oauth is None:
             return _err(
                 "the MCP OAuth service is unavailable in this process",
                 error_type="unavailable",
             )
-        status = await oauth.status(toolset)
+        status = await oauth.status(toolset, person)
         return _ok(status.model_dump(mode="json"))
 
     name = "get_toolset_auth_status"
@@ -1118,20 +1121,24 @@ def _toolset_auth_status_tool(
             id=name,
             toolset_id=SYSTEM_TOOLSET_ID,
             purpose=(
-                "Read a toolset's sign-in status: connected, needs_sign_in, "
-                "error or not_applicable, with the reason and expiry."
+                "Read a toolset's sign-in status for the person this run "
+                "acts for: connected, needs_sign_in, error or "
+                "not_applicable, with the reason and expiry."
             ),
             when=(
-                "Use when a tool of an MCP toolset failed with 'needs an "
-                "operator to reconnect it', or before relying on an "
-                "OAuth-protected MCP toolset. Read-only: only an admin can "
-                "connect a toolset, from the console."
+                "Use when a tool of an MCP toolset failed with 'needs the "
+                "person this run acts for to sign in' or 'needs an operator "
+                "to reconnect it', or before relying on an OAuth-protected "
+                "MCP toolset. Read-only: the person connects a browser "
+                "sign-in for themselves in the console (Toolsets > the "
+                "toolset > Connect); a client-credentials sign-in is "
+                "connected by someone with full access on the toolset."
             ),
             args_schema=_ToolsetIdArgs.model_json_schema(),
             examples=[
                 ToolExample(
                     args={"toolset_id": "github-mcp"},
-                    returns="the shared sign-in mode, state, reason and expiry",
+                    returns="the person's sign-in mode, state, reason and expiry, and per_user",
                 )
             ],
             required_role="user",

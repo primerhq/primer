@@ -47,6 +47,7 @@ from primer.storage.cas import patch_if_checked
 if TYPE_CHECKING:
     from primer.int.claim import ClaimEngine
     from primer.int.storage import Storage
+    from primer.model.principal import PrincipalRef
 
 
 logger = logging.getLogger(__name__)
@@ -376,8 +377,13 @@ async def durably_mark_session_resumable(
     payload: dict[str, Any] | None,
     session_storage: "Storage[WorkspaceSession]",
     engine: "ClaimEngine | None",
+    by: "PrincipalRef | None" = None,
 ) -> bool:
     """Guarded, durable ``parked -> resumable`` flip for one session row.
+
+    ``by`` names the person whose input this wake carries (an ``ask_user`` answer, external tool results): written as ``turn_person`` in the
+    flip's own write, as a steer's wake writes it, so the resumed turn runs as them (final access review F6). ``None`` (every other wake)
+    leaves the person the park was made with.
 
     This is the single source of truth for the park->resumable transition,
     shared by the bus listener (``primer.bus.listener.YieldEventListener``,
@@ -508,10 +514,13 @@ async def durably_mark_session_resumable(
         # One wake per key (ticket 01a12606): ``resumable`` is admitted for a reply to ANOTHER key of the park, never over the entry this key already
         # holds. In the guard, so a second wake that read the same row is refused by the backend, not by a check of the snapshot.
         where[("parked_state", "resume_event_payloads", leaf_key)] = [None]
+    patch: dict[str, Any] = {"parked_status": dumped["parked_status"]}
+    if by is not None:
+        patch["turn_person"] = by.model_dump(mode="json")
     landed = await patch_if_checked(
         session_storage,
         session.id,
-        {"parked_status": dumped["parked_status"]},
+        patch,
         set_paths=leaves,
         where=where,
     )
@@ -535,8 +544,9 @@ async def durably_wake_session(
     payload: dict[str, Any] | None,
     session_storage: "Storage[WorkspaceSession]",
     engine: "ClaimEngine | None",
+    by: "PrincipalRef | None" = None,
 ) -> bool:
-    """Durable flip for the REST reply handlers, repairing a missing lease.
+    """Durable flip for the REST reply handlers, repairing a missing lease (``by``: see :func:`durably_mark_session_resumable`).
 
     :func:`durably_mark_session_resumable` writes twice and the two writes
     CANNOT share a transaction (``mark_resumable`` acquires its own
@@ -569,6 +579,7 @@ async def durably_wake_session(
         payload=payload,
         session_storage=session_storage,
         engine=engine,
+        by=by,
     )
     if did or engine is None:
         return did

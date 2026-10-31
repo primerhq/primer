@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from primer.access.person import Person
 from primer.access.policy import level_of, readable_ids, require
 from primer.model.access import AccessLevel
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import AccessDeniedError, NotFoundError
 from primer.model.storage import Op, Predicate
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import WorkspaceSession
@@ -65,6 +65,35 @@ async def require_workspace(
         raise NotFoundError(f"{what} does not exist")
     require(person, row.access, need, what=what)
     return row
+
+
+class WorkspaceAccessWatch:
+    """The re-check of a connection that outlives its connect-time :func:`require_workspace` (the tap, the terminal; final access review F8).
+
+    :meth:`check` raises what :func:`require_workspace` raises for the same person and level. Each call re-reads the row (one primary-key
+    get, so a revoke on any process is seen at the next call) and re-judges the level only when its ``access.rev`` moved. Admins pass
+    without a read, as at connect.
+    """
+
+    def __init__(self, sp: "StorageProvider", person: Person, workspace_id: str, need: AccessLevel) -> None:
+        self._sp, self._person, self._workspace_id, self._need = sp, person, workspace_id, need
+        self._rev: int | None = None
+        self._refusal: Exception | None = None
+
+    async def check(self) -> None:
+        if self._person.is_admin:
+            return
+        row = await _workspace(self._sp, self._workspace_id)
+        if row is None:
+            self._rev, self._refusal = None, NotFoundError(f"Workspace {self._workspace_id!r} does not exist")
+        elif row.access.rev != self._rev:
+            self._rev, self._refusal = row.access.rev, None
+            try:
+                require(self._person, row.access, self._need, what=f"Workspace {self._workspace_id!r}")
+            except (NotFoundError, AccessDeniedError) as exc:
+                self._refusal = exc
+        if self._refusal is not None:
+            raise self._refusal
 
 
 async def require_session(

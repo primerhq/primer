@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from primer.model.provider import Toolset
 from tests.api.test_require_user_admin import _login, _seed
-from tests.toolset.oauth._service_helpers import target_of, token_row
+from tests.toolset.oauth._service_helpers import SYSTEM, target_of, token_row
 
 
 NO_PROBE = {"allow_unreachable": "true"}
@@ -115,7 +115,7 @@ async def test_an_admin_change_signs_the_toolset_out(raw_client, app) -> None:
     assert response.status_code == 200, response.text
     assert await app.state.mcp_oauth.store.get_tokens("kb") is None
     stored = await app.state.storage_provider.get_storage(Toolset).get("kb")
-    status = await app.state.mcp_oauth.status(stored)
+    status = await app.state.mcp_oauth.status(stored, SYSTEM)
     assert status.state == "needs_sign_in" and status.reason == "Not connected."
 
 

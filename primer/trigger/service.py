@@ -24,9 +24,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from primer.access.person import Person
-from primer.access.policy import require, visible_predicate
+from primer.access.policy import level_of, require, visible_predicate
 from primer.access.service import update_keeping_access
-from primer.model.access import Access, AccessLevel
+from primer.model.access import LEVEL_RANK, Access, AccessLevel
 from primer.model.event_matcher import validate_text_pattern
 from primer.model.except_ import NotFoundError
 from primer.model.principal import PrincipalRef
@@ -319,6 +319,11 @@ async def create_trigger(
     return trigger
 
 
+def _holds_owner_level(person: Person, trigger: Trigger) -> bool:
+    level = level_of(person, trigger.access)
+    return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[AccessLevel.OWNER]
+
+
 async def _refuse_trigger_out_of_reach(trigger_id: str, reach: Person | None, deps: ServiceDeps) -> None:
     """Raise :class:`TriggerNotFound` when a subscription of the trigger starts or feeds a session outside ``reach`` (review of #874, B1).
 
@@ -456,7 +461,9 @@ async def update_trigger(
                 update={"hmac_secret": trigger.config.hmac_secret},
             )
         trigger.config = config
-    if trigger.config.kind == "webhook" and adopted:
+    # Only an OWNER's save re-mints: a full grantee's rename must not swap the token out from under the owner's integration, and the token is never
+    # served to them anyway (final review F1).
+    if trigger.config.kind == "webhook" and adopted and (person is None or _holds_owner_level(person, trigger)):
         trigger.config = trigger.config.model_copy(
             update={"token": _mint_webhook_token()},
         )

@@ -3,7 +3,7 @@
 Before the fix a marker replaced EVERYTHING physically before it, including the tail
 (the last few turns) the compactor had deliberately kept verbatim and the user input
 the turn was about to answer. The next load rebuilt ``[summary]`` and nothing else.
-The marker now carries ``kept_tail_messages``; the shared reader puts them right after
+The marker now carries ``kept_tail_messages``; the transcript reader puts them right after
 the summary, ahead of whatever was appended after the marker, and rewinds treat them
 as written at the marker's seq.
 """

@@ -46,6 +46,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from primer.access.person import person_from_request
+from primer.access.policy import level_of
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
@@ -65,7 +66,8 @@ from primer.model.trigger import (
 )
 from primer.trigger.channel_access import require_channel_trigger_access
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
-from primer.trigger.owner import view_for
+from primer.model.access import LEVEL_RANK, AccessLevel
+from primer.trigger.owner import WEBHOOK_TOKEN_MASK, view_for
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ReplyTargetAnchorInvalid,
@@ -177,6 +179,25 @@ def _owner(request: Request) -> PrincipalRef | None:
     return PrincipalRef.from_principal(actor) if actor is not None else None
 
 
+def _reach(request: Request):
+    """The caller as the subscription-target reach rule judges them (the tool doors' ``caller_scope``): ``None`` for an admin (nothing is filtered)."""
+    person = person_from_request(request)
+    return None if person.is_admin else person
+
+
+async def _served(trigger: Trigger, request: Request, sp: Any) -> dict:
+    """The JSON a trigger is served as: a webhook token reaches only a caller holding OWNER on the trigger (an admin included), never a full grantee."""
+    body = await view_for(trigger, _owner(request), sp)
+    if trigger.config.kind == "webhook" and not _holds_owner(person_from_request(request), trigger):
+        body["config"]["token"] = WEBHOOK_TOKEN_MASK
+    return body
+
+
+def _holds_owner(person: Any, trigger: Trigger) -> bool:
+    level = level_of(person, trigger.access)
+    return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[AccessLevel.OWNER]
+
+
 def _raise_code(status: int, code: str, detail: str) -> None:
     """Raise an HTTPException with ``{detail: {code, message}}`` body."""
     raise HTTPException(
@@ -220,7 +241,7 @@ async def create_trigger_endpoint(
         _raise_code(422, "timezone_invalid", str(exc))
     return JSONResponse(
         status_code=201,
-        content=trigger.model_dump(mode="json"),
+        content=await _served(trigger, request, sp),
     )
 
 
@@ -244,7 +265,7 @@ async def list_triggers_endpoint(
     # it is the credential that drives the trigger's runs (A-20 round 2).
     caller = _owner(request)
     return {
-        "items": [await view_for(t, caller, sp) for t in items],
+        "items": [await _served(t, request, sp) for t in items],
         "total": len(items),
     }
 
@@ -264,7 +285,7 @@ async def get_trigger_endpoint(
         _raise_code(404, "trigger_not_found", str(exc))
     return JSONResponse(
         status_code=200,
-        content=await view_for(trigger, _owner(request), sp),
+        content=await _served(trigger, request, sp),
     )
 
 
@@ -290,6 +311,7 @@ async def update_trigger_endpoint(
             config=body.config,
             owner=_owner(request),
             person=person_from_request(request),
+            reach=_reach(request),
             deps=deps,
         )
     except TriggerNotFound as exc:
@@ -302,7 +324,7 @@ async def update_trigger_endpoint(
         _raise_code(422, "timezone_invalid", str(exc))
     return JSONResponse(
         status_code=200,
-        content=trigger.model_dump(mode="json"),
+        content=await _served(trigger, request, sp),
     )
 
 
@@ -317,7 +339,7 @@ async def delete_trigger_endpoint(
     deps = _deps(sp, claim_engine, event_bus)
     # Owner on the trigger (P3 Decision 3); a refusal deletes nothing.
     try:
-        await delete_trigger(trigger_id=trigger_id, person=person_from_request(request), deps=deps)
+        await delete_trigger(trigger_id=trigger_id, person=person_from_request(request), reach=_reach(request), deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
     return Response(status_code=204)
@@ -345,7 +367,7 @@ async def rotate_token_endpoint(
         _raise_code(422, "not_a_webhook_trigger", str(exc))
     return JSONResponse(
         status_code=200,
-        content=trigger.model_dump(mode="json"),
+        content=await _served(trigger, request, sp),
     )
 
 
@@ -378,7 +400,7 @@ async def fire_now_endpoint(
     )
     # Full on the trigger (P3 Decision 3); a refusal fires nothing. The fire runs as the trigger's and its subscriptions' owners.
     try:
-        result = await fire_now(trigger_id=trigger_id, person=person_from_request(request), deps=deps)
+        result = await fire_now(trigger_id=trigger_id, person=person_from_request(request), reach=_reach(request), deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
     return JSONResponse(
@@ -422,6 +444,7 @@ async def create_subscription_endpoint(
             reply_target=body.reply_target,
             owner=_owner(request),
             person=person_from_request(request),
+            reach=_reach(request),
             deps=deps,
         )
     except TriggerNotFound as exc:
@@ -458,7 +481,7 @@ async def list_subscriptions_endpoint(
         await get_trigger(trigger_id=trigger_id, person=person_from_request(request), deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
-    items = await list_subscriptions(trigger_id=trigger_id, deps=deps)
+    items = await list_subscriptions(trigger_id=trigger_id, person=person_from_request(request), reach=_reach(request), deps=deps)
     # A non-manager sees only the owner's display and role (A-20).
     caller = _owner(request)
     return {
@@ -485,6 +508,7 @@ async def get_subscription_endpoint(
             trigger_id=trigger_id,
             subscription_id=subscription_id,
             person=person_from_request(request),
+            reach=_reach(request),
             deps=deps,
         )
     except TriggerNotFound as exc:
@@ -533,6 +557,7 @@ async def update_subscription_endpoint(
             subscription_id=subscription_id,
             owner=_owner(request),
             person=person_from_request(request),
+            reach=_reach(request),
             deps=deps,
             **kwargs,
         )
@@ -570,6 +595,7 @@ async def delete_subscription_endpoint(
             trigger_id=trigger_id,
             subscription_id=subscription_id,
             person=person_from_request(request),
+            reach=_reach(request),
             deps=deps,
         )
     except TriggerNotFound as exc:

@@ -196,6 +196,31 @@ async def _migration_23_case(sp, migration) -> None:
     assert (await users.get("user-bob")).default_workspace_id is None
 
 
+async def test_migration_23_records_it_for_the_oldest_enabled_admin(tmp_path):
+    """Final access review F17: a disabled admin, however old, is skipped (as migrations 25 to 27 skip one)."""
+    from primer.model.provider import SqliteConfig
+    from primer.storage.migrations.m023_admin_default_workspace import M023AdminDefaultWorkspace
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "data.sqlite"))
+    await sp.initialize()
+    try:
+        await sp.get_storage(Workspace).create(Workspace(
+            id="primer", template_id="local-default", provider_id="local", created_at=NOW,
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://x", token="t"), access=Access(owners=["user-root"]),
+        ))
+        old = await _user(sp, "user-old", role="admin", age=0)
+        await sp.get_storage(User).update(old.model_copy(update={"disabled": True}))
+        await _user(sp, "user-root", role="admin", age=1)
+
+        await M023AdminDefaultWorkspace().apply(sp)
+
+        assert (await sp.get_storage(User).get("user-root")).default_workspace_id == "primer"
+        assert (await sp.get_storage(User).get("user-old")).default_workspace_id is None
+    finally:
+        await sp.aclose()
+
+
 async def test_two_admins_adopting_concurrently_leave_one_owner(fake_storage_provider):
     sp = fake_storage_provider
     reg = await _setup(sp)
@@ -322,3 +347,34 @@ async def test_a_fresh_installs_first_user_gets_a_default_workspace_and_can_use_
 
     assert (await sp.get_storage(Workspace).get(wid)) is not None and len(await _sessions(sp, wid)) == 1
     await require_profile_use(sp, Person("user-ada", "user"), await sp.get_storage(ModelProfile).get(await default_profile_id(sp)))
+
+
+@pytest.mark.parametrize(
+    "squat_access",
+    [
+        Access(owners=["user-mallory"], grants={"user-victim": "full"}),  # mallory's row, shared back to the victim
+        Access(owners=["user-victim"], grants={"user-mallory": "full"}),  # handed to the victim, mallory kept full
+        Access(),  # an unowned row
+    ],
+)
+async def test_a_squatted_default_id_is_never_adopted(fake_storage_provider, squat_access):
+    """Final access review F2: a row already holding ``ws-<user id>`` that is not the user's alone and private is not adopted as
+    their default: a fresh id is chosen, recorded, and the squatted row is left as it was."""
+    sp = fake_storage_provider
+    reg = await _setup(sp)
+    victim = await _user(sp, "user-victim")
+    await _user(sp, "user-mallory", age=1)
+    await sp.get_storage(Workspace).create(Workspace(
+        id="ws-user-victim", template_id="local-default", provider_id="local", created_at=NOW,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://x", token="t"), access=squat_access,
+    ))
+
+    wid = await ensure_user_default_workspace(sp, reg, victim)
+
+    assert wid != "ws-user-victim" and wid.startswith("ws-user-victim")
+    assert (await sp.get_storage(User).get("user-victim")).default_workspace_id == wid
+    row = await sp.get_storage(Workspace).get(wid)
+    assert row.access.owners == ["user-victim"] and not row.access.grants and not row.access.public
+    assert len(await _sessions(sp, wid)) == 1 and await _sessions(sp, "ws-user-victim") == []
+    assert (await sp.get_storage(Workspace).get("ws-user-victim")).access == squat_access
+    assert await ensure_user_default_workspace(sp, reg, await sp.get_storage(User).get("user-victim")) == wid

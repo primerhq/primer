@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest_asyncio
 
+from tests.events._users import seed_account_of
 from primer.events.dispatcher import EventDispatcher
 from primer.model.event import EventSubscription
 from primer.model.provider import SqliteConfig
@@ -131,6 +132,7 @@ async def test_full_wake_loop_through_the_dispatcher(sp):
     assert isinstance(yielded, Yielded)
 
     # The worker would write this park after the tool returns.
+    await seed_account_of(sp, ADMIN_CALLER.initiated_by)
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id="sess-1", workspace_id="w",
         binding=AgentSessionBinding(agent_id="agent-a"),
@@ -243,6 +245,7 @@ async def test_a_toolset_event_reaches_the_bus_and_the_agent_masked(sp):
     handler = make_wait_for_event_handler(sp)
     yielded = await handler({"event_types": ["toolset.*"]}, ctx=_ctx())
     assert isinstance(yielded, Yielded)
+    await seed_account_of(sp, ADMIN_CALLER.initiated_by)
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id="sess-1", workspace_id="w",
         binding=AgentSessionBinding(agent_id="agent-a"),

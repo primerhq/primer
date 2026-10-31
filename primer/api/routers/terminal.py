@@ -42,7 +42,7 @@ from typing import Any, Protocol
 from fastapi import APIRouter, Query, WebSocket
 
 from primer.access.person import person_from_request
-from primer.access.workspaces import require_workspace
+from primer.access.workspaces import WorkspaceAccessWatch, require_workspace
 from primer.api.deps import require_auth_ws, require_role_ws, require_user_ws
 from primer.model.access import AccessLevel
 from primer.model.except_ import AccessDeniedError, NotFoundError
@@ -245,7 +245,9 @@ async def workspace_terminal_ws(
         await session.close()
         return
 
-    recv_task = asyncio.ensure_future(_recv_loop(websocket, session))
+    # Re-checked on every input (final access review F8): a revoke or a downgrade below full closes the shell as a fresh connect would be.
+    watch = WorkspaceAccessWatch(websocket.app.state.storage_provider, person, workspace_id, AccessLevel.FULL)
+    recv_task = asyncio.ensure_future(_recv_loop(websocket, session, watch))
     send_task = asyncio.ensure_future(_send_loop(websocket, session))
     try:
         done, pending = await asyncio.wait(
@@ -272,12 +274,21 @@ async def workspace_terminal_ws(
         await session.close()
 
 
-async def _recv_loop(websocket: WebSocket, session: _TerminalPty) -> None:
-    """Browser → PTY: binary frames = stdin; text frames = JSON control."""
+async def _recv_loop(websocket: WebSocket, session: _TerminalPty, watch: WorkspaceAccessWatch | None = None) -> None:
+    """Browser → PTY: binary frames = stdin; text frames = JSON control. Each input first re-checks ``watch`` (the connect gate's level)."""
     while True:
         message = await websocket.receive()
         if message.get("type") == "websocket.disconnect":
             return
+        if watch is not None:
+            try:
+                await watch.check()
+            except NotFoundError:
+                await websocket.close(code=4404, reason="workspace_not_found")
+                return
+            except AccessDeniedError:
+                await websocket.close(code=4403, reason="forbidden")
+                return
         data = message.get("bytes")
         if data is not None:
             await session.write(data)

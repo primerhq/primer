@@ -24,6 +24,15 @@ function SH_activityTime(iso, prevIso, offsetOf) {
   if (prev && prev.y === p.y && prev.mo === p.mo && prev.d === p.d) return clock;
   return p.d + " " + months[p.mo] + " " + clock;
 }
+// The ACTOR cell (access-control P5): an event names the person behind it as "user:<user id>" (a bearer call names the token's owner).
+// Shown as that user's username when the user list knows the id, else as stored: "system", a "trigger:<id>", an unknown user.
+function SH_activityActor(actor, names) {
+  if (!actor) return "";
+  var text = String(actor);
+  if (text.indexOf("user:") === 0 && names && Object.prototype.hasOwnProperty.call(names, text.slice(5))) return names[text.slice(5)];
+  return text;
+}
+
 // The Activity console (revamp spec section 7): a filterable window
 // over the platform event log (GET /v1/events), closing the event-bus
 // arc's "console events UI" gap. A debugging window, not a tail -f:
@@ -48,6 +57,17 @@ function SH_ActivityPanel() {
   var errorState = React.useState(null);
   var error = errorState[0];
   var setError = errorState[1];
+  // user id -> username, for the actor cell. The log is admin-gated and so is the list; a list that cannot be read leaves the ids as they are.
+  var namesState = React.useState({});
+  var names = namesState[0];
+  var setNames = namesState[1];
+  React.useEffect(function () {
+    SH_api.adminUsers().then(function (out) {
+      var next = {};
+      ((out && out.items) || []).forEach(function (u) { if (u && u.id) next[u.id] = u.username; });
+      setNames(next);
+    }, function () {});
+  }, []);
 
   function query(afterId, replace) {
     setLoading(true);
@@ -132,7 +152,7 @@ function SH_ActivityPanel() {
                   <td className="mono">
                     {ev.entity_kind ? ev.entity_kind + "/" + ev.entity_id : ""}
                   </td>
-                  <td>{ev.actor}</td>
+                  <td title={ev.actor}>{SH_activityActor(ev.actor, names)}</td>
                   <td className="mono">{ev.session_id || ""}</td>
                   <td className="mono" title={ev.occurred_at}>
                     {SH_activityTime(ev.occurred_at, i ? rows[i - 1].occurred_at : null, function (d) { return -d.getTimezoneOffset(); })}
@@ -320,4 +340,5 @@ function SH_EventSubscriptionsTable() {
 }
 
 window.SH_ActivityPanel = SH_ActivityPanel;
+window.SH_activityActor = SH_activityActor;
 window.SH_EventSubscriptionsTable = SH_EventSubscriptionsTable;

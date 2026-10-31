@@ -283,7 +283,8 @@ function SA_dividerLabel(rec) {
 //
 // What the user ENTERED is never here: the S5 strip (the privacy ruling of
 // #872) removes a canvas.event's value and data from every structured copy the
-// transcript reads, and the transcript is a shared read. A change therefore
+// transcript reads, and the transcript is read through the workspace's access.
+// A change therefore
 // names only the control - the element's label, or its id when the element has
 // none - never the value (the lead's ruling after S9 dispatch).
 function SA_canvasChipLabel(rec) {

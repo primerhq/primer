@@ -31,7 +31,8 @@ from fastapi import Request
 
 from primer.model.except_ import ConflictError
 from primer.model.storage import Op
-from primer.storage.references import Lookup, ReferenceSpec, first_referencing_row
+from primer.access.person import person_from_request
+from primer.storage.references import Lookup, ReferenceSpec, first_referencing_row, referenced_by_text
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,8 @@ def build_reference_block_hook(
 
         "in_use_by: 1 <child_kind>(s) reference '<parent id>' (first: '<child id>')"
 
+    or, when the caller cannot read that child, ``"in_use_by: 1 other entity references '<parent id>'"``.
+
     The item count reflects only the items returned in the single-item page
     (0 or 1); callers should treat it as "at least one child exists".
 
@@ -141,13 +144,13 @@ def build_reference_block_hook(
             if child is not None:
                 # RFC7807 conflict envelope (consistent with every other
                 # error surface). The detail names the blocking child kind,
-                # count, and the first referencing id so the message is
-                # actionable; the error_code is carried as the message lead.
-                raise ConflictError(
-                    f"{check.error_code}: 1 "
-                    f"{check.child_kind}(s) reference {entity_id!r} "
-                    f"(first: {child.id!r})"
-                )
+                # count, and the first referencing id when the caller can read
+                # it, so the message is actionable without revealing a row they
+                # cannot see; the error_code is carried as the message lead.
+                raise ConflictError(await referenced_by_text(
+                    getattr(request.app.state, "storage_provider", None), person_from_request(request), error_code=check.error_code,
+                    child_kind=check.child_kind, parent_id=entity_id, child=child,
+                ))
 
     return _hook
 
