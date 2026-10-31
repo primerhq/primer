@@ -1130,7 +1130,7 @@ class WorkerPool:
 
                     io_shim = _WorkspaceIOShim(workspace_registry=self._workspace_registry)
                     io_shim.register_session(sid, refused_row.workspace_id)
-                    await record_refused_run(session_storage, io_shim, refused_row, event_bus=self._event_bus)
+                    await record_refused_run(session_storage, io_shim, refused_row, event_bus=self._event_bus, refused=refused)
                     outcome = await self._end_session(refused_row, reason="failed")
         except Exception:
             logger.exception(
