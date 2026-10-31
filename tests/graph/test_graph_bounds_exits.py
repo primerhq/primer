@@ -24,7 +24,7 @@ from primer.graph import _node_refs
 from primer.graph.base import _GraphErrorEvent
 from primer.graph.executor import GraphExecutor
 from primer.graph.workspace_executor import WorkspaceGraphExecutor
-from primer.model.chat import TextDelta, ToolResultPart
+from primer.model.chat import Done, TextDelta, ToolResultPart
 from primer.model.graph import (
     FanOutSpec,
     Graph,
@@ -41,7 +41,7 @@ from primer.model.graph import (
 from primer.model.workspace_session import SessionStatus
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.observability.turn_log_writer import TurnLogWriter
-from tests.graph.test_max_iterations import _agent, _model
+from tests.graph.test_max_iterations import _FakeLLM, _agent, _model
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
 from tests.graph.test_workspace_executor import _RecordingHolder, _make_state_repo
 
@@ -365,3 +365,40 @@ async def test_a_cancelled_run_is_saved_ended_cancelled():
 
     t = await threads.get(thread.id)
     assert (t.status, t.ended_reason) == (SessionStatus.ENDED, "cancelled")
+
+
+# ---- AG-L11d: input-template errors ----------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_agent_input_template_error_carries_template_error():
+    graph = Graph(
+        id="g-tpl", description="begin -> a with a broken template",
+        nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="a", agent_id="x", input_template="{{ nodes.missing.text }}"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="a"), _StaticEdge(from_node="a", to_node="end")],
+    )
+    llm = _FakeLLM(scripts=[[TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop")]])
+
+    _, events, thread = await _run(graph, llm=llm)
+
+    assert (thread.ended_reason, thread.ended_detail) == ("failed", "template_error")
+    assert [(e.code, e.node_id) for e in events if isinstance(e, _GraphErrorEvent)] == [("template_error", "a")]
+    assert llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_subgraph_input_template_error_carries_template_error():
+    child = Graph(id="g-child", description="begin -> end", nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
+                  edges=[_StaticEdge(from_node="begin", to_node="end")])
+    graph = Graph(
+        id="g-parent", description="begin -> sub with a broken template",
+        nodes=[_BeginNode(id="begin"), _GraphNodeRef(id="sub", graph_id="g-child", input_template="{{ nodes.missing.text }}"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="sub"), _StaticEdge(from_node="sub", to_node="end")],
+    )
+
+    async def graph_resolver(gid):
+        return child
+
+    _, _, thread = await _run(graph, graph_resolver=graph_resolver)
+
+    assert (thread.ended_reason, thread.ended_detail) == ("failed", "template_error")

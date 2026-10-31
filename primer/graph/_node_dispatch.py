@@ -64,7 +64,7 @@ from primer.graph._node_refs import (
     await_tool_dispatch_barrier,
 )
 from primer.common.bounded_template import off_loop
-from primer.graph.template import render_input_template
+from primer.graph.template import InputTemplateError, render_input_template
 from primer.model.chat import (
     ExtendedEvent,
     Message,
@@ -595,7 +595,7 @@ class _NodeDispatchMixin:
                     error=exc,
                     ended_detail=(
                         exc.ended_detail_code
-                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached)) else None
+                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached, InputTemplateError)) else None
                     ),
                 )
             )

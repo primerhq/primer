@@ -56,6 +56,7 @@ from primer.agent.loop import run_agent_turn
 from primer.agent.parked_round import ParkedRound
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph.router import RouterRegistry
+from primer.graph.template import InputTemplateError
 from primer.model.chat import (
     ExtendedEvent,
     Message,
@@ -1061,7 +1062,7 @@ class _BaseGraphExecutor(
                     # raise this exception.
                     detail = (
                         exc.ended_detail_code
-                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached))
+                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached, InputTemplateError))
                         else "tool_execution_failed"
                     )
                     if self._settle_suppressed_failure(ay.node_id, str(exc), detail, context, node_states):
@@ -1209,7 +1210,7 @@ class _BaseGraphExecutor(
                     # a tool_wait batch's resolution path either.
                     detail = (
                         exc.ended_detail_code
-                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached))
+                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached, InputTemplateError))
                         else "tool_execution_failed"
                     )
                     if self._settle_suppressed_failure(tw.node_id, str(exc), detail, context, node_states):
