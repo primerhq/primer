@@ -62,13 +62,15 @@ async def test_halfvec_create_put_search_3072():
     try:
         store = p.get_vector_store()
         await store.create_collection("c", dimensions=3072, distance="cosine")
+        from primer.vector.names import table_name_for_collection
+
         async with p.pool.acquire() as conn:
             col_type = await conn.fetchval(
                 "SELECT a.atttypid::regtype::text FROM pg_attribute a "
                 "JOIN pg_class c ON c.oid=a.attrelid "
                 "JOIN pg_namespace n ON n.oid=c.relnamespace "
-                "WHERE n.nspname=$1 AND c.relname='embeddings_c' AND a.attname='vector'",
-                schema,
+                "WHERE n.nspname=$1 AND c.relname=$2 AND a.attname='vector'",
+                schema, table_name_for_collection("c"),
             )
             assert col_type == "halfvec"
             vtype = await conn.fetchval(
