@@ -19,7 +19,7 @@ from primer.session.steer_delivery import (
     DELIVERED_SKIPPED_BUSY,
     deliver_steer,
 )
-from primer.trigger.owner import principal_for_fire, refuse_steer_above_fire
+from primer.trigger.owner import OWNER_UNRESOLVABLE, principal_for_fire, refuse_steer_above_fire, unresolvable_subscription_owner
 from primer.trigger.reach import TARGET_OUT_OF_REACH, refuse_fire_out_of_reach
 from primer.trigger.subscribers import (
     DispatchDeps,
@@ -48,6 +48,11 @@ class SessionAppendDispatcher:
         out_of_reach = await refuse_fire_out_of_reach(sub, deps.storage_provider)
         if out_of_reach is not None:
             return SubscriptionDispatchResult(ok=False, error_code=TARGET_OUT_OF_REACH, error_message=out_of_reach)
+        # A gone owner (deleted, disabled, revoked or expired token) feeds nothing: the payload would land in someone else's session as an account
+        # whose next turn is refused, ending that session failed (final review F5). Fail closed, as the fresh-session dispatchers do.
+        gone = await unresolvable_subscription_owner(sub, deps.storage_provider)
+        if gone is not None:
+            return SubscriptionDispatchResult(ok=False, error_code=OWNER_UNRESOLVABLE, error_message=gone)
         if deps.workspace_registry is None:
             return SubscriptionDispatchResult(
                 ok=False,
