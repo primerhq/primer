@@ -98,7 +98,7 @@ _DIFF = "--- f.py\n+++ f.py\n@@ -1,2 +1,2 @@\n def f():\n-    return 1\n+    ret
 
 
 async def test_local_edit_utf8_lf_bytes_and_diff(tmp_path: Path) -> None:
-    (tmp_path / "f.py").write_bytes("def f():\n    return 1\n".encode())
+    (tmp_path / "f.py").write_bytes(b"def f():\n    return 1\n")
     res = await Edit(tmp_path).execute(EditArgs(path="f.py", old_string="return 1", new_string="return 2"), _CTX)
     assert (tmp_path / "f.py").read_bytes() == b"def f():\n    return 2\n"
     assert res.output == _DIFF
@@ -125,7 +125,7 @@ async def test_local_edit_errors(tmp_path: Path) -> None:
 
 
 async def test_sandbox_edit_utf8_bytes_and_diff(tmp_path: Path) -> None:
-    (tmp_path / "f.py").write_bytes("def f():\n    return 1\n".encode())
+    (tmp_path / "f.py").write_bytes(b"def f():\n    return 1\n")
     tool = SandboxEdit(FakeSandbox(tmp_path), workspace_root="/workspace")
     res = await tool.execute(EditArgs(path="f.py", old_string="return 1", new_string="return 2"), _CTX)
     assert (tmp_path / "f.py").read_bytes() == b"def f():\n    return 2\n"

@@ -51,6 +51,7 @@ async def land_media_in_workspace(
     skipped with a log rather than failing the whole inbound message.
     """
     written: list[str] = []
+    names: set[str] = set()
     for index, part in enumerate(parts or []):
         data = await _part_bytes(part, artifact_storage)
         if not data:
@@ -59,10 +60,11 @@ async def land_media_in_workspace(
                 index, fire_id,
             )
             continue
-        path = (
-            f"{MEDIA_INBOX_ROOT}/{fire_id}/"
-            f"{_safe_name(getattr(part, 'filename', None), index)}"
-        )
+        name = _safe_name(getattr(part, "filename", None), index)
+        if name in names:  # two attachments named alike (every phone photo is image.png) must not overwrite (W56b)
+            name = f"{index}-{name}"
+        names.add(name)
+        path = f"{MEDIA_INBOX_ROOT}/{fire_id}/{name}"
         try:
             await workspace.write_file(path, data)
         except Exception:  # noqa: BLE001 - one bad file must not drop the turn
@@ -156,9 +158,12 @@ async def resolve_active_stt(storage_provider, registry=None):
     (06-s4-design.md section 3). Every failure to resolve one means "no
     STT", which is the spec's attach-as-is fallback: an install with no
     speech provider is a normal steady state, not a broken bootstrap.
+
+    ``registry`` is the app's STT :class:`SpeechRegistry`
+    (``app.state.stt_registry``), whose adapters are cached and closed at
+    shutdown (W56g). Without one (a router nobody wired) a registry is
+    built for this call, as before.
     """
-    if registry is not None:
-        return registry
     from primer.model.providers.speech import SpeechToTextProvider
     from primer.model.speech import ACTIVE_SPEECH_CONFIG_ID, ActiveSpeechConfig
 
@@ -183,9 +188,9 @@ async def resolve_active_stt(storage_provider, registry=None):
         provider_row = await storage.get(provider_id)
         if provider_row is None:
             return None
-        adapter = await SpeechRegistry(
-            storage=storage, factory=default_stt_factory, label="stt",
-        ).get(provider_id)
+        if registry is None:
+            registry = SpeechRegistry(storage=storage, factory=default_stt_factory, label="stt")
+        adapter = await registry.get(provider_id)
         return _BoundSTT(adapter, provider_row.default_model)
     except Exception:  # noqa: BLE001 - degrade to attach-as-is
         logger.warning("media_in: STT adapter build failed", exc_info=True)

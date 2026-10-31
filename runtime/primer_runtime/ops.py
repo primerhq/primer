@@ -79,6 +79,11 @@ def _atomic_write_bytes(target: pathlib.Path, content: bytes, mode: int | None) 
             os.chmod(tmp_path, mode)
         elif existing_mode is not None:
             os.chmod(tmp_path, existing_mode)
+        else:
+            # mkstemp makes 0600; a new file gets what a plain open would give it (review of workspaces, W55a).
+            umask = os.umask(0)
+            os.umask(umask)
+            os.chmod(tmp_path, 0o666 & ~umask)
         os.replace(tmp_path, target)
     except BaseException:
         try:
@@ -260,6 +265,25 @@ def _resolve_safe(raw_path: str, workspace_root: str) -> pathlib.Path:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolve_entry_safe(raw_path: str, workspace_root: str) -> pathlib.Path:
+    """The entry ``raw_path`` names, for an operation on the entry itself (delete): :func:`_resolve_safe`, except that when the final component is a
+    symlink the entry is the LINK (review of workspaces, W15). The directory it lives in is resolved and contained; the link's target is neither
+    followed nor judged, so a link to a file outside the workspace is removed as a link and the outside file is untouched."""
+    root = pathlib.Path(workspace_root).resolve()
+    lexical_raw = pathlib.PurePosixPath(raw_path) if pathlib.PurePosixPath(raw_path).is_absolute() else None
+    lexical = pathlib.Path(os.path.normpath(raw_path if lexical_raw is not None else root / raw_path))
+    if lexical.name in ("", ".", "..") or lexical == root:
+        return _resolve_safe(raw_path, workspace_root)
+    entry = lexical.parent.resolve() / lexical.name
+    if not entry.is_symlink():
+        return _resolve_safe(raw_path, workspace_root)
+    try:
+        entry.parent.relative_to(root)
+    except ValueError:
+        raise OpError(ErrorCode.EACCES, f"Path escapes workspace root: {raw_path!r}")
+    return entry
 
 
 def _os_err_to_op_error(exc: OSError, path: str) -> OpError:
@@ -472,11 +496,11 @@ async def stat(
 async def delete(args: dict, workspace_root: str, locks: WorkspaceLockTable) -> dict:
     """``delete`` op → ``{ok}`` (file or empty directory); Tier-A locked."""
     raw_path: str = args.get("path", "")
-    resolved = _resolve_safe(raw_path, workspace_root)
+    resolved = _resolve_entry_safe(raw_path, workspace_root)
 
     def _delete() -> None:
         try:
-            st = os.stat(resolved)
+            st = os.lstat(resolved)  # a symlink is deleted as the link it is: its target is never touched (W15)
         except OSError as exc:
             raise _os_err_to_op_error(exc, raw_path)
         if _stat_mod.S_ISDIR(st.st_mode):

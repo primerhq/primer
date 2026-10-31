@@ -15,6 +15,7 @@ import asyncio
 import io
 import itertools
 import logging
+import os
 import shutil
 import tarfile
 import time
@@ -346,6 +347,7 @@ class LocalWorkspace(Workspace):
         *,
         recursive: bool = False,
         max_entries: int | None = None,
+        skip_reserved: bool = False,
     ) -> list[FileEntry]:
         target = self._resolve_path(path)
         if not await asyncio.to_thread(target.exists):
@@ -353,9 +355,10 @@ class LocalWorkspace(Workspace):
         if not await asyncio.to_thread(target.is_dir):
             raise BadRequestError(f"{path!r} is not a directory")
 
+        reserved = _reserved_rel_paths(self._template) if skip_reserved else ()
         return await asyncio.to_thread(
             _walk_for_user, target, self._root,
-            recursive=recursive, max_entries=max_entries,
+            recursive=recursive, max_entries=max_entries, reserved=reserved,
         )
 
     async def read_file(self, path: str) -> bytes:
@@ -457,11 +460,14 @@ class LocalWorkspace(Workspace):
             ) from exc
 
     async def delete_file(self, path: str, *, recursive: bool = False) -> None:
-        target = self._resolve_path(path)
+        # An entry that is itself a symlink is deleted AS A LINK: its target (a directory ``rmtree``'d, a file outside the root) is not touched
+        # (review of workspaces, W15). Containment is still judged on where the entry lives.
+        target = self._resolve_entry(path)
+        is_link = await asyncio.to_thread(target.is_symlink)
         # Refuse a reserved path BEFORE the existence check: 404-vs-400
         # would tell a caller whether a .state / .tmp file exists (A-22).
         self._refuse_reserved(target, path)
-        if not await asyncio.to_thread(target.exists):
+        if not await asyncio.to_thread(os.path.lexists, target):
             raise NotFoundError(f"{path!r} not found")
         if target == self._root.resolve():
             raise BadRequestError("refusing to delete workspace root")
@@ -472,6 +478,9 @@ class LocalWorkspace(Workspace):
                 logger.debug(
                     "delete_file waited %.3fs on busy lock for %r", _waited, path,
                 )
+            if is_link:
+                await asyncio.to_thread(target.unlink)
+                return
             if await asyncio.to_thread(target.is_dir):
                 if recursive:
                     await asyncio.to_thread(shutil.rmtree, target)
@@ -494,26 +503,28 @@ class LocalWorkspace(Workspace):
         ABC docstring. Uses ``shutil.move`` so a rename and a cross-directory
         move share one primitive.
         """
-        src_target = self._resolve_path(src)
-        dst_target = self._resolve_path(dst)
+        # A symlink endpoint is the link, not its target (review of workspaces, W15): a link moves as a link, and a link at ``dst`` is a taken name.
+        src_target = self._resolve_entry(src)
+        dst_target = self._resolve_entry(dst)
+        src_is_link = await asyncio.to_thread(src_target.is_symlink)
         # Both endpoints must stay outside the reserved .state / .tmp trees so
         # the API can't shuffle the backend's bookkeeping around. Refused
         # BEFORE the existence check, or 404-vs-400 tells a caller whether a
         # reserved file exists (A-22).
         self._refuse_reserved(src_target, src)
         self._refuse_reserved(dst_target, dst)
-        if not await asyncio.to_thread(src_target.exists):
+        if not await asyncio.to_thread(os.path.lexists, src_target):
             raise NotFoundError(f"{src!r} not found")
         if src_target == self._root.resolve():
             raise BadRequestError("refusing to move workspace root")
-        if await asyncio.to_thread(dst_target.exists):
+        if await asyncio.to_thread(os.path.lexists, dst_target):
             raise ConflictError(
                 f"{dst!r} already exists; refusing to overwrite it"
             )
         # A directory may not be moved onto itself or into one of its own
         # descendants (that would orphan the subtree). dst_target need not
         # exist for this pure-path check.
-        if await asyncio.to_thread(src_target.is_dir):
+        if not src_is_link and await asyncio.to_thread(src_target.is_dir):
             try:
                 dst_target.relative_to(src_target)
             except ValueError:
@@ -860,6 +871,29 @@ class LocalWorkspace(Workspace):
             ) from exc
         return candidate
 
+    def _resolve_entry(self, path: str) -> Path:
+        """The filesystem entry ``path`` names, for an operation on the entry itself (delete, move).
+
+        Like :meth:`_resolve_path` (root-relative, no escaping the root), except that when the final component is a symlink the entry is the LINK:
+        the directory it lives in is resolved and contained, the link's own target is neither followed nor judged.
+        """
+        if not path:
+            raise BadRequestError("path must be non-empty")
+        if "\x00" in path:
+            raise BadRequestError("path contains a null byte")
+        root_resolved = self._root.resolve()
+        lexical = Path(os.path.normpath(root_resolved / path))
+        if lexical.name in ("", ".", "..") or lexical == root_resolved:
+            return self._resolve_path(path)
+        entry = lexical.parent.resolve() / lexical.name
+        if not entry.is_symlink():
+            return self._resolve_path(path)
+        try:
+            entry.parent.relative_to(root_resolved)
+        except ValueError as exc:
+            raise BadRequestError(f"path resolves outside workspace: {path!r}") from exc
+        return entry
+
     def _collect_default_members(self) -> list[Path]:
         """Top-level entries under root EXCEPT .state/ and .tmp/."""
         skip = {self._template.state_path, self._template.tmp_path}
@@ -889,7 +923,6 @@ def _atomic_write_bytes(target: Path, content: bytes) -> None:
     When ``target`` already exists, its file mode is preserved so the
     atomic swap doesn't silently change permissions.
     """
-    import os
     import tempfile
 
     directory = target.parent
@@ -910,6 +943,11 @@ def _atomic_write_bytes(target: Path, content: bytes) -> None:
             os.fsync(fh.fileno())
         if existing_mode is not None:
             os.chmod(tmp_path, existing_mode)
+        else:
+            # mkstemp makes 0600; a new file gets what a plain open would give it (review of workspaces, W55a).
+            umask = os.umask(0)
+            os.umask(umask)
+            os.chmod(tmp_path, 0o666 & ~umask)
         os.replace(tmp_path, target)
     except BaseException:
         # Best-effort cleanup so a failed write doesn't leak temp files.
@@ -943,12 +981,45 @@ def _make_file_entry(target: Path, workspace_root: Path) -> FileEntry:
     )
 
 
+def _reserved_rel_paths(template) -> tuple[str, ...]:
+    """The reserved trees (``state_path``, ``tmp_path``) as root-relative POSIX paths."""
+    import posixpath
+
+    return tuple(
+        posixpath.normpath(str(raw).replace("\\", "/")).strip("/")
+        for raw in (template.state_path, template.tmp_path)
+        if raw
+    )
+
+
+def _walk_pruned(target: Path, root_resolved: Path, reserved: tuple[str, ...]):
+    """``target.rglob("*")`` that does not yield the ``reserved`` trees (root-relative) nor descend into them. Lazy, like rglob, so a cap stops it."""
+    stack = [target]
+    while stack:
+        directory = stack.pop()
+        try:
+            children = sorted(directory.iterdir(), key=lambda p: p.name)
+        except OSError:
+            continue
+        for child in children:
+            try:
+                rel = child.relative_to(root_resolved).as_posix()
+            except ValueError:
+                rel = child.name
+            if rel in reserved:
+                continue
+            yield child
+            if child.is_dir() and not child.is_symlink():
+                stack.append(child)
+
+
 def _walk_for_user(
     target: Path,
     workspace_root: Path,
     *,
     recursive: bool,
     max_entries: int | None = None,
+    reserved: tuple[str, ...] = (),
 ) -> list[FileEntry]:
     # `target` is already a resolved path (see _resolve_path). Resolve the
     # workspace root too so entries from `target.iterdir()` share a common
@@ -978,7 +1049,8 @@ def _walk_for_user(
             # vendored node_modules, made every recursive=True call
             # here expensive regardless of how few entries the caller
             # actually wanted back).
-            walk = target.rglob("*")
+            # With reserved trees to skip the walk is ours (rglob cannot prune): never descend into them, so the cap is spent on real entries.
+            walk = _walk_pruned(target, root_resolved, reserved) if reserved else target.rglob("*")
             if max_entries is not None:
                 walk = itertools.islice(walk, max_entries)
             iterator = list(walk)

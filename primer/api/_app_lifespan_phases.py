@@ -488,8 +488,10 @@ async def _dispatch_recovered_deliveries(
             )
             continue
         # Gone, or finalized by a live sibling between collection and now.
-        # Either way it is not ours to re-fire.
-        if _row is None or _row.status != "pending":
+        # Either way it is not ours to re-fire. A pending row that carries a
+        # fire_id has fired already: an interactive hold keeps its row pending
+        # until the run ends, which can be well past the grace (W12).
+        if _row is None or _row.status != "pending" or _row.fire_id is not None:
             continue
         # Re-check the grace window against the fresh row: a row that was
         # stale at collection time is still stale now, but the re-check pass

@@ -723,6 +723,7 @@ def _make_lifespan(config: AppConfig):
         channel_registry.set_claim_engine(claim_engine)
         channel_registry.set_session_wiring(
             workspace_registry=workspace_registry, scheduler=scheduler,
+            stt_registry=getattr(app.state, "stt_registry", None),
         )
 
         # Only a process that OWNS inbound may open channel gateways. Warming a

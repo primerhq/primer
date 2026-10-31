@@ -348,6 +348,27 @@ class Storage(ABC, Generic[ModelT]):
             stored values.
         """
 
+    async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
+        """``(id, access)`` of every row matching ``predicate``, ordered by id: the two things a sharing check needs, without decoding the rows.
+
+        ``access`` is the row's stored ``access`` block as JSON (``None`` when the row has none). A backend overrides this with one keyset-paged
+        query that selects only those two columns, no ``COUNT``; this default reads full pages, for a backend that has no cheaper way.
+        """
+        from primer.model.storage import OffsetPage
+
+        out: list[tuple[str, dict[str, Any] | None]] = []
+        offset = 0
+        while True:
+            page = await self.find(predicate, OffsetPage(offset=offset, length=200))
+            for row in page.items:
+                access = getattr(row, "access", None)
+                out.append((row.id, access.model_dump(mode="json") if access is not None else None))
+            if len(page.items) < 200:
+                break
+            offset += 200
+        out.sort(key=lambda pair: pair[0])
+        return out
+
     @abstractmethod
     async def find(
         self,

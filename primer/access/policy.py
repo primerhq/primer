@@ -116,13 +116,26 @@ async def readable_ids(
     if person.is_admin:
         return None
     predicate = visible_predicate(person)
+    need_rank = LEVEL_RANK[need]
+    finder = getattr(storage, "find_ids", None)
+    if finder is None:  # a storage double without find_ids: read full pages, as every storage did before
+        return await _readable_ids_by_pages(storage, person, predicate, need_rank)
+    ids: list[str] = []
+    for row_id, raw in await finder(predicate):
+        held = level_of(person, Access.model_validate(raw or {}))
+        if held is not None and LEVEL_RANK[held] >= need_rank:
+            ids.append(row_id)
+    return ids
+
+
+async def _readable_ids_by_pages(storage: "Storage[Any]", person: Person, predicate: Predicate | None, need_rank: int) -> list[str]:
     ids: list[str] = []
     offset = 0
     while True:
         items = (await storage.find(predicate, OffsetPage(offset=offset, length=_PAGE_SIZE))).items
         for row in items:
             held = level_of(person, row.access)
-            if held is not None and LEVEL_RANK[held] >= LEVEL_RANK[need]:
+            if held is not None and LEVEL_RANK[held] >= need_rank:
                 ids.append(row.id)
         if len(items) < _PAGE_SIZE:
             return ids

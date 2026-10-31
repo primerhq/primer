@@ -776,7 +776,7 @@ class _LiveWorkspace:
             raise NotFoundError(f"{path!r} not found")
         return FileEntry(path=path, kind="file", size_bytes=len(self.files[path]), modified_at=NOW)
 
-    async def list_files(self, path: str = ".", *, recursive: bool = False, max_entries: int | None = None) -> list[FileEntry]:
+    async def list_files(self, path: str = ".", *, recursive: bool = False, max_entries: int | None = None, skip_reserved: bool = False) -> list[FileEntry]:
         return [self._entry(p) for p in sorted(self.files)][:max_entries]
 
     async def file_info(self, path: str) -> FileEntry:

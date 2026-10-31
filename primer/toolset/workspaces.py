@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field, ValidationError
 from primer.access.person import person_for_tool
 from primer.access.policy import require, visible_predicate
 from primer.access.workspaces import readable_workspace_ids, require_workspace, workspace_level
+from primer.bus.watch_notify import wake_watchers_best_effort
 from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
 from primer.common.validation_errors import without_input
@@ -133,7 +134,7 @@ from primer.toolset._system_guards import (
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.workspace.env_names import ENV_NAME_PATTERN, MAX_ENV_NAME_LENGTH, RUNTIME_TOKEN_ENV_NAMES
 from primer.workspace.provider_choices import list_provider_choices
-from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
+from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_tree_for_resolved, reserved_trees
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
     admin_only_settings_held,
@@ -227,14 +228,14 @@ def _outside_a_workspace_session(tool_name: str) -> ToolCallResult:
     return _err(f"{tool_name} works only inside a workspace session", error_type="unsupported-surface")
 
 
-def _refuse_reserved_read(
+async def _refuse_reserved_read(
     ws: Any, path: str, ctx: ToolContext | None,
 ) -> ToolCallResult | None:
     """A ``forbidden`` error when a non-admin names a path in the runtime's
     ``.state`` / ``.tmp`` trees (A-22), else ``None``."""
     if _caller_is_admin(ctx):
         return None
-    tree = reserved_tree_for(ws, path)
+    tree = await reserved_tree_for_resolved(ws, path)  # resolved as the backend does, links included (W55d)
     if tree is None:
         return None
     return _err(
@@ -2885,7 +2886,7 @@ def build_workspaces_toolset(
             return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
-            refused = _refuse_reserved_read(ws, args.path, ctx)
+            refused = await _refuse_reserved_read(ws, args.path, ctx)
             if refused is not None:
                 return refused
             # 01a0645c: recursive=True used to walk the ENTIRE subtree
@@ -2913,6 +2914,8 @@ def build_workspaces_toolset(
             entries = await ws.list_files(
                 args.path, recursive=args.recursive,
                 max_entries=(walk_cap + 1) if walk_cap is not None else None,
+                # A non-admin's walk never enters the reserved trees (W55c): they would fill the capped walk.
+                **({} if _caller_is_admin(ctx) else {"skip_reserved": True}),
             )
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
@@ -2985,7 +2988,7 @@ def build_workspaces_toolset(
             return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
-            refused = _refuse_reserved_read(ws, args.path, ctx)
+            refused = await _refuse_reserved_read(ws, args.path, ctx)
             if refused is not None:
                 return refused
             info = await ws.file_info(args.path)
@@ -3034,7 +3037,7 @@ def build_workspaces_toolset(
             return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
-            refused = _refuse_reserved_read(ws, args.path, ctx)
+            refused = await _refuse_reserved_read(ws, args.path, ctx)
             if refused is not None:
                 return refused
             raw = await ws.read_file(args.path)
@@ -3106,6 +3109,10 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-found")
         except (BadRequestError, PrimerError) as exc:
             return _err_from_primer(exc, error_type="bad-request")
+        # Every door that changes a workspace file wakes a watch_files park on it (as the REST routes do; review of workspaces, W55h).
+        await wake_watchers_best_effort(
+            workspace_id=args.workspace_id, path=args.path, scheduler=scheduler, event_bus=event_bus, event_type="deleted",
+        )
         return _ok({"deleted": True, "path": args.path})
 
     name, entry = _tool(
@@ -3161,6 +3168,9 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-found")
         except (BadRequestError, PrimerError) as exc:
             return _err_from_primer(exc, error_type="bad-request")
+        await wake_watchers_best_effort(
+            workspace_id=args.workspace_id, path=args.path, scheduler=scheduler, event_bus=event_bus, event_type="modified",
+        )
         return _ok({"path": args.path, "size_bytes": len(raw)})
 
     name, entry = _tool(

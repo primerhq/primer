@@ -111,9 +111,11 @@ async def test_a_subscription_cancelled_mid_listen_returns_its_pooled_connection
         if via == "aclose":
             await sub.aclose()
         else:
-            sub._supervisor.cancel()
+            # The bus holds ONE shared listener for all its subscriptions; cancelling its supervisor is the same event.
+            listener = bus._listener
+            listener._supervisor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await sub._supervisor
+                await listener._supervisor
 
         await _assert_all_returned(provider, "after the subscription was cancelled mid-LISTEN")
     finally:
@@ -142,19 +144,20 @@ async def test_a_second_cancel_during_the_unlisten_returns_the_pooled_connection
 
     bus = PostgresEventBus(provider)
     sub = bus.subscribe()
+    listener = bus._listener  # the bus's one shared LISTEN, which owns the connection and the supervisor
     try:
         for _ in range(100):  # wait until LISTEN has completed and the supervisor is parked
-            if sub._conn is not None:
+            if listener._conn is not None:
                 break
             await asyncio.sleep(0.02)
-        assert sub._conn is not None, "the subscription never started listening"
+        assert listener._conn is not None, "the bus never started listening"
 
         monkeypatch.setattr(asyncpg.connection.Connection, "remove_listener", slow)
-        sub._supervisor.cancel()
+        listener._supervisor.cancel()
         await asyncio.wait_for(entered.wait(), 3.0)
-        sub._supervisor.cancel()  # the second cancel, inside the UNLISTEN
+        listener._supervisor.cancel()  # the second cancel, inside the UNLISTEN
         with contextlib.suppress(asyncio.CancelledError):
-            await sub._supervisor
+            await listener._supervisor
 
         await _assert_all_returned(provider, "after a second cancel landed inside UNLISTEN")
     finally:
