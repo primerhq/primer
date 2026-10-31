@@ -138,6 +138,11 @@ var SH_api = {
       "GET", "/events?" + q.join("&"), null, { signal: signal });
   },
 
+  // Every user (admins only; GET /v1/admin/users): the Activity view names the user behind a "user:<id>" actor.
+  adminUsers: function (signal) {
+    return PR_fetchAllPages("/admin/users", { signal: signal });
+  },
+
   // Event subscriptions (events.py's make_crud_router list) - powers the
   // Activity console's subscriptions table (revamp notes section 4).
   // OffsetPageResponse shape: {items, total, ...}.

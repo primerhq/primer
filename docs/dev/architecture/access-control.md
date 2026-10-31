@@ -21,8 +21,12 @@ phases.
 ```mermaid
 flowchart LR
     req[REST request] --> pr[person_from_request]
+    req -->|auth middleware| acting[acting person]
+    run[tool manager: a run's listing and calls] -->|initiated_by| acting
     tool[system or crud tool] --> pt[person_for_tool]
+    acting --> pt
     mcp[MCP call] -->|current_actor| pt
+    acting --> ev[event actor user:id]
     pr --> person[Person user_id + role]
     pt --> person
     person --> pol[policy: level_of / require / visible_predicate]
@@ -40,7 +44,12 @@ flowchart LR
   `Owned` mixin that adds `access` to a model.
 - `primer/access/person.py`: `Person` (`user_id`, `role`, `is_admin`, `is_full_user`); `person_from_request` (an API
   token acts as its owner user), `person_from_ref` (a persisted `PrincipalRef`) and `person_for_tool` (the run's
-  initiator when a tool has a `ToolContext`, else the MCP endpoint's `current_actor`).
+  initiator when a tool has a `ToolContext`, else the acting person, else the MCP endpoint's `current_actor`).
+- `primer/access/acting.py` (a leaf module: it imports nothing from primer at runtime): `acting_as(person)` (a context
+  manager over one ContextVar, reset on exit), `acting_person()` and `actor_label(person)` (`user:<id>`, else
+  `system`).
+- `primer/access/tools.py`: `toolset_use` (which tools of which toolsets a person may use) and `may_use_toolset` (at
+  least one tool: who may sign in to an MCP toolset and read its status).
 - `primer/access/policy.py`: `level_of`, `require` (no level raises `NotFoundError`, too low a level raises
   `AccessDeniedError`, rendered as 403 with code `access_denied`), `visible_predicate` (the list filter; `None` for
   admins), `readable_ids` (the ids of the rows a person holds a level on, for an inherited kind's `<parent>_id IN`
@@ -78,6 +87,9 @@ To make another entity kind owned:
 | Toolset | `primer/api/routers/providers.py` | system CRUD, `crud` toolset | the only kind with `public_tools` |
 | Workspace template | `primer/api/routers/workspaces.py` | `workspaces` toolset | `local-default` is public with no owner |
 | Channel | `primer/api/routers/channels.py` | system CRUD | |
+| MCP OAuth sign-in | `primer/api/routers/mcp_oauth.py` | `system__get_toolset_auth_status` | not an owned kind: a browser sign-in is keyed by (toolset, user) and is its person's own; client credentials stay one shared row per toolset (see [mcp-oauth](../subsystems/mcp-oauth.md)) |
+| MCP server catalogue | `primer/mcp/dispatch.py` | the exposed built-in tools | only reserved built-in toolsets are exposable (`is_exposable`, `not_system_toolset`), so no owned toolset reaches an MCP client; the built-in tools check the caller's access |
+| Event log actor | `primer/storage/{postgres,sqlite}.py`, `primer/events/recorder.py` | every tool that writes | `user:<id>` of the acting person, else `system` |
 
 ## 6. Wiring
 
@@ -87,6 +99,50 @@ person per request; tools read it from the `ToolContext` or, over MCP, from `pri
 filter compiles to `data->'access'->'members' ? $n` on Postgres, served by the GIN index; SQLite installs scan.
 Migration 21 (`primer/storage/migrations/m021_entity_ownership.py`) stamps the first admin as owner of rows created
 before access control, and makes the seeded agents and template public.
+
+### The acting person
+
+`primer/access/acting.py` holds who the current code acts for. The auth middleware sets it for every authenticated
+request, REST, WebSocket and MCP alike: the user, the owner of a bearer token (never the token), and the system person
+when auth is disabled; an unauthenticated request sets nothing, and the person is reset when the request ends. The tool
+manager runs every listing and every call of a run under `acting_as(person_from_ref(initiated_by))`, so a run whose
+task was spawned from another user's request acts for its own person; `dispatch_inner_tool` does the same from its
+context (an approved re-run), and the MCP task bridge polls a parked task call as its session's `turn_person`, else
+its `initiated_by`. Two things read it: `person_for_tool` with no `ToolContext` (so an MCP OAuth listing sends the
+acting person's token) and the event writers. Worker internals, trigger dispatch and the dispatcher act for nobody.
+
+### MCP OAuth per person
+
+A browser (authorization-code) MCP sign-in belongs to one person: its token row is keyed by
+`token_key(toolset_id, user_id)` and names both, and a call or listing sends only the token of
+`person_for_tool(ctx)`. Nobody to act for (an unattributed run) means no browser token, never another row. A
+client-credentials sign-in is one shared row per toolset (the bare toolset id), and so is any sign-in of the system
+person. Any full user who may use at least one tool of the toolset (`may_use_toolset`: a level on it, or a public tool)
+starts, reads and ends their own browser sign-in; client credentials need FULL to connect or disconnect and use to
+read. A toolset the caller may not use answers like a missing one on every route and in the status tool. The callback
+writes the starter's row only if that user still exists, is enabled and full, may still use the toolset, and no other
+person is signed in on the callback request. Changing the toolset's OAuth settings or deleting it forgets every
+person's sign-in; `forget_user_sign_ins(storage_provider, user_id)` removes one person's on every toolset (Phase 6
+calls it when a user is removed). The per-user OAuth migration hands each existing browser sign-in to the user who
+connected it (`connected_by`), else the first admin; never the toolset's owner, who may never have held that upstream
+account. Details: [mcp-oauth](../subsystems/mcp-oauth.md).
+
+### The MCP server catalogue
+
+What an MCP client may list and call is the exposure allowlist AND `is_exposable`, which refuses every tool whose
+toolset is not a reserved built-in (`not_system_toolset`; stored toolset rows cannot take a built-in id). So no owned
+toolset, and no person's MCP OAuth sign-in, is ever reachable over `/v1/mcp`, whatever the allowlist says; this is
+pinned by `tests/mcp/test_safety.py`. The exposed built-in tools run as the MCP caller's person (`current_actor`, and
+the acting person the middleware set) and check access like any other door.
+
+### Event attribution
+
+Every CRUD and action event names the person behind it. Both storages' CRUD writers (`_append_crud_event`) and
+`EventRecorder.emit(actor=None)` record `actor_label(acting_person())`: `user:<user id>` for a person (a bearer call is
+its token's owner), `system` for the system person or when nobody acts. An explicit `actor=` still wins, and
+`actor_of(ref)` renders `user:<user_id>` whenever the ref carries a user id, so `mcp.tool_called` names the user. The
+acting agent is not part of the label (approvals carry the full identity). The console's Activity view shows a
+`user:<id>` actor as the username.
 
 ### Run identity
 
@@ -117,6 +173,13 @@ owner's username from the `User` row when a gate fires, and `tool_identity(ctx, 
 - `tests/toolset/test_system_access_tools.py`: tool refusals and the MCP path (set and reset `current_actor`).
 - `tests/storage/test_access_index.py`: the GIN index and its use by the list query (Postgres lane).
 - `tests/storage/test_m021_entity_ownership.py`: the migration rules and the public seeded rows.
+- `tests/access/test_acting_person.py` and `tests/events/test_event_attribution.py`: the acting person (middleware,
+  bearer owner, auth disabled, reset after the request, `person_for_tool` order) and the event actor (REST, bearer, a
+  run's tool write, a run overriding an inherited request person, MCP, worker internals, an explicit actor); the
+  Postgres twin is `tests/storage/test_crud_event_actor_live.py`.
+- `tests/toolset/oauth/test_per_user_tokens.py`, `tests/api/test_mcp_oauth_per_user_routes.py` and
+  `tests/storage/test_m027_mcp_oauth_per_user.py`: MCP OAuth per person, its routes and its migration;
+  `tests/e2e/test_access_p5_journey.py` drives the whole flow against the mock OAuth MCP server.
 
 ## 8. Historical decisions
 
