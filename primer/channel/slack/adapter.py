@@ -147,6 +147,7 @@ class SlackChannelAdapter(ChannelAdapter):
         root_ts = await self._session_root_ts(
             client, envelope.session_id,
             getattr(envelope, "thread_anchor", None),
+            workspace_id=envelope.workspace_id,
         )
         media = getattr(envelope, "media", None)
         if media and self._artifacts is not None:
@@ -240,7 +241,7 @@ class SlackChannelAdapter(ChannelAdapter):
         await client.files_upload_v2(**kwargs)
 
     async def _session_root_ts(
-        self, client: Any, session_id: str, anchor: str | None = None,
+        self, client: Any, session_id: str, anchor: str | None = None, *, workspace_id: str = "",
     ) -> str:
         """Get-or-create the root message ts for this session's thread.
 
@@ -262,6 +263,7 @@ class SlackChannelAdapter(ChannelAdapter):
         )
         ts = resp.get("ts", "")
         self._session_threads[session_id] = ts
+        await self._map_session_thread(ts, workspace_id=workspace_id, session_id=session_id)
         return ts
 
     # ----- inbound helpers (called from handlers in factory.py) -----------

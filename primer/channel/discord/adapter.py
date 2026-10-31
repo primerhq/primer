@@ -118,6 +118,7 @@ class DiscordChannelAdapter(ChannelAdapter):
         thread = await self._session_thread(
             channel, envelope.session_id,
             getattr(envelope, "thread_anchor", None),
+            workspace_id=envelope.workspace_id,
         )
         await self._post_thread_media(thread, envelope)
         header = attribution_header(envelope)
@@ -159,7 +160,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
 
     async def _session_thread(
-        self, channel: Any, session_id: str, anchor: str | None = None,
+        self, channel: Any, session_id: str, anchor: str | None = None, *, workspace_id: str = "",
     ) -> Any:
         """Get-or-create the one conversation thread for this session.
 
@@ -203,6 +204,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             name=label[:100], auto_archive_duration=60,
         )
         self._session_threads[session_id] = thread.id
+        await self._map_session_thread(str(thread.id), workspace_id=workspace_id, session_id=session_id)
         return thread
 
 
