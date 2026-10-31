@@ -14,6 +14,7 @@ from primer.access.person import Person
 from primer.access.policy import level_of
 from primer.common.toolset_ids import canonical_toolset_id
 from primer.model.provider import Toolset
+from primer.model.user import User
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 
 if TYPE_CHECKING:
@@ -56,4 +57,13 @@ async def may_use_toolset(sp: "StorageProvider", person: Person, toolset_id: str
     return use is None or bool(use)
 
 
-__all__ = ["ToolUse", "may_use_toolset", "toolset_use"]
+async def user_may_use_toolset(sp: "StorageProvider", user_id: str, toolset_id: str) -> bool:
+    """:func:`may_use_toolset` for the user ``user_id`` as stored NOW (not as a run or a pending sign-in remembered them): False when the user is
+    gone, disabled or not a full user."""
+    user = await sp.get_storage(User).get(user_id)
+    if user is None or user.disabled or user.role not in ("user", "admin"):
+        return False
+    return await may_use_toolset(sp, Person(user_id, user.role), toolset_id)
+
+
+__all__ = ["ToolUse", "may_use_toolset", "toolset_use", "user_may_use_toolset"]

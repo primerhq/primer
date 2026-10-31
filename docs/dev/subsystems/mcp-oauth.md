@@ -35,9 +35,19 @@ person for every authenticated request (REST, WebSocket, MCP; a bearer token's
 owner); the tool manager sets it to the run's own person around every listing and
 call of a run, whatever its task inherited; `dispatch_inner_tool` sets it from its
 context (an approved re-run); and the MCP task bridge polls a parked task call as
-that session's turn person, else its initiator. A call that acts for nobody (an
+that session's turn person, else its initiator. Before each poll the bridge
+re-reads that person (`primer.access.tools.user_may_use_toolset`): one who was
+disabled, or may no longer use the toolset, since the call parked is not polled
+for with their token; the parked call ends as failed with that reason (the wake's
+error text) and the bridge stops following it (review finding 4). A call that acts for nobody (an
 unattributed run, a graph ToolCall node's unattributed fallback) gets no browser
-token: it answers sign-in required and never falls back to another row. The `principal` string
+token: it answers sign-in required and never falls back to another row. So does
+the system person when auth is enabled (a system-owned trigger's fire, a session
+created while auth was off and resumed later, the graph fallback): the shared
+browser row is the system person's only on an auth-disabled install, which the
+service learns from `config.auth.enabled` (`ToolsetOAuthService(auth_enabled=...)`;
+a sign-in started for nobody while auth was off cannot finish once it is on;
+review finding 2). Client-credentials rows stay shared for every caller. The `principal` string
 passed through a toolset provider remains dispatch context only and never selects
 a token.
 
@@ -112,6 +122,17 @@ nobody is refused), Primer discovers the upstream metadata, creates or reuses th
 toolset's client, records one short-lived state and PKCE verifier naming that
 person, and returns the authorization URL. `PRIMER_PUBLIC_URL` supplies the
 stable callback origin in deployments where request-derived URLs are not safe.
+Without it the redirect URI comes from the request's `Host`, and a new
+registration replaces the one every person's tokens name, so their next refresh
+fails and signs them out. Only a caller with full access on the toolset (or an
+admin) may therefore replace an existing registration: below that, a start whose
+redirect URI differs from the registered one is a 409 `sign in through <registered
+origin>`, and one whose registration must be renewed (another issuer, a client
+secret the current key cannot open) is a 409 asking someone with full access to
+sign in first (`start_sign_in(may_reregister=...)`, review finding 1). The first
+registration of a toolset is made by whoever starts first. With
+`PRIMER_PUBLIC_URL` set the redirect URI is the deployment's, not the caller's,
+and every start behaves as before.
 The start answer also sets the `primer_mcp_oauth` cookie: a fresh nonce,
 HttpOnly, `SameSite=Lax`, scoped to the callback path, living as long as the
 pending sign-in (600 s), and `Secure` when the callback is https. The pending row
@@ -170,9 +191,10 @@ rows and registered clients stay), for removing a user.
 The per-user OAuth migration (`M027McpOAuthPerUser` in
 `primer/storage/migrations/m027_mcp_oauth_per_user.py` at the time of writing) makes
 an upgraded install's sign-ins per person. A browser token set stored under the bare
-toolset id moves, with its sealed tokens as stored, to the user its `connected_by`
-names (by username, else by id), else to the first admin (the oldest admin); with
-no users at all (the auth-disabled shape) it stays under the bare id. Not the
+toolset id moves, with its sealed tokens as stored, to the user whose id its
+`connected_by` is, else to the enabled admin whose username it is, else to the
+first enabled admin (the oldest); with no enabled admin (the auth-disabled shape
+has no users at all) it stays under the bare id. Not the
 toolset's owner: the token is an upstream account, and handing it to someone who
 never held it would be an escalation through a credential. Client-credentials rows
 stay the shared row. Every token row is stamped with `toolset_id` and `user_id`,
@@ -224,7 +246,9 @@ The REST surface is:
 
 - `POST /v1/toolsets/{id}/oauth/start` starts or restarts the caller's own
   browser sign-in (any full user who may use the toolset), or connects the shared
-  client-credentials one (full access on the toolset).
+  client-credentials one (full access on the toolset). A 409 means the start
+  would replace the toolset's client registration, which only full access may do
+  (section 6).
 - `GET /v1/toolsets/{id}/oauth/callback`, public, consumes an authorization-code
   callback without requiring the browser to hold a Primer session; it requires the
   `primer_mcp_oauth` cookie the start answer set in the same browser. It writes the

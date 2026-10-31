@@ -233,3 +233,38 @@ async def test_status_and_catalogue_auth_are_the_callers(raw_client, oauth_app, 
         assert (status["state"], status["per_user"]) == (state, True), name
         entry = next(item for item in (await raw_client.get("/v1/tools")).json()["items"] if item["id"] == "kb")
         assert entry["auth"]["state"] == state, name
+
+
+async def _client_id(app) -> str:
+    return (await app.state.mcp_oauth.store.get_client("kb")).client_id
+
+
+async def test_a_user_below_full_never_replaces_the_registration(raw_client, oauth_app, store_toolset, mock_oauth_mcp):
+    """Review finding 1: without PRIMER_PUBLIC_URL the redirect URI comes from the request's Host. A start from another Host by someone below FULL
+    would register the toolset's client again, replacing the one every other person's tokens name, so their next refresh fails and signs them out:
+    it is refused with a 409 that names the registered origin, and the registration stays."""
+    mock_oauth_mcp.state.register_confidential = True
+    await store_toolset(access=Access(owners=["u-owner"], public_tools=["echo"]))
+    await _as(raw_client, oauth_app, "carol")
+    assert (await raw_client.post("/v1/toolsets/kb/oauth/start")).status_code == 200
+    registered = await _client_id(oauth_app)
+
+    moved = await raw_client.post("/v1/toolsets/kb/oauth/start", headers={"Host": "evil.example"})
+
+    assert moved.status_code == 409, moved.text
+    assert "sign in through http://test" in moved.json()["detail"]
+    assert await _client_id(oauth_app) == registered and len(mock_oauth_mcp.state.registrations) == 1
+
+
+async def test_full_access_may_move_the_registration(raw_client, oauth_app, store_toolset, mock_oauth_mcp):
+    await store_toolset(access=Access(owners=["u-owner"], public_tools=["echo"]))
+    await _as(raw_client, oauth_app, "carol")
+    assert (await raw_client.post("/v1/toolsets/kb/oauth/start")).status_code == 200
+    registered = await _client_id(oauth_app)
+    await _as(raw_client, oauth_app, "owner")
+
+    moved = await raw_client.post("/v1/toolsets/kb/oauth/start", headers={"Host": "primer.example"})
+
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["redirect_uri"] == "http://primer.example/v1/toolsets/kb/oauth/callback"
+    assert await _client_id(oauth_app) != registered

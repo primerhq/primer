@@ -117,13 +117,19 @@ async def test_the_outcome_says_what_changed_and_the_row_holds_who_wrote_it_when
 
 
 async def test_canvas_updated_names_who_and_what_without_the_canvas_itself():
+    """The event's actor is the acting person's standard label (``user:<id>``, review finding 6); ``by`` stays the display name."""
+    from primer.access.acting import acting_as
+    from primer.access.person import Person
+
     w = make_world()
     await seed_session(w)
-    await _apply(w, G("playlist_create.cl"), by="alice")
-    await _apply(w, G("playlist_update.cl"), by="bob", src="agent")
+    with acting_as(Person("u-alice", "user")):
+        await _apply(w, G("playlist_create.cl"), by="alice")
+    with acting_as(Person("u-bob", "user")):
+        await _apply(w, G("playlist_update.cl"), by="bob", src="agent")
     first, second = await w.events("canvas.updated")
-    assert first.actor == "alice" and first.workspace_id == "ws-1"
-    assert second.actor == "bob" and second.payload == {
+    assert first.actor == "user:u-alice" and first.workspace_id == "ws-1"
+    assert second.actor == "user:u-bob" and second.payload == {
         "rev": 2, "source": "agent", "by": "bob", "element_count": 9,
         "changed": {"added": ["skip"], "updated": ["cover", "controls", "play", "player"], "removed": []},
     }
