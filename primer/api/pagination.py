@@ -15,6 +15,13 @@ from primer.model.storage import (
 )
 
 
+def empty_page(page: PageRequest) -> dict:
+    """The page a person who reads no workspace gets from a cross-workspace list (an ``IN ()`` predicate is not a SQL sentence)."""
+    if isinstance(page, OffsetPage):
+        return {"offset": page.offset, "length": 0, "total": 0, "items": []}
+    return {"next_cursor": None, "items": []}
+
+
 def parse_page(
     limit: int = Query(default=20, ge=1, le=200, description="Page size."),
     offset: int | None = Query(
