@@ -128,13 +128,16 @@ function SS_insertRecord(store, rec) {
 // part_id are no-ops.
 function SS_finalizePart(store, partId, finalText) {
   var part = store.parts[partId];
-  if (part) {
-    part.final = true;
-    part.state = "done";
-    if (typeof finalText === "string" && finalText.length > 0) part.text = finalText;
-    return true;
+  if (!part) {
+    // The record came first (the deltas ride the bus, the record the durable log or a history read, and the turn persist makes the
+    // record durable while the delta buffer may still hold the part): keep it final, or its late deltas open a second, live copy.
+    store.parts[partId] = { kind: null, text: "", state: "done", final: true };
+    return false;
   }
-  return false;
+  part.final = true;
+  part.state = "done";
+  if (typeof finalText === "string" && finalText.length > 0) part.text = finalText;
+  return true;
 }
 
 // Derive the turn status from the latest frame, mirroring the 3-source merge

@@ -732,3 +732,49 @@ def test_the_canvas_channel_keeps_the_highest_values() -> None:
     ))
     assert out["store"] == {"rev": 7, "eventSeq": 9}
     assert out["snap"] == {"rev": 7, "eventSeq": 9}
+
+
+def _rows_by_kind(rows, kind):
+    return [r for r in rows if r["kind"] == kind]
+
+
+def test_deltas_arriving_after_their_durable_record_do_not_add_a_second_copy() -> None:
+    """The deltas ride the bus and the record the durable log, so either can reach the store first. The turn persist makes a
+    turn's records durable while the dispatch's delta buffer still holds the answer's deltas (up to its 100 ms interval; a fast
+    model's whole answer), so a history read can hand the store the assistant_token record BEFORE the part_start / text_delta
+    of the same part_id. Those late deltas used to open a fresh live part, rendered after the last record as a second copy of
+    the answer (ui-e2e: "recovered after the retry" at nv-turn:6 and nv-turn:8). The record is final (A4) in either order."""
+    ctx = _ctx()
+    for shape in ({"kind": "assistant_token"}, {"class": "assistant_token"}):   # a REST history item, a tap frame
+        sid = "s-late-" + next(iter(shape))
+        rows = _transcript(ctx, "w-late", sid, [
+            {**shape, "session_id": sid, "seq": 6, "payload": {"part_id": "x:text:1", "text": "recovered after the retry"}},
+            {"class": "part_start", "session_id": sid, "part_id": "x:text:1", "kind": "text"},
+            {"class": "text_delta", "session_id": sid, "part_id": "x:text:1", "kind": "text",
+             "delta": "recovered after the retry"},
+            {"class": "part_end", "session_id": sid, "part_id": "x:text:1", "kind": "text"},
+        ])
+        assert _rows_by_kind(rows, "part") == [], shape
+        assert [r["text"] for r in _rows_by_kind(rows, "record")] == ["recovered after the retry"]
+
+
+def test_a_late_tool_input_delta_does_not_reopen_a_recorded_tool_call() -> None:
+    ctx = _ctx()
+    rows = _transcript(ctx, "w-late", "s-late-tool", [
+        {"class": "tool_call", "session_id": "s-late-tool", "seq": 3,
+         "payload": {"id": "x:tool:0:1", "name": "workspace__exec", "arguments": {"command": "true"}}},
+        {"class": "tool_input_delta", "session_id": "s-late-tool", "part_id": "x:tool:0:1", "kind": "tool",
+         "delta": '{"command": "true"}'},
+    ])
+    assert _rows_by_kind(rows, "part") == []
+
+
+def test_a_delta_for_another_part_still_streams_after_a_record() -> None:
+    """Only the recorded part is closed: the next part's deltas stream as before."""
+    ctx = _ctx()
+    rows = _transcript(ctx, "w-late", "s-late-next", [
+        {"class": "assistant_token", "session_id": "s-late-next", "seq": 6, "payload": {"part_id": "x:text:1", "text": "one"}},
+        {"class": "part_start", "session_id": "s-late-next", "part_id": "x:text:2", "kind": "text"},
+        {"class": "text_delta", "session_id": "s-late-next", "part_id": "x:text:2", "kind": "text", "delta": "tw"},
+    ])
+    assert [(r["partId"], r["text"], r["state"]) for r in _rows_by_kind(rows, "part")] == [("x:text:2", "tw", "streaming")]
