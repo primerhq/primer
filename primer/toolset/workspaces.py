@@ -914,7 +914,7 @@ def _make_delete_handler(
         if refusal is None:
             refusal = refuse_delete(guards, existing)
         if refusal is None:
-            refusal = await refuse_delete_if_referenced(guards, existing, storage_provider)
+            refusal = await refuse_delete_if_referenced(guards, existing, storage_provider, person_for_tool(ctx))
         if refusal is not None:
             return refusal
         try:

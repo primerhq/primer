@@ -547,3 +547,42 @@ async def test_four_more_doors_answer_a_hidden_row_like_an_unknown_one(world, ap
 
     seen = {door: (_norm(hidden, hid, uid), _norm(unknown, hid, uid)) for door, (hidden, unknown, hid, uid) in pairs.items()}
     assert {door: pair for door, pair in seen.items() if pair[0][0] != 404 or pair[0] != pair[1]} == {}
+
+
+# ===========================================================================
+# Final access review F10: a delete's 409 names only what the caller can read
+# ===========================================================================
+
+
+async def test_a_delete_conflict_does_not_name_a_row_the_caller_cannot_read(world, app, client, cast):
+    """Carol's public agent is bound by a session in Mallory's private workspace: the 409 says another entity references it and names
+    nothing (REST and the system ``delete_agent`` tool alike); a referencing row she can read is still named."""
+    import json
+
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.yield_ import ToolContext
+    from primer.toolset.system import build_system_toolset
+
+    sp = app.state.storage_provider
+    await sp.get_storage(Agent).create(Agent(
+        id="ag-pub", description="d", model=AgentModel(profile_id="p--m"), access=Access(owners=[cast.carol_id], public=True),
+    ))
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.mallory_id], grants={}))
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="ses-mallory-secret", workspace_id=WS, binding=AgentSessionBinding(agent_id="ag-pub"), status=SessionStatus.WAITING,
+        turn_no=1, created_at=NOW,
+    ))
+    tools = build_system_toolset(storage_provider=sp, provider_registry=app.state.provider_registry)
+    ctx = ToolContext(tool_call_id="tc", session_id=None, workspace_id=None, initiated_by=_carol_ref(cast))
+
+    rest = await cast.carol.delete("/v1/agents/ag-pub")
+    tool = await tools.call(tool_name="delete_agent", arguments={"id": "ag-pub"}, ctx=ctx)
+
+    assert rest.status_code == 409, rest.text
+    assert rest.json()["detail"] == "in_use_by: 1 other entity references 'ag-pub'"
+    assert tool.is_error and json.loads(tool.output)["message"] == rest.json()["detail"]
+
+    await sp.get_storage(Workspace).delete(WS)
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.carol_id], grants={}))
+    readable = await cast.carol.delete("/v1/agents/ag-pub")
+    assert readable.json()["detail"] == "in_use_by: 1 session(s) reference 'ag-pub' (first: 'ses-mallory-secret')"

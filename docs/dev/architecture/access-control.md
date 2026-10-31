@@ -177,7 +177,10 @@ is ignored. Migration 21 (`primer/storage/migrations/m021_entity_ownership.py`) 
 before access control, and makes the seeded agents and template public. Migration 28
 (`primer/storage/migrations/m028_infrastructure_public.py`) makes every existing model profile and provider with no
 sharing public, on the seven grantable tables (a row that already carries grants or `public` is left alone, so a re-run
-never undoes an admin's choice).
+never undoes an admin's choice). A delete refused because another row references the entity (409 `in_use_by`, REST and
+the system delete tools alike) names that row and its kind only when the caller can read it (a session through its
+workspace, a subscription through its trigger and reach, any other row through its own access); otherwise it says
+`in_use_by: 1 other entity references '<id>'` (`referenced_by_text` in `primer/storage/references.py`).
 
 ### 6.2 Workspaces and what inherits from them
 
