@@ -68,11 +68,21 @@ def _apply_seccomp(allow_network):
 
     SCMP_ACT_ALLOW = 0x7FFF0000
     EPERM = 1
+    ENOSYS = 38
     SCMP_ACT_ERRNO = 0x00050000 | (EPERM & 0x0000FFFF)
+    SCMP_ACT_ENOSYS = 0x00050000 | ENOSYS
+    SCMP_CMP_MASKED_EQ = 7
+    CLONE_THREAD = 0x00010000
 
+    class _ArgCmp(ctypes.Structure):
+        _fields_ = [("arg", ctypes.c_uint), ("op", ctypes.c_int),
+                    ("datum_a", ctypes.c_uint64), ("datum_b", ctypes.c_uint64)]
+
+    # glibc's fork() and posix_spawn() are clone(2) calls, so denying the fork syscall alone stops nothing. setsid and
+    # setpgid are what would let a child leave the process group the runner kills on a timeout.
     denied = [
         "ptrace", "process_vm_readv", "process_vm_writev",
-        "fork", "vfork", "execve", "execveat",
+        "fork", "vfork", "execve", "execveat", "setsid", "setpgid",
         "mount", "umount2", "pivot_root", "chroot",
         "init_module", "finit_module", "delete_module",
         "kexec_load", "reboot", "swapon", "swapoff",
@@ -94,6 +104,11 @@ def _apply_seccomp(allow_network):
     lib.seccomp_rule_add.argtypes = [
         ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint,
     ]
+    lib.seccomp_rule_add_array.restype = ctypes.c_int
+    lib.seccomp_rule_add_array.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint,
+        ctypes.POINTER(_ArgCmp),
+    ]
     lib.seccomp_load.restype = ctypes.c_int
     lib.seccomp_load.argtypes = [ctypes.c_void_p]
     lib.seccomp_release.argtypes = [ctypes.c_void_p]
@@ -109,6 +124,23 @@ def _apply_seccomp(allow_network):
                 continue
             lib.seccomp_rule_add(
                 ctypes.c_void_p(ctx), ctypes.c_uint32(SCMP_ACT_ERRNO),
+                ctypes.c_int(nr), ctypes.c_uint(0),
+            )
+        # clone without CLONE_THREAD is a new process; with it, a thread, which stays allowed. Flags are argument 0 on
+        # x86_64 and arm64 (s390 swaps the first two arguments).
+        nr = lib.seccomp_syscall_resolve_name(b"clone")
+        if nr >= 0:
+            no_thread = _ArgCmp(0, SCMP_CMP_MASKED_EQ, CLONE_THREAD, 0)
+            lib.seccomp_rule_add_array(
+                ctypes.c_void_p(ctx), ctypes.c_uint32(SCMP_ACT_ERRNO),
+                ctypes.c_int(nr), ctypes.c_uint(1), ctypes.byref(no_thread),
+            )
+        # clone3 passes its flags behind a pointer the filter cannot read. ENOSYS makes glibc fall back to clone, which
+        # the rule above judges.
+        nr = lib.seccomp_syscall_resolve_name(b"clone3")
+        if nr >= 0:
+            lib.seccomp_rule_add(
+                ctypes.c_void_p(ctx), ctypes.c_uint32(SCMP_ACT_ENOSYS),
                 ctypes.c_int(nr), ctypes.c_uint(0),
             )
         return lib.seccomp_load(ctypes.c_void_p(ctx)) == 0
