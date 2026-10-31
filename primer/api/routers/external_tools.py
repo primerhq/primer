@@ -20,10 +20,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field
 
-from primer.api.deps import get_external_tool_call_storage
+from primer.access.person import person_from_request
+from primer.access.workspaces import require_session, scope_to_readable_workspaces
+from primer.model.access import AccessLevel
+from primer.api.deps import get_external_tool_call_storage, get_storage_provider
 from primer.api.errors import common_responses
 from primer.model.external_tool import ExternalToolCall
 from primer.model.storage import OffsetPage
@@ -95,9 +98,15 @@ async def _pending_for(storage, *, field: str, value: str) -> dict:
     responses=common_responses(500),
 )
 async def session_pending(
+    request: Request,
     session_id: str = Path(...),
     storage=Depends(get_external_tool_call_storage),
+    storage_provider=Depends(get_storage_provider),
 ) -> dict:
+    # Access (P2 Task 3): the pending list is a read of the session (it
+    # names its tool calls and their arguments), so it needs read on the
+    # workspace the session lives in; a stranger answers the missing-row text.
+    await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.READ)
     return await _pending_for(storage, field="session_id", value=session_id)
 
 
@@ -107,12 +116,14 @@ async def session_pending(
     responses=common_responses(500),
 )
 async def list_external_tool_calls(
+    request: Request,
     status: str | None = Query(default=None),
     session_id: str | None = Query(default=None),
     chat_id: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     storage=Depends(get_external_tool_call_storage),
+    storage_provider=Depends(get_storage_provider),
 ) -> dict:
     # The status filter is applied post-sweep on purpose: a pending row
     # whose deadline passed must be reported (and persisted) as
@@ -125,6 +136,10 @@ async def list_external_tool_calls(
     if chat_id:
         q = q.where("chat_id", chat_id)
         predicate = q.build()
+    # Access (P2 Task 5): a non-admin lists only the calls of workspaces they read, in the query (a chat call, which has no workspace, is an admin's).
+    nothing, predicate = await scope_to_readable_workspaces(storage_provider, person_from_request(request), predicate)
+    if nothing:
+        return {"items": [], "total": 0}
     if predicate is not None:
         page = await storage.find(
             predicate, OffsetPage(offset=offset, length=limit)

@@ -3514,6 +3514,20 @@ input, textarea, select { font: inherit; color: inherit; }
   color: var(--text-3);
   border-bottom: 1px solid var(--border);
 }
+
+/* ACL-P2-T10: the rail's workspace group labels (Mine / Shared with me /
+   Public) - the house rail-label look, one step quieter than the section
+   head since they sit inside it. */
+.nv-rail-group {
+  margin: 8px 0 2px;
+  padding: 0 8px 0 12px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
 .nv-rail-count { font-family: var(--font-mono, monospace); color: var(--attention); }
 /* uiv2 Wave 1 (01a06431): the Files header's workspace name escapes the
    section head's inherited uppercase transform - "FILES payments-revamp",

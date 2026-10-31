@@ -22,9 +22,22 @@ from typing import Any
 import pytest
 
 from primer.api.registries import WorkspaceRegistry
+from primer.mcp.server import current_actor
+from primer.model.principal import Principal
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.toolset.workspaces import build_workspaces_toolset
 from tests.toolset.test_workspaces import _SP, _provider, _StubBackend, _template_body
+
+
+@pytest.fixture(autouse=True)
+def _actor():
+    """No calling session: the calls of this file act as the MCP endpoint's admin actor (the file tests the cancel and
+    teardown mechanics, not access)."""
+    token = current_actor.set(Principal(type="user", id="u-root", display="root", role="admin", source="local", user_id="u-root"))
+    try:
+        yield
+    finally:
+        current_actor.reset(token)
 
 
 @pytest.fixture

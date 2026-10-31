@@ -271,6 +271,8 @@ class ChannelEventRouter:
                         claim_engine=self._fire_deps.claim_engine,
                         workspace_registry=self._fire_deps.workspace_registry,
                         event_bus=self._bus,
+                        # Channel-thread senders are not primer users: the turn runs as the session's creator (spec §13 Q1).
+                        by=target.initiated_by,
                     )
                     if delivery.outcome != DELIVERED_MISSING:
                         return ChannelRouteOutcome(
@@ -322,6 +324,9 @@ class ChannelEventRouter:
                 # user message on that session (S6 section 5). Queueing is
                 # the parallelism a human conversation wants; a steer that
                 # lands mid-turn is realized at the drain checkpoint.
+                # Channel-thread senders are not primer users: the turn runs
+                # as the session's creator (spec §13 Q1).
+                target = await self._sp.get_storage(WorkspaceSession).get(record.session_id)
                 delivery = await deliver_steer(
                     session_id=record.session_id,
                     text=await self._steer_text(
@@ -338,6 +343,7 @@ class ChannelEventRouter:
                     claim_engine=self._fire_deps.claim_engine,
                     workspace_registry=self._fire_deps.workspace_registry,
                     event_bus=self._bus,
+                    by=target.initiated_by if target is not None else None,
                 )
                 if delivery.outcome != DELIVERED_MISSING:
                     return ChannelRouteOutcome(

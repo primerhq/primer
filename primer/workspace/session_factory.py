@@ -810,6 +810,7 @@ async def pause_session(
 
 async def resume_session(
     *, workspace_id: str, session_id: str, sessions: Any, scheduler: Any, claim_engine: Any | None, guard: SessionGuard | None = None,
+    by: PrincipalRef | None = None,
 ) -> WorkspaceSession:
     """Idempotent start-or-resume (shared by ``POST .../sessions/{sid}/resume`` and the ``resume_workspace_session`` tool; ticket 01a16d3c-9984).
 
@@ -818,8 +819,11 @@ async def resume_session(
       rested failure), the pause flag and a workspace refusal are cleared, and the session is enqueued and its claim lease upserted.
     * ``NotFoundError`` when the session does not exist on the workspace, ``ConflictError`` when it has ended.
 
-    The write is ONE field-scoped ``patch_if`` of the fields resume changes (``status``, ``pause_requested``, ``workspace_refusal``, and
-    ``started_at`` when the row it read has none), fenced on the status it read ALONE. It writes no park field, so a park, the hook's
+    ``by`` (access-control spec §13 Q1) names the person whose input this resume is: when the row it read has never run a turn
+    (``turn_person`` unset), the first turn runs as them, so the write names them; a turn already parked keeps the person it parked with.
+
+    The write is ONE field-scoped ``patch_if`` of the fields resume changes (``status``, ``pause_requested``, ``workspace_refusal``,
+    ``turn_person`` when the row it read never ran a turn, and ``started_at`` when the row it read has none), fenced on the status it read ALONE. It writes no park field, so a park, the hook's
     ``parked -> resumable`` flip or a cancel flag committed after the read is never written back over, and a PAUSED row whose park is
     ``resumable`` still resumes (the hook flips ``parked`` to ``resumable`` under a PAUSED row, so a park term in the fence would reject resume in
     normal use). A rejected write means the status moved: the row is re-read ONCE and the decision taken again (ENDED is a conflict, RUNNING the
@@ -858,6 +862,9 @@ async def resume_session(
                 # a rested failure (C-024) restarts the clock the stuck-session sweeper's age check reads: it is RUNNING with no lease row until
                 # the claim below is armed, and the sweeper may be on another pod (see ``wake_session``)
                 patch["started_at"] = datetime.now(timezone.utc)
+            if by is not None and s.turn_person is None:
+                # the resumer's input starts the session's first turn (spec §13 Q1); a parked turn's person stays
+                patch["turn_person"] = by
             written = await sessions.patch_if(
                 session_id, to_jsonable_python(patch),
                 where={"status": [raw_generation(s, "status")]},

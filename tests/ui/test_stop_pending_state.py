@@ -207,7 +207,7 @@ def test_the_composer_stop_button_is_disabled_and_relabelled_while_stopping() ->
     m = re.search(r'<button type="button" className="nv-stop-btn"[\s\S]{0,420}?</button>', DOC)
     assert m, "the composer Stop button is gone"
     button = m.group(0)
-    assert "disabled={props.stopping}" in button
+    assert "disabled={wsRo || props.stopping}" in button
     assert "Stopping" in button
 
 

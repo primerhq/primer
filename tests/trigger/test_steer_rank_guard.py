@@ -4,6 +4,11 @@
 ``initiated_by``. So a user who could point a subscription at an admin's session would drive an admin-ranked run. Each
 dispatcher now compares the target session's initiator with :func:`primer.trigger.owner.principal_for_fire` and refuses (a
 failed fire, ``error_code="steer_outranks_fire"``, nothing delivered) when the session outranks the fire.
+
+Before that rank question, the dispatcher asks the access question (access-control P2 T6): the owner recorded on the row must
+hold full on the target's workspace (:func:`primer.trigger.reach.refuse_fire_out_of_reach`), else the fire is refused as
+``target_out_of_reach`` and the rank guard is never reached. A ``restricted`` owner holds no level on anything, so a
+restricted fire is refused by that check no matter who started the target.
 """
 
 from __future__ import annotations
@@ -12,9 +17,11 @@ from datetime import datetime, timezone
 
 import primer.trigger.subscribers.parked_session as ps
 import primer.trigger.subscribers.session_append as sa
+from primer.model.access import Access
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import ParkedSessionSubConfig, SessionAppendSubConfig, Subscription, Trigger
 from primer.model.user import User
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.session.steer_delivery import DELIVERED_WOKEN, SteerDelivery
 from primer.trigger.subscribers import DispatchDeps
@@ -34,6 +41,14 @@ async def _seed(sp, *, session_by: PrincipalRef | None, owner: PrincipalRef | No
     trigger_owner = owner if trigger_owner is _UNSET else trigger_owner
     for uid, role in (("u-admin", "admin"), ("u-plain", "user"), ("u-restricted", "restricted")):
         await sp.get_storage(User).create(User(id=uid, username=uid, created_at=NOW, role=role))
+    # The target's workspace, owned by the subscription's owner so the access check (P2 T6) passes and the rank guard is
+    # the question these tests answer. A restricted owner owns it too: the check still refuses, because a restricted person
+    # holds no level on anything.
+    await sp.get_storage(Workspace).create(Workspace(
+        id="ws-1", template_id="local-default", provider_id="local", created_at=NOW,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://ws-1", token="t"),
+        access=Access(owners=[owner.id] if owner is not None else []),
+    ))
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id="se-target", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.WAITING, turn_status="idle", parked_status="parked",
@@ -182,14 +197,15 @@ async def test_an_admin_subscription_on_a_user_trigger_cannot_wake_a_parked_admi
     assert woken == []
 
 
-async def test_a_restricted_fire_cannot_append_to_an_unattributed_session(monkeypatch, fake_storage_provider):
-    """A session with no initiator counts as an ordinary user, which outranks a ``restricted`` owner's fire."""
+async def test_a_restricted_fire_is_refused_by_the_access_check_before_the_rank_guard(monkeypatch, fake_storage_provider):
+    """A restricted owner holds no level on any workspace (not even one it owns), so the access check refuses the fire and the
+    rank guard is never reached (access-control P2 T6)."""
     restricted = _ref("u-restricted", "restricted")
     sub = await _seed(fake_storage_provider, session_by=None, owner=restricted, config=APPEND)
 
     res, delivered = await _append(monkeypatch, fake_storage_provider, sub)
 
-    assert res.ok is False and res.error_code == "steer_outranks_fire", res
+    assert res.ok is False and res.error_code == "target_out_of_reach", res
     assert delivered == []
 
 

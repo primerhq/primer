@@ -17,6 +17,7 @@ from typing import Any
 
 from primer.model.event_matcher import validate_text_pattern
 from primer.model.except_ import NotFoundError
+from primer.access.person import Person
 from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage, Op
 from primer.model.trigger import (
@@ -28,7 +29,11 @@ from primer.model.trigger import (
     refuse_retired_reply_target,
 )
 from primer.storage.q import Q
-from primer.trigger.reach import refuse_target_out_of_reach, subscription_in_reach, subscription_reaches_outside
+from primer.trigger.reach import (
+    refuse_target_out_of_access,
+    subscription_in_reach,
+    subscription_reaches_outside,
+)
 from primer.trigger.cron import (
     CronInvalid,
     TimezoneInvalid,
@@ -67,7 +72,7 @@ class TriggerSlugConflict(Exception):
 
 class SubscriptionTargetNotFound(Exception):
     """A subscription saved from a workspace session names a target outside that session's reach, or one that does not exist: answered as a
-    ``not-found`` in the words of a target that does not exist (:func:`primer.trigger.reach.refuse_target_out_of_reach`). Nothing is stored."""
+    ``not-found`` in the words of a target that does not exist (:func:`primer.trigger.reach.refuse_target_out_of_access`). Nothing is stored."""
 
 
 class ReplyTargetChannelNotFound(Exception):
@@ -290,10 +295,10 @@ async def create_trigger(
     return trigger
 
 
-async def _refuse_trigger_out_of_reach(trigger_id: str, reach: str | None, deps: ServiceDeps) -> None:
+async def _refuse_trigger_out_of_reach(trigger_id: str, reach: Person | None, deps: ServiceDeps) -> None:
     """Raise :class:`TriggerNotFound` when a subscription of the trigger starts or feeds a session outside ``reach`` (review of #874, B1).
 
-    ``reach`` is the calling session's (:func:`primer.session.peer_messages.caller_reach`); ``None`` (prime, a person, an API client) refuses
+    ``reach`` is the calling session's (:func:`primer.trigger.reach.caller_scope`); ``None`` (an admin or the system principal) refuses
     nothing. Asked right where the trigger is looked up, so the refusal is exactly what an unknown trigger answers.
     """
     if reach is None:
@@ -314,7 +319,7 @@ async def update_trigger(
     caller: Any = None,
     from_run: bool = False,
     in_session: bool = False,
-    reach: str | None = None,
+    reach: Person | None = None,
     deps: ServiceDeps,
 ) -> Trigger:
     """Partial update.
@@ -434,7 +439,7 @@ async def update_trigger(
 
 
 async def delete_trigger(
-    *, trigger_id: str, caller: Any = None, from_run: bool = False, in_session: bool = False, reach: str | None = None, deps: ServiceDeps,
+    *, trigger_id: str, caller: Any = None, from_run: bool = False, in_session: bool = False, reach: Person | None = None, deps: ServiceDeps,
 ) -> None:
     """Delete a trigger and cascade-delete its subscriptions.
 
@@ -481,7 +486,7 @@ async def delete_trigger(
 
 
 async def fire_now(
-    *, trigger_id: str, caller: Any, from_run: bool, in_session: bool = False, reach: str | None = None, deps: ServiceDeps,
+    *, trigger_id: str, caller: Any, from_run: bool, in_session: bool = False, reach: Person | None = None, deps: ServiceDeps,
 ):
     """Synchronously fire a trigger and return its :class:`FireResult`.
 
@@ -553,20 +558,18 @@ async def create_subscription(
     event_matcher=None,
     reply_target=None,
     owner: PrincipalRef | None = None,
-    reach: str | None = None,
+    reach: Person | None = None,
     deps: ServiceDeps,
 ) -> Subscription:
     """Create a subscription bound to ``trigger_id``.
 
     ``owner`` is the caller; a fresh-session run the subscription fires is
-    attributed to it (see :mod:`primer.trigger.owner`).
+    attributed to it (see :mod:`primer.trigger.owner`). The owner must hold full on the target
+    workspace (access-control P2 T6): a target they hold no full on raises
+    :class:`SubscriptionTargetNotFound` and nothing is stored, and every fire checks the owner
+    again (:mod:`primer.trigger.reach`).
 
-    ``reach`` is the calling session's reach
-    (:func:`primer.session.peer_messages.caller_reach`): ``None`` (every
-    workspace) for a person, an API client or a session in prime. A target
-    outside it raises :class:`SubscriptionTargetNotFound` and nothing is
-    stored; within it the row records it, and every fire checks it again
-    (:mod:`primer.trigger.reach`).
+    ``reach`` is the calling person (:func:`primer.trigger.reach.caller_scope`); it is not stored.
 
     Subscriptions with ``kind='parked_session'`` are reserved for the
     ``subscribe_to_trigger`` yielding tool — the REST + toolset create
@@ -583,7 +586,9 @@ async def create_subscription(
             "subscriptions of kind 'parked_session' are only created via "
             "the subscribe_to_trigger yielding tool"
         )
-    refusal = await refuse_target_out_of_reach(deps.storage_provider, reach, config)
+    # The owner of the subscription must hold full on its target workspace (access-control P2 T6): a target they hold no full on is
+    # answered exactly as one that does not exist, and nothing is stored.
+    refusal = await refuse_target_out_of_access(deps.storage_provider, owner, config)
     if refusal is not None:
         raise SubscriptionTargetNotFound(refusal)
     await _validate_explicit_reply_target(reply_target, deps)
@@ -600,7 +605,6 @@ async def create_subscription(
         reply_target=reply_target,
         created_at=_now(),
         owner=owner,
-        reach=reach,
     )
     await subs_storage.create(sub)
     return sub
@@ -622,16 +626,19 @@ async def update_subscription(
     event_matcher: Any = _UNSET,
     reply_target: Any = _UNSET,
     owner: PrincipalRef | None = None,
-    reach: str | None = None,
+    reach: Person | None = None,
     deps: ServiceDeps,
 ) -> Subscription:
     """Partial update.
 
     The caller becomes the owner, as in :func:`update_trigger`, and its
-    reach becomes the row's (as in :func:`create_subscription`): from a
-    session outside prime, a subscription whose target is out of the
-    caller's reach is refused with :class:`SubscriptionNotFound`, exactly
-    as an unknown subscription id (review of #874, C1), and left as it was.
+    reach becomes the row's: from a session outside prime, a subscription
+    whose target is out of the caller's reach is refused with
+    :class:`SubscriptionNotFound`, exactly as an unknown subscription id
+    (review of #874, C1), and left as it was. The new owner must hold full
+    on the target workspace (access-control P2 T6): an update whose owner
+    does not is refused with :class:`SubscriptionTargetNotFound`, and left
+    as it was.
 
     Nullable string fields (``payload_template``, ``description``) use
     the ``_UNSET`` sentinel so callers can leave them untouched while
@@ -648,7 +655,11 @@ async def update_subscription(
     subs_storage = deps.storage_provider.get_storage(Subscription)
     sub = await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
     sub.owner = owner
-    sub.reach = reach
+    # The new owner must hold full on the target (access-control P2 T6): an update whose owner does not is
+    # refused with the save's own answer, before anything is written.
+    refusal = await refuse_target_out_of_access(deps.storage_provider, sub.owner, sub.config)
+    if refusal is not None:
+        raise SubscriptionTargetNotFound(refusal)
     if payload_template is not _UNSET:
         sub.payload_template = payload_template
     if parallelism is not None:
@@ -665,12 +676,12 @@ async def update_subscription(
     return sub
 
 
-async def _subscription_in_reach(trigger_id: str, subscription_id: str, reach: str | None, deps: ServiceDeps) -> Subscription:
+async def _subscription_in_reach(trigger_id: str, subscription_id: str, reach: Person | None, deps: ServiceDeps) -> Subscription:
     """The subscription ``subscription_id`` of ``trigger_id``, else :class:`SubscriptionNotFound`.
 
-    ``reach`` is the calling session's (:func:`primer.session.peer_messages.caller_reach`): a subscription whose target is outside it raises the
+    ``reach`` is the calling session's (:func:`primer.trigger.reach.caller_scope`): a subscription whose target is outside it raises the
     same :class:`SubscriptionNotFound` as an unknown id or another trigger's subscription (ticket 01a16c22; review of #874, C1), so the single
-    subscription tools never confirm an id out of reach. ``None`` (prime, a person, an API client) reaches every subscription.
+    subscription tools never confirm an id out of reach. ``None`` (an admin or the system principal) reaches every subscription.
     """
     sub = await deps.storage_provider.get_storage(Subscription).get(subscription_id)
     if sub is None or sub.trigger_id != trigger_id or not await subscription_in_reach(deps.storage_provider, reach, sub):
@@ -679,7 +690,7 @@ async def _subscription_in_reach(trigger_id: str, subscription_id: str, reach: s
 
 
 async def delete_subscription(
-    *, trigger_id: str, subscription_id: str, reach: str | None = None, deps: ServiceDeps,
+    *, trigger_id: str, subscription_id: str, reach: Person | None = None, deps: ServiceDeps,
 ) -> None:
     """Delete one subscription of ``trigger_id``.
 
@@ -753,7 +764,7 @@ async def rotate_webhook_token(
 
 
 async def get_subscription(
-    *, trigger_id: str, subscription_id: str, reach: str | None = None, deps: ServiceDeps,
+    *, trigger_id: str, subscription_id: str, reach: Person | None = None, deps: ServiceDeps,
 ) -> Subscription:
     """One subscription of ``trigger_id``; ``reach`` as in :func:`delete_subscription` (out of reach is an unknown id)."""
     return await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
@@ -813,7 +824,7 @@ async def list_triggers(
 
 
 async def list_subscriptions(
-    *, trigger_id: str, reach: str | None = None, deps: ServiceDeps,
+    *, trigger_id: str, reach: Person | None = None, deps: ServiceDeps,
 ) -> list[Subscription]:
     """Return ALL subscriptions for a trigger, paging through every row
     (previously capped at the first 200).

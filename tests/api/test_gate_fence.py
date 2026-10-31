@@ -15,9 +15,12 @@ import logging
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import SecretStr
 
+from primer.model.access import Access
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalRecord
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 
 G1 = "a" * 32
@@ -244,6 +247,12 @@ async def test_a_respond_for_a_call_that_is_not_pending_is_still_404_with_or_wit
 
 @pytest.mark.asyncio
 async def test_the_session_yields_lister_and_the_inbox_serve_the_gate_id(app, client):
+    # The workspace row the URL-path listers gate on (P2 Tasks 2/3): a missing workspace answers its 404.
+    await app.state.storage_provider.get_storage(Workspace).create(
+        Workspace(id="ws-g", template_id="tpl-1", provider_id="local-1", created_at=datetime.now(UTC),
+                  runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                  access=Access()),
+    )
     await app.state.storage_provider.get_storage(WorkspaceSession).create(
         _approval_session(session_id="f-list", tool_call_id="call_0", gate_id=G1))
     await app.state.storage_provider.get_storage(WorkspaceSession).create(_graph_two_gate_session(session_id="f-list2"))

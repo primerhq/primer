@@ -49,6 +49,7 @@ from primer.canvas.wait import CANVAS_WAIT_TOOL, canvas_wait_matches
 from primer.events.visibility import payload_without_input
 from primer.model.canvas import CanvasEvent, SessionCanvas
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import (
     CANVAS_DIGEST_PAYLOAD_KEY,
     CANVAS_EVENT_PAYLOAD_KEY,
@@ -147,12 +148,16 @@ async def deliver_canvas_event(
     claim_engine: Any,
     workspace_registry: Any,
     event_bus: Any,
+    by: PrincipalRef | None = None,
 ) -> str:
     """Deliver the recorded ``event`` to ``session_id`` by the session's state (see the module docstring) and say how.
 
     ``state`` is the canvas after the event (``CanvasService.state_of``): its user values go into the block. The session row's own
     workspace is the one written to; ``workspace_id`` (the caller's) only names it in the log when the session is gone. Returns one of
     ``wait``, ``woken``, ``queued`` and ``recorded``.
+
+    ``by`` (access-control spec §13 Q1) names the clicker: a click that wakes the session runs the turn as them, and a click that queues
+    behind an open turn carries them into the queue's attribution.
     """
     row = await storage_provider.get_storage(WorkspaceSession).get(session_id)
     if row is None or row.status == SessionStatus.ENDED:
@@ -180,7 +185,7 @@ async def deliver_canvas_event(
     if route_steer(row) == ROUTE_PENDING:
         await store_pending_steer(
             storage_provider=storage_provider, session=row, text=block, workspace_registry=workspace_registry, event_bus=event_bus,
-            attribution=carried,
+            attribution=carried, by=by,
         )
         return DELIVERY_QUEUED
     receipt = SessionWakeReceipt()
@@ -192,6 +197,7 @@ async def deliver_canvas_event(
             human_intent=True,
             extra_payload=carried,
             receipt=receipt,
+            by=by,
             deps=SessionWakeDeps(
                 storage_provider=storage_provider, scheduler=scheduler, claim_engine=claim_engine,
                 workspace_registry=workspace_registry, event_bus=event_bus,

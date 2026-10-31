@@ -1,7 +1,9 @@
-"""The guards of a peer message (pivot P3, plan tasks 4 and 5): the rank rule, the hop limit, the rate ledger, the scope and the display helpers.
+"""The guards of a peer message (pivot P3, plan tasks 4 and 5): the hop limit, the rate ledger, the scope and the display helpers.
 
-``message_session`` is the one way an agent drives another session's run, so what it may do is decided here, before anything is written. The rank
-rule is the one a trigger's steer uses (``primer.authz.principal_rank``); the tests in this file pin how the peer guards read it.
+``message_session`` is the one way an agent drives another session's run, so what it may do is decided here, before anything is written. Who may
+send at all is the acting person's level on the target's workspace (access-control P2 T6, where it replaces the sender's reach and rank): that
+decision is pinned over the real ``send_peer_message`` in ``tests/session/test_send_peer_message.py`` and the tool's in
+``tests/toolset/test_workspace_tools_access.py``; this file pins the guards that stand behind it.
 """
 
 from __future__ import annotations
@@ -12,7 +14,6 @@ import pytest
 from pydantic import ValidationError
 
 from primer.agent.invoke import MAX_INVOCATION_DEPTH
-from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage
 from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import (
@@ -34,18 +35,12 @@ from primer.session.peer_messages import (
     next_peer_hops,
     parked_on,
     peer_prefix,
-    rank_label,
     record_peer_message,
-    resolve_default_workspace_id,
-    sender_may_message,
 )
+from primer.bootstrap.prime import resolve_default_workspace_id
 from tests.session._peer_fakes import make_world
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
-
-
-def _ref(role, type_="user"):
-    return PrincipalRef(type=type_, id="x", display="x", role=role, source="local")
 
 
 def _session(**fields) -> WorkspaceSession:
@@ -69,54 +64,6 @@ def _ledger(sender: str, sent_at: datetime, **fields) -> PeerMessage:
 async def _ledger_rows(world, sender: str | None = None) -> list[PeerMessage]:
     rows = (await world.sp.get_storage(PeerMessage).find(None, OffsetPage(offset=0, length=200))).items
     return [r for r in rows if sender is None or r.from_session_id == sender]
-
-
-# ---- the rank rule (task 4) -------------------------------------------------------------------------------------------------------
-
-
-def test_a_user_run_cannot_message_a_session_an_admin_started():
-    user, admin = _ref("user"), _ref("admin")
-    assert sender_may_message(user, admin) is False
-    assert sender_may_message(admin, user) is True
-    assert sender_may_message(user, user) is True
-    assert sender_may_message(user, None) is True            # no recorded creator: it runs as an unattributed user
-    assert sender_may_message(None, user) is False           # an unknown sender fails closed
-    assert sender_may_message(PrincipalRef.system(), admin) is True
-    # Re-pinned (review of #853, round 2): an admin run may message a session recorded as system (it clears every role floor anyway); a user may not.
-    assert sender_may_message(admin, PrincipalRef.system()) is True
-    assert sender_may_message(user, PrincipalRef.system()) is False
-
-
-@pytest.mark.parametrize(
-    ("sender", "target", "allowed"),
-    [
-        pytest.param(_ref("restricted"), _ref("user"), False, id="restricted to user"),
-        pytest.param(_ref("restricted"), _ref("restricted"), True, id="restricted to restricted"),
-        pytest.param(_ref("user"), _ref("restricted"), True, id="user to restricted"),
-        pytest.param(PrincipalRef.system(), PrincipalRef.system(), True, id="system to system"),
-        pytest.param(PrincipalRef.unattributed(), None, True, id="unattributed to no creator"),
-        pytest.param(PrincipalRef.unattributed(), _ref("admin"), False, id="unattributed to admin"),
-        pytest.param(_ref(None), _ref("user"), False, id="a sender with no role to user"),
-        pytest.param(_ref("auditor"), _ref("user"), False, id="an unranked role to user"),
-        pytest.param(_ref("restricted"), _ref(None, "trigger"), True, id="restricted to a trigger run with no role"),
-        pytest.param(_ref("user", "api_token"), _ref("user"), True, id="a token run ranks by its role"),
-    ],
-)
-def test_the_sender_must_rank_at_least_as_high_as_the_target_creator(sender, target, allowed):
-    assert sender_may_message(sender, target) is allowed
-
-
-def test_the_refusal_carries_its_type_and_text():
-    exc = PeerMessageRefused("forbidden", "no")
-    assert (exc.error_type, exc.message, str(exc)) == ("forbidden", "no", "no")
-    assert rank_label(None) == "user (unattributed)"
-    assert rank_label(PrincipalRef.system()) == "system"
-
-
-def test_the_rank_label_names_the_role_and_never_who_it_is():
-    """The refusal text reaches the sending agent: it says at which rank the target runs, not which person or token started it."""
-    assert rank_label(_ref("admin")) == "admin"
-    assert rank_label(_ref("restricted", "api_token")) == "restricted"
 
 
 # ---- the hop limit (task 5) -------------------------------------------------------------------------------------------------------
@@ -296,7 +243,7 @@ async def test_the_recorded_default_wins_over_a_legacy_workspace():
 
 
 async def test_without_a_record_or_a_legacy_workspace_there_is_no_default():
-    """No session is then "in the default workspace", so none may reach another workspace (the safe side of the rule)."""
+    """No session is then "in the default workspace", a word the reach rule kept; the access rule asks the person's level, not the record."""
     assert await resolve_default_workspace_id(make_world().sp) is None
 
 

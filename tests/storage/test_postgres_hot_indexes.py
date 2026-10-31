@@ -34,12 +34,12 @@ from primer.storage.sqlite import _SQLITE_HOT_FIELD_INDEXES
 def test_registry_declares_the_hot_tables():
     """token_hash / session status / channel routing / useridentity
     uniqueness / webhook recovery / tool-approval-record gate key /
-    artifact-location routing / the five access-members GIN indexes are
+    artifact-location routing / the six access-members GIN indexes are
     all registered."""
     assert set(_HOT_FIELD_INDEXES) == {
         "apitoken", "sessions", "channel", "useridentity",
         "webhookdelivery", "toolapprovalrecord", "artifactlocation",
-        "agent", "graph", "toolset", "workspacetemplate",
+        "agent", "graph", "toolset", "workspacetemplate", "workspace", "externaltoolcall",
     }
 
 
@@ -73,10 +73,21 @@ def test_apitoken_token_hash_index_is_unique_on_the_scalar():
 
 
 def test_sessions_status_index_is_a_plain_btree_on_the_scalar():
-    (suffix, unique, expr), = _HOT_FIELD_INDEXES["sessions"]
+    (suffix, unique, expr), = _HOT_FIELD_INDEXES["sessions"][:1]
     assert suffix == "status"
     assert unique is False
     assert expr == "((data->>'status'))"
+
+
+def test_sessions_workspace_id_index_is_a_plain_btree_on_the_scalar():
+    """The cross-workspace list filters (access-control P2) push
+    ``workspace_id IN <readable>`` into the sessions query; index-backed."""
+    (suffix, unique, expr), = [
+        e for e in _HOT_FIELD_INDEXES["sessions"] if e[0] == "workspace_id"
+    ]
+    assert suffix == "workspace_id"
+    assert unique is False
+    assert expr == "((data->>'workspace_id'))"
 
 
 def test_channel_index_covers_provider_id_and_external_id():
@@ -111,7 +122,7 @@ def test_session_model_maps_to_the_sessions_table():
     ("table", "expected_names"),
     [
         ("apitoken", ["apitoken_token_hash_uniq"]),
-        ("sessions", ["sessions_status"]),
+        ("sessions", ["sessions_status", "sessions_workspace_id"]),
         ("channel", ["channel_provider_external", "channel_access_members"]),
         ("artifactlocation", ["artifactlocation_provider_id"]),
         ("unindexed_table", []),
@@ -137,7 +148,10 @@ def test_token_hash_ddl_emits_unique_index():
 
 
 def test_status_ddl_emits_plain_index():
-    (stmt,) = _hot_field_index_ddl("sessions", '"public"."sessions"')
+    (stmt,) = [
+        s for s in _hot_field_index_ddl("sessions", '"public"."sessions"')
+        if '"sessions_status"' in s
+    ]
     assert "CREATE INDEX IF NOT EXISTS" in stmt
     assert "UNIQUE" not in stmt
 
@@ -180,5 +194,13 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
 
     assert "apitoken_token_hash_uniq" in await _index_names(sp, "apitoken")
     assert "sessions_status" in await _index_names(sp, "sessions")
+    assert "sessions_workspace_id" in await _index_names(sp, "sessions")
     assert "channel_provider_external" in await _index_names(sp, "channel")
     assert "artifactlocation_provider_id" in await _index_names(sp, "artifactlocation")
+
+
+@pytest.mark.parametrize("table", ["toolapprovalrecord", "externaltoolcall"])
+def test_the_cross_workspace_lists_have_a_workspace_id_index(table):
+    """The records and external call lists push ``workspace_id IN <readable>`` into the query (access-control P2 Task 5); index-backed."""
+    (suffix, unique, expr), = (e for e in _HOT_FIELD_INDEXES[table] if e[0] == "workspace_id")
+    assert (suffix, unique, expr) == ("workspace_id", False, "((data->>'workspace_id'))")

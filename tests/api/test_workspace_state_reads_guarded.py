@@ -23,8 +23,11 @@ from fastapi import FastAPI, Request
 from primer.api.errors import register_error_handlers
 from primer.api.deps import get_event_bus, get_scheduler, get_workspace_registry
 from primer.api.routers import workspaces as ws_router
+from primer.model.access import Access
+from primer.model.principal import Principal
+from pydantic import SecretStr
 from primer.model.user import User
-from primer.model.workspace import FileEntry
+from primer.model.workspace import FileEntry, Workspace, WorkspaceRuntimeMeta
 
 _NOW = datetime(2026, 10, 8, tzinfo=timezone.utc)
 _SECRET = b'{"kind":"error","payload":{"extensions":{"traceback":"Traceback ... /app/primer/x.py"}}}\n'
@@ -99,6 +102,32 @@ class _Registry:
         return self.ws
 
 
+class _Store:
+    def __init__(self, rows: dict) -> None:
+        self._rows = rows
+
+    async def get(self, row_id: str):
+        return self._rows.get(row_id)
+
+    async def create(self, row):
+        self._rows[row.id] = row
+        return row
+
+
+class _SP:
+    def __init__(self, store: _Store) -> None:
+        self._store = store
+
+    def get_storage(self, cls):
+        return self._store
+
+    async def initialize(self):
+        return
+
+    async def aclose(self):
+        return
+
+
 def _app(role: str) -> tuple[FastAPI, _Registry]:
     app = FastAPI()
     register_error_handlers(app)  # PrimerError -> RFC 7807, as in the real app
@@ -108,9 +137,29 @@ def _app(role: str) -> tuple[FastAPI, _Registry]:
         created_at=_NOW, role=role,
     )
 
+    # The access gates read the workspace row off the storage provider and
+    # the acting person off state.actor (P2 Task 2): a minimal provider
+    # whose one row is owned by this role's user.
+    row = Workspace(
+        id="w",
+        template_id="t",
+        provider_id="p",
+        created_at=_NOW,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://w", token=SecretStr("x")),
+        access=Access(owners=[user.id]),
+    )
+    store = _Store({row.id: row})
+    sp = _SP(store)
+    app.state.storage_provider = sp
+    app.state.provider_registry = object()
+
     @app.middleware("http")
     async def _as_user(request: Request, call_next):
         request.state.user = user
+        request.state.actor = Principal(
+            type="user", id=user.id, display=role, role=role,
+            source="test", user_id=user.id,
+        )
         return await call_next(request)
 
     app.include_router(ws_router.files_router, prefix="/v1")

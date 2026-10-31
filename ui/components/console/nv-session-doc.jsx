@@ -789,6 +789,9 @@ function NV_SessionStateChip(props) {
 
 function NV_SessionHeader(props) {
   var con = NV_useConsole();
+  // ACL-P2-T10: the session's write controls (rename, park, end, delete) stay in the menu at read
+  // level, disabled with the reason - a read grant is not a drive.
+  var wsRo = con && con.wsReadonly;
   var session = props.session;
   var sid = props.sid;
   var renameState = React.useState(null);
@@ -912,6 +915,7 @@ function NV_SessionHeader(props) {
                 visible at a time. A test that looks one up by data-verb must scope it (the title has data-testid="nv-session-title"). */}
             <button type="button" className="nv-menu-row"
               data-testid="nv-session-rename" data-verb="session.rename"
+              disabled={wsRo} title={wsRo ? con.wsRoNote : undefined}
               onClick={function () {
                 setOvf(false);
                 NV_doRename(con.wid, sid, session && session.name, props.onChanged, con.toast);
@@ -991,6 +995,7 @@ function NV_SessionHeader(props) {
             {NV_canPark(session) ? (
               <button type="button" className="nv-menu-row"
                 data-testid="nv-session-park" data-verb="session.park"
+                disabled={wsRo} title={wsRo ? con.wsRoNote : undefined}
                 onClick={function () {
                   setOvf(false);
                   NV_doPark(con.wid, sid, props.onChanged, con.toast, !!session && session.status === "running");
@@ -999,6 +1004,7 @@ function NV_SessionHeader(props) {
             {!NV_sessionIsOver(session) ? (
               <button type="button" className="nv-menu-row" data-danger="true"
                 data-testid="nv-session-end" data-verb="session.end"
+                disabled={wsRo} title={wsRo ? con.wsRoNote : undefined}
                 onClick={function () {
                   setOvf(false);
                   NV_doEnd(con.wid, sid, (session && session.name) || sid, props.onChanged, con.toast);
@@ -1006,6 +1012,7 @@ function NV_SessionHeader(props) {
             ) : null}
             <button type="button" className="nv-menu-row" data-danger="true"
               data-testid="nv-session-delete"
+              disabled={wsRo} title={wsRo ? con.wsRoNote : undefined}
               onClick={function () {
                 setOvf(false);
                 NV_doDelete(con.wid, sid, (session && session.name) || sid, props.onDeleted, con.toast);
@@ -1192,7 +1199,8 @@ function NV_LifecycleRow(props) {
 function NV_DecisionCard(props) {
   var con = NV_useConsole();
   var item = props.item;
-  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session);
+  // ACL-P2: deciding needs full on the session's workspace, the open one (con.wsLevel; null until read reads as unknown and fails open).
+  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session, con.wsLevel || undefined);
   var rejState = React.useState(false);
   var rejOpen = rejState[0];
   var setRej = rejState[1];
@@ -1233,7 +1241,7 @@ function NV_DecisionCard(props) {
         ) : null}
         {!mayDecide ? (
           <div className="nv-card-note" data-testid="nv-decision-rank-note">
-            {SH_rankDecisionWords(props.session)}
+            {SH_accessDecisionWords()}
           </div>
         ) : null}
         {mayDecide ? (
@@ -1533,7 +1541,8 @@ function NV_toolCallWithRows(row, resultFor, running) {
 function NV_AskCard(props) {
   var con = NV_useConsole();
   var item = props.item;
-  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session);
+  // ACL-P2: deciding needs full on the session's workspace, the open one (con.wsLevel; null until read reads as unknown and fails open).
+  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session, con.wsLevel || undefined);
   // Wave 6 (audit A item 15 render half): SH_askOptionsOf (shell-
   // attention.js, wave 3) normalizes _AskUserArgs.response_schema's
   // {enum: [...]} into a radio-friendly list, or null for the SAME
@@ -1584,7 +1593,7 @@ function NV_AskCard(props) {
         <div className="nv-ask-prompt">{item.preview || item.title}</div>
         {!mayDecide ? (
           <div className="nv-card-note" data-testid="nv-ask-rank-note">
-            {SH_rankDecisionWords(props.session)}
+            {SH_accessDecisionWords()}
           </div>
         ) : options ? (
           <div className="nv-ask-options" data-testid="nv-ask-options">
@@ -2176,6 +2185,8 @@ function NV_Composer(props) {
       ? "Steer mid-run - queues to the turn boundary"
       : "Message " + (props.agentName || "agent") + "…";
   var con = NV_useConsole();
+  // ACL-P2-T10: a read-level viewer's composer stays drawn but disabled, with the reason as its words.
+  var wsRo = con && con.wsReadonly;
   var valState = React.useState(function () { return NV_DRAFTS[props.sid] || ""; });
   var val = valState[0];
   var setVal = valState[1];
@@ -2463,6 +2474,11 @@ function NV_Composer(props) {
           ev.target.value = "";
         }} />
       <div className="nv-composer-wrap" data-testid="nv-composer">
+        {wsRo ? (
+          <div className="nv-status-strip" role="status" data-testid="nv-composer-readonly">
+            <span className="nv-status-verb">{con.wsRoNote}</span>
+          </div>
+        ) : null}
         <NV_StatusStrip shown={props.statusShown}
           stopping={props.stopping}
           canStop={props.canStop}
@@ -2528,6 +2544,7 @@ function NV_Composer(props) {
             ) : null}
             <textarea ref={inputRef} value={val} rows={1}
               data-testid="nv-composer-input"
+              disabled={wsRo}
               aria-label={composerHint}
               placeholder={composerHint}
               onChange={function (ev) {
@@ -2559,6 +2576,7 @@ function NV_Composer(props) {
               title={"Hold to talk, or double-tap to latch. Release "
                 + "lands as editable text, never auto-sends."}
               data-testid="nv-mic"
+              disabled={wsRo}
               data-active={recording ? "true" : "false"}
               data-latched={latched ? "true" : "false"}
               onMouseDown={micDown} onMouseUp={micUp}
@@ -2585,15 +2603,15 @@ function NV_Composer(props) {
             <button type="button" className="nv-stop-btn"
               data-testid="nv-stop" data-verb="session.interrupt"
               data-pending={props.stopping ? "true" : "false"}
-              title={props.stopping ? "Stopping the turn" : "Interrupt the running turn"}
-              disabled={props.stopping}
+              title={wsRo ? con.wsRoNote : (props.stopping ? "Stopping the turn" : "Interrupt the running turn")}
+              disabled={wsRo || props.stopping}
               onClick={props.onInterrupt}>
               {props.stopping ? "Stopping…" : "Stop"}
             </button>
           ) : null}
           <button type="button" className="nv-send-btn" data-testid="nv-send"
             data-mode={props.running ? "queue" : "send"}
-            disabled={sending || attachmentsPending}
+            disabled={wsRo || sending || attachmentsPending}
             onClick={send}>{sending ? "Sending…"
               : (props.running ? (props.queueLabel || "Queue") : "Send")}</button>
         </div>
@@ -3626,7 +3644,7 @@ function NV_SessionDoc(props) {
         : null}
       {typeof window.ExternalPendingBanner === "function" ? (
         <window.ExternalPendingBanner sessionId={sid}
-          session={session} viewer={con.viewer}
+          session={session} viewer={con.viewer} level={con.wsLevel || undefined}
           pollMs={calm ? NV_CALM_POLL_MS : 5000}
           pushToast={window.primerApi.toastPush} />
       ) : null}

@@ -56,6 +56,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from primer.access.person import person_for_tool
 from primer.access.policy import require, visible_predicate
+from primer.access.workspaces import readable_workspace_ids, require_workspace, workspace_level
 from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
 from primer.common.validation_errors import without_input
@@ -71,6 +72,7 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.model.except_ import ValidationError as PrimerValidationError
+from primer.model.principal import person_ref
 from primer.model.storage import (
     CursorPage,
     FieldRef,
@@ -105,12 +107,10 @@ from primer.model.workspace_session import (
 from primer.model.yield_ import ToolContext, Yielded
 from primer.session.peer_messages import (
     PEER_MESSAGE_MAX_CHARS,
-    REACH_NOTE,
+    ACCESS_NOTE,
     REFUSE_RESTART_NEEDS_INPUT,
     PeerMessageRefused,
     PeerSendResult,
-    caller_reach,
-    in_reach,
     list_workspace_session_summaries,
     send_peer_message,
 )
@@ -133,7 +133,6 @@ from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.workspace.env_names import ENV_NAME_PATTERN, MAX_ENV_NAME_LENGTH, RUNTIME_TOKEN_ENV_NAMES
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
-from primer.workspace.session_reconcile import open_sessions_on
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
     admin_only_settings_held,
@@ -191,7 +190,6 @@ def _caller_is_admin(ctx: ToolContext | None) -> bool:
     return _role_allows(actor, "admin")
 
 
-
 def _mcp_caller_ref():
     """The MCP request's actor as a persisted ref (a call with no ToolContext is the MCP endpoint), else ``None``.
 
@@ -204,64 +202,6 @@ def _mcp_caller_ref():
     if actor is None or actor.type == "system":
         return None
     return PrincipalRef.from_principal(actor)
-
-def _caller_principal(ctx: ToolContext | None) -> Any:
-    """Who is calling, for a rank rule: the run's initiator when the call has a ToolContext, else (the MCP endpoint) the request's actor; ``None``
-    when neither is known, which :func:`primer.authz.principal_rank` ranks as an ordinary user. The two sources of :func:`_caller_is_admin`."""
-    if ctx is not None:
-        return ctx.initiated_by
-    from primer.mcp.server import current_actor
-
-    return current_actor.get()
-
-
-def _refuse_outranked(ctx: ToolContext | None, row: WorkspaceSession) -> ToolCallResult | None:
-    """``forbidden`` when the caller ranks below the creator of ``row`` (lead ruling 2 of the G7 fixes, audit G7-06; review of #853), else ``None``.
-
-    The caller must out-rank or equal the session's creator, the rule of the REST routes, of a trigger's fire and of a message from another session
-    (:func:`primer.authz.may_drive`): for the steer and restart tools called with no calling session, and for the cancel, resume, pause and interrupt
-    tools from a session or not (pause and interrupt: ticket 01a16d3c-a8bc). The message is fixed: it names neither the creator nor the rank. A call with no ToolContext is the MCP endpoint, a live request whose actor
-    carries the account's current role, so it may always act on a session its own account or token started (``own_session``, N1); a run may not
-    (a trigger-capped run carries an admin's identity at a lower rank).
-
-    A session acting on ITSELF (the calling session is ``row``) is never refused (lead ruling on the review of #904): its run executes at most at
-    the rank recorded on its row, so stopping, pausing, cancelling or resuming its own run drives nothing higher. Without this a session whose
-    creator was demoted (the row records admin, the run is capped to user) could not stop or pause itself.
-    """
-    from primer.authz import OUTRANKED_MESSAGE, may_drive, rank_label
-    from primer.session.peer_messages import REFUSE_RANK
-
-    if ctx is not None and ctx.session_id and ctx.session_id == row.id:
-        return None
-    if may_drive(_caller_principal(ctx), row.initiated_by, own_session=ctx is None):
-        return None
-    if ctx is not None and ctx.session_id:
-        # From a session: the words a message, a steer and a restart from a session are refused in (one refusal text, review of #853 round 2).
-        return _err(
-            REFUSE_RANK.format(session_id=row.id, target_rank=rank_label(row.initiated_by), sender_rank=rank_label(run_principal(ctx))),
-            error_type="forbidden",
-        )
-    return _err(OUTRANKED_MESSAGE, error_type="forbidden")
-
-
-class _Refused(Exception):
-    """A tool's refusal raised from inside a shared session helper's ``guard`` (``primer.workspace.session_factory.SessionGuard``) and answered as
-    the tool's result: the helper decides the rank on the row it reads under the lifecycle lock, as the REST route does."""
-
-    def __init__(self, result: ToolCallResult) -> None:
-        super().__init__(result.output)
-        self.result = result
-
-
-def _rank_guard(ctx: ToolContext | None) -> Callable[[WorkspaceSession], None]:
-    """:func:`_refuse_outranked` as a helper's ``guard``: raises :class:`_Refused` with the tool's ``forbidden`` answer."""
-
-    def guard(row: WorkspaceSession) -> None:
-        refusal = _refuse_outranked(ctx, row)
-        if refusal is not None:
-            raise _Refused(refusal)
-
-    return guard
 
 
 def _caller_actor(ctx: ToolContext | None) -> str:
@@ -356,14 +296,6 @@ def _restore_template_secrets(entity: WorkspaceTemplate, existing: WorkspaceTemp
 #: Work carried on after its caller was cancelled. A strong reference: asyncio keeps tasks weakly, so without this a
 #: teardown could be garbage-collected half done.
 _CARRIED_ON: set[asyncio.Task] = set()
-
-
-class _Refused(Exception):
-    """A refusal raised out of a step run inside another call (the rank scan ``destroy`` runs before its teardown), carrying the tool's answer."""
-
-    def __init__(self, result: ToolCallResult) -> None:
-        super().__init__(result.output)
-        self.result = result
 
 
 async def _carry_on(work: Awaitable[Any], *, what: str) -> Any:
@@ -506,8 +438,8 @@ class _MessageSessionArgs(BaseModel):
         ...,
         min_length=1,
         description=(
-            "The session to message: an id from list_my_sessions (your own workspace) or, from a session in the default workspace "
-            "(prime), from find_sessions (any workspace)."
+            "The session to message: an id from list_my_sessions (your own workspace) or, with full access to the target's workspace, "
+            "from find_sessions (any workspace)."
         ),
     )
     text: str = Field(
@@ -662,17 +594,10 @@ _CREATE_WORKSPACE_WHEN = (
     "runtime in the container does not answer within 30 seconds the create fails (``type=backend-error``, REST 503) with a "
     "message that names the image, and nothing is left behind. "
     f"A custom image must contain the primer workspace runtime: build it FROM ``{DOCKER_RUNTIME_IMAGE}``. "
-    "Refused (``type=forbidden``) from a session outside the default workspace (prime): create workspaces from a session in prime or "
-    "from the console. "
+    "Needs read access on the template; you become the new workspace's owner, and it is private until you share it "
+    "(``system__set_entity_access`` with ``kind`` ``workspace``). "
     "A template on a Kubernetes provider with ``variant: agent_sandbox`` is refused (``type=not-implemented``, REST 501): no backend "
     "builds that variant yet, and nothing is created."
-)
-
-#: What ``create_workspace`` answers a session outside the default workspace (review of #870, F4, lead ruling): such a session could not reach
-#: the workspace it made, and creating one is the management plane's work.
-REFUSE_CREATE_WORKSPACE = (
-    "create_workspace is refused from a session outside the default workspace (prime); "
-    "create workspaces from a session in prime or from the console"
 )
 
 # Appended to the `when` of create_workspace_template and update_workspace_template: which backend field a provider reads, who may set it, and the limits.
@@ -774,9 +699,9 @@ _RestoreSecrets = Callable[[Any, Any, "ToolContext | None"], None] | None
 _StampAccess = Callable[["ToolContext | None"], Access] | None
 
 
-#: ``(page or row) -> payload``: what a list or get tool serves instead of the stored page or row (a response-only field added to each row).
-_Served = Callable[[Any], Awaitable[Any]] | None
-#: ``ctx -> predicate or None``: the rows a caller's listing is confined to, ``None`` for every row (the reach of a calling session).
+#: ``(page or row, ctx) -> payload``: what a list or get tool serves instead of the stored page or row (a response-only field added to each row).
+_Served = Callable[[Any, "ToolContext | None"], Awaitable[Any]] | None
+#: ``ctx -> predicate or None``: the rows a caller's listing is confined to, ``None`` for every row (the access of the calling person).
 _ListScope = Callable[["ToolContext | None"], Awaitable[Predicate | None]] | None
 #: ``(ctx, id) -> bool``: whether the caller may see the row ``id``; a row it may not is answered exactly as a row that does not exist.
 _GetScope = Callable[["ToolContext | None", str], Awaitable[bool]] | None
@@ -805,7 +730,7 @@ def _make_list_handler(
                 listed = await storage.list(page, order_by=order_by)
             else:
                 listed = await storage.find(confined, page, order_by=order_by)
-            return _ok(await served(listed) if served is not None else listed)
+            return _ok(await served(listed, ctx) if served is not None else listed)
         except BadRequestError as exc:
             # A bad cursor (forged, or not this request's) is a client error,
             # answered like the secret-field refusal above (ticket 01a1212a).
@@ -832,7 +757,7 @@ def _make_get_handler(
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
-        return _ok(await served(row) if served is not None else row)
+        return _ok(await served(row, ctx) if served is not None else row)
 
     return _handler
 
@@ -1665,42 +1590,47 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     # ------------------- Workspace CRUD (no update) -------------------
-    async def _default_workspace_id() -> str | None:
+    async def _default_workspace_id(ctx: ToolContext | None) -> str | None:
+        """The caller's own default workspace (access-control spec 6.7); an id-less person (auth disabled) gets the install-wide one."""
         from primer.bootstrap.prime import resolve_default_workspace_id
 
-        return await resolve_default_workspace_id(storage_provider)
+        return await resolve_default_workspace_id(storage_provider, person_for_tool(ctx))
 
     def _with_is_default(row: WorkspaceRow, default_id: str | None) -> dict[str, Any]:
         """A served workspace row: the stored row plus ``is_default``, the response-only flag the REST rows carry (G7-09, lead ruling 5): an
         agent finds the default workspace (prime) by it, never by its name, which is a label anyone may give any workspace."""
         return {**row.model_dump(mode="json"), "is_default": row.id == default_id}
 
-    async def _workspace_page_served(page: Any) -> dict[str, Any]:
-        default_id = await _default_workspace_id()
+    async def _workspace_page_served(page: Any, ctx: ToolContext | None) -> dict[str, Any]:
+        default_id = await _default_workspace_id(ctx)
         return {**page.model_dump(mode="json"), "items": [_with_is_default(row, default_id) for row in page.items]}
 
-    async def _workspace_row_served(row: WorkspaceRow) -> dict[str, Any]:
-        return _with_is_default(row, await _default_workspace_id())
+    async def _workspace_row_served(row: WorkspaceRow, ctx: ToolContext | None) -> dict[str, Any]:
+        return _with_is_default(row, await _default_workspace_id(ctx))
 
-    async def _out_of_reach(ctx: ToolContext | None, workspace_id: str) -> ToolCallResult | None:
-        """The answer to a call on ``workspace_id`` from a session that may not reach it, else ``None`` (ticket 01a16ad1).
+    async def _access_guard(ctx: ToolContext | None, workspace_id: str, need: AccessLevel) -> ToolCallResult | None:
+        """What the caller's person holds on ``workspace_id`` (access-control P2 T6), asked at the point a tool would look the workspace up.
 
-        Exactly the not-found of a workspace that does not exist, in the registry's words (:func:`_unknown_workspace`), so a workspace id seen in a
-        file or a log is never confirmed. Every tool that names a workspace asks this at the point where it would look the workspace up, after its
-        own argument checks, so an out-of-reach id and an unknown one answer alike whatever else the call says.
+        The run acts as its turn's person (:func:`primer.access.person.person_for_tool`), never as the calling session's reach: a workspace the
+        person holds no level on answers exactly as one that does not exist (the registry's own words, so an id seen in a file or a log is never
+        confirmed), and a level below ``need`` answers ``forbidden``. Admins and the auth-disabled system principal hold every level.
         """
-        if await _workspace_in_reach(ctx, workspace_id):
+        person = person_for_tool(ctx)
+        try:
+            await require_workspace(storage_provider, person, workspace_id, need)
             return None
-        return _err_from_primer(_unknown_workspace(workspace_id), error_type="not-found")
+        except NotFoundError:
+            return _err_from_primer(_unknown_workspace(workspace_id), error_type="not-found")
+        except AccessDeniedError as exc:
+            return _err(exc.message, error_type="forbidden")
 
-    async def _workspace_in_reach(ctx: ToolContext | None, workspace_id: str) -> bool:
-        """Whether the caller may reach ``workspace_id``; ``get_workspace`` answers a row it may not exactly as a missing one."""
-        return in_reach(await caller_reach(storage_provider, ctx), workspace_id)
+    async def _workspace_visible(ctx: ToolContext | None, workspace_id: str) -> bool:
+        """``get_workspace`` answers a row the caller's person holds no level on exactly as a missing one (a read is enough)."""
+        return await workspace_level(storage_provider, person_for_tool(ctx), workspace_id) is not None
 
-    async def _workspaces_in_reach(ctx: ToolContext | None) -> Predicate | None:
-        """``list_workspaces`` confined to the caller's reach: only its own workspace from a session outside prime, every one otherwise."""
-        reach = await caller_reach(storage_provider, ctx)
-        return None if reach is None else Predicate(left=FieldRef(name="id"), op=Op.EQ, right=Value(value=reach))
+    async def _workspaces_visible(ctx: ToolContext | None) -> Predicate | None:
+        """``list_workspaces`` confined to the workspaces the caller's person can read (``None`` for an admin: they see every one)."""
+        return visible_predicate(person_for_tool(ctx))
 
     name, entry = _tool(
         "list_workspaces",
@@ -1712,11 +1642,11 @@ def build_workspaces_toolset(
             "Use when enumerating materialised workspaces, or to find the "
             "default workspace (the row with ``is_default: true``; never by "
             "its name, which any workspace may carry); not for fetching one "
-            "by id (use ``get_workspace``). From a session outside the "
-            "default workspace (prime) it lists only your own workspace."
+            "by id (use ``get_workspace``). It lists the workspaces your "
+            "person may read."
         ),
         _PaginationArgs,
-        _make_list_handler(_workspace_storage, WorkspaceRow, served=_workspace_page_served, scope=_workspaces_in_reach),
+        _make_list_handler(_workspace_storage, WorkspaceRow, served=_workspace_page_served, scope=_workspaces_visible),
         examples=[
             ToolExample(args={}, returns="page of Workspace rows"),
             ToolExample(args={"limit": 20}),
@@ -1733,10 +1663,10 @@ def build_workspaces_toolset(
         (
             "Use when you have a workspace id and want its persisted "
             "record; not for listing all of them (use "
-            "``list_workspaces``). ``type=not-found`` if missing. " + REACH_NOTE
+            "``list_workspaces``). ``type=not-found`` if missing. " + ACCESS_NOTE
         ),
         _IdArgs,
-        _make_get_handler(_workspace_storage, "Workspace", served=_workspace_row_served, scope=_workspace_in_reach),
+        _make_get_handler(_workspace_storage, "Workspace", served=_workspace_row_served, scope=_workspace_visible),
         examples=[
             ToolExample(args={"id": "ws-1"}, returns="the Workspace row"),
         ],
@@ -1749,10 +1679,6 @@ def build_workspaces_toolset(
             args = _CreateWorkspaceArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        # A session outside prime makes no workspace (review of #870, F4): asked before any lookup, so neither a template id nor a workspace id
-        # is confirmed by the answer. From prime and with no calling session (a person, an API client) nothing changes.
-        if await caller_reach(storage_provider, ctx) is not None:
-            return _err(REFUSE_CREATE_WORKSPACE, error_type="forbidden")
         # A secret file source in the overrides reads an operator secret by name: admin only, as on REST.
         refusal = _refuse_non_admin(admin_only_override_fields(args.overrides), ctx)
         if refusal is not None:
@@ -1783,8 +1709,12 @@ def build_workspaces_toolset(
         try:
             # The one create path of this tool and POST /v1/workspaces (ticket 01a16d72): the live instance, then the row with the first phase
             # every create door writes (pending until the probe's first good ping), and the instance rolled back if the row write fails or
-            # is cancelled (a hard Cancel of the turn cancels every call whatever its flag).
-            row = await workspace_registry.create(template=template, overrides=args.overrides, workspace_id=args.id)
+            # is cancelled (a hard Cancel of the turn cancels every call whatever its flag). The caller is the owner (spec 6.1), as on REST.
+            person = person_for_tool(ctx)
+            access = Access.owned_by(person.user_id) if person.user_id else Access()
+            row = await workspace_registry.create(
+                template=template, overrides=args.overrides, workspace_id=args.id, access=access,
+            )
         except PrimerValidationError as exc:
             # A refusal of the request itself (a size the provider cannot honour, master Review Focus 5): the message
             # names overrides.resources.<field>, and nothing was built.
@@ -1804,6 +1734,18 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-found")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="backend-error")
+        # The creator is stamped owner of what they just built (access-control P2 T6): the row every create door writes has
+        # no owner, and the creator is the one person who starts with full control of the workspace. A field-scoped guarded
+        # write (the probe races the row's phase), and a no-owner create (a run naming no user) keeps the row as written.
+        person = person_for_tool(ctx)
+        if person.user_id is not None:
+            stamped = await _workspace_storage().patch_if(
+                row.id,
+                patch={"access": Access.owned_by(person.user_id).model_dump(mode="json")},
+                where={("access", "rev"): [0], ("access", "public"): [False]},
+            )
+            if stamped is not None:
+                row = stamped
         return _ok(row)
 
     name, entry = _tool(
@@ -1841,42 +1783,22 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _refuse_outranked_in_workspace(ctx: ToolContext | None, workspace_id: str) -> ToolCallResult | None:
-        """``forbidden`` when an open session in ``workspace_id`` ranks above the caller, else ``None`` (review of #870, F3).
-
-        Deleting a workspace ends every open session in it (``workspace_lost``), so it acts on each of them as a cancel does, and follows the cancel
-        tool's rank rule for each (:func:`_refuse_outranked`, in its words: a session's refusal from a session, the fixed message with none). Run by
-        ``destroy`` itself (``before_teardown``, review of #874 D1), after its default-workspace refusal and once the workspace is marked as being
-        destroyed, so a session start from then on is refused. Asked after the reach check, so an out-of-reach workspace is still answered as an
-        unknown one.
-        """
-        async for row in open_sessions_on(storage_provider, workspace_id):
-            refusal = _refuse_outranked(ctx, row)
-            if refusal is not None:
-                return refusal
-        return None
 
     async def _delete_workspace(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _IdArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        # Out of reach before the default-workspace refusal: prime is out of reach of a session outside it, and is answered as unknown too.
-        refusal = await _out_of_reach(ctx, args.id)
+        # The run's person needs owner on the workspace (access-control P2 T6), asked before anything is torn down: a workspace they hold no
+        # level on is answered exactly as one that does not exist, and a level below owner answers forbidden (the default-workspace refusal of
+        # destroy() still stands for a person who may reach it).
+        refusal = await _access_guard(ctx, args.id, AccessLevel.OWNER)
         if refusal is not None:
             return refusal
 
-        async def _rank_scan() -> None:
-            outranked = await _refuse_outranked_in_workspace(ctx, args.id)
-            if outranked is not None:
-                raise _Refused(outranked)
-
         try:
             # Carried to its end if this call is cancelled: destroy() is the instance, its sessions, then the row.
-            await _carry_on(workspace_registry.destroy(args.id, before_teardown=_rank_scan), what=f"delete_workspace {args.id}")
-        except _Refused as exc:
-            # A higher-rank session is open in the workspace: nothing was torn down (review of #870 F3, #874 D1).
-            return exc.result
+            await _carry_on(workspace_registry.destroy(args.id), what=f"delete_workspace {args.id}")
         except ReservedWorkspaceError as exc:
             # The default workspace (prime) is never deleted; destroy() refuses it before touching anything. Before the generic
             # PrimerError branch below, which would call a refusal a backend failure.
@@ -1898,11 +1820,9 @@ def build_workspaces_toolset(
             "its template (use ``delete_workspace_template``). "
             "``type=not-found`` when the id is unknown; "
             "``type=forbidden`` for the default workspace (prime), "
-            "which cannot be deleted. " + REACH_NOTE + " Prime too is another "
+            "which cannot be deleted. " + ACCESS_NOTE + " Prime too is another "
             "workspace there, so it answers type=not-found from outside it. "
-            "Deleting a workspace ends every open session in it, so "
-            "``type=forbidden`` while one of them runs at a higher rank than "
-            "you (the rule of ``cancel_workspace_session``). While the delete "
+            "While the delete "
             "runs the workspace reads ``phase=terminating``. "
             "``type=backend-error`` when the teardown fails part way (a "
             "backend that is down during it included): the workspace then "
@@ -1937,10 +1857,11 @@ def build_workspaces_toolset(
             args = _CreateSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
-            # A session outside the default workspace creates sessions only in its own (review of #853): a session it made in prime would reach
-            # every workspace. Answered exactly as a workspace that does not exist.
-            return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
+        # The run's person needs full on the workspace (access-control P2 T6): a session it made there would run at its rank, and a workspace
+        # the person holds no level on is answered exactly as one that does not exist.
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.FULL)
+        if refusal is not None:
+            return refusal
         from primer.model.principal import PrincipalRef
         from primer.workspace.session_factory import (
             SessionFactoryDeps,
@@ -1988,7 +1909,7 @@ def build_workspaces_toolset(
             "Use when you need to execute an agent or graph headlessly; "
             "poll it with ``get_workspace_session`` and read outputs with "
             "``read_workspace_file``; stop it with "
-            "``cancel_workspace_session``. " + REACH_NOTE
+            "``cancel_workspace_session``. " + ACCESS_NOTE
         ),
         _CreateSessionArgs,
         _create_session,
@@ -2031,15 +1952,11 @@ def build_workspaces_toolset(
             args = _WorkspaceSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        # The reach of a calling session, then the rank of the caller (review of #853): out of reach answers exactly as an unknown session does
-        # (cancel_session's own words), and a caller below the session's creator is refused before anything is written.
-        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
-            return _err(_session_not_on_workspace(args), error_type="not-found")
-        target = await _session_row_storage().get(args.session_id)
-        if target is not None and target.workspace_id == args.workspace_id:
-            refusal = _refuse_outranked(ctx, target)
-            if refusal is not None:
-                return refusal
+        # The run's person needs full on the workspace (access-control P2 T6): the old reach and rank rules are subsumed by the level held,
+        # and a workspace the person holds no level on is answered exactly as an unknown session (cancel_session's own words).
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.FULL)
+        if refusal is not None:
+            return refusal
         from primer.workspace.session_factory import (
             SessionCancelDeps,
             cancel_session,
@@ -2071,7 +1988,7 @@ def build_workspaces_toolset(
             "Use when you need to stop a run; a created or paused session "
             "ends immediately, a running one is preempted at the next safe "
             "point. Not for a temporary halt (use "
-            "``pause_workspace_session``). " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
+            "``pause_workspace_session``). " + ACCESS_NOTE
         ),
         _WorkspaceSessionArgs,
         _cancel_workspace_session,
@@ -2097,9 +2014,10 @@ def build_workspaces_toolset(
             args = _WorkspaceSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
-            # Out of the calling session's reach (review of #853): exactly as an unknown session (interrupt_session's own words).
-            return _err(_session_not_on_workspace(args), error_type="not-found")
+        # The run's person needs full on the workspace (access-control P2 T6); the rank rule the Stop once asked is subsumed by the level.
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.FULL)
+        if refusal is not None:
+            return refusal
         from primer.workspace.session_factory import (
             SessionInterruptDeps,
             interrupt_session,
@@ -2113,12 +2031,7 @@ def build_workspaces_toolset(
                 workspace_id=args.workspace_id,
                 session_id=args.session_id,
                 deps=deps,
-                # A Stop acts on a run at its creator's rank: the caller must out-rank or equal the creator, as the REST route asks
-                # (ticket 01a16d3c-a8bc).
-                guard=_rank_guard(ctx),
             )
-        except _Refused as exc:
-            return exc.result
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
         except ConflictError as exc:
@@ -2145,8 +2058,7 @@ def build_workspaces_toolset(
             "parked waiting on an approval, an answer or a timer (cancel it "
             "instead). A session may stop itself; an autonomous session that "
             "does waits until something wakes it, and a graph session stops "
-            "between graph events, not at the next model call. " + REACH_NOTE
-            + " type=forbidden when the session runs at a higher rank than you (or your run)."
+            "between graph events, not at the next model call. " + ACCESS_NOTE
         ),
         _WorkspaceSessionArgs,
         _interrupt_workspace_session,
@@ -2171,10 +2083,11 @@ def build_workspaces_toolset(
             args = _WorkspaceListSessionsArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
-            # Out of the calling session's reach: answered exactly as a workspace that does not exist (the registry's own words for one), so a
-            # workspace id seen in a file or a log is never confirmed.
-            return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
+        # A read is enough to list the workspace's sessions (access-control P2 T6): out of access is answered exactly as a workspace
+        # that does not exist (the registry's own words), so a workspace id seen in a file or a log is never confirmed.
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.READ)
+        if refusal is not None:
+            return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
         except NotFoundError as exc:
@@ -2202,7 +2115,7 @@ def build_workspaces_toolset(
         (
             "Use when enumerating the agent sessions on a workspace; "
             "not for one session's state (use "
-            "``get_workspace_session``). " + REACH_NOTE
+            "``get_workspace_session``). " + ACCESS_NOTE
         ),
         _WorkspaceListSessionsArgs,
         _list_sessions,
@@ -2223,13 +2136,19 @@ def build_workspaces_toolset(
         except ValidationError as exc:
             return _err_from_validation(exc)
         filters: list[Predicate] = []
-        reach = await caller_reach(storage_provider, ctx)
-        if reach is not None:
-            # A session outside the default workspace finds only its own workspace's sessions (lead ruling 3 of the G7 fixes). Another workspace
-            # named in ``workspace_id`` then finds nothing, exactly as a workspace id that does not exist.
-            filters.append(
-                Predicate(left=FieldRef(name="workspace_id"), op=Op.EQ, right=Value(value=reach))
-            )
+        person = person_for_tool(ctx)
+        # The run's person finds the sessions of the workspaces it can read (access-control P2 T6): a named workspace it holds no level on
+        # answers exactly as one that does not exist; otherwise the search is confined to the workspaces at read level and above.
+        if args.workspace_id is not None:
+            refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.READ)
+            if refusal is not None:
+                return refusal
+        else:
+            ids = await readable_workspace_ids(storage_provider, person, need=AccessLevel.READ)
+            if ids is not None:
+                filters.append(
+                    Predicate(left=FieldRef(name="workspace_id"), op=Op.IN, right=Value(value=ids))
+                )
         if args.workspace_id is not None:
             filters.append(
                 Predicate(
@@ -2271,15 +2190,15 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "find_sessions",
         (
-            "Find sessions across every workspace by workspace, agent, "
-            "state or initiator, newest first."
+            "Find sessions across the workspaces you can read by workspace, "
+            "agent, state or initiator, newest first."
         ),
         (
             "Use when you manage sessions in OTHER workspaces, as the "
-            "operator in prime does; not for listing one workspace's "
-            "sessions (use ``list_workspace_sessions``). From a session "
-            "outside the default workspace (prime) it finds only your own "
-            "workspace's sessions."
+            "operator does; not for listing one workspace's sessions (use "
+            "``list_workspace_sessions``). It finds sessions only in the "
+            "workspaces your person can read, wherever your session runs; "
+            "a ``workspace_id`` you cannot read answers type=not-found."
         ),
         _FindSessionsArgs,
         _find_sessions,
@@ -2296,9 +2215,11 @@ def build_workspaces_toolset(
             args = _WorkspaceSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
-            # Out of the calling session's reach (review of #853): exactly as a workspace that does not exist (the registry's own words).
-            return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
+        # A read is enough to inspect one session on the workspace (access-control P2 T6): out of access is answered exactly as a workspace
+        # that does not exist (the registry's own words).
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.READ)
+        if refusal is not None:
+            return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
         except NotFoundError as exc:
@@ -2334,8 +2255,8 @@ def build_workspaces_toolset(
             "listing all of them (use ``list_workspace_sessions``). The "
             "answer has no ``session_state`` and no ``parked_event_key``: read "
             "them from ``find_sessions`` (the full session row, any workspace "
-            "you reach) or, for your own workspace, ``list_my_sessions`` "
-            "(``state`` and ``parked_on``). " + REACH_NOTE
+            "you may read) or, for your own workspace, ``list_my_sessions`` "
+            "(``state`` and ``parked_on``). " + ACCESS_NOTE
         ),
         _WorkspaceSessionArgs,
         _get_session,
@@ -2359,9 +2280,13 @@ def build_workspaces_toolset(
             args = _SessionMessagesArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # Out of the caller's person's read (access-control P2 T6) answers exactly as a workspace that does not exist, asked before the row
+        # lookup (as ``get_workspace_session`` asks it): a no-read caller cannot probe for a session's existence.
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.READ)
+        if refusal is not None:
+            return refusal
         row = await storage_provider.get_storage(WorkspaceSession).get(args.session_id)
-        # Out of the calling session's reach (review of #853) answers exactly as a session that does not exist.
-        if row is None or row.workspace_id != args.workspace_id or not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
+        if row is None or row.workspace_id != args.workspace_id:
             return _err(
                 f"Session {args.session_id!r} does not exist on "
                 f"workspace {args.workspace_id!r}",
@@ -2409,7 +2334,7 @@ def build_workspaces_toolset(
             "(use ``get_workspace_session``). Never read "
             "``.state/sessions/<id>/messages.jsonl`` with "
             "``read_workspace_file``: raw ``.state`` reads are refused "
-            "unless the caller is an admin. " + REACH_NOTE
+            "unless the caller is an admin. " + ACCESS_NOTE
         ),
         _SessionMessagesArgs,
         _session_messages,
@@ -2430,20 +2355,16 @@ def build_workspaces_toolset(
             args = _WorkspaceSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
-            # Out of the calling session's reach (review of #853): exactly as an unknown session (pause_session's own words).
-            return _err(_session_not_on_workspace(args), error_type="not-found")
+        # The run's person needs full on the workspace (access-control P2 T6); the rank rule the pause once asked is subsumed by the level.
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.FULL)
+        if refusal is not None:
+            return refusal
         from primer.workspace.session_factory import pause_session
 
         try:
             session = await pause_session(
                 workspace_id=args.workspace_id, session_id=args.session_id, sessions=_session_row_storage(),
-                # A pause stops a run at its creator's rank: the caller must out-rank or equal the creator, as the REST route asks
-                # (ticket 01a16d3c-a8bc).
-                guard=_rank_guard(ctx),
             )
-        except _Refused as exc:
-            return exc.result
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
         except ConflictError as exc:
@@ -2462,20 +2383,19 @@ def build_workspaces_toolset(
             args = _WorkspaceSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if not in_reach(await caller_reach(storage_provider, ctx), args.workspace_id):
-            # Out of the calling session's reach (review of #853): exactly as an unknown session (resume_session's own words).
-            return _err(_session_not_on_workspace(args), error_type="not-found")
+        # The run's person needs full on the workspace (access-control P2 T6); the rank rule the resume once asked is subsumed by the level.
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.FULL)
+        if refusal is not None:
+            return refusal
         from primer.workspace.session_factory import resume_session
 
         try:
             session = await resume_session(
                 workspace_id=args.workspace_id, session_id=args.session_id, sessions=_session_row_storage(), scheduler=scheduler,
                 claim_engine=claim_engine,
-                # A resume sets a run going at its creator's rank: the caller must out-rank or equal the creator (review of #853).
-                guard=_rank_guard(ctx),
+                # Starting a never-started session's first turn names its person (spec §13 Q1); a parked turn keeps its own.
+                by=person_ref(run_principal(ctx)),
             )
-        except _Refused as exc:
-            return exc.result
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
         except ConflictError as exc:
@@ -2503,7 +2423,7 @@ def build_workspaces_toolset(
             "triggers, agents and other sessions held until it is resumed or "
             "a person messages it. ``type=conflict`` when the session has "
             "ended, or when its status changed under the call twice (try "
-            "again). " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
+            "again). " + ACCESS_NOTE
         ),
         _WorkspaceSessionArgs,
         _pause_workspace_session,
@@ -2529,7 +2449,7 @@ def build_workspaces_toolset(
             "The answer is the session row; a session already running is "
             "answered as it is, with nothing changed. ``type=conflict`` "
             "when the session has ended, or when its status changed under "
-            "the call twice (try again). " + REACH_NOTE + " type=forbidden when the session runs at a higher rank than you (or your run)."
+            "the call twice (try again). " + ACCESS_NOTE
         ),
         _WorkspaceSessionArgs,
         _resume_workspace_session,
@@ -2579,17 +2499,22 @@ def build_workspaces_toolset(
         from primer.events.recorder import recorder_for
         from primer.session.steer_delivery import DELIVERED_MISSING, DELIVERED_QUEUED, deliver_steer
 
+        # The run's person needs full on the named workspace (access-control P2 T6), asked BEFORE the row lookup, as every other tool asks it:
+        # a no-full caller cannot tell a session that exists there from one that does not (the workspace's own not-found words answer both).
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.FULL)
+        if refusal is not None:
+            return refusal
         sessions = storage_provider.get_storage(WorkspaceSession)
         row = await sessions.get(args.session_id)
         if row is None or row.workspace_id != args.workspace_id:
             return _err(_session_not_on_workspace(args), error_type="not-found")
         if ctx is not None and ctx.session_id:
             # An AGENT in a workspace session is steering another session (pivot P3, lead ruling 3): that is a message from the calling session, so it
-            # goes through the service ``message_session`` uses and gets its guards (who sent it, the hop count, the per-sender rate limit, the rank
-            # check) and the rulings keyed on a peer message (it never evicts a person's queued steer; it never reopens a session an operator
-            # cancelled). A call with no calling session (the MCP endpoint, a chat) is a person or an API client steering, and takes the path below.
-            # The named workspace is checked first (above), and then the reach of the caller's (lead ruling 3 of the G7 fixes): a session outside the
-            # default workspace reaches only its own, and a session out of reach answers exactly as one that does not exist. It announces
+            # goes through the service ``message_session`` uses and gets its guards (who sent it, the hop count, the per-sender rate limit, the
+            # access level) and the rulings keyed on a peer message (it never evicts a person's queued steer; it never reopens a session an
+            # operator cancelled). A call with no calling session (the MCP endpoint, a chat) is a person or an API client steering, and takes the
+            # path below. The named workspace is checked first (above), and then the target's: a session whose person holds no access to it
+            # answers exactly as one that does not exist (access-control P2 T6). It announces
             # ``session.steered`` for every delivery, as it always did.
             try:
                 sent = await _send_from_session(
@@ -2601,15 +2526,12 @@ def build_workspaces_toolset(
                 )
             except PeerMessageRefused as exc:
                 if exc.error_type == "not-found":
-                    # Out of the caller's reach, or gone since the read above: in the words of a session that does not exist.
+                    # No access to the target's workspace, or gone since the read above: in the words of a session that does not exist.
                     return _err(_session_not_on_workspace(args), error_type="not-found")
                 return _err(exc.message, error_type=exc.error_type)
             after = await sessions.get(args.session_id) or row
             return _ok({**after.model_dump(mode="json"), "delivery": sent.delivery})
-        # A person or an API client steering: they must rank at least as high as the session's creator (G7 ruling 2).
-        refusal = _refuse_outranked(ctx, row)
-        if refusal is not None:
-            return refusal
+        # A person or an API client steering takes the delivery path directly: the full level was asked above, before the row lookup.
         # The same delivery path as the REST steer route and every other machine entrypoint (triggers, channel replies): a session with a
         # turn open (armed, running, or parked on any gate) QUEUES the instruction for its next turn boundary instead of writing a second
         # user message, a parked gate is never answered by it, and an idle or ended session starts its next turn with it.
@@ -2626,6 +2548,8 @@ def build_workspaces_toolset(
             claim_engine=claim_engine,
             workspace_registry=workspace_registry,
             event_bus=event_bus,
+            # The steer's turn runs as the calling run's person (spec §13 Q1); a run with none keeps the target's.
+            by=person_ref(run_principal(ctx)),
         )
         if delivery.outcome == DELIVERED_MISSING:
             # deliver_steer reports a session that cannot take a message as missing, and says why: an ended session that cannot be reopened (a
@@ -2670,12 +2594,13 @@ def build_workspaces_toolset(
             "From inside a workspace session it is a message from that "
             "session: the target sees a user message that starts with "
             "[from session <your session id> (agent <your agent id>)], and "
-            "the limits of message_session apply (not-found outside your "
-            "reach: a session outside the default workspace reaches only "
-            "its own workspace; forbidden, hop-limit, rate-limited, "
-            "conflict). With no calling session (MCP) any workspace is "
-            "reachable, the caller must rank at least as high as the "
-            "session's creator (type=forbidden), and a session an operator "
+            "the limits of message_session apply (not-found: a session in "
+            "a workspace you hold no access to answers as an unknown id; "
+            "forbidden (you hold less than full access to the target's "
+            "workspace), hop-limit, rate-limited, "
+            "conflict). With no "
+            "calling session (MCP) the caller must hold full access to the "
+            "workspace (type=forbidden), and a session an operator "
             "cancelled is refused (type=conflict)."
         ),
         _SteerArgs,
@@ -2711,7 +2636,7 @@ def build_workspaces_toolset(
         if ctx is not None and ctx.session_id:
             # An AGENT in a workspace session is restarting another session (lead ruling 1 of the G7 fixes): that is a message from the calling
             # session, exactly as a steer from it is, so it goes through the service ``message_session`` uses and gets every one of its guards (the
-            # reach of the caller's workspace, the rank, the hop count, the per-sender rate limit) and its attribution (the prefix, ``payload.peer``,
+            # the access level, the hop count, the per-sender rate limit) and its attribution (the prefix, ``payload.peer``,
             # the hop count of the reopened turn, the ledger row, ``session.messaged``). A session an operator cancelled is refused, as for any peer
             # message. A call with no calling session (the MCP endpoint) takes the path below.
             if args.input is None:
@@ -2726,20 +2651,18 @@ def build_workspaces_toolset(
                 )
             except PeerMessageRefused as exc:
                 if exc.error_type == "not-found":
-                    # Out of the caller's reach, or gone since the read above: answered in the words of a session that does not exist, so a
-                    # session id seen in a shared file or a log is never confirmed.
+                    # No access to the target's workspace, or gone since the read above: answered in the words of a session that does not exist,
+                    # so a session id seen in a shared file or a log is never confirmed.
                     return _err(_session_not_on_workspace(args), error_type="not-found")
                 return _err(exc.message, error_type=exc.error_type)
             after = await sessions.get(args.session_id) or row
             return _ok(after.model_dump(mode="json"))
 
-        # A person or an API client restarting: they must rank at least as high as the session's creator (G7 ruling 2). A missing session is the
-        # not-found restart_session raises, in its own words.
-        existing = await storage_provider.get_storage(WorkspaceSession).get(args.session_id)
-        if existing is not None and existing.workspace_id == args.workspace_id:
-            refusal = _refuse_outranked(ctx, existing)
-            if refusal is not None:
-                return refusal
+        # A person or an API client restarting: their person needs full on the workspace (access-control P2 T6); the rank rule they once had to
+        # satisfy is subsumed by the level held. A missing session is the not-found restart_session raises, in its own words.
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.FULL)
+        if refusal is not None:
+            return refusal
         try:
             row = await restart_session(
                 workspace_id=args.workspace_id,
@@ -2748,6 +2671,8 @@ def build_workspaces_toolset(
                 # 01a08c08: no person stands behind a tool call (an MCP client, or a context with no session), so it does not clear a pause
                 # and does not reopen a session an operator cancelled (lead ruling 1 of the G7 fixes; only the REST Restart does).
                 human_intent=False,
+                # The reopened turn runs as the calling run's person (spec §13 Q1); a run with none keeps the session's own.
+                by=person_ref(run_principal(ctx)),
                 reset_deps=SessionResetDeps(
                     storage_provider=storage_provider,
                     workspace_registry=workspace_registry,
@@ -2791,10 +2716,11 @@ def build_workspaces_toolset(
             "message from that session: input is required, the target sees "
             "a user message that starts with [from session <your session "
             "id> (agent <your agent id>)], and the limits of message_session "
-            "apply (not-found outside your reach, forbidden, hop-limit, "
-            "rate-limited, conflict). With no calling session (MCP) the "
-            "caller must rank at least as high as the session's creator "
-            "(type=forbidden)."
+            "apply (not-found: a session in a workspace you hold no access "
+            "to answers as an unknown id; forbidden (you hold less than full "
+            "access to the target's workspace), hop-limit, rate-limited, "
+            "conflict). With no calling session (MCP) the caller must hold "
+            "full access to the workspace (type=forbidden)."
         ),
         _RestartArgs,
         _restart_session,
@@ -2822,6 +2748,10 @@ def build_workspaces_toolset(
             args = _ListMySessionsArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # The person may have lost read on its own workspace since the session started; a lost level answers as a missing workspace.
+        refusal = await _access_guard(ctx, ctx.workspace_id, AccessLevel.READ)
+        if refusal is not None:
+            return refusal
         return _ok(
             await list_workspace_session_summaries(
                 storage_provider,
@@ -2887,9 +2817,9 @@ def build_workspaces_toolset(
             "The target sees a user message that starts with [from session <your session id> (agent <your agent id>)]. "
             "A graph session gets the raw text and restarts its graph: the message is recorded in its transcript, but the graph never reads it "
             "(a run takes its input only from the session's stored graph_input). "
-            "Refusals: bad-request (yourself), not-found (no such session in your reach: your own workspace, or any workspace from a "
-            "session in the default workspace (prime); a session out of reach answers exactly as an unknown id), forbidden (it runs at a "
-            "higher rank than you), hop-limit (a chain of 8 messages), rate-limited (20 messages per 10 minutes), "
+            "Refusals: bad-request (yourself), not-found (a session in a workspace you hold no access to answers exactly as an unknown id), "
+            "forbidden (you hold less than full access to the session's workspace), hop-limit (a chain of 8 messages), "
+            "rate-limited (20 messages per 10 minutes), "
             "conflict (mode if_idle and the session is busy, or an ended session that cannot reopen)."
         ),
         _MessageSessionArgs,
@@ -2918,7 +2848,7 @@ def build_workspaces_toolset(
             args = _ListFilesArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        refusal = await _out_of_reach(ctx, args.workspace_id)
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.READ)
         if refusal is not None:
             return refusal
         try:
@@ -2994,7 +2924,7 @@ def build_workspaces_toolset(
         (
             "Use when browsing a workspace's filesystem; not for one "
             "entry's metadata (use ``get_workspace_file_info``) or its "
-            "bytes (use ``read_workspace_file``). " + REACH_NOTE
+            "bytes (use ``read_workspace_file``). " + ACCESS_NOTE
         ),
         _ListFilesArgs,
         _list_files,
@@ -3018,7 +2948,7 @@ def build_workspaces_toolset(
             args = _WorkspacePathArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        refusal = await _out_of_reach(ctx, args.workspace_id)
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.READ)
         if refusal is not None:
             return refusal
         try:
@@ -3041,7 +2971,7 @@ def build_workspaces_toolset(
             "not for listing a directory (use ``list_workspace_files``) "
             "or reading bytes (use ``read_workspace_file``). "
             "``type=not-found`` when missing; ``type=bad-request`` on "
-            "path-escape attempts. " + REACH_NOTE
+            "path-escape attempts. " + ACCESS_NOTE
         ),
         _WorkspacePathArgs,
         _file_info,
@@ -3067,7 +2997,7 @@ def build_workspaces_toolset(
                 f"unknown encoding {args.encoding!r}; use 'text' or 'base64'",
                 error_type="bad-request",
             )
-        refusal = await _out_of_reach(ctx, args.workspace_id)
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.READ)
         if refusal is not None:
             return refusal
         try:
@@ -3111,7 +3041,7 @@ def build_workspaces_toolset(
         (
             "Use when you need a file's bytes; not for its metadata "
             "(use ``get_workspace_file_info``) or to write it (use "
-            "``write_workspace_file``). " + REACH_NOTE
+            "``write_workspace_file``). " + ACCESS_NOTE
         ),
         _ReadFileArgs,
         _read_file,
@@ -3134,7 +3064,7 @@ def build_workspaces_toolset(
             args = _WorkspacePathArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        refusal = await _out_of_reach(ctx, args.workspace_id)
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.FULL)
         if refusal is not None:
             return refusal
         try:
@@ -3153,7 +3083,7 @@ def build_workspaces_toolset(
             "Use when removing one path from a workspace; not for "
             "destroying the whole workspace (use ``delete_workspace``). "
             "Refuses to delete the workspace root or paths inside "
-            "``.state`` / ``.tmp`` with ``type=bad-request``. " + REACH_NOTE
+            "``.state`` / ``.tmp`` with ``type=bad-request``. " + ACCESS_NOTE
         ),
         _WorkspacePathArgs,
         _delete_file,
@@ -3189,7 +3119,7 @@ def build_workspaces_toolset(
                 return _err(
                     f"invalid base64 content: {exc}", error_type="bad-request"
                 )
-        refusal = await _out_of_reach(ctx, args.workspace_id)
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.FULL)
         if refusal is not None:
             return refusal
         try:
@@ -3212,7 +3142,7 @@ def build_workspaces_toolset(
             "Use when creating or overwriting file content; not for "
             "reading it (use ``read_workspace_file``). Refuses to "
             "overwrite a directory or write inside reserved ``.state`` "
-            "/ ``.tmp`` trees. " + REACH_NOTE
+            "/ ``.tmp`` trees. " + ACCESS_NOTE
         ),
         _WriteFileArgs,
         _write_file,
@@ -3246,7 +3176,7 @@ def build_workspaces_toolset(
             args = _LogArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        refusal = await _out_of_reach(ctx, args.workspace_id)
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.READ)
         if refusal is not None:
             return refusal
         try:
@@ -3276,7 +3206,7 @@ def build_workspaces_toolset(
         (
             "Use when you need the workspace's state-repo history; not "
             "for a session's lifecycle state (use "
-            "``get_workspace_session``). " + REACH_NOTE
+            "``get_workspace_session``). " + ACCESS_NOTE
         ),
         _LogArgs,
         _get_log,
@@ -3329,8 +3259,8 @@ def build_workspaces_toolset(
         # Tolerant decode: absent / empty / garbage → fresh drain.
         cursor = TapCursor.decode(args.cursor)
 
-        # A workspace out of the calling session's reach answers as one that does not exist: the tap reads every session's stream in it.
-        refusal = await _out_of_reach(ctx, args.workspace_id)
+        # A workspace the caller's person holds no read on answers as one that does not exist: the tap reads every session's stream in it.
+        refusal = await _access_guard(ctx, args.workspace_id, AccessLevel.READ)
         if refusal is not None:
             return refusal
 
@@ -3413,7 +3343,7 @@ def build_workspaces_toolset(
             "loop (the request/response analogue of the SSE tap stream). "
             "Page with ``next_cursor``; an empty ``events`` with the same "
             "``next_cursor`` means nothing new. Not for one session's "
-            "lifecycle state (use ``get_workspace_session``). " + REACH_NOTE
+            "lifecycle state (use ``get_workspace_session``). " + ACCESS_NOTE
         ),
         _WorkspaceTapArgs,
         _workspace_tap,
@@ -3454,7 +3384,7 @@ def build_workspaces_toolset(
     return InternalToolsetProvider(toolset_id=toolset_id, registry=registry)
 
 
-__all__ = ["REFUSE_CREATE_WORKSPACE", "WORKSPACES_TOOLSET_ID", "build_workspaces_toolset"]
+__all__ = ["WORKSPACES_TOOLSET_ID", "build_workspaces_toolset"]
 
 
 # Register yielding-tool resume hooks at import time. The worker's

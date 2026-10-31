@@ -6,8 +6,9 @@ code that decides it, not against a copy of the words.
 * the template tools' admin-only list left out ``container_security_context_overrides``, which ``template_privilege`` gates;
 * ``system__reset_prime_instructions`` named ``forbidden``, ``not-found`` and ``unavailable``, and its handler also answers ``conflict`` (a
   workspace the deployment refuses) and ``bad-request`` (a directory called ``agents.md``);
-* ``message_session`` said not-found is "no such session in your workspace" and ids come from ``list_my_sessions``: from a session in prime every
-  workspace is in reach, and its ids come from ``find_sessions``;
+* ``message_session`` said not-found is "no such session in your workspace" and ids come from ``list_my_sessions``: a session in a
+  workspace the caller's person holds no access to answers as an unknown id (access-control P2 T6), and its ids come from
+  ``find_sessions``;
 * ``restart_workspace_session`` said it "works for completed, failed, or cancelled sessions": the tools refuse a cancelled one, whoever calls;
 * ``get_workspace_session`` answers no ``session_state`` and no ``parked_event_key`` and did not say where to read them.
 """
@@ -68,7 +69,11 @@ def _provider_registry(sp) -> ProviderRegistry:
 
 @pytest.fixture
 async def system(fake_storage_provider):
-    await fake_storage_provider.get_storage(Workspace).create(_row("prime"))
+    from primer.model.access import Access
+
+    row = _row("prime")
+    row.access = Access(owners=["u1"])
+    await fake_storage_provider.get_storage(Workspace).create(row)
     await fake_storage_provider.set_default_workspace_id("prime")
     registry = _Registry(_Ws({"agents.md": b"mine"}))
     toolset = build_system_toolset(
@@ -89,13 +94,21 @@ async def test_the_reset_tool_names_every_type_it_answers(system) -> None:
 
 async def test_a_workspace_the_deployment_refuses_is_a_conflict(system) -> None:
     """The answer the description now names, from the handler (the bad-request one is pinned in test_system_reset_prime_instructions.py)."""
+    from primer.model.principal import Principal
+    from primer.mcp.server import current_actor
+
     toolset, registry = system
 
     async def _refused(workspace_id):
         raise WorkspaceRefusedError("provider 'local' refused", provider_id="local").for_workspace(workspace_id)
 
     registry.get_workspace = _refused
-    result = await toolset.call(tool_name="reset_prime_instructions", arguments={})
+    # The access check asks the MCP endpoint's token user, which the real dispatcher publishes (``primer.api._app_mcp``).
+    token = current_actor.set(Principal(type="user", id="tok-u1", display="u1", role="user", source="local", user_id="u1"))
+    try:
+        result = await toolset.call(tool_name="reset_prime_instructions", arguments={})
+    finally:
+        current_actor.reset(token)
 
     assert result.is_error and json.loads(result.output)["type"] == "conflict"
 
@@ -103,15 +116,14 @@ async def test_a_workspace_the_deployment_refuses_is_a_conflict(system) -> None:
 # ---- the session tools -----------------------------------------------------------------------------------------------------------------------
 
 
-def test_message_session_says_not_found_is_out_of_reach_and_where_ids_come_from(tools) -> None:
+def test_message_session_says_no_access_is_not_found_and_where_ids_come_from(tools) -> None:
     tool = tools["message_session"]
     refusals = tool.description.split("Refusals:", 1)[1]
 
     assert "no such session in your workspace" not in tool.description
-    assert "not-found (no such session in your reach:" in refusals
-    assert "prime" in refusals.split("not-found", 1)[1].split("forbidden", 1)[0], "from prime every workspace is in reach"
+    assert "not-found (a session in a workspace you hold no access to" in refusals
     session_id = tool.args_schema["properties"]["session_id"]["description"]
-    assert "list_my_sessions" in session_id and "find_sessions" in session_id and "prime" in session_id
+    assert "list_my_sessions" in session_id and "find_sessions" in session_id and "full access" in session_id
 
 
 def test_restart_says_the_tools_refuse_a_cancelled_session(tools) -> None:

@@ -28,7 +28,7 @@ A workspace is a filesystem plus a git repository of state, and every session in
 - Two ways in:
   - Inside a session, the seven [in-session file tools](workspaces/in-session-file-tools) (`workspace__read`, `workspace__exec` and the rest) are bound to the session's workspace and take no `workspace_id`.
   - From outside, the `workspaces__*` tools take a `workspace_id`: [files and the log](workspaces/files-and-log), [create and delete a workspace](workspaces/create-and-delete).
-- The reach rule. A session reaches only its own workspace with every tool that names a workspace or a session: another workspace answers `not-found`, exactly like an id that does not exist. A session in prime, and a caller with no session (a person or an API client over MCP), reach every workspace. A session outside prime cannot create a workspace at all.
+- The access rule. A workspace belongs to its owners and is private until shared. Every tool that names a workspace or a session acts with the access of the person behind the run, wherever the run lives: `read` to read files and sessions, `full` to write, run commands and drive sessions, `owner` to delete or share. A workspace that person holds no access to answers `not-found`, exactly like an id that does not exist; too low a level answers `forbidden`. Any full user may create a workspace and owns it. See [Sharing and access](start-here/sharing-and-access).
 - Sessions in one workspace share its files and its shell. Two sessions that write the same file race. Coordinate through a file under `.state/shared/`, or send a message: [messaging other sessions](sessions/messaging-other-sessions).
 
 ## Gotchas

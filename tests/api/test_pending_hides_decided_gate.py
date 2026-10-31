@@ -18,10 +18,13 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport
+from pydantic import SecretStr
 
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
+from primer.model.access import Access
 from primer.model.provider import SqliteConfig
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.storage.sqlite import SqliteStorageProvider
 from tests.api.test_gate_fence import G1, G2, _approval_session, _ask_user_session, _graph_two_gate_session
@@ -51,6 +54,12 @@ async def sqlite_client(sqlite_provider: SqliteStorageProvider) -> AsyncIterator
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         registered = await client.post("/v1/auth/register", json={"username": "admin", "password": "testpassword"})
         assert registered.status_code in (200, 201), registered.text
+        # The workspace row the URL-path routes gate on (P2 Tasks 2/3); the admin clears the gates.
+        await sqlite_provider.get_storage(Workspace).create(
+            Workspace(id="ws-g", template_id="tpl-1", provider_id="local-1", created_at=datetime.now(UTC),
+                      runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                      access=Access()),
+        )
         yield client
 
 

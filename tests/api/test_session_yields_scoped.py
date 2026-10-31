@@ -37,11 +37,20 @@ async def _seed_session(
     parked_state: dict | None = None,
     parked_at: datetime | None = None,
 ):
+    from primer.model.access import Access
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
     from primer.model.workspace_session import (
         AgentSessionBinding,
         WorkspaceSession,
     )
+    from pydantic import SecretStr
 
+    # The workspace row the route's access gate reads (P2 Tasks 2/3): missing workspaces answer their 404.
+    await fake_storage_provider.get_storage(Workspace).create(
+        Workspace(id=wid, template_id="tpl-1", provider_id="local-1", created_at=_now(),
+                  runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                  access=Access()),
+    )
     sess = WorkspaceSession(
         id=sid,
         workspace_id=wid,

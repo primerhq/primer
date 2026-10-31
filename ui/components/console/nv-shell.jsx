@@ -173,7 +173,7 @@ function NV_usernameOf(status) {
   return status.username;
 }
 // The workspace the console opens when the address names none (pivot P2 Task 14): the row GET /v1/workspaces flags with the response-only
-// is_default (prime, the default workspace), else the first listed (an older server sends no flag; the list is every page, up to the page cap), else none.
+// is_default (the CALLER's own default workspace: the server flags per person, access-control spec 6.7), else the first listed (an older server sends no flag; the list is every page, up to the page cap), else none.
 function NV_defaultWid(items) {
   var rows = items || [];
   for (var i = 0; i < rows.length; i++) {
@@ -325,6 +325,19 @@ function NV_Shell() {
         { signal: signal });
     },
     { retryMs: 2000 }
+  );
+  // ACL-P2-T10: the open workspace's level for the caller, read through the access sub-resource the
+  // Share dialog writes to (keyed per workspace, so one read each; a null wid reads nothing). "read"
+  // is the only level the studio goes read-only on: owner and full keep every control, and an admin
+  // holds owner, so only a genuine read grant draws the disabled controls with their reason.
+  var wsAccess = window.primerApi.useResource(
+    "workspace-access:" + (wid || "none"),
+    function (signal) {
+      return wid
+        ? window.primerApi.apiFetch("GET", "/workspaces/" + encodeURIComponent(wid) + "/access", null, { signal: signal })
+        : Promise.resolve(null);
+    },
+    { pollMs: 15000, deps: [wid] }
   );
   // The theme verbs (registered once, in the core-verb effect below) run long after the render that registered them, and act on the shell as it is
   // then: the signed-in username (the key of the user's stored choice) and the shell's re-render, which redraws the profile menu's pressed button.
@@ -850,6 +863,12 @@ function NV_Shell() {
       username: NV_usernameOf(status.data),
       role: (status.data && status.data.role) || "user",
       viewer: status.data && status.data.principal,
+      // ACL-P2-T10: the read-only mode of the studio (a "read" level on the open workspace): the composer,
+      // the file writes, the terminal and the session controls stay drawn, disabled, with wsRoNote as their
+      // reason - never hidden. The level is the access view's your_level (null until read).
+      wsLevel: (wsAccess.data && wsAccess.data.your_level) || null,
+      wsReadonly: !!(wsAccess.data && wsAccess.data.your_level === "read"),
+      wsRoNote: "Read-only: you can view this workspace",
       speech: (caps.data && caps.data.speech) || {},
       voiceRef: voiceRef,
       paletteRef: paletteRef,
@@ -942,7 +961,7 @@ function NV_Shell() {
       },
     };
   }, [wid, view, doc, overlay, anchor, canvas, panels, openMenu, registry,
-    frecency, wsItems, workspaces.data, status, caps, voiceRef, paletteRef, goView, replaceView, clearView,
+    frecency, wsItems, workspaces.data, status, wsAccess, caps, voiceRef, paletteRef, goView, replaceView, clearView,
     closeOverlayTo, openSessionInStudio,
     tgModel, setTgModel, resolveSessionMeta, stampSessionMeta, setOpenMenu,
     setOverlay, setTick, markPush, setWid]);

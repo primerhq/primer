@@ -17,6 +17,7 @@ from primer.model.event import (
     LogSink,
     SessionWakeSink,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
 from primer.model.workspace_session import (
     AgentSessionBinding,
@@ -24,6 +25,11 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.storage.sqlite import SqliteStorageProvider
+
+# The dispatcher's delivery re-check (access-control Phase 2, Task 7) judges the
+# park's turn person on the event's workspace; these mechanics tests park a
+# session an ADMIN started, which the re-check never blocks.
+ADMIN_REF = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
 
 
 async def _park_session(sp, session_id: str, event_key: str) -> None:
@@ -37,6 +43,7 @@ async def _park_session(sp, session_id: str, event_key: str) -> None:
         binding=AgentSessionBinding(agent_id="agent-a"),
         status=SessionStatus.WAITING,
         created_at=datetime.now(timezone.utc),
+        initiated_by=ADMIN_REF,
         parked_status="parked",
         parked_event_key=event_key,
     )
@@ -183,6 +190,7 @@ async def test_a_session_wake_names_the_park_the_sink_read(sp):
     parked_at = datetime.now(timezone.utc) - timedelta(minutes=3)
     row = WorkspaceSession(
         id="s1", workspace_id="w", binding=AgentSessionBinding(agent_id="agent-a"), status=SessionStatus.WAITING, created_at=parked_at,
+        initiated_by=ADMIN_REF,
         parked_status="parked", parked_event_key="evwait:s1:c1", parked_at=parked_at,
     )
     await sp.get_storage(WorkspaceSession).create(row)
@@ -205,6 +213,7 @@ async def _park_evwait(sp, session_id: str, event_key: str, subscription_id: str
     meta = {"event_types": ["collection.document_pushed"], **({"subscription_id": subscription_id} if subscription_id else {})}
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id=session_id, workspace_id="w", binding=AgentSessionBinding(agent_id="agent-a"), status=SessionStatus.WAITING, created_at=parked_at,
+        initiated_by=ADMIN_REF,
         parked_status="parked", parked_event_key=event_key, parked_at=parked_at,
         parked_state={"tool_call_id": "c1", "yielded": {"tool_name": "wait_for_event", "event_key": event_key, "resume_metadata": meta}},
     ))
@@ -289,6 +298,7 @@ async def test_the_sink_judges_only_the_entries_that_wait_on_its_own_key(sp):
     ]
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id="gs", workspace_id="w", binding=GraphSessionBinding(graph_id="g"), status=SessionStatus.WAITING, created_at=parked_at,
+        initiated_by=ADMIN_REF,
         parked_status="parked", parked_event_key=key, parked_event_keys=[key, other], parked_at=parked_at,
         parked_state={
             "tool_call_id": "c1", "yielded": {"tool_name": "_approval", "event_key": key, "resume_metadata": {}},

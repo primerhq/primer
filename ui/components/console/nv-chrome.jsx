@@ -336,6 +336,9 @@ function NV_WorkspaceChip() {
 
 function NV_Topbar() {
   var con = NV_useConsole();
+  // ACL-P2-T10: the terminal is a write surface (it can run anything), so a read-level
+  // viewer gets it drawn but disabled, with the reason in its title.
+  var wsRo = con && con.wsReadonly;
   NV_useMenuDismiss(con, "profile", "nv-profile-btn");
   return (
     <div className="nv-topbar" data-testid="nv-topbar" role="banner">
@@ -356,9 +359,10 @@ function NV_Topbar() {
       {con.view.name === "studio" ? (
         <div className="nv-topbar-toggles">
           <button type="button" className="nv-topbar-toggle"
-            title="Toggle terminal" data-verb="terminal.toggle"
+            title={wsRo ? con.wsRoNote : "Toggle terminal"} data-verb="terminal.toggle"
             data-testid="nv-toggle-terminal"
             data-active={con.panels.terminal ? "true" : "false"}
+            disabled={wsRo}
             onClick={function () { NV_run(con, "terminal.toggle"); }}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
               stroke="currentColor" strokeWidth="1.3">

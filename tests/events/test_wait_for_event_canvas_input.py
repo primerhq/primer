@@ -43,12 +43,14 @@ from primer.canvas.service import CanvasService
 from primer.canvas.settings import write_canvas_settings
 from primer.events.dispatcher import EventDispatcher
 from primer.events.redaction import MASK
+from primer.model.access import Access
 from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
 from primer.model.event import EventSubscription
 from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
 from primer.model.storage import OffsetPage
 from primer.model.user import User
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
 from primer.session.yields import flip_sessions_parked_on
@@ -94,6 +96,17 @@ async def sp(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
     provider = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "t.sqlite")))
     await provider.initialize()
     await provider.get_event_store().ensure_schema()
+    # The shared workspace of this suite, as a row the access layer can judge:
+    # u-1 (the non-admin waiter) holds read, u-admin owns it (Phase 2, Task 7:
+    # a non-admin wait pins a readable workspace, and the dispatcher re-checks
+    # the park's person on the event's workspace at delivery).
+    await provider.get_storage(Workspace).create(Workspace(
+        id=WORKSPACE, template_id="t", provider_id="p",
+        created_at=datetime.now(UTC),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
+        # u-other is the signed-in reader of the served session rows: a session inherits its workspace's access (Phase 2, Task 3).
+        access=Access(owners=["u-admin"], grants={"u-1": "read", "u-other": "read"}),
+    ))
     try:
         yield provider
     finally:

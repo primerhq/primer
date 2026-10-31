@@ -26,6 +26,10 @@ does not scope canvas events to sessions; it drops the input. :data:`INPUT_KEYS`
 * ``wait_for_event``'s resume hook removes them again (:func:`payload_without_input`), as defence in depth.
 
 And a non-admin canvas wait may not match on the input (:func:`reads_input`): whether the wait wakes would tell the run what was entered.
+
+The one exact type the safe prefixes exclude is ``session.wake`` (:data:`UNSAFE_TYPES`): it carries no workspace and holds the wake payload,
+so it never reaches a non-admin (access-control Phase 2, Task 7). A non-admin may still WAIT on ``session.*``: what keeps the wake envelope
+out of the wake is the subscription's workspace pin and the dispatcher's delivery re-check, not the kind rule.
 """
 
 from __future__ import annotations
@@ -40,6 +44,10 @@ if TYPE_CHECKING:
 USER_SAFE_PREFIXES: tuple[str, ...] = ("session.", "workspace.", "canvas.")
 #: Exact event types a non-admin may see.
 USER_SAFE_TYPES: frozenset[str] = frozenset({"tool.called", "turn.started", "trigger.fired", "llm.called"})
+#: Exact event types a non-admin may NOT see even though a safe prefix reaches them (access-control Phase 2, Task 7):
+#: ``session.wake`` carries no workspace (a workspace-less event never matches a non-admin's workspace-pinned
+#: subscription) and holds the wake payload.
+UNSAFE_TYPES: frozenset[str] = frozenset({"session.wake"})
 #: Event-type prefixes a non-admin may wait on only with a workspace or session matcher: the canvas events carry user-entered content.
 SCOPED_PREFIXES: tuple[str, ...] = ("canvas.",)
 #: The envelope fields a non-admin's ``eq`` matcher names to scope such a wait.
@@ -55,6 +63,8 @@ _GLOB_CHARS = "*?["
 
 def user_safe(event_type: str) -> bool:
     """Whether a non-admin may see an event of type ``event_type``."""
+    if event_type in UNSAFE_TYPES:
+        return False
     return event_type in USER_SAFE_TYPES or any(event_type.startswith(p) for p in USER_SAFE_PREFIXES)
 
 
@@ -128,6 +138,7 @@ __all__ = [
     "INPUT_KEYS",
     "SCOPED_PREFIXES",
     "SCOPE_PATHS",
+    "UNSAFE_TYPES",
     "USER_SAFE_PREFIXES",
     "USER_SAFE_TYPES",
     "input_glob",

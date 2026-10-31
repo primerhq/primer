@@ -72,8 +72,7 @@ def person_for_tool(ctx: "ToolContext | None") -> Person:
     """The person behind a tool call: the run's initiator when the call carries a ``ToolContext``, else the MCP request's actor.
 
     The MCP endpoint dispatches handlers without a ``ToolContext`` and publishes its live actor on
-    :data:`primer.mcp.server.current_actor` instead (the same two sources
-    ``primer.toolset.workspaces._caller_principal`` reads). Nothing known reads only public rows.
+    :data:`primer.mcp.server.current_actor` instead. Nothing known reads only public rows.
     """
     if ctx is not None:
         return person_from_ref(ctx.initiated_by)

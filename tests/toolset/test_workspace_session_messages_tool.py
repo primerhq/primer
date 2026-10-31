@@ -31,10 +31,23 @@ TOOL = "read_workspace_session_messages"
 
 
 def _run_in_the_workspace():
-    """A user's run in a session of the transcript's own workspace. Since the review of #853 a calling session reaches only its own workspace (or
-    every one from prime), so the run reading ``_WID``'s transcripts is one of ``_WID`` (``caller()``'s context names a session of workspace ``w``,
-    which no longer reaches ``_WID``: ``tests/api/test_session_control_rule_table.py``)."""
+    """A user's run in a session of the transcript's own workspace. The access check (access-control P2 T6) asks the run's person on the NAMED
+    workspace, so the context's workspace id is cosmetic here: the public row in ``_setup`` is what lets the read through."""
     return dataclasses.replace(caller("user"), workspace_id=_WID)
+
+
+async def _seed_ws(provider, wid: str) -> None:
+    """A workspace row the tool names (``_Provider`` pre-seeds ``_WID``): public, so the person the call acts as (the run's initiator, or the
+    actor-less MCP person) holds read (access-control P2 T6) and the guard under test is the session's own."""
+    from primer.model.access import Access
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+    from tests.tap.test_mcp_tap_tool import _NOW
+
+    await provider.get_storage(Workspace).create(Workspace(
+        id=wid, template_id="tpl", provider_id="local-1", created_at=_NOW,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://1", token="t"),
+        access=Access(public=True),
+    ))
 
 
 async def _setup():
@@ -104,6 +117,7 @@ async def test_a_session_on_another_workspace_is_not_found():
 
     provider = _Provider()
     await _seed_session(provider.store, "s1")  # on ws-1
+    await _seed_ws(provider, "ws-other")  # public too: the refusal under test is the session row check, not the access gate
     home, other = _FakeWorkspaceIO(), _FakeWorkspaceIO()
     log = (
         _line(1, "user_input", text="Reply with exactly: PONG")

@@ -23,8 +23,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from primer.access.person import person_from_ref
+from primer.access.workspaces import workspace_level
 from primer.bus.scheduler_tasks import _BackgroundTask
 from primer.events.filters import matches_async
 from primer.events.recorder import EVENTS_APPENDED_KEY
@@ -42,6 +44,9 @@ from primer.model.storage import OffsetPage
 from primer.model.yield_ import with_wake_entry, with_wake_park
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from primer.model.workspace_session import WorkspaceSession
 
 
 class EventDispatcher(_BackgroundTask):
@@ -264,7 +269,7 @@ class EventDispatcher(_BackgroundTask):
     async def _deliver_session_wake(
         self, sub: EventSubscription, sink: SessionWakeSink, event: Event,
     ) -> bool:
-        park, parked_at = await self._park_state(sink, sub.id)
+        park, parked_at, row = await self._park_state(sink, sub.id)
         if park == "gone":
             # The session ended or vanished: the wait can never be
             # answered. Consume the event and GC the subscription.
@@ -284,6 +289,19 @@ class EventDispatcher(_BackgroundTask):
             # never becomes visible again, and the skip path deletes
             # the one-shot.
             return False
+        if row is not None and await self._read_blocked(row, event):
+            # A revoked grant stops delivery (access-control Phase 2, Task 7):
+            # the park's turn person no longer reads the event's workspace.
+            # Consume the event (move the cursor past it) and leave the
+            # subscription alone: the park's timeout settles the wait, and
+            # a later event under a restored grant still may wake it.
+            logger.info(
+                "event-dispatcher: not delivering event %d to session %s "
+                "(subscription %s): the turn person no longer reads %r",
+                event.id, sink.session_id, sub.id, event.workspace_id,
+            )
+            await self._sp.get_event_store().set_cursor(sub.id, event.id)
+            return True
         if self._bus is None:
             logger.warning(
                 "event-dispatcher: no bus to wake session %s "
@@ -305,9 +323,10 @@ class EventDispatcher(_BackgroundTask):
             await self._complete_one_shot(sub)
         return True
 
-    async def _park_state(self, sink: SessionWakeSink, subscription_id: str | None = None) -> tuple[str, datetime | None]:
-        """``(state, parked_at)``: state is 'parked' (deliver), 'pending' (retry later), 'gone' (GC) or 'orphan' (GC: the wait under this key was created by
-        another subscription); ``parked_at`` is the park the row had when it was read (``None`` unless 'parked').
+    async def _park_state(self, sink: SessionWakeSink, subscription_id: str | None = None) -> tuple[str, datetime | None, "WorkspaceSession | None"]:
+        """``(state, parked_at, row)``: state is 'parked' (deliver), 'pending' (retry later), 'gone' (GC) or 'orphan' (GC: the wait under this key was created by
+        another subscription); ``parked_at`` is the park the row had when it was read (``None`` unless 'parked'); ``row`` is the session row read (``None`` when
+        the read failed).
 
         'orphan' needs both ends to carry an identity: the park's entry for the key names the subscription the tool created (``resume_metadata.subscription_id``)
         and ``subscription_id`` is the one delivering. A park that names none (a wait from an older build) is delivered into by the key alone, as before.
@@ -326,9 +345,9 @@ class EventDispatcher(_BackgroundTask):
                 "event-dispatcher: session %s read failed", sink.session_id,
                 exc_info=True,
             )
-            return "pending", None
+            return "pending", None, None
         if row is None or row.status == SessionStatus.ENDED:
-            return "gone", None
+            return "gone", None, None
         keys = set(row.parked_event_keys or [])
         if row.parked_event_key:
             keys.add(row.parked_event_key)
@@ -346,9 +365,27 @@ class EventDispatcher(_BackgroundTask):
                 ]
                 owners = [owner for owner in owners if owner]
                 if owners and subscription_id not in owners:
-                    return "orphan", None
-            return "parked", row.parked_at
-        return "pending", None
+                    return "orphan", None, None
+            return "parked", row.parked_at, row
+        return "pending", None, None
+
+    async def _read_blocked(self, row: "WorkspaceSession", event: Event) -> bool:
+        """Whether ``event`` must not wake this non-admin park (access-control Phase 2, Task 7).
+
+        The session's turn person (``turn_person``, else ``initiated_by``, else an unattributed user:
+        ``session_run_principal``) is judged on the event's workspace with ONE ``workspace_level``
+        call, keeping the re-check cheap. Admin persons are never blocked; an event without a
+        workspace names no readable workspace, so it never wakes a non-admin park. A storage
+        hiccup raises, and the caller's failure path holds the cursor and retries (fail closed).
+        """
+        from primer.worker.executor_builders import session_run_principal
+
+        person = person_from_ref(session_run_principal(row))
+        if person.is_admin:
+            return False
+        if event.workspace_id is None:
+            return True
+        return await workspace_level(self._sp, person, event.workspace_id) is None
 
     async def _complete_one_shot(self, sub: EventSubscription) -> None:
         store = self._sp.get_event_store()

@@ -184,6 +184,7 @@ async def _wire_tap_router(app) -> tuple[InMemoryEventBus, WorkspaceTapRouter]:
 
 
 async def _ensure_workspace(app, workspace_registry, wid: str) -> _FakeWorkspaceForTap:
+    from primer.model.access import Access
     from primer.model.workspace import (
         LocalWorkspaceConfig,
         Workspace,
@@ -213,6 +214,9 @@ async def _ensure_workspace(app, workspace_registry, wid: str) -> _FakeWorkspace
                 runtime_meta=WorkspaceRuntimeMeta(
                     url="ws://127.0.0.1:5959/", token=SecretStr("t")
                 ),
+                # Public so a role=user caller (P2 Task 2's tap READ gate)
+                # can open the stream; the admin/system callers here bypass.
+                access=Access(public=True),
             )
         )
     except Exception:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 
+from primer.model.principal import person_ref
 from primer.model.trigger import Subscription
 from primer.model.workspace_session import WorkspaceSession
 from primer.session.steer_delivery import (
@@ -18,7 +19,7 @@ from primer.session.steer_delivery import (
     DELIVERED_SKIPPED_BUSY,
     deliver_steer,
 )
-from primer.trigger.owner import refuse_steer_above_fire
+from primer.trigger.owner import principal_for_fire, refuse_steer_above_fire
 from primer.trigger.reach import TARGET_OUT_OF_REACH, refuse_fire_out_of_reach
 from primer.trigger.subscribers import (
     DispatchDeps,
@@ -76,6 +77,11 @@ class SessionAppendDispatcher:
                     error_code="steer_outranks_fire",
                     error_message=reason,
                 )
+        # The turn the fire starts runs as the fire's owner (spec §13 Q1;
+        # principal_for_fire's dual-sided role cap, as the fire itself is ranked).
+        # A fire with no person behind it (a system or legacy ownerless one) leaves
+        # the session's own person in place, as a personless steer from a peer does.
+        fire_principal = person_ref(await principal_for_fire(sub, deps.storage_provider))
         try:
             delivery = await deliver_steer(
                 session_id=sub.config.session_id,
@@ -90,6 +96,7 @@ class SessionAppendDispatcher:
                 claim_engine=deps.claim_engine,
                 workspace_registry=deps.workspace_registry,
                 event_bus=deps.event_bus,
+                by=fire_principal,
             )
         except Exception as exc:  # noqa: BLE001 - defensive perimeter
             return SubscriptionDispatchResult(
