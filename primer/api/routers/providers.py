@@ -2079,8 +2079,8 @@ async def list_all_tools(
             from primer.toolset.oauth.service import OAuthTarget
 
             readable = level_of(person, row.access) is not None
-            if readable and OAuthTarget.from_toolset(row) is not None:
-                status = await mcp_oauth.status(row)
+            if readable and OAuthTarget.from_toolset(row, person) is not None:
+                status = await mcp_oauth.status(row, person)
                 entry["auth"] = status.model_dump(
                     mode="json",
                     include={"mode", "state", "reason", "expires_at"},

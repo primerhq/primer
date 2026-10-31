@@ -13,18 +13,21 @@ construction time and expose two operations:
 The optional ``principal`` parameter on both methods is the identity in
 the dispatch or run context. The model cannot choose it. Providers may
 use it for caller-aware policy, while providers without caller-specific
-behaviour ignore it. MCP OAuth is one shared sign-in per toolset and does
-not choose credentials by principal. ``None`` is permitted and means the
-dispatch has no principal context.
+behaviour ignore it. ``None`` is permitted and means the dispatch has no
+principal context. It never selects an MCP OAuth token: a browser
+sign-in's token follows the acting person
+(:func:`primer.access.person.person_for_tool`: the run's ``initiated_by``
+from ``ctx`` on a call, else the acting person of the listing or call),
+and a client-credentials token is shared by every caller.
 
-An MCP adapter whose shared sign-in is unusable raises
+An MCP adapter with no usable sign-in for the call (for a browser sign-in:
+none for the person it acts for, or it acts for nobody) raises
 :class:`primer.model.mcp_oauth.McpSignInRequiredError`. Agent dispatch
 turns that into a tool error, while remote listing omits the toolset and
 adds a notice to the turn.
 
-The shared sign-in (the service, the routes, the refresh lease and the
-status) is described in ``docs/dev/subsystems/mcp-oauth.md``; the earlier
-per-user OAuth spec it replaced no longer applies.
+The sign-ins (the service, the routes, the refresh lease and the status)
+are described in ``docs/dev/subsystems/mcp-oauth.md``.
 """
 
 from __future__ import annotations
@@ -69,9 +72,9 @@ class ToolsetProvider(ABC):
         ----------
         principal
             Identity supplied by the dispatch or run context. Providers
-            may use it for caller-aware policy. MCP OAuth credentials are
-            shared by toolset and ignore it. ``None`` means no principal
-            context is available.
+            may use it for caller-aware policy. MCP OAuth credentials
+            ignore it: they follow the acting person. ``None`` means no
+            principal context is available.
 
         Returns
         -------
@@ -84,8 +87,9 @@ class ToolsetProvider(ABC):
         Raises
         ------
         primer.model.mcp_oauth.McpSignInRequiredError
-            The MCP toolset needs an operator to reconnect its shared
-            sign-in before it can answer.
+            The MCP toolset has no usable sign-in for the person the
+            dispatch acts for (or, for client credentials, its shared
+            sign-in needs an operator to reconnect it).
         primer.model.except_.ProviderError
         primer.model.except_.NetworkError
             Standard upstream / transport failures.
@@ -135,8 +139,9 @@ class ToolsetProvider(ABC):
         primer.model.except_.UnsupportedContentError
             ``tool_name`` is not exposed by this provider.
         primer.model.mcp_oauth.McpSignInRequiredError
-            The MCP toolset needs an operator to reconnect its shared
-            sign-in before it can answer.
+            The MCP toolset has no usable sign-in for the person the
+            dispatch acts for (or, for client credentials, its shared
+            sign-in needs an operator to reconnect it).
         primer.model.except_.ProviderError
         primer.model.except_.NetworkError
             Standard upstream / transport failures.

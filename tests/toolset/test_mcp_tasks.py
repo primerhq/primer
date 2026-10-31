@@ -187,7 +187,7 @@ class _FakeStdioProvider(McpToolsetProvider):
         )
         self._fake_session = session
 
-    def _open_session(self, *, principal=None):  # type: ignore[override]
+    def _open_session(self, *, principal=None, ctx=None):  # type: ignore[override]
         # Mimic the asynccontextmanager surface of the base class.
         from contextlib import asynccontextmanager
 

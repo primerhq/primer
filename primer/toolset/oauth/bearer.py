@@ -1,4 +1,4 @@
-"""Bearer authentication for an MCP toolset's shared OAuth sign-in."""
+"""Bearer authentication for an MCP toolset's OAuth sign-in: the token of the person the call acts for, or the shared one."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class McpBearerAuth(httpx2.Auth):
-    """Attach the shared token and retry one rejected request after refresh.
+    """Attach the target's token (its person's, or the shared one) and retry one rejected request after refresh.
 
     The MCP SDK runs requests in its own task group and can swallow an
     exception raised by an auth flow. Refresh failures are therefore recorded
@@ -70,7 +70,7 @@ class McpBearerAuth(httpx2.Auth):
                     f"the MCP server {self._target.toolset_id} rejected a freshly issued access token; the next call fetches a new one"
                 )
                 return
-            self.sign_in_required = str(McpSignInRequiredError(self._target.toolset_id, reason=TOKEN_REJECTED))
+            self.sign_in_required = str(McpSignInRequiredError(self._target.toolset_id, reason=TOKEN_REJECTED, per_user=True))
 
 
 __all__ = ["McpBearerAuth"]

@@ -16,7 +16,7 @@ from urllib.parse import quote, urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from primer.api.deps import get_mcp_oauth, get_principal, get_storage_provider, require_admin
+from primer.api.deps import get_mcp_oauth, get_storage_provider, require_admin
 from primer.api.errors import _problem_response, common_responses
 from primer.access.person import person_from_request
 from primer.access.policy import require
@@ -101,7 +101,6 @@ async def start_toolset_sign_in(
     request: Request,
     response: Response,
     toolset_id: str = Path(...),
-    principal: str | None = Depends(get_principal),
     storage_provider=Depends(get_storage_provider),
     service: ToolsetOAuthService = Depends(get_mcp_oauth),
 ) -> SignInStart:
@@ -112,15 +111,17 @@ async def start_toolset_sign_in(
         toolset = Toolset(id=toolset_id, provider=ToolsetProviderType.INTERNAL)
     else:
         toolset = await _stored_toolset(toolset_id, storage_provider)
-    target = OAuthTarget.from_toolset(toolset)
+    # A browser sign-in is the caller's own (access-control P5 Task 2); Task 3 opens these routes to every person who may use the toolset.
+    person = person_from_request(request)
+    target = OAuthTarget.from_toolset(toolset, person)
     if target is None:
         raise BadRequestError("this toolset has no OAuth settings (its Authentication is None or Header)")
     if target.oauth.grant == "client_credentials":
-        status = await service.connect_client_credentials(target, connected_by=principal)
+        status = await service.connect_client_credentials(target, connected_by=person.user_id)
         return SignInStart(authorize_url=None, redirect_uri=None, expires_at=None, status=status)
     redirect_uri = _redirect_uri(service, request, toolset_id)
     binding = secrets.token_urlsafe(32)
-    started = await service.start_sign_in(target, redirect_uri=redirect_uri, started_by=principal, browser_binding=binding)
+    started = await service.start_sign_in(target, redirect_uri=redirect_uri, started_by=person.user_id, browser_binding=binding)
     response.set_cookie(SIGN_IN_COOKIE, binding, max_age=int(PENDING_TTL.total_seconds()), **_cookie_options(request, redirect_uri))
     return started
 
@@ -202,6 +203,7 @@ async def toolset_sign_in_status(
         require(person_from_request(request), toolset.access, AccessLevel.READ, what=f"Toolset {toolset_id!r}")
     return await service.status(
         toolset,
+        person_from_request(request),
         redirect_uri=_redirect_uri(service, request, toolset_id),
     )
 
@@ -219,7 +221,7 @@ async def disconnect_toolset_sign_in(
 ) -> ToolsetAuthStatus:
     _require_connect_admin(request)
     toolset = await _stored_toolset(toolset_id, storage_provider)
-    return await service.disconnect(toolset)
+    return await service.disconnect(toolset, person_from_request(request))
 
 
 __all__ = ["CONNECT_ADMIN_REASON", "SIGN_IN_COOKIE", "console_return_url", "mcp_oauth_public_router", "mcp_oauth_router"]

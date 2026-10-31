@@ -69,7 +69,7 @@ def _harness() -> Harness:
 async def _sign_in(store: McpOAuthStore, toolset_id: str) -> None:
     """Store a whole sign-in for ``toolset_id``: its tokens, a registered client and a pending browser sign-in."""
     await store.replace_tokens(McpOAuthTokenSet(
-        id=toolset_id, grant="authorization_code", access_token_enc=store.seal("tok"), refresh_token_enc=store.seal("ref"),
+        id=toolset_id, toolset_id=toolset_id, grant="authorization_code", access_token_enc=store.seal("tok"), refresh_token_enc=store.seal("ref"),
         token_endpoint="https://as.example/token", client_id="client-1", client_source="registered", config_fingerprint="f" * 64,
         connected_at=NOW, connected_by="admin",
     ))
