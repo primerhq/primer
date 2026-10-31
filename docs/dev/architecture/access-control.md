@@ -219,9 +219,12 @@ leaves their default workspace in place, reachable only by admins.
 
 ### 6.7 Not yet scoped
 
-These cross-workspace lists do not filter by readable workspaces on this branch (plan Task 5, landing separately): `GET
-/v1/sessions`, `POST /v1/sessions/find`, `GET /v1/sessions/recent`, `GET /v1/yields/pending`, `GET
-/v1/external_tool_calls` and `GET /v1/tool_approval/records`. A live tap or terminal connection is checked when it opens,
+The cross-workspace lists (`GET /v1/sessions`, `POST /v1/sessions/find`, `GET /v1/sessions/recent`, `GET
+/v1/yields/pending`, `GET /v1/external_tool_calls`, `GET /v1/tool_approval/records`) are scoped: for a non-admin,
+`scope_to_readable_workspaces` (`primer/access/workspaces.py`) ANDs `workspace_id IN <readable workspaces>` into the query,
+so pages, totals and the recent window count only what the caller reads; external tool calls and approval records carry
+`workspace_id` (migration 24 backfills it from their session; a row whose session was gone stays `None`, visible to admins
+only). A live tap or terminal connection is checked when it opens,
 not again after a revoke (a Phase 6 ticket). A turn already running when a grant is revoked runs to its end, its
 in-session file tools included; the next turn or resume is refused (6.3).
 
