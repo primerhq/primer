@@ -374,7 +374,11 @@ the address that passed. A refused endpoint is a 400 naming the URL (a refresh
 keeps its tokens and reports `error`). The only opt-in is the policy's existing
 one, `workspace_allow_private_url_sources` (`PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES`),
 for deployments whose MCP servers use an authorization server on a private
-network. Like the web tools' guarded client, the explicit transport means httpx
+network; it lets private and loopback addresses through and NEVER link-local or
+cloud-metadata ones (ruling D19), so a hostile MCP server's OAuth endpoints cannot
+reach the metadata service because an operator wanted a file server. The address
+rule itself is `primer/common/addrules.py`, shared with `netguard` (every IPv6 form
+that carries an IPv4 address is judged by it: mapped, NAT64, 6to4, compatible, SIIT). Like the web tools' guarded client, the explicit transport means httpx
 does not apply `HTTP(S)_PROXY` to these calls.
 
 ## 10. Testing patterns

@@ -173,7 +173,8 @@ another person's runs still need that person's own sign-in.
 - Primer does not call an OAuth endpoint the MCP server names on another host
   when it is on a private, loopback or link-local address (the start answers 400
   naming the URL). An operator whose authorization server is on a private
-  network turns on `PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES`.
+  network turns on `PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES` (it never opens
+  link-local or cloud-metadata addresses).
 - `oauth.resource_uri` must be the MCP server's URL or a parent of it on the same
   origin (scheme, host and port), such as the origin itself; a create or update
   that names another one (another origin, or a sibling path) is refused as a

@@ -55,13 +55,14 @@ import httpcore
 import httpx
 from aiohttp.abc import AbstractResolver, ResolveResult
 
+from primer.common import addrules
+
 
 ALLOW_CONFIG_KEY = "PRIMER_EGRESS_ALLOW"
 
 _IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 _IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
-_NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
 _HOSTNAME_RE = re.compile(
     r"^(?=.{1,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9])?)(\.[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9])?)*$"
 )
@@ -126,30 +127,16 @@ def configure_egress_allow(entries: Iterable[str]) -> None:
 # ---- the address rule --------------------------------------------------------
 
 
-def _embedded_v4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
-    if ip.ipv4_mapped is not None:
-        return ip.ipv4_mapped
-    if ip in _NAT64:
-        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-    if ip.sixtofour is not None:
-        return ip.sixtofour
-    return None
-
-
 def _is_public(ip: _IPAddress) -> bool:
-    if isinstance(ip, ipaddress.IPv6Address):
-        inner = _embedded_v4(ip)
-        if inner is not None:
-            return _is_public(inner)
-    return ip.is_global and not ip.is_multicast
+    """The platform's one address rule (:mod:`primer.common.addrules`, shared with :mod:`primer.common.ssrf`)."""
+    return addrules.is_public(ip)
 
 
 def _is_allowed(ip: _IPAddress) -> bool:
     if _is_public(ip):
         return True
-    candidates = [ip]
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        candidates.append(ip.ipv4_mapped)
+    # An allowlisted v4 range also admits the IPv6 forms that carry such an address (mapped, NAT64, 6to4, compatible, SIIT).
+    candidates = [ip, addrules.unwrap(ip)]
     return any(c in net for c in candidates for net in _allow_networks if c.version == net.version)
 
 
