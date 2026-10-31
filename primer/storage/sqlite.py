@@ -660,7 +660,7 @@ class SqliteStorageProvider(StorageProvider):
                 await self.connection.commit()
 
     async def set_session_secret(self, secret: str) -> None:
-        """Persist the cookie-signing HMAC secret on the singleton row.
+        """Persist the cookie-signing HMAC secret on the singleton row, only when none is stored.
 
         Called by the auth layer the first time it needs a secret and
         the ``PRIMER_AUTH__SESSION_SECRET`` / ``PRIMER_SESSION_SECRET``
@@ -668,7 +668,7 @@ class SqliteStorageProvider(StorageProvider):
         """
         async with self._write_guard() as should_commit:
             await self.connection.execute(
-                "UPDATE system_state SET session_secret = ? WHERE id = ?",
+                "UPDATE system_state SET session_secret = ? WHERE id = ? AND session_secret IS NULL",
                 (secret, "singleton"),
             )
             if should_commit:

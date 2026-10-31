@@ -478,10 +478,10 @@ class PostgresStorageProvider(StorageProvider):
             await conn.execute(sql, version, ts, "singleton")
 
     async def set_session_secret(self, secret: str) -> None:
-        """Persist the cookie-signing HMAC secret on the singleton row."""
+        """Persist the cookie-signing HMAC secret on the singleton row, only when none is stored."""
         sql = (
             f'UPDATE {self.system_state_table} '
-            f'SET session_secret = $1 WHERE id = $2'
+            f'SET session_secret = $1 WHERE id = $2 AND session_secret IS NULL'
         )
         async with self.pool.acquire() as conn:
             await conn.execute(sql, secret, "singleton")

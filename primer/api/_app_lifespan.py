@@ -207,12 +207,18 @@ def _make_lifespan(config: AppConfig):
             secret_provider=secret_provider,
             local_policy=local_workspace_policy,
         )
-        from primer.auth.secret import resolve_secret_box
+        from primer.auth.secret import resolve_secret_box, resolve_session_secret
         from primer.toolset.oauth.service import ToolsetOAuthService
 
+        # Resolved once (env var > db > generated and stored) and shared by the
+        # cookie signer below and the token box, so they never disagree (GS-14).
+        session_secret = (
+            await resolve_session_secret(storage=storage_provider, auth_config=config.auth)
+            if config.auth.enabled or config.encryption_key is None else None
+        )
         mcp_oauth = ToolsetOAuthService(
             storage_provider=storage_provider,
-            secret_box=await resolve_secret_box(config, storage_provider),
+            secret_box=await resolve_secret_box(config, storage_provider, session_secret=session_secret),
             public_url=config.public_url,
             auth_enabled=config.auth.enabled,
         )
@@ -361,17 +367,10 @@ def _make_lifespan(config: AppConfig):
         app.state.internal_collections = None
         app.state.config = config
 
-        # Resolve the cookie-signing secret (env var > db > auto-generate).
-        # Stashed on app.state so the auth router + middleware can sign /
-        # verify session cookies without re-reading from storage on every
-        # request.
+        # The cookie-signing secret resolved above. Stashed on app.state so
+        # the auth router + middleware can sign / verify session cookies
+        # without re-reading from storage on every request.
         if config.auth.enabled:
-            from primer.auth.secret import resolve_session_secret
-
-            session_secret = await resolve_session_secret(
-                storage=storage_provider,
-                auth_config=config.auth,
-            )
             app.state.session_secret = session_secret
             logger.info("auth: session secret resolved")
         else:

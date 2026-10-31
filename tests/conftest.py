@@ -562,7 +562,8 @@ class _FakeStorageProvider:
         self._last_migration_at = migrated_at or datetime.now(UTC)
 
     async def set_session_secret(self, secret: str) -> None:
-        self._session_secret = secret
+        if getattr(self, "_session_secret", None) is None:
+            self._session_secret = secret
 
     async def set_sso_jit_enabled(self, enabled: bool) -> None:
         self._sso_jit_enabled = enabled

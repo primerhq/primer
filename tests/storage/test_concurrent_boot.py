@@ -175,3 +175,17 @@ async def test_a_lagging_boot_does_not_rerun_m028_on_a_new_private_provider(tmp_
         assert stamps == [28, 29]
     finally:
         await sp.aclose()
+
+
+async def test_concurrent_first_boots_agree_on_one_session_secret(two_boots) -> None:
+    """GS-14: a secret is stored only when none is, and every resolver returns the stored one (cookies and the token box agree)."""
+    from primer.api.config import AuthConfig
+    from primer.auth.secret import resolve_session_secret
+
+    a, b = two_boots
+    cfg = AuthConfig(session_secret=None)
+    got = await asyncio.gather(*(resolve_session_secret(storage=p, auth_config=cfg) for p in (a, b, a, b)))
+    stored = (await b.get_system_state()).session_secret
+    assert stored and set(got) == {stored}
+    await a.set_session_secret("late")
+    assert (await b.get_system_state()).session_secret == stored

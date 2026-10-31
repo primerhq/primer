@@ -8,8 +8,9 @@ Session secret priority:
 2. ``system_state.session_secret`` column. Auto-generated on first
    need, persisted for restart durability.
 
-If neither is set, this module generates a fresh 32-byte hex secret
-and writes it back via :meth:`StorageProvider.set_session_secret`.
+If neither is set, this module generates a fresh 32-byte hex secret,
+writes it back via :meth:`StorageProvider.set_session_secret` (which stores
+it only when none is stored), and returns what the database then holds.
 
 Encryption key (:func:`resolve_secret_box`): ``AppConfig.encryption_key``
 (``PRIMER_ENCRYPTION_KEY``) when set, else the session secret above, with a
@@ -54,18 +55,19 @@ async def resolve_session_secret(
     state = await storage.get_system_state()
     if state.session_secret:
         return state.session_secret
-    new_secret = _generate_secret()
-    await storage.set_session_secret(new_secret)
-    return new_secret
+    await storage.set_session_secret(_generate_secret())
+    # A process booting alongside may have stored its secret first; the stored one is the only one every process agrees on (GS-14).
+    return (await storage.get_system_state()).session_secret
 
 
-async def resolve_secret_box(config: AppConfig, storage_provider: StorageProvider) -> SecretBox:
+async def resolve_secret_box(config: AppConfig, storage_provider: StorageProvider, *, session_secret: str | None = None) -> SecretBox:
     """The box that seals the MCP OAuth tokens, client secrets and pending sign-ins this process stores.
 
     ``config.encryption_key`` is the key material when it is set; it must be at least :data:`MIN_ENCRYPTION_KEY_LENGTH` characters, else
     :class:`~primer.model.except_.ConfigError` (a weak key would look like protection and not be, so the process does not start). Without it the session
     secret is the material (:func:`resolve_session_secret`: the operator's, else the persisted one, generated on first need) and
     :data:`SECRET_BOX_FALLBACK_WARNING` is logged once. Every server process must resolve the same material, or the tokens one seals the others cannot open.
+    ``session_secret`` is the secret the caller already resolved, so one process never resolves it twice.
     """
     key = config.encryption_key
     if key is not None:
@@ -74,5 +76,5 @@ async def resolve_secret_box(config: AppConfig, storage_provider: StorageProvide
             raise ConfigError(f"PRIMER_ENCRYPTION_KEY must be at least {MIN_ENCRYPTION_KEY_LENGTH} characters")
         return SecretBox.from_key_material(material)
     logger.warning(SECRET_BOX_FALLBACK_WARNING)
-    session_secret = await resolve_session_secret(storage=storage_provider, auth_config=config.auth)
+    session_secret = session_secret or await resolve_session_secret(storage=storage_provider, auth_config=config.auth)
     return SecretBox.from_key_material(session_secret)
