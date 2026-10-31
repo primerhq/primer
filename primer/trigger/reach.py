@@ -141,12 +141,14 @@ async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> 
         logger.warning("trigger %s subscription %s refused: it has no owner; the fire starts and feeds no session", sub.trigger_id, sub.id)
         return "this subscription has no owner, so nobody can be checked on its target; the fire starts and feeds no session (re-save it)"
     # Judged by the role the owner holds NOW, capped by the one recorded (a demoted admin or a user since restricted does not keep the reach of the role
-    # they saved with; a deleted or disabled owner holds none), the rule every later run of the owner follows (access-control P6 Task 2).
+    # they saved with), the rule every later run of the owner follows (access-control P6 Task 2).
     from primer.trigger.owner import resolve_current_role
 
     recorded = person_from_ref(owner)
     role = await resolve_current_role(owner, storage_provider)
-    person = Person(recorded.user_id, role if role not in (None, "system") else ("admin" if role == "system" else "restricted"))
+    # An owner that cannot be resolved (deleted, disabled, revoked token) keeps the recorded role here: the fresh-session dispatchers refuse it in their own
+    # words (``unresolvable_subscription_owner``).
+    person = recorded if role is None else Person(recorded.user_id, "admin" if role == "system" else role)
     if person.is_admin:
         return None  # an admin or system owner reaches every workspace, one whose row is gone included (as require_session)
     config = sub.config
