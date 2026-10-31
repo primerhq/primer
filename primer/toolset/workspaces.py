@@ -694,8 +694,8 @@ _RestoreSecrets = Callable[[Any, Any, "ToolContext | None"], None] | None
 _StampAccess = Callable[["ToolContext | None"], Access] | None
 
 
-#: ``(page or row) -> payload``: what a list or get tool serves instead of the stored page or row (a response-only field added to each row).
-_Served = Callable[[Any], Awaitable[Any]] | None
+#: ``(page or row, ctx) -> payload``: what a list or get tool serves instead of the stored page or row (a response-only field added to each row).
+_Served = Callable[[Any, "ToolContext | None"], Awaitable[Any]] | None
 #: ``ctx -> predicate or None``: the rows a caller's listing is confined to, ``None`` for every row (the access of the calling person).
 _ListScope = Callable[["ToolContext | None"], Awaitable[Predicate | None]] | None
 #: ``(ctx, id) -> bool``: whether the caller may see the row ``id``; a row it may not is answered exactly as a row that does not exist.
@@ -725,7 +725,7 @@ def _make_list_handler(
                 listed = await storage.list(page, order_by=order_by)
             else:
                 listed = await storage.find(confined, page, order_by=order_by)
-            return _ok(await served(listed) if served is not None else listed)
+            return _ok(await served(listed, ctx) if served is not None else listed)
         except BadRequestError as exc:
             # A bad cursor (forged, or not this request's) is a client error,
             # answered like the secret-field refusal above (ticket 01a1212a).
@@ -752,7 +752,7 @@ def _make_get_handler(
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
-        return _ok(await served(row) if served is not None else row)
+        return _ok(await served(row, ctx) if served is not None else row)
 
     return _handler
 
@@ -1573,22 +1573,23 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     # ------------------- Workspace CRUD (no update) -------------------
-    async def _default_workspace_id() -> str | None:
+    async def _default_workspace_id(ctx: ToolContext | None) -> str | None:
+        """The caller's own default workspace (access-control spec 6.7); an id-less person (auth disabled) gets the install-wide one."""
         from primer.bootstrap.prime import resolve_default_workspace_id
 
-        return await resolve_default_workspace_id(storage_provider)
+        return await resolve_default_workspace_id(storage_provider, person_for_tool(ctx))
 
     def _with_is_default(row: WorkspaceRow, default_id: str | None) -> dict[str, Any]:
         """A served workspace row: the stored row plus ``is_default``, the response-only flag the REST rows carry (G7-09, lead ruling 5): an
         agent finds the default workspace (prime) by it, never by its name, which is a label anyone may give any workspace."""
         return {**row.model_dump(mode="json"), "is_default": row.id == default_id}
 
-    async def _workspace_page_served(page: Any) -> dict[str, Any]:
-        default_id = await _default_workspace_id()
+    async def _workspace_page_served(page: Any, ctx: ToolContext | None) -> dict[str, Any]:
+        default_id = await _default_workspace_id(ctx)
         return {**page.model_dump(mode="json"), "items": [_with_is_default(row, default_id) for row in page.items]}
 
-    async def _workspace_row_served(row: WorkspaceRow) -> dict[str, Any]:
-        return _with_is_default(row, await _default_workspace_id())
+    async def _workspace_row_served(row: WorkspaceRow, ctx: ToolContext | None) -> dict[str, Any]:
+        return _with_is_default(row, await _default_workspace_id(ctx))
 
     async def _access_guard(ctx: ToolContext | None, workspace_id: str, need: AccessLevel) -> ToolCallResult | None:
         """What the caller's person holds on ``workspace_id`` (access-control P2 T6), asked at the point a tool would look the workspace up.

@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
-from primer.bootstrap.prime import resolve_default_workspace_id
+from primer.bootstrap.prime import is_user_default_workspace, resolve_default_workspace_id
 from primer.model.access import Access
 from primer.model.common import dump_for_storage
 from primer.model.except_ import ConflictError, NotFoundError, ValidationError
@@ -477,7 +477,7 @@ class WorkspaceRegistry:
     async def destroy(self, workspace_id: str, *, before_teardown: Callable[[], Awaitable[None]] | None = None) -> None:
         """Destroy the live workspace AND drop the persisted row.
 
-        Refuses the default workspace (prime) with :class:`ReservedWorkspaceError`, as the FIRST thing it does: before the row is
+        Refuses the default workspace (prime) and every user's default workspace with :class:`ReservedWorkspaceError`, as the FIRST thing it does: before the row is
         read, before any backend is built or called, before a session is touched. This is the one funnel every workspace delete passes
         (the REST route and the ``delete_workspace`` tool both end here), so the rule lives here and the layers above only translate
         the error. The default is whatever :func:`~primer.bootstrap.prime.resolve_default_workspace_id` names, so it is the recorded id,
@@ -515,7 +515,7 @@ class WorkspaceRegistry:
         it. A refused delete (the default workspace, an unknown id, the rank scan) never writes it. If the destroy then fails,
         the row must not stay ``terminating``, which nothing would ever move again (:meth:`_after_a_failed_destroy`).
         """
-        if workspace_id == await resolve_default_workspace_id(self._sp):
+        if workspace_id == await resolve_default_workspace_id(self._sp) or await is_user_default_workspace(self._sp, workspace_id):
             raise ReservedWorkspaceError(workspace_id)
         row = await self.get_workspace_row(workspace_id)
         # From here to the row delete the runtime may be gone while the row still says the workspace exists: see is_being_destroyed.
