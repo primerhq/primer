@@ -290,7 +290,8 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
         async with self._lock:
             ws = self._workspaces.pop(workspace_id, None)
         if ws is None:
-            raise NotFoundError(f"workspace {workspace_id!r} not found")
+            await self._destroy_uncached(workspace_id)
+            return
         try:
             # The workspace is going away, so the sessions on it end with it; a plain aclose() only releases the handle.
             await ws.end_all_sessions()
@@ -301,6 +302,21 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
                 extra={"workspace_id": workspace_id, "error": str(exc)},
             )
         await asyncio.to_thread(shutil.rmtree, ws.root, ignore_errors=True)
+
+    async def _destroy_uncached(self, workspace_id: str) -> None:
+        """Remove the directory of a workspace this process never materialised (after a restart, or a delete run in a worker).
+
+        It went with the row only when cached, so a later create of the same id adopted the old files and ``.state``
+        history (review W2). The id gets create's check (:meth:`_refuse_escaping`): an escaping id or a symlinked
+        workspace is never followed, and counts as nothing on disk, as before. ``NotFoundError`` when nothing is there.
+        """
+        try:
+            ws_root = self._refuse_escaping(workspace_id)
+        except ValidationError:
+            ws_root = None
+        if ws_root is None or not await asyncio.to_thread(ws_root.is_dir):
+            raise NotFoundError(f"workspace {workspace_id!r} not found")
+        await asyncio.to_thread(shutil.rmtree, ws_root, ignore_errors=True)
 
     # ---- internals ------------------------------------------------------
 
