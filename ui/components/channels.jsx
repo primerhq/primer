@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, FormField, PR_fetchAllPages, PR_PagedNote */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, FormField, PR_fetchAllPages, PR_PagedNote, SHR_useBadge, SHR_UseShare */
 
 // Top-level scope is shared with the babel-standalone IIFE; prefix all
 // consts with CH_ to avoid clashes with other components (notably the
@@ -149,6 +149,11 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
               <Card
                 title={p.id}
                 subtitle={<ProviderBadge kind={p.provider} />}
+                pill={window.SHR_useBadge(p.access) ? (
+                  <span className="pill" data-testid={"ch-provider-access-badge-" + window.SHR_useBadge(p.access)} style={{ background: "var(--bg-2)", borderColor: "var(--border)" }}>
+                    {window.SHR_useBadge(p.access)}
+                  </span>
+                ) : null}
                 meta={`${chs.length} channel${chs.length === 1 ? "" : "s"} · ${CH_relAge(p.created_at)}`}
                 onClick={() => onOpen(p.id)}
               />
@@ -172,7 +177,18 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
               const chs = channelItems.filter((c) => c.provider_id === p.id);
               return (
                 <tr key={p.id} onClick={() => onOpen(p.id)} style={{ cursor: "pointer" }}>
-                  <td className="mono">{p.id}</td>
+                  <td className="mono">
+                    {p.id}
+                    {window.SHR_useBadge(p.access) ? (
+                      <span
+                        className="pill pill-ended"
+                        data-testid={"ch-provider-access-badge-" + window.SHR_useBadge(p.access)}
+                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
+                      >
+                        <span className="dot"></span>{window.SHR_useBadge(p.access)}
+                      </span>
+                    ) : null}
+                  </td>
                   <td><ProviderBadge kind={p.provider} /></td>
                   <td className="mono num tabular">{chs.length}</td>
                   <td className="mono muted">{CH_relAge(p.created_at)}</td>
@@ -231,6 +247,9 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing, fram
     return seeded;
   });
   const [fieldErrors, setFieldErrors] = React.useState({});
+  // ACL-P4-T7: the create form's Public switch (off by default); the POST
+  // cannot set the access, so save follows it with the access PUT.
+  const [pub, setPub] = React.useState(false);
 
   // Re-seed defaults whenever the provider type changes - skip the
   // FIRST render in edit mode so we keep the prefill we just set up.
@@ -282,11 +301,28 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing, fram
         ? [CH_LIST_PROVIDERS, "channel-provider-detail:" + (existing?.id || "")]
         : [CH_LIST_PROVIDERS],
       onSuccess: (row) => {
-        if (typeof onSaved === "function") {
-          onSaved(row);
-        } else if (typeof onCreated === "function") {
-          onCreated(row);
+        const after = () => {
+          if (typeof onSaved === "function") {
+            onSaved(row);
+          } else if (typeof onCreated === "function") {
+            onCreated(row);
+          }
+        };
+        // ACL-P4-T7: the POST cannot set the access (the server stamps a
+        // private one and ignores the body), so the switch follows it with
+        // the access PUT, and the handoff waits for it.
+        if (!isEdit && pub) {
+          window.SHR_makePublic("channel_providers", row.id).then(after, function (err) {
+            if (pushToast) pushToast({
+              kind: "error",
+              title: "Channel provider created, but it stayed private",
+              detail: (err && (err.detail || err.message)) || "",
+            });
+            after();
+          });
+          return;
         }
+        after();
       },
       onError: (err) => {
         if (err.status === 422 && Array.isArray(err.fieldErrors)) {
@@ -398,6 +434,17 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing, fram
           );
         })}
       </div>
+      {/* ACL-P4-T7: a new provider defaults private (who can use it is the
+      admin's call); the switch makes the new row public through the access
+      PUT that follows the register. */}
+      {!isEdit && (
+        <FormField label="Public" hint="off by default · who can use this provider is set after it exists">
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input type="checkbox" data-testid="ch-provider-public" checked={pub} onChange={(e) => setPub(e.target.checked)} />
+            <span>Everyone can use this provider</span>
+          </label>
+        </FormField>
+      )}
     </>
   );
 
@@ -537,6 +584,7 @@ function ChannelProviderDetail({ providerId, pushToast, onBack = null, onDeleted
             <div className="mono" style={{ fontSize: 16, fontWeight: 600 }}>{p.id}</div>
             <div className="muted text-sm mono">created {CH_relAge(p.created_at)}</div>
           </div>
+          <SHR_UseShare plural="channel_providers" id={p.id} title={p.id} />
           <Btn
             size="sm"
             kind="ghost"

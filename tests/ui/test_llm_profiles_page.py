@@ -115,6 +115,9 @@ def test_create_and_open_still_host_the_profile_form(ctx) -> None:
 def test_a_single_card_shows_imported_provider_model_window_and_usage(ctx) -> None:
     assert card(ctx, A) == {
         "id": A["id"], "name": A["id"], "sub": "vllm-gx10 · qwen3.8-27b", "badge": "imported",
+        # ACL-P4-T7: the card's status slot names who can use the profile (the fixture row carries
+        # no access, so nothing: a served row's access drives the badge, pinned in test_p4_use_grants_ui.py).
+        "status": None,
         "icon": {"path": js(ctx, "MP_ICON_SINGLE"), "tone": "var(--text-2)"},
         "facts": [["context window", "262,144 tokens"], ["usage", "bound by 2 agents · 1 graph node"]],
     }
