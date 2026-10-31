@@ -17,11 +17,17 @@ generic "sandboxed" badge.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import ctypes.util
 import json
+import logging
+import os
 import platform
 import shutil
+import ssl
 import sys
+import sysconfig
+import tempfile
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any
@@ -29,6 +35,8 @@ from typing import Any
 from primer.common.process_group import NEW_SESSION, kill_process_group
 from primer.toolset.python_runner._shim import SHIM_SOURCE
 from primer.toolset.python_runner.protocol import ShimResponse, parse_response
+
+logger = logging.getLogger(__name__)
 
 # A tool gets a minimal PATH and nothing else. Notably no PYTHONPATH: see the
 # module docstring.
@@ -53,9 +61,47 @@ class IsolationLevel(str, Enum):
     """What the runner can actually enforce, not what it aspires to."""
 
     CONTAINER = "container"
+    LANDLOCK = "landlock"
     SECCOMP = "seccomp"
     SANDBOX_EXEC = "sandbox-exec"
     RLIMIT_ONLY = "rlimit-only"
+
+
+def detect_landlock_abi() -> int:
+    """The kernel's Landlock ABI version (``landlock_create_ruleset`` with the VERSION flag), or 0 where Landlock is missing or switched off."""
+    if platform.system() != "Linux":
+        return 0
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        return max(int(libc.syscall(ctypes.c_long(444), None, ctypes.c_size_t(0), ctypes.c_uint32(1))), 0)
+    except (OSError, AttributeError):
+        return 0
+
+
+# Read-only for a tool under Landlock (a missing path is skipped): system libraries (extension modules and the libraries they load),
+# name resolution and TLS trust files, zone data, and the two device files a tool may use. The interpreter's stdlib prefixes and the
+# certificate paths this host's ssl module reports are added by _landlock_read_paths.
+_LANDLOCK_READ = (
+    "/usr/lib", "/usr/lib64", "/usr/local/lib", "/lib", "/lib64", "/etc/ld.so.cache",
+    "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/gai.conf", "/etc/host.conf", "/etc/localtime",
+    "/etc/ssl", "/etc/pki", "/usr/share/ca-certificates", "/usr/share/zoneinfo",
+    "/dev/urandom",
+)
+_LANDLOCK_READ_WRITE = ("/dev/null",)
+
+
+def _landlock_read_paths() -> list[str]:
+    paths = list(_LANDLOCK_READ)
+    paths += [sys.base_prefix, sys.base_exec_prefix, sysconfig.get_paths()["stdlib"], sysconfig.get_paths()["platstdlib"]]
+    verify = ssl.get_default_verify_paths()
+    paths += [p for p in (verify.cafile, verify.capath, verify.openssl_cafile, verify.openssl_capath) if p]
+    try:
+        import certifi
+
+        paths.append(certifi.where())
+    except ImportError:
+        pass
+    return sorted({p for p in paths if os.path.exists(p)})
 
 
 def detect_local_isolation() -> IsolationLevel:
@@ -63,6 +109,9 @@ def detect_local_isolation() -> IsolationLevel:
     if sys.platform == "darwin" and shutil.which("sandbox-exec"):
         return IsolationLevel.SANDBOX_EXEC
     if platform.system() == "Linux":
+        # Landlock confines file access (the shim applies it before the tool loads); with libseccomp the tool also gets the syscall filter.
+        if detect_landlock_abi() >= 1:
+            return IsolationLevel.LANDLOCK
         # libseccomp is a SYSTEM library reached through ctypes, not a Python
         # package. It has to be: the shim runs under -I -S, so no
         # site-package is importable there and a pip dependency would never
@@ -71,6 +120,16 @@ def detect_local_isolation() -> IsolationLevel:
             return IsolationLevel.SECCOMP
         return IsolationLevel.RLIMIT_ONLY
     return IsolationLevel.RLIMIT_ONLY
+
+
+def warn_if_unconfined(level: IsolationLevel) -> None:
+    """Startup note: the local runner cannot confine file access without Landlock (D17); tools still run, and the badge says what they get."""
+    if level in (IsolationLevel.LANDLOCK, IsolationLevel.CONTAINER):
+        return
+    logger.warning(
+        "python tools run without Landlock file confinement (isolation level %r): a tool can read any file this "
+        "process's user can. Use a Linux kernel with Landlock (5.13+) or a container runner.", level.value,
+    )
 
 
 def _timeout_error() -> ShimResponse:
@@ -166,6 +225,17 @@ class LocalHardenedRunner(Runner):
     async def run(
         self, request: dict[str, Any], *, timeout_seconds: float
     ) -> ShimResponse:
+        # One scratch dir per call: the tool's cwd and TMPDIR, the only place Landlock lets it write.
+        with tempfile.TemporaryDirectory(prefix="primer-tool-") as scratch:
+            return await self._run_in(scratch, request, timeout_seconds)
+
+    async def _run_in(
+        self, scratch: str, request: dict[str, Any], timeout_seconds: float
+    ) -> ShimResponse:
+        if self._level is IsolationLevel.LANDLOCK:
+            request = {**request, "landlock": {
+                "read": _landlock_read_paths(), "read_write": [p for p in _LANDLOCK_READ_WRITE if os.path.exists(p)], "scratch": scratch,
+            }}
         # Its own session, so a timeout or a cancel kills the shim's whole process group (primer.common.process_group):
         # anything the shim started goes with it. A process the tool deliberately detached (setsid) does not.
         proc = await asyncio.create_subprocess_exec(
@@ -173,7 +243,8 @@ class LocalHardenedRunner(Runner):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**_BASE_ENV, **self._env},
+            env={**_BASE_ENV, "TMPDIR": scratch, **self._env},
+            cwd=scratch,
             **NEW_SESSION,
         )
         finished = False

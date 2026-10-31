@@ -141,7 +141,7 @@ async def test_the_runtime_route_reports_isolation_and_tools(client) -> None:
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["isolation_level"] in {
-        "container", "seccomp", "sandbox-exec", "rlimit-only",
+        "container", "landlock", "seccomp", "sandbox-exec", "rlimit-only",
     }
     assert [t["id"] for t in body["tools"]] == ["greet"]
     assert body["registration_error"] is None

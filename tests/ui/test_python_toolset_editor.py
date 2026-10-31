@@ -53,7 +53,7 @@ def test_every_isolation_level_has_operator_facing_copy() -> None:
     # A generic "sandboxed" badge would be a lie on rlimit-only. An operator
     # deciding whether to trust a tool needs to know which level they are on.
     src = EDITOR.read_text(encoding="utf-8")
-    for level in ("container", "seccomp", "sandbox-exec", "rlimit-only"):
+    for level in ("container", "landlock", "seccomp", "sandbox-exec", "rlimit-only"):
         assert level in src, level
     assert "are NOT" in src, "rlimit-only must state what it does not cover"
 

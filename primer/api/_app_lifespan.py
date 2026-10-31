@@ -62,6 +62,12 @@ logger = logging.getLogger(__name__)
 def _make_lifespan(config: AppConfig):
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # A python tool runs as this process's user: non-dumpable keeps it from reading /proc/<pid>/environ (the DSN and provider keys).
+        from primer.common.hardening import make_non_dumpable
+        from primer.toolset.python_runner.runners import detect_local_isolation, warn_if_unconfined
+        make_non_dumpable()
+        warn_if_unconfined(detect_local_isolation())
+
         # --- Observability wiring ----------------------------------------
         # Set up OTEL tracing + auto-instrumentation as early as possible
         # in the lifespan so any span-emitting code below is covered.

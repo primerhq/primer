@@ -148,6 +148,73 @@ def _apply_seccomp(allow_network):
         lib.seccomp_release(ctypes.c_void_p(ctx))
 
 
+def _apply_landlock(spec):
+    """Confine file access with Landlock (ctypes, like seccomp: no site-package is importable here). Read-only on spec["read"], read and write on
+    spec["read_write"], everything on spec["scratch"] except execute, nothing else. Returns True when the ruleset is in force.
+
+    Applied AFTER seccomp: loading libseccomp runs ctypes.util.find_library, which starts ldconfig, and the ruleset would refuse that.
+    """
+    import ctypes
+    import os
+    import platform
+
+    if platform.system() != "Linux":
+        return False
+    libc = ctypes.CDLL(None, use_errno=True)
+
+    def sys_(nr, *args):
+        return libc.syscall(ctypes.c_long(nr), *args)
+
+    abi = sys_(444, None, ctypes.c_size_t(0), ctypes.c_uint32(1))
+    if abi < 1:
+        return False
+    EXECUTE, WRITE_FILE, READ_FILE, READ_DIR = 1 << 0, 1 << 1, 1 << 2, 1 << 3
+    handled = (1 << 13) - 1                # ABI 1: execute, read, write, remove and make-* rights
+    if abi >= 2:
+        handled |= 1 << 13                 # REFER
+    if abi >= 3:
+        handled |= 1 << 14                 # TRUNCATE
+    if abi >= 5:
+        handled |= 1 << 15                 # IOCTL_DEV
+    FILE_RIGHTS = EXECUTE | WRITE_FILE | READ_FILE | (1 << 14) | (1 << 15)
+
+    class _Ruleset(ctypes.Structure):
+        _fields_ = [("handled_access_fs", ctypes.c_uint64)]
+
+    class _PathBeneath(ctypes.Structure):
+        _pack_ = 1
+        _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
+
+    ruleset = sys_(444, ctypes.byref(_Ruleset(handled)), ctypes.c_size_t(8), ctypes.c_uint32(0))
+    if ruleset < 0:
+        return False
+    try:
+        def allow(path, rights):
+            try:
+                fd = os.open(path, os.O_PATH)
+            except OSError:
+                return
+            try:
+                if not os.path.isdir(path):
+                    rights &= FILE_RIGHTS
+                rule = _PathBeneath(rights & handled, fd)
+                sys_(445, ctypes.c_int(ruleset), ctypes.c_int(1), ctypes.byref(rule), ctypes.c_uint32(0))
+            finally:
+                os.close(fd)
+
+        for path in spec.get("read") or ():
+            allow(path, READ_FILE | READ_DIR)
+        for path in spec.get("read_write") or ():
+            allow(path, READ_FILE | READ_DIR | WRITE_FILE | (1 << 14))
+        if spec.get("scratch"):
+            allow(spec["scratch"], handled & ~EXECUTE)
+        if libc.prctl(38, 1, 0, 0, 0) != 0:            # PR_SET_NO_NEW_PRIVS, required to restrict oneself
+            return False
+        return sys_(446, ctypes.c_int(ruleset), ctypes.c_uint32(0)) == 0
+    finally:
+        os.close(ruleset)
+
+
 class _Yield(Exception):
     def __init__(self, kind, params, meta):
         self.kind = kind
@@ -199,6 +266,9 @@ def _main():
     req = json.loads(sys.stdin.read())
     _apply_limits(req.get("limits") or {})
     _apply_seccomp(bool(req.get("allow_network")))
+    if req.get("landlock") is not None and not _apply_landlock(req["landlock"]):
+        # The runner reported Landlock for this host: running unconfined under that claim would be a lie.
+        return _err("RunnerError", "the Landlock confinement could not be applied")
 
     ns = _build_namespace()
     try:

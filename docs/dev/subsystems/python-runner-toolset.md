@@ -10,7 +10,7 @@ tools are derived from it by AST; calls execute out of process.
 The source is untrusted by construction: agents can reach
 `create_python_toolset`, so an agent can author a tool. Everything here
 follows from that. The host reads the module structurally and never
-imports it; the sandbox runs it in a fresh process it cannot escape; and
+imports it; the sandbox runs it in a fresh process whose syscalls, resources and (under Landlock, see `docs/dev/architecture/python-tool-isolation.md`) files are bounded to its scratch dir; and
 the two sides talk over one JSON round trip whose shape the host
 validates.
 
