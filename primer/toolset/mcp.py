@@ -740,6 +740,9 @@ class McpToolsetProvider(ToolsetProvider):
                     "handshake (not an MCP server, or it exited "
                     "immediately)"
                 ) from exc
+            if isinstance(exc, Exception):
+                # Classified here, not by each caller: call and the task requests enter the session outside their own try (AG-M15).
+                raise self._classified(exc) from exc
             raise
 
         logger.info(
