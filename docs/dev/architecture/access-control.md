@@ -144,7 +144,7 @@ parent.
 | Agent | `primer/api/routers/compute.py` | system CRUD, `crud` toolset | seeded agents are public with no owner; a run's person needs read, re-checked every turn |
 | Graph | `primer/api/routers/compute.py` | system CRUD, `crud` toolset | as agents |
 | Toolset | `primer/api/routers/providers.py` | system CRUD, `crud` toolset | the only kind with `public_tools` |
-| Workspace template | `primer/api/routers/workspaces.py` | `workspaces` toolset | `local-default` is public with no owner; creating a workspace from it needs read |
+| Workspace template | `primer/api/routers/workspaces.py` | `workspaces` toolset | `local-default` is public with no owner; creating a workspace from it needs read; a save (REST hooks and the create/update tools) refuses a `document` file source in a collection the saver cannot read, like a missing document (`refuse_unreadable_document_mounts`) |
 | Channel | `primer/api/routers/channels.py` | system CRUD | |
 | Workspace | `primer/api/routers/workspaces.py`, `tap.py`, `terminal.py` | `workspaces` toolset, the system reply-binding tools, `reset_prime_instructions`, the sharing tools (`kind` `workspace`) | no `public_tools` |
 | Inherited from a workspace | `sessions.py`, `workspaces.py`, `canvas.py`, `yields.py`, `tool_approval.py`, `external_tools.py`, `compute.py` (graph-run logs), `events.py` | `workspaces` toolset (session, file and log tools), `message_session`, `wait_for_event`, trigger subscription targets (`primer/trigger/reach.py`) | the table in section 6.2 |

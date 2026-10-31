@@ -1240,21 +1240,37 @@ def build_workspaces_toolset(
             return _err(provider_unusable_message(entity.provider_id), error_type="not-found")
         return None
 
+    async def _template_mount_refusal(entity: WorkspaceTemplate, ctx: ToolContext | None) -> ToolCallResult | None:
+        """The saver must read the collection of every ``document`` file source, as the REST hooks check (final access review F15)."""
+        from primer.workspace.resolvers import refuse_unreadable_document_mounts
+
+        try:
+            await refuse_unreadable_document_mounts(storage_provider, person_for_tool(ctx), entity.files)
+        except NotFoundError as exc:
+            return _err(exc.message, error_type="not-found")
+        return None
+
     async def _template_create_check(
         entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
     ) -> ToolCallResult | None:
-        return _template_refusal(entity, existing, ctx) or await _template_provider_refusal(entity, existing, ctx)
+        return (
+            _template_refusal(entity, existing, ctx) or await _template_provider_refusal(entity, existing, ctx)
+            or await _template_mount_refusal(entity, ctx)
+        )
 
     async def _template_write_access_check(
         entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
     ) -> ToolCallResult | None:
         """``full`` before the admin-field checks (spec 9: a row the caller cannot reach answers as a missing one)."""
         if existing is None:
-            return _template_refusal(entity, None, ctx)
+            return _template_refusal(entity, None, ctx) or await _template_mount_refusal(entity, ctx)
         denial = _template_access_refusal(AccessLevel.FULL)(entity, existing, ctx)
         if denial is not None:
             return denial
-        return _template_refusal(entity, existing, ctx) or await _template_provider_refusal(entity, existing, ctx)
+        return (
+            _template_refusal(entity, existing, ctx) or await _template_provider_refusal(entity, existing, ctx)
+            or await _template_mount_refusal(entity, ctx)
+        )
 
     def _template_delete_access_check(
         _entity: None, existing: WorkspaceTemplate, ctx: ToolContext | None,
