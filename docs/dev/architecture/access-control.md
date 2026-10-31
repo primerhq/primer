@@ -171,9 +171,12 @@ fetch, speech and artifact storage providers stay global settings (below), not g
 - `usable(sp, person, model_cls, id)` (`primer/access/infra.py`) is the one question every check asks: the row, or
   `None` when it is missing or the person holds no level on it, so an unusable row reads exactly like a missing one.
 - New rows are private; rows the platform writes are public: the bootstrap runner's providers, and the profile the
-  public seeded agents run on, which `publish_default_profile` (`primer/bootstrap/seed.py`, called by the ensure pass on
-  boot and `/setup/seed`) makes public together with its members and their LLM providers, only while no admin ever shared
-  them (`rev` 0). Existing rows become public in migration 26.
+  public seeded agents run on, which `publish_default_profile` (`primer/bootstrap/seed.py`) makes public together with its
+  members and their LLM providers, only while no admin ever shared them (`rev` 0). The ensure pass (boot and
+  `/setup/seed`) calls it ONLY while it writes the seeded roster for the first time (a fresh install, the wizard's seed),
+  for the profile those agents are written with; a later boot or seed re-run publishes nothing, so a private profile an
+  admin adds stays private, and pointing the seeded agents at one is the admin's call (users get
+  `model_profile_unusable`). Existing rows become public in migration 26.
 - The choices lists (`GET /v1/model_profiles/choices`, `system__list_model_profile_choices`,
   `GET /v1/workspace_providers/_choices`, `list_workspace_provider_choices`) take the person's `visible_predicate`.
 

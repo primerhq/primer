@@ -56,3 +56,32 @@ async def test_a_row_an_admin_already_shared_is_left_alone(fake_storage_provider
 
     stored = (await sp.get_storage(ModelProfile).get("prof")).access
     assert not stored.public and stored.grants == {"u1": "read"} and stored.rev == 2
+
+
+async def test_a_later_boot_publishes_no_profile(tmp_path):
+    """Security review finding 1: only the install's setup publishes. Once the seeded agents exist, a boot or a ``/setup/seed`` re-run
+    publishes nothing, not even a newer private profile that lists first (by id) and its private provider."""
+    from primer.model.provider import SqliteConfig
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
+    await sp.initialize()
+    try:
+        await _world(sp)
+        await ensure_seeded_agents(sp)  # the install's setup: the seeded agents are written, bound to "prof"
+        assert (await sp.get_storage(ModelProfile).get("prof")).access.public
+
+        await sp.get_storage(LLMProvider).create(
+            LLMProvider(id="a-gpu", provider=LLMProviderType.ANTHROPIC, config=AnthropicConfig(api_key=SecretStr("k")), limits=Limits(max_concurrency=1))
+        )
+        await sp.get_storage(ModelProfile).create(
+            ModelProfile(id="a-opus", description="d", provider_id="a-gpu", model_name="m", context_length=1000)
+        )
+        assert await default_profile_id(sp) == "a-opus"  # lists first
+
+        await ensure_seeded_agents(sp)  # a later boot
+
+        assert not (await sp.get_storage(ModelProfile).get("a-opus")).access.public
+        assert not (await sp.get_storage(LLMProvider).get("a-gpu")).access.public
+    finally:
+        await sp.aclose()

@@ -210,8 +210,9 @@ async def publish_default_profile(storage_provider, profile_id: str) -> None:
     """Make the profile the public seeded agents run on, and what it resolves to, public (access-control P4 Task 3).
 
     A new profile or provider is private (an admin opts a costly model in), but the seeded operator and builder are public agents bound
-    to this profile: without a public profile a new user's operator session could not run. Only a row no admin ever shared (``rev`` 0)
-    is touched, so a boot or a seed re-run never undoes an admin's deliberate choice, and the write is fenced on that rev.
+    to this profile: without a public profile a new user's operator session could not run. The ensure pass calls it only while it writes
+    the seeded roster for the first time (the install's setup). Only a row no admin ever shared (``rev`` 0) is touched, so it never undoes
+    an admin's deliberate choice, and the write is fenced on that rev.
     """
     from primer.model.access import Access
     from primer.model.model_profile import ModelProfile
@@ -255,8 +256,11 @@ async def ensure_seeded_agents(storage_provider) -> list[str]:
     if profile_id is None:
         logger.info("seed: no model profile yet; agent seeding deferred")
         return []
-    await publish_default_profile(storage_provider, profile_id)
     agents = storage_provider.get_storage(Agent)
+    # Only the install's setup publishes: the pass about to write the whole seeded roster (a fresh install, the wizard's seed). A later
+    # boot or seed re-run publishes nothing, so a private profile an admin adds (which may list first) stays private (security review 1).
+    if all([await agents.get(agent_id) is None for agent_id in SEEDED_AGENT_FACTORIES]):
+        await publish_default_profile(storage_provider, profile_id)
     created: list[str] = []
     for agent_id, factory in SEEDED_AGENT_FACTORIES.items():
         if await agents.get(agent_id) is not None:
