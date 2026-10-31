@@ -56,6 +56,8 @@ class SandboxEdit(WorkspaceTool):
         assert isinstance(args, EditArgs)
         if args.old_string == args.new_string:
             raise BadRequestError("old_string and new_string are identical")
+        if not args.old_string:   # "" matches between every character
+            raise BadRequestError("old_string must not be empty")
         target = resolve_sandbox_path(self._root, args.path)
         info = await self._sandbox.stat(target)
         if info is None:
