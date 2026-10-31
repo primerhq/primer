@@ -133,6 +133,34 @@ async def _wait_for_system_page(
     )
 
 
+async def _assert_no_system_page(client: httpx.AsyncClient, path: str, *, settle_s: float = 7.0) -> None:
+    """The page does NOT appear while its entity is private: the live map lists only public rows (access-control P3).
+
+    Waits longer than the dispatcher's poll interval (5s), so a convergence that was going to write the page has had its chance.
+    """
+    deadline = asyncio.get_running_loop().time() + settle_s
+    while asyncio.get_running_loop().time() < deadline:
+        page = await client.get(f"/v1/collections/{_SYSTEM_COLLECTION_ID}/documents", params={"path": path})
+        assert page.status_code == 404, f"private entity listed on the public live map at {path!r}: {page.text}"
+        await asyncio.sleep(0.5)
+
+
+async def _make_public(client: httpx.AsyncClient, plural: str, entity_id: str) -> None:
+    """Publish one of the caller's rows (PUT .../access public: true, keeping its owners and grants)."""
+    view = (await client.get(f"/v1/{plural}/{entity_id}/access")).json()
+    put = await client.put(
+        f"/v1/{plural}/{entity_id}/access",
+        json={
+            "owners": [o["id"] for o in view["owners"]],
+            "grants": {g["user"]["id"]: g["level"] for g in view["grants"]},
+            "public": True,
+            "public_tools": view.get("public_tools", []),
+            "rev": view["rev"],
+        },
+    )
+    assert put.status_code == 200, put.text
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _drain_inflight_bootstrap(client: httpx.AsyncClient):
     """Ensure no internal-collections bootstrap is in-flight before each test.
@@ -2534,6 +2562,10 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
         assert cr.status_code == 201, cr.text
         coll_created = True
 
+        # Private by default, so it is not on the public live map; publishing it adds the page.
+        await _assert_no_system_page(client, f"this-install/collections/{collection_id}")
+        await _make_public(client, "collections", collection_id)
+
         # The new collection gets a page in the system collection: the
         # event-log dispatcher converges it within its poll interval,
         # and because bootstrap left search on there, the converge
@@ -2962,6 +2994,10 @@ async def test_new_agent_is_searchable_through_the_system_collection(
             )
             assert ag.status_code == 201, ag.text
             agent_created = True
+
+            # Private by default, so it is not on the public live map; publishing it adds the page.
+            await _assert_no_system_page(client, f"this-install/agents/{agent_id}")
+            await _make_public(client, "agents", agent_id)
 
             # The page converges via the event-log dispatcher (bounded by
             # its poll interval), not inline with the POST.

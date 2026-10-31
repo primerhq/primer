@@ -125,33 +125,56 @@ async def test_knw_sc_02_create_with_cross_encoder(
     assert search["state"] == "indexing"
 
 
+async def _make_cross_encoder(client: httpx.AsyncClient, suffix: str) -> str:
+    cid = f"ce-sc-{suffix}"
+    resp = await client.post(
+        "/v1/cross_encoder_providers",
+        json={
+            "id": cid,
+            "provider": "huggingface",
+            "models": [{"name": "m"}],
+            "config": {"token": None},
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    assert resp.status_code in (200, 201, 409), f"Cross-encoder create: {resp.text}"
+    return cid
+
+
 @pytest.mark.asyncio
 async def test_knw_sc_03_edit_cross_encoder_top_n(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """PUT updating the reranker's top_n succeeds."""
+    """The reranker's top_n changes through the search route; a whole-row PUT cannot touch the search block (owner-only, access-control P3)."""
     sid = await _make_ssp(client, unique_suffix)
     eid = await _make_embedder(client, unique_suffix)
+    cid = await _make_cross_encoder(client, unique_suffix)
     coll_id = f"coll-sc03-{unique_suffix}"
 
     body = _coll_body(
         coll_id=coll_id, eid=eid, sid=sid,
-        cross_encoder={"provider_id": "ce-fake", "model": "m", "top_n": 10},
+        cross_encoder={"provider_id": cid, "model": "m", "top_n": 10},
     )
     created = await client.post("/v1/collections", json=body)
     assert created.status_code == 201, created.text
 
     body["search"]["cross_encoder"]["top_n"] = 25
-    put = await client.put(f"/v1/collections/{coll_id}", json=body)
+    whole_row = await client.put(f"/v1/collections/{coll_id}", json=body)
+    assert whole_row.status_code == 403, whole_row.text  # collection_search_protected: a PUT of the row never changes search
+    assert "collection_search_protected" in whole_row.text
+
+    put = await client.put(f"/v1/collections/{coll_id}/search", json=body["search"])
     assert put.status_code == 200, put.text
     assert put.json()["search"]["cross_encoder"]["top_n"] == 25
+    stored = await client.get(f"/v1/collections/{coll_id}")
+    assert stored.json()["search"]["cross_encoder"]["top_n"] == 25
 
 
 @pytest.mark.asyncio
 async def test_knw_sc_04_remove_search_block(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """Setting search to null turns the collection back into grep-only."""
+    """Disabling search through the search route turns the collection back into grep-only."""
     sid = await _make_ssp(client, unique_suffix)
     eid = await _make_embedder(client, unique_suffix)
     coll_id = f"coll-sc04-{unique_suffix}"
@@ -162,12 +185,10 @@ async def test_knw_sc_04_remove_search_block(
     )
     assert created.status_code == 201, created.text
 
-    put = await client.put(
-        f"/v1/collections/{coll_id}",
-        json=_coll_body(coll_id=coll_id, eid=eid, sid=sid, with_search=False),
-    )
-    assert put.status_code == 200, put.text
-    assert put.json()["search"] is None
+    removed = await client.delete(f"/v1/collections/{coll_id}/search")
+    assert removed.status_code == 204, removed.text
+    stored = await client.get(f"/v1/collections/{coll_id}")
+    assert stored.json()["search"] is None
 
     hit = await client.post(f"/v1/collections/{coll_id}/search", json={"query": "x"})
     assert hit.status_code == 409, hit.text
