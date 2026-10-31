@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import ClassVar
 
 from pydantic import BaseModel
@@ -94,7 +95,7 @@ class SandboxWrite(WorkspaceTool):
         )
         ctx.session.mark_read(args.path)
         size = len(args.content.encode("utf-8"))
-        metadata = _diff_stat(old_lines, args.content.splitlines())
+        metadata = await asyncio.to_thread(_diff_stat, old_lines, args.content.splitlines())
         return ToolResult(
             output=f"wrote {size} bytes to {args.path}", metadata=metadata
         )
