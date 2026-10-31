@@ -120,3 +120,23 @@ async def test_a_failed_create_over_an_existing_directory_leaves_its_files(tmp_p
     with pytest.raises(BadRequestError):
         await backend.create(_template(init_commands=["exit 3"]), workspace_id="proj")
     assert (tmp_path / "proj" / "precious.txt").read_text() == "from an earlier install"
+
+
+# ---- W54: re-attach keeps the workspace's own env overrides ---------------------------------------------------------------------
+
+
+async def test_reattach_in_a_fresh_process_keeps_the_override_env(fake_storage_provider, tmp_path) -> None:
+    await fake_storage_provider.get_storage(WorkspaceProvider).create(WorkspaceProvider(
+        id="local-1", provider=WorkspaceProviderType.LOCAL, config=LocalWorkspaceConfig(root_path=str(tmp_path)),
+        access=Access(public=True),
+    ))
+    template = _template(env={"FROM_TEMPLATE": "t", "SHARED": "template"})
+    overrides = WorkspaceTemplateOverrides(env={"SHARED": "override", "ONLY_OVERRIDE": "o"})
+    registry = WorkspaceRegistry(fake_storage_provider)
+    created = await registry.create(template=template, overrides=overrides, workspace_id="proj")
+    want = {"FROM_TEMPLATE": "t", "SHARED": "override", "ONLY_OVERRIDE": "o"}
+    first = await registry.get_workspace(created.id)
+    assert first._env == want, "the create itself merged the overrides"
+
+    fresh = await WorkspaceRegistry(fake_storage_provider).get_workspace(created.id)    # another process: re-attach from disk
+    assert fresh._env == want

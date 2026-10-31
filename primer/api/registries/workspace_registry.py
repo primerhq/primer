@@ -269,6 +269,10 @@ class WorkspaceRegistry:
         template = row.template_snapshot
         if template is None:
             template = await self._backfill_template_snapshot(row)
+        if template is not None and row.overrides is not None and row.overrides.env:
+            # A local re-attach rebuilds the env from the template it is given: carry the workspace's own env overrides, merged as create
+            # merged them (review W54), or they are gone after a restart and in every worker. A container or a pod keeps its env itself.
+            template = template.model_copy(update={"env": {**template.env, **row.overrides.env}})
         ws = await backend.get(workspace_id, template=template)
         if ws is None:
             raise NotFoundError(
