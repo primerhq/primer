@@ -7,7 +7,7 @@ from typing import Any
 
 from primer.channel.adapter import (
     BoundedDict, ChannelAdapter, PromptEnvelope,
-    attribution_header, format_tool_args, session_thread_label,
+    attribution_header, format_tool_args, session_thread_label, split_text,
 )
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import ApprovalView
@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Discord message content caps at 2000 chars; keep args well under it.
 _DISCORD_ARGS_MAX = 1700
+# A message's content is at most 2000 characters (discord.com/developers/docs/resources/message#create-message).
+_DISCORD_MESSAGE_MAX = 2000
 
 
 def format_approval_content(envelope: PromptEnvelope) -> str:
@@ -151,8 +153,8 @@ class DiscordChannelAdapter(ChannelAdapter):
                     )
             return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         elif envelope.kind == "inform":
-            msg = await thread.send(content=header + envelope.prompt)
-            return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
+            msgs = [await thread.send(content=part) for part in split_text(header + envelope.prompt, _DISCORD_MESSAGE_MAX)]
+            return {"message_id": getattr(msgs[0], "id", 0), "thread_id": thread.id}
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
 

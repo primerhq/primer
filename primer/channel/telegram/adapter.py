@@ -7,7 +7,7 @@ from typing import Any
 
 from primer.channel.adapter import (
     DEFAULT_CACHE_MAXSIZE, BoundedDict, ChannelAdapter, PromptEnvelope,
-    attribution_header,
+    attribution_header, split_text,
 )
 from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
 from primer.channel.telegram.render import (
@@ -29,6 +29,10 @@ _BoundedDict = BoundedDict
 
 # Agents shown per page in the /agent inline-keyboard picker.
 _AGENTS_PER_PAGE = 8
+
+# A message's text is 1-4096 characters after entities parsing, counted in UTF-16 code units
+# (core.telegram.org/bots/api#sendmessage).
+_TELEGRAM_TEXT_MAX = 4096
 
 
 class TelegramChannelAdapter(ChannelAdapter):
@@ -123,11 +127,11 @@ class TelegramChannelAdapter(ChannelAdapter):
         await self._post_envelope_media(envelope)
         header = attribution_header(envelope)
         if envelope.kind == "inform":
-            msg = await self._app.bot.send_message(
-                chat_id=self._channel.external_id,
-                text=header + envelope.prompt,
-            )
-            return {"message_id": getattr(msg, "message_id", 0)}
+            msgs = [
+                await self._app.bot.send_message(chat_id=self._channel.external_id, text=part)
+                for part in split_text(header + envelope.prompt, _TELEGRAM_TEXT_MAX)
+            ]
+            return {"message_id": getattr(msgs[0], "message_id", 0)}
         if envelope.kind == "ask_user":
             body = build_ask_user_message(
                 chat_id=self._channel.external_id, envelope=envelope,

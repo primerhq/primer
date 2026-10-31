@@ -15,7 +15,7 @@ import httpx
 
 from primer.channel.adapter import (
     BoundedDict, ChannelAdapter, PromptEnvelope,
-    attribution_header, session_thread_label,
+    attribution_header, session_thread_label, split_text,
 )
 from primer.channel.slack.connection import SLACK_CONNECTIONS
 from primer.channel.slack.render import (
@@ -29,6 +29,9 @@ from primer.model.except_ import ProviderError
 
 
 logger = logging.getLogger(__name__)
+
+# Slack truncates message text after 40,000 characters (api.slack.com/methods/chat.postMessage, "Truncating content").
+_SLACK_TEXT_MAX = 40_000
 
 
 def _get_web_client(conn: Any) -> Any:
@@ -153,11 +156,12 @@ class SlackChannelAdapter(ChannelAdapter):
                 await self.post_thread_media(parts, thread_ts=root_ts)
         header = attribution_header(envelope)
         if envelope.kind == "inform":
-            await client.chat_postMessage(
-                channel=self._channel.external_id,
-                thread_ts=root_ts,
-                text=header + envelope.prompt,
-            )
+            for part in split_text(header + envelope.prompt, _SLACK_TEXT_MAX):
+                await client.chat_postMessage(
+                    channel=self._channel.external_id,
+                    thread_ts=root_ts,
+                    text=part,
+                )
             return {"ts": "", "channel": self._channel.external_id, "thread_ts": root_ts}
         if envelope.kind == "ask_user":
             body = build_ask_user_message(

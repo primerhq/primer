@@ -77,6 +77,37 @@ def format_tool_args(tool_args: dict[str, Any] | None) -> str:
         return str(tool_args)
 
 
+def utf16_fit(text: str, limit: int) -> int:
+    """How many leading characters of ``text`` fit in ``limit`` UTF-16 code units (a character outside the BMP is two)."""
+    units = 0
+    for i, ch in enumerate(text):
+        units += 2 if ch > "\uffff" else 1
+        if units > limit:
+            return i
+    return len(text)
+
+
+def split_text(text: str, limit: int) -> list[str]:
+    """``text`` as consecutive posts of at most ``limit`` UTF-16 code units, in order.
+
+    UTF-16 units are Telegram's measure and never more than the characters Slack and Discord count. A post
+    is cut after the last newline, else space, that fits (that separator is dropped), else at the limit.
+    """
+    parts: list[str] = []
+    while (fit := utf16_fit(text, limit)) < len(text):
+        cut = text.rfind("\n", 1, fit + 1)
+        if cut < 0:
+            cut = text.rfind(" ", 1, fit + 1)
+        if cut < 0:
+            parts.append(text[:fit])
+            text = text[fit:]
+        else:
+            parts.append(text[:cut])
+            text = text[cut + 1:]
+    parts.append(text)
+    return parts
+
+
 def attribution_header(env: "PromptEnvelope") -> str:
     """Return a one-line attribution prefix for gate posts.
 
@@ -325,4 +356,6 @@ __all__ = [
     "PromptEnvelope",
     "ResponseEnvelope",
     "provider_supports_threads",
+    "split_text",
+    "utf16_fit",
 ]
