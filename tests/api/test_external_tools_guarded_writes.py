@@ -66,10 +66,14 @@ class _RecordingBus:
         self.published.append((key, payload))
 
 
-async def _parked_external_session(client, wsr, sp) -> str:
+async def _parked_external_session(client, wsr, sp, *, due: bool = False) -> str:
+    """``due``: the park's own deadline has passed, so its timeout transition can land (a park whose deadline is ahead refuses one)."""
     wid = await _setup_ws(client, wsr)
     await _seed_agent(sp, allow=True)
-    await _seed_session(sp, wid, **_parked_over("sess-1"))
+    park = _parked_over("sess-1")
+    if due:
+        park["parked_until"] = datetime.now(UTC) - timedelta(seconds=1)
+    await _seed_session(sp, wid, **park)
     return wid
 
 
@@ -132,15 +136,16 @@ async def test_the_first_of_a_cancel_and_a_steer_result_decides_the_call_and_eve
 
 
 @pytest.mark.parametrize("listing", ["global", "session_pending"])
-async def test_a_sweep_racing_a_steer_result_leaves_completed(
+async def test_a_sweep_that_took_the_park_first_times_the_call_out_and_the_steer_result_gets_409(
     app, client, wsr, sp, monkeypatch, listing: str,
 ) -> None:
-    """N53c. A GET list sweeps a ``pending`` row whose ``timeout_at`` passed and is held at its ``timed_out`` write
-    while the steer carrying the result completes the call. The row stays ``completed``, and the GET reports the
-    real status: the global list says ``completed`` (not the ``pending`` it read, not the ``timed_out`` it tried to
-    write), and the session's pending list does not list the call."""
+    """N53c under the GS-6 ruling (first decision wins). A GET list sweeps a ``pending`` row whose ``timeout_at`` passed, on a park
+    whose deadline passed too: the park takes the timeout first, and the sweep is held at its ``timed_out`` row write while the
+    steer carrying the result arrives. The steer is the loser: it answers 409 ``already_decided`` and writes nothing. Released,
+    the sweep times the row out and the GET reports it as stored: the global list says ``timed_out``, and the session's pending
+    list does not list the call."""
     app.state.event_bus = _RecordingBus()
-    wid = await _parked_external_session(client, wsr, sp)
+    wid = await _parked_external_session(client, wsr, sp, due=True)
     calls = sp.get_storage(ExternalToolCall)
     now = datetime.now(UTC)
     await calls.create(ExternalToolCall(
@@ -159,24 +164,56 @@ async def test_a_sweep_racing_a_steer_result_leaves_completed(
     await held.release()
     listed = await reader
 
-    assert 200 <= r_s.status_code < 300, r_s.text
+    assert r_s.status_code == 409, r_s.text
+    assert r_s.json()["extensions"]["code"] == "already_decided"
     row = await calls.get(ROW_ID)
-    assert (row.status, row.result, row.is_error) == ("completed", RESULT, False)
+    assert (row.status, row.result, row.is_error) == ("timed_out", {"timed_out": True}, True)
+    session = await sp.get_storage(WorkspaceSession).get("sess-1")
+    assert session.parked_state["resume_event_payload"] == {"__yield_timeout__": True}
     assert listed.status_code == 200, listed.text
     items = listed.json()["items"]
     if listing == "global":
         # the whole stored row, resolved_at included (the sweep refreshes every field of the row it read)
         assert items == [row.model_dump(mode="json")]
-        assert items[0]["status"] == "completed" and items[0]["resolved_at"] is not None
+        assert items[0]["resolved_at"] is not None
     else:
         assert items == []
 
 
+async def test_a_sweep_after_a_result_took_the_park_leaves_the_row_to_the_result(app, client, wsr, sp, monkeypatch) -> None:
+    """GS-6 ruling. The steer carrying the result takes the park and is held at its ``completed`` row write; a GET list
+    then sweeps the row, whose ``timeout_at`` has passed. The park holds the result, so the timeout did not win: the sweep
+    must not time the row out, and released, the result completes it."""
+    app.state.event_bus = _RecordingBus()
+    wid = await _parked_external_session(client, wsr, sp, due=True)
+    calls = sp.get_storage(ExternalToolCall)
+    now = datetime.now(UTC)
+    await calls.create(ExternalToolCall(
+        id=ROW_ID, session_id="sess-1", tool_call_id="tc-1", tool_name="lookup_customer",
+        arguments={}, created_at=now - timedelta(minutes=2), timeout_at=now - timedelta(seconds=1),
+    ))
+    held = hold_write(monkeypatch, calls, row_id=ROW_ID, status="completed")
+
+    result = asyncio.create_task(_steer_result(client, wid))
+    await held.wait_arrived()
+    listed = await client.get("/v1/external_tool_calls?session_id=sess-1")
+    await held.release()
+    r_s = await result
+
+    assert 200 <= r_s.status_code < 300, r_s.text
+    assert listed.status_code == 200, listed.text
+    row = await calls.get(ROW_ID)
+    assert (row.status, row.result, row.is_error) == ("completed", RESULT, False)
+    session = await sp.get_storage(WorkspaceSession).get("sess-1")
+    assert session.parked_state["resume_event_payload"]["result"] == RESULT
+
+
 async def test_a_sweep_times_out_a_pending_row_past_its_deadline(app, client, wsr, sp) -> None:
     """The lazy timeout itself, through the guarded write: a ``pending`` row whose ``timeout_at`` passed is stored
-    and reported ``timed_out``, and drops out of the session's pending list."""
+    and reported ``timed_out``, and drops out of the session's pending list. The park's own deadline has passed too, so
+    its timeout transition lands first (GS-6)."""
     app.state.event_bus = _RecordingBus()
-    await _parked_external_session(client, wsr, sp)
+    await _parked_external_session(client, wsr, sp, due=True)
     calls = sp.get_storage(ExternalToolCall)
     now = datetime.now(UTC)
     await calls.create(ExternalToolCall(
