@@ -22,6 +22,7 @@ single-row under the GIL within one process.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import weakref
@@ -29,6 +30,7 @@ from datetime import datetime, timezone
 
 from primer.model.channel_correlation import ChannelCorrelation
 from primer.model.common import dump_for_storage
+from primer.model.except_ import ConflictError
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
 
@@ -264,6 +266,40 @@ class CorrelationStore:
         if self._backend() == "other":
             return await self._fallback_upsert(record)
         return await self._atomic_upsert(record)
+
+    async def claim_thread(self, *, channel_id: str, anchor: str) -> bool:
+        """Claim a conversation that has no session yet: insert its row, with no session, only if it has none (W6).
+
+        True when this call inserted it; False when the conversation already has a row (mapped, or claimed by another
+        process that is starting its session). The row id is derived from the key, so two claims conflict on every
+        backend; on the SQL backends the ``(channel_id, anchor)`` unique index also refuses a claim beside a mapping.
+        The claimer's :meth:`upsert_thread_session` turns the row into the mapping; :meth:`release_claim` drops it
+        when no session came of it.
+        """
+        if self._backend() != "other":
+            await self._ensure_unique_index()
+        digest = hashlib.sha256(f"{channel_id}\0{anchor}".encode()).hexdigest()[:32]
+        try:
+            await self._storage().create(ChannelCorrelation(
+                id=f"channel-correlation-claim-{digest}", channel_id=channel_id, anchor=anchor,
+                updated_at=datetime.now(timezone.utc),
+            ))
+        except ConflictError:
+            return False
+        return True
+
+    async def release_claim(self, *, channel_id: str, anchor: str) -> None:
+        """Drop a conversation's claim row if no session was mapped onto it.
+
+        Best effort: a claim left behind only makes the conversation's next message wait out the router's claim wait
+        before starting a session of its own.
+        """
+        try:
+            record = await self.lookup(channel_id, anchor)
+            if record is not None and record.session_id is None:
+                await self._storage().delete(record.id)
+        except Exception:  # noqa: BLE001 - see the docstring
+            logger.warning("channel: releasing the claim on %s/%s failed", channel_id, anchor, exc_info=True)
 
     async def clear_gate(self, channel_id: str, anchor: str, tool_call_id: str | None = None) -> None:
         """Blank a resolved gate's ``tool_call_id``, keeping the mapping.

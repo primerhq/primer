@@ -385,3 +385,127 @@ def test_W33_the_seen_set_is_bounded(monkeypatch):
     for i in range(500):
         ed._first_delivery(("cp-1", "777", "message.posted", f"m{i}"))
     assert len(ed._SEEN_EVENTS) <= 50
+
+
+# --------------------------------------------------------------------------- W6
+
+
+async def test_W6_two_quick_messages_in_a_new_conversation_start_one_session(steers):
+    sp = _FakeStorageProvider()
+    await _seed(sp)
+    fires = _Fires(sp, delay=0.05)
+    router = _router(sp, fires)
+    first, second = await asyncio.gather(
+        router.route_event(event=_event(1, text="hi"), channel=None),
+        router.route_event(event=_event(2, text="can you check the build?"), channel=None),
+    )
+    assert fires.sessions == ["s1"]
+    assert (first.kind, first.session_id) == ("fired", "s1")
+    assert (second.kind, second.session_id) == ("steer", "s1")
+    assert steers == [("s1", "can you check the build?")]
+
+
+async def test_W6_quick_replies_in_a_mapped_thread_steer_in_arrival_order(monkeypatch):
+    sp = _FakeStorageProvider()
+    await _seed(sp)
+    await CorrelationStore(sp).upsert_thread_session(channel_id="ch-1", anchor="th-1", workspace_id="w1", session_id="s9")
+    order: list[str] = []
+
+    async def _slow_first(**kw):
+        if kw["text"] == "one":
+            await asyncio.sleep(0.05)
+        order.append(kw["text"])
+        return SteerDelivery(outcome="queued", session_id=kw["session_id"])
+
+    monkeypatch.setattr(ed, "deliver_steer", _slow_first)
+    router = _router(sp, _Fires(sp))
+    await asyncio.gather(*(
+        router.route_event(event=_event(i, text=t, surface="thread", anchor="th-1"), channel=None)
+        for i, t in ((1, "one"), (2, "two"))
+    ))
+    assert order == ["one", "two"]
+
+
+async def test_W6_a_conversation_claimed_by_another_process_steers_into_its_session(steers, monkeypatch):
+    """Another process claimed the conversation and is starting its session: this one waits and steers into it."""
+    monkeypatch.setattr(ed, "_CLAIM_POLL_SECONDS", 0.01)
+    sp = _FakeStorageProvider()
+    await _seed(sp)
+    other = CorrelationStore(sp)
+    assert await other.claim_thread(channel_id="ch-1", anchor="dm:u1") is True
+    fires = _Fires(sp)
+    routed = asyncio.create_task(_router(sp, fires).route_event(event=_event(2, text="second"), channel=None))
+    await asyncio.sleep(0.05)
+    assert not routed.done()  # waiting on the other process's session
+    await other.upsert_thread_session(channel_id="ch-1", anchor="dm:u1", workspace_id="w1", session_id="s-other")
+    out = await asyncio.wait_for(routed, 5)
+    assert (out.kind, out.session_id) == ("steer", "s-other")
+    assert fires.calls == [] and steers == [("s-other", "second")]
+    assert len(await CorrelationStore(sp).list_for_channel("ch-1")) == 1
+
+
+async def test_W6_a_claim_that_never_resolves_falls_back_to_a_fresh_fire(steers, monkeypatch):
+    """A claimer that died mid-fire must not silence the conversation forever."""
+    monkeypatch.setattr(ed, "_CLAIM_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(ed, "_CLAIM_WAIT_SECONDS", 0.1)
+    sp = _FakeStorageProvider()
+    await _seed(sp)
+    assert await CorrelationStore(sp).claim_thread(channel_id="ch-1", anchor="dm:u1") is True
+    out = await _router(sp, _Fires(sp)).route_event(event=_event(2), channel=None)
+    assert (out.kind, out.session_id) == ("fired", "s1")
+    row = await CorrelationStore(sp).lookup("ch-1", "dm:u1")
+    assert row.session_id == "s1"
+    assert len(await CorrelationStore(sp).list_for_channel("ch-1")) == 1
+
+
+async def test_W6_the_claim_is_released_when_the_fire_maps_nothing():
+    sp = _FakeStorageProvider()
+    await _seed(sp)
+    await _router(sp, _Fires(sp, start_sessions=False)).route_event(event=_event(1), channel=None)
+    assert await CorrelationStore(sp).lookup("ch-1", "dm:u1") is None
+
+
+async def test_W6_the_claim_is_released_when_every_fire_raises():
+    sp = _FakeStorageProvider()
+    await _seed(sp)
+
+    async def _boom(**_kw):
+        raise RuntimeError("fire failed")
+
+    out = await _router(sp, _boom).route_event(event=_event(1), channel=None)
+    assert out.kind == "ignored"
+    assert await CorrelationStore(sp).lookup("ch-1", "dm:u1") is None
+
+
+async def test_W6_claiming_is_a_conditional_insert(tmp_path: Path):
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "claim.sqlite"))
+    await sp.initialize()
+    try:
+        a, b = CorrelationStore(sp), CorrelationStore(sp)
+        won = await asyncio.gather(*(s.claim_thread(channel_id="ch-1", anchor="th-1") for s in (a, b, a, b)))
+        assert sorted(won) == [False, False, False, True]
+        await a.upsert_thread_session(channel_id="ch-1", anchor="th-1", workspace_id="w1", session_id="s1")
+        rows = await a.list_for_channel("ch-1")
+        assert [(r.session_id, r.workspace_id) for r in rows] == [("s1", "w1")]
+        # A conversation that is already mapped cannot be claimed.
+        assert await b.claim_thread(channel_id="ch-1", anchor="th-1") is False
+    finally:
+        await sp.aclose()
+
+
+async def test_W6_a_claim_conflicts_with_a_mapping_written_by_another_path(tmp_path: Path):
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "claim2.sqlite"))
+    await sp.initialize()
+    try:
+        store = CorrelationStore(sp)
+        await store.upsert_thread_session(channel_id="ch-1", anchor="th-1", workspace_id="w1", session_id="s1")
+        assert await store.claim_thread(channel_id="ch-1", anchor="th-1") is False
+        assert [r.session_id for r in await store.list_for_channel("ch-1")] == ["s1"]
+    finally:
+        await sp.aclose()
+
+
+def test_claim_rows_are_correlation_rows_with_no_session():
+    """A claim is the conversation's own row before its session exists: kind session, no session, no gate."""
+    row = ChannelCorrelation(channel_id="ch-1", anchor="a")
+    assert (row.kind, row.session_id, row.tool_call_id) == ("session", None, None)
