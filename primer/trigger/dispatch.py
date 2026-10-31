@@ -420,7 +420,8 @@ async def fire_trigger(
     last_fire_error = json.dumps({
         "code": first_err.get("error_code"),
         "subscription_id": first_err.get("subscription_id"),
-        "message": first_err.get("error_message"),
+        # Scrubbed as on the subscription row: this one is served to every READ grantee of the trigger (W44).
+        "message": _safe_error_message(first_err.get("error_message")),
     }) if first_err else None
     # The fire's own fields only (P3 Decision 8): an edit or a sharing change saved while the fire ran survives it.
     await write_trigger_fields(triggers_storage, trigger, {

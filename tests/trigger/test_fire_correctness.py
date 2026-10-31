@@ -99,3 +99,39 @@ async def test_gate_reads_every_live_session_past_one_page(sp) -> None:
     res = await _busy(sp, *cancelled, _session("sess-zzzz"))
     assert res is not None and res.error_message == "session 'sess-zzzz' still in-flight"
 
+
+# ---------------------------------------------------------------------------
+# W44: the trigger row's last_fire_error
+# ---------------------------------------------------------------------------
+
+
+async def _fire_raising(storage, monkeypatch, message: str) -> Trigger:
+    await storage.get_storage(Trigger).create(Trigger(
+        id="tr-1", slug="tr-x", name="x", config=DelayedTriggerConfig(fire_at=NOW), enabled=True, next_fire_at=NOW, created_at=NOW,
+    ))
+    await storage.get_storage(Subscription).create(Subscription(
+        owner=PrincipalRef.system(), id="sb-1", trigger_id="tr-1", config=SessionAppendSubConfig(session_id="cn-1"),
+        payload_template="hi", enabled=True, created_at=NOW,
+    ))
+
+    class _Raises:
+        async def dispatch(self, *args, **kwargs):
+            raise RuntimeError(message)
+
+    monkeypatch.setattr(dispatch_mod, "get_dispatcher", lambda kind: _Raises())
+    await dispatch_mod.fire_trigger(trigger_id="tr-1", scheduled_for=None, deps=DispatchDeps(storage_provider=storage, claim_engine=None))
+    return await storage.get_storage(Trigger).get("tr-1")
+
+
+async def test_last_fire_error_shape_is_unchanged(fake_storage_provider, monkeypatch) -> None:
+    row = await _fire_raising(fake_storage_provider, monkeypatch, "boom")
+    assert row.last_fire_error == json.dumps({"code": "dispatch_failed", "subscription_id": "sb-1", "message": "boom"})
+
+
+async def test_last_fire_error_is_scrubbed_on_the_trigger_row(fake_storage_provider, monkeypatch) -> None:
+    row = await _fire_raising(
+        fake_storage_provider, monkeypatch, "connect failed: https://user:hunter2@internal.example/hook?token=abc Bearer sk-live-123",
+    )
+    message = json.loads(row.last_fire_error)["message"]
+    assert message == "connect failed: <url> Bearer <redacted>"
+
