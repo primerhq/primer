@@ -35,6 +35,24 @@ def validate_timezone(tz: str) -> None:
         raise TimezoneInvalid(f"invalid timezone: {tz!r}") from exc
 
 
+def _runs_once_in_a_repeated_hour(cron_expr: str) -> bool:
+    """Whether the expression is a fixed-hour job, which classic cron runs ONCE when clocks fall back and an hour repeats.
+
+    A job whose hour field is a plain number, list or range (``30 1 * * *``, ``0 1,3 * * *``) runs in the first pass only; a wildcard or stepped
+    hour (``*``, ``*/2``, ``@hourly``) is a recurring job and runs in both passes, as every hourly job should.
+    """
+    fields = cron_expr.split()
+    if len(fields) == 1:  # an alias: only @hourly recurs within the day
+        return fields[0].lower() != "@hourly"
+    hour = fields[1]
+    return "*" not in hour and "/" not in hour
+
+
+def _is_second_pass(local: datetime) -> bool:
+    """Whether ``local`` (a zone-aware datetime from ``astimezone``) is the second pass of a wall-clock time that clocks fall back across."""
+    return local.fold == 1 and local.replace(fold=0).utcoffset() != local.utcoffset()
+
+
 def next_fire_at(
     cron_expr: str,
     tz_name: str,
@@ -50,11 +68,17 @@ def next_fire_at(
     tz = ZoneInfo(tz_name)
     base_local = after.astimezone(tz)
     it = croniter(cron_expr, base_local)
-    nxt_local = it.get_next(datetime)
-    # croniter returns naive in some versions when given naive input; coerce.
-    if nxt_local.tzinfo is None:
-        nxt_local = nxt_local.replace(tzinfo=tz)
-    return nxt_local.astimezone(timezone.utc)
+    skip_repeat = _runs_once_in_a_repeated_hour(cron_expr)
+    while True:
+        nxt_local = it.get_next(datetime)
+        # croniter returns naive in some versions when given naive input; coerce.
+        if nxt_local.tzinfo is None:
+            nxt_local = nxt_local.replace(tzinfo=tz)
+        nxt_utc = nxt_local.astimezone(timezone.utc)
+        # A fixed-hour job already ran in the first pass of a repeated wall-clock time: not again in the second.
+        if skip_repeat and _is_second_pass(nxt_utc.astimezone(tz)):
+            continue
+        return nxt_utc
 
 
 def iter_missed_fires(
@@ -74,6 +98,7 @@ def iter_missed_fires(
     tz = ZoneInfo(tz_name)
     base_local = from_.astimezone(tz)
     it = croniter(cron_expr, base_local)
+    skip_repeat = _runs_once_in_a_repeated_hour(cron_expr)
     emitted = 0
     while emitted < limit:
         nxt_local = it.get_next(datetime)
@@ -82,6 +107,8 @@ def iter_missed_fires(
         nxt_utc = nxt_local.astimezone(timezone.utc)
         if nxt_utc > now:
             return
+        if skip_repeat and _is_second_pass(nxt_utc.astimezone(tz)):
+            continue
         yield nxt_utc
         emitted += 1
 
@@ -101,10 +128,16 @@ def previous_fire_at(
     validate_timezone(tz_name)
     tz = ZoneInfo(tz_name)
     base_local = (at_or_before + timedelta(microseconds=1)).astimezone(tz)
-    prev_local = croniter(cron_expr, base_local).get_prev(datetime)
-    if prev_local.tzinfo is None:
-        prev_local = prev_local.replace(tzinfo=tz)
-    return prev_local.astimezone(timezone.utc)
+    it = croniter(cron_expr, base_local)
+    skip_repeat = _runs_once_in_a_repeated_hour(cron_expr)
+    while True:
+        prev_local = it.get_prev(datetime)
+        if prev_local.tzinfo is None:
+            prev_local = prev_local.replace(tzinfo=tz)
+        prev_utc = prev_local.astimezone(timezone.utc)
+        if skip_repeat and _is_second_pass(prev_utc.astimezone(tz)):
+            continue
+        return prev_utc
 
 
 #: The most missed ticks one claim of a ``catchup: all`` trigger replays (the oldest first), besides the due tick.
