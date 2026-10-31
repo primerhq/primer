@@ -17,6 +17,7 @@ harness-managed rows, which the REST routes refuse. Ruling (the lead, Option A):
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ from primer.api.registries import ProviderRegistry
 from primer.model.collection import Collection, CollectionEmbedder, CollectionSearchConfig, Document
 from primer.model.common import dump_for_storage
 from primer.model.provider import SqliteConfig
+from primer.model.user import User
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.toolset.system import build_system_toolset
 from tests._support.caller import AsCaller
@@ -73,6 +75,8 @@ async def world(tmp_path: Path):
     sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
     await sp.initialize()
     await sp.get_content_store().ensure_schema()
+    # The admin the calls act as (and kb-1's owner): indexing embeds only through providers an owner may use.
+    await sp.get_storage(User).create(User(id="user-1", username="user-1", created_at=datetime.now(UTC), role="admin"))
     store = _RecordingStore()
     registry = ProviderRegistry(
         sp,

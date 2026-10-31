@@ -341,8 +341,10 @@ Deployment and every worker Deployment (or give the pods a role). The endpoint a
 
 ## 8. Public surfaces
 
-Every route below is admin-only (`require_admin`, mounted in `primer/api/_app_routes.py`), and every tool needs an admin
-(`required_role="admin"`).
+The routes split by verb (ACL-P4 Task 9, `read_write_routers` in `primer/api/routers/_crud.py`): the reads (`GET` list/get, `_types`, the
+active-config read) mount at the user tier (full users, every secret masked by the models' `SecretStr` serialization; restricted users still
+get nothing) and the writes (create / update / delete, `POST .../find`, the `_test` probes, the active-config `PUT`) stay admin
+(`require_admin`, mounted in `primer/api/_app_routes.py`). Every tool needs an admin (`required_role="admin"`).
 
 - REST, the rows: the CRUD routes `GET` and `POST /v1/artifact_storage_providers`,
   `GET`, `PUT` and `DELETE /v1/artifact_storage_providers/{id}`, and `POST /v1/artifact_storage_providers/find`;
@@ -369,7 +371,8 @@ Every route below is admin-only (`require_admin`, mounted in `primer/api/_app_ro
   while it is out the select is `aria-busy` and never natively disabled (that would drop the focus), and a second change is ignored. Success
   says "New files now go to <id>"; a refusal (the probe failed, the store is gone, a lost race) shows the server's sentence under the field,
   never its code, and the select shows the stored store again while both are read again. It draws loading, a load error with Retry, and the
-  case of a single store (only the reserved database row), and nothing at all for a non-admin, because the routes are admin-only. The
+  case of a single store (only the reserved database row). For a non-admin it draws the same field read-only (ACL-P4 Task 9): the select is
+  natively disabled with "Only an admin can change this" under it, and it makes no write. The
   provider form gives the `s3` kind the install hint when the `s3` extra is missing (`EXTRA_FOR_PROVIDER_TYPE` in
   `ui/foundation/capabilities.js`). `tests/ui/test_artifact_store_selector.py` runs it in MiniRacer on the real routers' answers, and
   `tests/ui_e2e/test_artifact_store_selector_journey.py` runs it in a browser, the phone width included.

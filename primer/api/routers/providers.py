@@ -39,7 +39,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.access.person import person_from_request
-from primer.access.policy import require, visible_predicate
+from primer.access.policy import catalogue_predicate, level_of, require, visible_predicate
 from primer.common.hf_hub import MAX_MODELS_PER_CHECK, check_hf_models
 from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm.anthropic import _discover_anthropic_models
@@ -698,6 +698,7 @@ async def draft_test_cross_encoder_provider(body: _ModelProviderDraft) -> dict[s
 
 llm_provider_router = make_crud_router(
     model_cls=LLMProvider,
+    grantable=True,
     storage_dep=get_llm_provider_storage,
     plural="llm_providers",
     tag="llm-providers",
@@ -1023,6 +1024,7 @@ async def _dispatch_llm_probe(provider: str, config: dict[str, Any]) -> dict:
 
 embedding_provider_router = make_crud_router(
     model_cls=EmbeddingProvider,
+    grantable=True,
     storage_dep=get_embedding_provider_storage,
     plural="embedding_providers",
     tag="embedding-providers",
@@ -1259,6 +1261,7 @@ async def _probe_openai_compatible_models(config: dict[str, Any]) -> dict:
 
 cross_encoder_provider_router = make_crud_router(
     model_cls=CrossEncoderProvider,
+    grantable=True,
     storage_dep=get_cross_encoder_provider_storage,
     plural="cross_encoder_providers",
     tag="cross-encoder-providers",
@@ -2045,7 +2048,10 @@ async def list_all_tools(
     # may not read stay out of the catalogue (spec anti-goal 4: filter in
     # storage, never a fetched page in Python); admins get a None predicate
     # and keep the unfiltered list.
-    access_pred = visible_predicate(person_from_request(request))
+    person = person_from_request(request)
+    # The rows the person can see, plus the rows with public tools (``tools:public``): a row the person holds no level on shows only its public
+    # tools, with no auth status (access-control P4 Task 2).
+    access_pred = catalogue_predicate(person)
     ts_storage = storage_provider.get_storage(Toolset)
     seen_user_ids: set[str] = set()
     offset = 0
@@ -2072,7 +2078,8 @@ async def list_all_tools(
             }
             from primer.toolset.oauth.service import OAuthTarget
 
-            if OAuthTarget.from_toolset(row) is not None:
+            readable = level_of(person, row.access) is not None
+            if readable and OAuthTarget.from_toolset(row) is not None:
                 status = await mcp_oauth.status(row)
                 entry["auth"] = status.model_dump(
                     mode="json",
@@ -2082,7 +2089,7 @@ async def list_all_tools(
                 registry, row.id, principal,
             )
             if reason is None:
-                entry["tools"] = tools
+                entry["tools"] = tools if readable else [t for t in tools if t["id"] in row.access.public_tools]
             else:
                 entry["available"] = False
                 entry["unavailable_reason"] = reason

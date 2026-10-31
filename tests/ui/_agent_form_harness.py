@@ -52,9 +52,13 @@ PROFILES = [
     {"id": "fast", "description": "Fast", "kind": "single", "context_length": 8192},
     {"id": "slow", "description": "Slow", "kind": "single", "context_length": 32768},
 ]
+# The suite's profile vocabulary, as an install's rows stand under access control P4: pre-P4 rows the
+# migration made PUBLIC (lead ruling), so a user-role account's /model_profiles/choices still lists them.
 PROFILE_ROWS = [
-    {"id": "fast", "description": "Fast", "provider_id": "p1", "model_name": "m1", "context_length": 8192},
-    {"id": "slow", "description": "Slow", "provider_id": "p1", "model_name": "m2", "context_length": 32768},
+    {"id": "fast", "description": "Fast", "provider_id": "p1", "model_name": "m1", "context_length": 8192,
+     "access": {"public": True}},
+    {"id": "slow", "description": "Slow", "provider_id": "p1", "model_name": "m2", "context_length": 32768,
+     "access": {"public": True}},
 ]
 # The useResource key the form reads the profile choices under (the agents list keeps its own key for the admin list).
 PROFILE_CHOICES_KEY = "agents:model-profile-choices"

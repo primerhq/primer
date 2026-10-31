@@ -12,6 +12,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, PlainSerializer, PositiveInt, SecretStr
 
+from primer.model.common import SERVING_NON_ADMIN
 from primer.model.masked_url import MaskedUserinfoUrl
 
 
@@ -27,7 +28,7 @@ def _mask_with_tail(secret: SecretStr) -> str:
     ever protects a pathological/test value, never a real key's tail.
     """
     value = secret.get_secret_value()
-    if len(value) <= 4:
+    if len(value) <= 4 or SERVING_NON_ADMIN.get():  # a non-admin's read of a global setting: no tail (security review of P4, 6)
         return "**********"
     return "**********" + value[-4:]
 

@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -786,6 +787,8 @@ def _make_create_handler(
         refusal = refuse_create(guards, entity)
         if refusal is None and privilege_check is not None:
             refusal = privilege_check(entity, None, ctx)
+            if inspect.isawaitable(refusal):
+                refusal = await refusal
         if refusal is not None:
             return refusal
         # A create has nothing stored to restore a mask from: the copy-a-row move (get_*, a new id, create_*) would store the served masks as the values.
@@ -842,6 +845,8 @@ def _make_update_handler(
         # The access check runs before the guards' refusals: a row the caller holds no level on answers exactly like a
         # missing one, whatever the guards would say of it (a reserved id, a managing harness) (spec 9).
         refusal = privilege_check(entity, existing, ctx) if privilege_check is not None else None
+        if inspect.isawaitable(refusal):
+            refusal = await refusal
         if refusal is None:
             refusal = refuse_update(guards, entity, existing)
         if refusal is not None:
@@ -1230,7 +1235,24 @@ def build_workspaces_toolset(
 
         return _refusal
 
-    def _template_write_access_check(
+    async def _template_provider_refusal(
+        entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
+    ) -> ToolCallResult | None:
+        """A template may name only a workspace provider its saver may use (access-control P4 Task 5): as a missing one, unchanged ones unchecked."""
+        from primer.workspace.provider_use import provider_unusable, provider_unusable_message
+
+        if existing is not None and existing.provider_id == entity.provider_id:
+            return None
+        if await provider_unusable(storage_provider, person_for_tool(ctx), entity.provider_id):
+            return _err(provider_unusable_message(entity.provider_id), error_type="not-found")
+        return None
+
+    async def _template_create_check(
+        entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
+    ) -> ToolCallResult | None:
+        return _template_refusal(entity, existing, ctx) or await _template_provider_refusal(entity, existing, ctx)
+
+    async def _template_write_access_check(
         entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
     ) -> ToolCallResult | None:
         """``full`` before the admin-field checks (spec 9: a row the caller cannot reach answers as a missing one)."""
@@ -1239,7 +1261,7 @@ def build_workspaces_toolset(
         denial = _template_access_refusal(AccessLevel.FULL)(entity, existing, ctx)
         if denial is not None:
             return denial
-        return _template_refusal(entity, existing, ctx)
+        return _template_refusal(entity, existing, ctx) or await _template_provider_refusal(entity, existing, ctx)
 
     def _template_delete_access_check(
         _entity: None, existing: WorkspaceTemplate, ctx: ToolContext | None,
@@ -1366,6 +1388,7 @@ def build_workspaces_toolset(
         _CreateProviderArgs,
         _make_create_handler(
             _CreateProviderArgs, _provider_storage, "WorkspaceProvider", guards=provider_guards,
+            stamp_access=lambda ctx: Access(),  # a new provider is private; its use grant is set through set_entity_access (admins)
         ),
         examples=[
             ToolExample(
@@ -1404,13 +1427,13 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _list_workspace_provider_choices(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _list_workspace_provider_choices(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             _NoArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         try:
-            return _ok(await list_provider_choices(_provider_storage()))
+            return _ok(await list_provider_choices(_provider_storage(), person_for_tool(ctx)))
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
 
@@ -1493,7 +1516,7 @@ def build_workspaces_toolset(
         _CreateTemplateArgs,
         _make_create_handler(
             _CreateTemplateArgs, _template_storage, "WorkspaceTemplate", guards=template_guards,
-            privilege_check=_template_refusal, stamp_access=_template_access_of,
+            privilege_check=_template_create_check, stamp_access=_template_access_of,
         ),
         examples=[
             ToolExample(

@@ -305,9 +305,9 @@ async def test_the_listing_is_made_as_the_principal_the_runs_context_carries(res
     rec = Scripted([scripted_tool("go")], roles={"go": "user"})
     _, (_, handler) = _describe_tool_tool(Registry({"rec": rec}, reserved_provider_registry), None)
     arguments = {"toolset_id": "rec", "tool_name": "go"}
-    assert not (await handler(arguments, ctx=SimpleNamespace(principal="alice"))).is_error
+    assert not (await handler(arguments, ctx=SimpleNamespace(principal="alice", initiated_by=None))).is_error
     await handler(arguments)
-    await handler(arguments, ctx=SimpleNamespace(principal=None))
+    await handler(arguments, ctx=SimpleNamespace(principal=None, initiated_by=None))
     assert rec.listed_as == ["alice", None, None]
 
 
@@ -318,9 +318,9 @@ async def test_a_principal_argument_the_model_supplies_is_ignored(reserved_provi
     _, (_, handler) = _describe_tool_tool(Registry({"rec": rec}, reserved_provider_registry), None)
     asked = {"toolset_id": "rec", "tool_name": "go", "principal": "mallory"}
 
-    assert not (await handler(asked, ctx=SimpleNamespace(principal="alice"))).is_error
+    assert not (await handler(asked, ctx=SimpleNamespace(principal="alice", initiated_by=None))).is_error
     assert not (await handler(asked)).is_error
-    assert not (await handler(asked, ctx=SimpleNamespace(principal=None))).is_error
+    assert not (await handler(asked, ctx=SimpleNamespace(principal=None, initiated_by=None))).is_error
 
     assert rec.listed_as == ["alice", None, None], "a principal the model supplied reached the provider"
 

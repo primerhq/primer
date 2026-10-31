@@ -27,6 +27,7 @@ from primer.model.yield_ import ToolContext
 from primer.toolset.crud import build_crud_toolset
 from primer.toolset.system import build_system_toolset
 from primer.toolset.workspaces import build_workspaces_toolset
+from tests._support.workspace_providers import seed_public_workspace_providers
 
 A, B, C = "u-a", "u-b", "u-c"
 ADMIN = "u-admin"
@@ -89,7 +90,8 @@ def _ids(result: Any) -> set[str]:
 
 
 @pytest.fixture
-def sp(fake_storage_provider):
+async def sp(fake_storage_provider):
+    await seed_public_workspace_providers(fake_storage_provider, "local-1")
     return fake_storage_provider
 
 

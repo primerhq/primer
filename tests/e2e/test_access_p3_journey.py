@@ -155,6 +155,10 @@ async def test_a_channel_trigger_on_another_users_private_channel_is_refused(cli
               "config": {"app_token": "xapp-1-acl3", "bot_token": "xoxb-1-acl3", "signing_secret": "acl3-secret"}},
     )
     assert provider.status_code == 201, provider.text
+    # A new channel provider is private to admins (access-control P4): the admin publishes it so the users below may bind channels to it.
+    view = (await client.get(f"/v1/channel_providers/{cp_id}/access")).json()
+    published = await client.put(f"/v1/channel_providers/{cp_id}/access", json={"owners": [], "grants": {}, "public": True, "rev": view["rev"]})
+    assert published.status_code == 200, published.text
     try:
         async with (
             _user(client, base_url, f"acl3-cb-{unique_suffix}") as (b_id, b),

@@ -41,6 +41,9 @@ const GB_api = (() => {
     listGraphs: (params, signal) => api().apiFetch("GET", `/graphs${qs(params)}`, null, { signal }),
     graphStatus: (id, signal) => api().apiFetch("GET", `/graphs/${encodeURIComponent(id)}/status`, null, { signal }),
     listAgents: (params, signal) => api().apiFetch("GET", `/agents${qs(params)}`, null, { signal }),
+    // The profiles a caller may USE (user tier: a use grant or public; admins all), as the agent
+    // form reads them: the first page of the same route the form pages through (PR_fetchAllPages).
+    modelProfileChoices: (signal) => api().apiFetch("GET", "/model_profiles/choices?limit=200&offset=0", null, { signal }),
     agentStatus: (id, signal) => api().apiFetch("GET", `/agents/${encodeURIComponent(id)}/status`, null, { signal }),
     toolCatalogue: (signal) => api().apiFetch("GET", "/tools/catalogue", null, { signal }),
     nodeStates: (graphId, runId, signal) =>

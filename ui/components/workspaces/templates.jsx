@@ -756,6 +756,12 @@ function WT_TemplateOverlay(props) {
   var choices = (choicesRes.data && choicesRes.data.items) || [];
   var row = creating ? null : given || rowRes.data || null;
 
+  // ACL-P6-T3: the marker row of the overlay header (the template's own
+  // access). Unconditional hooks: create mode looks up nobody.
+  var viewerId = con.viewer && (con.viewer.user_id || con.viewer.id) || null;
+  var ownerIds = (row && row.access && row.access.owners) || [];
+  var ownerNames = window.SHR_useUserNames(ownerIds);
+
   // {form, initial, base}: the form, the form as it was opened (null on create) and the row it was opened from.
   var stState = React.useState(null);
   var st = stState[0];
@@ -1098,6 +1104,11 @@ function WT_TemplateOverlay(props) {
   return (
     <React.Fragment>
     <PK_FormOverlay title={title} testid="wt-overlay" onClose={closeUnlessSaving} selector={selector} footer={footer}>
+      {!creating && row && row.access && (
+        <div data-testid="template-access-markers" style={WT_NOTE_STYLE}>
+          <SHR_AccessMarkers access={row.access} me={viewerId} names={ownerNames} />
+        </div>
+      )}
       {note ? <div className="field-help" data-testid="wt-readonly-note" style={WT_NOTE_STYLE}>{note}</div> : null}
       {mode === "edit" ? (
         <div className="field-help" data-testid="wt-snapshot-note">
@@ -1230,6 +1241,14 @@ function WT_TemplatesPage() {
     pageSize: 12,
     text: function (t) { return [t.id, t.description, t.provider_id, WT_label(t, choiceFor(t)), t.backend && t.backend.image].join(" "); },
   });
+  // ACL-P6-T3: the marker's viewer + the looked-up owner names (one batched
+  // lookup for the page).
+  var viewerId = con.viewer && (con.viewer.user_id || con.viewer.id) || null;
+  var ownerIds = [];
+  items.forEach(function (t) {
+    ((t.access && t.access.owners) || []).forEach(function (o) { if (ownerIds.indexOf(o) < 0) ownerIds.push(o); });
+  });
+  var ownerNames = window.SHR_useUserNames(ownerIds);
   function openCreate() {
     setOpen({ create: true });
   }
@@ -1271,7 +1290,8 @@ function WT_TemplatesPage() {
           var reserved = WT_isReserved(t);
           var locked = reserved || (!isAdmin && WT_heldAdminFields(t).length > 0);
           // A built-in template is public to everyone by definition: its badge stays "built in", no sharing badges beside it.
-          var badges = reserved ? "built in" : (SHR_accessBadges(t.access).filter(Boolean).join(" · ") || undefined);
+          // ACL-P6-T3: the badge is the marker row (whose it is, from the row's access).
+          var badges = reserved ? "built in" : (window.SHR_accessMarkers(t.access, viewerId, ownerNames).join(" · ") || undefined);
           return (
             <PK_Card key={t.id} id={t.id} icon={{ path: WT_KIND_ICONS[WT_kindOf(t)] }} badge={badges}
               title={t.id} subtitle={t.description || undefined} facts={WT_cardFacts(t, choiceFor(t))}

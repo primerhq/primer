@@ -13,6 +13,10 @@ Endpoints (all under ``/v1/mcp_exposure``):
                            exposability verdict and live allowlist
                            membership; powers the Phase 8 UI table.
 
+``GET /`` mounts at the user tier (global settings, ACL-P4 Task 9);
+``PUT /`` and ``GET /available`` (exposure administration: it lists and
+contacts every toolset row) mount at the admin tier.
+
 Auth surface mirrors :mod:`primer.api.routers.api_tokens` — the cookie
 session is the only legal write path. Bearer tokens can READ both
 endpoints (so an operator-side dashboard authenticated with a token
@@ -34,6 +38,7 @@ from primer.api.deps import (
     get_storage_provider,
     require_admin,
 )
+from primer.api.routers._crud import read_write_routers
 from primer.mcp.exposure import (
     ExposureDeps,
     ToolNotExposable,
@@ -167,4 +172,17 @@ async def available_tools_endpoint(
     return {"items": items}
 
 
-__all__ = ["mcp_exposure_router"]
+# ACL-P4 Task 9: the exposure singleton is global settings - its read (the
+# row) mounts at the user tier; the PUT stays admin (it carries its own
+# route-level require_admin too).
+mcp_exposure_read_router, mcp_exposure_write_router = read_write_routers(
+    mcp_exposure_router,
+)
+# The /available catalogue is exposure administration, not a global setting:
+# it lists and contacts every toolset row, private ones included, so it goes
+# back to the admin tier with the PUT (security review of P4, finding 4).
+mcp_exposure_write_router.routes.extend(r for r in mcp_exposure_read_router.routes if r.path.endswith("/available"))
+mcp_exposure_read_router.routes[:] = [r for r in mcp_exposure_read_router.routes if not r.path.endswith("/available")]
+
+
+__all__ = ["mcp_exposure_read_router", "mcp_exposure_router", "mcp_exposure_write_router"]

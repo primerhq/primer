@@ -21,7 +21,7 @@ from tests._support.runs import (
 )
 from tests._support.smk import smk
 from tests._support.testconfig import requires
-from tests._support.model_profiles import agent_model
+from tests._support.model_profiles import agent_model, profile_id_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -121,6 +121,11 @@ async def test_call_tool_refuses_an_admin_tool_for_a_user_run(authed_client, bas
         json={"owners": [o["id"] for o in shared["owners"]], "grants": {made.json()["id"]: "read"}, "rev": shared["rev"]},
     )
     assert put.status_code == 200, put.text
+    # The agent's model profile and its provider are private to admins by default: the user's run needs the use of them (access control P4).
+    for plural, rid in (("llm_providers", agent["provider_id"]), ("model_profiles", profile_id_for(agent["provider_id"], sc))):
+        infra = (await authed_client.get(f"/v1/{plural}/{rid}/access")).json()
+        published = await authed_client.put(f"/v1/{plural}/{rid}/access", json={"owners": [], "grants": {}, "public": True, "rev": infra["rev"]})
+        assert published.status_code == 200, published.text
     # The workspace is the admin's too: the user starts a session in it, which needs full on it (access control P2).
     ws_access = (await authed_client.get(f"/v1/workspaces/{wid}/access")).json()
     ws_put = await authed_client.put(

@@ -1,9 +1,10 @@
 """Providers > Artifact Store: the "Store new files in" selector (plan 09, Task 11; seam I-4), ``ui/components/artifact-store-selector.jsx``.
 
-It reads ``GET /artifact_storage_active_config`` and every page of ``GET /artifact_storage_providers`` and writes ``PUT /artifact_storage_active_config``,
-three admin-only routes. The lead's rulings (2026-10-24) it is held to:
+It reads ``GET /artifact_storage_active_config`` and every page of ``GET /artifact_storage_providers`` (user tier since ACL-P4 Task 9, secrets masked) and
+writes ``PUT /artifact_storage_active_config`` (admin only). The lead's rulings (2026-10-24) it is held to:
 
-1. Admin only: an admin gets the selector, anyone else nothing (no control and no request).
+1. Admin switch: everyone gets the selector (the reads are user tier); a non-admin's select is disabled with "Only an admin can change this" under it
+   and makes no write.
 2. A refused selection shows the server's words under the field (``readRefusal``), never a code, and the select shows the stored store again.
 3. While a selection is out the select is busy (``aria-busy``), never natively disabled, and a second change is ignored (no second request).
 4. Loading, a load error with Retry (``as-active-store-retry``) and the empty case (only the database store) are all shown.
@@ -395,17 +396,20 @@ def test_while_a_switch_is_out_the_select_is_busy_not_disabled_and_ignores_a_sec
     assert len(js(ctx, "puts()")) == 2, "the next change is sent once the first is answered"
 
 
-# ---- ruling 1: admin only -----------------------------------------------------------------------------------------------------------------
+# ---- ruling 1: the switch is an admin's ----------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("console", [{"role": "user"}, {"role": "restricted"}, None], ids=["user", "restricted", "no-console"])
-def test_anyone_but_an_admin_gets_nothing_and_no_request_is_made(ctx, served, console) -> None:
+def test_anyone_but_an_admin_gets_the_readonly_selector(ctx, served, console) -> None:
+    # ACL-P4 Task 9: the reads are user tier, so the selector renders for a
+    # non-admin too; the switch is an admin's and the select says so.
     ctx.eval(f"CONSOLE = {json.dumps(console)};")
     _load(ctx, served["active_fs"], served["stores"])
-    assert ctx.eval("MR.find('as-active-store')") is None
-    assert ctx.eval("select()") is None
-    assert [key for key in js(ctx, "KEYS") if str(key).startswith("as:")] == [], "the admin-only routes are never asked"
-    assert js(ctx, "CALLS") == []
+    assert ctx.eval("MR.find('as-active-store') !== null") is True
+    assert ctx.eval("select().props.disabled") is True
+    assert ctx.eval("MR.find('as-active-store-readonly-note') !== null") is True
+    assert ctx.eval(f"KEYS.indexOf({json.dumps(ACTIVE_KEY)}) >= 0 && KEYS.indexOf({json.dumps(STORES_KEY)}) >= 0") is True, "the user-tier reads are asked"
+    assert js(ctx, "puts()") == [], "a read-only selector makes no write"
 
 
 def test_an_admin_gets_the_selector(ctx, served) -> None:

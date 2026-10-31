@@ -28,6 +28,7 @@ from primer.model.workspace import (
 from primer.model.yield_ import ToolContext
 from primer.toolset.workspaces import build_workspaces_toolset
 from primer.workspace.env_names import ENV_NAME_PATTERN, MAX_ENV_NAME_LENGTH, RUNTIME_TOKEN_ENV_NAMES
+from tests._support.workspace_providers import seed_public_workspace_providers
 from tests.toolset._desc_conformance import assert_tool_conforms
 from tests.toolset.test_workspaces import _SP, _StubBackend
 
@@ -38,6 +39,7 @@ _TEMPLATE_TOOLS = ["create_workspace_template", "update_workspace_template"]
 @pytest.fixture
 async def world():
     sp = _SP()
+    await seed_public_workspace_providers(sp, "p-1", "k3s", "dock", "loc", "local-1", "k8s-1", "docker-1")
     toolset = build_workspaces_toolset(storage_provider=sp, workspace_registry=WorkspaceRegistry(sp, factory=_StubBackend))
     return toolset, {tool.id: tool async for tool in toolset.list_tools()}
 

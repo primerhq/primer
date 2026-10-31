@@ -47,6 +47,11 @@ window.primerApi = {
   },
   toastPush: function (t) { TOASTS.push(t); },
 };
+// ACL-P4-T7: the use-grant affordances share-dialog.jsx provides the overlays (loaded before
+// model-profiles.jsx by the app): the "Who can use" button and the row's access badge.
+var SHR_UseShare = function () { return null; };
+window.SHR_useBadge = function (access) { return access ? "Public" : null; };
+window.SHR_UseShare = SHR_UseShare;
 """
 
 # after api.js has loaded: it sets the real apiFetch, ApiError and readRefusal on window.primerApi, and only apiFetch is replaced

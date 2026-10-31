@@ -107,11 +107,15 @@
     // useResource(key, fetcher, opts) — run the fetcher exactly once and
     // expose its result. No polling, no abort, no error path (fixtures never
     // fail). Mirrors the real hook's { data, loading, error, refetch } shape.
-    function useResource(_cacheKey, fetcher /* , opts */) {
-      const [state, setState] = React.useState({ data: null, loading: true });
+    function useResource(cacheKey, fetcher /* , opts */) {
+      // A null key is the real hook's "fetch nothing" (a page with nothing to look up, e.g. the owner-name lookup of rows with no owners).
+      const [state, setState] = React.useState({ data: null, loading: cacheKey !== null });
       React.useEffect(() => {
+        if (cacheKey === null) return undefined;
         let alive = true;
-        Promise.resolve(fetcher(undefined))
+        // Through a then so a fetcher that throws synchronously is a failed fetch, never an exception in the effect.
+        Promise.resolve()
+          .then(() => fetcher(undefined))
           .then((data) => { if (alive) setState({ data, loading: false }); })
           .catch(() => { if (alive) setState({ data: null, loading: false }); });
         return () => { alive = false; };

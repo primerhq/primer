@@ -101,6 +101,22 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
     );
   }, [items, textFilter]);
 
+  // ACL-P6-T3a: the owner badge says the username, not the id: one batched lookup
+  // (SHR_useUserNames, share-dialog.jsx) for every owner id on the page.
+  const ownerIds = React.useMemo(() => {
+    const out = [];
+    items.forEach((a) => {
+      ((a.access && a.access.owners) || []).forEach((o) => { if (out.indexOf(o) < 0) out.push(o); });
+    });
+    return out;
+  }, [items]);
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
+  // ACL-P6-T3: the marker's viewer (con.viewer: /auth/status's principal
+  // projection, the viewer's user id; a signed-out console names nobody).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+
   // Per-row status — fetch /agents/{id}/status once per visible row.
   const [perRowStatus, setPerRowStatus] = React.useState({});
   React.useEffect(() => {
@@ -262,16 +278,9 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
                 <tr key={a.id} onClick={() => openRow(a.id)} style={{ cursor: "pointer" }}>
                   <td className="mono">
                     {a.id}
-                    {SHR_accessBadges(a.access).map((b) => (
-                      <span
-                        key={b}
-                        className="pill pill-ended"
-                        data-testid={"agent-access-badge-" + b}
-                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
-                      >
-                        <span className="dot"></span>{b}
-                      </span>
-                    ))}
+                    {/* ACL-P6-T3: the marker row (the owner's name through the
+                        looked-up names; "Owned by you" when it is ours). */}
+                    <SHR_AccessMarkers access={a.access} me={meId} names={ownerNames} />
                   </td>
                   <td className="muted text-sm" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {a.description || <span style={{ color: "var(--text-4)" }}>—</span>}
@@ -940,15 +949,16 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     return { onChange: (e) => { set(e.target.value); note(e); }, onInput: note };
   };
 
-  // The model profile dropdown. A profile the agent names that is no longer in the list stays the selection (a native select would otherwise show its first
-  // option and the save would repoint the agent): it is the first option, marked "(missing)" when the list loaded and plain when the load failed.
+  // The model profile dropdown. The form reads the caller's own choices (user tier: the profiles THIS person may use), so a profile the agent names that
+  // is not in the list is not deleted - it is not available to the caller (ACL-P4-T7). It stays the selection (a native select would otherwise show its
+  // first option and the save would repoint the agent): it is the first option, marked "(not available to you)" when the list loaded and plain when it failed.
   const profilesFailed = !!profiles.error;
   const profileGone = !!profileId && !selectedProfile && !profiles.loading;
   // Said through the console's one reader of a failed request, so a refusal that carries only a code (forbidden_role) is said in words.
   const profilesLoadError = profilesFailed ? window.primerApi.readRefusal(profiles.error, "").message : "";
   const profileError = AG_fieldError(fieldErrors, "body.model")
     || (profilesFailed ? "Could not load the model profiles" + (profilesLoadError ? ": " + profilesLoadError : ".") : null)
-    || (profileMissing ? "This profile no longer exists. Pick another one." : null);
+    || (profileMissing ? "This model profile is not available to you. An admin can grant its use." : null);
   const profileHelp = !profiles.loading && !profilesFailed && profileOptions.length === 0
     ? "No model profiles yet. Register an LLM provider and import its models first."
     : "The default; a run can override it";
@@ -964,6 +974,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   const voiceShown = !!(caps.data && caps.data.speech && caps.data.speech.tts_configured);
   const shownPaths = voiceShown ? AG_FIELD_PATHS : AG_FIELD_PATHS.filter((path) => path !== "body.tts_voice");
   const otherErrors = AG_otherFieldErrors(fieldErrors, shownPaths);
+
+  // ACL-P6-T3: the marker row of the detail header (the agent's own access;
+  // the names looked up once per page). Unconditional hooks: create mode
+  // looks up nobody (an empty set keys to null).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const detailOwnerIds = React.useMemo(
+    () => ((existing && existing.access && existing.access.owners) || []),
+    [existing]
+  );
+  const detailOwnerNames = window.SHR_useUserNames(detailOwnerIds);
 
   // uiv2 Wave 2 (harness_id): a managed row 409s on any PUT
   // (routers/agents.py) - AG_ConfigTab used to just hide its Edit
@@ -1029,6 +1050,11 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
         ),
       }}
     >
+      {isEdit && existing?.access && (
+        <div data-testid="agent-access-markers" style={{ marginBottom: 8 }}>
+          <SHR_AccessMarkers access={existing.access} me={meId} names={detailOwnerNames} />
+        </div>
+      )}
       {isEdit && <AG_StatusPanel id={existing.id} status={status} />}
       <PK_Grid cols={2}>
         <PK_Field label="Id" help={isEdit ? "The id cannot change after the agent is created." : undefined} error={AG_fieldError(fieldErrors, "body.id")}>
@@ -1051,7 +1077,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             value={profileId}
             onChange={(e) => setProfileId(e.target.value)}
           >
-            {profileGone && <option value={profileId}>{profilesFailed ? profileId : profileId + " (missing)"}</option>}
+            {profileGone && <option value={profileId}>{profilesFailed ? profileId : profileId + " (not available to you)"}</option>}
             {profiles.loading && profileOptions.length === 0 && <option value="">Loading model profiles…</option>}
             {!profiles.loading && profileOptions.length === 0 && !profileId && <option value="">No model profiles yet</option>}
             {profileOptions.map((pr) => <option key={pr.id} value={pr.id}>{pr.id}</option>)}

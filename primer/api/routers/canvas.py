@@ -37,6 +37,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic import ValidationError as PydanticValidationError
 
+from primer.api.routers._crud import read_write_routers
 from primer.access.person import person_from_request
 from primer.access.workspaces import require_session
 from primer.model.access import AccessLevel
@@ -599,6 +600,13 @@ async def put_canvas_settings(body: CanvasSettingsBody, storage_provider: Any = 
     return await write_canvas_settings(storage_provider, settings)
 
 
+# ACL-P4 Task 9: canvas settings are global settings - the GET mounts at the
+# user tier, the PUT stays admin.
+canvas_settings_read_router, canvas_settings_write_router = read_write_routers(
+    canvas_settings_router,
+)
+
+
 __all__ = [
     "FILE_REFUSED",
     "SESSION_ENDED",
@@ -610,5 +618,7 @@ __all__ = [
     "CanvasView",
     "canvas_public_router",
     "canvas_router",
+    "canvas_settings_read_router",
     "canvas_settings_router",
+    "canvas_settings_write_router",
 ]

@@ -18,6 +18,7 @@ Two scenarios:
 from __future__ import annotations
 
 from primer.model_profile import ResolvedModel
+from primer.model.access import Access
 from primer.model.model_profile import ModelProfile, ModelProfileConfig
 
 from collections.abc import AsyncIterator
@@ -169,6 +170,7 @@ class _StorageProvider:
         self._agent = agent
         self._provider_row = provider_row
         self._profile = ModelProfile(
+            access=Access(public=True),  # usable by the run's person (access-control P4)
             id="prov-1--m1",
             description="Test profile.",
             provider_id="prov-1",

@@ -10333,7 +10333,9 @@ async def test_t0730_workspaces_cursor_walk_visits_each_exactly_once(
         # each seeded id to appear exactly once.
         seen: set[str] = set()
         cursor: str | None = None
-        for _page in range(40):  # bounded safety net
+        # The bound is a safety net only: the suite leaves many workspaces behind (every user a journey makes gets a default workspace), and
+        # the walk is 2 per page, so it must outlast them.
+        for _page in range(1000):  # bounded safety net
             body: dict = {
                 "predicate": None,  # no filter — walk everything
                 "page": {"kind": "cursor", "cursor": cursor, "length": 2},
@@ -10350,7 +10352,7 @@ async def test_t0730_workspaces_cursor_walk_visits_each_exactly_once(
             if cursor is None:
                 break
         else:
-            pytest.fail("cursor walk did not terminate within 40 pages")
+            pytest.fail("cursor walk did not terminate within 1000 pages")
 
         # Each seeded id appears exactly once (set semantics — and
         # the cursor invariant from T0044 says no id should repeat).

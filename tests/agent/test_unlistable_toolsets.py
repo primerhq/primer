@@ -767,7 +767,7 @@ async def test_a_stop_during_a_subagents_turn_start_listing_ends_it_before_the_m
     async def resolve(agent_id, *, storage_provider, provider_registry):
         return subagent_stop.AGENT, llm, subagent_stop.MODEL
 
-    async def build(context, *, storage_provider=None, provider_registry=None, approval_resolver=None):
+    async def build(context, *, agent_id=None, storage_provider=None, provider_registry=None, approval_resolver=None):
         return manager
 
     monkeypatch.setattr(invoke, "_resolve_agent_runtime", resolve)

@@ -18,8 +18,8 @@ workspace's: sessions and their transcripts, files, the state log, the tap, work
 approvals, external tool calls, the terminal and graph-run logs. A document inherits its collection's and a trigger
 subscription its trigger's (both by CHECKING the parent on every door), and an agent, graph, toolset or collection a
 harness installed carries a COPY of the harness's access, rewritten whenever the harness is shared (6.12). Each turn of
-a session runs as the person whose input started it, and every full user has a private default workspace. The grantable
-infrastructure (providers and model profiles) follows the same model in a later phase.
+a session runs as the person whose input started it, and every full user has a private default workspace. Model profiles and the
+providers a user-owned entity references are not owned but grantable: an admin-set use grant says who may USE them (6.17).
 
 ## 2. Visual overview
 
@@ -57,7 +57,9 @@ flowchart LR
 - `primer/access/service.py`: `get_access_view`, `set_access` (owners only; the whole desired state; refuses an empty
   owner list, unknown, disabled or restricted users, per-tool flags on kinds without tools, and a row a harness
   installed with 409 `harness_managed`; writes the `access` block alone with `patch_if` guarded on `access.rev`, then
-  runs an optional `after_write` hook), `lookup_users` (username prefix, id and username only), and the two writers
+  runs an optional `after_write` hook), `lookup_users` (username prefix, id and username only), `lookup_user_names`
+  (the ids form the console's badges call: one query over at most 200 ids, unknown ids absent, disabled and restricted
+  users still named), and the two writers
   that keep the sharing out of a whole-row write: `update_keeping_access` (every other field, fenced on the rev the
   caller read: a sharing change in between answers 409) and `rewrite_keeping_access` (every other field, fenced on the
   rev read fresh and retried, for long operations such as a harness sync whose snapshot may be stale).
@@ -84,11 +86,18 @@ flowchart LR
   /v1/auth/status`.
 - REST: `make_crud_router(..., owned=True)` (`primer/api/routers/_crud.py`), or `row_guard` plus `list_filter` for a
   kind that inherits its parent's access (documents from their collection), and `make_access_router(...)`
-  (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access` (workspaces included), plus `GET /v1/users/lookup`.
+  (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access` (workspaces included), plus `GET /v1/users/lookup` (the
+  username-prefix `q`; the ids form `?ids=` names the ids the console's badges show, at most 200).
 - Tools: `system__get_entity_access`, `system__set_entity_access`, `system__lookup_users`
-  (`primer/toolset/_system_access.py`; the kinds are agent, graph, toolset, workspace template, channel, collection, trigger, harness and workspace); the
-  generated CRUD tools enforce the same levels; the `workspaces` toolset asks `require_workspace` per tool.
+  (`primer/toolset/_system_access.py`; the kinds are agent, graph, toolset, workspace template, channel, collection, trigger, harness, workspace and the
+  seven grantable infrastructure kinds); the generated CRUD tools enforce the same levels; the `workspaces` toolset asks `require_workspace` per tool.
 - Console: `SHR_ShareDialog` (`ui/components/shared/share-dialog.jsx`) for every owned kind, workspaces included.
+- Phase 4: `primer/model/access.py` `Grantable` (the mixin of grantable infrastructure) and `TOOLS_PUBLIC_TOKEN`;
+  `primer/access/policy.py` `may_use_tool` and `catalogue_predicate`; `primer/access/tools.py` `toolset_use`;
+  `primer/access/infra.py` `usable`; `set_access(use_only=True)` and `get_access_view(use_only=True)`;
+  `primer/api/routers/infra_access.py`; `primer/authz.py` `ProfileUnusable`; `primer/model_profile/resolver.py`
+  `require_profile_use` and `resolve_llm(person=)`; `primer/workspace/provider_use.py`; `primer/channel/checks.py`
+  `channel_for_binding`; `primer/knowledge/search_use.py`.
 
 ## 4. How to add a new implementation
 
@@ -135,6 +144,11 @@ parent.
 | Subscription (inherited) | `triggers.py` (`/triggers/{id}/subscriptions...`) | `trigger` toolset, `create/list/delete_channel_binding`, `subscribe_to_trigger`, `subscribe_to_channel_event` | inherits its trigger by check (6.10) |
 | Harness | `primer/api/routers/harness.py` | `harness` toolset | writes stay admin-only; list, get and bundle need read (6.12) |
 | Harness-installed rows (inherited) | the owning kinds' routers | the owning kinds' tools | carry a copy of the harness's access; direct sharing answers 409 `harness_managed` (6.12) |
+| Model profile (grantable) | `primer/api/routers/model_profiles.py` | system CRUD | use grant; the choices list is filtered |
+| LLM provider (grantable) | `primer/api/routers/providers.py` | system CRUD | use grant, checked with the profile that names it |
+| Embedding, cross-encoder, vector store provider (grantable) | `providers.py`, `semantic_search.py` | system CRUD | use grant, checked when search is enabled and at every search |
+| Workspace provider (grantable) | `primer/api/routers/workspaces.py` | `workspaces` toolset | use grant, checked at workspace create and template save; choices filtered |
+| Channel provider (grantable) | `primer/api/routers/channels.py` | system CRUD | use grant, checked when a channel is saved or bound |
 
 ## 6. Wiring
 
@@ -146,7 +160,11 @@ person per request; tools read it from the `ToolContext` or, over MCP, from `pri
 filter compiles to `data->'access'->'members' ? $n` on Postgres, served by the GIN index; SQLite installs scan. A
 workspace create (REST and the `create_workspace` tool, through `WorkspaceRegistry.create`) stamps
 `Access.owned_by(<creator>)`; an id-less admin or system caller writes an unowned row. Access in a create or update body
-is ignored.
+is ignored. Migration 21 (`primer/storage/migrations/m021_entity_ownership.py`) stamps the first admin as owner of rows created
+before access control, and makes the seeded agents and template public. Migration 28
+(`primer/storage/migrations/m028_infrastructure_public.py`) makes every existing model profile and provider with no
+sharing public, on the seven grantable tables (a row that already carries grants or `public` is left alone, so a re-run
+never undoes an admin's choice).
 
 ### 6.2 Workspaces and what inherits from them
 
@@ -242,7 +260,7 @@ leaves their default workspace in place, reachable only by admins.
   `default_workspace_id`, unless that admin already has one or another user owns or records it.
 - Migration 24 (`m024_cross_workspace_list_field.py`) stamps `workspace_id` on external tool calls and tool approval
   records from their session, so the cross-workspace lists can filter in storage (6.7).
-- Phase 3 adds migrations 25 to 27 (6.14).
+- Phase 3 adds migrations 25 to 27 (6.14), and Phase 4 adds migration 28 (6.17).
 
 ### 6.7 Not yet scoped
 
@@ -255,9 +273,9 @@ only). A live tap or terminal connection is checked when it opens,
 not again after a revoke (a Phase 6 ticket). A turn already running when a grant is revoked runs to its end, its
 in-session file tools included; the next turn or resume is refused (6.3).
 
-The subsections below describe Phase 3 (collections, triggers, channel triggers and harnesses). They are numbered
-from 6.8 so they follow the Phase 2 subsections (workspaces and what inherits from them, the turn person, events, the
-per-user default workspace) of the same section.
+Subsections 6.8 to 6.14 describe Phase 3 (collections, triggers, channel triggers and harnesses), numbered after the Phase 2
+subsections (workspaces and what inherits from them, the turn person, events, the per-user default workspace); 6.15 to 6.20
+describe Phase 4 (run identity, the tool list, grantable infrastructure, use checks, global settings and the console).
 
 ### 6.8 Collections and what documents inherit
 
@@ -363,6 +381,145 @@ Phase 2 owns migrations 22 to 24 (6.6), so Phase 3's follow them.
 - `m027_harness_ownership` (migration 27): an unset harness is owned by the first enabled admin; every installed row takes a copy of
   its harness's access.
 
+### 6.15 Run identity
+
+Every run carries a composite identity: the person behind it plus the entity acting. The person is
+`ToolContext.initiated_by` (the turn person of a steered turn, a token's owner for an API-token run); the actor is
+`ToolContext.actor`, an `ActorRef` (`primer/model/principal.py`, `kind` one of `agent`, `graph`, `user`, `system`, plus
+`id`). The actor is the innermost acting entity: the session's agent, a graph agent node's agent, a sub-agent, a ToolCall
+node's graph or a child graph. A direct MCP call acts as the user (`system` on an auth-disabled install). The builders
+set it on the `ToolExecutionManager` (`actor=`; default: the bound session's agent), which stamps it on every context.
+The actor never adds access: every decision is still the person's.
+
+`identity_doc(ref, actor, username=None)` (`primer/access/person.py`) renders it; `gate_identity` reads an API token
+owner's username from the `User` row when a gate fires, and `tool_identity(ctx, storage_provider)` reads it the way
+`person_for_tool` reads the person. Every gate that builds an approval input passes it as `ApprovalContext.identity`
+(the tool manager's gate, `system__call_tool` with and without a context, the MCP endpoint), so the input always has an
+`identity` key:
+
+```json
+{"user": {"id": "u-7", "name": "bob", "role": "user"}, "actor": {"kind": "agent", "id": "agent-builder"}}
+```
+
+### 6.16 The person-filtered tool list
+
+A run's tool list holds only the tools its person may use. `toolset_use(sp, person, toolset_ids)`
+(`primer/access/tools.py`) answers, for each toolset id as spelled, `None` (every tool), a set (only those tools) or an
+empty set (none), with ONE batched read of the toolset rows. A toolset with no row (a built-in or reserved id) is open to
+every full user; a row the person holds a level on gives every tool; otherwise only the tools the row marks public
+(`public_tools`, `may_use_tool`), exactly those and never their siblings; a restricted person gets nothing; admins
+short-circuit with no read.
+
+- `ToolExecutionManager.list_tools` computes it for `person_from_ref(initiated_by)` through the provider registry's
+  storage provider, BEFORE any remote (MCP) toolset is listed. A toolset with no usable tool is left out and reported with
+  the notice word `not available to you` (`tool_listing.NO_ACCESS`); it is never listed remotely, so no connection and no
+  OAuth prompt happen for it. A toolset with some usable tools is reported `some tools not available to you`
+  (`SOME_TOOLS`) and its other tools stay out of the routing table. Both words join `NOTICE_STATES`, the system-message
+  notice a model already reads for an unreachable toolset. A manager built with no registry skips the check (tests only).
+- Every inner door asks the same question again: `dispatch_inner_tool(storage_provider=...)` runs `inner_access_refusal`
+  beside the role floor and answers a refused tool as `not-found` (the words of a missing tool), so an approved
+  `call_tool` re-run after a revoke is refused. `system__call_tool`, `list_toolset_tools` and `describe_tool` read the row
+  with `_toolset_read_refusal`, which lets a public tool through; `list_toolset_tools` lists only the usable tools and
+  `describe_tool` answers any other as missing.
+- A graph ToolCall manager with no identity is an unattributed user, never the system principal.
+- The REST catalogues (`/v1/tools`, `/v1/tools/catalogue`, the toolset catalogue in `providers.py`) use
+  `catalogue_predicate`: the rows the person can see plus the rows carrying the derived member token `tools:public`
+  (`TOOLS_PUBLIC_TOKEN`), and show only the public tools of a row the person holds no level on. `visible_predicate` never
+  matches that token, so the row itself stays unlisted and unreadable.
+
+### 6.17 Grantable infrastructure
+
+Model profiles and the providers a user-owned entity references carry a use grant: `Grantable`
+(`primer/model/access.py`) gives them an `access` block with no owners, every grant `read` (meaning *use*) and `public`.
+The seven kinds are model profiles, LLM providers, embedding providers, cross-encoder providers, vector store (semantic
+search) providers, workspace providers and channel providers, each with a GIN index on `access.members`. Web search and
+fetch, speech and artifact storage providers stay global settings (below), not grantable.
+
+- Writes stay admin-only: creating, editing and deleting a row, and setting its grant. `make_crud_router(grantable=True)`
+  stamps a private block (`Access()`) on create and ignores the body's `access`; an update keeps the stored one through
+  `update_keeping_access`, so no edit, probe stamp or bootstrap re-run resets a grant. The tool twin is
+  `_crud_tools_for(grantable=True)`.
+- The sub-resource `GET` / `PUT /v1/{plural}/{id}/access` is mounted on the USER tier before the admin CRUD routers
+  (`primer/api/routers/infra_access.py`), and the service decides: `set_access(use_only=True)` refuses owners, `full`
+  grants and per-tool flags and skips the harness-managed refusal, and only an admin holds `owner`, so only an admin can
+  change it. A grantee (or any reader of a public row) reads the view, but a non-admin's view lists no owners and no
+  grants, only `your_level` and `public` (`get_access_view(use_only=True)`), so a colleague's grant cannot be enumerated.
+  A stranger gets 404. `system__get_entity_access` / `set_entity_access` take the seven kinds (`_USE_ONLY` in
+  `_system_access.py`) and call the same service.
+- `usable(sp, person, model_cls, id)` (`primer/access/infra.py`) is the one question every check asks: the row, or
+  `None` when it is missing or the person holds no level on it, so an unusable row reads exactly like a missing one.
+- New rows are private; rows the platform writes are public: the bootstrap runner's providers, and the profile the
+  public seeded agents run on, which `publish_default_profile` (`primer/bootstrap/seed.py`) makes public together with its
+  members and their LLM providers, only while no admin ever shared them (`rev` 0). The ensure pass (boot and
+  `/setup/seed`) calls it ONLY while it writes the seeded roster for the first time (a fresh install, the wizard's seed),
+  for the profile those agents are written with; a later boot or seed re-run publishes nothing, so a private profile an
+  admin adds stays private, and pointing the seeded agents at one is the admin's call (users get
+  `model_profile_unusable`). Existing rows become public in migration 28.
+- The choices lists (`GET /v1/model_profiles/choices`, `system__list_model_profile_choices`,
+  `GET /v1/workspace_providers/_choices`, `list_workspace_provider_choices`) take the person's `visible_predicate`.
+
+### 6.18 Use checks on profiles and providers
+
+The saver is checked when an entity that names infrastructure is written, and the person a run acts as is checked when it
+is used. An unchanged reference is not re-checked on an edit, so an edit by a full grantee checks the grantee only on
+what the edit adds.
+
+- **Model profiles.** `resolve_llm(person=)` (`primer/model_profile/resolver.py`) is a USE: `require_profile_use` needs
+  use of the profile the run names (the session override, else the agent's, or a graph node's) AND of every LLM provider
+  it resolves to, the providers of an aggregated profile's members included. The member recursion carries no person: a
+  grant on an aggregate covers its members, a grant on a member never covers the aggregate. The agent, graph and
+  sub-agent builders pass `person_from_ref(initiated_by)` (a sub-agent: the parent run's identity), manual compact the
+  requester. A refusal raises `ProfileUnusable` (`primer/authz.py`, code `model_profile_unusable`); it fails the TURN,
+  never the session: `pause_session_for_unusable_profile` writes an ERROR record and `last_turn_error.code`, sets
+  PAUSED, keeps the park and releases the lease with `entity_noop`, and the pool's resume branch does the same, so an admin
+  grant then `/resume` runs it and a peer without the grant who steers cannot end the owner's session. `invoke_agent`
+  answers a tool error (`forbidden`). On save, `check_profile_exists` and the new `check_graph_node_profiles`
+  (`primer/agent/agent_checks.py`) refuse a profile the saver may not use as `model_profile_not_found`, and a toolset row
+  the saver cannot read (none of whose named tools is public) counts as missing; REST and the tools both pass the saver.
+  `GET /v1/agents/{id}/status` reports an unusable profile as ONE issue and skips the provider and member walk.
+- **Workspace providers.** `WorkspaceRegistry.materialise(person=)`, the one door every create passes, needs use of the
+  template's provider and answers an unusable one with the not-found `get_backend` raises for a missing one, building
+  nothing; the bootstrap seed passes no person. A template save checks its saver (`primer/workspace/provider_use.py`;
+  422 `workspace_provider_not_found`, a provider that does not exist reads the same).
+- **Channel providers.** A channel save needs use of its provider (`check_channel_on_create` / `check_channel_on_update`
+  with `person`), and binding a channel (`channel_for_binding`: a workspace's reply binding, workspace create, the
+  `set_reply_binding` tool, a channel trigger) needs it too; otherwise the channel reads as missing.
+- **Search providers.** `enable_search(person=)` needs use of the embedder, the vector store and the cross-encoder
+  (else the existing not-registered 409), and so does every search (`primer/knowledge/search_use.py`): REST answers 409 and
+  points to grep and the tree, the `collections` tool falls back to fulltext on `auto` and refuses `semantic`, and
+  `system__search_collection` refuses (`conflict`, the REST words) before it embeds anything. A collection
+  create whose `search` block names providers runs the same check for the saver (`check_collection_search_use`, REST 409,
+  tool `conflict`, the same not-registered words); a whole-row update cannot change `search` at all. Indexing writes by
+  full users are not a use of their own, but indexing (`index_document`, `index_documents`, given the storage) refuses to
+  embed through a provider no owner of the collection may use (`owners_may_use`; an owner with no user row counts as
+  unable), failing closed: a backfill records the reason on the search block (`state: error`).
+
+### 6.19 Global settings
+
+Install-wide settings every feature already uses are readable by every full user, secrets masked, and writable only by
+admins: the web search and fetch providers and their active configs, the speech providers and active config, the artifact
+storage providers and active store, canvas settings and the MCP exposure singleton. The routers split by verb with
+`read_write_routers` (`primer/api/routers/_crud.py`): GETs mount at the user tier (a restricted user still reaches
+nothing, an unauthenticated caller gets 401), the writes, the `_test` probes and the active-config PUTs stay admin. The
+exposure catalogue `GET /v1/mcp_exposure/available` is exposure administration, not a global setting (it lists and
+contacts every toolset row, private ones included), so it stays admin; `GET /v1/mcp_exposure` (the allowlist) is readable.
+A non-admin's read is served stricter than an admin's: the read parts mount with `serve_global_settings`
+(`primer/api/deps.py`), which sets `SERVING_NON_ADMIN` (`primer/model/common.py`) for that request, so the masking
+serializers serve every API key fully masked (`_mask_with_tail` drops the tail) and every URL with no userinfo at all
+(`MaskedUserinfoUrl`, and `NonAdminStrippedUrlStr` for the S3 `endpoint_url`, which an admin still sees as typed).
+
+### 6.20 Console (Phase 4)
+
+The share dialog (`ui/components/shared/share-dialog.jsx`) has a `useOnly` mode for the seven grantable kinds: no owners
+and no level picker, only "People who can use" and an "Everyone can use" switch; admins edit it, everyone else sees it
+read-only (their own level and public). A "Who can use" button (the `entity.share` verb) sits on the detail overlays of
+model profiles, LLM, workspace, channel, semantic-search, embedding and cross-encoder providers, and their cards carry a
+`SHR_useBadge` (Public, "N people" or "Admins only"). The create forms of these kinds have a "Public" switch, off by
+default (a new row is private). The agent form and the graph node profile picker show a current profile the person cannot
+use as "<id> (not available to you)" with a warning, and a paused session whose `last_turn_error.code` is
+`model_profile_unusable` shows a banner saying its model profile is not available to the person who sent the turn and that
+an admin can grant its use before Resume. Tests: `tests/ui/test_p4_use_grants_ui.py`.
+
 ## 7. Testing patterns
 
 - `tests/access/`: `Person` derivations and the policy, including a matrix that pins list visibility to `level_of` for
@@ -392,8 +549,14 @@ Phase 2 owns migrations 22 to 24 (6.6), so Phase 3's follow them.
   `tests/toolset/test_trigger_tools_access.py` (including the channel-binding tools),
   `tests/trigger/test_service_calls_name_the_person.py` (the static guard), `tests/trigger/test_channel_trigger_access.py`,
   `tests/harness/test_harness_access.py`, and `tests/storage/test_m025_collection_ownership.py`,
-  `test_m026_trigger_ownership.py`, `test_m027_harness_ownership.py`. The two-user journey is
+  `test_m026_trigger_ownership.py`, `test_m027_harness_ownership.py`, `test_m028_infrastructure_public.py`. The two-user journey is
   `tests/e2e/test_access_p3_journey.py`.
+- Phase 4: `tests/access/test_tool_use.py` and `tests/agent/test_tool_list_access.py` (the filtered list),
+  `tests/access/test_use_grants.py`, `tests/api/test_infra_use_routes.py` and `tests/toolset/test_system_access_infra_kinds.py`
+  (grantable infrastructure), `tests/model_profile/test_profile_use.py` and `tests/session/test_unusable_profile_turn.py`
+  (profile use), `tests/workspace/test_materialise_access.py`, `tests/channel/test_channel_provider_use.py`,
+  `tests/knowledge/test_search_provider_use.py`, `tests/api/test_global_settings_read.py`, and the live journey
+  `tests/e2e/test_access_p4_journey.py` (CI only).
 
 ## 8. Historical decisions
 

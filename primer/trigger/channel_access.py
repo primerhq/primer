@@ -38,3 +38,8 @@ async def require_channel_trigger_access(sp: Any, person: Person, config: Any) -
     if channel is None:
         raise NotFoundError(f"Channel {config.channel_id!r} does not exist")
     require(person, channel.access, AccessLevel.READ, what=f"Channel {config.channel_id!r}")
+    # The saver must also be able to use the channel's provider (access-control P4 Task 6): else the channel reads as missing.
+    from primer.channel.checks import channel_for_binding
+
+    if await channel_for_binding(sp, person, config.channel_id) is None:
+        raise NotFoundError(f"Channel {config.channel_id!r} does not exist")

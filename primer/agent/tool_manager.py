@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from primer.access.person import gate_identity
 from primer.agent import tool_listing
 from primer.agent.approval import (
     ApprovalContext,
@@ -61,7 +62,7 @@ from primer.model.except_ import (
     PrimerError,
     UnsupportedContentError,
 )
-from primer.model.principal import PrincipalRef
+from primer.model.principal import ActorRef, PrincipalRef
 from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
@@ -191,6 +192,7 @@ class ToolExecutionManager:
         event_recorder: "Any | None" = None,
         turn_no: int | None = None,
         run_scope: "tuple[str, str] | None" = None,
+        actor: ActorRef | None = None,
     ) -> None:
         # Optional platform event recorder: when wired (worker executor
         # builds), every dispatched call lands a ``tool.called`` event.
@@ -232,6 +234,8 @@ class ToolExecutionManager:
         # child session (``create_workspace_session``) can propagate it —
         # see ``ToolContext.initiated_by``.
         self._initiated_by = initiated_by
+        # The innermost acting entity this manager runs for (``ToolContext.actor``); None means the bound session's agent (:meth:`_actor`).
+        self._actor_override = actor
         # 01a0518b: the enclosing session turn's own turn number, stamped
         # onto every ToolContext this manager builds (mirrors
         # initiated_by's propagation) so nested subagent calls
@@ -333,6 +337,13 @@ class ToolExecutionManager:
             return self._run_scope[0], self._run_scope[1], None
         return None, None, None
 
+    def _actor(self) -> ActorRef | None:
+        """The run's actor: the one the builder set, else the bound session's agent, else None."""
+        if self._actor_override is not None:
+            return self._actor_override
+        agent_id = self._scope()[2]
+        return ActorRef(kind="agent", id=agent_id) if agent_id else None
+
     @property
     def workspace_session_scope(self) -> tuple[str | None, str | None]:
         """(session_id, workspace_id) of the session this manager runs for (:meth:`_scope`), or Nones."""
@@ -354,6 +365,7 @@ class ToolExecutionManager:
         external_call_storage: "Any | None" = None,
         event_recorder: "Any | None" = None,
         turn_no: int | None = None,
+        actor: ActorRef | None = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -383,6 +395,7 @@ class ToolExecutionManager:
             external_tools=external_tools,
             external_call_storage=external_call_storage,
             turn_no=turn_no,
+            actor=actor,
         )
 
     def rebind_workspace(
@@ -415,6 +428,7 @@ class ToolExecutionManager:
             graph_invocation_services=self._graph_services,
             initiated_by=initiated_by or self._initiated_by,
             turn_no=self._turn_no,
+            actor=self._actor_override,
         )
 
     async def list_tools(
@@ -452,10 +466,17 @@ class ToolExecutionManager:
             # any non-session caller (chats and bare managers) gets the
             # filter - these tools require a session to function anyway.
             suppress_workspace_ext = self._workspace_session is None
+            # What the run's person may use of each toolset (access-control P4 Task 2), BEFORE any remote listing: a toolset the person
+            # may use no tool of is never contacted, so it costs no connection and no sign-in prompt, and is noticed instead.
+            use = await self._tool_use()
+            for toolset_id, usable in use.items():
+                if usable is not None and not usable:
+                    unavailable[toolset_id] = tool_listing.NO_ACCESS
+                    unavailable_states[toolset_id] = tool_listing.NO_ACCESS
             # The remote toolsets (MCP) are listed first and together, so one that hangs costs the turn its bound once,
             # not once per toolset. The walk below then takes them in registration order like every other toolset.
             remote = await self._list_remote_toolsets(
-                principal=principal, skip_workspace_ext=suppress_workspace_ext,
+                principal=principal, skip_workspace_ext=suppress_workspace_ext, skip=frozenset(unavailable),
             )
             # Toolset-provider tools (each provider yields tools by their
             # bare name; we scope on the way out).
@@ -470,6 +491,9 @@ class ToolExecutionManager:
                     # references one gets the standard "not registered"
                     # rejection in ``_execute_inner``.
                     continue
+                if toolset_id in unavailable:
+                    continue  # no usable tool for this person: noticed above, nothing of it listed
+                usable = use.get(toolset_id)
                 listing = remote.get(toolset_id)
                 if listing is not None and listing.reason is not None:
                     # Cannot list: left out of the turn, nothing of it enters the routing table.
@@ -514,6 +538,10 @@ class ToolExecutionManager:
                     # is the same flag surfaced for the MCP guard. Keyed on
                     # the same session-absent condition.
                     if suppress_workspace_ext and t.requires_workspace:
+                        continue
+                    if usable is not None and t.id not in usable:
+                        # A tool the person may not use stays out of the routing table too, so it is not reachable by any door.
+                        unavailable_states[toolset_id] = tool_listing.SOME_TOOLS
                         continue
                     scoped_id = f"{toolset_id}{_SCOPE_SEPARATOR}{t.id}"
                     # Routing table is built unconditionally so an
@@ -571,6 +599,7 @@ class ToolExecutionManager:
         *,
         principal: str | None,
         skip_workspace_ext: bool,
+        skip: frozenset[str] = frozenset(),
     ) -> dict[str, tool_listing.ToolListing]:
         """List every remote toolset at once, each bounded; toolset id -> what it answered.
 
@@ -584,6 +613,7 @@ class ToolExecutionManager:
             for toolset_id, provider in self._toolsets.items()
             if getattr(provider, "lists_remotely", False) is True
             and not (skip_workspace_ext and toolset_id == WORKSPACE_EXT_TOOLSET_ID)
+            and toolset_id not in skip
         }
         if not remote:
             return {}
@@ -597,6 +627,17 @@ class ToolExecutionManager:
             )
         )
         return dict(zip(remote, listings))
+
+    async def _tool_use(self) -> dict[str, frozenset[str] | None]:
+        """Toolset id -> the tools the run's person may use (``None``: every tool). Empty when the manager has no registry (tests only)."""
+        registry = self._provider_registry
+        sp = getattr(registry, "storage_provider", None)
+        if sp is None:
+            return {}
+        from primer.access.person import person_from_ref
+        from primer.access.tools import toolset_use
+
+        return await toolset_use(sp, person_from_ref(self._initiated_by), self._toolsets)
 
     def unavailable_toolsets(self) -> dict[str, str]:
         """Toolset id -> the state of a toolset left out of this turn (an MCP toolset that could not list its tools); a copy.
@@ -690,6 +731,7 @@ class ToolExecutionManager:
                 # The agent the approval gate names in its context (``ApprovalContext.agent_id``, below): a door that gates another tool for
                 # this run reads it here, so a policy keyed on the agent fires through the door too (audit G6-7).
                 agent_id=agent_id,
+                actor=self._actor(),
             )
         if self._chat_id is not None:
             return ToolContext(
@@ -701,6 +743,7 @@ class ToolExecutionManager:
                 initiated_by=self._initiated_by,
                 turn_no=self._turn_no,
                 principal=principal,
+                actor=self._actor(),
             )
         return None
 
@@ -859,6 +902,9 @@ class ToolExecutionManager:
                     session_id=scope_session_id,
                     chat_id=getattr(self, "_chat_id", None),
                     requested_at=datetime.now(UTC),
+                    identity=await gate_identity(
+                        self._initiated_by, self._actor(), getattr(self._provider_registry, "storage_provider", None),
+                    ),
                 )
                 verdict = await evaluate_approval_gate(
                     policy=policy,

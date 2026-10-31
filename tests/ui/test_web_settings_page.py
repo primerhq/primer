@@ -36,14 +36,38 @@ def _seed_standard_resources(ui) -> None:
     ui.set_resource("web:fetch:providers", data=[LOCAL, JINA, FC])
 
 
-def test_a_non_admin_gets_a_notice_and_no_request(web_ui) -> None:
+def test_a_non_admin_reads_the_page_read_only(web_ui) -> None:
+    # ACL-P4 Task 9: the reads are user tier, so the page renders for a user
+    # and the user-tier reads fire; every write control takes no input.
     ui = web_ui(role="user")
+    _seed_standard_resources(ui)
     ui.mount("WEB_SettingsPage")
 
-    assert ui.find("web-admin-only") is not None
-    assert any("Web settings need the admin role" in t for t in ui.texts())
-    assert ui.asked_keys() == []
-    assert ui.calls() == []
+    assert ui.find("web-admin-only") is None
+    assert ui.find("web-page") is not None
+    # The user-tier reads are asked (asked_keys accumulates every fetch, so
+    # each key may appear more than once across rerenders).
+    asked = ui.asked_keys()
+    for key in ("web:search:active", "web:search:providers", "web:fetch:active", "web:fetch:providers"):
+        assert key in asked, f"{key} was never asked: {asked}"
+
+    # The write controls stay visible and say why they take no input.
+    assert ui.kit("PK_Segmented", "web-search-mode")["disabled"] is True
+    assert ui.find("web-fetch-default")["disabled"] is True
+    assert ui.kit("PK_PageHeader", "Web")["action"]["disabled"] is True
+    assert ui.kit("PK_PageHeader", "Web")["action"]["title"] == "Only an admin can change this"
+    assert ui.find("web-search-readonly-note") is not None
+    assert ui.find("web-fetch-readonly-note") is not None
+    assert any("Only an admin can change this" in t for t in ui.texts())
+
+    # An admin's page is unchanged: nothing disabled, no note.
+    ui_admin = web_ui()
+    _seed_standard_resources(ui_admin)
+    ui_admin.mount("WEB_SettingsPage")
+    assert ui_admin.kit("PK_Segmented", "web-search-mode").get("disabled") is None
+    assert ui_admin.find("web-fetch-default")["disabled"] is False
+    assert ui_admin.kit("PK_PageHeader", "Web")["action"].get("disabled") is None
+    assert ui_admin.find("web-search-readonly-note") is None
 
 
 def test_the_header_is_the_kit_header_over_the_fetchers(web_ui) -> None:

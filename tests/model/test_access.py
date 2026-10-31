@@ -18,8 +18,10 @@ def test_owner_grant_is_dropped():
 
 def test_public_tools_do_not_make_the_row_listable():
     # Per-tool public (Phase 4's tool_is_public) must not leak the row itself
-    # into every user's list: only the row-level public flag adds the token.
-    assert Access(owners=["u1"], public_tools=["t"]).members == ["u:u1"]
+    # into every user's list: only the row-level public flag adds the ``public`` token. Per-tool public adds the separate ``tools:public`` token,
+    # which ``visible_predicate`` never matches (only the tool catalogues do).
+    members = Access(owners=["u1"], public_tools=["t"]).members
+    assert members == ["tools:public", "u:u1"] and "public" not in members
 
 
 def test_owned_by():
