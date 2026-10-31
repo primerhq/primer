@@ -137,6 +137,7 @@ async def test_create_channel_binding_records_the_owner(fake_storage_provider) -
     await fake_storage_provider.get_storage(Trigger).create(Trigger(
         id="trg-ch-1", slug="ch-trigger", name="ch", created_at=datetime.now(timezone.utc),
         config=ChannelTriggerConfig(provider_id="cp-1", channel_id="chan-1"),
+        access=Access(owners=["user-1"]),  # binding needs full on the trigger (access-control P3 Task 4)
     ))
     registry = ProviderRegistry(
         fake_storage_provider, llm_factory=lambda p: object(), embedder_factory=lambda p: object(),

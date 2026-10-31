@@ -424,6 +424,8 @@ async def test_a_capped_run_that_creates_a_channel_binding_stays_capped(
     await fake_storage_provider.get_storage(Trigger).create(Trigger(
         id="trg-ch-1", slug="ch-trigger", name="ch", created_at=datetime.now(timezone.utc),
         config=ChannelTriggerConfig(provider_id="cp-1", channel_id="chan-1"), owner=_ref("u-admin", "admin"),
+        # As migration 24 leaves it: the user behind the run-as owner owns it, so the capped run (that user, at user rank) may bind.
+        access=Access(owners=["u-admin"]),
     ))
     registry = ProviderRegistry(
         fake_storage_provider, llm_factory=lambda p: object(), embedder_factory=lambda p: object(),
