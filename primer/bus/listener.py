@@ -73,6 +73,7 @@ class YieldEventListener:
             return
         sub = self._bus.subscribe()
         try:
+            await sub.ready()
             async for event in sub:
                 if self._stopping:
                     break

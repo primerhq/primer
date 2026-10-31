@@ -127,6 +127,7 @@ class WorkspaceTapRouter:
         if self._task is not None:
             return
         self._sub = self._bus.subscribe()
+        await self._sub.ready()
         self._task = asyncio.create_task(
             self._consume(), name="workspace-tap-router"
         )
