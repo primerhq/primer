@@ -35,6 +35,7 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
+from primer.model.storage import MAX_OFFSET
 from primer.access.person import person_from_request
 from primer.access.policy import readable_ids, require
 from primer.api.deps import (
@@ -782,7 +783,7 @@ async def list_indexed_documents(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
     limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     document_id: str | None = Query(
         default=None,
         description=(

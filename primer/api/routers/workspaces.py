@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import to_jsonable_python
 
+from primer.model.storage import MAX_OFFSET
 from primer.access.person import person_from_request
 from primer.access.policy import level_of, require
 from primer.access.workspaces import readable_workspace_ids, require_session, require_workspace, scope_to_readable_workspaces
@@ -1470,7 +1471,7 @@ async def list_sessions(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     limit: int = Query(default=20, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     session_storage=Depends(get_session_storage),
 ) -> dict:
@@ -2916,7 +2917,7 @@ async def list_files(
     path: str = Query(default=".", description="Workspace-relative path"),
     recursive: bool = Query(default=False),
     limit: int = Query(default=200, ge=1, le=2000),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     user=Depends(require_user),
 ) -> dict:

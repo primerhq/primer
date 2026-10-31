@@ -23,6 +23,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field
 
+from primer.model.storage import MAX_OFFSET
 from primer.access.person import person_from_request
 from primer.access.workspaces import require_session, scope_to_readable_workspaces
 from primer.model.access import AccessLevel
@@ -120,7 +121,7 @@ async def list_external_tool_calls(
     status: str | None = Query(default=None),
     session_id: str | None = Query(default=None),
     chat_id: str | None = Query(default=None),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     limit: int = Query(default=50, ge=1, le=200),
     storage=Depends(get_external_tool_call_storage),
     storage_provider=Depends(get_storage_provider),

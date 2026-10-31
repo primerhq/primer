@@ -504,6 +504,8 @@ def _make_lifespan(config: AppConfig):
             # The artifact-storage registry is a second cache on the same bus: an edit of a provider row in ANY process (a REST edit on the API, a tool
             # in a worker) drops this process's cached store too.
             await artifact_storage_registry.bind_invalidation_bus(coordinator.invalidation_bus)
+            # The approval gate caches its policy lookups per process: an edit in any process must reach every gate (GS-28).
+            await approval_resolver.bind_invalidation_bus(coordinator.invalidation_bus)
             await provider_registry.bind_rate_limiter(coordinator.rate_limiter)
             # Re-bind the channel inbox now that the event bus exists.
             # ChannelInbox was constructed earlier (lines 102-104) with

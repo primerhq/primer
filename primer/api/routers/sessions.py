@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field, model_validator
 from pydantic_core import to_jsonable_python
 
+from primer.model.storage import MAX_OFFSET
 from primer.model.external_tool import (
     ExternalToolDef,
     validate_external_tool_defs,
@@ -1130,7 +1131,7 @@ async def get_session_turn_log(
     request: Request,
     session_id: str = Path(..., description="Session id"),
     limit: int = Query(default=200, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     since_seq: int | None = Query(default=None, ge=0),
     sessions=Depends(get_session_storage),
     storage_provider=Depends(get_storage_provider),
@@ -1490,7 +1491,7 @@ async def get_session_messages(
     request: Request,
     session_id: str = Path(..., description="Session id"),
     limit: int = Query(default=200, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     after_seq: int | None = Query(default=None, ge=0),
     visible: bool = Query(
         False,

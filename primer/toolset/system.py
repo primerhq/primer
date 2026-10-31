@@ -161,6 +161,7 @@ from primer.model.yield_ import ToolContext, Yielded
 from primer.session.peer_messages import ACCESS_NOTE
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
+from primer.storage.references import LLM_PROVIDER_REFERENCES, MODEL_PROFILE_GRAPH_REFERENCE
 from primer.artifact.checks import (
     ARTIFACT_DEFAULT_WRITE_NOTE,
     ARTIFACT_DELETE_NOTE,
@@ -408,6 +409,10 @@ def build_system_toolset(
         if artifact_storage_registry is not None:
             await artifact_storage_registry.invalidate(eid)
 
+    async def _inv_policy(_eid: str) -> None:
+        # The gate's cached verdicts are stale in every process once a policy row changes (GS-28); ``approval_resolver`` is set below.
+        await approval_resolver.invalidate_everywhere()
+
     async def _inv_mp(eid: str) -> None:
         # The ModelProfile REST router drops the profile's cached AggregatedLLM on every update and delete (a no-op when
         # it was never cached), so the next resolve rebuilds it from the row's current members and routing policy.
@@ -436,12 +441,14 @@ def build_system_toolset(
             references=(
                 ToolReference("agent", Agent, "model.profile_id"),
                 ToolReference("model_profile (aggregate member)", ModelProfile, "members", op=Op.CONTAINS),
+                ToolReference.from_spec(MODEL_PROFILE_GRAPH_REFERENCE),
             ),
         ),
         "toolset": toolset_guards(),
         # reserved bootstrap ids (REST: create 409, delete 403)
         "llm_provider": CrudGuards(
             kind="llm_provider", reserved_create_ids=RESERVED_LLM_IDS, reserved_delete_ids=RESERVED_LLM_IDS,
+            references=tuple(ToolReference.from_spec(spec) for spec in LLM_PROVIDER_REFERENCES),
         ),
         "embedding_provider": CrudGuards(
             kind="embedding_provider", reserved_create_ids=RESERVED_EMBEDDER_IDS, reserved_delete_ids=RESERVED_EMBEDDER_IDS,
@@ -604,7 +611,7 @@ def build_system_toolset(
         ("graph_thread", "graph_threads", GraphThread, None, None, None, "user", False),
         ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin", False),
         ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, _inv_asp, _inv_asp, "admin", False),
-        ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, None, None, "admin", False),
+        ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, _inv_policy, _inv_policy, "admin", False),
         ("channel_provider", "channel_providers", ChannelProvider, None, None, None, "admin", False),
         ("channel", "channels", Channel, None, None, None, "user", True),
     ]

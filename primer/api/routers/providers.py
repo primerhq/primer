@@ -110,6 +110,7 @@ from primer.model.provider import (
     TransportType,
 )
 from primer.api.routers._references import ReferenceCheck
+from primer.storage.references import LLM_PROVIDER_REFERENCES
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalPolicy
 
@@ -709,6 +710,7 @@ llm_provider_router = make_crud_router(
     on_pre_create=_make_reserved_create_guard(RESERVED_LLM_IDS, "llm_provider"),
     on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_make_reserved_delete_guard(RESERVED_LLM_IDS, "llm_provider"),
+    references=[ReferenceCheck.from_spec(spec) for spec in LLM_PROVIDER_REFERENCES],
 )
 
 
@@ -1157,8 +1159,22 @@ def _is_google_api_key_invalid(response: httpx.Response) -> bool:
     return any(isinstance(d, dict) and d.get("reason") == "API_KEY_INVALID" for d in details)
 
 
+# One Ollama request, and the whole probe (the list plus one /api/show per model): a server that accepts and never answers must not hold the
+# discovery route or the setup wizard's gate (GS-4).
+_OLLAMA_REQUEST_TIMEOUT_S = 10.0
+_OLLAMA_PROBE_TIMEOUT_S = 30.0
+
+
 async def _probe_ollama_models(config: dict[str, Any]) -> dict:
     """List models locally available on an Ollama server."""
+    try:
+        async with asyncio.timeout(_OLLAMA_PROBE_TIMEOUT_S):
+            return await _probe_ollama_models_unbounded(config)
+    except TimeoutError as exc:
+        raise _probe_failure(f"ollama probe timed out after {_OLLAMA_PROBE_TIMEOUT_S:g}s") from exc
+
+
+async def _probe_ollama_models_unbounded(config: dict[str, Any]) -> dict:
     import ollama
 
     headers: dict[str, str] = {}
@@ -1171,17 +1187,25 @@ async def _probe_ollama_models(config: dict[str, Any]) -> dict:
     # methods on `host` internally and raises AttributeError on an
     # HttpUrl. str() here is defensive regardless of which shape the
     # caller passes.
-    client = ollama.AsyncClient(host=str(config["url"]), headers=headers or None)
+    client = ollama.AsyncClient(
+        host=str(config["url"]), headers=headers or None, timeout=httpx.Timeout(_OLLAMA_REQUEST_TIMEOUT_S),
+    )
+    try:
+        return await _ollama_models_of(client)
+    finally:
+        # The SDK client wraps an httpx client; close it so a probe leaks no socket.
+        inner = getattr(client, "_client", None)
+        if inner is not None:
+            await inner.aclose()
+
+
+async def _ollama_models_of(client: Any) -> dict:
     try:
         resp = await client.list()
     except Exception as exc:  # pragma: no cover — network paths
         raise _probe_failure(
             f"ollama probe failed: {type(exc).__name__}: {exc}",
         ) from exc
-    finally:
-        # ollama.AsyncClient does not expose aclose() in all versions;
-        # rely on httpx's GC for cleanup.
-        pass
     # ollama.list() returns a ListResponse with .models[].model (the
     # name); context_length is not on that endpoint but IS on the
     # per-model `/api/show` response (modelinfo's key naming is

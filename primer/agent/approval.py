@@ -26,6 +26,7 @@ from primer.agent.rego import RegoCompileError, RegoEvaluator
 from primer.common.preview_allowlist import lead_changes, lead_digests
 from primer.common.preview_paths import closed_set_names
 from primer.common.toolset_ids import canonical_toolset_id, toolset_id_spellings
+from primer.int.coordinator import InvalidationTopic
 from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.yield_ import GATE_ID_KEY, new_gate_id
@@ -41,6 +42,7 @@ from primer.model.tool_approval import (
 
 if TYPE_CHECKING:
     from primer.api.registries.provider_registry import ProviderRegistry
+    from primer.int.coordinator import InvalidationBus
     from primer.model.chat import Tool
 
 
@@ -326,6 +328,8 @@ class ApprovalResolver:
         # Cache value layout: (expires_at_monotonic, policy_or_None)
         self._cache: dict[tuple[str, str], tuple[float, ToolApprovalPolicy | None]] = {}
         self._lock = asyncio.Lock()
+        self._invalidation_bus: "InvalidationBus | None" = None
+        self._invalidation_sub: Any = None
 
     async def find(
         self,
@@ -361,6 +365,29 @@ class ApprovalResolver:
     def invalidate(self) -> None:
         """Drop the in-process cache; next lookup hits storage."""
         self._cache.clear()
+
+    async def invalidate_everywhere(self) -> None:
+        """Drop this process's cache now and tell every other process to drop theirs (an edit of a policy row reaches the gate everywhere at once, GS-28).
+
+        With no bus bound (a single process whose lifespan did not bind one) only the local drop happens.
+        """
+        self.invalidate()
+        if self._invalidation_bus is not None:
+            await self._invalidation_bus.publish(InvalidationTopic.TOOL_APPROVAL_POLICY, "*")
+
+    async def bind_invalidation_bus(self, bus: "InvalidationBus") -> None:
+        """Wire the cache to the bus so an edit made in any process drops this one's cache too. Idempotent."""
+        if self._invalidation_bus is not None:
+            return
+
+        async def _on_event(_key: str) -> None:
+            self.invalidate()
+
+        # A dropped notification during a reconnect may have left a stale verdict cached: treat everything as stale.
+        self._invalidation_sub = await bus.subscribe(
+            InvalidationTopic.TOOL_APPROVAL_POLICY, _on_event, on_reconnect=self.invalidate,
+        )
+        self._invalidation_bus = bus
 
     async def card_baseline(self, *, toolset_id: str, tool_name: str, arguments: Any) -> dict[str, Any] | None:
         """The stored row an update's approval card compares its lead values with, in the shape of the call's arguments, or ``None``

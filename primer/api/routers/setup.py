@@ -8,6 +8,7 @@ so completion re-runs the pass rather than waiting for the next boot.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Request
@@ -35,7 +36,7 @@ from primer.bootstrap.setup_state import (
 )
 from primer.common.log import redact_credentials
 from primer.model.agent import Agent
-from primer.model.except_ import BadRequestError, ConfigError, NotFoundError
+from primer.model.except_ import BadRequestError, ConfigError, ConflictError, NotFoundError
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import LLMProvider
 from primer.model.storage import OffsetPage
@@ -120,18 +121,26 @@ async def reset_agents(request: Request) -> dict:
         if existing is None:
             await agents.create(default_row)
         else:
-            await agents.update(
-                existing.model_copy(
-                    update={
-                        "description": default_row.description,
-                        "system_prompt": default_row.system_prompt,
-                        "tools": default_row.tools,
-                    }
-                )
-            )
+            await _patch_reset_fields(agents, existing, default_row)
         reset.append(agent_id)
     logger.info("setup: reset seeded agents %r", reset)
     return {"reset": reset}
+
+
+async def _patch_reset_fields(agents, existing: Agent, default_row: Agent) -> None:
+    """Write the three reset fields and nothing else, fenced on ``access.rev`` so a share landing since the read is not overwritten (GS-22)."""
+    patch = default_row.model_dump(mode="json", include={"description", "system_prompt", "tools"})
+    for _ in range(3):
+        rev = existing.access.rev
+        written = await agents.patch_if(existing.id, patch, where={("access", "rev"): [rev, None] if rev == 0 else [rev]})
+        if written is not None:
+            return
+        refreshed = await agents.get(existing.id)  # the row moved: patch it as it is now
+        if refreshed is None:
+            await agents.create(default_row)
+            return
+        existing = refreshed
+    raise ConflictError(f"agent {existing.id!r} kept changing while it was reset; try again")
 
 
 class PrimeInstructionsReset(BaseModel):
@@ -237,6 +246,11 @@ class SetupStateResponse(BaseModel):
     predicates: list[SetupPredicateOut]
 
 
+# How many providers the live check tries when no default profile names one, and the bound on all of them together.
+_LIVE_CHECK_FALLBACK_ROWS = 3
+_LIVE_CHECK_FALLBACK_SECONDS = 30.0
+
+
 async def _live_llm_provider_check(storage_provider) -> tuple[bool, str | None]:
     """Probe the provider the DEFAULT profile names for a live response.
 
@@ -250,45 +264,54 @@ async def _live_llm_provider_check(storage_provider) -> tuple[bool, str | None]:
     profile yet (or none naming a stored row) every row is probed, capped,
     until one answers.
     """
-    page = await storage_provider.get_storage(LLMProvider).list(
-        OffsetPage(offset=0, length=100)
-    )
-    if not page.items:
-        return False, "no LLM provider configured"
-    rows = list(page.items)
-    # The default profile's id is the PROFILE's id (provider--model): resolve
-    # the row for the provider it actually names.
-    named: list[LLMProvider] = []
+    providers = storage_provider.get_storage(LLMProvider)
+    # The provider the default profile names is read by id: whichever page of the listing it would sit on, it costs one get (GS-25).
+    candidates: list[LLMProvider] = []
+    profile_named = False
     default_id = await default_profile_id(storage_provider)
     if default_id is not None:
         profile = await storage_provider.get_storage(ModelProfile).get(default_id)
         if profile is not None:
-            named = [row for row in rows if row.id == profile.provider_id]
-    candidates = named or rows
-    detail = None
-    for row in candidates:
-        try:
-            await discover_saved_llm_models(
-                provider_id=row.id,
-                providers=get_llm_provider_storage(storage_provider),
-            )
-        except BadRequestError as exc:
-            if "live model discovery is not supported" in str(exc):
-                # 01a06918: unreachable today -- every current LLMProviderType
-                # member has a live probe (_probe_llm_models' dispatch, see
-                # its own comment on the analogous else branch). The old
-                # reachable case was "aggregated" (a provider type with no
-                # probe of its own); it moved off LLMProvider entirely onto
-                # ModelProfile (01a067c4). Kept as a forward-looking fallback
-                # for the same reason _probe_llm_models keeps its match: a
-                # future provider type added without a live-probe path should
-                # read as "configured, no live signal either way" here rather
-                # than fail the setup gate outright.
-                return True, None
-            detail = str(exc)
-            continue
-        return True, None
-    return False, detail or "no LLM provider configured"
+            named = await providers.get(profile.provider_id)
+            candidates = [named] if named is not None else []
+            profile_named = bool(candidates)
+    if not candidates:
+        # No default profile (or it names no stored row): probe the first few rows, under one overall bound.
+        page = await providers.list(OffsetPage(offset=0, length=_LIVE_CHECK_FALLBACK_ROWS))
+        if not page.items:
+            return False, "no LLM provider configured"
+        candidates = list(page.items)
+    async def probe() -> tuple[bool, str | None]:
+        detail = None
+        for row in candidates:
+            try:
+                await discover_saved_llm_models(
+                    provider_id=row.id,
+                    providers=get_llm_provider_storage(storage_provider),
+                )
+            except BadRequestError as exc:
+                if "live model discovery is not supported" in str(exc):
+                    # 01a06918: unreachable today -- every current LLMProviderType
+                    # member has a live probe (_probe_llm_models' dispatch, see
+                    # its own comment on the analogous else branch). The old
+                    # reachable case was "aggregated" (a provider type with no
+                    # probe of its own); it moved off LLMProvider entirely onto
+                    # ModelProfile (01a067c4). Kept as a forward-looking fallback
+                    # for the same reason _probe_llm_models keeps its match: a
+                    # future provider type added without a live-probe path should
+                    # read as "configured, no live signal either way" here rather
+                    # than fail the setup gate outright.
+                    return True, None
+                detail = str(exc)
+                continue
+            return True, None
+        return False, detail or "no LLM provider configured"
+
+    try:
+        async with asyncio.timeout(None if profile_named else _LIVE_CHECK_FALLBACK_SECONDS):
+            return await probe()
+    except TimeoutError:
+        return False, "no provider answered in time"
 
 
 async def _live_default_workspace_check(request: Request) -> tuple[bool, str | None]:

@@ -141,8 +141,12 @@ class TestLLMProviderCRUD:
     async def test_delete_then_get_returns_404(self, client) -> None:
         body = dump_for_storage(_llm())
         await client.post("/v1/llm_providers", json=body)
+        # Creating a provider also creates its profiles; a provider a profile names is refused (GS-5), so remove those first.
+        for profile in (await client.get("/v1/model_profiles?limit=200")).json()["items"]:
+            if profile.get("provider_id") == "anthropic-1":
+                assert (await client.delete(f"/v1/model_profiles/{profile['id']}")).status_code == 204
         delete = await client.delete("/v1/llm_providers/anthropic-1")
-        assert delete.status_code == 204
+        assert delete.status_code == 204, delete.text
         get = await client.get("/v1/llm_providers/anthropic-1")
         assert get.status_code == 404
 
@@ -431,7 +435,7 @@ class TestProbeUrlStringification:
         captured: dict = {}
 
         class FakeAsyncClient:
-            def __init__(self, *, host, headers=None):
+            def __init__(self, *, host, headers=None, timeout=None):
                 captured["host"] = host
 
             async def list(self):
@@ -511,7 +515,7 @@ class TestOllamaContextLengthDiscovery:
         from primer.api.routers.providers import _probe_ollama_models
 
         class FakeAsyncClient:
-            def __init__(self, *, host, headers=None):
+            def __init__(self, *, host, headers=None, timeout=None):
                 pass
 
             async def list(self):
@@ -540,7 +544,7 @@ class TestOllamaContextLengthDiscovery:
         from primer.api.routers.providers import _probe_ollama_models
 
         class FakeAsyncClient:
-            def __init__(self, *, host, headers=None):
+            def __init__(self, *, host, headers=None, timeout=None):
                 pass
 
             async def list(self):
