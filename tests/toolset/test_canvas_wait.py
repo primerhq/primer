@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+from tests.events._users import seed_account_of
 from primer.canvas.lang import parse_program
 from primer.canvas.wait import (
     CANVAS_WAIT_PREFIX,
@@ -47,9 +48,9 @@ async def world() -> World:
     # The dispatcher re-checks the park's turn person on the event's workspace at
     # delivery (access-control Phase 2, Task 7); this suite's session is an
     # admin's, which the re-check never blocks.
-    await seed_session(w, initiated_by=PrincipalRef(
-        type="user", id="u-admin", display="admin", role="admin", source="local",
-    ))
+    admin = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
+    await seed_account_of(w.sp, admin)  # a deleted or disabled person's park takes no wake
+    await seed_session(w, initiated_by=admin)
     await w.service.apply(
         session_id="s1", workspace_id="ws-1", statements=parse_program(PROGRAM), unit="line", base_rev=None, source="agent", by="agent",
     )
