@@ -83,6 +83,7 @@ class Kind:
     rest_update: Callable[[dict], dict] = lambda row: {**row, "description": "edited"}  # noqa: E731
     rest_method: str = "put"  # the REST verb that edits the row (a workspace is only renamed: PATCH)
     mcp_update_tool: bool = True  # False: no MCP tool edits this row (a workspace row is edited over REST only)
+    mcp_writes: bool = True  # False: the writes are approval-gated by the seeded policies, so MCP does not expose them ("not exposed: approval_required")
 
 
 async def _profile(client: httpx.AsyncClient) -> str:
@@ -169,8 +170,8 @@ async def _make_harness(c, suffix, ctx):
 
 
 KINDS = [
-    Kind("agent", "agents", _make_agent, ("system__get_agent", "system__update_agent", "system__delete_agent")),
-    Kind("graph", "graphs", _make_graph, ("system__get_graph", "system__update_graph", "system__delete_graph")),
+    Kind("agent", "agents", _make_agent, ("system__get_agent", "system__update_agent", "system__delete_agent"), mcp_writes=False),
+    Kind("graph", "graphs", _make_graph, ("system__get_graph", "system__update_graph", "system__delete_graph"), mcp_writes=False),
     Kind("toolset", "toolsets", _make_toolset, ("system__get_toolset", "system__update_toolset", "system__delete_toolset")),
     Kind("collection", "collections", _make_collection, ("system__get_collection", "system__update_collection", "system__delete_collection")),
     Kind("workspace_template", "workspace_templates", _make_template,
@@ -178,7 +179,7 @@ KINDS = [
     Kind("workspace", "workspaces", _make_workspace, ("workspaces__get_workspace", "workspaces__get_workspace", "workspaces__delete_workspace"),
          mcp_update=lambda rid: {"id": rid}, rest_update=lambda row: {"name": "renamed"}, rest_method="patch", mcp_update_tool=False),
     Kind("trigger", "triggers", _make_trigger, ("trigger__get", "trigger__update", "trigger__delete"),
-         mcp_update=lambda rid: {"id": rid, "name": "edited"}, rest_update=lambda row: {"name": "edited"}),
+         mcp_update=lambda rid: {"id": rid, "name": "edited"}, rest_update=lambda row: {"name": "edited"}, mcp_writes=False),
     Kind("channel", "channels", _make_channel, ("system__get_channel", "system__update_channel", "system__delete_channel"),
          rest_update=lambda row: row),
     Kind("harness", "harnesses", _make_harness, ("harness__get", "harness__get", "harness__get"), writable=False),
@@ -302,7 +303,9 @@ async def test_every_level_of_every_owned_kind_through_rest_and_mcp(client, base
                     # read: get ok, update refused
                     await _share(owner_client, kind.plural, rid, owner_id, {b_id: "read"})
                     assert await door.get(kind, rid) == OK, where
-                    has_update = kind.writable and (door_name == "rest" or kind.mcp_update_tool)
+                    # Over MCP an approval-gated write (agent, graph, trigger) is not exposed at all: the REST door pins those levels.
+                    on_door = door_name == "rest" or kind.mcp_writes
+                    has_update = kind.writable and on_door and (door_name == "rest" or kind.mcp_update_tool)
                     if has_update:
                         assert await door.update(kind, rid) == DENIED, where
                     # full: update ok, delete refused
@@ -310,15 +313,17 @@ async def test_every_level_of_every_owned_kind_through_rest_and_mcp(client, base
                         await _share(owner_client, kind.plural, rid, owner_id, {b_id: "full"})
                         if has_update:
                             assert await door.update(kind, rid) == OK, where
-                        assert await door.delete(kind, rid) == DENIED, where
+                        if on_door:
+                            assert await door.delete(kind, rid) == DENIED, where
 
                 # public: restricted C reads nothing; promoted, C reads it
                 await _share(owner_client, kind.plural, rid, owner_id, {}, public=True)
-                assert await RestDoor(c).get(kind, rid) == MISSING, kind.name
+                # (a restricted account is turned away by the role gate, 403 on most routes and 404 on the rest: either way it reads nothing)
+                assert await RestDoor(c).get(kind, rid) in (MISSING, DENIED), kind.name
                 await _set_role(client, c_id, "user")
                 assert await RestDoor(c).get(kind, rid) == OK, kind.name
                 await _set_role(client, c_id, "restricted")
-                assert await RestDoor(c).get(kind, rid) == MISSING, kind.name
+                assert await RestDoor(c).get(kind, rid) in (MISSING, DENIED), kind.name
 
                 # owner transfer: B becomes the owner and deletes it
                 if kind.writable:
@@ -368,7 +373,8 @@ async def test_a_use_grant_is_set_by_the_admin_alone_and_read_by_its_grantee(cli
             assert view.json()["owners"] == [] and view.json()["grants"] == [], "a use grant does not list its peers"
             assert (await grantee.put(f"/v1/{plural}/{rid}/access", json={"owners": [], "grants": {}, "rev": 0})).status_code in (403, 404), kind
             # owner: only an admin edits; full is not a use grant
-            refused = await client.put(f"/v1/{plural}/{rid}/access", json={"owners": [g_id], "grants": {}, "rev": view.json()["rev"] or 0})
+            admin_rev = (await client.get(f"/v1/{plural}/{rid}/access")).json()["rev"]  # the grantee's view hides the rev: the admin's is current
+            refused = await client.put(f"/v1/{plural}/{rid}/access", json={"owners": [g_id], "grants": {}, "rev": admin_rev})
             assert refused.status_code in (400, 422), (kind, refused.text)
             # the nobody and the restricted user still cannot see it
             for who in (nobody, restricted):
