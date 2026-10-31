@@ -493,6 +493,18 @@ class StuckSessionSweeper(_BackgroundTask):
             op=Op.EQ,
             right=Value(value=0),
         )
+        # Ended rows never un-stick (CORE-14): _never_started rejects
+        # them anyway, but excluding them in the query keeps the
+        # ever-growing ended turn-0 set out of every 30 s page.
+        predicate = Predicate(
+            left=predicate,
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="status"),
+                op=Op.NE,
+                right=Value(value=SessionStatus.ENDED.value),
+            ),
+        )
         out: list = []
         offset, page_size = 0, _MAX_PAGE
         while True:
