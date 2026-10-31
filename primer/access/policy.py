@@ -12,14 +12,21 @@ anti-goal 4: filter in the predicate, never a fetched page in Python).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from primer.access.person import Person
 from primer.model.access import Access, AccessLevel, LEVEL_RANK
 from primer.model.except_ import AccessDeniedError, NotFoundError
-from primer.model.storage import FieldRef, Op, Predicate, Value
+from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+
+if TYPE_CHECKING:
+    from primer.int.storage import Storage
 
 _MEMBERS = "access.members"
 _PUBLIC_TOKEN = "public"
 _NO_MATCH_TOKEN = "__none__"
+#: ``OffsetPage.length`` is bounded to 200; the page size the id-set walk uses.
+_PAGE_SIZE = 200
 
 
 def _contains(value: str) -> Predicate:
@@ -89,6 +96,32 @@ def visible_predicate(person: Person) -> Predicate | None:
             combined = Predicate(left=term, op=Op.OR, right=combined)
         return combined
     return _contains(_NO_MATCH_TOKEN)
+
+
+async def readable_ids(
+    storage: "Storage[Any]", person: Person, need: AccessLevel = AccessLevel.READ
+) -> list[str] | None:
+    """The ids of the owned rows in ``storage`` that ``person`` holds at least ``need`` on.
+
+    ``None`` for admins (they see everything: no filter). Otherwise the ids
+    from a ``visible_predicate`` find, kept only while the held level reaches
+    ``need`` (public rows count as read). The id set an inherited kind's
+    lists filter on (``<parent>_id IN <ids>``).
+    """
+    if person.is_admin:
+        return None
+    predicate = visible_predicate(person)
+    ids: list[str] = []
+    offset = 0
+    while True:
+        items = (await storage.find(predicate, OffsetPage(offset=offset, length=_PAGE_SIZE))).items
+        for row in items:
+            held = level_of(person, row.access)
+            if held is not None and LEVEL_RANK[held] >= LEVEL_RANK[need]:
+                ids.append(row.id)
+        if len(items) < _PAGE_SIZE:
+            return ids
+        offset += _PAGE_SIZE
 
 
 def tool_is_public(access: Access, tool_name: str) -> bool:

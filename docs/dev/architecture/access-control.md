@@ -43,11 +43,13 @@ flowchart LR
   initiator when a tool has a `ToolContext`, else the MCP endpoint's `current_actor`).
 - `primer/access/policy.py`: `level_of`, `require` (no level raises `NotFoundError`, too low a level raises
   `AccessDeniedError`, rendered as 403 with code `access_denied`), `visible_predicate` (the list filter; `None` for
-  admins) and `tool_is_public`.
+  admins), `readable_ids` (the ids of the rows a person holds a level on, for an inherited kind's `<parent>_id IN`
+  filter; `None` for admins) and `tool_is_public`.
 - `primer/access/service.py`: `get_access_view`, `set_access` (owners only; the whole desired state; refuses an empty
   owner list, unknown, disabled or restricted users, and per-tool flags on kinds without tools; writes the `access`
   block alone with `patch_if` guarded on `access.rev`) and `lookup_users` (username prefix, id and username only).
-- REST: `make_crud_router(..., owned=True)` (`primer/api/routers/_crud.py`) and `make_access_router(...)`
+- REST: `make_crud_router(..., owned=True)` (`primer/api/routers/_crud.py`), or `row_guard` plus `list_filter` for a
+  kind that inherits its parent's access (documents from their collection), and `make_access_router(...)`
   (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access`, plus `GET /v1/users/lookup`.
 - Tools: `system__get_entity_access`, `system__set_entity_access`, `system__lookup_users`
   (`primer/toolset/_system_access.py`); the generated CRUD tools enforce the same levels.

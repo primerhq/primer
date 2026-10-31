@@ -596,6 +596,9 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # jsonb ? operator. Same shape as the other owned tables.
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
+    "collection": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
     "channel": [
         (
             "provider_external",

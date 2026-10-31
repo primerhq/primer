@@ -35,6 +35,8 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
+from primer.access.person import person_from_request
+from primer.access.policy import readable_ids, require
 from primer.api.deps import (
     get_collection_storage,
     get_document_service,
@@ -47,7 +49,10 @@ from primer.api.errors import common_responses
 from primer.api.registries import ProviderRegistry, SemanticSearchRegistry
 from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router
+from primer.api.routers.access import make_access_router
+from primer.model.access import AccessLevel
 from primer.model.chat import TextPart
+from primer.model.storage import Predicate
 from primer.model.collection import (
     ChunkingConfig,
     Collection,
@@ -76,6 +81,7 @@ from primer.knowledge.lifecycle import (
     search_status,
 )
 from primer.search.run import run_collection_search
+from primer.storage.q import Q
 
 
 logger = logging.getLogger(__name__)
@@ -165,7 +171,7 @@ async def _collection_on_pre_delete(existing: Collection, request: Request) -> N
     is only needed for a collection with search configured.
     """
     if existing.system:
-        # Read-only through every path, as the document routes already say (``_require_writable``): it is regenerated from platform
+        # Read-only through every path, as the document routes already say (``_require_collection``): it is regenerated from platform
         # state, and the cascade below would otherwise empty it.
         raise HTTPException(
             status_code=403,
@@ -181,12 +187,23 @@ async def _collection_on_pre_delete(existing: Collection, request: Request) -> N
     )
 
 
+# The access sub-resource (GET/PUT /collections/{id}/access) is mounted
+# BEFORE the CRUD router (route-order rule in _crud.py).
+collection_access_router = make_access_router(
+    model_cls=Collection,
+    plural="collections",
+    storage_dep=get_collection_storage,
+    tag="collections",
+)
+
+
 collection_router = make_crud_router(
     model_cls=Collection,
     storage_dep=get_collection_storage,
     plural="collections",
     tag="collections",
     cdc_kind="collection",
+    owned=True,
     managed_by_field="harness_id",
     on_pre_create=_collection_on_pre_create,
     on_pre_update=_collection_on_pre_update,
@@ -220,11 +237,22 @@ class _DocMoveBody(BaseModel):
     new_slug: str | None = None
 
 
-async def _require_writable(collections, collection_id: str) -> None:
+async def _require_collection(
+    request: Request, collections, collection_id: str, level: AccessLevel,
+) -> Collection:
+    """Load the collection and enforce ``level`` on it (plan P3 Decision 6); return the row.
+
+    Its documents inherit its access: ``read`` reads and searches them, ``full`` writes them, ``owner`` deletes the
+    collection, shares it and turns search on or off. A missing row, or one the caller holds no level on, answers the
+    same 404 (spec 9); too low a level answers 403 ``access_denied``. Any write to a ``system`` collection is refused
+    (403), whoever asks.
+    """
+    what = f"Collection {collection_id!r}"
     coll = await collections.get(collection_id)
     if coll is None:
-        raise NotFoundError(f"Collection {collection_id!r} does not exist")
-    if coll.system:
+        raise NotFoundError(f"{what} does not exist")
+    require(person_from_request(request), coll.access, level, what=what)
+    if level is not AccessLevel.READ and coll.system:
         raise HTTPException(
             status_code=403,
             detail=(
@@ -232,6 +260,7 @@ async def _require_writable(collections, collection_id: str) -> None:
                 "read-only; it is regenerated from platform state."
             ),
         )
+    return coll
 
 
 def _check_body_cap(body: str) -> None:
@@ -252,6 +281,7 @@ def _doc_json(document) -> dict:
     responses=common_responses(404, 500),
 )
 async def get_or_list_docs(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     path: str | None = Query(
         default=None,
@@ -266,9 +296,7 @@ async def get_or_list_docs(
     service=Depends(get_document_tree_service),
 ) -> dict:
     """Read a node (body + children) or walk the tree under a parent."""
-    coll = await collections.get(collection_id)
-    if coll is None:
-        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    await _require_collection(request, collections, collection_id, AccessLevel.READ)
     if path is not None:
         res = await service.read(collection_id=collection_id, path=path)
         return {
@@ -286,15 +314,16 @@ async def get_or_list_docs(
     "/collections/{collection_id}/docs",
     status_code=201,
     summary="Create a document node under a parent",
-    responses=common_responses(404, 409, 422, 500),
+    responses=common_responses(403, 404, 409, 422, 500),
 )
 async def create_doc(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     body: _DocCreateBody = Body(...),
     collections=Depends(get_collection_storage),
     service=Depends(get_document_tree_service),
 ) -> dict:
-    await _require_writable(collections, collection_id)
+    await _require_collection(request, collections, collection_id, AccessLevel.FULL)
     _check_body_cap(body.body)
     doc = await service.create(
         collection_id=collection_id, parent=body.parent, slug=body.slug,
@@ -306,16 +335,17 @@ async def create_doc(
 @collection_router.patch(
     "/collections/{collection_id}/docs",
     summary="Update a document's body and/or title",
-    responses=common_responses(404, 422, 500),
+    responses=common_responses(403, 404, 422, 500),
 )
 async def patch_doc(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     path: str = Query(..., description="Slug path of the document"),
     body: _DocPatchBody = Body(...),
     collections=Depends(get_collection_storage),
     service=Depends(get_document_tree_service),
 ) -> dict:
-    await _require_writable(collections, collection_id)
+    await _require_collection(request, collections, collection_id, AccessLevel.FULL)
     if body.body is not None:
         _check_body_cap(body.body)
     doc = await service.update(
@@ -327,15 +357,16 @@ async def patch_doc(
 @collection_router.post(
     "/collections/{collection_id}/docs/move",
     summary="Move a document (and its subtree) to a new parent and/or slug",
-    responses=common_responses(400, 404, 409, 500),
+    responses=common_responses(400, 403, 404, 409, 500),
 )
 async def move_doc(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     body: _DocMoveBody = Body(...),
     collections=Depends(get_collection_storage),
     service=Depends(get_document_tree_service),
 ) -> dict:
-    await _require_writable(collections, collection_id)
+    await _require_collection(request, collections, collection_id, AccessLevel.FULL)
     doc = await service.move(
         collection_id=collection_id, path=body.path,
         new_parent=body.new_parent, new_slug=body.new_slug,
@@ -347,16 +378,17 @@ async def move_doc(
     "/collections/{collection_id}/docs",
     status_code=204,
     summary="Delete a document, optionally with its subtree",
-    responses=common_responses(404, 409, 500),
+    responses=common_responses(403, 404, 409, 500),
 )
 async def delete_doc(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     path: str = Query(..., description="Slug path of the document"),
     recursive: bool = Query(default=False),
     collections=Depends(get_collection_storage),
     service=Depends(get_document_tree_service),
 ) -> None:
-    await _require_writable(collections, collection_id)
+    await _require_collection(request, collections, collection_id, AccessLevel.FULL)
     await service.delete(
         collection_id=collection_id, path=path, recursive=recursive,
     )
@@ -375,9 +407,7 @@ async def grep_docs(
     max_results: int = Query(default=50, ge=1, le=500),
     collections=Depends(get_collection_storage),
 ) -> dict:
-    coll = await collections.get(collection_id)
-    if coll is None:
-        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    await _require_collection(request, collections, collection_id, AccessLevel.READ)
     result = await grep_collection(
         request.app.state.storage_provider.get_content_store(),
         collection_id=collection_id, pattern=q,
@@ -392,6 +422,7 @@ async def grep_docs(
     responses=common_responses(404, 500),
 )
 async def get_or_list_collection_documents(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     path: str | None = Query(
         default=None,
@@ -421,8 +452,7 @@ async def get_or_list_collection_documents(
       listing is sourced from the content store, which is authoritative for
       ``(collection_id, path)`` resolution.
     """
-    if await collections.get(collection_id) is None:
-        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    await _require_collection(request, collections, collection_id, AccessLevel.READ)
 
     if path is not None:
         # DocumentService.read raises NotFoundError -> 404 via the handler.
@@ -439,9 +469,10 @@ async def get_or_list_collection_documents(
 @collection_router.put(
     "/collections/{collection_id}/documents",
     summary="Create or replace a document at a path",
-    responses=common_responses(404, 422, 500),
+    responses=common_responses(403, 404, 422, 500),
 )
 async def put_collection_document(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     path: str = Query(..., description="Path to create/replace within the collection"),
     body: _DocumentUpsertBody = Body(...),
@@ -454,7 +485,7 @@ async def put_collection_document(
     the body via the service's indexer after the write commits. Returns the
     stored document metadata.
     """
-    await _require_writable(collections, collection_id)
+    await _require_collection(request, collections, collection_id, AccessLevel.FULL)
 
     doc = await service.upsert(
         collection_id=collection_id,
@@ -470,9 +501,10 @@ async def put_collection_document(
     "/collections/{collection_id}/documents",
     summary="Delete a document by path",
     status_code=204,
-    responses=common_responses(404, 500),
+    responses=common_responses(403, 404, 500),
 )
 async def delete_collection_document(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     path: str = Query(..., description="Path to delete within the collection"),
     collections=Depends(get_collection_storage),
@@ -482,7 +514,7 @@ async def delete_collection_document(
 
     Raises 404 (via NotFoundError) when no document lives at that path.
     """
-    await _require_writable(collections, collection_id)
+    await _require_collection(request, collections, collection_id, AccessLevel.FULL)
     await service.delete(collection_id=collection_id, path=path)
 
 
@@ -490,9 +522,10 @@ async def delete_collection_document(
     "/collections/{collection_id}/documents/move",
     summary="Move a document from one path to another",
     status_code=204,
-    responses=common_responses(404, 409, 500),
+    responses=common_responses(403, 404, 409, 500),
 )
 async def move_collection_document(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     body: _DocumentMoveBody = Body(...),
     collections=Depends(get_collection_storage),
@@ -503,7 +536,7 @@ async def move_collection_document(
     404 (NotFoundError) when ``from`` does not exist; 409 (ConflictError)
     when ``to`` is already occupied.
     """
-    await _require_writable(collections, collection_id)
+    await _require_collection(request, collections, collection_id, AccessLevel.FULL)
     await service.move(collection_id=collection_id, src=body.src, dst=body.dst)
 
 
@@ -520,7 +553,7 @@ class _SearchEnableBody(BaseModel):
 @collection_router.put(
     "/collections/{collection_id}/search",
     summary="Enable semantic search and backfill the collection",
-    responses=common_responses(404, 409, 422, 500),
+    responses=common_responses(403, 404, 409, 422, 500),
 )
 async def enable_collection_search(
     collection_id: str = Path(..., description="Collection id"),
@@ -537,7 +570,7 @@ async def enable_collection_search(
     failure leaves the partial index intact and the state in ``error``;
     re-issuing the same PUT retries.
     """
-    await _require_writable(collections, collection_id)
+    await _require_collection(request, collections, collection_id, AccessLevel.OWNER)
     cfg = CollectionSearchConfig(**body.model_dump())
     updated = await enable_search(
         request.app.state.storage_provider, registry, ssr,
@@ -550,7 +583,7 @@ async def enable_collection_search(
     "/collections/{collection_id}/search",
     status_code=204,
     summary="Disable semantic search and drop the collection's vectors",
-    responses=common_responses(404, 500),
+    responses=common_responses(403, 404, 500),
 )
 async def disable_collection_search(
     collection_id: str = Path(..., description="Collection id"),
@@ -559,7 +592,7 @@ async def disable_collection_search(
     request: Request = None,  # noqa: RUF013 - FastAPI fills this
 ) -> None:
     """Always succeeds: a missing provider or namespace still disables."""
-    await _require_writable(collections, collection_id)
+    await _require_collection(request, collections, collection_id, AccessLevel.OWNER)
     await disable_search(
         request.app.state.storage_provider, ssr, collection_id=collection_id,
     )
@@ -572,9 +605,11 @@ async def disable_collection_search(
 )
 async def get_collection_search_status(
     collection_id: str = Path(..., description="Collection id"),
+    collections=Depends(get_collection_storage),
     ssr=Depends(get_semantic_search_registry),
     request: Request = None,  # noqa: RUF013 - FastAPI fills this
 ) -> dict:
+    await _require_collection(request, collections, collection_id, AccessLevel.READ)
     status = await search_status(
         request.app.state.storage_provider, ssr, collection_id=collection_id,
     )
@@ -584,9 +619,10 @@ async def get_collection_search_status(
 @collection_router.post(
     "/collections/{collection_id}/import",
     summary="Import a zip archive's directory structure into the tree",
-    responses=common_responses(400, 404, 409, 413, 500),
+    responses=common_responses(400, 403, 404, 409, 413, 500),
 )
 async def import_collection_zip(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     file: UploadFile = File(...),
     parent: str = Query(default="", description="Parent path to import under"),
@@ -604,7 +640,7 @@ async def import_collection_zip(
     (32 MiB), an archive listing more than ``MAX_ENTRIES`` entries, or one
     inflating past ``MAX_UNCOMPRESSED_BYTES``; nothing is written then.
     """
-    await _require_writable(collections, collection_id)
+    await _require_collection(request, collections, collection_id, AccessLevel.FULL)
     cap = importer.MAX_ARCHIVE_BYTES
     # Copy the upload in chunks into a spool that moves to disk past 1 MiB, refusing it the moment
     # it passes the cap, rather than reading the whole of it into memory before checking.
@@ -633,6 +669,7 @@ async def import_collection_zip(
     responses=common_responses(404, 422, 502, 503),
 )
 async def search_collection(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     body: _CollectionSearchBody = Body(...),
     collections=Depends(get_collection_storage),
@@ -652,9 +689,7 @@ async def search_collection(
     used when storing chunks, so query and index vectors live in the
     same embedding space.
     """
-    coll = await collections.get(collection_id)
-    if coll is None:
-        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    coll = await _require_collection(request, collections, collection_id, AccessLevel.READ)
 
     if coll.search is None:
         raise ConflictError(
@@ -725,6 +760,7 @@ async def search_collection(
     responses=common_responses(404, 500, 502, 503),
 )
 async def list_indexed_documents(
+    request: Request,
     collection_id: str = Path(..., description="Collection id"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -760,9 +796,7 @@ async def list_indexed_documents(
     offset/limit). The records list is sorted deterministically by
     ``(document_id, chunk_id)`` so a slice is stable across calls.
     """
-    coll = await collections.get(collection_id)
-    if coll is None:
-        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    coll = await _require_collection(request, collections, collection_id, AccessLevel.READ)
 
     if coll.search is None:
         raise ConflictError(
@@ -888,8 +922,41 @@ def build_document_indexer(request: Request):
     )
 
 
+async def _require_document_collection(
+    request: Request, collection_id: str, level: AccessLevel, *, what: str,
+) -> None:
+    """A document inherits its collection's access (plan P3 Decision 6): enforce ``level`` on ``collection_id``.
+
+    No level, or a collection that is gone, answers ``what``'s missing-row 404; too low a level 403 ``access_denied``.
+    Admins pass without a lookup (a dangling ``collection_id`` stays theirs to clean up).
+    """
+    person = person_from_request(request)
+    if person.is_admin:
+        return
+    coll = await request.app.state.storage_provider.get_storage(Collection).get(collection_id)
+    if coll is None:
+        raise NotFoundError(f"{what} does not exist")
+    require(person, coll.access, level, what=what)
+
+
+async def _document_row_guard(row: Document, request: Request, write: bool) -> None:
+    """row_guard: read a document with read on its collection, write or delete it with full; refusals name the document."""
+    level = AccessLevel.FULL if write else AccessLevel.READ
+    await _require_document_collection(request, row.collection_id, level, what=f"Document {row.id!r}")
+
+
+async def _readable_documents(request: Request) -> Predicate | None:
+    """list_filter: ``collection_id IN <collections the caller can read>`` (``None`` for admins)."""
+    sp = request.app.state.storage_provider
+    ids = await readable_ids(sp.get_storage(Collection), person_from_request(request))
+    return None if ids is None else Q(Document).where_in("collection_id", ids).build()
+
+
 async def _document_pre_create(entity: Document, request: Request) -> None:
-    """on_pre_create hook: block ingestion into system collections."""
+    """on_pre_create hook: creating needs full on the collection; block ingestion into system collections."""
+    await _require_document_collection(
+        request, entity.collection_id, AccessLevel.FULL, what=f"Collection {entity.collection_id!r}",
+    )
     await _reject_system_collection(
         entity.collection_id, request, verb="created",
     )
@@ -898,8 +965,12 @@ async def _document_pre_create(entity: Document, request: Request) -> None:
 async def _document_pre_update(
     entity: Document, existing: Document, request: Request
 ) -> None:
-    """on_pre_update hook: block edits that target a system collection
-    (covers both a system source and a system destination)."""
+    """on_pre_update hook: moving a document needs full on the target collection too (the row guard checked the source);
+    block edits that target a system collection (covers both a system source and a system destination)."""
+    if existing.collection_id != entity.collection_id:
+        await _require_document_collection(
+            request, entity.collection_id, AccessLevel.FULL, what=f"Collection {entity.collection_id!r}",
+        )
     await _reject_system_collection(
         entity.collection_id, request, verb="updated",
     )
@@ -1047,6 +1118,8 @@ document_router = make_crud_router(
     plural="documents",
     tag="documents",
     managed_by_field="harness_id",
+    row_guard=_document_row_guard,
+    list_filter=_readable_documents,
     on_pre_create=_document_pre_create,
     on_pre_update=_document_pre_update,
     on_create=_index_document_hook,
