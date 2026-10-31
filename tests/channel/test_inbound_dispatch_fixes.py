@@ -321,3 +321,18 @@ async def test_W56i_the_trigger_scan_reads_only_the_events_provider():
     await _router(sp, fires).route_event(event=_event(1, surface="channel"), channel=None)
     assert [c["trigger_id"] for c in fires.calls] == ["t-mine"]
     assert decoded["rows"] == 1
+
+
+# --------------------------------------------------------------------------- W56b
+
+
+async def test_W56b_two_attachments_with_one_name_both_land():
+    from primer.channel.media_in import land_media_in_workspace
+
+    ws = _Workspace()
+    paths = await land_media_in_workspace(
+        workspace=ws, fire_id="f1", artifact_storage=None,
+        parts=[_Part("image/png", "image.png", b"A"), _Part("image/png", "image.png", b"B"), _Part("image/png", "c.png", b"C")],
+    )
+    assert paths == ["media/f1/image.png", "media/f1/1-image.png", "media/f1/c.png"]
+    assert ws.files == {"media/f1/image.png": b"A", "media/f1/1-image.png": b"B", "media/f1/c.png": b"C"}

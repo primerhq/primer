@@ -51,6 +51,7 @@ async def land_media_in_workspace(
     skipped with a log rather than failing the whole inbound message.
     """
     written: list[str] = []
+    names: set[str] = set()
     for index, part in enumerate(parts or []):
         data = await _part_bytes(part, artifact_storage)
         if not data:
@@ -59,10 +60,11 @@ async def land_media_in_workspace(
                 index, fire_id,
             )
             continue
-        path = (
-            f"{MEDIA_INBOX_ROOT}/{fire_id}/"
-            f"{_safe_name(getattr(part, 'filename', None), index)}"
-        )
+        name = _safe_name(getattr(part, "filename", None), index)
+        if name in names:  # two attachments named alike (every phone photo is image.png) must not overwrite (W56b)
+            name = f"{index}-{name}"
+        names.add(name)
+        path = f"{MEDIA_INBOX_ROOT}/{fire_id}/{name}"
         try:
             await workspace.write_file(path, data)
         except Exception:  # noqa: BLE001 - one bad file must not drop the turn
