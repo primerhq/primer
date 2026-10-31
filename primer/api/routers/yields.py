@@ -415,19 +415,26 @@ class AskUserRespondBody(BaseModel):
     )
 
 
-def _validate_response_against_schema(
+async def _validate_response_against_schema(
     *, response: Any, schema: dict[str, Any] | None,
 ) -> None:
     if schema is None:
         return
-    # jsonschema arrives via mcp's transitive deps but we declare it
-    # directly in pyproject for clarity.
-    import jsonschema  # local import keeps the router import cheap
+    # The schema is the agent's (a prompt-injected admin run can park one), so it is validated bounded and off the loop (GS-29).
     from jsonschema import exceptions as jse
     from referencing.exceptions import Unresolvable
 
+    from primer.common import bounded_jsonschema
+    from primer.common.user_regex import UserRegexError, UserRegexTimeout
+
     try:
-        jsonschema.validate(instance=response, schema=schema)
+        await bounded_jsonschema.validate_bounded_off_loop(response, schema)
+    except UserRegexTimeout as exc:
+        raise ValidationError(
+            f"response failed schema validation: its patterns used their {exc.seconds:g} s matching budget"
+        ) from exc
+    except UserRegexError as exc:
+        raise ValidationError(f"response_schema is invalid: {exc}") from exc
     except jse.ValidationError as exc:
         raise ValidationError(
             f"response failed schema validation: {exc.message}"
@@ -494,7 +501,7 @@ async def post_ask_user_respond(
         )
         if ay is not None:
             ay_meta = ay.get("resume_metadata") or {}
-            _validate_response_against_schema(
+            await _validate_response_against_schema(
                 response=body.response, schema=ay_meta.get("response_schema"),
             )
             ay_event_key = ay.get("event_key")
@@ -538,7 +545,7 @@ async def post_ask_user_respond(
                 f"Session {session_id!r} names ask_user prompt {body.tool_call_id!r} with no pending tool call"
             )
         disp_meta = disp.get("resume_metadata") or {}
-        _validate_response_against_schema(
+        await _validate_response_against_schema(
             response=body.response, schema=disp_meta.get("response_schema"),
         )
         tc_event_key = tc.get("parked_event_key")
@@ -575,7 +582,7 @@ async def post_ask_user_respond(
         )
     metadata = yielded.get("resume_metadata") or {}
     _pick_ask_user_gate([{"resume_metadata": metadata}], token=body.gate_id, session_id=session_id)
-    _validate_response_against_schema(
+    await _validate_response_against_schema(
         response=body.response, schema=metadata.get("response_schema"),
     )
     event_key = yielded.get("event_key")
