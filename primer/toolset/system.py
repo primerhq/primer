@@ -159,6 +159,7 @@ from primer.model.workspace import (
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.session.peer_messages import ACCESS_NOTE
+from primer.session.mutation_lock import session_lifecycle_lock
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
 from primer.artifact.checks import (
     ARTIFACT_DEFAULT_WRITE_NOTE,
@@ -1606,21 +1607,30 @@ def build_system_toolset(
                             error_type="not-found")
 
         sessions = storage_provider.get_storage(WorkspaceSession)
-        row = await sessions.get(ctx.session_id)
-        if row is None:
-            return _err(f"session {ctx.session_id!r} does not exist",
-                        error_type="not-found")
-
-        await sessions.update(row.model_copy(update={
-            "pending_binding_switch": {
-                "kind": args.kind,
-                "agent_id": args.agent_id,
-                "graph_id": args.graph_id,
-                "profile_id": args.profile_id,
-                "actor": "agent",
-                "reason": args.reason,
-            },
-        }))
+        # As the REST twin (AG-M13): the queued switch ALONE, under the lifecycle lock, fenced on the turn_status and last_seq
+        # read inside it. A whole-row write from this mid-turn read erased a Stop, a Cancel or a seq a steer reserved in between.
+        async with session_lifecycle_lock().acquire(ctx.session_id):
+            row = await sessions.get(ctx.session_id)
+            if row is None:
+                return _err(f"session {ctx.session_id!r} does not exist",
+                            error_type="not-found")
+            written = await sessions.patch_if(
+                ctx.session_id,
+                {"pending_binding_switch": {
+                    "kind": args.kind,
+                    "agent_id": args.agent_id,
+                    "graph_id": args.graph_id,
+                    "profile_id": args.profile_id,
+                    "actor": "agent",
+                    "reason": args.reason,
+                }},
+                where={"turn_status": [row.turn_status], "last_seq": [row.last_seq]},
+            )
+        if written is None:
+            return _err(
+                f"session {ctx.session_id!r} changed while the switch was being queued; nothing was changed, retry",
+                error_type="conflict",
+            )
         target = args.graph_id if args.kind == "graph" else args.agent_id
         return ToolCallResult(
             output=(
