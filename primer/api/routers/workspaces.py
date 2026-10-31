@@ -147,6 +147,7 @@ from primer.workspace.template_privilege import (
     refusal_message,
 )
 from primer.workspace.template_secrets import restore_template_secrets
+from primer.bus.watch_notify import wake_watchers_best_effort
 from primer.session.mutation_lock import KeyedLock, session_lifecycle_lock
 from primer.model.yield_ import gate_id_of, with_wake_park
 from primer.session.pending_gates import undecided_pending_gates
@@ -3084,10 +3085,13 @@ async def make_dir(
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    event_bus=Depends(get_event_bus),
 ) -> None:
     await _require_workspace(request, workspace_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     await ws.make_dir(path)
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=path, scheduler=scheduler, event_bus=event_bus, event_type="created")
 
 
 @files_router.delete(
@@ -3105,10 +3109,13 @@ async def delete_file(
         description="Delete a non-empty directory and all its contents",
     ),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    event_bus=Depends(get_event_bus),
 ) -> None:
     await _require_workspace(request, workspace_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     await ws.delete_file(path, recursive=recursive)
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=path, scheduler=scheduler, event_bus=event_bus, event_type="deleted")
 
 
 @files_router.post(
@@ -3123,6 +3130,8 @@ async def move_file(
     src: str = Query(..., description="Source workspace-relative path"),
     dst: str = Query(..., description="Destination workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    event_bus=Depends(get_event_bus),
 ) -> None:
     """Move / rename ``src`` to ``dst`` within one workspace.
 
@@ -3146,6 +3155,9 @@ async def move_file(
                 ),
             },
         ) from exc
+    # The source is gone and the destination is new: a session watching either path is woken.
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=src, scheduler=scheduler, event_bus=event_bus, event_type="deleted")
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=dst, scheduler=scheduler, event_bus=event_bus, event_type="created")
 
 
 @files_router.put(
@@ -3237,26 +3249,11 @@ async def write_file(
                         media_type=PROBLEM_JSON_MEDIA_TYPE,
                     )
         await ws.write_file(path, raw)
-    # Deterministically wake any watch_files-parked session in this
-    # workspace whose watched paths match the just-written file. This
-    # reuses the event-bus -> YieldEventListener resume path; inotify
-    # stays as the backstop. Best-effort: a wake failure must never fail
-    # the write itself.
-    try:
-        from primer.bus.watch_notify import wake_watch_files_on_write
-
-        await wake_watch_files_on_write(
-            workspace_id=workspace_id,
-            path=path,
-            scheduler=scheduler,
-            event_bus=event_bus,
-        )
-    except Exception:  # noqa: BLE001 - wake is best-effort
-        logger.exception(
-            "wake_watch_files_on_write failed for workspace=%r path=%r",
-            workspace_id,
-            path,
-        )
+    # Deterministically wake any watch_files-parked session in this workspace whose watched paths match the just-written file (the event-bus ->
+    # YieldEventListener resume path; inotify stays as the backstop). Best-effort: a wake failure never fails the write itself.
+    await wake_watchers_best_effort(
+        workspace_id=workspace_id, path=path, scheduler=scheduler, event_bus=event_bus, event_type="modified",
+    )
     return Response(status_code=204)
 
 

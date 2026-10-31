@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field, ValidationError
 from primer.access.person import person_for_tool
 from primer.access.policy import require, visible_predicate
 from primer.access.workspaces import readable_workspace_ids, require_workspace, workspace_level
+from primer.bus.watch_notify import wake_watchers_best_effort
 from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
 from primer.common.validation_errors import without_input
@@ -3106,6 +3107,10 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-found")
         except (BadRequestError, PrimerError) as exc:
             return _err_from_primer(exc, error_type="bad-request")
+        # Every door that changes a workspace file wakes a watch_files park on it (as the REST routes do; review of workspaces, W55h).
+        await wake_watchers_best_effort(
+            workspace_id=args.workspace_id, path=args.path, scheduler=scheduler, event_bus=event_bus, event_type="deleted",
+        )
         return _ok({"deleted": True, "path": args.path})
 
     name, entry = _tool(
@@ -3161,6 +3166,9 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-found")
         except (BadRequestError, PrimerError) as exc:
             return _err_from_primer(exc, error_type="bad-request")
+        await wake_watchers_best_effort(
+            workspace_id=args.workspace_id, path=args.path, scheduler=scheduler, event_bus=event_bus, event_type="modified",
+        )
         return _ok({"path": args.path, "size_bytes": len(raw)})
 
     name, entry = _tool(
