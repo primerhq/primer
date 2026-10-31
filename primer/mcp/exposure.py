@@ -112,6 +112,8 @@ async def get_exposure(deps: ExposureDeps) -> McpExposure:
 
 async def _iter_catalogue(
     deps: ExposureDeps,
+    *,
+    reserved_only: bool = False,
 ) -> AsyncIterator[tuple[Tool, Any]]:
     """Yield ``(Tool, ToolsetProvider)`` for every reachable tool.
 
@@ -124,6 +126,11 @@ async def _iter_catalogue(
     Toolsets that fail to resolve or enumerate are logged at WARNING
     and skipped -- one broken provider must not bring down the
     exposure UI.
+
+    ``reserved_only`` stops after the built-ins. primer's own MCP server
+    (tools/list, tools/call) walks only those: a user toolset's tools are
+    never exposable (``not_system_toolset``), and enumerating one starts its
+    external server, which can hang /v1/mcp (W10).
     """
     registry = deps.provider_registry
     storage_provider = deps.storage_provider
@@ -169,6 +176,8 @@ async def _iter_catalogue(
             continue
         async for pair in _emit(toolset_id):
             yield pair
+    if reserved_only:
+        return
 
     # 2. User-defined Toolset rows.  Paged so the catalogue scales
     # beyond the default storage cap.
@@ -204,10 +213,10 @@ async def _iter_catalogue(
 _ROUTING_CACHE: dict[str, tuple[datetime, dict[str, tuple[str, str]]]] = {}
 
 
-def _routing_cache_key(deps: ExposureDeps) -> str:
+def _routing_cache_key(deps: ExposureDeps, reserved_only: bool) -> str:
     """Key the cache per storage provider so two providers (e.g. distinct
-    test instances) never share a routing map."""
-    return f"{id(deps.storage_provider)}"
+    test instances) never share a routing map, and per catalogue walked."""
+    return f"{id(deps.storage_provider)}:{reserved_only}"
 
 
 def _clear_routing_cache() -> None:
@@ -219,6 +228,7 @@ async def build_routing_map(
     deps: ExposureDeps,
     *,
     use_cache: bool = True,
+    reserved_only: bool = False,
 ) -> dict[str, tuple[str, str]]:
     """Return ``{scoped_id: (toolset_id, bare_tool_name)}`` for the catalogue.
 
@@ -235,21 +245,22 @@ async def build_routing_map(
     map without re-enumerating the catalogue; a miss (first call, or the
     stamp moved because the operator edited the allowlist) rebuilds it. Pass
     ``use_cache=False`` to force a fresh build (used by the validation path,
-    which must see in-flight catalogue changes).
+    which must see in-flight catalogue changes). ``reserved_only`` maps the
+    built-in toolsets only (see :func:`_iter_catalogue`).
     """
     if use_cache:
         exposure = await get_exposure(deps)
-        key = _routing_cache_key(deps)
+        key = _routing_cache_key(deps, reserved_only)
         cached = _ROUTING_CACHE.get(key)
         if cached is not None and cached[0] == exposure.updated_at:
             return cached[1]
 
     routing: dict[str, tuple[str, str]] = {}
-    async for tool, _provider in _iter_catalogue(deps):
+    async for tool, _provider in _iter_catalogue(deps, reserved_only=reserved_only):
         routing[tool_scoped_id(tool)] = (tool.toolset_id, tool.id)
 
     if use_cache:
-        _ROUTING_CACHE[_routing_cache_key(deps)] = (exposure.updated_at, routing)
+        _ROUTING_CACHE[_routing_cache_key(deps, reserved_only)] = (exposure.updated_at, routing)
     return routing
 
 
