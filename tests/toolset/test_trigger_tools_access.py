@@ -18,6 +18,7 @@ import pytest_asyncio
 
 from primer.mcp.server import current_actor
 from primer.model.access import Access
+from primer.model.channel import Channel
 from primer.model.principal import Principal, PrincipalRef
 from primer.model.provider import SqliteConfig
 from primer.model.trigger import AgentFreshSubConfig, ChannelTriggerConfig, Subscription, Trigger, WebhookTriggerConfig
@@ -57,11 +58,13 @@ async def env(tmp_path) -> AsyncIterator[Any]:
         id="s-1", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"), status=SessionStatus.RUNNING, created_at=NOW,
     ))
     shared = Access(owners=[ALICE], grants={BOB: "read", CAROL: "full"})
+    # The channel the chat trigger fires from is readable by everyone: parking on a channel trigger needs READ on its channel (access-control P3 SEC, finding 6).
+    await sp.get_storage(Channel).create(Channel(id="ch-pub", provider_id="cp-1", provider="slack", external_id="CPUB", access=Access(public=True)))
     await sp.get_storage(Trigger).create(Trigger(
         id=TID, slug="nightly", name="n", created_at=NOW, owner=_ref(ALICE), config=WebhookTriggerConfig(token="a" * 32), access=shared,
     ))
     await sp.get_storage(Trigger).create(Trigger(
-        id=CHAN, slug="chat", name="c", created_at=NOW, owner=_ref(ALICE), config=ChannelTriggerConfig(provider_id="cp-1"), access=shared,
+        id=CHAN, slug="chat", name="c", created_at=NOW, owner=_ref(ALICE), config=ChannelTriggerConfig(provider_id="cp-1", channel_id="ch-pub"), access=shared,
     ))
     await sp.get_storage(Subscription).create(Subscription(
         id=SID, trigger_id=TID, created_at=NOW, owner=_ref(ALICE), config=AgentFreshSubConfig(workspace_id="ws-1", agent_id="ag-1"),

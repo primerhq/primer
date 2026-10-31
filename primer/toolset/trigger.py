@@ -850,6 +850,17 @@ def _make_get_sub_handler(
     return _handler
 
 
+async def _may_read_trigger_channel(storage_provider: Any, person: Any, trigger: Any) -> bool:
+    """Whether ``person`` holds READ on the channel of a channel ``trigger`` (a provider-wide one is admin-only): parking on it reads that channel's events."""
+    from primer.model.except_ import AccessDeniedError, NotFoundError
+
+    try:
+        await require_channel_trigger_access(storage_provider, person, trigger.config)
+    except (AccessDeniedError, NotFoundError):
+        return False
+    return True
+
+
 def _make_create_sub_handler(
     storage_provider: "StorageProvider",
     claim_engine: Any,
@@ -1118,6 +1129,7 @@ def _make_subscribe_channel_handler(
             or not trigger.enabled
             or trigger.config.kind != TriggerKind.CHANNEL.value
             or level_of(person_for_tool(ctx), trigger.access) is None  # parking needs read on the trigger (P3 Decision 4)
+            or not await _may_read_trigger_channel(storage_provider, person_for_tool(ctx), trigger)  # and on its channel (P3 SEC, finding 6)
         ):
             return _err(
                 f"channel trigger {args.trigger_id!r} does not exist, is "

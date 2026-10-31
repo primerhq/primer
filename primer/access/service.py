@@ -105,15 +105,19 @@ async def set_access(
     what: str,
     allow_public_tools: bool = False,
     after_write: Callable[[Any], Awaitable[None]] | None = None,
+    harness_exists: Callable[[str], Awaitable[bool]] | None = None,
 ) -> AccessView:
     """Replace the sharing of ``entity_id``; owners only. Writes the ``access`` block alone, guarded on its ``rev``.
 
-    A row a harness installed (it has a ``harness_id``) is shared through its harness, never directly: 409 ``harness_managed``.
+    A row a harness installed (it has a ``harness_id``) is shared through its harness, never directly: 409 ``harness_managed``. That holds only while the
+    harness row EXISTS (``harness_exists``; none given: it does): a dangling ``harness_id`` (the harness was deleted, as ``apply_uninstall(cascade=False)``
+    leaves it) names nothing that could share the row, so the row is shared directly again.
     ``after_write`` runs with the written row once the write has landed (a harness fans its access out to what it installed).
     """
     row = await _load(storage, entity_id, what)
     require(person, row.access, AccessLevel.OWNER, what=what)
-    if getattr(row, "harness_id", None):
+    harness_id = getattr(row, "harness_id", None)
+    if harness_id and (harness_exists is None or await harness_exists(harness_id)):
         raise ConflictError(f"{what} is managed by a harness (harness_managed); share the harness instead", code="harness_managed")
     current: Access = row.access
     if update.rev is not None and update.rev != current.rev:
