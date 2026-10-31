@@ -72,6 +72,19 @@ def _enqueue_output(queue: "asyncio.Queue[bytes]", data: bytes) -> bool:
         return dropped
 
 
+#: What the shell keeps of the API server's environment (review W43, lead ruling D9); every other server variable (database
+#: URLs, secret and provider keys) stays out. The workspace's own env is added on top.
+_SHELL_ENV_KEPT = frozenset({"PATH", "HOME", "LANG", "TERM", "USER", "SHELL", "TZ"})
+
+
+def _shell_env(workspace_env: dict[str, str]) -> dict[str, str]:
+    """The terminal shell's environment: the kept server variables (``LC_*`` included), the workspace env, a default TERM."""
+    env = {k: v for k, v in os.environ.items() if k in _SHELL_ENV_KEPT or k.startswith("LC_")}
+    env.update(workspace_env)
+    env.setdefault("TERM", "xterm-256color")
+    return env
+
+
 def _default_shell() -> list[str]:
     """Return the argv for a login shell: ``$SHELL`` → bash → sh, ``-l``."""
     shell = os.environ.get("SHELL")
@@ -149,9 +162,7 @@ class LocalPtySession:
             return
         self._started = True
 
-        proc_env = dict(os.environ)
-        proc_env.update(self._env)
-        proc_env.setdefault("TERM", "xterm-256color")
+        proc_env = _shell_env(self._env)
 
         master_fd, slave_fd = pty.openpty()
         self._master_fd = master_fd
