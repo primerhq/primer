@@ -121,6 +121,13 @@ async def test_call_tool_refuses_an_admin_tool_for_a_user_run(authed_client, bas
         json={"owners": [o["id"] for o in shared["owners"]], "grants": {made.json()["id"]: "read"}, "rev": shared["rev"]},
     )
     assert put.status_code == 200, put.text
+    # The workspace is the admin's too: the user starts a session in it, which needs full on it (access control P2).
+    ws_access = (await authed_client.get(f"/v1/workspaces/{wid}/access")).json()
+    ws_put = await authed_client.put(
+        f"/v1/workspaces/{wid}/access",
+        json={"owners": [o["id"] for o in ws_access["owners"]], "grants": {made.json()["id"]: "full"}, "rev": ws_access["rev"]},
+    )
+    assert ws_put.status_code == 200, ws_put.text
     async with httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(30.0, connect=10.0)) as user_client:
         login = await user_client.post("/v1/auth/login", json=account)
         assert login.status_code in (200, 204), login.text

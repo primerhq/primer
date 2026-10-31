@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
+import pytest
 
 _PASSWORD = "access-journey-password-123"
 
@@ -43,6 +44,15 @@ async def _share(owner: httpx.AsyncClient, wid: str, owner_id: str, grants: dict
     assert put.status_code == 200, put.text
 
 
+async def _profile_id(client: httpx.AsyncClient) -> str:
+    profiles = await client.get("/v1/model_profiles")
+    assert profiles.status_code == 200, profiles.text
+    items = profiles.json()["items"]
+    if not items:
+        pytest.skip("no model profile on this server")
+    return items[0]["id"]
+
+
 def _denied(resp: httpx.Response) -> None:
     assert resp.status_code == 403, resp.text
     assert resp.json()["extensions"]["code"] == "access_denied", resp.text
@@ -65,10 +75,25 @@ async def test_a_workspace_is_private_until_shared_and_a_steered_turn_runs_as_th
         assert a_ws not in [w["id"] for w in listed.json()["items"]]
         assert (await b.get("/v1/events", params={"workspace_id": a_ws})).status_code == 404
 
-        # The owner's operator session (made at sign-in) and a file to read.
-        main = await a.post(f"/v1/workspaces/{a_ws}/main_session")
-        assert main.status_code in (200, 201), main.text
-        sid = main.json()["id"]
+        # The owner's session and a file to read. The hermetic server seeds no operator agent, so the owner runs an agent of
+        # their own, made public so the peer's steered turn may run it too (a turn needs read on its bound agent).
+        agent_id = f"acl2-agent-{a_id}"
+        made = await a.post(
+            "/v1/agents",
+            json={"id": agent_id, "description": "access journey agent", "model": {"profile_id": await _profile_id(client)}},
+        )
+        assert made.status_code == 201, made.text
+        agent_access = (await a.get(f"/v1/agents/{agent_id}/access")).json()
+        published = await a.put(
+            f"/v1/agents/{agent_id}/access", json={"owners": [a_id], "grants": {}, "public": True, "rev": agent_access["rev"]},
+        )
+        assert published.status_code == 200, published.text
+        started = await a.post(
+            f"/v1/workspaces/{a_ws}/sessions",
+            json={"binding": {"kind": "agent", "agent_id": agent_id}, "initial_instructions": "hello", "auto_start": False},
+        )
+        assert started.status_code in (200, 201), started.text
+        sid = started.json()["id"]
         wrote = await a.put(f"/v1/workspaces/{a_ws}/files", params={"path": "acl2-notes.txt"}, json={"content": "shared notes"})
         assert wrote.status_code == 204, wrote.text
 
