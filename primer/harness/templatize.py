@@ -121,6 +121,43 @@ def apply_override_mappings(
     return out
 
 
+# Literal Jinja delimiters the inbound renderer would interpret (KN-17):
+# every outbound template file is rendered as a Jinja template at install
+# time, so tracked-entity strings and document bodies must ship their
+# ``{{``, ``{%`` and ``{#`` openers escaped. The escape runs before
+# apply_override_mappings inserts the ``{{ overrides.* }}`` tokens, so
+# those stay live. The order of the replacements is fixed: each
+# replacement text contains no other delimiter, so sequential replaces
+# are safe.
+_JINJA_DELIMITER_ESCAPES: tuple[tuple[str, str], ...] = (
+    ("{{", "{{ '{{' }}"),
+    ("{%", "{{ '{%' }}"),
+    ("{#", "{{ '{#' }}"),
+)
+
+
+def escape_jinja_delimiters(text: str) -> str:
+    """Escape ``{{``, ``{%`` and ``{#`` so the inbound Jinja render emits
+    them literally."""
+    for literal, escaped in _JINJA_DELIMITER_ESCAPES:
+        text = text.replace(literal, escaped)
+    return text
+
+
+def escape_template_literals(entity: Any) -> Any:
+    """Deep-copy a dumped entity, escaping Jinja delimiters in every string."""
+    def _walk(value: Any) -> Any:
+        if isinstance(value, str):
+            return escape_jinja_delimiters(value)
+        if isinstance(value, dict):
+            return {k: _walk(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_walk(v) for v in value]
+        return value
+
+    return _walk(entity)
+
+
 def compose_overrides_schema_from_mappings(
     mappings: list[OverrideMapping],
     values: dict[str, Any],
@@ -173,5 +210,7 @@ __all__ = [
     "OverrideSchemaCollisionError",
     "apply_override_mappings",
     "compose_overrides_schema_from_mappings",
+    "escape_jinja_delimiters",
+    "escape_template_literals",
     "infer_schema_fragment",
 ]
