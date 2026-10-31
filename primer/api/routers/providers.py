@@ -1192,7 +1192,9 @@ async def _probe_ollama_models_unbounded(config: dict[str, Any]) -> dict:
         return await _ollama_models_of(client)
     finally:
         # The SDK client wraps an httpx client; close it so a probe leaks no socket.
-        await client._client.aclose()
+        inner = getattr(client, "_client", None)
+        if inner is not None:
+            await inner.aclose()
 
 
 async def _ollama_models_of(client: Any) -> dict:

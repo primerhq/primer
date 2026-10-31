@@ -431,7 +431,7 @@ class TestProbeUrlStringification:
         captured: dict = {}
 
         class FakeAsyncClient:
-            def __init__(self, *, host, headers=None):
+            def __init__(self, *, host, headers=None, timeout=None):
                 captured["host"] = host
 
             async def list(self):
@@ -511,7 +511,7 @@ class TestOllamaContextLengthDiscovery:
         from primer.api.routers.providers import _probe_ollama_models
 
         class FakeAsyncClient:
-            def __init__(self, *, host, headers=None):
+            def __init__(self, *, host, headers=None, timeout=None):
                 pass
 
             async def list(self):
@@ -540,7 +540,7 @@ class TestOllamaContextLengthDiscovery:
         from primer.api.routers.providers import _probe_ollama_models
 
         class FakeAsyncClient:
-            def __init__(self, *, host, headers=None):
+            def __init__(self, *, host, headers=None, timeout=None):
                 pass
 
             async def list(self):
