@@ -64,7 +64,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from primer.access.person import Person
-from primer.access.tools import may_use_toolset
+from primer.access.tools import user_may_use_toolset
 from primer.common.error_codes import safe_code
 from primer.common.origin import origin_of
 from primer.common.secret_box import SecretBox, SecretBoxError
@@ -72,7 +72,6 @@ from primer.int.storage_provider import StorageProvider
 from primer.model.except_ import BadRequestError, ConfigError, ConflictError, PrimerError, ProviderError
 from primer.model.mcp_oauth import ClientAuthMethod, ClientSource, McpOAuthClient, McpOAuthPendingSignIn, McpOAuthTokenSet, McpSignInRequiredError
 from primer.model.provider import HttpConfig, McpConfig, OAuthConfig, Toolset, ToolsetProviderType, TransportType
-from primer.model.user import User
 from primer.storage import raw_generation
 from primer.toolset.oauth import egress, protocol
 from primer.toolset.oauth.protocol import ClientAuth, Discovery
@@ -536,10 +535,7 @@ class ToolsetOAuthService:
             return False
         if user_id is None:
             return not self._auth_enabled
-        user = await self._sp.get_storage(User).get(user_id)
-        if user is None or user.disabled or user.role not in ("user", "admin"):
-            return False
-        return await may_use_toolset(self._sp, Person(user_id, user.role), pending.toolset_id)
+        return await user_may_use_toolset(self._sp, user_id, pending.toolset_id)
 
     # ---- client credentials ---------------------------------------------------------------------------------------------------------------------------------------------
 

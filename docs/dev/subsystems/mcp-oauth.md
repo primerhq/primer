@@ -35,7 +35,11 @@ person for every authenticated request (REST, WebSocket, MCP; a bearer token's
 owner); the tool manager sets it to the run's own person around every listing and
 call of a run, whatever its task inherited; `dispatch_inner_tool` sets it from its
 context (an approved re-run); and the MCP task bridge polls a parked task call as
-that session's turn person, else its initiator. A call that acts for nobody (an
+that session's turn person, else its initiator. Before each poll the bridge
+re-reads that person (`primer.access.tools.user_may_use_toolset`): one who was
+disabled, or may no longer use the toolset, since the call parked is not polled
+for with their token; the parked call ends as failed with that reason (the wake's
+error text) and the bridge stops following it (review finding 4). A call that acts for nobody (an
 unattributed run, a graph ToolCall node's unattributed fallback) gets no browser
 token: it answers sign-in required and never falls back to another row. So does
 the system person when auth is enabled (a system-owned trigger's fire, a session

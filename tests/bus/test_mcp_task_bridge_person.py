@@ -70,3 +70,64 @@ async def test_the_bridge_polls_as_the_parked_runs_person(turn_person, initiated
     people = await _poll_once(turn_person, initiated_by)
 
     assert people == [expected, expected], "tasks/get and tasks/result both act for the parked run's person"
+
+
+async def _store_person_and_toolset(sp, *, disabled: bool = False, granted: bool = True) -> None:
+    from datetime import UTC, datetime
+
+    from primer.model.access import Access
+    from primer.model.provider import Toolset
+    from primer.model.user import User
+
+    await sp.get_storage(User).create(User(id="u-turn", username="turn", role="user", disabled=disabled, created_at=datetime.now(UTC)))
+    await sp.get_storage(Toolset).create(Toolset(
+        id="srv-1", provider="mcp", config={"transport": "stdio", "config": {"command": ["echo"]}},
+        access=Access(owners=["u-owner"], grants={"u-turn": "read"} if granted else {}),
+    ))
+
+
+async def _poll_with_storage(sp) -> tuple[list[Person], list[tuple[str, dict]]]:
+    scheduler = InMemoryScheduler()
+    await scheduler.initialize()
+    bus = InMemoryEventBus()
+    await bus.initialize()
+    try:
+        sess = _make_mcp_task_parked_session(session_id="sess-1", tool_call_id="tc-1", toolset_id="srv-1", task_id="t-abc")
+        sess.turn_person = _ref("u-turn")
+        scheduler._sessions["sess-1"] = sess
+        provider = _RecordingProvider(_FakeSession(tools=[], task_id="t-abc"), toolset_id="srv-1")
+        bridge = McpTaskBridge(bus=bus, scheduler=scheduler, provider_registry=_MockProviderRegistry({"srv-1": provider}), storage_provider=sp)
+        woken: list[tuple[str, dict]] = []
+
+        async def record(event_key: str, payload: dict) -> None:
+            woken.append((event_key, payload))
+
+        bridge._publish_wake = record  # type: ignore[method-assign]
+        [park] = await _find_parked_mcp_task_keys(scheduler)
+        await bridge._handle_one_park(park)
+        return provider.people, woken
+    finally:
+        await scheduler.aclose()
+        await bus.aclose()
+
+
+@pytest.mark.parametrize("lost", ["disabled", "access removed"])
+async def test_a_person_who_lost_the_toolset_ends_the_parked_call(fake_storage_provider, lost):
+    """Review finding 4: before each poll the bridge re-reads the person. One disabled, or no longer able to use the toolset, is not polled for
+    with their token: the parked call ends as failed with the reason, so the bridge stops following it."""
+    await _store_person_and_toolset(fake_storage_provider, disabled=lost == "disabled", granted=lost != "access removed")
+
+    people, woken = await _poll_with_storage(fake_storage_provider)
+
+    assert people == [], "the bridge polled with the token of a person who may no longer use the toolset"
+    [(event_key, payload)] = woken
+    assert event_key == "mcp_task:srv-1:t-abc" and payload["result"]["isError"] is True
+    assert "may no longer use the MCP toolset srv-1" in payload["result"]["content"][0]["text"]
+
+
+async def test_a_person_who_still_may_use_the_toolset_is_polled_for(fake_storage_provider):
+    await _store_person_and_toolset(fake_storage_provider)
+
+    people, woken = await _poll_with_storage(fake_storage_provider)
+
+    assert people == [Person("u-turn", "user")] * 2 and woken[0][1]["result"]["isError"] is False
