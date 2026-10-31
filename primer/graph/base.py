@@ -1312,11 +1312,7 @@ class _BaseGraphExecutor(
                 await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=None)
                 return
             # Drain any fan-out plans spawned by the drained ToolCalls.
-            for fanout_id, instances in list(self._pending_fanout.items()):
-                for inst in instances:
-                    self._fanout_instances[inst.synthesized_id] = inst
-                    next_ready.add(inst.synthesized_id)
-                del self._pending_fanout[fanout_id]
+            next_ready |= self._drain_pending_fanout(context)
             # NOTE: context.iteration is bumped further down, only once we
             # know this superstep is actually fully drained (past the
             # pending-recheck below) - see the comment there. Do not move
@@ -1482,13 +1478,28 @@ class _BaseGraphExecutor(
             if self._pending_ended_reason is None:
                 self._pending_ended_reason = "failed"
             return None
+        next_ready |= self._drain_pending_fanout(context)
+        self._ready_set |= next_ready
+        return None
+
+    def _drain_pending_fanout(self, context: GraphContext) -> set[str]:
+        """Register the staged fan-out instances and return their ids for the next ready set (the three drain sites: loop tail, resume, park).
+
+        A target fanned out again (a loop-back) starts over (AG-M9): its old aggregator list is dropped and its expected count is this
+        drain's, so its FanIn waits for and reads only this pass's copies.
+        """
+        admitted: set[str] = set()
+        counts: dict[str, int] = {}
         for fanout_id, instances in list(self._pending_fanout.items()):
             for inst in instances:
                 self._fanout_instances[inst.synthesized_id] = inst
-                next_ready.add(inst.synthesized_id)
+                admitted.add(inst.synthesized_id)
+                counts[inst.target_node_id] = counts.get(inst.target_node_id, 0) + 1
             del self._pending_fanout[fanout_id]
-        self._ready_set |= next_ready
-        return None
+        for target, n in counts.items():
+            context.nodes.pop(target, None)
+            self._fanout_target_expected_count[target] = n
+        return admitted
 
     def _suppressing_drain(self, nid: str) -> "tuple[FanOutSpec, _FanoutDrainState] | None":
         """The spec and drain state that suppress ``nid``'s failure (Spec B §2.5): a fan-out instance whose spec is not ``fail_fast``.
@@ -2374,11 +2385,7 @@ class _BaseGraphExecutor(
             # next superstep; per-instance dispatch resolves the underlying
             # target node and renders its template with fanout_* in scope
             # (Task 2.4).
-            for fanout_id, instances in list(self._pending_fanout.items()):
-                for inst in instances:
-                    self._fanout_instances[inst.synthesized_id] = inst
-                    next_ready.add(inst.synthesized_id)
-                del self._pending_fanout[fanout_id]
+            next_ready |= self._drain_pending_fanout(context)
 
             # 01a0812c: additive, not a bare reset - union is the default
             # pattern for every successor-fold site in this class (see

@@ -14,10 +14,11 @@ From the review probes (``/tmp/review-agent/graph/``), each turned into the beha
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
-from primer.graph.base import _GraphErrorEvent
+from primer.graph.base import _GraphEndOutputEvent, _GraphErrorEvent
 from primer.graph.executor import GraphExecutor
 from primer.graph.router import RouterRegistry
 from primer.model.chat import ToolResultPart
@@ -32,6 +33,7 @@ from primer.model.graph import (
     _CallableRouter,
     _ConditionalEdge,
     _EndNode,
+    _FanInNode,
     _FanOutNode,
     _JsonPathRouter,
     _StaticEdge,
@@ -236,3 +238,52 @@ async def test_a_raising_callable_router_after_a_resume_ends_the_run_failed():
     assert (t.status, t.ended_reason, t.ended_detail) == (SessionStatus.ENDED, "failed", None)
     assert ex2.last_done_reason == "graph_failed"
     assert "router exploded" in (ex2._last_failure_text or "")
+
+
+# ---- AG-M9: stale fan-out results after a loop-back ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_loop_back_fans_in_only_this_passes_results():
+    graph = Graph(
+        id="g-loop-map", description="loop with map fan-out", max_iterations=40,
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="plan", tool_id="x__plan", arguments={}, output_schema=OBJ),
+            _FanOutNode(id="fo", specs=[FanOutSpec(kind="map", target_node_id="t", source_node_id="plan", source_path="items")]),
+            _ToolCallNode(id="t", tool_id="x__work", arguments={"v": "{{ fanout_item }}"}),
+            _FanInNode(id="fi", aggregate_template="{{ nodes.t | map(attribute='text') | join(',') }}"),
+            _ToolCallNode(id="judge", tool_id="x__judge", arguments={"agg": "{{ nodes.fi.text }}"}, output_schema=OBJ),
+            _EndNode(id="end", output_template="{{ nodes.fi.text }}"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="plan"),
+            _StaticEdge(from_node="plan", to_node="fo"),
+            _StaticEdge(from_node="t", to_node="fi"),
+            _StaticEdge(from_node="fi", to_node="judge"),
+            _ConditionalEdge(from_node="judge", router=_JsonPathRouter(
+                branches=[JsonPathBranch(conditions=[BranchCondition(path="again", op="eq", value=True)], to_node="plan")],
+                default_to="end",
+            )),
+        ],
+    )
+    calls = {"plan": 0, "judge": 0}
+    judged: list[str] = []
+
+    async def dispatcher(node, arguments):
+        if node.tool_id == "x__plan":
+            calls["plan"] += 1
+            return ToolResultPart(id="p", output=json.dumps({"items": ["a", "b", "c"] if calls["plan"] == 1 else ["z"]}))
+        if node.tool_id == "x__work":
+            return ToolResultPart(id="w", output=str(arguments["v"]))
+        calls["judge"] += 1
+        judged.append(arguments["agg"])
+        return ToolResultPart(id="j", output='{"again": true}' if calls["judge"] == 1 else '{"again": false}')
+
+    ex, events, exc, thread = await _run(graph, dispatcher)
+
+    assert exc is None
+    assert judged == ["a,b,c", "z"]
+    assert [e.text for e in events if isinstance(e, _GraphEndOutputEvent)] == ["z"]
+    assert thread.ended_reason == "completed"
+    assert ex._fanout_target_expected_count["t"] == 1
