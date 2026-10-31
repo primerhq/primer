@@ -91,6 +91,7 @@ from primer.session.persistence import (
     flush_partial_output,
     infer_agent_phase,
     materialize_pending_tool_wait_rows,
+    publish_tick,
     stash_and_flush_tool_call_record,
     stash_graph_scoped_ids,
     translate_stream_event,
@@ -819,9 +820,7 @@ async def run_one_session_turn(
                         executor, "_tool_calls_as_claims_enabled", False,
                     ),
                 )
-                await deps.event_bus.publish(
-                    f"session:{session_id}:tick", {"seq": seq}
-                )
+                await publish_tick(deps.event_bus, session_id, seq)
                 if rec.kind == SessionMessageKind.GRAPH_TRANSITION:
                     await _emit_graph_transition(deps, session, rec)
 
@@ -2055,7 +2054,7 @@ async def _land_cancelled_turn(
             if own_outcome:
                 await _mark_turn_completed(session_storage, session_id, session.turn_no)
     if seq is not None:
-        await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
+        await publish_tick(deps.event_bus, session_id, seq)
     await _best_effort_io("the TurnLogCancelled turn log entry", session_id, _safe_turn_log(turn_log, TurnLogCancelled(
         seq=0, ts=_now(), turn_no=session.turn_no, reason=reason,
     )))
@@ -2176,7 +2175,7 @@ async def _flush_and_tick(
             session_id,
         )
     seq = writer.last_seq
-    await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
+    await publish_tick(deps.event_bus, session_id, seq)
     return seq
 
 
