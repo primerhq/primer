@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from primer.api.registries import WorkspaceRegistry
+from primer.model.access import Access
 from primer.model.except_ import ConflictError
 from primer.model.workspace import (
     LocalWorkspaceConfig,
@@ -36,7 +37,8 @@ async def world(tmp_path: Path):
     await sp.get_storage(WorkspaceProvider).create(
         WorkspaceProvider(id="local-1", provider=WorkspaceProviderType.LOCAL, config=LocalWorkspaceConfig(root_path=str(tmp_path)))
     )
-    template = WorkspaceTemplate(id="tpl-1", description="t", provider_id="local-1")
+    # Public: the tool is called with no context (an anonymous caller), which reads only public templates.
+    template = WorkspaceTemplate(access=Access(public=True), id="tpl-1", description="t", provider_id="local-1")
     await sp.get_storage(WorkspaceTemplate).create(template)
     registry = WorkspaceRegistry(sp)  # the real local backend
     try:

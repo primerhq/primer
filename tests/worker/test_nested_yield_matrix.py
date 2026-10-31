@@ -334,6 +334,8 @@ class _MappedRegistry:
     def __init__(self, *, llm: Any, toolsets: dict[str, Any]) -> None:
         self._llm = llm
         self.toolsets = dict(toolsets)
+        # Holds no Toolset rows: these toolsets are built in, so call_tool's READ check on a stored row finds none to check.
+        self.storage_provider = _FakeStorageProvider()
 
     async def get_llm(self, _provider_id: str) -> Any:
         return self._llm
