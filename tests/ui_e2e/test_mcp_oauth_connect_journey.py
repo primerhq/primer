@@ -126,8 +126,9 @@ def test_connect_from_the_overlay(
         page.get_by_test_id("nv-plat-filter").fill(toolset_id)
         card = page.get_by_test_id(f"pk-card:{toolset_id}")
         expect(card).to_be_visible(timeout=15_000)
+        # A per-person sign-in (access-control P5) reads "Needs your sign-in" on the card; the panel below keeps its own wording.
         expect(page.get_by_test_id(f"pk-card-status:{toolset_id}")).to_have_text(
-            "Needs sign-in"
+            "Needs your sign-in"
         )
         card.get_by_test_id(f"pk-card-open:{toolset_id}").click()
         expect(page.get_by_test_id("nv-overlay-body")).to_be_visible(timeout=15_000)
@@ -251,7 +252,7 @@ def test_the_panel_on_a_phone(
         expect(sheet).to_be_visible(timeout=20_000)
         status = sheet.locator(".nv-mob-fact-status")
         expect(status).to_have_count(1)
-        expect(status).to_contain_text("Needs sign-in")
+        expect(status).to_contain_text("Needs your sign-in")
         expect(status).to_have_attribute("data-tone", "warn")
         expect(page.get_by_test_id("nv-mob-fact-edit-note")).to_have_text(
             "Edit on desktop"
