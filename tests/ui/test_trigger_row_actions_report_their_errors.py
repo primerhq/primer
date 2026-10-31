@@ -37,6 +37,9 @@ function Btn(p) { return React.createElement("button", { "data-testid": p["data-
 function Banner(p) { return React.createElement("div", null, p.children); }
 function Icon() { return null; }
 function Modal(p) { return React.createElement("div", null, p.children); }
+// The list's access badges (ui/components/shared/share-dialog.jsx, ACL-P3-T7): the row in this harness
+// carries no access field, so the stand-in says none - the badges are not this file's subject.
+globalThis.SHR_accessBadges = function () { return []; };
 """
 
 _DRIVER = """
