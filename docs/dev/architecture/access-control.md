@@ -218,10 +218,15 @@ nothing, an unauthenticated caller gets 401), the writes, the `_test` probes and
 
 ### Console (Phase 4)
 
-Console part still to document (task P4-T7): the console part (the share dialog's use-only mode and the "Who can use" buttons on the
-infrastructure pages, the "(not available to you)" profile picker entries, the paused-session banner for
-`model_profile_unusable`, public tools in the tool picker) lands with branch `acl/p4-t7-console`; document it here once it
-merges.
+The share dialog (`ui/components/shared/share-dialog.jsx`) has a `useOnly` mode for the seven grantable kinds: no owners
+and no level picker, only "People who can use" and an "Everyone can use" switch; admins edit it, everyone else sees it
+read-only (their own level and public). A "Who can use" button (the `entity.share` verb) sits on the detail overlays of
+model profiles, LLM, workspace, channel, semantic-search, embedding and cross-encoder providers, and their cards carry a
+`SHR_useBadge` (Public, "N people" or "Admins only"). The create forms of these kinds have a "Public" switch, off by
+default (a new row is private). The agent form and the graph node profile picker show a current profile the person cannot
+use as "<id> (not available to you)" with a warning, and a paused session whose `last_turn_error.code` is
+`model_profile_unusable` shows a banner saying its model profile is not available to the person who sent the turn and that
+an admin can grant its use before Resume. Tests: `tests/ui/test_p4_use_grants_ui.py`.
 
 ## 7. Testing patterns
 
