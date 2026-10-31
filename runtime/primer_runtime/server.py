@@ -65,6 +65,11 @@ RUNTIME_VERSION: str = "1.0.0"
 
 _PROTOCOL_MAJOR: int = int(PROTOCOL_VERSION.split(".")[0])
 
+# Largest inbound frame (GI-4). aiohttp's 4 MiB default dropped the connection, and every terminal, exec and watch on it,
+# for any file over about 3 MiB. The platform's RuntimeClient accepts the same (``_MAX_WS_MSG_SIZE``) and refuses to send
+# more, so a too-big request fails alone; this covers its 128 MiB workspace-file PUT (a ~96 MiB file, base64).
+_MAX_MSG_SIZE: int = 256 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -117,7 +122,7 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     if not _check_token(token, provided):
         raise web.HTTPUnauthorized(reason="Invalid or missing bearer token")
 
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(max_msg_size=_MAX_MSG_SIZE)
     await ws.prepare(request)
 
     # --- Handshake: first message must be op="hello" ----------------------

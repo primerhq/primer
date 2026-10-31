@@ -335,3 +335,70 @@ async def test_a_paste_into_a_busy_terminal_never_freezes_the_runtime(tmp_path: 
         _kill(pid)
         os.killpg(server.pid, signal.SIGKILL)
         server.wait()
+
+
+# ---------------------------------------------------------------------------
+# GI-4: the frame limit matches the platform's, and a too-big request fails alone
+# ---------------------------------------------------------------------------
+
+
+async def _client(url: Any):
+    from primer.workspace.runtime.runtime_client import RuntimeClient
+
+    client = RuntimeClient(url=str(url).replace("http://", "ws://"), token=_TOKEN)
+    await client.connect()
+    return client
+
+
+async def test_a_file_over_4_mib_is_written_and_siblings_survive(runtime) -> None:
+    _connect, root, url = runtime
+    client = await _client(url)
+    try:
+        pty = await client.open_pty(cmd=["/bin/sh"], cols=80, rows=24)
+        content = os.urandom(5 * 1024 * 1024)  # ~6.7 MiB frame, past aiohttp's 4 MiB default
+        await client.write_file("five.bin", content)
+        assert (root / "five.bin").read_bytes() == content
+        assert await client.read_file("five.bin") == content
+        await pty.stdin(b"echo still-$((3+4))\n")
+        out = b""
+        async with asyncio.timeout(10):
+            async for frame in pty.events():
+                out += frame.data or b""
+                if b"still-7" in out:
+                    break
+        await pty.close()
+    finally:
+        await client.aclose()
+
+
+def test_the_runtime_accepts_what_the_platform_client_accepts() -> None:
+    from primer.workspace.runtime import runtime_client
+    from primer_runtime import server
+
+    assert server._MAX_MSG_SIZE == runtime_client._MAX_WS_MSG_SIZE
+
+
+async def test_a_request_over_the_frame_limit_fails_alone(runtime, monkeypatch) -> None:
+    from primer.workspace.runtime import runtime_client
+    from primer.workspace.runtime.runtime_client import RuntimeError as RtError
+
+    _connect, root, url = runtime
+    monkeypatch.setattr(runtime_client, "_MAX_WS_MSG_SIZE", 1024 * 1024)
+    client = await _client(url)
+    try:
+        pty = await client.open_pty(cmd=["/bin/sh"], cols=80, rows=24)
+        with pytest.raises(RtError):
+            await client.write_file("big.bin", b"a" * (1024 * 1024))  # ~1.4 MiB frame
+        assert not (root / "big.bin").exists()
+        await client.write_file("small.bin", b"ok")  # the same connection still serves
+        assert (root / "small.bin").read_bytes() == b"ok"
+        await pty.stdin(b"echo alive-$((4+4))\n")
+        out = b""
+        async with asyncio.timeout(10):
+            async for frame in pty.events():
+                out += frame.data or b""
+                if b"alive-8" in out:
+                    break
+        await pty.close()
+    finally:
+        await client.aclose()
