@@ -80,10 +80,14 @@ async def test_the_event_is_what_the_server_made_of_it(world_with_playlist):
 
 
 async def test_the_platform_event_carries_the_event_and_names_who_did_it(world_with_playlist):
+    from primer.access.acting import acting_as
+    from primer.access.person import Person
+
     w = world_with_playlist
-    ev = await _event(w, "genre", "change", value="Lo-fi", by="bob")
+    with acting_as(Person("u-bob", "user")):
+        ev = await _event(w, "genre", "change", value="Lo-fi", by="bob")
     [logged] = await w.events("canvas.event")
-    assert (logged.actor, logged.workspace_id, logged.session_id) == ("bob", "ws-1", "s1")
+    assert (logged.actor, logged.workspace_id, logged.session_id) == ("user:u-bob", "ws-1", "s1"), "the standard actor label (review finding 6)"
     assert logged.payload == ev.public() and logged.payload["id"] == "e1" and logged.payload["rev"] == 2
 
 

@@ -49,7 +49,10 @@ def _toolset(toolset_id: str, *, harness_id: str | None = None) -> Toolset:
 @pytest.fixture
 async def oauth_app(app, fake_storage_provider, fake_provider_registry):
     await app.state.mcp_oauth.aclose()
-    service = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=SecretBox.from_key_material("delete-paths-key-0123456789"))
+    # auth_enabled=False: the shared browser row these tests seed is the system person's only on an auth-disabled install.
+    service = ToolsetOAuthService(
+        storage_provider=fake_storage_provider, secret_box=SecretBox.from_key_material("delete-paths-key-0123456789"), auth_enabled=False,
+    )
     app.state.mcp_oauth = service
     fake_provider_registry._toolset_factory = _build_default_toolset_factory(oauth=service)
     yield app

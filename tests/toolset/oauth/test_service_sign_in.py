@@ -73,7 +73,8 @@ def store(fake_storage_provider, box) -> McpOAuthStore:
 
 @pytest.fixture
 async def svc(fake_storage_provider, box, clock):
-    service = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=box, clock=clock, owner_id="pod-a")
+    # SYSTEM, the person these tests act as, holds the shared browser row only on an auth-disabled install.
+    service = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=box, clock=clock, owner_id="pod-a", auth_enabled=False)
     yield service
     await service.aclose()
 
@@ -150,7 +151,7 @@ async def test_start_reuses_the_registration(svc, target, store, mock_oauth_mcp)
 
 async def test_start_reregisters_when_the_redirect_uri_changes(svc, target, store, mock_oauth_mcp):
     await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
-    await svc.start_sign_in(target, redirect_uri=OTHER_REDIRECT, started_by="admin", browser_binding=BINDING)
+    await svc.start_sign_in(target, redirect_uri=OTHER_REDIRECT, started_by="admin", browser_binding=BINDING, may_reregister=True)
     assert [r["redirect_uris"] for r in mock_oauth_mcp.state.registrations] == [[REDIRECT], [OTHER_REDIRECT]]
     assert (await store.get_client("kb")).redirect_uri == OTHER_REDIRECT
 
@@ -162,7 +163,7 @@ async def test_start_reregisters_when_the_stored_registration_cannot_be_read(svc
     other = McpOAuthStore(fake_storage_provider, SecretBox.from_key_material(OTHER_KEY))
     await other.put_client(McpOAuthClient(id="kb", issuer=mock_oauth_mcp.issuer, redirect_uri=REDIRECT, client_id="old-client",
                                           client_secret_enc=other.seal("old-secret"), registered_at=NOW))
-    start = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
+    start = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING, may_reregister=True)
     assert len(mock_oauth_mcp.state.registrations) == 1 and parse_qs(urlsplit(start.authorize_url).query)["client_id"] != ["old-client"]
 
 

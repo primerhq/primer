@@ -190,11 +190,19 @@ def _quote_user_text(text: str | None) -> str:
     return f"User-supplied description: {json.dumps(cleaned, ensure_ascii=False)}"
 
 
-def _agent_body(a) -> str:
+def _agent_body(a, public_profiles: frozenset[str] | set[str] = frozenset()) -> str:
+    # The map is public: a private profile's id stays out of it (review finding 5).
+    profile = getattr(a.model, "profile_id", "")
     return (
         f"# {a.id}\n\n{_quote_user_text(a.description)}\n\n"
-        f"- model profile: `{getattr(a.model, 'profile_id', '')}`\n"
+        f"- model profile: {f'`{profile}`' if profile in public_profiles else 'a private profile'}\n"
     )
+
+
+async def _public_profile_ids(storage_provider) -> set[str]:
+    from primer.model.model_profile import ModelProfile
+
+    return {p.id for p in await _list_all(storage_provider, ModelProfile) if _listed(p)}
 
 
 def _graph_body(g) -> str:
@@ -359,13 +367,16 @@ async def _providers_map(storage_provider, *, root: str = "") -> dict[str, str]:
         # kind="aggregated" (01a067c4) profiles have no model_name/
         # provider_id/context_length of their own -- the single-profile
         # label would literally render "None on None, context None".
+        # A private provider's or member profile's id stays out of the public map (review finding 5).
         if p.kind == "aggregated":
             return f"aggregated pool of {len(p.members or [])}: " + ", ".join(
-                p.members or [],
+                m if m in public_profiles else "a private profile" for m in p.members or []
             )
-        return f"{p.model_name} on {p.provider_id}, context {p.context_length}"
+        provider = p.provider_id if p.provider_id in public_llms else "a private provider"
+        return f"{p.model_name} on {provider}, context {p.context_length}"
 
     profiles = [r for r in await _all_rows(storage_provider, ModelProfile) if _listed(r)]
+    public_llms, public_profiles = {r.id for r in llms}, {p.id for p in profiles}
     out[f"{prefix}providers/model-profiles"] = _index(
         "Model profiles",
         [(p.id, None, _profile_label(p)) for p in profiles],
@@ -471,8 +482,9 @@ async def _live_pages(storage_provider) -> dict[str, WikiPage]:
         )
 
     agents = [a for a in await _list_all(storage_provider, Agent) if _listed(a)]
+    public_profiles = await _public_profile_ids(storage_provider)
     for a in agents:
-        put(f"{LIVE_ROOT}/agents/{_live_slug(a.id)}", _agent_body(a))
+        put(f"{LIVE_ROOT}/agents/{_live_slug(a.id)}", _agent_body(a, public_profiles))
     put(LIVE_ROOT + "/agents", _index_body(
         "Agents", [(f"{LIVE_ROOT}/agents/{_live_slug(a.id)}", a.id) for a in agents],
     ))
@@ -1064,7 +1076,7 @@ async def converge_entity(
                 pass
             wrote_page = True
         else:
-            body = render(entity)
+            body = _agent_body(entity, await _public_profile_ids(storage_provider)) if entity_type == "agent" else render(entity)
             page = _live_page(path, body)
             try:
                 current = await tree.read(

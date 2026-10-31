@@ -56,7 +56,10 @@ def clock() -> Clock:
 
 @pytest.fixture
 async def svc(fake_storage_provider, clock):
-    service = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=SecretBox.from_key_material(KEY), clock=clock, owner_id="pod-a")
+    # An auth-disabled install, so SYSTEM holds the shared browser row (with auth enabled it holds none: review finding 2).
+    service = ToolsetOAuthService(
+        storage_provider=fake_storage_provider, secret_box=SecretBox.from_key_material(KEY), clock=clock, owner_id="pod-a", auth_enabled=False,
+    )
     yield service
     await service.aclose()
 
@@ -304,3 +307,98 @@ async def test_the_callback_writes_the_row_of_the_person_who_started_it(svc, kb,
     await connect(svc, kb, person=B)
     row = await svc.store.get_tokens(token_key("kb", "u-b"), toolset_id="kb", user_id="u-b")
     assert row is not None and (row.connected_by, row.connected_at) == ("u-b", clock.now)
+
+
+ELSEWHERE = "http://evil.example/v1/toolsets/kb/oauth/callback"
+
+
+async def test_a_start_that_may_not_reregister_signs_nobody_out(svc, kb, clock, mock_oauth_mcp, fake_storage_provider):
+    """Review finding 1: B, below FULL, starts from another redirect URI (a forged Host). Re-registering would replace the one client A's tokens
+    name, so A's next refresh would fail and wipe A's sign-in, and A's own sign-in in flight would fail its exchange. B is refused with a 409
+    naming the registered origin; the registration, A's tokens and A's pending sign-in all stand."""
+    from primer.model.except_ import ConflictError
+    from primer.model.user import User
+    from tests.toolset.oauth._service_helpers import NOW, authorize
+
+    mock_oauth_mcp.state.register_confidential = True
+    mock_oauth_mcp.state.access_token_ttl_s = 60
+    await connect(svc, kb, person=A)
+    registered = await svc.store.get_client("kb")
+    await fake_storage_provider.get_storage(User).create(User(id="u-b", username="b", created_at=NOW, role="user"))
+    a_again = await svc.start_sign_in(target_of(kb, A), redirect_uri=REDIRECT, started_by="u-a", browser_binding=BINDING)
+
+    with pytest.raises(ConflictError, match="sign in through http://127.0.0.1:9"):
+        await svc.start_sign_in(target_of(kb, B), redirect_uri=ELSEWHERE, started_by="u-b", browser_binding="b-binding-0123456789", may_reregister=False)
+
+    assert (await svc.store.get_client("kb")).client_id == registered.client_id and len(mock_oauth_mcp.state.registrations) == 1
+    back = authorize(a_again.authorize_url)
+    done = await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
+    assert done.state == "connected", "A's sign-in in flight still exchanges its code"
+    clock.advance(hours=2)
+    assert await svc.access_token(target_of(kb, A)), "A's refresh still authenticates with the registered client"
+
+
+async def test_full_access_or_a_public_url_may_reregister(svc, kb, fake_storage_provider, mock_oauth_mcp):
+    """Someone with FULL re-registers as before; with PRIMER_PUBLIC_URL set the redirect URI is the deployment's, not the caller's, so a start
+    behaves as it always did."""
+    from tests.toolset.oauth._service_helpers import KEY
+
+    await svc.start_sign_in(target_of(kb, A), redirect_uri=REDIRECT, started_by="u-a", browser_binding=BINDING)
+    await svc.start_sign_in(target_of(kb, A), redirect_uri=ELSEWHERE, started_by="u-a", browser_binding=BINDING, may_reregister=True)
+    assert (await svc.store.get_client("kb")).redirect_uri == ELSEWHERE
+
+    public = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=SecretBox.from_key_material(KEY), public_url="https://primer.example")
+    try:
+        moved = public.redirect_uri("kb", request_base_url=None)
+        await public.start_sign_in(target_of(kb, B), redirect_uri=moved, started_by="u-b", browser_binding=BINDING, may_reregister=False)
+    finally:
+        await public.aclose()
+    assert (await svc.store.get_client("kb")).redirect_uri == moved and len(mock_oauth_mcp.state.registrations) == 3
+
+
+async def test_an_unreadable_registration_is_renewed_only_by_full_access(svc, kb, fake_storage_provider, mock_oauth_mcp):
+    from primer.model.except_ import ConflictError
+    from tests.toolset.oauth._service_helpers import NOW, OTHER_KEY
+    from primer.toolset.oauth.store import McpOAuthStore
+
+    other = McpOAuthStore(fake_storage_provider, SecretBox.from_key_material(OTHER_KEY))
+    await other.put_client(McpOAuthClient(id="kb", issuer=mock_oauth_mcp.issuer, redirect_uri=REDIRECT, client_id="old-client",
+                                          client_secret_enc=other.seal("old-secret"), registered_at=NOW))
+
+    with pytest.raises(ConflictError, match="full access"):
+        await svc.start_sign_in(target_of(kb, B), redirect_uri=REDIRECT, started_by="u-b", browser_binding=BINDING, may_reregister=False)
+    assert mock_oauth_mcp.state.registrations == []
+
+
+async def test_with_auth_enabled_the_system_person_gets_no_browser_token(fake_storage_provider, clock, kb, mock_oauth_mcp):
+    """Review finding 2: the shared browser row is the system person's only on an auth-disabled install. With auth enabled, a run whose person is
+    the system principal (a system-owned trigger's fire, a session made while auth was off and resumed, a graph fallback) gets sign-in required,
+    and a sign-in started for nobody while auth was off cannot finish now. Client credentials stay shared for everyone."""
+    off = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=SecretBox.from_key_material(KEY), clock=clock, auth_enabled=False)
+    on = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=SecretBox.from_key_material(KEY), clock=clock, auth_enabled=True)
+    try:
+        await connect(off, kb, person=SYSTEM)
+        assert await fake_storage_provider.get_storage(McpOAuthTokenSet).get("kb") is not None
+        mock_oauth_mcp.state.seen_tokens.clear()
+        provider = McpToolsetProvider(kb.id, kb.config, oauth=on)
+
+        with pytest.raises(McpSignInRequiredError):
+            await provider.call(tool_name="echo", arguments={"text": "x"}, ctx=_ctx(PrincipalRef.system()))
+        assert mock_oauth_mcp.state.seen_tokens == [], "a system run sent the shared browser token with auth enabled"
+        assert (await on.status(kb, SYSTEM)).state == "needs_sign_in"
+
+        from primer.toolset.oauth.service import SignInError
+        from tests.toolset.oauth._service_helpers import authorize
+
+        start = await off.start_sign_in(target_of(kb, SYSTEM), redirect_uri=REDIRECT, started_by=None, browser_binding=BINDING)
+        back = authorize(start.authorize_url)
+        with pytest.raises(SignInError):
+            await on.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
+
+        cc = make_toolset(mock_oauth_mcp.mcp_url, oauth=CC, toolset_id="cc")
+        await on.connect_client_credentials(target_of(cc, A), connected_by="u-a")
+        shared = McpToolsetProvider(cc.id, cc.config, oauth=on)
+        assert (await shared.call(tool_name="echo", arguments={"text": "y"}, ctx=_ctx(PrincipalRef.system()))).output == "y"
+    finally:
+        await off.aclose()
+        await on.aclose()
