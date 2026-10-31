@@ -2317,7 +2317,9 @@ async def steer_session(
     )
     from primer.session.external_tools import (
         CANCEL_REASON_SUPERSEDED,
+        AlreadyDecidedError,
         _pending_targets,
+        _rows_by_tcid,
         apply_tool_results,
         cancel_pending_external,
     )
@@ -2385,18 +2387,19 @@ async def steer_session(
     #    the park with the synthetic cancelled payload so the turn resumes
     #    and pairs the call before the queued instruction is consumed.
     if body.instruction:
-        cancelled = await cancel_pending_external(
-            call_storage=call_storage, session_id=session_id,
-        )
-        if cancelled and row is not None:
+        # The park decides first (GS-6: the first decision wins, as for the yields cancel and a result): a call is cancelled only if its
+        # park took the cancel, through the same guarded flip, and only then is its row written. A call whose park refused the cancel (a
+        # result landed first) keeps its result and the steer answers 409 already_decided.
+        pending_rows, _ = await _rows_by_tcid(call_storage, session_id=session_id)
+        refused: list[str] = []
+        if row is not None:
             # The cancel names the park whose calls it read (``row``, refreshed above): delivered by key alone and at least once, a copy that arrives after
             # the session re-parked under the same key must not cancel the new call (ticket 01a1208d, #702 review B2).
             payload = with_wake_park(make_cancelled_payload(reason=CANCEL_REASON_SUPERSEDED), row.parked_at)
             woken = None
             for tcid, (key, entry_row_id) in _pending_targets(row).items():
-                # Only a call whose cancel LANDED is woken: a call whose result landed meanwhile (its guarded
-                # row write was rejected, so it is not in ``cancelled``) keeps the reply the park carries.
-                if tcid not in cancelled:
+                # A call whose row already left pending (its result, a cancel or the timeout resolved it) has nothing to cancel.
+                if tcid not in pending_rows:
                     continue
                 # Each cancel is its own leaf of a multi-event park and the flip writes only that leaf, so the leaves
                 # other wakes wrote stay whatever this request read (ticket 01a122cc-effa). A further wake still starts
@@ -2411,19 +2414,30 @@ async def steer_session(
                         "longer waits on it, so it is not woken", tcid, session_id,
                     )
                     continue
-                await durably_wake_session(
+                if not await durably_wake_session(
                     woken,
                     event_key=key,
                     payload=payload,
                     session_storage=sessions,
                     engine=engine,
-                )
+                ):
+                    refused.append(tcid)
+                    continue
                 try:
                     await event_bus.publish(key, payload)
                 except Exception:  # noqa: BLE001 - durable flip landed
                     logger.exception(
                         "external tool cancel publish failed for %r", key
                     )
+        # The rows follow: every pending call except one whose park refused the cancel (its winner writes that row).
+        await cancel_pending_external(
+            call_storage=call_storage, session_id=session_id, tool_call_ids=set(pending_rows) - set(refused),
+        )
+        if refused:
+            raise AlreadyDecidedError(
+                f"external tool call(s) {refused!r} on session {session_id!r} were already decided (a result landed first); "
+                "the instruction was not delivered"
+            )
 
         # A session runs one turn at a time, so an instruction that
         # arrives while a turn is still open is queued rather than

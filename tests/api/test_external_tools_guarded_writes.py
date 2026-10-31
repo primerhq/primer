@@ -235,38 +235,63 @@ async def test_the_sweep_moves_on_past_a_rejected_row_that_is_gone_before_its_re
     assert live == stored
 
 
-async def test_an_instruction_steer_whose_cancel_lost_its_race_does_not_wake_the_park(
-    app, client, wsr, sp, monkeypatch,
+@pytest.mark.parametrize("first", ["instruction", "steer"])
+async def test_the_first_of_an_instruction_cancel_and_a_steer_result_decides_the_call_and_every_record_agrees(
+    app, client, wsr, sp, monkeypatch, first: str,
 ) -> None:
-    """The steer's supersede wake runs only when one of its cancels LANDED. The instruction steer (R_i) reads the
-    session while it is parked; its cancel of ``tc-1`` is held at its write while the steer carrying the result (R_s)
-    completes the call; released, that cancel is rejected, so R_i cancelled nothing and must wake nothing. A wake
-    from R_i's pre-R_s snapshot would replace R_s's result in the park with the cancelled marker (the durable flip
-    refuses only an ENDED row). PR-6c reorders this loop wake-first; its d6 race replaces this test."""
+    """GS-6 ruling (the "PR-6c" reorder: the instruction's cancel decides on the park first). An instruction steer (R_i)
+    cancels the pending call ``tc-1`` while a steer carrying its result (R_s) races it. Whoever takes the park first decides,
+    and the park and the call's row agree.
+
+    * instruction first: R_i's park flip lands and R_i is held at its ``cancelled`` row write while R_s runs. R_s answers 409
+      ``already_decided`` and writes nothing; released, R_i answers 200 and the row is ``cancelled``.
+    * steer first: R_s's park flip lands and R_s is held at its ``completed`` row write while R_i runs. R_i's cancel is refused
+      by the park: R_i answers 409 ``already_decided``, publishes no cancel and writes no row; released, R_s answers 200 and the
+      row is ``completed`` with the result."""
     bus = _RecordingBus()
     app.state.event_bus = bus
     wid = await _parked_external_session(client, wsr, sp)
     await _seed_call(sp, "sess-1")
     calls = sp.get_storage(ExternalToolCall)
-    held = hold_write(monkeypatch, calls, row_id=ROW_ID, status="cancelled")
     key = "external_tool:sess-1:tc-1"
 
-    instruction = asyncio.create_task(client.post(
-        f"/v1/workspaces/{wid}/sessions/sess-1/steer", json={"instruction": "actually, do something else"},
-    ))
-    await held.wait_arrived()
-    r_s = await _steer_result(client, wid)
-    await held.release()
-    r_i = await instruction
+    def _instruction():
+        return client.post(f"/v1/workspaces/{wid}/sessions/sess-1/steer", json={"instruction": "actually, do something else"})
 
-    assert 200 <= r_s.status_code < 300, r_s.text
-    assert r_i.status_code == 200, r_i.text
+    if first == "instruction":
+        held = hold_write(monkeypatch, calls, row_id=ROW_ID, status="cancelled")
+        held_request = asyncio.create_task(_instruction())
+        await held.wait_arrived()
+        r_s = await _steer_result(client, wid)
+        await held.release()
+        r_i = await held_request
+        winner, loser = r_i, r_s
+    else:
+        held = hold_write(monkeypatch, calls, row_id=ROW_ID, status="completed")
+        held_request = asyncio.create_task(_steer_result(client, wid))
+        await held.wait_arrived()
+        r_i = await _instruction()
+        await held.release()
+        r_s = await held_request
+        winner, loser = r_s, r_i
+
+    assert winner.status_code == 200, winner.text
+    assert loser.status_code == 409, loser.text
+    assert loser.json()["extensions"]["code"] == "already_decided"
     row = await calls.get(ROW_ID)
-    assert (row.status, row.result, row.is_error) == ("completed", RESULT, False)
     session = await sp.get_storage(WorkspaceSession).get("sess-1")
     assert session.parked_status == "resumable"
-    assert session.parked_state["resume_event_payload"] == {"result": RESULT, "is_error": False, WAKE_PARK_KEY: session.parked_at.isoformat(), WAKE_ENTRY_KEY: ROW_ID}
-    assert not [p for k, p in bus.published if k == key and p.get("__yield_cancelled__")]
+    payload = session.parked_state["resume_event_payload"]
+    cancels = [p for k, p in bus.published if k == key and p.get("__yield_cancelled__")]
+    if first == "instruction":
+        assert (row.status, row.is_error) == ("cancelled", True)
+        assert row.result == {"cancelled": True, "reason": "superseded by new user message"}
+        assert payload["__yield_cancelled__"] is True and "result" not in payload
+        assert len(cancels) == 1
+    else:
+        assert (row.status, row.result, row.is_error) == ("completed", RESULT, False)
+        assert payload == {"result": RESULT, "is_error": False, WAKE_PARK_KEY: session.parked_at.isoformat(), WAKE_ENTRY_KEY: ROW_ID}
+        assert cancels == []
 
 
 @pytest.mark.parametrize(
@@ -363,14 +388,13 @@ async def test_an_instruction_steer_that_cancels_both_calls_of_a_graph_park_keep
     assert all(payload.get("__yield_cancelled__") is True for payload in leaves.values())
 
 
-async def test_two_instruction_steers_that_read_one_graph_park_and_each_cancel_one_call_keep_both_cancelled_leaves(
+async def test_two_instruction_steers_that_read_one_graph_park_the_first_takes_both_calls_and_the_second_cancel_gets_409(
     app, client, wsr, sp, monkeypatch,
 ) -> None:
-    """Ticket 01a122cc-effa (C6 through the steer's cancel loop). Two instruction steers read the same graph park. Steer A lands the cancel of tc-g1's row
-    and is held at its write of tc-g2's (the rows are cancelled in id order). Steer B, which read the park before A woke anything, lands the cancel of tc-g2
-    and wakes it. Released, A's tc-g2 write is refused and A wakes tc-g1 from ITS snapshot, which has no tc-g2 leaf: the flip wrote the whole
-    ``parked_state`` from that snapshot and dropped B's cancel while both rows say ``cancelled`` (that node waits for its deadline). Each cancel is its
-    own leaf, so both stay."""
+    """GS-6 ruling (park first; ticket 01a122cc-effa's leaves). Two instruction steers read the same graph park. Steer A takes both calls at the park
+    (each cancel its own leaf), lands tc-g1's row and is held at its write of tc-g2's (the rows are cancelled in id order). Steer B then cancels tc-g2,
+    the one row still pending: the park already holds A's decision for it, so B's cancel is refused, B answers 409 ``already_decided`` and writes
+    nothing. Released, A cancels tc-g2's row; both rows and both leaves say cancelled."""
     bus = _RecordingBus()
     app.state.event_bus = bus
     wid = await _setup_ws(client, wsr)
@@ -394,12 +418,14 @@ async def test_two_instruction_steers_that_read_one_graph_park_and_each_cancel_o
         after = await sessions.get("sess-1")
         statuses = [(await calls.get(row_id)).status for row_id in ("etool-g1", "etool-g2")]
 
-    assert before_b == ("cancelled", "pending", "parked"), "precondition: A landed tc-g1's cancel and has woken nothing when B reads the park"
-    assert (steer_a.status_code, steer_b.status_code) == (200, 200), (steer_a.text, steer_b.text)
+    assert before_b == ("cancelled", "pending", "resumable"), "precondition: A took both calls at the park and landed tc-g1's row when B reads"
+    assert steer_a.status_code == 200, steer_a.text
+    assert steer_b.status_code == 409, steer_b.text
+    assert steer_b.json()["extensions"]["code"] == "already_decided"
     assert statuses == ["cancelled", "cancelled"]
-    assert sorted(k for k, p in bus.published if p.get("__yield_cancelled__")) == [k1, k2], "each steer woke the call whose cancel it landed"
+    assert sorted(k for k, p in bus.published if p.get("__yield_cancelled__")) == [k1, k2], "A published both cancels, B none"
     leaves = {e["event_key"]: e["payload"] for e in ((after.parked_state or {}).get("resume_event_payloads") or {}).values()}
-    assert sorted(leaves) == [k1, k2], "a steer's cancel wake from its own snapshot dropped the other steer's cancelled leaf"
+    assert sorted(leaves) == [k1, k2]
     assert all(payload.get("__yield_cancelled__") is True for payload in leaves.values())
 
 
