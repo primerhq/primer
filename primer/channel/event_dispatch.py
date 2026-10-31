@@ -342,7 +342,7 @@ class ChannelEventRouter:
                         text=await self._steer_text(
                             event=event,
                             media_parts=media_parts,
-                            workspace_id=target.workspace_id,
+                            workspace_ids=[target.workspace_id],
                             fire_id=event.event_id,
                         ),
                         parallelism="queue",
@@ -415,7 +415,7 @@ class ChannelEventRouter:
                     text=await self._steer_text(
                         event=event,
                         media_parts=media_parts,
-                        workspace_id=record.workspace_id,
+                        workspace_ids=[record.workspace_id],
                         fire_id=event.event_id,
                     ),
                     parallelism="queue",
@@ -445,18 +445,6 @@ class ChannelEventRouter:
             event.provider_id, channel_id,
         )
         event_payload = event.model_dump(mode="json")
-        if media_parts:
-            # The created session's FIRST instruction must reference the
-            # same landed files the steer path composes, so a fresh thread
-            # with an attachment is not silently text-only. No workspace is
-            # resolvable before _map_thread runs, so the attachments are
-            # referenced by name here.
-            event_payload["text"] = await self._steer_text(
-                event=event,
-                media_parts=media_parts,
-                workspace_id=None,
-                fire_id=event.event_id,
-            )
         extra_context = {"event": event_payload}
         # Every trigger this event fires shares ONE text_pattern match budget
         # (G6-5): fire_trigger reads it, so N triggers cannot multiply it. It
@@ -476,6 +464,15 @@ class ChannelEventRouter:
                 await self._await_claim(channel_id, anchor)
                 return await self._route(event=event, channel=channel, media_parts=media_parts, claim=False)
             claimed = True
+        if media_parts:
+            # The created session's FIRST instruction references the same landed files the steer path composes (W9): the
+            # attachments land under media/<event id>/ in every workspace a binding about to fire starts a session in.
+            event_payload["text"] = await self._steer_text(
+                event=event,
+                media_parts=media_parts,
+                workspace_ids=[getattr(sub.config, "workspace_id", None) for subs in subscriptions.values() for sub in subs],
+                fire_id=event.event_id,
+            )
         try:
             return await self._fire_and_map(
                 event=event, triggers=triggers, subscriptions=subscriptions, extra_context=extra_context,
@@ -640,10 +637,10 @@ class ChannelEventRouter:
         *,
         event: ChannelEvent,
         media_parts: list | None,
-        workspace_id: str | None,
+        workspace_ids: list[str | None],
         fire_id: str,
     ) -> str:
-        """Land any attachments, then build the text the session receives."""
+        """Land any attachments in each named workspace, then build the text the session receives."""
         from primer.channel.media_in import (
             compose_steer_text,
             land_media_in_workspace,
@@ -654,24 +651,26 @@ class ChannelEventRouter:
         if not media_parts:
             return event.text or ""
         registry = self._fire_deps.workspace_registry
-        workspace = None
-        if registry is not None and workspace_id:
-            try:
-                workspace = await registry.get_workspace(workspace_id)
-            except Exception:  # noqa: BLE001 - land nothing rather than fail
-                logger.warning(
-                    "channel media: workspace %s unreachable", workspace_id,
-                    exc_info=True,
-                )
         store = await self._artifact_store()
         paths: list[str] = []
-        if workspace is not None:
-            paths = await land_media_in_workspace(
-                workspace=workspace,
-                fire_id=fire_id,
-                parts=media_parts,
-                artifact_storage=store,
-            )
+        for workspace_id in dict.fromkeys(w for w in workspace_ids if w):
+            workspace = None
+            if registry is not None:
+                try:
+                    workspace = await registry.get_workspace(workspace_id)
+                except Exception:  # noqa: BLE001 - land nothing rather than fail
+                    logger.warning(
+                        "channel media: workspace %s unreachable", workspace_id,
+                        exc_info=True,
+                    )
+            if workspace is not None:
+                landed = await land_media_in_workspace(
+                    workspace=workspace,
+                    fire_id=fire_id,
+                    parts=media_parts,
+                    artifact_storage=store,
+                )
+                paths = paths or landed  # every workspace gets the same media/<fire_id>/ paths
         stt = await resolve_active_stt(self._sp)
         transcript, note = await transcribe_voice_parts(
             parts=media_parts, artifact_storage=store, stt=stt,

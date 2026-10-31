@@ -509,3 +509,36 @@ def test_claim_rows_are_correlation_rows_with_no_session():
     """A claim is the conversation's own row before its session exists: kind session, no session, no gate."""
     row = ChannelCorrelation(channel_id="ch-1", anchor="a")
     assert (row.kind, row.session_id, row.tool_call_id) == ("session", None, None)
+
+
+# --------------------------------------------------------------------------- W9
+
+
+async def test_W9_a_fresh_conversation_lands_its_attachments_before_the_fire():
+    sp = _FakeStorageProvider()
+    await _seed(sp, workspace_id="w-target")
+    registry = _Registry()
+    fires = _Fires(sp)
+    await _router(sp, fires, registry=registry).route_event(
+        event=_event(7, text="what is wrong here?"), channel=None, media_parts=[_Part("image/png", "shot.png", b"PNG")],
+    )
+    assert registry.workspaces["w-target"].files == {"media/m7/shot.png": b"PNG"}
+    assert fires.calls[0]["extra_context"]["event"]["text"] == (
+        "what is wrong here?\n\nAttachments in this workspace:\n- media/m7/shot.png"
+    )
+
+
+async def test_W9_attachments_land_in_every_workspace_a_fire_starts_a_session_in():
+    sp = _FakeStorageProvider()
+    await _seed(sp, triggers=[("t1", "cp-1", "ch-1"), ("t2", "cp-1", None)], workspace_id="w-a")
+    await sp.get_storage(Subscription).create(Subscription(
+        id="sub-2", trigger_id="t2", created_at=datetime.now(UTC),
+        config=AgentFreshSubConfig(workspace_id="w-b", agent_id="ag1"),
+    ))
+    registry = _Registry()
+    await _router(sp, _Fires(sp, start_sessions=False), registry=registry).route_event(
+        event=_event(8, surface="channel"), channel=None, media_parts=[_Part("image/png", "x.png", b"X")],
+    )
+    assert {w: ws.files for w, ws in registry.workspaces.items()} == {
+        "w-a": {"media/m8/x.png": b"X"}, "w-b": {"media/m8/x.png": b"X"},
+    }
