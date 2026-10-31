@@ -110,6 +110,7 @@ from primer.toolset._system_canvas import canvas_settings_tools
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.model.collection import Collection, Document
 from primer.model.except_ import (
+    AccessDeniedError,
     BadRequestError,
     ConflictError,
     NotFoundError,
@@ -132,6 +133,7 @@ from primer.model.channel import (
 from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import Parallelism, ReplyTargetInput, SubscriptionConfig
+from primer.trigger.channel_access import require_channel_trigger_access
 from primer.trigger.owner import view_for
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE, caller_scope
 from primer.trigger.service import (
@@ -1014,6 +1016,8 @@ def build_system_toolset(
                     f"not a {trigger.config.kind} trigger",
                     error_type="validation-error",
                 )
+            # The channel the trigger fires from must be readable by the binder (access P3, decision 5).
+            await require_channel_trigger_access(storage_provider, person_for_tool(ctx), trigger.config)
             sub = await create_subscription(
                 trigger_id=args.trigger_id,
                 config=args.config,
@@ -1048,6 +1052,10 @@ def build_system_toolset(
             return _err(str(exc), error_type="not-found")
         except ReplyTargetAnchorInvalid as exc:
             return _err(str(exc), error_type="validation-error")
+        except NotFoundError as exc:
+            return _err(str(exc), error_type="not-found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         return _ok(sub)
 
     registry["create_channel_binding"] = (

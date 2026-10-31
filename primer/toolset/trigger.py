@@ -40,8 +40,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.access.person import person_for_tool
 from primer.common.validation_errors import without_input
 from primer.model.chat import Tool, ToolCallResult, ToolExample
+from primer.model.except_ import AccessDeniedError, NotFoundError
 from primer.model.event_matcher import (
     EventMatcher,
     EventMatcherPatternError,
@@ -61,6 +63,7 @@ from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
+from primer.trigger.channel_access import require_channel_trigger_access
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.owner import view_for
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE, caller_scope, refuse_target_out_of_access
@@ -675,6 +678,8 @@ def _make_create_handler(
             return _err_validation(exc)
         deps = _make_deps(storage_provider, claim_engine, event_bus)
         try:
+            # The channel the trigger fires from must be readable by its saver (access P3, decision 5).
+            await require_channel_trigger_access(storage_provider, person_for_tool(ctx), args.config)
             trigger = await create_trigger(
                 slug=args.slug,
                 name=args.name,
@@ -690,6 +695,10 @@ def _make_create_handler(
             return _err(str(exc), error_type="cron_invalid")
         except TimezoneInvalid as exc:
             return _err(str(exc), error_type="timezone_invalid")
+        except NotFoundError as exc:
+            return _err(str(exc), error_type="not-found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         return _ok(trigger)
 
     return _handler
@@ -712,6 +721,8 @@ def _make_update_handler(
         # trigger whose owner outranks the caller answers ``type=forbidden`` and changes nothing (it keeps its stored owner).
         caller, from_run, in_session = _fire_caller(ctx)
         try:
+            # The channel a re-pointed config fires from must be readable by the saver (access P3, decision 5); a None config re-checks nothing.
+            await require_channel_trigger_access(storage_provider, person_for_tool(ctx), args.config)
             trigger = await update_trigger(
                 trigger_id=args.id,
                 name=args.name,
@@ -738,6 +749,10 @@ def _make_update_handler(
             return _err(str(exc), error_type="cron_invalid")
         except TimezoneInvalid as exc:
             return _err(str(exc), error_type="timezone_invalid")
+        except NotFoundError as exc:
+            return _err(str(exc), error_type="not-found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         return _ok(trigger)
 
     return _handler

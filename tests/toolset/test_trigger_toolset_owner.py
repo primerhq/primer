@@ -121,9 +121,17 @@ async def test_create_channel_binding_records_the_owner(fake_storage_provider) -
     # The save asks the caller's full on the target workspace (access-control P2 T6): user-1 owns ws-1.
     await _seed_ws1(fake_storage_provider)
     await fake_storage_provider.set_default_workspace_id(caller().workspace_id)
+    # The trigger fires from chan-1, a channel the caller holds full on (access P3, decision 5 refuses the admin-only provider-wide form).
+    from primer.model.access import Access
+    from primer.model.channel import Channel
+
+    await fake_storage_provider.get_storage(Channel).create(Channel(
+        id="chan-1", provider_id="cp-1", provider="slack", external_id="C12345",
+        access=Access(owners=["user-1"]),
+    ))
     await fake_storage_provider.get_storage(Trigger).create(Trigger(
         id="trg-ch-1", slug="ch-trigger", name="ch", created_at=datetime.now(timezone.utc),
-        config=ChannelTriggerConfig(provider_id="cp-1"),
+        config=ChannelTriggerConfig(provider_id="cp-1", channel_id="chan-1"),
     ))
     registry = ProviderRegistry(
         fake_storage_provider, llm_factory=lambda p: object(), embedder_factory=lambda p: object(),

@@ -46,6 +46,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from primer.access.person import person_from_request
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
@@ -62,6 +63,7 @@ from primer.model.trigger import (
     Trigger,
     TriggerConfig,
 )
+from primer.trigger.channel_access import require_channel_trigger_access
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.owner import view_for
 from primer.trigger.service import (
@@ -190,6 +192,8 @@ async def create_trigger_endpoint(
 ) -> JSONResponse:
     deps = _deps(sp, claim_engine, event_bus)
     try:
+        # The channel the trigger fires from must be readable by its saver (access P3, decision 5).
+        await require_channel_trigger_access(sp, person_from_request(request), body.config)
         trigger = await create_trigger(
             slug=body.slug,
             name=body.name,
@@ -268,6 +272,8 @@ async def update_trigger_endpoint(
     # A save re-arms the trigger's claim and hands it to the saver, so it follows the rank rule of a manual fire (ticket 01a16ee4):
     # 403 ``forbidden_rank`` otherwise, and nothing changes (the trigger keeps its stored owner).
     try:
+        # The channel a re-pointed config fires from must be readable by the saver (access P3, decision 5); a None config re-checks nothing.
+        await require_channel_trigger_access(sp, person_from_request(request), body.config)
         trigger = await update_trigger(
             trigger_id=trigger_id,
             name=body.name,
