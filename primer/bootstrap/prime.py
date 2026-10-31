@@ -319,10 +319,10 @@ async def ensure_main_operator_session(
       G7-12): a new display name, another login source (password or SSO) or a role change keeps the same session; an API
       token is its own principal. One query, filtered in storage on the workspace, ``initiated_by.id``,
       ``binding.agent_id`` and the status, reads them: never a scan of the workspace's sessions.
-    * **A role change keeps the session, demotion included.** A demoted admin gets their OWN main session back: their
-      steer of it is a live request on a session they started, which :func:`primer.authz.may_drive` always allows
-      (``own_session``, review of #853 N1), and its runs execute at their current role, which caps the recorded admin
-      rank (``resolve_run_principal``). A promotion keeps it too; it runs at the rank it was created with.
+    * **A role change keeps the session, demotion included.** A demoted admin gets their OWN main session back (driving
+      it needs full on the workspace, like any session: access-control Phase 2), and its runs execute at their current
+      role, which caps the recorded admin rank (``resolve_run_principal``). A promotion keeps it too; it runs at the rank
+      it was created with.
     * **A created session is named ``main`` and runs as the caller.** ``initiated_by`` carries the caller's role, so the
       session clears exactly the caller's role floor (A-20): an admin's main session can call the admin tools through
       the operator, a user's cannot. It is made exactly as the workspace-create seed makes its ``main`` (the plain

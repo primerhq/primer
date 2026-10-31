@@ -594,17 +594,10 @@ _CREATE_WORKSPACE_WHEN = (
     "runtime in the container does not answer within 30 seconds the create fails (``type=backend-error``, REST 503) with a "
     "message that names the image, and nothing is left behind. "
     f"A custom image must contain the primer workspace runtime: build it FROM ``{DOCKER_RUNTIME_IMAGE}``. "
-    "Refused (``type=forbidden``) from a session outside the default workspace (prime): create workspaces from a session in prime or "
-    "from the console. "
+    "Needs read access on the template; you become the new workspace's owner, and it is private until you share it "
+    "(``system__set_entity_access`` with ``kind`` ``workspace``). "
     "A template on a Kubernetes provider with ``variant: agent_sandbox`` is refused (``type=not-implemented``, REST 501): no backend "
     "builds that variant yet, and nothing is created."
-)
-
-#: What ``create_workspace`` answers a session outside the default workspace (review of #870, F4, lead ruling): such a session could not reach
-#: the workspace it made, and creating one is the management plane's work.
-REFUSE_CREATE_WORKSPACE = (
-    "create_workspace is refused from a session outside the default workspace (prime); "
-    "create workspaces from a session in prime or from the console"
 )
 
 # Appended to the `when` of create_workspace_template and update_workspace_template: which backend field a provider reads, who may set it, and the limits.
@@ -2197,15 +2190,15 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "find_sessions",
         (
-            "Find sessions across every workspace by workspace, agent, "
-            "state or initiator, newest first."
+            "Find sessions across the workspaces you can read by workspace, "
+            "agent, state or initiator, newest first."
         ),
         (
             "Use when you manage sessions in OTHER workspaces, as the "
-            "operator in prime does; not for listing one workspace's "
-            "sessions (use ``list_workspace_sessions``). From a session "
-            "outside the default workspace (prime) it finds only your own "
-            "workspace's sessions."
+            "operator does; not for listing one workspace's sessions (use "
+            "``list_workspace_sessions``). It finds sessions only in the "
+            "workspaces your person can read, wherever your session runs; "
+            "a ``workspace_id`` you cannot read answers type=not-found."
         ),
         _FindSessionsArgs,
         _find_sessions,
@@ -3391,7 +3384,7 @@ def build_workspaces_toolset(
     return InternalToolsetProvider(toolset_id=toolset_id, registry=registry)
 
 
-__all__ = ["REFUSE_CREATE_WORKSPACE", "WORKSPACES_TOOLSET_ID", "build_workspaces_toolset"]
+__all__ = ["WORKSPACES_TOOLSET_ID", "build_workspaces_toolset"]
 
 
 # Register yielding-tool resume hooks at import time. The worker's
