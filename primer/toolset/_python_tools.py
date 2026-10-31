@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from primer.access.person import person_for_tool
 from primer.access.service import update_keeping_access
@@ -26,7 +26,7 @@ from primer.model.yield_ import ToolContext
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err
 from primer.toolset._helpers import ok as _ok
-from primer.toolset._system_common import SYSTEM_TOOLSET_ID
+from primer.toolset._system_common import SYSTEM_TOOLSET_ID, _err_from_validation
 from primer.toolset._system_guards import refuse_create, refuse_update, toolset_guards
 from primer.toolset.internal import ToolHandler
 
@@ -141,7 +141,10 @@ def build_python_toolset_tools(
         )
         from primer.toolset.python_runner.registration import RegistrationError
 
-        args = _CreatePythonToolsetArgs(**args_json)
+        try:
+            args = _CreatePythonToolsetArgs.model_validate(args_json)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         row = Toolset(
             id=args.toolset_id,
             provider=ToolsetProviderType.PYTHON,
@@ -176,7 +179,10 @@ def build_python_toolset_tools(
         from primer.toolset.python_runner.registration import RegistrationError
         from primer.toolset.toolset_checks import own_python_source_version
 
-        args = _UpdatePythonToolsetSourceArgs(**args_json)
+        try:
+            args = _UpdatePythonToolsetSourceArgs.model_validate(args_json)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         store = storage_provider.get_storage(Toolset)
         existing = await store.get(args.toolset_id)
         if existing is None:
@@ -237,7 +243,10 @@ def build_python_toolset_tools(
         from primer.model.providers.toolset import Toolset
         from primer.toolset.python_runner.registration import RegistrationError
 
-        args = _ListPythonToolsArgs(**args_json)
+        try:
+            args = _ListPythonToolsArgs.model_validate(args_json)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         existing = await storage_provider.get_storage(Toolset).get(
             args.toolset_id
         )

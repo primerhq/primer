@@ -64,7 +64,7 @@ from primer.model.except_ import (
     UnsupportedContentError,
 )
 from primer.model.principal import ActorRef, PrincipalRef
-from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
+from primer.model.yield_ import ToolContext, ToolWaitPark, Yielded, YieldToWorker
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
 
@@ -794,7 +794,14 @@ class ToolExecutionManager:
             except Exception as _exc:
                 _metrics.tool_calls_total.labels(call.name, "fail").inc()
                 await self._emit_tool_called(call, ok=False)
-                raise
+                # A PrimerError here is a routing or gate answer the callers already handle; a park and a sign-in leave as they always did.
+                if isinstance(_exc, (PrimerError, YieldToWorker, ToolWaitPark)):
+                    raise
+                # Anything else is the tool's own failure (W16, ruling D1): an error result and the turn goes on. On the claims path a raise
+                # was retried as transient, re-running earlier side effects. The text is fixed: the exception's may carry paths or secrets.
+                logger.exception("ToolExecutionManager: tool %r raised; answered as a tool error", call.name)
+                _tracing.record_failure(_span, _exc)  # the span still says the call failed (masked, as an escaping exception was)
+                return ToolResultPart(id=call.id, output=f"tool {call.name} failed with an internal error; see the server logs", error=True)
             finally:
                 _metrics.tool_duration_seconds.labels(call.name).observe(
                     _time.monotonic() - _t0

@@ -419,10 +419,13 @@ async def test_a_task_not_referenced_by_the_live_park_is_voided_never_executed()
 
 @pytest.mark.asyncio
 async def test_a_poisoned_tool_call_reaches_terminal_failed_with_a_synthesized_result_state():
-    """A tool that always raises must stop requeueing: at attempt_count == max_attempts
+    """An execution that always fails must stop requeueing: at attempt_count == max_attempts
     the task goes terminal FAILED carrying a synthesized error result_state (the resume
     coordinator hands the model a tool_result for its tool_use instead of wedging).
-    On main nothing claims the lease, so no attempt count ever advances."""
+    On main nothing claims the lease, so no attempt count ever advances.
+
+    The poison is the tool manager's own failure: a tool that raises is answered by the
+    manager as an error result (W16, ruling D1; the next test), so it no longer poisons."""
     config = WorkerConfig(
         concurrency=2,
         heartbeat_interval_seconds=1,
@@ -439,6 +442,12 @@ async def test_a_poisoned_tool_call_reaches_terminal_failed_with_a_synthesized_r
         config=config,
         tool="boom",
     )
+    tool_manager = _PoisonToolManager()
+
+    async def _poison_executor(session, workspace):
+        return _executor_with(tool_manager)
+
+    pool._build_agent_executor = _poison_executor  # type: ignore[method-assign]
     try:
         await pool.start()
         task_storage = provider.get_storage(ToolCallTask)
@@ -450,8 +459,8 @@ async def test_a_poisoned_tool_call_reaches_terminal_failed_with_a_synthesized_r
         )
         task = task_storage._data[TASK_ID]  # noqa: SLF001
         assert task.state is ToolCallTaskState.FAILED
-        assert toolset.calls == ["boom", "boom"], (
-            f"the tool ran {len(toolset.calls)} times; it must run exactly max_attempts "
+        assert tool_manager.executed == config.max_attempts, (
+            f"the call ran {tool_manager.executed} times; it must run exactly max_attempts "
             f"({config.max_attempts}) times before the cap"
         )
         assert task.attempts >= config.max_attempts, "the row's unclean-execution count did not advance"
@@ -465,7 +474,48 @@ async def test_a_poisoned_tool_call_reaches_terminal_failed_with_a_synthesized_r
         await scheduler.aclose()
 
 
+@pytest.mark.asyncio
+async def test_a_tool_that_raises_is_done_with_an_error_result_on_its_first_attempt():
+    """W16 (ruling D1): a tool that raises is answered by the tool manager as an error result, so the task is DONE on its first
+    attempt carrying that result (the model sees its own error under its own tool_use), and it is not retried: a retry would run
+    the tool, and whatever it did before raising, again."""
+    config = WorkerConfig(
+        concurrency=2, heartbeat_interval_seconds=1, lease_ttl_seconds=5, poll_interval_seconds=0.1, drain_timeout_seconds=3,
+        tool_calls_as_claims_enabled=True, max_attempts=2, base_backoff_seconds=0.1, max_backoff_seconds=1.0,
+    )
+    pool, engine, provider, toolset, session_rows, task_rows, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID], config=config, tool="boom",
+    )
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state in (ToolCallTaskState.DONE, ToolCallTaskState.FAILED),  # noqa: SLF001
+            "the task never reached a terminal state",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        assert task.state is ToolCallTaskState.DONE
+        assert toolset.calls == ["boom"], "the tool ran once and was not retried"
+        assert task.result_state["error"] is True and task.result_state["id"] == CALL_ID
+        assert f"{TOOLSET_ID}__boom" in task.result_state["output"]
+        assert "the boom tool failed" not in task.result_state["output"], "the exception's own text stays in the server log"
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
 # ---- branch coverage (green-only; the three probes above are the red-first core) ----
+
+
+class _PoisonToolManager:
+    """A tool manager whose execute itself fails (not a tool's error: the manager does not answer it)."""
+
+    def __init__(self) -> None:
+        self.executed = 0
+
+    async def execute(self, call, *, principal=None):
+        self.executed += 1
+        raise RuntimeError("the tool manager broke")
 
 
 class _GatingToolManager:

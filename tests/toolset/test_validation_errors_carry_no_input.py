@@ -108,3 +108,59 @@ def test_the_shared_filter_keeps_everything_but_the_input() -> None:
     assert without_input(errors) == [{"type": "missing", "loc": ["body", "token"], "msg": "Field required", "ctx": {"error": "x"}, "url": "https://errors.pydantic.dev/x"}]
     assert errors[0]["input"] == {"api_key": KEY}, "the argument is not modified"
     assert without_input([]) == []
+
+
+# ---- the collections and web tools (AG-L6) ------------------------------------------------------------------------------------------------------------------------------------
+
+
+def _without_echo(text: str) -> None:
+    assert PASSWORD not in text and KEY not in text and "pw-0123" not in text, text
+    errors = json.loads(text[text.index("["):])
+    assert errors and all("input" not in error and {"type", "loc", "msg"} <= set(error) for error in errors), errors
+
+
+def test_a_collections_tool_answers_bad_arguments_without_their_input() -> None:
+    from primer.toolset import collections
+
+    _, result = collections._parse(_Probe, {"url": f"http://svc:{PASSWORD}@emb.local:badport/v1", "count": "not a number " + KEY})
+
+    assert result.is_error is True
+    answer = json.loads(result.output)
+    assert answer["type"] == "validation-error"
+    assert answer["message"].startswith("argument validation failed: ")
+    _without_echo(answer["message"])
+
+
+def _web_handlers():
+    import httpx
+
+    from primer.toolset.web import tools
+
+    client = httpx.AsyncClient()
+    ctx = type("Ctx", (), {"workspace_id": "ws-1"})()
+    return [
+        pytest.param(tools.make_web_search_handler(object()), {"query": ["q " + KEY], "count": "many " + KEY}, {}, "web-search: invalid arguments: ", id="web_search"),
+        pytest.param(
+            tools.make_http_request_handler(http_client=client, response_body_byte_cap=1024),
+            {"url": f"http://svc:{PASSWORD}@x.local:badport/", "headers": {"Authorization": 5}, "body": None, "timeout_seconds": KEY},
+            {}, "http-request: invalid arguments: ", id="http_request",
+        ),
+        pytest.param(tools.make_web_fetch_handler(object()), {"url": f"http://svc:{PASSWORD}@x.local:badport/"}, {}, "web-fetch: invalid arguments: ", id="web_fetch"),
+        pytest.param(
+            tools.make_download_handler(http_client=client, workspace_registry=object(), byte_cap=1024),
+            {"url": f"http://svc:{PASSWORD}@x.local:badport/", "max_bytes": KEY}, {"ctx": ctx}, "download: invalid arguments: ", id="download",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("handler", "arguments", "extra", "prefix"), _web_handlers())
+async def test_a_web_tool_refuses_bad_arguments_without_their_input(handler, arguments, extra, prefix) -> None:
+    from primer.model.except_ import BadRequestError
+
+    with pytest.raises(BadRequestError) as refused:
+        await handler(arguments, **extra)
+
+    text = str(refused.value)
+    assert text.startswith(prefix), text
+    _without_echo(text)
