@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from primer.harness.dispatch import _collect_bundle_files
+from primer.harness.dispatch import _collect_bundle_paths
 from primer.harness.git import HarnessGitError, fetch_harness_metadata
 from primer.harness.paths import symlink_reason
 from primer.harness.template import HarnessTemplateError, render_bundle
@@ -88,7 +88,7 @@ def test_the_dispatcher_bundle_walk_refuses_a_symlink(tmp_path):
     secret.write_bytes(b"x" * 10)
     repo = _repo(tmp_path, link_to=secret)
     with pytest.raises(HarnessGitError) as err:
-        _collect_bundle_files(repo)
+        _collect_bundle_paths(repo)
     assert err.value.code == "harness_symlink_refused" and "docs/readme.md" in err.value.message
 
 
@@ -96,7 +96,7 @@ def test_the_dispatcher_bundle_walk_still_hashes_plain_files_and_skips_git(tmp_p
     repo = _repo(tmp_path, body="plain")
     (repo / ".git").mkdir()
     os.symlink("/etc/hostname", repo / ".git" / "link")  # inside .git: never part of the bundle, never refused
-    names = [name for name, _ in _collect_bundle_files(repo)]
+    names = _collect_bundle_paths(repo)
     assert names == ["docs/readme.md", "templates/doc.yaml"]
 
 

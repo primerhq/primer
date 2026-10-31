@@ -51,17 +51,52 @@ def test_hash_rendered_payload_idempotent():
 
 
 def test_hash_bundle_order_independent_to_walk():
-    files = [
-        ("a.yaml", b"contents-a"),
-        ("b.yaml", b"contents-b"),
-    ]
-    h1 = hash_bundle(files)
-    h2 = hash_bundle(list(reversed(files)))
+    contents = {"a.yaml": b"contents-a", "b.yaml": b"contents-b"}
+    paths = ["a.yaml", "b.yaml"]
+    h1 = hash_bundle(paths, contents.__getitem__)
+    h2 = hash_bundle(list(reversed(paths)), contents.__getitem__)
     assert h1 == h2  # bundle hash sorts filenames internally
 
 
 def test_hash_bundle_changes_with_content():
-    files = [("a.yaml", b"original")]
-    h1 = hash_bundle(files)
-    h2 = hash_bundle([("a.yaml", b"modified")])
+    h1 = hash_bundle(["a.yaml"], {"a.yaml": b"original"}.__getitem__)
+    h2 = hash_bundle(["a.yaml"], {"a.yaml": b"modified"}.__getitem__)
     assert h1 != h2
+
+
+def test_hash_bundle_streams_one_file_at_a_time(tmp_path):
+    """Pre-fix red: hash_bundle materialised every file of the checkout in
+    one ``[(path, bytes), ...]`` list before digesting. It now takes paths
+    plus a reader and digests file by file, so only one file's content is
+    held at a time. The digest framing (sorted by path, ``path\\x00content\\x00``)
+    is unchanged, so stored bundle hashes - which drive the sync fast path -
+    are identical to the pre-fix digest computed inline below."""
+    import hashlib
+
+    contents = {
+        "harness.yaml": b"kind: Harness",
+        "templates/one.yaml": b"spec: one",
+        "templates/two.yaml": b"spec: two",
+    }
+    for rel, data in contents.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+
+    # Reference digest: the pre-fix framing, computed inline.
+    h = hashlib.sha256()
+    for rel in sorted(contents):
+        h.update(rel.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(contents[rel])
+        h.update(b"\x00")
+    reference = h.hexdigest()
+
+    reads: list[str] = []
+
+    def read(name: str) -> bytes:
+        reads.append(name)
+        return (tmp_path / name).read_bytes()
+
+    assert hash_bundle(list(contents), read) == reference
+    assert reads == sorted(contents), "one read per file, in sorted order"

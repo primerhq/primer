@@ -285,7 +285,7 @@ async def fetch_harness_metadata(
             overrides_schema = {"type": "object", "properties": {}}
 
         # Bundle hash: every non-.git file under target, path relative to target.
-        files: list[tuple[str, bytes]] = []
+        paths: list[str] = []
         for p in sorted(target.rglob("*")):
             rel = p.relative_to(target)
             parts = rel.parts
@@ -297,8 +297,8 @@ async def fetch_harness_metadata(
                 raise HarnessGitError("harness_symlink_refused", f"{rel.as_posix()}: {reason}")
             if not p.is_file():
                 continue
-            files.append((rel.as_posix(), p.read_bytes()))
-        bundle_hash = hash_bundle(files)
+            paths.append(rel.as_posix())
+        bundle_hash = hash_bundle(paths, lambda name: (target / name).read_bytes())
 
         # Resolve commit SHA from the working clone.
         try:
