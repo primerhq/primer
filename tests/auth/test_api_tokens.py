@@ -34,8 +34,21 @@ def test_hash_token_is_deterministic_sha256():
     assert all(c in "0123456789abcdef" for c in a)
 
 
-def test_extract_prefix_returns_8_chars():
-    assert extract_prefix("primer_pat_abcdefghij") == "primer_p"
+def test_extract_prefix_is_the_8_characters_after_the_fixed_prefix():
+    """Every token starts ``primer_pat_``, so the first 8 characters were the same for every token (review of gaps-security, GS-43): the display prefix
+    is the first 8 characters of the random part, which tell two tokens apart."""
+    assert extract_prefix("primer_pat_abcdefghij") == "abcdefgh"
+    assert extract_prefix("primer_pat_abc") == "abc"
+
+
+def test_two_new_tokens_show_different_prefixes():
+    prefixes = {extract_prefix(mint_plaintext()) for _ in range(20)}
+
+    assert len(prefixes) == 20 and not any(p.startswith("primer_") for p in prefixes)
+
+
+def test_a_plaintext_without_the_known_prefix_keeps_its_first_8_characters():
+    assert extract_prefix("someothertoken") == "someothe"
 
 
 def test_api_token_model_round_trips():
