@@ -644,7 +644,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="topology_drift")
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="topology_drift", node_id=entry.node_id)
                 return
             if _is_value_yield_toolcall(entry):
                 # Value-yielding tool_call node (e.g. ``system__ask_user``):
@@ -696,7 +696,7 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="tool_execution_failed")
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="tool_execution_failed", node_id=entry.node_id)
                     return
                 if entry.row_call_id is not None:
                     yield self._toolcall_answer_event(entry.node_id, context, entry.row_call_id, result)
@@ -734,7 +734,7 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=mapped.error_code)
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=mapped.error_code, node_id=entry.node_id)
                     return
                 self._apply_node_result(entry.node_id, _NodeDone(node_id=entry.node_id, output=NodeOutput(
                     text=mapped.text, parsed=mapped.parsed, history=[],
@@ -826,7 +826,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=rej.ended_detail_code)
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=rej.ended_detail_code, node_id=entry.node_id)
                 return
             except Exception as exc:  # noqa: BLE001 -- map all to node failure
                 if entry.row_call_id is not None:
@@ -866,7 +866,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="tool_execution_failed")
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="tool_execution_failed", node_id=entry.node_id)
                 return
             finally:
                 reset_current_toolcall(call_token)
@@ -911,7 +911,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=mapped.error_code)
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=mapped.error_code, node_id=entry.node_id)
                 return
             tc_out = NodeOutput(
                 text=mapped.text,
@@ -1092,7 +1092,7 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=detail)
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=detail, node_id=ay.node_id)
                     return
                 self._apply_node_result(ay.node_id, _NodeDone(node_id=ay.node_id, output=out, error=None), context, node_states)
                 completed_ids.append(ay.node_id)
@@ -1237,7 +1237,7 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=detail)
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=detail, node_id=tw.node_id)
                     return
                 self._apply_node_result(tw.node_id, _NodeDone(node_id=tw.node_id, output=out, error=None), context, node_states)
                 completed_ids.append(tw.node_id)
@@ -1269,6 +1269,7 @@ class _BaseGraphExecutor(
                 phase="exit",
                 status=_status,
             )
+            await self._log_resumed_node(nid, context.iteration, node_states, getattr(context.nodes.get(nid), "ended_detail", None))
 
         # 01a0812c / 01a08016 (absorbed into this task): compute + fold
         # THIS resume's own completed_ids' successors into self._ready_set
@@ -1422,6 +1423,7 @@ class _BaseGraphExecutor(
         iteration: int,
         node_states: dict[str, NodeRuntimeState],
         ended_detail: str | None,
+        node_id: str | None = None,
     ) -> None:
         """Persist ``ENDED/failed`` AND expose the outcome: the failure exits of :meth:`resume_from_checkpoint`.
 
@@ -1435,6 +1437,8 @@ class _BaseGraphExecutor(
         """
         self._last_ended_reason = "failed"
         self._last_ended_detail = ended_detail
+        if node_id is not None:
+            await self._log_resumed_node(node_id, iteration, node_states, ended_detail)
         await self._save_state(
             iteration=iteration,
             node_states=node_states,
@@ -1442,6 +1446,32 @@ class _BaseGraphExecutor(
             ended_reason="failed",
             ended_detail=ended_detail,
         )
+
+    async def _log_resumed_node(
+        self,
+        nid: str,
+        iteration: int,
+        node_states: dict[str, NodeRuntimeState],
+        ended_detail: str | None,
+    ) -> None:
+        """The per-node completed / failed turn-log record of a node the resume settled (AG-L11a): the main loop writes it for the nodes it runs.
+
+        The node's start was logged before it parked, so there is no duration to report (0) and no superstep id.
+        """
+        w = self._node_turn_logs.get(nid)
+        if w is None:
+            w = self._node_turn_logs[nid] = self._turn_log_factory(nid)
+        rt = node_states.get(nid)
+        now = datetime.now(timezone.utc)
+        if rt is not None and rt.status == NodeRuntimeStatus.ENDED:
+            event: TurnLogCompleted | TurnLogFailed = TurnLogCompleted(seq=0, ts=now, node_id=nid, iteration=iteration)
+        else:
+            event = TurnLogFailed(seq=0, ts=now, node_id=nid, iteration=iteration, error=ProblemDetails(
+                type="/errors/graph-node-failed", title="Graph node failed", status=500,
+                detail=redact_credentials(rt.error if rt is not None and rt.error else "node failed"),
+                extensions={"ended_detail": ended_detail},
+            ))
+        await _safe_graph_turn_log(w, event)
 
     async def _fold_successors_before_park(
         self,

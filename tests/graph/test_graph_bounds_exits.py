@@ -36,6 +36,8 @@ from primer.model.graph import (
     _StaticEdge,
     _ToolCallNode,
 )
+from primer.model.yield_ import Yielded, YieldToWorker
+from primer.observability.turn_log_writer import TurnLogWriter
 from tests.graph.test_max_iterations import _agent, _model
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
 from tests.graph.test_workspace_executor import _make_state_repo
@@ -186,3 +188,68 @@ async def test_a_wide_superstep_never_has_more_node_tasks_alive_than_the_bound()
     baseline = alive["t0"][0]          # tasks alive while one node runs (the test's own and that node's)
     # at most max_parallel_nodes node tasks, plus the one task that starts them, in place of the single node
     assert max(alive["t"]) - baseline <= 2, (baseline, max(alive["t"]))
+
+
+# ---- AG-L11a: turn-log records of resumed nodes ----------------------------------------------------------------------
+
+
+def _gated_graph() -> Graph:
+    return Graph(
+        id="g-gated", description="begin -> t (gated) -> end",
+        nodes=[_BeginNode(id="begin"), _ToolCallNode(id="t", tool_id="x__t", arguments={}), _EndNode(id="end", output_template="ok")],
+        edges=[_StaticEdge(from_node="begin", to_node="t"), _StaticEdge(from_node="t", to_node="end")],
+    )
+
+
+class _CaptureWriter(TurnLogWriter):
+    """Shared across the parked and the resumed executor (a storage writer's seq restarts per process, a deferred concern of its own)."""
+
+    def __init__(self, sink: list, node_id: str) -> None:
+        self._sink, self._node_id = sink, node_id
+
+    async def append(self, event) -> int:
+        self._sink.append((self._node_id, event))
+        return len(self._sink)
+
+    async def aclose(self) -> None:
+        pass
+
+
+async def _park_and_resume(resume_dispatcher):
+    graph = _gated_graph()
+    threads, msgs = _InMemoryStorage(GraphThread), _InMemoryStorage(GraphNodeMessage)
+    sink: list = []
+    thread = await GraphExecutor.open_thread(graph=graph, thread_storage=threads)  # type: ignore[arg-type]
+
+    async def gate(node, arguments):
+        raise YieldToWorker(Yielded(tool_name="_approval", event_key="tool_approval:sid:tc-1"), tool_call_id="tc-1")
+
+    ex1 = _executor(graph, threads, msgs, thread.id, dispatcher=gate)
+    ex1._turn_log_factory = lambda nid: _CaptureWriter(sink, nid)
+    with pytest.raises(YieldToWorker) as parked:
+        async for _ in ex1.invoke([]):
+            pass
+    ex2 = _executor(graph, threads, msgs, thread.id, dispatcher=resume_dispatcher)
+    ex2._turn_log_factory = lambda nid: _CaptureWriter(sink, nid)
+    [_ async for _ in ex2.resume_from_checkpoint(parked.value.graph_checkpoint)]
+    return [ev for nid, ev in sink if nid == "t"]
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_node_gets_its_completed_record():
+    events = await _park_and_resume(_echo)
+
+    assert [type(e).__name__ for e in events] == ["TurnLogStarted", "TurnLogCompleted"]
+    assert events[1].node_id == "t"
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_node_that_fails_gets_its_failed_record():
+    async def boom(node, arguments, bypass_approval=False):
+        raise RuntimeError("tool broke")
+
+    events = await _park_and_resume(boom)
+
+    assert [type(e).__name__ for e in events] == ["TurnLogStarted", "TurnLogFailed"]
+    assert "tool broke" in (events[1].error.detail or "")
+    assert events[1].error.extensions == {"ended_detail": "tool_execution_failed"}
