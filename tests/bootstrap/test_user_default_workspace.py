@@ -196,6 +196,31 @@ async def _migration_23_case(sp, migration) -> None:
     assert (await users.get("user-bob")).default_workspace_id is None
 
 
+async def test_migration_23_records_it_for_the_oldest_enabled_admin(tmp_path):
+    """Final access review F17: a disabled admin, however old, is skipped (as migrations 25 to 27 skip one)."""
+    from primer.model.provider import SqliteConfig
+    from primer.storage.migrations.m023_admin_default_workspace import M023AdminDefaultWorkspace
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "data.sqlite"))
+    await sp.initialize()
+    try:
+        await sp.get_storage(Workspace).create(Workspace(
+            id="primer", template_id="local-default", provider_id="local", created_at=NOW,
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://x", token="t"), access=Access(owners=["user-root"]),
+        ))
+        old = await _user(sp, "user-old", role="admin", age=0)
+        await sp.get_storage(User).update(old.model_copy(update={"disabled": True}))
+        await _user(sp, "user-root", role="admin", age=1)
+
+        await M023AdminDefaultWorkspace().apply(sp)
+
+        assert (await sp.get_storage(User).get("user-root")).default_workspace_id == "primer"
+        assert (await sp.get_storage(User).get("user-old")).default_workspace_id is None
+    finally:
+        await sp.aclose()
+
+
 async def test_two_admins_adopting_concurrently_leave_one_owner(fake_storage_provider):
     sp = fake_storage_provider
     reg = await _setup(sp)

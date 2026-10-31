@@ -51,6 +51,7 @@ class User(Identifiable):  # noqa: N801
 
     role: str = "user"
     created_at: datetime | None = None
+    disabled: bool = False
 
 
 def _owned_by(user_id: str) -> dict[str, Any]:
@@ -79,7 +80,7 @@ class M022WorkspaceOwnership:
     description = "give existing workspaces an owner"
 
     async def apply(self, sp: StorageProvider) -> None:
-        admins = [u for u in await _read_all(sp.get_storage(User)) if u.role == "admin" and u.created_at is not None]
+        admins = [u for u in await _read_all(sp.get_storage(User)) if u.role == "admin" and not u.disabled and u.created_at is not None]
         first_admin = min(admins, key=lambda u: u.created_at).id if admins else None
         if first_admin is None:
             return

@@ -283,6 +283,8 @@ leaves their default workspace in place, reachable only by admins.
 - Migration 24 (`m024_cross_workspace_list_field.py`) stamps `workspace_id` on external tool calls and tool approval
   records from their session, so the cross-workspace lists can filter in storage (6.7).
 - Phase 3 adds migrations 25 to 27 (6.14), and Phase 4 adds migration 28 (6.17).
+- "The first admin" of migrations 21 to 23 is the oldest ENABLED admin, as in migrations 25 to 27: a disabled admin is
+  skipped. An install that ran them before this rule keeps what they wrote (there is no re-run).
 
 ### 6.7 Not yet scoped
 
