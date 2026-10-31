@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from primer.model.access import Access
 from primer.int.claim import ClaimKind
 from primer.model.agent import Agent, AgentModel
 from primer.model.except_ import (
@@ -265,7 +266,7 @@ async def test_create_session_works_with_seeded_agent(
     persists a session whose binding points at an existing Agent row.
     """
     await fake_storage_provider.get_storage(Agent).create(
-        Agent(
+        Agent(access=Access(public=True), 
             id="ag-1", description="x",
             model=AgentModel(profile_id="p--m"),
         ),
@@ -538,7 +539,7 @@ async def _seed_workspace(sp, workspace_id="ws-1", phase="pending") -> None:
 
 async def _seed_agent(sp, agent_id="ag-1") -> None:
     await sp.get_storage(Agent).create(
-        Agent(
+        Agent(access=Access(public=True), 
             id=agent_id,
             description="x",
             model=AgentModel(profile_id="p--m"),
@@ -755,7 +756,7 @@ async def _seed_graph(sp, graph: Graph) -> None:
 
 
 def _runnable_graph(graph_id="gr-run") -> Graph:
-    return Graph(
+    return Graph(access=Access(public=True), 
         id=graph_id,
         description="Begin -> agent -> End",
         nodes=[
@@ -778,7 +779,7 @@ async def test_start_workspace_session_unrunnable_graph_raises_validation(
     session-start (not at graph creation) with a ValidationError -> 422."""
     await _seed_workspace(fake_storage_provider)
     # An empty graph now persists fine, but it is not runnable.
-    await _seed_graph(fake_storage_provider, Graph(id="gr-empty", description="draft", nodes=[], edges=[]))
+    await _seed_graph(fake_storage_provider, Graph(access=Access(public=True), id="gr-empty", description="draft", nodes=[], edges=[]))
     live = _FakeLiveWorkspace()
     deps = _full_deps(
         fake_storage_provider, fake_scheduler, fake_claim_engine, live,

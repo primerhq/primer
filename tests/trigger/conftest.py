@@ -152,9 +152,12 @@ def fake_event_bus() -> _FakeEventBus:
 @pytest.fixture
 async def seeded_agent(fake_storage_provider):
     """Persist a minimal :class:`Agent` row and return it."""
+    from primer.model.access import Access
     from primer.model.agent import Agent, AgentModel
 
+    # Public: a fired run needs READ on its agent, and these tests are not about who may read it.
     agent = Agent(
+        access=Access(public=True),
         id="ag-1",
         description="seeded test agent",
         model=AgentModel(profile_id="p--m"),
@@ -188,11 +191,14 @@ async def seeded_workspace(fake_storage_provider):
 @pytest.fixture
 async def seeded_graph(fake_storage_provider, seeded_agent):
     """Persist a minimal Begin → End :class:`Graph` row and return it."""
+    from primer.model.access import Access
     from primer.model.graph import Graph, _BeginNode, _EndNode, _StaticEdge
 
     begin = _BeginNode(id="begin")
     end = _EndNode(id="end")
+    # Public, as the agent above: a fired graph run needs READ on its graph.
     graph = Graph(
+        access=Access(public=True),
         id="gr-1",
         description="seeded test graph",
         nodes=[begin, end],

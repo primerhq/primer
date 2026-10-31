@@ -18,7 +18,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from primer.api.deps import get_mcp_oauth, get_principal, get_storage_provider, require_admin
 from primer.api.errors import _problem_response, common_responses
+from primer.access.person import person_from_request
+from primer.access.policy import require
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+from primer.model.access import AccessLevel
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.model.provider import Toolset, ToolsetProviderType
 from primer.toolset.oauth.service import (
@@ -181,7 +184,7 @@ async def complete_toolset_sign_in(
 @mcp_oauth_router.get(
     "/toolsets/{toolset_id}/oauth/status",
     response_model=ToolsetAuthStatus,
-    responses=common_responses(404, 500),
+    responses=common_responses(403, 404, 500),
 )
 async def toolset_sign_in_status(
     request: Request,
@@ -190,9 +193,13 @@ async def toolset_sign_in_status(
     service: ToolsetOAuthService = Depends(get_mcp_oauth),
 ) -> ToolsetAuthStatus:
     if toolset_id in RESERVED_TOOLSET_IDS:
+        # Built-in toolsets have no storage row: there is no access to check.
         toolset = Toolset(id=toolset_id, provider=ToolsetProviderType.INTERNAL)
     else:
         toolset = await _stored_toolset(toolset_id, storage_provider)
+        # The sign-in status reads the toolset row: it needs read level, and a row the
+        # caller holds no level on answers like a missing one (access spec 9).
+        require(person_from_request(request), toolset.access, AccessLevel.READ, what=f"Toolset {toolset_id!r}")
     return await service.status(
         toolset,
         redirect_uri=_redirect_uri(service, request, toolset_id),

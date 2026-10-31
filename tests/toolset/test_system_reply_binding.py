@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
+from primer.model.access import Access
 from primer.api.registries import ProviderRegistry
 from primer.mcp.server import current_actor
 from primer.model.access import Access
@@ -177,7 +178,7 @@ def _actor():
 
 
 def _make_channel(ch_id: str = "chan-1") -> Channel:
-    return Channel(
+    return Channel(access=Access(public=True), 
         id=ch_id,
         provider_id="cp-1",
         provider="slack",

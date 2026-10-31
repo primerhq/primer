@@ -90,8 +90,10 @@ async def test_the_list_toolset_tools_system_tool_does_not_hand_the_secret_to_th
     await _create_toolset(client, port, "ts-sys", f"Bearer {KEY}\n")
     _name, (_tool, handler) = _list_toolset_tools_tool(app.state.provider_registry)
 
+    from tests._support.caller import ADMIN_CALLER  # the toolset's creator is the admin; the tool now reads the row's access
+
     with pytest.raises(PrimerError) as raised:
-        await handler({"toolset_id": "ts-sys"})
+        await handler({"toolset_id": "ts-sys"}, ctx=ADMIN_CALLER)
 
     assert _clean(str(raised.value)) and _clean(raised.value.message)
 

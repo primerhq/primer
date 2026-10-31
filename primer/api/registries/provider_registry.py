@@ -440,6 +440,12 @@ class ProviderRegistry:
 
     # ---- Lookups ----------------------------------------------------------
 
+
+    @property
+    def storage_provider(self) -> "StorageProvider":
+        """The storage the registry resolves rows from (read access checks on a toolset row use it)."""
+        return self._sp
+
     async def get_llm(self, provider_id: str) -> LLM:
         async with self._lock:
             cached = self._llm_cache.get(provider_id)

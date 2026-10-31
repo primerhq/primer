@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from primer.model.access import Access
 from primer.model.agent import Agent
 from primer.model.chat import Done, Message, StreamEvent, TextDelta
 from primer.model.graph import Graph, _AgentNodeRef, _BeginNode, _EndNode, _GraphNodeRef, _StaticEdge
@@ -66,7 +67,7 @@ class _Scripted:
 
 def _graph() -> Graph:
     """begin -> plain (no profile) -> pinned (its own profile) -> end."""
-    return Graph(
+    return Graph(access=Access(public=True), 
         id="g-profiles", description="two agent nodes, one with a profile of its own",
         nodes=[
             _BeginNode(id="begin"),
@@ -126,12 +127,12 @@ async def test_without_a_binding_profile_a_profile_less_node_runs_on_its_agent_d
 
 async def test_the_binding_profile_reaches_the_nodes_of_a_subgraph(monkeypatch, tmp_path):
     """A ``graph`` node's child runs in the same run, so its profile-less agent nodes take the binding's profile too."""
-    child = Graph(
+    child = Graph(access=Access(public=True), 
         id="g-child", description="one agent node",
         nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="inner", agent_id="ag-1", input_template="go"), _EndNode(id="end")],
         edges=[_StaticEdge(from_node="begin", to_node="inner"), _StaticEdge(from_node="inner", to_node="end")],
     )
-    parent = Graph(
+    parent = Graph(access=Access(public=True), 
         id="g-parent", description="a graph node",
         nodes=[_BeginNode(id="begin"), _GraphNodeRef(id="sub", graph_id="g-child", input_template="go"), _EndNode(id="end")],
         edges=[_StaticEdge(from_node="begin", to_node="sub"), _StaticEdge(from_node="sub", to_node="end")],

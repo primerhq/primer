@@ -16,6 +16,9 @@ dependency tree at startup.
 
 from __future__ import annotations
 
+from primer.access.person import person_from_ref
+from primer.access.policy import level_of
+
 import logging
 from typing import TYPE_CHECKING
 
@@ -236,7 +239,8 @@ def build_graph_invocation_services(
 
     async def agent_resolver(agent_id: str):
         row = await pool._storage.get_storage(Agent).get(agent_id)
-        if row is None:
+        # The run's person must be able to read it (read = see it, run it): unreadable answers like missing.
+        if row is None or level_of(person_from_ref(initiated_by), row.access) is None:
             raise NotFoundError(f"Agent {agent_id!r} not found")
         return row
 
@@ -260,7 +264,7 @@ def build_graph_invocation_services(
 
     async def graph_resolver(graph_id: str):
         row = await pool._storage.get_storage(Graph).get(graph_id)
-        if row is None:
+        if row is None or level_of(person_from_ref(initiated_by), row.access) is None:
             raise NotFoundError(f"Graph {graph_id!r} not found")
         return row
 
@@ -383,6 +387,14 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # they rank as an ordinary user, never as system (security review A-20).
     # The role is the creator's CURRENT one, capped by the recorded one, and a creator that cannot be resolved refuses the run (G7 ruling 2, G6-6).
     initiated_by = await resolve_run_principal(pool._storage, session)
+    # The turn's person must still be able to read the bound agent (a revoked grant stops the next turn). A frozen snapshot's
+    # access may be stale, so the live row decides.
+    # A pool built without storage (tests only) has no row to ask, as resolve_run_principal does.
+    if pool._storage is not None:
+        # The live row decides; a snapshot whose row was deleted keeps the access it was frozen with.
+        live_agent = agent if binding.agent_snapshot is None else (await pool._storage.get_storage(Agent).get(binding.agent_id) or agent)
+        if live_agent is None or level_of(person_from_ref(initiated_by), live_agent.access) is None:
+            raise NotFoundError(f"Agent {binding.agent_id!r} not found")
     gis = pool._build_graph_invocation_services(
         workspace=workspace,
         workspace_session=agent_session,
@@ -515,7 +527,8 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     async def agent_resolver(agent_id: str):
         agent_storage = pool._storage.get_storage(Agent)
         row = await agent_storage.get(agent_id)
-        if row is None:
+        # A node's agent is run by the run's person: unreadable answers like missing (spec 6.3).
+        if row is None or level_of(person_from_ref(initiated_by), row.access) is None:
             raise NotFoundError(
                 f"Agent {agent_id!r} referenced by graph "
                 f"{graph.id!r} not found"
@@ -542,6 +555,12 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # create_workspace_session inherits it (see build_agent_executor). An
     # unattributed row fails closed, as in build_agent_executor, and the role is the creator's current one (resolve_run_principal).
     initiated_by = await resolve_run_principal(pool._storage, session)
+    # The turn's person must still be able to read the bound graph (a revoked grant stops the next turn); a frozen snapshot's
+    # access may be stale, so the live row decides.
+    if pool._storage is not None:
+        live_graph = graph if binding.graph_snapshot is None else (await pool._storage.get_storage(Graph).get(binding.graph_id) or graph)
+        if live_graph is None or level_of(person_from_ref(initiated_by), live_graph.access) is None:
+            raise NotFoundError(f"Graph {binding.graph_id!r} not found for session {session.id!r}")
 
     async def tool_manager_resolver(agent):
         toolset_ids = _toolset_ids_from_scoped(agent.tools)
@@ -604,7 +623,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     async def graph_resolver(subgraph_id: str):
         graph_storage = pool._storage.get_storage(Graph)
         row = await graph_storage.get(subgraph_id)
-        if row is None:
+        if row is None or level_of(person_from_ref(initiated_by), row.access) is None:
             raise NotFoundError(
                 f"Subgraph {subgraph_id!r} referenced by graph "
                 f"{graph.id!r} not found"
