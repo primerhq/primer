@@ -309,6 +309,17 @@ def grep_text(
     return out, len(hits)
 
 
+def glob_matches(rel: str, pattern: str) -> bool:
+    """Whether grep's ``glob`` filter keeps the file at ``rel`` (relative to the search path).
+
+    A pattern without ``/`` matches the basename, one with ``/`` the relative path. fnmatch's ``*``
+    crosses ``/``, so ``**/`` must also be allowed to match no directory (``**/*.py`` keeps ``a.py``).
+    """
+    if "/" not in pattern:
+        return fnmatch.fnmatch(rel.rsplit("/", 1)[-1], pattern)
+    return fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(rel, pattern.replace("**/", ""))
+
+
 def _collect_files(target: Path, glob_filter: str | None) -> list[Path]:
     if target.is_file():
         return [target]
@@ -316,7 +327,7 @@ def _collect_files(target: Path, glob_filter: str | None) -> list[Path]:
     for p in target.rglob("*"):
         if not p.is_file():
             continue
-        if glob_filter is not None and not fnmatch.fnmatch(p.name, glob_filter):
+        if glob_filter is not None and not glob_matches(p.relative_to(target).as_posix(), glob_filter):
             continue
         out.append(p)
     out.sort(key=lambda p: p.as_posix())
@@ -338,6 +349,9 @@ def _grep_files(
     total = 0
     file_count = 0
     for path in files:
+        rel = workspace_relative(workspace_root, path)
+        if rel is None:
+            continue   # a symlink leading out of the workspace
         try:
             with path.open("rb") as fh:
                 head = fh.read(_BINARY_SNIFF_BYTES)
@@ -349,7 +363,6 @@ def _grep_files(
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        rel = workspace_relative(workspace_root, path)
         lines, count = grep_text(
             text, rel, rx=rx, mode=mode, context=context, multiline=multiline, budget=budget,
         )
@@ -368,6 +381,7 @@ __all__ = [
     "GrepBudget",
     "GrepPattern",
     "compile_grep_pattern",
+    "glob_matches",
     "grep_budget",
     "grep_budget_error",
     "grep_text",

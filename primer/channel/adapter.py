@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from typing import Any
@@ -12,6 +13,8 @@ from primer.model.channel import ChannelProviderType
 # primer.channel; re-exported here because every channel adapter and
 # a good deal of test code imports them from this module.
 from primer.model.envelope import PromptEnvelope, ResponseEnvelope
+
+logger = logging.getLogger(__name__)
 
 # Channels that anchor one thread per chat (multi-type). Telegram has no
 # threads (single-type: one 1:1 chat per channel).
@@ -75,6 +78,37 @@ def format_tool_args(tool_args: dict[str, Any] | None) -> str:
         return json.dumps(tool_args, indent=2, ensure_ascii=False)
     except (TypeError, ValueError):
         return str(tool_args)
+
+
+def utf16_fit(text: str, limit: int) -> int:
+    """How many leading characters of ``text`` fit in ``limit`` UTF-16 code units (a character outside the BMP is two)."""
+    units = 0
+    for i, ch in enumerate(text):
+        units += 2 if ch > "\uffff" else 1
+        if units > limit:
+            return i
+    return len(text)
+
+
+def split_text(text: str, limit: int, *, utf16: bool = False) -> list[str]:
+    """``text`` as consecutive posts of at most ``limit`` characters, in order.
+
+    ``utf16`` counts UTF-16 code units instead, Telegram's measure (Slack and Discord count characters). A post
+    is cut after the last newline, else space, that fits (that separator is dropped), else at the limit.
+    """
+    parts: list[str] = []
+    while (fit := utf16_fit(text, limit) if utf16 else min(limit, len(text))) < len(text):
+        cut = text.rfind("\n", 1, fit + 1)
+        if cut < 0:
+            cut = text.rfind(" ", 1, fit + 1)
+        if cut < 0:
+            parts.append(text[:fit])
+            text = text[fit:]
+        else:
+            parts.append(text[:cut])
+            text = text[cut + 1:]
+    parts.append(text)
+    return parts
 
 
 def attribution_header(env: "PromptEnvelope") -> str:
@@ -265,6 +299,22 @@ class ChannelAdapter(ABC):
             return DecisionRefused(QUESTION_STALE_NOTICE)    # the inbox already logged the refusal
         return True
 
+    async def _map_session_thread(self, anchor: str, *, workspace_id: str, session_id: str) -> None:
+        """Map a thread the bot opened for a session to that session, so a reply there steers it (W35).
+
+        Only for a thread the adapter itself created: a shared anchor (a workspace's or a binding's thread) is never
+        mapped to one of the sessions posting into it. Best effort, like the ask_user row: the post goes out regardless.
+        """
+        if self._sp is None or not anchor:
+            return
+        from primer.channel.correlation import CorrelationStore
+        try:
+            await CorrelationStore(self._sp).upsert_thread_session(
+                channel_id=self._channel.id, anchor=anchor, workspace_id=workspace_id, session_id=session_id,
+            )
+        except Exception:  # noqa: BLE001 - the mapping is best effort; the post must not fail on it
+            logger.warning("channel: failed to map thread %s to session %s", anchor, session_id, exc_info=True)
+
     # -- shared inbound routing --------------------------------------------
 
     async def collect_inbound_media(self, raw: Any) -> list:
@@ -325,4 +375,6 @@ __all__ = [
     "PromptEnvelope",
     "ResponseEnvelope",
     "provider_supports_threads",
+    "split_text",
+    "utf16_fit",
 ]

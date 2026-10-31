@@ -170,11 +170,11 @@ async def test_image_file_becomes_image_part_with_artifact(tmp_path, async_close
     store = _MemArtifacts()
     adapter = _make_adapter(sp, store)
     img = _png_bytes()
-    _FakeAsyncClient._by_url["https://files.slack/img"] = _FakeResponse(img)
+    _FakeAsyncClient._by_url["https://files.slack.com/files-pri/T1-F1/img"] = _FakeResponse(img)
 
     parts = await adapter.collect_inbound_media({
         "files": [{
-            "url_private_download": "https://files.slack/img",
+            "url_private_download": "https://files.slack.com/files-pri/T1-F1/img",
             "mimetype": "image/png", "name": "shot.png",
         }],
     })
@@ -195,11 +195,11 @@ async def test_document_file_becomes_document_part_with_filename(tmp_path, async
     store = _MemArtifacts()
     adapter = _make_adapter(sp, store)
     pdf = b"%PDF-1.4 fake document bytes"
-    _FakeAsyncClient._by_url["https://files.slack/doc"] = _FakeResponse(pdf)
+    _FakeAsyncClient._by_url["https://files.slack.com/files-pri/T1-F2/doc"] = _FakeResponse(pdf)
 
     parts = await adapter.collect_inbound_media({
         "files": [{
-            "url_private_download": "https://files.slack/doc",
+            "url_private_download": "https://files.slack.com/files-pri/T1-F2/doc",
             "mimetype": "application/pdf", "name": "report.pdf",
         }],
     })
@@ -219,11 +219,11 @@ async def test_oversized_file_skipped_turn_lands_as_text(tmp_path, async_closers
     adapter = _make_adapter(sp, store)
     # 21 MiB exceeds the 20 MiB default cap -> MediaTooLarge -> skipped.
     big = b"x" * (21 * 1024 * 1024)
-    _FakeAsyncClient._by_url["https://files.slack/big"] = _FakeResponse(big)
+    _FakeAsyncClient._by_url["https://files.slack.com/files-pri/T1-F3/big"] = _FakeResponse(big)
 
     parts = await adapter.collect_inbound_media({
         "files": [{
-            "url_private_download": "https://files.slack/big",
+            "url_private_download": "https://files.slack.com/files-pri/T1-F3/big",
             "mimetype": "application/pdf", "name": "huge.pdf",
         }],
     })
@@ -237,11 +237,11 @@ async def test_oversized_file_skipped_turn_lands_as_text(tmp_path, async_closers
 async def test_no_artifact_registry_skips_media_gracefully(tmp_path, async_closers):
     sp = await _make_sp(tmp_path, async_closers)
     adapter = _make_adapter(sp, store=None)  # artifact_registry None
-    _FakeAsyncClient._by_url["https://files.slack/img"] = _FakeResponse(_png_bytes())
+    _FakeAsyncClient._by_url["https://files.slack.com/files-pri/T1-F1/img"] = _FakeResponse(_png_bytes())
 
     parts = await adapter.collect_inbound_media({
         "files": [{
-            "url_private_download": "https://files.slack/img",
+            "url_private_download": "https://files.slack.com/files-pri/T1-F1/img",
             "mimetype": "image/png", "name": "shot.png",
         }],
     })
@@ -256,12 +256,12 @@ async def test_download_failure_skips_file_without_raising(tmp_path, async_close
     store = _MemArtifacts()
     adapter = _make_adapter(sp, store)
     # Mapped to a 500 -> download failure -> skip, no raise.
-    _FakeAsyncClient._by_url["https://files.slack/bad"] = _FakeResponse(
+    _FakeAsyncClient._by_url["https://files.slack.com/files-pri/T1-F4/bad"] = _FakeResponse(
         b"", status_code=500)
 
     parts = await adapter.collect_inbound_media({
         "files": [{
-            "url_private_download": "https://files.slack/bad",
+            "url_private_download": "https://files.slack.com/files-pri/T1-F4/bad",
             "mimetype": "image/png", "name": "shot.png",
         }],
     })

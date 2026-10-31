@@ -79,7 +79,10 @@ class Glob(WorkspaceTool):
         if not root.is_dir():
             raise BadRequestError(f"{args.path!r} is not a directory")
 
-        matches = await asyncio.to_thread(_glob_with_mtime, root, args.pattern)
+        try:
+            matches = await asyncio.to_thread(_glob_with_mtime, root, args.pattern, self._root)
+        except (ValueError, NotImplementedError) as exc:   # pathlib refuses '/abs', '**x' and the like
+            raise BadRequestError(f"invalid glob pattern {args.pattern!r}: {exc}") from None
         # Newest first; ties broken alphabetically for determinism.
         matches.sort(key=lambda t: (-t[0], t[1].as_posix()))
 
@@ -95,9 +98,11 @@ class Glob(WorkspaceTool):
         return ToolResult(output="\n".join(rels), truncated=truncated)
 
 
-def _glob_with_mtime(root: Path, pattern: str) -> list[tuple[float, Path]]:
+def _glob_with_mtime(root: Path, pattern: str, workspace_root: Path) -> list[tuple[float, Path]]:
     out: list[tuple[float, Path]] = []
     for p in root.glob(pattern):
+        if workspace_relative(workspace_root, p) is None:
+            continue   # a symlink or '..' leading out of the workspace
         try:
             out.append((p.stat().st_mtime, p))
         except OSError:

@@ -97,6 +97,8 @@ class Edit(WorkspaceTool):
         assert isinstance(args, EditArgs)
         if args.old_string == args.new_string:
             raise BadRequestError("old_string and new_string are identical")
+        if not args.old_string:   # "" matches between every character
+            raise BadRequestError("old_string must not be empty")
         target = resolve_workspace_path(self._root, args.path)
         if not target.exists():
             raise NotFoundError(f"{args.path!r} not found")
@@ -114,9 +116,14 @@ class Edit(WorkspaceTool):
         # Hold the lock across the ENTIRE read-modify-write so the file the
         # diff is computed from is the same one written back.
         async with lock_ctx:
-            original = await asyncio.to_thread(
-                target.read_text, encoding="utf-8"
-            )
+            raw = await asyncio.to_thread(target.read_bytes)
+            try:
+                # Universal newlines, as read_text gave: old_string matches on "\n" whatever the file uses.
+                original = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            except UnicodeDecodeError:
+                raise BadRequestError(
+                    f"{args.path!r} is not UTF-8 text; edit changes UTF-8 files only"
+                ) from None
             count = original.count(args.old_string)
             if count == 0:
                 raise BadRequestError(
@@ -133,8 +140,10 @@ class Edit(WorkspaceTool):
             else:
                 updated = original.replace(args.old_string, args.new_string, 1)
 
+            # A CRLF file stays CRLF (a new_string already holding "\r\n" is not doubled).
+            written = updated.replace("\r\n", "\n").replace("\n", "\r\n") if b"\r\n" in raw else updated
             await asyncio.to_thread(
-                _atomic_write_bytes, target, updated.encode("utf-8")
+                _atomic_write_bytes, target, written.encode("utf-8")
             )
 
         diff_lines = list(
