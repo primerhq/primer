@@ -65,6 +65,16 @@ async def client(app: FastAPI):
 
 async def _seed(app: FastAPI, sid: str, **over) -> WorkspaceSession:
     sp = app.state.storage_provider
+    # The workspace row the session tools read before they act (access control P2: a tool resolves the session's workspace).
+    from pydantic import SecretStr
+
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+
+    if await sp.get_storage(Workspace).get(WID) is None:
+        await sp.get_storage(Workspace).create(Workspace(
+            id=WID, template_id="tpl-1", provider_id="wp-1", created_at=datetime.now(UTC), phase="running",
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://localhost:5959", token=SecretStr("tok")),
+        ))
     if await sp.get_storage(Agent).get(AGENT_ID) is None:
         await sp.get_storage(Agent).create(
             Agent(id=AGENT_ID, description="cancel journey",
