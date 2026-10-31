@@ -300,3 +300,26 @@ async def test_create_session_with_no_manager_identity_fails_closed_to_an_ordina
     body = json.loads(result.output)
     assert body["initiated_by"]["type"] != "system"
     assert body["initiated_by"]["role"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_a_session_started_over_mcp_runs_as_the_token_account(
+    session_toolset,
+    seeded,
+) -> None:
+    """No ctx and a known MCP caller: the session runs as the account behind the token (so it can use what that account can
+    read), never unattributed and never system."""
+    from primer.mcp.server import current_actor
+    from primer.model.principal import Principal
+
+    token = current_actor.set(Principal(type="api_token", id="tok-9", display="t", role="user", source="local", user_id="u-9"))
+    try:
+        result = await session_toolset.call(
+            tool_name="create_workspace_session",
+            arguments={"workspace_id": seeded, "binding": {"kind": "agent", "agent_id": "code-reviewer"}},
+        )
+    finally:
+        current_actor.reset(token)
+    assert not result.is_error, result.output
+    body = json.loads(result.output)
+    assert body["initiated_by"]["id"] == "tok-9" and body["initiated_by"]["user_id"] == "u-9"
