@@ -3333,33 +3333,31 @@ def build_workspaces_toolset(
             )
             return events
 
+        # Bounded long-poll: only when the caller asked to wait and a router is wired. The subscription is opened BEFORE the first drain, so a tick
+        # that lands between that drain and the wait is already queued and ends the wait at once (it used to be missed, and cost the whole
+        # ``wait_seconds``). This never parks the agent turn: one timed wait, then one more drain.
+        sub = tap_router.subscribe(args.workspace_id) if args.wait_seconds > 0 and tap_router is not None else None
         try:
-            events = await _drain()
-        except TapSelectorTimeout as exc:
-            # The selector's LIKE patterns ran out of the read's time budget
-            # (G6-4): a clear error result; the cursor is not advanced.
-            return _err(str(exc), error_type="bad-request")
-
-        # Bounded long-poll: only when the immediate drain is empty AND
-        # the caller asked to wait AND a router is wired. This never parks
-        # the agent turn — it is a single timed wait then one more drain.
-        if not events and args.wait_seconds > 0 and tap_router is not None:
-            sub = tap_router.subscribe(args.workspace_id)
             try:
+                events = await _drain()
+            except TapSelectorTimeout as exc:
+                # The selector's LIKE patterns ran out of the read's time budget
+                # (G6-4): a clear error result; the cursor is not advanced.
+                return _err(str(exc), error_type="bad-request")
+            if not events and sub is not None:
                 try:
-                    await asyncio.wait_for(
-                        sub.__anext__(), timeout=args.wait_seconds
-                    )
+                    await asyncio.wait_for(sub.__anext__(), timeout=args.wait_seconds)
                 except (TimeoutError, StopAsyncIteration):
                     # Timed out (or the subscription ended) — fall through
                     # to one more drain, which may still be empty.
                     pass
-            finally:
+                try:
+                    events = await _drain()
+                except TapSelectorTimeout as exc:
+                    return _err(str(exc), error_type="bad-request")
+        finally:
+            if sub is not None:
                 await sub.aclose()
-            try:
-                events = await _drain()
-            except TapSelectorTimeout as exc:
-                return _err(str(exc), error_type="bad-request")
 
         return _ok(
             {

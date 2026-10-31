@@ -804,3 +804,50 @@ async def test_tap_ends_at_the_first_batch_after_a_revoke(app, workspace_registr
     finally:
         await router.aclose()
         await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_selector_with_an_unknown_event_field_is_a_400_before_any_stream(app, workspace_registry):
+    """Part 2 Task 76 (W26): it used to pass the check and kill the stream at the first record."""
+    from urllib.parse import quote
+
+    wid = "w-badfield"
+    await _ensure_workspace(app, workspace_registry, wid)
+    cookie = await _login_cookie(app)
+    bus, router = await _wire_tap_router(app)
+    try:
+        selector = json.dumps({"events": {"kind": "predicate", "left": {"kind": "field", "name": "bogus"}, "op": "=", "right": {"kind": "value", "value": 1}}})
+        async with _SSEConnection(app, f"/v1/workspaces/{wid}/tap?selector={quote(selector)}", cookie=cookie) as conn:
+            assert conn.status_code == 400
+    finally:
+        await router.aclose()
+        await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_sessions_predicate_the_store_cannot_evaluate_is_a_400_before_any_stream(app, workspace_registry):
+    """Part 2 Task 76 (W26): the sessions predicate is resolved before the 200, so its failure is an answer, not a dead stream."""
+    from urllib.parse import quote
+
+    from primer.model.except_ import BadRequestError
+
+    wid = "w-badsess"
+    await _ensure_workspace(app, workspace_registry, wid)
+    cookie = await _login_cookie(app)
+    store = app.state.storage_provider.get_storage(WorkspaceSession)
+    original_find = store.find
+
+    async def find(predicate, page, **kw):  # the way the SQL stores refuse a field the model does not declare
+        if "no_such_session_field" in repr(predicate):
+            raise BadRequestError("field 'no_such_session_field' is not declared on model 'WorkspaceSession'")
+        return await original_find(predicate, page, **kw)
+
+    store.find = find  # type: ignore[method-assign]
+    bus, router = await _wire_tap_router(app)
+    try:
+        selector = json.dumps({"sessions": {"kind": "predicate", "left": {"kind": "field", "name": "no_such_session_field"}, "op": "=", "right": {"kind": "value", "value": 1}}})
+        async with _SSEConnection(app, f"/v1/workspaces/{wid}/tap?selector={quote(selector)}", cookie=cookie) as conn:
+            assert conn.status_code == 400
+    finally:
+        await router.aclose()
+        await bus.aclose()

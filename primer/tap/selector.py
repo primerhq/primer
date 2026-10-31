@@ -202,7 +202,8 @@ def _like_to_regex(pattern: str, *, flags: int = 0) -> regex.Pattern:
     try:
         # The translation, not the user's text, is compiled: escaping can
         # double its length, so the cap above is the one that applies.
-        return compile_user_regex("".join(["^"] + parts + ["$"]), flags, max_length=None)
+        # DOTALL: % and _ cross newlines, as in SQL. \Z, not $: the pattern must match the WHOLE value (``$`` also matches before a trailing newline).
+        return compile_user_regex("".join(["^"] + parts + [r"\Z"]), flags | regex.DOTALL, max_length=None)
     except UserRegexError as exc:
         raise TapSelectorError(f"a LIKE pattern in the selector cannot be used: {exc}") from None
 
@@ -220,6 +221,24 @@ def _like_patterns(pred: Predicate | None) -> list[tuple[Op, str]]:
     return found
 
 
+def _check_fields(pred: Predicate | None) -> None:
+    """Refuse a field name an event cannot resolve, and a LIKE pattern that is not text, in every comparison of ``pred``."""
+    stack = [pred] if pred is not None else []
+    while stack:
+        node = stack.pop()
+        if node.op in (Op.AND, Op.OR):
+            stack.extend(side for side in (node.left, node.right) if isinstance(side, Predicate))
+            continue
+        if isinstance(node.left, FieldRef):
+            name = node.left.name
+            if not (name in ("class", "class_") or name in _TAP_FIELDS or name.startswith("payload.")):
+                raise TapSelectorError(
+                    f"unknown tap field {name!r}: valid fields are 'class', {sorted(_TAP_FIELDS)} and 'payload.<key>'"
+                )
+        if node.op in (Op.LIKE, Op.ILIKE) and not (isinstance(node.right, Value) and isinstance(node.right.value, str)):
+            raise TapSelectorError(f"a {node.op.value} comparison in the selector needs a text pattern")
+
+
 def check_selector(selector: TapSelector) -> None:
     """Refuse a selector whose ``events`` LIKE patterns are too long or do not compile (:class:`TapSelectorError`).
 
@@ -228,6 +247,7 @@ def check_selector(selector: TapSelector) -> None:
     """
     for op, pattern in _like_patterns(selector.events):
         selector.compiled_like(pattern, regex.IGNORECASE if op is Op.ILIKE else 0)
+    _check_fields(selector.events)
 
 
 def _timeout_error(budget: MatchBudget) -> TapSelectorTimeout:
@@ -281,16 +301,16 @@ def _eval_predicate(pred: Predicate, event: TapEvent, budget: _Eval) -> bool:
         return field_val != rhs
 
     if op is Op.GT:
-        return field_val > rhs  # type: ignore[operator]
+        return _ordered(field_val, rhs, lambda a, b: a > b)
 
     if op is Op.LT:
-        return field_val < rhs  # type: ignore[operator]
+        return _ordered(field_val, rhs, lambda a, b: a < b)
 
     if op is Op.GE:
-        return field_val >= rhs  # type: ignore[operator]
+        return _ordered(field_val, rhs, lambda a, b: a >= b)
 
     if op is Op.LE:
-        return field_val <= rhs  # type: ignore[operator]
+        return _ordered(field_val, rhs, lambda a, b: a <= b)
 
     if op is Op.IN:
         assert isinstance(rhs, list), f"Op.IN expects a list right-hand side, got {type(rhs)}"
@@ -310,20 +330,25 @@ def _eval_predicate(pred: Predicate, event: TapEvent, budget: _Eval) -> bool:
 
     if op is Op.LIKE:
         assert isinstance(rhs, str), f"Op.LIKE expects a string pattern, got {type(rhs)}"
-        assert isinstance(field_val, str), (
-            f"Op.LIKE can only match string fields, got {type(field_val)}"
-        )
-        return _like_matches(rhs, field_val, 0, budget)
+        # SQL: LIKE on a value that is not text (a missing key, a number) is not a match, never an error.
+        return isinstance(field_val, str) and _like_matches(rhs, field_val, 0, budget)
 
     if op is Op.ILIKE:
         assert isinstance(rhs, str), f"Op.ILIKE expects a string pattern, got {type(rhs)}"
-        assert isinstance(field_val, str), (
-            f"Op.ILIKE can only match string fields, got {type(field_val)}"
-        )
-        return _like_matches(rhs, field_val, regex.IGNORECASE, budget)
+        return isinstance(field_val, str) and _like_matches(rhs, field_val, regex.IGNORECASE, budget)
 
     # Should be unreachable if Op enum is exhaustive, but guard anyway.
     raise NotImplementedError(f"Unsupported Op: {op!r}")  # pragma: no cover
+
+
+def _ordered(left: Any, right: Any, compare: Any) -> bool:
+    """``compare(left, right)`` with SQL semantics: a missing value or values that cannot be ordered against each other are not a match."""
+    if left is None or right is None:
+        return False
+    try:
+        return bool(compare(left, right))
+    except TypeError:
+        return False
 
 
 def _like_matches(pattern: str, value: str, flags: int, ctx: _Eval) -> bool:
