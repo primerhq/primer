@@ -1,6 +1,6 @@
 ---
 title: "Sharing and access"
-summary: "Who may read, change, share or delete an agent, graph, toolset, template, channel, collection, trigger or harness, how to share one, and who may use models, providers and tools."
+summary: "Who may read, change, share or delete a shared item (agent, graph, toolset, channel, collection, trigger, harness), and who may use models and tools."
 tools: [system__get_entity_access, system__set_entity_access, system__lookup_users]
 related: [start-here/roles-and-approvals, agents/create-and-edit]
 order: 60
