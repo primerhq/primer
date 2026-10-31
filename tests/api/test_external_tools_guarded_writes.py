@@ -80,41 +80,55 @@ async def _steer_result(client, wid: str):
     )
 
 
-async def test_the_yields_cancel_route_racing_a_steer_result_leaves_completed(
-    app, client, wsr, sp, monkeypatch,
+@pytest.mark.parametrize("first", ["cancel", "steer"])
+async def test_the_first_of_a_cancel_and_a_steer_result_decides_the_call_and_every_record_agrees(
+    app, client, wsr, sp, monkeypatch, first: str,
 ) -> None:
-    """N53d. A single-event external park on ``tc-1``, its row ``pending``. The yields-cancel route (R_c) publishes
-    the cancelled marker on a bus that delivers nothing, calls ``flip_external_row`` and is held at that function's
-    ``cancelled`` write; the steer carrying the result (R_s) runs to completion meanwhile; then R_c is released.
-    R_s's ``completed`` stands, the park carries R_s's payload, and R_c still answers 202 (its row write is best
-    effort, so a rejected write is silent)."""
+    """GS-6 ruling. A single-event external park on ``tc-1``, its row ``pending``; the yields-cancel route (R_c) and the
+    steer carrying the result (R_s) race. The first to take the park decides, and the park and the call's row agree.
+
+    * cancel first: R_c's park flip lands and R_c is held at its ``cancelled`` row write while R_s runs. R_s answers
+      409 ``already_decided`` and writes nothing; released, R_c answers 202 and the row is ``cancelled`` with no result.
+    * steer first: R_s completes the call; R_c then answers 409 ``already_decided``, publishes nothing and leaves the
+      row ``completed`` with the result."""
     bus = _RecordingBus()
     app.state.event_bus = bus
     wid = await _parked_external_session(client, wsr, sp)
     await _seed_call(sp, "sess-1")
     calls = sp.get_storage(ExternalToolCall)
-    held = hold_write(monkeypatch, calls, row_id=ROW_ID, status="cancelled")
     key = "external_tool:sess-1:tc-1"
 
-    cancel_request = asyncio.create_task(
-        client.post("/v1/sessions/sess-1/yields/tc-1/cancel", json={"reason": "operator"}),
-    )
-    await held.wait_arrived()
-    r_s = await _steer_result(client, wid)
-    await held.release()
-    r_c = await cancel_request
+    if first == "cancel":
+        held = hold_write(monkeypatch, calls, row_id=ROW_ID, status="cancelled")
+        cancel_request = asyncio.create_task(
+            client.post("/v1/sessions/sess-1/yields/tc-1/cancel", json={"reason": "operator"}),
+        )
+        await held.wait_arrived()
+        r_s = await _steer_result(client, wid)
+        await held.release()
+        r_c = await cancel_request
+        loser, winner = r_s, r_c
+    else:
+        r_s = await _steer_result(client, wid)
+        r_c = await client.post("/v1/sessions/sess-1/yields/tc-1/cancel", json={"reason": "operator"})
+        loser, winner = r_c, r_s
 
+    assert 200 <= winner.status_code < 300, winner.text
+    assert loser.status_code == 409, loser.text
+    assert loser.json()["extensions"]["code"] == "already_decided"
     row = await calls.get(ROW_ID)
-    assert row.status == "completed"
-    assert row.result == RESULT
-    assert row.is_error is False
     session = await sp.get_storage(WorkspaceSession).get("sess-1")
     assert session.parked_status == "resumable"
-    assert session.parked_state["resume_event_payload"] == {"result": RESULT, "is_error": False, WAKE_PARK_KEY: session.parked_at.isoformat(), WAKE_ENTRY_KEY: ROW_ID}
-    assert 200 <= r_s.status_code < 300, r_s.text
-    assert r_c.status_code == 202, r_c.text
-    # R_c did publish its cancelled marker; nothing delivered it
-    assert any(k == key and p.get("__yield_cancelled__") for k, p in bus.published)
+    payload = session.parked_state["resume_event_payload"]
+    cancels = [p for k, p in bus.published if k == key and p.get("__yield_cancelled__")]
+    if first == "cancel":
+        assert (row.status, row.result, row.is_error) == ("cancelled", {"cancelled": True, "reason": "operator"}, True)
+        assert payload["__yield_cancelled__"] is True and "result" not in payload
+        assert len(cancels) == 1
+    else:
+        assert (row.status, row.result, row.is_error) == ("completed", RESULT, False)
+        assert payload == {"result": RESULT, "is_error": False, WAKE_PARK_KEY: session.parked_at.isoformat(), WAKE_ENTRY_KEY: ROW_ID}
+        assert cancels == []
 
 
 @pytest.mark.parametrize("listing", ["global", "session_pending"])
