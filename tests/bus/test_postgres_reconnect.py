@@ -155,11 +155,10 @@ async def test_invalidation_reconnect_flushes_registry_caches():
     registry = ProviderRegistry(storage_provider=object())
     await registry.bind_invalidation_bus(inv_bus)
     try:
-        # bind creates one EventBus subscription per topic (4), each on its
-        # own LISTEN connection. Wait until all are listening.
-        await _wait_for(
-            lambda: sum(1 for c in pool.conns if c.listened) >= 4
-        )
+        # bind creates one EventBus subscription per topic (4); they share the
+        # process's single LISTEN connection. Wait until it is listening.
+        await _wait_for(lambda: pool.conns and pool.conns[0].listened)
+        assert len(pool.conns) == 1
 
         # Seed every cache so we can observe the wholesale flush.
         registry._llm_cache["llm-1"] = _StubAdapter()

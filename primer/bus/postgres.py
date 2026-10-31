@@ -40,6 +40,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from primer.bus._mailbox import DEFAULT_QUEUE_MAXSIZE, Mailbox, matches
 from primer.int.event_bus import Event, EventBus, EventSubscription
 from primer.model.except_ import ProviderError
 
@@ -95,7 +96,11 @@ class _PostgresSubscription(EventSubscription):
         reconnect_seconds: float,
         on_reconnect=None,
         on_close=None,
+        on_event=None,
     ) -> None:
+        # ``on_event``: when given, a decoded event goes to it instead of this object's own queue. The bus uses ONE such supervisor per process as its
+        # shared listener and fans events out to its subscriptions in process.
+        self._on_event = on_event
         self._acquire = acquire
         self._release = release
         self._reconnect_seconds = reconnect_seconds
@@ -162,6 +167,9 @@ class _PostgresSubscription(EventSubscription):
                 "PostgresEventBus: malformed NOTIFY payload %r -- dropped",
                 payload,
             )
+            return
+        if self._on_event is not None:
+            self._on_event(event)
             return
         # put_nowait is fine -- the queue is unbounded.
         self._queue.put_nowait(event)
@@ -311,6 +319,55 @@ class _PostgresSubscription(EventSubscription):
         self._supervisor = asyncio.create_task(self._run())
 
 
+class _BusSubscription(EventSubscription):
+    """One subscriber of a :class:`PostgresEventBus`: a bounded mailbox the bus fans matching events into.
+
+    It holds no connection of its own; the bus keeps a single shared LISTEN per process (``PostgresEventBus._listener``) and routes each decoded
+    notification to the mailboxes that want its key.
+    """
+
+    def __init__(
+        self,
+        bus: "PostgresEventBus",
+        *,
+        key: str | None,
+        prefix: str | None,
+        suffix: str | None,
+        coalesce: bool,
+        on_reconnect: Callable[[], None] | None,
+        maxsize: int,
+    ) -> None:
+        self._bus = bus
+        self._key = key
+        self._prefix = prefix
+        self._suffix = suffix
+        self._on_reconnect = on_reconnect
+        self._mailbox = Mailbox(maxsize, coalesce=coalesce, on_loss=on_reconnect)
+        self._closed = False
+
+    def wants(self, event_key: str) -> bool:
+        return matches(self._key, self._prefix, event_key, self._suffix)
+
+    def __aiter__(self) -> "_BusSubscription":
+        return self
+
+    async def __anext__(self) -> Event:
+        return await self._mailbox.next()
+
+    async def ready(self, timeout: float | None = DEFAULT_READY_TIMEOUT_SECONDS) -> None:
+        listener = self._bus._listener
+        if listener is not None:
+            await listener.ready(timeout)
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._bus._unsubscribe(self)
+        self._mailbox.close()
+        await self._bus._release_listener_if_idle()
+
+
 class PostgresEventBus(EventBus):
     """LISTEN/NOTIFY-backed bus piggybacking on the existing storage pool.
 
@@ -325,9 +382,11 @@ class PostgresEventBus(EventBus):
         storage: "PostgresStorageProvider",
         *,
         reconnect_seconds: float = DEFAULT_LISTEN_RECONNECT_SECONDS,
+        queue_maxsize: int = DEFAULT_QUEUE_MAXSIZE,
     ) -> None:
         self._storage = storage
         self._reconnect_seconds = reconnect_seconds
+        self._queue_maxsize = queue_maxsize
         self._closed = False
         # Track live subscriptions so aclose can drop them. A set (not a list)
         # so each subscription's aclose() can deregister itself in O(1) and a
@@ -335,8 +394,14 @@ class PostgresEventBus(EventBus):
         # the bus accumulated a dead _PostgresSubscription per subscribe()
         # for its entire lifetime (an unbounded leak under high subscribe/
         # close churn, e.g. one short-lived subscription per session turn).
-        self._subs: set[_PostgresSubscription] = set()
-        # Metric: number of LISTEN reconnects across all subscriptions.
+        self._subs: set[_BusSubscription] = set()
+        # Routing: subscriptions asking for one exact key, and the rest (all events, or a prefix), checked per event.
+        self._by_key: dict[str, set[_BusSubscription]] = {}
+        self._other: set[_BusSubscription] = set()
+        # The ONE LISTEN connection of this process (a supervised _PostgresSubscription in "fan-out" mode), started by the first subscription and
+        # released with the last. Before this every subscription (one per running turn) held its own pooled connection.
+        self._listener: _PostgresSubscription | None = None
+        # Metric: number of LISTEN reconnects of the shared listener.
         self._listen_reconnects_total: int = 0
 
     async def initialize(self) -> None:
@@ -348,18 +413,58 @@ class PostgresEventBus(EventBus):
         if self._closed:
             return
         self._closed = True
-        # Iterate a snapshot: each sub.aclose() deregisters itself via the
-        # on_close hook, mutating self._subs mid-loop, so we must not iterate
-        # the live set directly.
+        # Iterate a snapshot: each sub.aclose() deregisters itself, mutating self._subs mid-loop.
         for sub in list(self._subs):
             await sub.aclose()
         self._subs.clear()
+        await self._release_listener_if_idle()
 
-    def _unsubscribe(self, sub: "_PostgresSubscription") -> None:
-        """Drop *sub* from the live registry. Idempotent (discard, not
-        remove) so a sub that closes after the bus already cleared the set
-        -- or closes twice -- never raises."""
+    def _unsubscribe(self, sub: "_BusSubscription") -> None:
+        """Drop *sub* from the live registry and the routing tables. Idempotent."""
         self._subs.discard(sub)
+        self._other.discard(sub)
+        if sub._key is not None:
+            keyed = self._by_key.get(sub._key)
+            if keyed is not None:
+                keyed.discard(sub)
+                if not keyed:
+                    del self._by_key[sub._key]
+
+    def _ensure_listener(self) -> "_PostgresSubscription":
+        if self._listener is None:
+            self._listener = _PostgresSubscription(
+                acquire=self._storage.pool.acquire,
+                release=self._storage.pool.release,
+                reconnect_seconds=self._reconnect_seconds,
+                on_reconnect=self._on_listener_reconnect,
+                on_event=self._fan_out,
+            )
+            self._listener._start()
+        return self._listener
+
+    async def _release_listener_if_idle(self) -> None:
+        """Stop the shared LISTEN once nothing is subscribed (the connection goes back to the pool)."""
+        if self._subs or self._listener is None:
+            return
+        listener, self._listener = self._listener, None  # a subscribe during the await below starts a fresh listener
+        await listener.aclose()
+
+    def _on_listener_reconnect(self) -> None:
+        # One reconnect of the shared connection: count it once, tell every subscription (each caller's hook must never break the supervisor).
+        self._listen_reconnects_total += 1
+        for sub in list(self._subs):
+            if sub._on_reconnect is not None:
+                try:
+                    sub._on_reconnect()
+                except Exception:  # noqa: BLE001 -- never break the loop
+                    logger.exception("PostgresEventBus: subscribe on_reconnect hook raised; continuing")
+
+    def _fan_out(self, event: Event) -> None:
+        """Hand one decoded notification to the subscriptions that want its key (decoded once for the whole process)."""
+        targets = list(self._by_key.get(event.event_key, ()))
+        targets.extend(sub for sub in self._other if sub.wants(event.event_key))
+        for sub in targets:
+            sub._mailbox.offer(event)
 
     async def publish(
         self,
@@ -400,34 +505,22 @@ class PostgresEventBus(EventBus):
         self,
         *,
         on_reconnect: Callable[[], None] | None = None,
-    ) -> _PostgresSubscription:
+        key: str | None = None,
+        prefix: str | None = None,
+        suffix: str | None = None,
+        coalesce: bool = False,
+    ) -> _BusSubscription:
         if self._closed:
             raise RuntimeError("subscribe on closed PostgresEventBus")
-
-        def _on_reconnect() -> None:
-            # Always bump the bus's own reconnect metric, then fan out to
-            # the caller's hook (if any). The caller's callback must never
-            # break the supervisor's reconnect loop, so its exceptions are
-            # logged and swallowed.
-            self._listen_reconnects_total += 1
-            if on_reconnect is not None:
-                try:
-                    on_reconnect()
-                except Exception:  # noqa: BLE001 -- never break the loop
-                    logger.exception(
-                        "PostgresEventBus: subscribe on_reconnect hook raised; "
-                        "continuing",
-                    )
-
-        sub = _PostgresSubscription(
-            acquire=self._storage.pool.acquire,
-            release=self._storage.pool.release,
-            reconnect_seconds=self._reconnect_seconds,
-            on_reconnect=_on_reconnect,
-            on_close=self._unsubscribe,
+        sub = _BusSubscription(
+            self, key=key, prefix=prefix, suffix=suffix, coalesce=coalesce, on_reconnect=on_reconnect, maxsize=self._queue_maxsize,
         )
-        sub._start()
         self._subs.add(sub)
+        if key is not None:
+            self._by_key.setdefault(key, set()).add(sub)
+        else:
+            self._other.add(sub)
+        self._ensure_listener()
         return sub
 
     def metrics_snapshot(self) -> dict[str, Any]:

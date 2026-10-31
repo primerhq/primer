@@ -84,7 +84,7 @@ async def fire_and_hold(
         )
         return HeldFire(fire_result=result, timed_out=True)
 
-    sub = deps.event_bus.subscribe()
+    sub = deps.event_bus.subscribe(prefix=_TERMINAL_PREFIX, suffix=_TERMINAL_SUFFIX)  # only terminal events: nothing else can be dropped for them
     await sub.ready()  # listening before the fire publishes its wake
     try:
         result = await fire_trigger(
