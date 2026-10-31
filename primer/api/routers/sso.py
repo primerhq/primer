@@ -91,6 +91,7 @@ from primer.api.deps import (
     get_user_storage,
 )
 from primer.api.routers.auth import _set_session_cookie
+from primer.api.user_default import ensure_default_for_request
 from primer.auth import oidc
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.oidc import OidcProvider, UserIdentity
@@ -684,6 +685,7 @@ async def _complete_oidc_flow(
         email=email,
     )
     _set_session_cookie(request, response, user, src=provider.id)
+    await ensure_default_for_request(request, user)
     logger.info(
         "sso.callback success provider_id=%s user_id=%s", provider.id, user.id,
     )

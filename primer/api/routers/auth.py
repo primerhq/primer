@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field
 
 from primer.api.deps import get_storage_provider, require_auth
 from primer.api.errors import common_responses
+from primer.api.user_default import ensure_default_for_request
 from primer.auth.passwords import hash_password, verify_password
 from primer.auth.throttle import LoginThrottle
 from primer.auth.tokens import sign_session
@@ -106,6 +107,14 @@ class AuthStatus(BaseModel):
         default=False,
         description="True if the logged-in user must rotate their password "
         "before using the app.",
+    )
+    default_workspace_id: str | None = Field(
+        default=None,
+        description=(
+            "The caller's own default workspace (access-control spec 6.7): the private workspace a full user gets at their first "
+            "sign-in. For an auth-disabled install, the install-wide default. Unset when signed out, for a restricted user, "
+            "and for an API token's owner who has not signed in yet."
+        ),
     )
     setup_complete: bool = Field(
         default=False,
@@ -283,7 +292,16 @@ async def auth_status(request: Request) -> AuthStatus:
     setup = await evaluate_setup_state(get_storage_provider(request))
     sign_in_method, sign_in_provider = await _sign_in_of(request)
     actor = getattr(request.state, "actor", None)
+    default_workspace_id: str | None = None
+    if user is not None and actor is not None and actor.type == "user":
+        # An existing cookie session: a user promoted from restricted since their last sign-in gets the workspace here.
+        default_workspace_id = await ensure_default_for_request(request, user, fast=True)
+    elif actor is not None and actor.type == "system":
+        from primer.bootstrap.prime import resolve_default_workspace_id
+
+        default_workspace_id = await resolve_default_workspace_id(get_storage_provider(request))
     return AuthStatus(
+        default_workspace_id=default_workspace_id,
         has_user=has_user,
         authenticated=user is not None,
         username=user.username if user is not None else None,
@@ -424,6 +442,7 @@ async def login(
         )
     # Signed with the epoch the row holds NOW, so a login that finishes after a revocation is valid.
     _set_session_cookie(request, response, stored, remember=body.remember)
+    await ensure_default_for_request(request, stored)
     logger.info(
         "auth.login success username=%s remember=%s", username, body.remember,
     )

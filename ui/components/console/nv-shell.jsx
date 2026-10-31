@@ -173,7 +173,7 @@ function NV_usernameOf(status) {
   return status.username;
 }
 // The workspace the console opens when the address names none (pivot P2 Task 14): the row GET /v1/workspaces flags with the response-only
-// is_default (prime, the default workspace), else the first listed (an older server sends no flag; the list is every page, up to the page cap), else none.
+// is_default (the CALLER's own default workspace: the server flags per person, access-control spec 6.7), else the first listed (an older server sends no flag; the list is every page, up to the page cap), else none.
 function NV_defaultWid(items) {
   var rows = items || [];
   for (var i = 0; i < rows.length; i++) {
