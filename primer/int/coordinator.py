@@ -42,6 +42,7 @@ class InvalidationTopic(str, Enum):
     WORKSPACE_PROVIDER = "workspace_provider"
     HARNESS = "harness"
     ARTIFACT_STORAGE_PROVIDER = "artifact_storage_provider"
+    TOOL_APPROVAL_POLICY = "tool_approval_policy"
 
 
 ROLE_TIMER_SCHEDULER = "timer-scheduler"
