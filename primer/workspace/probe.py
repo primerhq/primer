@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 _FAILS_BEFORE_FAILED = 3
 _HITS_BEFORE_RUNNING = 3
 _LIST_PAGE_SIZE = 200
+#: The least time one workspace's ping gets, whatever the interval (the bound is the interval, at least this): a test-sized
+#: interval must not turn a real answer into a miss.
+_MIN_PING_TIMEOUT_S = 5.0
 
 
 class WorkspaceProbeTask:
@@ -176,15 +179,21 @@ class WorkspaceProbeTask:
         """Ping one workspace and update its row with the result."""
         ok = False
         fail_reason: str | None = None
+        # Each ping is bounded (review W1): a runtime that cannot be reached kept ``ping`` waiting for a reconnect that never came, and
+        # with it the whole tick, so no other workspace was probed again. The bound covers resolving the handle too (a re-attach).
+        timeout = max(self._interval, _MIN_PING_TIMEOUT_S)
         try:
-            handle = await self._registry.get_workspace(ws.id)
-            ok = bool(await handle.ping())
+            async with asyncio.timeout(timeout):
+                handle = await self._registry.get_workspace(ws.id)
+                ok = bool(await handle.ping())
         except WorkspaceRefusedError:
             # The deployment refuses this workspace's provider (a local one where the topology forbids it,
             # ticket 01a1072f). The workspace is intact, so this is neither a hit nor a miss: counting it would
             # flip the row to failed and end every open session on it workspace_lost, which is permanent.
             # Leave the row and its streaks exactly as they are.
             return
+        except TimeoutError:
+            fail_reason = f"the runtime did not answer within {timeout:g}s"
         except Exception as exc:  # noqa: BLE001 -- treat as a miss
             fail_reason = f"{type(exc).__name__}: {exc}"
 

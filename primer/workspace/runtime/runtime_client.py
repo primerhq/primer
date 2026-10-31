@@ -128,6 +128,9 @@ class RuntimeClient:
 
     _HEARTBEAT_INTERVAL_S: float = 15.0
     _HEARTBEAT_MAX_MISSED: int = 3
+    # How long a HEALTH request (``ping``, ``inspect``, the heartbeat) waits for its answer, connection included: a client
+    # whose reconnects keep failing, or a runtime that went silent, must not hold the caller for ever (review W1, W22).
+    _HEALTH_TIMEOUT_S: float = 10.0
     _RECONNECT_DELAYS: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
 
     def __init__(
@@ -252,9 +255,10 @@ class RuntimeClient:
         the connection is down or the runtime responds with ``ok=false``.
         Used by :meth:`primer.workspace.runtime.ws_sandbox.WSSandbox.ping`
         and the Phase-7 workspace probe task; callers wrap the
-        :class:`Exception` into a ``False`` return value.
+        :class:`Exception` into a ``False`` return value. Bounded by
+        ``_HEALTH_TIMEOUT_S`` (``TimeoutError`` past it).
         """
-        await self._send_request(OpName.HEALTH, {})
+        await self._send_request(OpName.HEALTH, {}, timeout=self._HEALTH_TIMEOUT_S)
 
     async def read_file(self, path: str) -> bytes:
         result = await self._send_request(OpName.READ_FILE, {"path": path})
@@ -609,20 +613,23 @@ class RuntimeClient:
         self._next_req_id += 1
         return rid
 
-    async def _send_request(self, op: OpName, args: dict[str, Any]) -> dict[str, Any]:
+    async def _send_request(self, op: OpName, args: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
         """Send a single-shot request and wait for the response.
 
         Raises :class:`RuntimeError` if the server responds with ok=false.
         Raises :class:`RuntimeError` with code EPROTOCOL if the connection
-        drops while the request is in-flight.
+        drops while the request is in-flight. With *timeout*, raises
+        ``TimeoutError`` when the answer (the wait for a connection
+        included) takes longer.
         """
         req_id = self._alloc_req_id()
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[Any] = loop.create_future()
         self._pending[req_id] = fut
         try:
-            await self._send_raw(Request(req_id=req_id, op=op, args=args))
-            return await fut
+            async with asyncio.timeout(timeout):
+                await self._send_raw(Request(req_id=req_id, op=op, args=args))
+                return await fut
         finally:
             self._pending.pop(req_id, None)
             if fut.done() and not fut.cancelled():
