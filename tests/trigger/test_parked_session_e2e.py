@@ -32,6 +32,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from primer.int.claim import ClaimKind
+from primer.model.access import Access
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     DelayedTriggerConfig,
     Subscription,
@@ -48,6 +50,10 @@ from primer.trigger.dispatch import fire_trigger
 from primer.trigger.subscribers import DispatchDeps
 from primer.workspace.session_factory import SessionFactoryDeps, create_session
 
+
+
+# Who parks: a person the subscription is owned by (a fire of an ownerless subscription is refused, access-control P3 Task 4).
+_PARKER = PrincipalRef.system()
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -69,6 +75,8 @@ async def _seed_trigger(
         enabled=True,
         next_fire_at=_now() + timedelta(seconds=30),
         created_at=_now(),
+        # Readable by whoever parks on it (parking needs read on the trigger, access-control P3 Task 4).
+        access=Access(public=True),
     )
     await triggers.create(t)
     return t
@@ -132,6 +140,7 @@ async def test_parked_session_e2e_subscribe_fire_resume(
         tool_call_id=tool_call_id,
         session_id=session.id,
         workspace_id=seeded_workspace.id,
+        initiated_by=_PARKER,
     )
     with pytest.raises(YieldToWorker) as info:
         await toolset.call(
@@ -268,6 +277,7 @@ async def test_parked_session_e2e_with_payload_template(
         tool_call_id=tool_call_id,
         session_id=session.id,
         workspace_id=seeded_workspace.id,
+        initiated_by=_PARKER,
     )
     with pytest.raises(YieldToWorker) as info:
         await toolset.call(
@@ -410,6 +420,7 @@ async def test_parked_session_e2e_session_unparked_before_fire(
         tool_call_id="tc-unpark-1",
         session_id=session.id,
         workspace_id=seeded_workspace.id,
+        initiated_by=_PARKER,
     )
     with pytest.raises(YieldToWorker) as info:
         await toolset.call(

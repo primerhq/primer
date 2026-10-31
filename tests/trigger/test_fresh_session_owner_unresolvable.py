@@ -96,12 +96,23 @@ async def test_a_fire_whose_subscription_owner_is_gone_is_refused_and_makes_no_s
 
 
 @pytest.mark.parametrize("kind", ["agent", "graph"])
-@pytest.mark.parametrize("owner", [USER, None], ids=["a current user", "a row saved before owners were recorded"])
-async def test_a_fire_whose_owner_resolves_or_was_never_recorded_is_not_refused_for_it(fake_storage_provider, kind, owner):
+async def test_a_fire_whose_owner_resolves_is_not_refused_for_it(fake_storage_provider, kind):
     sp = fake_storage_provider
     await _ws(sp)
     await sp.get_storage(User).create(User(id="u-ada", username="ada", created_at=NOW, role="admin"))
 
-    res = await _fire(sp, kind, owner)
+    res = await _fire(sp, kind, USER)
 
     assert res.error_code == "dispatch_failed", res
+
+
+@pytest.mark.parametrize("kind", ["agent", "graph"])
+async def test_a_fire_of_a_row_saved_before_owners_were_recorded_is_refused(fake_storage_provider, kind):
+    """Migration 24 gives every legacy subscription its trigger's owner; one still without an owner is refused (fail closed)."""
+    sp = fake_storage_provider
+    await _ws(sp)
+
+    res = await _fire(sp, kind, None)
+
+    assert (res.ok, res.error_code) == (False, "target_out_of_reach"), res
+    assert await _sessions(sp) == []

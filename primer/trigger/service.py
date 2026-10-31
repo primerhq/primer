@@ -6,6 +6,14 @@ and the management toolset (``primer.toolset.trigger``) call into it,
 so behaviour stays consistent across surfaces.
 
 Typed exceptions are mapped to HTTP error envelopes by the router.
+
+Access (access-control plan P3 Task 4, Decision 3): a trigger is owned and shareable, and its subscriptions inherit it. Every
+function that takes ``person`` enforces the level on the trigger: read sees it and its subscriptions, full edits it, fires it
+and manages its subscriptions, owner deletes it, rotates its webhook token and shares it. A trigger the person holds no level
+on raises :class:`TriggerNotFound` (exactly as an unknown id); too low a level raises
+:class:`primer.model.except_.AccessDeniedError`. ``person=None`` is an internal call (the platform: the dispatcher, the
+delete cascade), which is not gated; every REST route and tool passes the caller. Who a fire runs as is unchanged: the
+trigger's ``owner`` (its last saver) and each subscription's owner (:mod:`primer.trigger.owner`).
 """
 
 from __future__ import annotations
@@ -15,11 +23,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from primer.access.person import Person
+from primer.access.policy import require, visible_predicate
+from primer.access.service import update_keeping_access
+from primer.model.access import Access, AccessLevel
 from primer.model.event_matcher import validate_text_pattern
 from primer.model.except_ import NotFoundError
-from primer.access.person import Person
 from primer.model.principal import PrincipalRef
-from primer.model.storage import OffsetPage, Op
+from primer.model.storage import OffsetPage, Op, Predicate
 from primer.model.trigger import (
     PARALLELISM_VALUES,
     ExplicitReplyTarget,
@@ -112,15 +123,6 @@ async def _validate_explicit_reply_target(reply_target: Any, deps: "ServiceDeps"
 _SECRET_MASK = "**********"
 
 
-class TriggerForbidden(Exception):
-    """The caller may not change this trigger's secrets: only its owner or an admin may (lead review of #491, round 2)."""
-
-
-class TriggerOutranked(Exception):
-    """The caller may not fire this trigger by hand: its owner outranks the caller (ticket 01a16e65-12d1,
-    :func:`primer.trigger.owner.refuse_fire_now`). ``str()`` is the refusal's words. Nothing was fired."""
-
-
 class WebhookTokenNotFound(Exception):
     """No trigger found for the supplied webhook token."""
 
@@ -156,6 +158,23 @@ class ServiceDeps:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _require_trigger(trigger_id: str, person: Person | None, need: AccessLevel, deps: "ServiceDeps") -> Trigger:
+    """The trigger row, after enforcing ``need`` for ``person`` (``None``: an internal call, not gated).
+
+    No row, or no level, raises :class:`TriggerNotFound` (an out-of-access trigger answers exactly like an unknown id); too low
+    a level raises :class:`AccessDeniedError` (403 ``access_denied``, tool ``forbidden``).
+    """
+    trigger = await deps.storage_provider.get_storage(Trigger).get(trigger_id)
+    if trigger is None:
+        raise TriggerNotFound(trigger_id)
+    if person is not None:
+        try:
+            require(person, trigger.access, need, what=f"Trigger {trigger_id!r}")
+        except NotFoundError:
+            raise TriggerNotFound(trigger_id) from None
+    return trigger
 
 
 def _mint_webhook_token() -> str:
@@ -237,9 +256,13 @@ async def create_trigger(
     config,
     enabled: bool = True,
     owner: PrincipalRef | None = None,
+    person: Person | None = None,
     deps: ServiceDeps,
 ) -> Trigger:
     """Create a new Trigger row.
+
+    ``person`` (the caller) becomes its sole owner (access); with no user id (an admin-managed or internal create) the row is
+    admin-only. A body never chooses the access.
 
     ``owner`` is the caller (the REST actor or the calling run's
     ``initiated_by``); a fired run is ranked no higher than it (see
@@ -289,6 +312,7 @@ async def create_trigger(
         next_fire_at=nxt,
         created_at=_now(),
         owner=owner,
+        access=Access.owned_by(person.user_id) if person is not None and person.user_id is not None else Access(),
     )
     await storage.create(trigger)
     await _upsert_claim_if_eligible(trigger, deps=deps)
@@ -316,35 +340,25 @@ async def update_trigger(
     enabled: bool | None = None,
     config=None,
     owner: PrincipalRef | None = None,
-    caller: Any = None,
-    from_run: bool = False,
-    in_session: bool = False,
+    person: Person | None = None,
     reach: Person | None = None,
     deps: ServiceDeps,
 ) -> Trigger:
-    """Partial update.
+    """Partial update; needs full on the trigger (Decision 3).
 
     The caller becomes the owner: whoever last saved a trigger is who its
     runs are ranked by. ``owner=None`` (a call with no identity) clears it,
     so the trigger fires as an ordinary user.
 
-    The rank rule of a manual fire is asked after the reach check
-    (:func:`primer.trigger.owner.refuse_trigger_change`, ticket 01a16ee4): the
-    caller must rank at least as high as the trigger's owner (an admin is
-    never outranked), and a live request (``from_run`` False: REST, or the
-    MCP endpoint's own call) may also always save a trigger it owns. A
-    refusal raises :class:`TriggerOutranked` before anything changes: the row
-    keeps its owner (a refused change adopts none), its timing and its
-    subscriptions.
-
-    A webhook trigger is changed only by its owner or an admin
-    (:func:`primer.trigger.owner.may_manage_trigger`; :class:`TriggerForbidden`
-    otherwise): the save hands the caller the token in the response, and the
-    token is the credential that drives the trigger's runs. When the save
-    hands the trigger to a different owner a new token is minted, so nobody
-    who knew the old one rides along at the new owner's rank. A token equal
-    to the mask (a body round-tripped from a masked read) keeps the stored
-    one.
+    The level is asked after the reach check; a refusal changes nothing (the
+    row keeps its owner, its timing and its subscriptions). A full grantee who
+    saves becomes the run-as owner, as anyone who saves does: they act as
+    themselves. When the save hands a webhook trigger to a different owner a
+    new token is minted, so nobody who knew the old one rides along at the new
+    owner's rank. A token equal to the mask (a body round-tripped from a masked
+    read) keeps the stored one. The row is written with
+    :func:`primer.access.service.update_keeping_access`: a sharing change made
+    meanwhile answers ``ConflictError`` and is never undone.
 
     Changing the trigger's ``config.kind`` discriminator is rejected
     with :class:`TriggerKindImmutable` (delete + recreate is the
@@ -360,29 +374,14 @@ async def update_trigger(
     disabled trigger is not read, and found ineligible, on every poll.
     """
     storage = deps.storage_provider.get_storage(Trigger)
-    trigger = await storage.get(trigger_id)
-    if trigger is None:
-        raise TriggerNotFound(trigger_id)
+    trigger = await _require_trigger(trigger_id, person, AccessLevel.FULL, deps)
     await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
-    from primer.trigger.owner import refuse_trigger_change
-
-    refusal = await refuse_trigger_change(
-        trigger, caller, deps.storage_provider, from_run=from_run, in_session=in_session,
-    )
-    if refusal is not None:
-        raise TriggerOutranked(refusal)
     if config is not None and config.kind != trigger.config.kind:
         raise TriggerKindImmutable(
             f"cannot change kind from {trigger.config.kind!r} to {config.kind!r}"
         )
-    from primer.trigger.owner import WEBHOOK_TOKEN_MASK, may_manage_trigger, same_owner
+    from primer.trigger.owner import WEBHOOK_TOKEN_MASK, same_owner
 
-    if trigger.config.kind == "webhook" and not await may_manage_trigger(
-        trigger, owner, deps.storage_provider,
-    ):
-        raise TriggerForbidden(
-            "only the trigger's owner or an admin may change a webhook trigger"
-        )
     adopted = not await same_owner(trigger.owner, owner, deps.storage_provider)
     trigger.owner = owner
     if name is not None:
@@ -428,7 +427,8 @@ async def update_trigger(
         source.compute_next_fire_at(trigger, now=_now())
         if trigger.enabled else None
     )
-    await storage.update(trigger)
+    # Every field but the sharing, guarded on its rev (P3 Decision 8): a sharing change made meanwhile is a conflict, never undone.
+    trigger = await update_keeping_access(storage, trigger, trigger, what=f"Trigger {trigger_id!r}")
     if trigger.enabled:
         await _upsert_claim_if_eligible(trigger, deps=deps)
     else:
@@ -439,17 +439,11 @@ async def update_trigger(
 
 
 async def delete_trigger(
-    *, trigger_id: str, caller: Any = None, from_run: bool = False, in_session: bool = False, reach: Person | None = None, deps: ServiceDeps,
+    *, trigger_id: str, person: Person | None = None, reach: Person | None = None, deps: ServiceDeps,
 ) -> None:
-    """Delete a trigger and cascade-delete its subscriptions.
+    """Delete a trigger and cascade-delete its subscriptions; needs owner on the trigger (Decision 3).
 
-    The rank rule of a manual fire is asked after the reach check
-    (:func:`primer.trigger.owner.refuse_trigger_change`, ticket 01a16ee4): the
-    caller must rank at least as high as the trigger's owner (an admin is
-    never outranked), and a live request (``from_run`` False) may also always
-    delete a trigger it owns. A refusal raises :class:`TriggerOutranked`
-    before anything is deleted: the row and every subscription stay as they
-    were.
+    The level is asked after the reach check; a refusal deletes nothing.
 
     ``reach`` is the calling session's: a trigger with a subscription that starts or feeds a session outside it answers :class:`TriggerNotFound`.
 
@@ -458,17 +452,8 @@ async def delete_trigger(
     """
     storage = deps.storage_provider.get_storage(Trigger)
     subs_storage = deps.storage_provider.get_storage(Subscription)
-    trigger = await storage.get(trigger_id)
-    if trigger is None:
-        raise TriggerNotFound(trigger_id)
+    await _require_trigger(trigger_id, person, AccessLevel.OWNER, deps)
     await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
-    from primer.trigger.owner import refuse_trigger_change
-
-    refusal = await refuse_trigger_change(
-        trigger, caller, deps.storage_provider, from_run=from_run, in_session=in_session,
-    )
-    if refusal is not None:
-        raise TriggerOutranked(refusal)
     # Cascade-delete all subscriptions bound to this trigger. All of them are read BEFORE any is deleted: deleting
     # while paging by offset shifts the remaining rows down, so every page after the first skipped as many rows as
     # the page before it had deleted (a trigger with more than 200 subscriptions left orphans behind).
@@ -486,43 +471,20 @@ async def delete_trigger(
 
 
 async def fire_now(
-    *, trigger_id: str, caller: Any, from_run: bool, in_session: bool = False, reach: Person | None = None, deps: ServiceDeps,
+    *, trigger_id: str, person: Person | None, reach: Person | None = None, deps: ServiceDeps,
 ):
     """Synchronously fire a trigger and return its :class:`FireResult`.
 
     The one manual fire path: ``POST /v1/triggers/{id}/fire_now`` and the ``trigger__fire_now`` tool both call it. Delegates to
-    :func:`primer.trigger.dispatch.fire_trigger`. Raises :class:`TriggerNotFound` if the trigger row is missing, or when a subscription of it starts
-    or feeds a session outside ``reach`` (the calling session's); then :class:`TriggerOutranked` when ``caller`` may not fire it
-    (:func:`primer.trigger.owner.refuse_fire_now`: the caller ranks below the trigger's owner and, for a live request, does not own it). The reach
-    rule is asked first, so an out-of-reach trigger answers as an unknown one, never as a forbidden one. Either refusal fires nothing. Otherwise
-    returns whatever ``fire_trigger`` reports (including the skipped=True envelope when the trigger is disabled).
+    :func:`primer.trigger.dispatch.fire_trigger`. Needs full on the trigger (Decision 3): no level raises :class:`TriggerNotFound`, as does a
+    subscription of it that starts or feeds a session outside ``reach`` (the calling session's); too low a level raises
+    :class:`AccessDeniedError`. Either refusal fires nothing. Otherwise returns whatever ``fire_trigger`` reports (including the skipped=True
+    envelope when the trigger is disabled). The fire runs as the trigger's and its subscriptions' owners, as every fire does.
 
-    ``caller`` is who fires: the request's principal (REST, or the MCP endpoint with no calling session; ``from_run`` False) or the calling run's
-    principal (a tool call from a session or from a delegated run; ``from_run`` True, ``in_session`` when the run is a session's, which only picks
-    the words). Both are required, so no door can fire without being ranked.
-
-    The rank is decided on this function's read of the trigger and ``fire_trigger`` reads it again; a save in between makes its saver the owner.
-    So the checked owner goes to ``fire_trigger`` as its ``owner_guard`` (review of #927): when its read shows another owner, the rank rule is asked
-    again on that row and a refusal there raises :class:`TriggerOutranked`, in the same words, before anything is fired.
+    ``person`` is required (``None`` only for an internal call), so no door can fire without naming who fires.
     """
-    storage = deps.storage_provider.get_storage(Trigger)
-    trigger = await storage.get(trigger_id)
-    if trigger is None:
-        raise TriggerNotFound(trigger_id)
+    await _require_trigger(trigger_id, person, AccessLevel.FULL, deps)
     await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
-    from primer.trigger.owner import refuse_fire_now
-
-    refusal = await refuse_fire_now(trigger, caller, deps.storage_provider, from_run=from_run, in_session=in_session)
-    if refusal is not None:
-        raise TriggerOutranked(refusal)
-    checked_owner = trigger.owner
-
-    async def owner_guard(row: Trigger) -> None:
-        if row.owner == checked_owner:
-            return
-        changed = await refuse_fire_now(row, caller, deps.storage_provider, from_run=from_run, in_session=in_session)
-        if changed is not None:
-            raise TriggerOutranked(changed)
 
     from primer.trigger.dispatch import fire_trigger
     from primer.trigger.subscribers import DispatchDeps
@@ -538,7 +500,6 @@ async def fire_now(
         trigger_id=trigger_id,
         scheduled_for=None,
         deps=dispatch_deps,
-        owner_guard=owner_guard,
     )
 
 
@@ -558,10 +519,11 @@ async def create_subscription(
     event_matcher=None,
     reply_target=None,
     owner: PrincipalRef | None = None,
+    person: Person | None = None,
     reach: Person | None = None,
     deps: ServiceDeps,
 ) -> Subscription:
-    """Create a subscription bound to ``trigger_id``.
+    """Create a subscription bound to ``trigger_id``; needs full on the trigger (Decision 3).
 
     ``owner`` is the caller; a fresh-session run the subscription fires is
     attributed to it (see :mod:`primer.trigger.owner`). The owner must hold full on the target
@@ -577,10 +539,7 @@ async def create_subscription(
     """
     if event_matcher is not None:
         validate_text_pattern(event_matcher.text_pattern)
-    triggers_storage = deps.storage_provider.get_storage(Trigger)
-    trigger = await triggers_storage.get(trigger_id)
-    if trigger is None:
-        raise TriggerNotFound(trigger_id)
+    await _require_trigger(trigger_id, person, AccessLevel.FULL, deps)
     if config.kind == "parked_session":
         raise ParkedSessionOnlyFromYield(
             "subscriptions of kind 'parked_session' are only created via "
@@ -626,10 +585,11 @@ async def update_subscription(
     event_matcher: Any = _UNSET,
     reply_target: Any = _UNSET,
     owner: PrincipalRef | None = None,
+    person: Person | None = None,
     reach: Person | None = None,
     deps: ServiceDeps,
 ) -> Subscription:
-    """Partial update.
+    """Partial update; needs full on the trigger (Decision 3).
 
     The caller becomes the owner, as in :func:`update_trigger`, and its
     reach becomes the row's: from a session outside prime, a subscription
@@ -653,7 +613,7 @@ async def update_subscription(
         refuse_retired_reply_target(reply_target)       # the same reason: a retired dm_sender is refused here too (ticket 01a16e37-b98e)
         await _validate_explicit_reply_target(reply_target, deps)    # round 2 of #932, item 3: an explicit target names a real channel
     subs_storage = deps.storage_provider.get_storage(Subscription)
-    sub = await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
+    sub = await _subscription_in_reach(trigger_id, subscription_id, reach, deps, person=person, need=AccessLevel.FULL)
     sub.owner = owner
     # The new owner must hold full on the target (access-control P2 T6): an update whose owner does not is
     # refused with the save's own answer, before anything is written.
@@ -676,13 +636,20 @@ async def update_subscription(
     return sub
 
 
-async def _subscription_in_reach(trigger_id: str, subscription_id: str, reach: Person | None, deps: ServiceDeps) -> Subscription:
+async def _subscription_in_reach(
+    trigger_id: str, subscription_id: str, reach: Person | None, deps: ServiceDeps,
+    *, person: Person | None = None, need: AccessLevel = AccessLevel.READ,
+) -> Subscription:
     """The subscription ``subscription_id`` of ``trigger_id``, else :class:`SubscriptionNotFound`.
+
+    A subscription inherits its trigger's access: ``person`` needs ``need`` on the trigger (no level raises
+    :class:`TriggerNotFound`, too low a level :class:`AccessDeniedError`), asked before the subscription is looked up.
 
     ``reach`` is the calling session's (:func:`primer.trigger.reach.caller_scope`): a subscription whose target is outside it raises the
     same :class:`SubscriptionNotFound` as an unknown id or another trigger's subscription (ticket 01a16c22; review of #874, C1), so the single
     subscription tools never confirm an id out of reach. ``None`` (an admin or the system principal) reaches every subscription.
     """
+    await _require_trigger(trigger_id, person, need, deps)
     sub = await deps.storage_provider.get_storage(Subscription).get(subscription_id)
     if sub is None or sub.trigger_id != trigger_id or not await subscription_in_reach(deps.storage_provider, reach, sub):
         raise SubscriptionNotFound(subscription_id)
@@ -690,14 +657,14 @@ async def _subscription_in_reach(trigger_id: str, subscription_id: str, reach: P
 
 
 async def delete_subscription(
-    *, trigger_id: str, subscription_id: str, reach: Person | None = None, deps: ServiceDeps,
+    *, trigger_id: str, subscription_id: str, person: Person | None = None, reach: Person | None = None, deps: ServiceDeps,
 ) -> None:
-    """Delete one subscription of ``trigger_id``.
+    """Delete one subscription of ``trigger_id``; needs full on the trigger (Decision 3).
 
     ``reach`` is the calling session's: a subscription whose target is outside it raises :class:`SubscriptionNotFound`, exactly as an unknown id,
     and nothing is deleted (ticket 01a16c22).
     """
-    await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
+    await _subscription_in_reach(trigger_id, subscription_id, reach, deps, person=person, need=AccessLevel.FULL)
     await deps.storage_provider.get_storage(Subscription).delete(subscription_id)
 
 
@@ -706,12 +673,9 @@ async def delete_subscription(
 # ---------------------------------------------------------------------------
 
 
-async def get_trigger(*, trigger_id: str, deps: ServiceDeps) -> Trigger:
-    storage = deps.storage_provider.get_storage(Trigger)
-    trigger = await storage.get(trigger_id)
-    if trigger is None:
-        raise TriggerNotFound(trigger_id)
-    return trigger
+async def get_trigger(*, trigger_id: str, person: Person | None = None, deps: ServiceDeps) -> Trigger:
+    """One trigger; needs read on it (no level answers :class:`TriggerNotFound`)."""
+    return await _require_trigger(trigger_id, person, AccessLevel.READ, deps)
 
 
 async def get_trigger_by_webhook_token(
@@ -730,44 +694,34 @@ async def get_trigger_by_webhook_token(
 
 
 async def rotate_webhook_token(
-    *, trigger_id: str, owner: PrincipalRef | None = None, deps: ServiceDeps,
+    *, trigger_id: str, owner: PrincipalRef | None = None, person: Person | None = None, deps: ServiceDeps,
 ) -> Trigger:
-    """Rotate the capability token of a webhook trigger.
+    """Rotate the capability token of a webhook trigger; needs owner on the trigger (Decision 3).
 
-    Only the trigger's owner or an admin may (:class:`TriggerForbidden`
-    otherwise), and the caller becomes the owner: a rotate hands out the new
-    token, so it can never leave the trigger ranked as someone higher.
+    The caller becomes the run-as owner: a rotate hands out the new token, so it can never leave the trigger ranked as
+    someone higher. The row is written with :func:`primer.access.service.update_keeping_access`.
 
     Returns the updated trigger with the new token.
     Raises :class:`TriggerNotFound` if missing, or ``ValueError`` if the
     trigger is not of kind='webhook'.
     """
     storage = deps.storage_provider.get_storage(Trigger)
-    trigger = await storage.get(trigger_id)
-    if trigger is None:
-        raise TriggerNotFound(trigger_id)
+    trigger = await _require_trigger(trigger_id, person, AccessLevel.OWNER, deps)
     if trigger.config.kind != "webhook":
         raise ValueError(
             f"rotate_webhook_token requires kind='webhook', got {trigger.config.kind!r}"
         )
-    from primer.trigger.owner import may_manage_trigger
-
-    if not await may_manage_trigger(trigger, owner, deps.storage_provider):
-        raise TriggerForbidden(
-            "only the trigger's owner or an admin may rotate its webhook token"
-        )
     new_token = _mint_webhook_token()
     trigger.config = trigger.config.model_copy(update={"token": new_token})
     trigger.owner = owner
-    await storage.update(trigger)
-    return trigger
+    return await update_keeping_access(storage, trigger, trigger, what=f"Trigger {trigger_id!r}")
 
 
 async def get_subscription(
-    *, trigger_id: str, subscription_id: str, reach: Person | None = None, deps: ServiceDeps,
+    *, trigger_id: str, subscription_id: str, person: Person | None = None, reach: Person | None = None, deps: ServiceDeps,
 ) -> Subscription:
-    """One subscription of ``trigger_id``; ``reach`` as in :func:`delete_subscription` (out of reach is an unknown id)."""
-    return await _subscription_in_reach(trigger_id, subscription_id, reach, deps)
+    """One subscription of ``trigger_id``; needs read on the trigger; ``reach`` as in :func:`delete_subscription` (out of reach is an unknown id)."""
+    return await _subscription_in_reach(trigger_id, subscription_id, reach, deps, person=person)
 
 
 # Window size for the paginated list helpers below. Each list walks the
@@ -806,25 +760,32 @@ async def list_triggers(
     *,
     kind: str | None = None,
     enabled: bool | None = None,
+    person: Person | None = None,
     deps: ServiceDeps,
 ) -> list[Trigger]:
-    """Return ALL triggers (optionally filtered), paging through every row.
+    """Return ALL triggers ``person`` can read (optionally filtered), paging through every row.
 
-    Previously capped at the first 200 rows, silently dropping the rest;
-    now walks the backend page by page until exhausted."""
+    The access filter runs in the storage query (``visible_predicate``, GIN-indexed), never over fetched rows; an admin and an
+    internal call (``person=None``) are unfiltered."""
     storage = deps.storage_provider.get_storage(Trigger)
-    if kind is None and enabled is None:
-        return await _drain_list(storage)
-    q = Q(Trigger)
+    clauses = []
     if kind is not None:
-        q = q.where_op("config.kind", Op.EQ, kind)
+        clauses.append(Q(Trigger).where_op("config.kind", Op.EQ, kind).build())
     if enabled is not None:
-        q = q.where_op("enabled", Op.EQ, enabled)
-    return await _drain_list(storage, predicate=q.build())
+        clauses.append(Q(Trigger).where_op("enabled", Op.EQ, enabled).build())
+    visible = visible_predicate(person) if person is not None else None
+    if visible is not None:
+        clauses.append(visible)
+    if not clauses:
+        return await _drain_list(storage)
+    predicate = clauses[0]
+    for clause in clauses[1:]:
+        predicate = Predicate(left=predicate, op=Op.AND, right=clause)
+    return await _drain_list(storage, predicate=predicate)
 
 
 async def list_subscriptions(
-    *, trigger_id: str, reach: Person | None = None, deps: ServiceDeps,
+    *, trigger_id: str, person: Person | None = None, reach: Person | None = None, deps: ServiceDeps,
 ) -> list[Subscription]:
     """Return ALL subscriptions for a trigger, paging through every row
     (previously capped at the first 200).
@@ -838,6 +799,8 @@ async def list_subscriptions(
     person, an API client, and the trigger-level checks and the delete
     cascade, which must see every subscription) returns them all.
     """
+    if person is not None:
+        await _require_trigger(trigger_id, person, AccessLevel.READ, deps)
     subs_storage = deps.storage_provider.get_storage(Subscription)
     q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger_id)
     rows = await _drain_list(subs_storage, predicate=q.build())
@@ -853,7 +816,6 @@ __all__ = [
     "SubscriptionTargetNotFound",
     "TriggerKindImmutable",
     "TriggerNotFound",
-    "TriggerOutranked",
     "TriggerSlugConflict",
     "WebhookTokenNotFound",
     "create_subscription",

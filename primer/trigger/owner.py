@@ -176,109 +176,9 @@ def _rank_label(ref: PrincipalRef | None) -> str:
     return rank_label(ref)
 
 
-# ---------------------------------------------------------------------------
-# Who may fire a trigger by hand (ticket 01a16e65-12d1)
-# ---------------------------------------------------------------------------
-
-#: What a run (a tool call from a session) reads when it may not fire a trigger: the words a refused message to a session uses
-#: (the old peer-message rank refusal), said of the trigger. A trigger "runs at" its owner's rank: that is the most its fires run at.
-REFUSE_FIRE_RANK = (
-    "trigger {trigger_id!r} runs at a higher rank ({owner_rank}) than this session ({caller_rank}); "
-    "a session may fire only triggers at or below its own rank"
-)
-#: What a run outside any session reads (a subagent ``system__invoke_agent`` started over MCP, a chat's run): the same words, said of the run.
-REFUSE_FIRE_RANK_RUN = (
-    "trigger {trigger_id!r} runs at a higher rank ({owner_rank}) than this run ({caller_rank}); "
-    "a run may fire only triggers at or below its own rank"
-)
-#: What a person (a REST call, or an MCP call with no calling session) reads when they may not fire a trigger. A person, unlike a run, may always
-#: fire a trigger they own. Naming the owner's rank tells nobody anything new: every read of a trigger shows its owner's rank (:func:`view_for`).
-REFUSE_FIRE_RANK_REQUEST = (
-    "trigger {trigger_id!r} runs at a higher rank ({owner_rank}) than you ({caller_rank}); "
-    "you may fire only your own triggers and triggers at or below your rank"
-)
-
-
-#: What a person (a REST call, or an MCP call with no calling session) reads when they may not change or delete a trigger (ticket 01a16ee4): the
-#: same rule as a manual fire, said of a change or a delete. A person, unlike a run, may always change or delete a trigger they own.
-REFUSE_CHANGE_RANK_REQUEST = (
-    "trigger {trigger_id!r} runs at a higher rank ({owner_rank}) than you ({caller_rank}); "
-    "you may change or delete only your own triggers and triggers at or below your rank"
-)
-#: What a run inside a session reads when it may not change or delete a trigger: the same rule, said of the session.
-REFUSE_CHANGE_RANK = (
-    "trigger {trigger_id!r} runs at a higher rank ({owner_rank}) than this session ({caller_rank}); "
-    "a session may change or delete only triggers at or below its own rank"
-)
-#: What a run outside any session reads (a subagent ``system__invoke_agent`` started over MCP): the same rule, said of the run.
-REFUSE_CHANGE_RANK_RUN = (
-    "trigger {trigger_id!r} runs at a higher rank ({owner_rank}) than this run ({caller_rank}); "
-    "a run may change or delete only triggers at or below its own rank"
-)
-
-
-async def _ranked_refusal(
-    trigger: Trigger, caller: Any, storage_provider: Any, *, from_run: bool, in_session: bool,
-    request_words: str, run_words: str, run_outside_words: str,
-) -> str | None:
-    """The shared core of a manual trigger door's rank rule (a fire, a change, a delete): ``None`` when ``caller`` may drive the trigger's owner,
-    else the refusal in the door's own words.
-
-    ``caller`` must rank at least as high as the trigger's owner (:func:`primer.authz.may_drive`; an admin is never outranked, and an admin acts
-    on a ``system``-owned trigger too). The owner's rank is the role recorded on the trigger, the ceiling its fires run at; a trigger saved
-    before owners were recorded has none and ranks as an ordinary user (:func:`primer.authz.principal_rank` of ``None``), as its fires do.
-
-    ``caller`` is a live request's principal (a person's REST call, an MCP call with no calling session) when ``from_run`` is False, else the
-    calling run's principal (a tool call from a session, or from a delegated run; lead ruling on the review of #927). A live request may also
-    always act on a trigger its own account owns, a token counting as its user (:func:`same_owner`): the request carries the account's current
-    role and every fire of the trigger runs at most at it, so a demoted admin is not locked out of their own trigger. A run never gets that
-    rule: a trigger-capped run carries an admin's identity at a lower rank, and that admin's own triggers still run at admin. ``in_session``
-    only picks the words of a run's refusal. A caller nobody can name ranks as an ordinary user and is worded as one, never "user
-    (unattributed)".
-    """
-    if may_drive(caller, trigger.owner):
-        return None
-    if not from_run and caller is not None and await same_owner(caller, trigger.owner, storage_provider):
-        return None
-    template = (run_words if in_session else run_outside_words) if from_run else request_words
-    caller_rank = rank_label(caller if caller is not None else PrincipalRef.unattributed())
-    reason = template.format(trigger_id=trigger.id, owner_rank=rank_label(trigger.owner), caller_rank=caller_rank)
-    logger.info("trigger %s: %s", trigger.id, reason)
-    return reason
-
-
-async def refuse_fire_now(
-    trigger: Trigger, caller: Any, storage_provider: Any, *, from_run: bool, in_session: bool = False,
-) -> str | None:
-    """A reason to refuse ``caller``'s manual fire of ``trigger`` (``fire_now``), else ``None`` (ticket 01a16e65-12d1).
-
-    A fire runs as the trigger's owners (:func:`principal_for_fire`), so whoever fires a trigger by hand drives its owner's automation: a
-    ``session_append`` subscription of an admin's trigger steers at the admin's rank. The rule, and the words of its refusal, are the shared
-    core of a manual trigger door's rank rule (:func:`_ranked_refusal`), which ``update_trigger`` / ``delete_trigger`` ask too
-    (:func:`refuse_trigger_change`). Only the manual doors ask: a clock fire (scheduled or delayed), a webhook and a channel event have no
-    caller to rank.
-    """
-    return await _ranked_refusal(
-        trigger, caller, storage_provider, from_run=from_run, in_session=in_session,
-        request_words=REFUSE_FIRE_RANK_REQUEST, run_words=REFUSE_FIRE_RANK, run_outside_words=REFUSE_FIRE_RANK_RUN,
-    )
-
-
-async def refuse_trigger_change(
-    trigger: Trigger, caller: Any, storage_provider: Any, *, from_run: bool, in_session: bool = False,
-) -> str | None:
-    """A reason to refuse ``caller``'s change or delete of ``trigger`` (``update_trigger`` / ``delete_trigger``), else ``None`` (ticket
-    01a16ee4).
-
-    The same rule as a manual fire (:func:`refuse_fire_now`), for the same reason: a save re-arms the trigger's claim under the saver's timing
-    and hands the trigger to the saver as its owner, and a delete ends its subscriptions' automation, so whoever changes or deletes a trigger
-    drives the owner's automation. The rule and the words of its refusal are the shared core (:func:`_ranked_refusal`); a refusal leaves the
-    row, its owner and its subscriptions exactly as they were, and a refused change adopts no owner.
-    """
-    return await _ranked_refusal(
-        trigger, caller, storage_provider, from_run=from_run, in_session=in_session,
-        request_words=REFUSE_CHANGE_RANK_REQUEST, run_words=REFUSE_CHANGE_RANK, run_outside_words=REFUSE_CHANGE_RANK_RUN,
-    )
+# Who may fire, change, delete or share a trigger is its ACCESS (access-control P3 Decision 3; :mod:`primer.trigger.service`), not the
+# rank of its owner: the rank rules of tickets 01a16e65-12d1 and 01a16ee4 are replaced by the levels. A fire still runs as the
+# owners above, capped by their roles.
 
 
 # ---------------------------------------------------------------------------
@@ -367,15 +267,7 @@ async def same_owner(a: PrincipalRef | None, b: PrincipalRef | None, storage_pro
 
 __all__ = [
     "OWNER_UNRESOLVABLE",
-    "REFUSE_CHANGE_RANK",
-    "REFUSE_CHANGE_RANK_REQUEST",
-    "REFUSE_CHANGE_RANK_RUN",
-    "REFUSE_FIRE_RANK",
-    "REFUSE_FIRE_RANK_REQUEST",
-    "REFUSE_FIRE_RANK_RUN",
     "WEBHOOK_TOKEN_MASK",
-    "refuse_fire_now",
-    "refuse_trigger_change",
     "unresolvable_subscription_owner",
     "resolve_current_role",
     "may_manage_trigger",

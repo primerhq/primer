@@ -251,3 +251,15 @@ async def test_an_mcp_call_acts_as_the_request_actor(env):
     # Nobody known reads only public rows.
     is_err, body = await env.call("collections", "read_document", {"collection": CID, "path": "a"}, None)
     assert is_err and body["type"] == "not-found", body
+
+
+@pytest.mark.parametrize("uid", [CAROL, ALICE, ROOT])
+async def test_update_collection_cannot_change_search(env, uid):
+    search = {"embedder": {"provider_id": "emb", "model": "m"}, "vector_store_provider_id": "ssp"}
+    is_err, body = await env.call(
+        "system", "update_collection", {"id": CID, "entity": {"id": CID, "description": "d", "search": search}}, uid,
+    )
+    assert is_err and body["type"] == "forbidden" and "/search" in body["message"], body
+    assert (await env.sp.get_storage(Collection).get(CID)).search is None
+    is_err, body = await env.call("system", "update_collection", {"id": CID, "entity": {"id": CID, "description": "renamed"}}, uid)
+    assert not is_err and body["description"] == "renamed", body

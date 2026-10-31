@@ -362,6 +362,10 @@ async def test_a_user_cannot_bind_a_subscription_to_a_channel_trigger_on_an_unre
     )
     assert created.status_code == 201, created.text
     tid = created.json()["id"]
+    # Alice shares the trigger full with bob (binding needs full on it, access-control P3 Task 4), so the channel is what refuses him.
+    triggers = app.state.storage_provider.get_storage(Trigger)
+    row = await triggers.get(tid)
+    await triggers.update(row.model_copy(update={"access": Access(owners=row.access.owners, grants={bob: "full"})}))
 
     refused = await app.state.system_toolset.call(
         tool_name="create_channel_binding",

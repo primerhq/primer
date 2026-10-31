@@ -225,6 +225,8 @@ async def _seed_channel_trigger(sp: _SP, trigger_id: str = "trg-ch-1") -> Trigge
         name="Channel trigger",
         config=ChannelTriggerConfig(provider_id="slack-1", channel_id="chan-1"),
         created_at=datetime.now(timezone.utc),
+        # A binding is a subscription of the trigger (access-control P3 Task 4): u-owner owns it (full, to bind), u-other reads it (to list).
+        access=Access(owners=["u-owner"], grants={"u-other": "read"}),
     )
     # The trigger fires from chan-1: saving anything onto it asks read on that channel (access P3, decision 5), so the row must exist.
     await sp.get_storage(Channel).create(_make_channel("chan-1"))

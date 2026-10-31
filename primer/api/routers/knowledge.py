@@ -69,7 +69,7 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.common.entity_checks import EntityCheckError
-from primer.knowledge.checks import check_collection_id, check_collection_system_flag
+from primer.knowledge.checks import check_collection_id, check_collection_search_unchanged, check_collection_system_flag
 from primer.model.payload_too_large import PayloadTooLargeError
 from primer.knowledge.grep import grep_collection
 from primer.knowledge import importer
@@ -155,9 +155,11 @@ async def _collection_on_pre_create(entity: Collection, request: Request) -> Non
 
 
 async def _collection_on_pre_update(entity: Collection, existing: Collection, request: Request) -> None:
-    """Refuse an update that changes the ``system`` flag (403), or the delete guard below is one PUT away from being bypassed."""
+    """Refuse an update that changes the ``system`` flag (403), or the delete guard below is one PUT away from being bypassed, or
+    that changes ``search`` (403; the owner's search routes do that)."""
     try:
         check_collection_system_flag(entity, existing)
+        check_collection_search_unchanged(entity, existing)
     except EntityCheckError as exc:
         raise _system_flag_refusal(exc) from exc
 

@@ -13,7 +13,9 @@ is no longer the rule):
   subscription records) and logged, and starts and feeds no session. That covers a grant revoked after the save, and a parked or appended-to
   session that moved since the row was saved.
 
-A save with no identity (``owner`` ``None``) and every row saved before owners were recorded check nothing: those fire as they always did.
+A save with no identity (``owner`` ``None``) checks nothing at save time, but such a row never fires: migration 24 gave every subscription
+saved before owners were recorded its trigger's owner, so a fire of a subscription with no owner is refused (fail closed, access-control P3
+Task 4).
 
 A trigger is not in a workspace, but its subscriptions are, so the tools that act on a whole trigger ask too (review of #874, B1): for a non-admin
 caller (:func:`caller_scope`), ``trigger::update``, ``trigger::fire_now`` and ``trigger::delete`` answer exactly as an unknown trigger when any
@@ -129,14 +131,17 @@ async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> 
     """Why a fire of ``sub`` may not start or feed its target, or ``None`` when it may.
 
     The owner recorded on the row (``sub.owner``) must hold full on the target's workspace: the config's ``workspace_id`` for a fresh session,
-    the target session's workspace for ``session_append`` and ``parked_session``. A row with no owner (saved before owners were recorded) never
-    refuses, and a target session that no longer exists is not refused here: there is nothing to start or feed, and the dispatcher reports the
-    missing session in its own words. A kind with no rule is refused (fail closed). The reason is stored on the subscription
+    the target session's workspace for ``session_append`` and ``parked_session``. A row with no owner is refused (fail closed: migration 24 gave
+    every legacy row its trigger's owner, so nobody could be checked), and a target session that no longer exists is not refused here: there is
+    nothing to start or feed, and the dispatcher reports the missing session in its own words. A kind with no rule is refused (fail closed). The reason is stored on the subscription
     (``last_fire_error``), read by whoever may read the row.
     """
     owner = getattr(sub, "owner", None)
     if owner is None:
-        return None
+        logger.warning("trigger %s subscription %s refused: it has no owner; the fire starts and feeds no session", sub.trigger_id, sub.id)
+        return "this subscription has no owner, so nobody can be checked on its target; the fire starts and feeds no session (re-save it)"
+    if person_from_ref(owner).is_admin:
+        return None  # an admin or system owner reaches every workspace, one whose row is gone included (as require_session)
     config = sub.config
     if isinstance(config, AgentFreshSubConfig | GraphFreshSubConfig):
         target: str | None = config.workspace_id

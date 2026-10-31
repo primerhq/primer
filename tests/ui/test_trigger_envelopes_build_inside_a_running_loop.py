@@ -19,7 +19,7 @@ async def test_real_envelopes_build_inside_a_running_loop() -> None:
 
     envelopes = real_envelopes()
 
-    assert envelopes["fire_outranked"]["status"] == 403 and envelopes["fire_outranked"]["extensions"]["code"] == "forbidden_rank"
+    assert envelopes["fire_refused"]["status"] == 403 and envelopes["fire_refused"]["extensions"]["code"] == "access_denied"
     assert envelopes["session_ended"]["extensions"]["error"] == "auth_required"
 
 
@@ -33,5 +33,5 @@ async def test_real_fire_bodies_build_inside_a_running_loop() -> None:
 
 
 def test_both_still_build_with_no_loop_running() -> None:
-    assert real_envelopes()["fire_outranked"]["extensions"]["code"] == "forbidden_rank"
+    assert real_envelopes()["fire_refused"]["extensions"]["code"] == "access_denied"
     assert set(real_fire_bodies()) == {"skipped", "fired", "no_subscriptions", "partial", "all_failed", "delivery_skipped"}

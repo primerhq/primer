@@ -36,10 +36,12 @@ from primer.int.claim import ClaimKind, ParkRequest, ReleaseOutcome
 from primer.model.channel import ChannelProviderType
 from primer.model.channel_event import ChannelEvent, EventSender, NormalizedEventType
 from primer.model.chat import Message, ToolCallPart, ToolResultPart
+from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
 from primer.model.scheduler import WorkerConfig
 from primer.model.storage import OffsetPage
 from primer.model.trigger import ChannelTriggerConfig, DelayedTriggerConfig, Subscription, Trigger
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext, YieldToWorker
 from primer.storage.sqlite import SqliteStorageProvider
@@ -103,6 +105,10 @@ async def world(tmp_path):
     engine = InMemoryClaimEngine(adapters={ClaimKind.SESSION: SessionClaimAdapter(session_storage=sp.get_storage(WorkspaceSession))})
     listener = YieldEventListener(bus=bus, session_storage=sp.get_storage(WorkspaceSession), engine=engine)
     listener.start()
+    # The parked session's workspace: whoever parks must hold full on it (access-control P2 T6).
+    await sp.get_storage(Workspace).create(Workspace(
+        id=WS, template_id="t", provider_id="p", created_at=_now(), runtime_meta=WorkspaceRuntimeMeta(url="ws://ws-1", token="t"),
+    ))
     await sp.get_storage(Trigger).create(Trigger(
         id=TRIGGER, slug="sub-target", name="t", config=DelayedTriggerConfig(fire_at=_now() + timedelta(hours=1)),
         enabled=True, next_fire_at=_now() + timedelta(hours=1), created_at=_now(),
@@ -128,7 +134,7 @@ async def _park(world: World, tool: str, *, expired: bool = False) -> None:
     lease = next(ln for ln in await world.engine.claim_due("wrk-turn", max_count=10) if ln.entity_id == SID)
     with pytest.raises(YieldToWorker) as info:
         await build_workspace_ext_toolset(storage_provider=world.sp).call(
-            tool_name=tool, arguments=arguments, ctx=ToolContext(tool_call_id=CALL, session_id=SID, workspace_id=WS),
+            tool_name=tool, arguments=arguments, ctx=ToolContext(tool_call_id=CALL, session_id=SID, workspace_id=WS, initiated_by=PrincipalRef.system()),
         )
     parked_at = _now()
     yielded = stamp_parked_at(info.value.yielded, parked_at)

@@ -124,7 +124,8 @@ async def test_a_legacy_ownerless_fire_cannot_append_to_a_system_session(monkeyp
 
     res, delivered = await _append(monkeypatch, fake_storage_provider, sub)
 
-    assert res.ok is False and res.error_code == "steer_outranks_fire", res
+    # Refused before the steer rank is asked: an ownerless subscription never fires (access-control P3 Task 4).
+    assert res.ok is False and res.error_code == "target_out_of_reach", res
     assert delivered == []
 
 

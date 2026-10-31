@@ -171,6 +171,7 @@ from primer.model_profile.checks import check_profile_on_create, check_profile_o
 from primer.knowledge.checks import (
     RESERVED_COLLECTION_ID_PREFIX,
     check_collection_id,
+    check_collection_search_unchanged,
     check_collection_system_flag,
     check_graph_id,
 )
@@ -516,6 +517,7 @@ def build_system_toolset(
 
     async def _collection_pre_update(entity: Collection, existing: Collection) -> None:
         check_collection_system_flag(entity, existing)
+        check_collection_search_unchanged(entity, existing)
 
     async def _graph_pre_create(entity: Graph) -> None:
         check_graph_id(entity)
@@ -1007,8 +1009,9 @@ def build_system_toolset(
             # The service create path is kind-agnostic, so the wrapper enforces the
             # documented precondition: a binding only makes sense on a channel
             # trigger, checked before anything is stored.
+            # A binding is a subscription: read on the trigger to see it, full to add one (access P3, decision 3).
             trigger = await get_trigger(
-                trigger_id=args.trigger_id, deps=_binding_deps()
+                trigger_id=args.trigger_id, person=person_for_tool(ctx), deps=_binding_deps()
             )
             if trigger.config.kind != "channel":
                 return _err(
@@ -1034,6 +1037,7 @@ def build_system_toolset(
                 # A session outside prime binds only to its own workspace or a session in it, and the row records that reach for every
                 # fire (review of #870, F1).
                 reach=caller_scope(ctx),
+                person=person_for_tool(ctx),
                 deps=_binding_deps(),
             )
         except TriggerNotFound as exc:
@@ -1117,12 +1121,15 @@ def build_system_toolset(
         except ValidationError as exc:
             return _err_from_validation(exc)
         deps = _binding_deps()
+        # Read on the trigger (access P3, decision 3): a trigger the caller cannot read answers as an unknown one.
         try:
-            await get_trigger(trigger_id=args.trigger_id, deps=deps)
+            await get_trigger(trigger_id=args.trigger_id, person=person_for_tool(ctx), deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         # From a session outside prime, a binding whose action targets another workspace is left out (ticket 01a16c22).
-        items = await list_subscriptions(trigger_id=args.trigger_id, reach=caller_scope(ctx), deps=deps)
+        items = await list_subscriptions(
+            trigger_id=args.trigger_id, person=person_for_tool(ctx), reach=caller_scope(ctx), deps=deps,
+        )
         # A non-manager sees only the owner's display and role (A-20), as trigger__list_subscriptions does.
         caller = _caller(ctx)
         return _ok([await view_for(s, caller, storage_provider) for s in items])
@@ -1171,8 +1178,14 @@ def build_system_toolset(
                 subscription_id=args.subscription_id,
                 # Out of the caller's reach answers as an unknown binding and deletes nothing (ticket 01a16c22).
                 reach=caller_scope(ctx),
+                # Full on the trigger (access P3, decision 3).
+                person=person_for_tool(ctx),
                 deps=_binding_deps(),
             )
+        except TriggerNotFound as exc:
+            return _err(str(exc), error_type="trigger_not_found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         except SubscriptionNotFound as exc:
             return _err(str(exc), error_type="subscription_not_found")
         return _ok({"ok": True})
