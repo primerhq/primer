@@ -122,7 +122,10 @@ class SandboxWorkspace(Workspace):
             SandboxWrite(sandbox, workspace_root=workspace_root),
             SandboxEdit(sandbox, workspace_root=workspace_root),
             SandboxGlob(sandbox, workspace_root=workspace_root),
-            SandboxGrep(sandbox, workspace_root=workspace_root),
+            SandboxGrep(
+                sandbox, workspace_root=workspace_root,
+                reserved_trees=(template.state_path, template.tmp_path),
+            ),
             SandboxExec(sandbox, workspace_root=workspace_root),
         ]
         return cls(

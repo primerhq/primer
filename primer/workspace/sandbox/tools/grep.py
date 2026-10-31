@@ -28,6 +28,7 @@ from primer.workspace.local.tools.grep import (
     grep_budget_error,
     grep_text,
 )
+from primer.workspace.reserved import reserved_tree
 from primer.workspace.runtime.protocol import ErrorCode
 from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeOpError
 from primer.workspace.sandbox.tools._common import (
@@ -69,9 +70,13 @@ class SandboxGrep(WorkspaceTool):
         ),
     ]
 
-    def __init__(self, sandbox: Sandbox, *, workspace_root: str) -> None:
+    def __init__(
+        self, sandbox: Sandbox, *, workspace_root: str,
+        reserved_trees: tuple[str, ...] = (".state", ".tmp"),
+    ) -> None:
         self._sandbox = sandbox
         self._root = workspace_root
+        self._reserved = reserved_trees
 
     def parameters(self) -> type[BaseModel]:
         return GrepArgs
@@ -92,7 +97,9 @@ class SandboxGrep(WorkspaceTool):
         if info.kind == "file":
             files.append(target_abs)
         else:
-            await self._collect_files(target_abs, args.glob, files)
+            # The walk skips the reserved trees (one read RPC per file, git objects included), unless it starts inside one.
+            inside = reserved_tree(workspace_relative(self._root, target_abs), self._reserved)
+            await self._collect_files(target_abs, args.glob, files, () if inside else self._reserved)
 
         out_lines: list[str] = []
         match_count = 0
@@ -152,11 +159,14 @@ class SandboxGrep(WorkspaceTool):
         dir_abs: str,
         glob_filter: str | None,
         out: list[str],
+        skip: tuple[str, ...],
     ) -> None:
         for entry in await self._sandbox.list_dir(dir_abs):
             child_abs = f"{dir_abs}/{entry.path}"
+            if skip and reserved_tree(workspace_relative(self._root, child_abs), skip):
+                continue
             if entry.kind == "dir":
-                await self._collect_files(child_abs, glob_filter, out)
+                await self._collect_files(child_abs, glob_filter, out, skip)
                 continue
             if entry.kind != "file":
                 continue
