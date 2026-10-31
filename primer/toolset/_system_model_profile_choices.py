@@ -2,7 +2,7 @@
 
 The profile tools (``list_model_profiles``, ``get_model_profile`` and the writes) are admin-only, as their REST router, because a profile is
 provider configuration. A user-role agent may still create or edit an agent (``create_agent`` / ``update_agent`` are user tier), and an agent
-must name a profile in ``model.profile_id``, so this user-tier tool lists every profile by id, description, kind and context length, sorted by
+must name a profile in ``model.profile_id``, so this user-tier tool lists the profiles the calling person may use (a use grant, or public; an admin all of them) by id, description, kind and context length, sorted by
 id and paged like the other list tools, and nothing of the provider, the model name, the members or the config. It reads the rows through
 :func:`primer.model_profile.choices.list_model_profile_choices`, the function the route answers from.
 

@@ -2,10 +2,11 @@
 
 "Disable" on a user row fired its PATCH at once, while "Delete" opens a thorough confirmation. A disable is not a small change: the auth middleware treats a disabled
 account as unauthenticated from the next request it checks (primer/api/middleware/auth.py), on the cookie path, on the bearer path (an API key resolves to its owner,
-who is then refused) and over MCP alike. It checks ONCE when a request or a connection OPENS, so a connection that is already open (a terminal, the tap stream, a session
-WebSocket, an MCP stream) is not cut off, and the disable changes one field only (``PATCH /admin/users/{id}`` writes ``disabled``; the session epoch is not bumped), so work
-already running for the user (their triggers, running sessions, scheduled fires) is not stopped either. Nothing is deleted and Enable undoes it, which is what the prompt
-says. "Enable" only restores access, so it stays one click.
+who is then refused) and over MCP alike, and the revalidate watcher (primer/api/middleware/revalidate.py) re-reads the account on a connection that stays open, every
+auth.revalidate_interval_s (default 5 s), and ends it when the account stops being valid, so a connection that is already open (a terminal, the tap stream, a session
+WebSocket, an MCP stream) is signed out within a few seconds; the disable changes one field only (``PATCH /admin/users/{id}`` writes ``disabled``; the session epoch is
+not bumped), so work already running for the user (their triggers, running sessions, scheduled fires) is not stopped either. Nothing is deleted and Enable undoes it,
+which is what the prompt says. "Enable" only restores access, so it stays one click.
 
 Two pure functions run here in MiniRacer against the real source: ``ADM_toggleConfirm(user)`` (the prompt, or ``null``) and ``ADM_toggleStep(user)`` (what a click does: ask,
 or send straight away). The row's handler is JSX, so that it asks BEFORE it sends the PATCH and sends nothing when declined is a source check (this checkout has no render
@@ -69,15 +70,17 @@ def test_disabling_an_enabled_account_asks_first_and_says_what_follows() -> None
     assert "Nothing is deleted" in message and "Enable" in message, "it must say it is reversible"
 
 
-def test_the_prompt_does_not_claim_a_connection_that_is_already_open_is_cut_off() -> None:
-    """The middleware checks once when a request or a connection OPENS: an open terminal, tap stream, session WebSocket or MCP stream keeps going. The prompt must
-    scope its claim to new requests and connections and say plainly that an open one is not cut off (the lead's review of ADM-26)."""
+def test_the_prompt_says_a_connection_already_open_is_signed_out_within_a_few_seconds() -> None:
+    """The revalidate watcher (primer/api/middleware/revalidate.py) re-reads the account on a connection that stays open, every interval (default 5 s), and ends it
+    when the account stops being valid, so the prompt must say an already open connection, such as a terminal, is signed out within a few seconds - and must not claim
+    it keeps going."""
     message = _prompt({"id": "u-1", "username": "bob", "disabled": False})["message"]
 
     assert "new requests and connections" in message.lower(), "the refusal applies to NEW requests and connections"
-    assert "already open" in message, "it must name the connections it does not reach"
+    assert "already open" in message, "it must name the connections it reaches"
     assert "terminal" in message, "the example an admin cares about: an open terminal"
-    assert "not cut off" in message, "it must say they are not cut off"
+    assert "signed out" in message and "few seconds" in message, "it must say the open connection ends within a few seconds"
+    assert "not cut off" not in message, "the old claim: the watcher cuts it off within one interval"
     assert "Every request this account makes" not in message, "the old claim covered requests on a connection that is already open"
     assert "very next request" not in message, "the wording is 'starting with the very next one'"
 
@@ -144,7 +147,7 @@ def test_the_row_holds_no_guard_flag_across_the_prompt() -> None:
 
 def test_the_delete_dialog_does_not_say_every_session_is_invalidated() -> None:
     """Delete has the same shape as Disable: the middleware refuses NEW requests and connections from the account, and a connection that is already open (a terminal)
-    is not cut off (the lead's ruling on ADM-26 round 2)."""
+    is signed out within a few seconds by the revalidate watcher (the lead's ruling on ADM-26 round 2, as the watcher now cuts open connections)."""
     start = SRC.index("function ADM_DeleteUserDialog(")
     dialog = SRC[start:SRC.index("// ====", start)]
 
@@ -153,4 +156,4 @@ def test_the_delete_dialog_does_not_say_every_session_is_invalidated() -> None:
     assert bullet, "the first bullet must say what happens to the account's requests"
     text = bullet.group(1)
     assert "starting with the very next one" in text
-    assert "already open" in text and "terminal" in text and "not cut off" in text
+    assert "already open" in text and "terminal" in text and "signed out" in text and "few seconds" in text

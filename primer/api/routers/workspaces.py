@@ -577,7 +577,7 @@ async def list_workspace_provider_choices(
     request: Request,
     storage=Depends(get_workspace_provider_storage),
 ) -> WorkspaceProviderChoices:
-    """Every workspace provider as ``{id, kind, label, default_image}``, sorted by id.
+    """The workspace providers the caller may use (a use grant, or public; an admin all of them) as ``{id, kind, label, default_image}``, sorted by id.
 
     ``kind`` is ``local``, ``container`` or ``kubernetes``. ``label`` is what a person calls it (``Local``, ``Docker``, ``Podman``,
     ``containerd`` or ``Kubernetes``). ``default_image`` is the image a container provider runs when a template names none, and ``null``
