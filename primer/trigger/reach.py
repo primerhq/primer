@@ -140,7 +140,14 @@ async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> 
     if owner is None:
         logger.warning("trigger %s subscription %s refused: it has no owner; the fire starts and feeds no session", sub.trigger_id, sub.id)
         return "this subscription has no owner, so nobody can be checked on its target; the fire starts and feeds no session (re-save it)"
-    if person_from_ref(owner).is_admin:
+    # Judged by the role the owner holds NOW, capped by the one recorded (a demoted admin or a user since restricted does not keep the reach of the role
+    # they saved with; a deleted or disabled owner holds none), the rule every later run of the owner follows (access-control P6 Task 2).
+    from primer.trigger.owner import resolve_current_role
+
+    recorded = person_from_ref(owner)
+    role = await resolve_current_role(owner, storage_provider)
+    person = Person(recorded.user_id, role if role not in (None, "system") else ("admin" if role == "system" else "restricted"))
+    if person.is_admin:
         return None  # an admin or system owner reaches every workspace, one whose row is gone included (as require_session)
     config = sub.config
     if isinstance(config, AgentFreshSubConfig | GraphFreshSubConfig):
@@ -152,7 +159,7 @@ async def refuse_fire_out_of_reach(sub: Subscription, storage_provider: Any) -> 
         target = row.workspace_id
     else:
         target = None  # a kind with no rule here: refused (fail closed)
-    level = await workspace_level(storage_provider, person_from_ref(owner), target) if target is not None else None
+    level = await workspace_level(storage_provider, person, target) if target is not None else None
     if target is not None and _full(level):
         return None
     logger.warning(
