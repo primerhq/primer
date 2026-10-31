@@ -1,4 +1,4 @@
-"""The python tool shim's hardening (Part 3 Task 105).
+"""The python tool shim's hardening (Part 3 Task 105): no fork, capped output, prints off the response, finite timeouts.
 
 Inverted from the coverage-gap probes (``review-gaps-security.md`` GS-10, GS-11, GS-35, GS-36).
 """
@@ -18,6 +18,7 @@ import pytest
 from primer.toolset.python_runner import runners as runners_mod
 from primer.toolset.python_runner._shim import SHIM_SOURCE
 from primer.toolset.python_runner.protocol import build_request
+from primer.toolset.python_runner.registration import RegistrationError, register_module
 from primer.toolset.python_runner.runners import IsolationLevel, LocalHardenedRunner
 
 SECCOMP_ONLY = pytest.mark.skipif(
@@ -141,3 +142,18 @@ async def test_a_print_in_a_tool_leaves_its_result_intact() -> None:
     module = "import sys\ndef run():\n    print('debug')\n    sys.stdout.write('more')\n    return 42\n"
     resp = await LocalHardenedRunner().run(_req(module), timeout_seconds=10)
     assert (resp.ok, resp.value) == (True, 42)
+
+
+# --------------------------------------------------------------------------- GS-35: NaN timeout
+
+
+@pytest.mark.parametrize("literal", ['"nan"', '"-nan"', '"inf"'])
+def test_a_non_finite_timeout_is_refused_at_registration(literal: str) -> None:
+    src = (
+        f"@primer_tool(timeout_seconds={literal})\n"
+        "def f(a: str) -> str:\n"
+        '    """Do it.\n\n    Use when you must.\n\n    Args:\n        a: A.\n    """\n'
+    )
+    with pytest.raises(RegistrationError) as exc:
+        register_module(src, "ts-1", 30.0)
+    assert exc.value.field == "timeout_seconds"
