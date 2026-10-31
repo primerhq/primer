@@ -37,6 +37,7 @@ Public surface:
 * :func:`vet_ip_literal` - the literal-address check aiohttp needs (it
   bypasses its resolver for IP literals).
 * :func:`url_targets_internal_literal` - the save-time form: a URL that writes an internal address (or localhost) out, no DNS involved.
+* :func:`url_resolves_internal` - the save-time form for a name: one bounded lookup, for callers below admin.
 """
 
 from __future__ import annotations
@@ -203,6 +204,40 @@ def url_targets_internal_literal(url: str) -> bool:
         return not _is_allowed(ip)
     name = _norm_host(host)
     return (name == "localhost" or name.endswith(".localhost")) and name not in _allow_hosts
+
+
+#: How long a save-time resolution (:func:`url_resolves_internal`) may take before it gives up and says nothing.
+RESOLVE_TIMEOUT_SECONDS = 2.0
+
+
+async def url_resolves_internal(url: str) -> bool:
+    """Whether ``url``'s host NAME resolves, now, to an address that is internal and not allowed (any one answer counts, as for :func:`vet_host`).
+
+    The save-time half of the rule for a name (:func:`url_targets_internal_literal` is the half that needs no lookup). The lookup is bounded
+    (:data:`RESOLVE_TIMEOUT_SECONDS`) and runs off the event loop (``getaddrinfo`` on a thread). A name that does not resolve, a timeout, a literal address
+    (its own rule) and an allowlisted name all answer ``False``: this check never refuses on doubt, the connect-time guard still applies.
+    It is a snapshot: a name can be re-bound after it (an admin-owned toolset edited by a grantee keeps that residual window, because the
+    toolset's trusted author skips the connect-time guard).
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return False
+    if not host or _parse_ip(host) is not None or _norm_host(host) in _allow_hosts:
+        return False
+    port = port or (443 if parts.scheme == "https" else 80)
+    try:
+        addrs = await asyncio.wait_for(_resolve(host, port), RESOLVE_TIMEOUT_SECONDS)
+    except (OSError, TimeoutError):
+        return False
+    for addr in addrs:
+        ip = _parse_ip(addr)
+        if ip is None or not _is_allowed(ip):
+            return True
+    return False
 
 
 async def vet_host(host: str, port: int) -> list[str]:
@@ -408,6 +443,7 @@ __all__ = [
     "configure_egress_allow",
     "guarded_async_client",
     "guarded_transport",
+    "url_resolves_internal",
     "url_targets_internal_literal",
     "parse_egress_allow",
     "transport_over",

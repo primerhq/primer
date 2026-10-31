@@ -19,7 +19,7 @@ the difference is documented in rest-api.md and in the ``create_toolset`` / ``up
 from __future__ import annotations
 
 from primer.common.entity_checks import EntityCheckError
-from primer.common.netguard import url_targets_internal_literal
+from primer.common.netguard import url_resolves_internal, url_targets_internal_literal
 from primer.common.origin import origin_of
 from primer.model.common import preserve_masked_secrets
 from primer.model.except_ import ValidationError as PrimerValidationError
@@ -75,6 +75,28 @@ def targets_an_internal_address(entity: Toolset) -> bool:
         return False
     inner = getattr(config, "config", None)
     return isinstance(inner, HttpConfig) and url_targets_internal_literal(str(inner.url))
+
+
+async def check_mcp_url_resolves_public(entity: Toolset, person) -> None:
+    """Refuse a write by a caller below admin that points an http / sse MCP toolset at a NAME which resolves to an internal address.
+
+    The literal rule (:func:`targets_an_internal_address`, in :func:`toolset_admin_reason`) cannot see a name. Without this, a FULL grantee of an
+    admin-owned toolset could repoint it at ``mcp.sneaky.example`` that resolves to ``10.0.0.5``: the toolset's author is an admin, so
+    :func:`primer.toolset.mcp_egress.author_is_trusted` trusts it and neither guard fires. So a non-admin's save resolves the host once (bounded,
+    off the loop, ``PRIMER_EGRESS_ALLOW`` honoured) and is refused with the same reason when ANY answer is internal; a failed lookup refuses
+    nothing, and an admin's save is never resolved. Active DNS rebinding against an admin-owned toolset edited by a grantee remains (the name
+    can be re-bound after this snapshot): acceptable because it needs a hostile grantee the admin chose, the attacker's DNS and an admin-owned toolset,
+    and every toolset a non-admin owns is guarded at connect time. ``person`` is anything with ``is_admin`` (a request's or a tool run's person).
+    Raises :class:`EntityCheckError` (``forbidden``, code ``forbidden_role``).
+    """
+    if person.is_admin or entity.provider != ToolsetProviderType.MCP:
+        return
+    config = entity.config
+    if getattr(config, "transport", None) not in (TransportType.HTTP, TransportType.SSE):
+        return
+    inner = getattr(config, "config", None)
+    if isinstance(inner, HttpConfig) and await url_resolves_internal(str(inner.url)):
+        raise EntityCheckError("forbidden", _INTERNAL_URL_REASON, code="forbidden_role")
 
 
 def runs_python(entity: Toolset) -> bool:
@@ -238,6 +260,7 @@ def check_toolset_on_update(entity: Toolset, existing: Toolset) -> None:
 
 __all__ = [
     "RESOURCE_URI_FIELD",
+    "check_mcp_url_resolves_public",
     "check_oauth_resource_uri",
     "check_python_toolset",
     "check_toolset_on_create",

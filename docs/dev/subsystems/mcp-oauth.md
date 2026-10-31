@@ -350,7 +350,14 @@ goes to the address that passed, so a name re-bound after the save is refused to
 unless an admin authored the toolset (`author_is_trusted`: an enabled admin owns it, or
 it has no owner, as a platform-seeded or harness-installed row; read per dispatch, so
 a role change applies at once). The create probe for a caller below admin goes through
-the same guard and answers 403 `forbidden_role` instead of a port scan. The operator's
+the same guard and answers 403 `forbidden_role` instead of a port scan. A save by a caller
+below admin also resolves the URL's host once (`check_mcp_url_resolves_public`, bounded
+at 2 s, off the loop, `PRIMER_EGRESS_ALLOW` honoured, a failed lookup refuses nothing)
+and is refused with the same reason when any answer is internal: this closes a full
+grantee of an admin-owned toolset repointing it at a name that resolves internal (its
+admin author makes it trusted, so the connect-time guard does not run). Active DNS
+rebinding against such a toolset remains (the name can be re-bound after the snapshot);
+it needs a hostile grantee the admin chose and the attacker's DNS. The operator's
 `PRIMER_EGRESS_ALLOW` opts internal servers back in for everyone.
 
 The OAuth client does not call private addresses an MCP server names (audit

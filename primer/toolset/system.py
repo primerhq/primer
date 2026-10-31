@@ -181,6 +181,7 @@ from primer.knowledge.checks import (
 from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
 from primer.knowledge.lifecycle import purge_collection
 from primer.toolset.toolset_checks import (
+    check_mcp_url_resolves_public,
     check_toolset_on_create,
     check_toolset_on_update,
     oauth_settings_changed,
@@ -483,14 +484,21 @@ def build_system_toolset(
             tool_schema_of=_tool_schema_of,
         )
 
-    async def _toolset_pre_create(entity: Toolset) -> None:
+    async def _toolset_pre_create(entity: Toolset, *, person: Any = None) -> None:
         # Not the router's reachability probe (an 8 s outbound call for http / sse MCP toolsets): a tool runs inside an agent turn.
         check_toolset_on_create(entity)
+        if person is not None:
+            await check_mcp_url_resolves_public(entity, person)  # a name that resolves internal, below admin (the REST route does the same)
 
-    async def _toolset_pre_update(entity: Toolset, existing: Toolset) -> None:
+    async def _toolset_pre_update(entity: Toolset, existing: Toolset, *, person: Any = None) -> None:
         check_toolset_on_update(entity, existing)
+        if person is not None:
+            await check_mcp_url_resolves_public(entity, person)
         if mcp_oauth is not None and oauth_settings_changed(entity, existing):
             await mcp_oauth.forget(entity.id)
+
+    _toolset_pre_create.takes_person = True  # type: ignore[attr-defined]
+    _toolset_pre_update.takes_person = True  # type: ignore[attr-defined]
 
     async def _profile_pre_create(entity: ModelProfile) -> None:
         await check_profile_on_create(entity, storage_provider=storage_provider)
