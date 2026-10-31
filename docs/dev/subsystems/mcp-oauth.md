@@ -187,9 +187,10 @@ rows and registered clients stay), for removing a user.
 The per-user OAuth migration (`M027McpOAuthPerUser` in
 `primer/storage/migrations/m027_mcp_oauth_per_user.py` at the time of writing) makes
 an upgraded install's sign-ins per person. A browser token set stored under the bare
-toolset id moves, with its sealed tokens as stored, to the user its `connected_by`
-names (by username, else by id), else to the first admin (the oldest admin); with
-no users at all (the auth-disabled shape) it stays under the bare id. Not the
+toolset id moves, with its sealed tokens as stored, to the user whose id its
+`connected_by` is, else to the enabled admin whose username it is, else to the
+first enabled admin (the oldest); with no enabled admin (the auth-disabled shape
+has no users at all) it stays under the bare id. Not the
 toolset's owner: the token is an upstream account, and handing it to someone who
 never held it would be an escalation through a credential. Client-credentials rows
 stay the shared row. Every token row is stamped with `toolset_id` and `user_id`,
