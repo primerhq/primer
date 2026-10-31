@@ -44,6 +44,7 @@ from primer.trigger.reach import (
     refuse_target_out_of_access,
     subscription_in_reach,
     subscription_reaches_outside,
+    subscriptions_in_reach,
 )
 from primer.trigger.cron import (
     CronInvalid,
@@ -855,7 +856,9 @@ async def list_subscriptions(
     rows = await _drain_list(subs_storage, predicate=q.build())
     if reach is None:
         return rows
-    return [sub for sub in rows if await subscription_in_reach(deps.storage_provider, reach, sub)]
+    # Batch the reach reads: one read per DISTINCT target session/workspace,
+    # not one per row (M9). The answer is the one-row filter's, same order.
+    return await subscriptions_in_reach(deps.storage_provider, reach, rows)
 
 
 __all__ = [

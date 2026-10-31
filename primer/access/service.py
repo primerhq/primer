@@ -70,11 +70,21 @@ async def _load(storage: Storage[Any], entity_id: str, what: str) -> Any:
 
 
 async def _user_refs(users: Storage[User], ids: list[str]) -> dict[str, UserRef]:
-    refs: dict[str, UserRef] = {}
-    for uid in ids:
-        user = await users.get(uid)
-        refs[uid] = UserRef(id=uid, username=user.username if user is not None else None)
-    return refs
+    """The refs of every id: one ``id IN`` find per 200 ids, an id with no row
+    resolves to a username-less ref, never an error."""
+    unique = list(dict.fromkeys(ids))
+    found: dict[str, User] = {}
+    for start in range(0, len(unique), 200):  # OffsetPage.length is capped at 200
+        chunk = unique[start : start + 200]
+        page = await users.find(
+            Predicate(left=FieldRef(name="id"), op=Op.IN, right=Value(value=chunk)),
+            OffsetPage(offset=0, length=len(chunk)),
+        )
+        found.update({user.id: user for user in page.items})
+    return {
+        uid: UserRef(id=uid, username=found[uid].username if uid in found else None)
+        for uid in unique
+    }
 
 
 def _view(access: Access, refs: dict[str, UserRef], level: AccessLevel | None) -> AccessView:
