@@ -1633,3 +1633,45 @@ async def test_a_harness_install_still_stores_agents_whose_ids_the_create_rule_r
     with pytest.raises(EntityCheckError) as refused:
         check_agent_fields(Agent(id=stored.id, description="d", model={"profile_id": "p--m"}))
     assert refused.value.code == "agent_id_invalid", "a REST-created agent with this id would be refused, so it can never collide with the install"
+
+
+# ---------------------------------------------------------------------------
+# Access control (security review finding 7): a template never sets sharing; the installer owns; a sync keeps sharing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_harness_install_ignores_template_access_and_the_installer_owns_the_rows(fake_storage_provider):
+    from primer.model.access import Access
+    from primer.model.agent import Agent
+    from primer.model.principal import PrincipalRef
+
+    harness = _make_harness("acme").model_copy(update={"operation_requested_by": PrincipalRef(
+        type="user", id="u-installer", display="i", role="user", source="local", user_id="u-installer",
+    )})
+    entry = RenderedEntry(
+        kind="agent", template_name="asst", resolved_id=resolved_id("acme", "asst"),
+        template_source_hash="h", rendered_hash="h1",
+        rendered_payload={"description": "assistant", "model": {"profile_id": "p--m"},
+                          "access": {"owners": ["u-attacker"], "public": True}},
+    )
+    error = await apply_install(
+        storage_provider=fake_storage_provider, harness=harness, entries=[entry], rendered_files_by_name={},
+        bundle_hash="bh1", overrides_hash="oh1", schema_hash=None,
+    )
+    assert error is None
+    stored = await fake_storage_provider.get_storage(Agent).get("acme__asst")
+    assert stored.access == Access.owned_by("u-installer")
+
+    # The owner shares it; a sync of a changed template keeps that sharing.
+    agents = fake_storage_provider.get_storage(Agent)
+    await agents.update(stored.model_copy(update={"access": Access(owners=["u-installer"], grants={"u-peer": "read"})}))
+    changed = entry.model_copy(update={"rendered_hash": "h2", "rendered_payload": {**entry.rendered_payload, "description": "assistant v2"}})
+    err = await apply_sync(
+        storage_provider=fake_storage_provider, harness=harness, new_entries=[changed], rendered_files_by_name={},
+        bundle_hash="bh2", overrides_hash="oh2", schema_hash=None,
+    )
+    assert err is None
+    synced = await agents.get("acme__asst")
+    assert synced.description == "assistant v2"
+    assert synced.access.grants == {"u-peer": "read"} and synced.access.public is False

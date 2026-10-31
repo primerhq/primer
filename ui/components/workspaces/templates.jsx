@@ -1270,7 +1270,8 @@ function WT_TemplatesPage() {
         {paged.visible.map(function (t) {
           var reserved = WT_isReserved(t);
           var locked = reserved || (!isAdmin && WT_heldAdminFields(t).length > 0);
-          var badges = [reserved ? "built in" : null].concat(SHR_accessBadges(t.access)).filter(Boolean).join(" · ") || undefined;
+          // A built-in template is public to everyone by definition: its badge stays "built in", no sharing badges beside it.
+          var badges = reserved ? "built in" : (SHR_accessBadges(t.access).filter(Boolean).join(" · ") || undefined);
           return (
             <PK_Card key={t.id} id={t.id} icon={{ path: WT_KIND_ICONS[WT_kindOf(t)] }} badge={badges}
               title={t.id} subtitle={t.description || undefined} facts={WT_cardFacts(t, choiceFor(t))}

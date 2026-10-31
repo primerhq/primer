@@ -190,6 +190,18 @@ def _caller_is_admin(ctx: ToolContext | None) -> bool:
     return _role_allows(actor, "admin")
 
 
+def _mcp_caller_ref():
+    """The MCP request's actor as a persisted ref (a call with no ToolContext is the MCP endpoint), else ``None``.
+
+    A session started over MCP runs as the account behind the token, so it can use what that account can read; with no
+    known caller it stays unattributed (an ordinary user that reads only public rows)."""
+    from primer.mcp.server import current_actor
+    from primer.model.principal import PrincipalRef
+
+    actor = current_actor.get()
+    if actor is None or actor.type == "system":
+        return None
+    return PrincipalRef.from_principal(actor)
 
 
 def _caller_actor(ctx: ToolContext | None) -> str:
@@ -834,9 +846,11 @@ def _make_update_handler(
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"  # type: ignore[attr-defined]
             )
-        refusal = refuse_update(guards, entity, existing)
-        if refusal is None and privilege_check is not None:
-            refusal = privilege_check(entity, existing, ctx)
+        # The access check runs before the guards' refusals: a row the caller holds no level on answers exactly like a
+        # missing one, whatever the guards would say of it (a reserved id, a managing harness) (spec 9).
+        refusal = privilege_check(entity, existing, ctx) if privilege_check is not None else None
+        if refusal is None:
+            refusal = refuse_update(guards, entity, existing)
         if refusal is not None:
             return refusal
         if preserve_access:
@@ -852,7 +866,15 @@ def _make_update_handler(
         except PrimerValidationError as exc:
             return _err(exc.message, error_type="validation-error")
         try:
-            updated = await storage.update(entity)
+            if preserve_access:
+                # Guarded on the stored sharing's rev (a share changed meanwhile is a conflict, never a resurrected grant).
+                from primer.access.service import update_keeping_access
+
+                updated = await update_keeping_access(storage, entity, existing, what=f"{cls_name} {args.id!r}")
+            else:
+                updated = await storage.update(entity)
+        except ConflictError as exc:
+            return _err(str(exc), error_type="conflict")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
         if on_update is not None:
@@ -888,9 +910,11 @@ def _make_delete_handler(
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
-        refusal = refuse_delete(guards, existing)
-        if refusal is None and privilege_check is not None:
-            refusal = privilege_check(None, existing, ctx)
+        # The access check runs before the guards' refusals: an unreadable row answers like a missing one, so neither
+        # the managed-by refusal nor a reference blocker names what it holds (spec 9).
+        refusal = privilege_check(None, existing, ctx) if privilege_check is not None else None
+        if refusal is None:
+            refusal = refuse_delete(guards, existing)
         if refusal is None:
             refusal = await refuse_delete_if_referenced(guards, existing, storage_provider)
         if refusal is not None:
@@ -1677,6 +1701,11 @@ def build_workspaces_toolset(
                 f"WorkspaceTemplate {args.template_id!r} does not exist",
                 error_type="not-found",
             )
+        # Materialising a workspace copies the template's config into it: the template is read here, so it needs read
+        # level, as on REST. A row the caller holds no level on answers exactly like a missing one (spec 9).
+        denial = _template_access_refusal(AccessLevel.READ)(None, template, ctx)
+        if denial is not None:
+            return denial
         if args.id is not None:
             existing = await _workspace_storage().get(args.id)
             if existing is not None:
@@ -1867,6 +1896,7 @@ def build_workspaces_toolset(
                 # system principal that clears every role floor (A-20).
                 initiated_by=(
                     getattr(ctx, "initiated_by", None)
+                    or _mcp_caller_ref()
                     or PrincipalRef.unattributed()
                 ),
                 deps=deps,

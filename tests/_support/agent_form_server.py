@@ -7,7 +7,7 @@ the way ``primer/api/_app_routes.py`` includes them: ``model_profile_choices_rou
 ``model_profile_router`` behind ``require_admin``, and ``compute.agent_router`` behind ``require_user``. The storage is the root suite's
 in-memory fake, holding only the profiles and agents the test names.
 
-The caller's role is a header (``x-test-role``), turned into the signed-in ``User`` the auth middleware would set: what a route answers to
+The caller's role is a header (``x-test-role``), turned into the signed-in ``User`` and actor the auth middleware would set: what a route answers to
 a ``user`` account and to an ``admin`` is the router's own decision, not the test's.
 """
 
@@ -51,6 +51,7 @@ def agent_form_server(*, profiles: list[dict], agents: tuple[dict, ...] | list[d
     from primer.api.routers.model_profiles import model_profile_choices_router, model_profile_router
     from primer.model.agent import Agent
     from primer.model.model_profile import ModelProfile
+    from primer.model.principal import Principal
     from primer.model.user import User
     from tests.conftest import _FakeStorageProvider
 
@@ -74,7 +75,12 @@ def agent_form_server(*, profiles: list[dict], agents: tuple[dict, ...] | list[d
     async def _sign_in(request: Request, call_next):
         role = request.headers.get("x-test-role")
         if role:
-            request.state.user = User(id=f"u-{role}", username=role, role=role, created_at=datetime.now(timezone.utc))
+            user = User(id=f"u-{role}", username=role, role=role, created_at=datetime.now(timezone.utc))
+            request.state.user = user
+            # The actor the auth middleware's cookie path sets beside the user: access decisions read it.
+            request.state.actor = Principal(
+                type="user", id=user.id, display=user.username, role=role, source="local", user_id=user.id,
+            )
         return await call_next(request)
 
     # As primer/api/_app_routes.py includes them: the choices before the admin router, whose GET /{id} would read "choices" as an id.

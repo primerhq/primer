@@ -18,6 +18,7 @@ from pydantic import SecretStr
 from primer.channel.correlation import CorrelationStore
 from primer.channel.inbox import ChannelInbox
 from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 from primer.model.channel import (
     Channel,
@@ -134,7 +135,7 @@ class _World:
             id="ws-1", description="w", template_id="t-1", provider_id="p-1", created_at=datetime.now(UTC),
             runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959/", token=SecretStr("t")), reply_binding=ws_binding,
         ))
-        await sp.get_storage(Agent).create(Agent(id="ag-1", description="a", model=AgentModel(profile_id="p--m")))
+        await sp.get_storage(Agent).create(Agent(access=Access(public=True), id="ag-1", description="a", model=AgentModel(profile_id="p--m")))
         await sp.get_storage(Trigger).create(Trigger(
             id="tr-1", slug="ch-trigger", name="Channel", created_at=datetime.now(UTC),
             config=ChannelTriggerConfig(provider_id="cp-sl", channel_id="ch-sl", interactive=interactive),

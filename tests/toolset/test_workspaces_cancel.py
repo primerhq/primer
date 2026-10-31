@@ -74,6 +74,19 @@ async def _cancel(task: asyncio.Task) -> None:
         await task
 
 
+
+def _admin():
+    """The admin these calls stand for (no session): the template is created with no identity, so it is admin-managed and
+    only an admin may create a workspace from it (access control)."""
+    from primer.model.principal import PrincipalRef
+    from primer.model.yield_ import ToolContext
+
+    return ToolContext(
+        tool_call_id="c", session_id=None, workspace_id=None,
+        initiated_by=PrincipalRef(type="user", id="admin-1", display="admin", role="admin", source="local", user_id="admin-1"),
+    )
+
+
 class TestCreateWorkspaceRollsBackOnCancel:
     async def test_a_cancel_while_the_row_is_written_destroys_the_live_instance(self, sp, workspace_registry, toolset) -> None:
         await _seed_template(toolset)
@@ -86,7 +99,7 @@ class TestCreateWorkspaceRollsBackOnCancel:
         sp.get_storage(WorkspaceRow).create = row_create_that_never_returns  # type: ignore[method-assign]
         backend = await workspace_registry.get_backend("local-1")
 
-        call = asyncio.create_task(toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-1"}))
+        call = asyncio.create_task(toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-1"}, ctx=_admin()))
         await entered.wait()
         assert "ws-x" in backend._workspaces, "precondition: the live instance exists while the row is being written"
 
@@ -106,7 +119,7 @@ class TestCreateWorkspaceRollsBackOnCancel:
         backend = await workspace_registry.get_backend("local-1")
 
         with pytest.raises(RuntimeError, match="storage is down"):
-            await toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-1"})
+            await toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-1"}, ctx=_admin())
 
         assert "ws-x" not in backend._workspaces
 
@@ -125,7 +138,7 @@ class TestCreateWorkspaceRollsBackOnCancel:
         backend = await workspace_registry.get_backend("local-1")
         backend.destroy = destroy_that_fails  # type: ignore[method-assign]
 
-        call = asyncio.create_task(toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-1"}))
+        call = asyncio.create_task(toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-1"}, ctx=_admin()))
         await entered.wait()
 
         await _cancel(call)  # the CancelledError, not the RuntimeError of the failed rollback
@@ -134,7 +147,7 @@ class TestCreateWorkspaceRollsBackOnCancel:
         await _seed_template(toolset)
         backend = await workspace_registry.get_backend("local-1")
 
-        result = await toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-1"})
+        result = await toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-1"}, ctx=_admin())
 
         assert not result.is_error, result.output
         assert "ws-x" in backend._workspaces
@@ -144,7 +157,7 @@ class TestCreateWorkspaceRollsBackOnCancel:
 class TestDeleteWorkspaceCarriesOnAfterACancel:
     async def _seeded(self, toolset, workspace_registry):
         await _seed_template(toolset)
-        created = await toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-1"})
+        created = await toolset.call(tool_name="create_workspace", arguments={"id": "ws-x", "template_id": "tpl-1"}, ctx=_admin())
         assert not created.is_error, created.output
         return await workspace_registry.get_backend("local-1")
 

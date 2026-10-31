@@ -25,6 +25,8 @@ import primer.toolset.system as system_module
 from primer.agent.invoke import build_subagent_toolmanager
 from primer.api.registries import ProviderRegistry
 from primer.authz import _role_allows
+from primer.model.access import Access
+from primer.model.agent import Agent, AgentModel
 from primer.model.chat import ToolCallPart, ToolResultPart
 from primer.model.principal import PrincipalRef
 from primer.model.yield_ import Yielded
@@ -41,8 +43,12 @@ TOOLS = ["rec__admin_x", "rec__user_x"]
 
 
 @pytest.fixture
-def captured(monkeypatch, fake_storage_provider):
+async def captured(monkeypatch, fake_storage_provider):
     seen: dict = {}
+    # A public agent: the read check passes for every caller, so the identity handed on is what these tests see.
+    await fake_storage_provider.get_storage(Agent).create(Agent(
+        access=Access(public=True), id="ag-1", description="a subagent", model=AgentModel(profile_id="p--m"),
+    ))
 
     async def _fake_run_subagent(**kwargs):
         seen.update(kwargs)

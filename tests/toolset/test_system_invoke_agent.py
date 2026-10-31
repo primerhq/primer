@@ -29,6 +29,13 @@ class _Storage:
     def get_storage(self, cls: type) -> "_Storage":  # pragma: no cover - stub
         return self
 
+    async def get(self, id: str):
+        # invoke_agent reads the agent row for the caller's read access before it runs the (monkeypatched) subagent.
+        from primer.model.access import Access
+        from primer.model.agent import Agent, AgentModel
+
+        return Agent(id=id, description="stub", model=AgentModel(profile_id="p"), access=Access(public=True))
+
 
 class _SP:
     async def get_system_state(self):

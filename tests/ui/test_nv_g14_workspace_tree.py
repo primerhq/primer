@@ -220,7 +220,12 @@ def _settle(ctx) -> None:
 
 @pytest.fixture
 def rail():
-    c = mini_react_context(_code(SH_API, UI / "components" / "console" / "nv-rail.jsx"), _PRELUDE + "\n" + _ERRTEXT)
+    # NV_Rail reads the viewer's id through the console context (ACL-P2-T10's group split),
+    # so the stand-in answers the hook with an empty context (no viewer: every row is Public).
+    c = mini_react_context(
+        _code(SH_API, UI / "components" / "console" / "nv-rail.jsx"),
+        _PRELUDE + "\n" + _ERRTEXT + "\nvar CON = {};" + " function NV_useConsole() { return CON; }",
+    )
     c.eval(_PRIMER_STUBS)
     try:
         yield c
