@@ -14,8 +14,11 @@ from pathlib import Path
 
 import pytest
 
+from primer.mcp.server import current_actor
+from primer.model.principal import Principal
 from primer.model.storage import OffsetPage
 from primer.model.trigger import DelayedTriggerConfig, SessionAppendSubConfig, Subscription, Trigger
+from tests.api._sub_targets import seed_sub_targets
 from primer.model.workspace_session import AgentSessionBinding, PendingSessionMessage, SessionStatus, WorkspaceSession
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +52,7 @@ async def _queued(sp) -> list[PendingSessionMessage]:
 async def test_the_tool_delivers_a_session_append_like_the_rest_route(app, client):
     sp = app.state.storage_provider
     await _seed(sp)
+    await seed_sub_targets(sp, session_id="sess-other")  # ws-1 as a row: the subscription's owner must hold full on it
     tools = app.state.provider_registry._trigger_toolset_provider
 
     rest = await client.post("/v1/triggers/tr-tool/fire_now")
@@ -56,7 +60,12 @@ async def test_the_tool_delivers_a_session_append_like_the_rest_route(app, clien
     [rest_result] = rest.json()["results"]
     assert rest_result["ok"] is True and rest_result["artefact_id"] == "sess-busy", rest_result
 
-    tool = await tools.call(tool_name="fire_now", arguments={"id": "tr-tool"})
+    # The MCP door names the request's person; an admin holds full on the subscription's target workspace (access-control P2 T6).
+    token = current_actor.set(Principal(type="user", id="u-adm", display="adm", role="admin", source="local", user_id="u-adm"))
+    try:
+        tool = await tools.call(tool_name="fire_now", arguments={"id": "tr-tool"})
+    finally:
+        current_actor.reset(token)
     assert not tool.is_error, tool.output
     [tool_result] = json.loads(tool.output)["results"]
     assert tool_result["ok"] is True, f"the tool's fire did not deliver: {tool_result}"
