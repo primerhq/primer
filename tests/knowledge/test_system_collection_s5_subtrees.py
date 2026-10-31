@@ -18,6 +18,7 @@ from primer.knowledge.system_collection import (
     regenerate_system_collection,
 )
 from primer.knowledge.tree import DocumentTreeService
+from primer.model.access import Access
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import (
     LLMProvider,
@@ -97,6 +98,7 @@ async def test_the_root_index_names_every_subtree(sp, wiki):
 async def test_providers_subtree_tracks_registry_state(sp, wiki):
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
+            access=Access(public=True),  # the live map lists only public rows (P5 T5)
             id="llm-1",
             provider="ollama",
             config={"url": "http://localhost:11434"},
@@ -105,6 +107,7 @@ async def test_providers_subtree_tracks_registry_state(sp, wiki):
     )
     await sp.get_storage(ModelProfile).create(
         ModelProfile(
+            access=Access(public=True),  # the live map lists only public rows (P5 T5)
             id="llm-1--qwen",
             description="default",
             provider_id="llm-1",
@@ -131,18 +134,21 @@ async def test_aggregated_profile_renders_its_pool_not_none_on_none(sp, wiki):
     render this literally as "None on None, context None"."""
     await sp.get_storage(ModelProfile).create(
         ModelProfile(
+            access=Access(public=True),  # the live map lists only public rows (P5 T5)
             id="leaf-a", description="leaf a",
             provider_id="llm-1", model_name="qwen", context_length=32000,
         )
     )
     await sp.get_storage(ModelProfile).create(
         ModelProfile(
+            access=Access(public=True),  # the live map lists only public rows (P5 T5)
             id="leaf-b", description="leaf b",
             provider_id="llm-1", model_name="qwen-fast", context_length=8000,
         )
     )
     await sp.get_storage(ModelProfile).create(
         ModelProfile(
+            access=Access(public=True),  # the live map lists only public rows (P5 T5)
             id="agg-pool", description="a pool", kind="aggregated",
             members=["leaf-a", "leaf-b"],
         )
@@ -174,6 +180,7 @@ async def test_how_to_guides_are_written(sp, wiki):
 async def test_a_removed_provider_disappears_from_the_next_pass(sp, wiki):
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
+            access=Access(public=True),  # the live map lists only public rows (P5 T5)
             id="llm-1",
             provider="ollama",
             config={"url": "http://localhost:11434"},
