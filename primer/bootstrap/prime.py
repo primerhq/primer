@@ -248,9 +248,14 @@ async def _adopt_install_default(storage_provider: Any, user: User) -> str | Non
         return None
     from primer.model.access import Access
 
-    adopted = await storage_provider.get_storage(Workspace).patch_if(
+    workspaces = storage_provider.get_storage(Workspace)
+    row = await workspaces.get(install_id)
+    if row is None or row.access.owners:
+        return None
+    # rev 0 -> 1 is the claim: a concurrent adopter's guard fails, and it falls through to its own workspace.
+    adopted = await workspaces.patch_if(
         install_id,
-        patch={"access": Access.owned_by(user.id).model_dump(mode="json")},
+        patch={"access": Access(owners=[user.id], rev=1).model_dump(mode="json")},
         where={("access", "rev"): [0], ("access", "public"): [False]},
     )
     return install_id if adopted is not None else None

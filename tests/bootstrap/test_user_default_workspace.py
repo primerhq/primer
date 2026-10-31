@@ -192,3 +192,41 @@ async def _migration_23_case(sp, migration) -> None:
     assert (await users.get("user-root")).default_workspace_id == "primer"
     assert (await users.get("user-late")).default_workspace_id is None
     assert (await users.get("user-bob")).default_workspace_id is None
+
+
+async def test_two_admins_adopting_concurrently_leave_one_owner(fake_storage_provider):
+    sp = fake_storage_provider
+    reg = await _setup(sp)
+    await sp.get_storage(Workspace).create(Workspace(
+        id="prime", template_id="local-default", provider_id="local", created_at=NOW,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://x", token="t"),
+    ))
+    await sp.set_default_workspace_id("prime")
+    a = await _user(sp, "user-a", role="admin")
+    b = await _user(sp, "user-b", role="admin", age=1)
+
+    ids = await asyncio.gather(
+        ensure_user_default_workspace(sp, reg, a), ensure_user_default_workspace(sp, reg, b)
+    )
+
+    owners = (await sp.get_storage(Workspace).get("prime")).access.owners
+    assert len(owners) == 1 and sorted(ids).count("prime") == 1
+    winner = owners[0]
+    assert dict(zip(["user-a", "user-b"], ids))[winner] == "prime"
+    loser = "user-b" if winner == "user-a" else "user-a"
+    assert dict(zip(["user-a", "user-b"], ids))[loser] == f"ws-{loser}"
+
+
+async def test_an_owned_install_default_is_never_adopted(fake_storage_provider):
+    sp = fake_storage_provider
+    reg = await _setup(sp)
+    await sp.get_storage(Workspace).create(Workspace(
+        id="prime", template_id="local-default", provider_id="local", created_at=NOW,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://x", token="t"), access=Access(owners=["user-a"]),
+    ))
+    await sp.set_default_workspace_id("prime")
+    await _user(sp, "user-a", role="admin")
+    b = await _user(sp, "user-b", role="admin", age=1)
+
+    assert await ensure_user_default_workspace(sp, reg, b) == "ws-user-b"
+    assert (await sp.get_storage(Workspace).get("prime")).access.owners == ["user-a"]

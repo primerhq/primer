@@ -91,3 +91,27 @@ async def test_a_users_default_workspace_cannot_be_deleted(app, stub_materialise
         resp = await c.delete("/v1/workspaces/ws-user-ada")
     assert resp.status_code in (403, 409), resp.text
     assert await app.state.storage_provider.get_storage(Workspace).get("ws-user-ada") is not None
+
+
+async def test_a_failing_ensure_is_not_retried_by_status_within_the_backoff(app, stub_materialise, monkeypatch):
+    from primer.api import user_default
+
+    calls = []
+
+    async def boom(*args, **kwargs):
+        calls.append(1)
+        raise RuntimeError("backend down")
+
+    monkeypatch.setattr(user_default, "ensure_user_default_workspace", boom)
+    user_default._FAILED_UNTIL.clear()
+    c, pw = await _user_client(app, "user-ada", "user")
+    async with c:
+        await c.post("/v1/auth/login", json={"username": "user-ada", "password": pw})  # a sign-in always tries
+        assert len(calls) == 1
+        for _ in range(2):
+            assert (await c.get("/v1/auth/status")).json()["default_workspace_id"] is None
+        assert len(calls) == 1  # status inside the 60 s window did not retry
+        user_default._FAILED_UNTIL.clear()
+        await c.get("/v1/auth/status")
+        assert len(calls) == 2
+    user_default._FAILED_UNTIL.clear()
