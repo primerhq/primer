@@ -28,12 +28,14 @@ import pytest
 
 from primer.model.storage import OffsetPage
 from primer.model.access import Access
+from primer.model.channel import Channel
 from primer.model.trigger import (
     ChannelTriggerConfig,
     ScheduledTriggerConfig,
     Subscription,
     Trigger,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset.trigger import _make_subscribe_channel_handler
 
@@ -48,17 +50,23 @@ def _ctx() -> ToolContext:
         tool_call_id="call-1",
         session_id="sess-1",
         workspace_id="ws-1",
+        # The seeded channel trigger is provider-wide, which only an admin may park on (access-control P3 Decision 5).
+        initiated_by=PrincipalRef(type="user", id="admin-1", display="admin", role="admin", source="local", user_id="admin-1"),
     )
 
 
 async def _seed_channel_trigger(
     fake_storage_provider, *, trigger_id: str = "trg-ch-1", enabled: bool = True,
 ) -> Trigger:
+    # Parking on a channel trigger needs READ on its channel (access-control P3 SEC, finding 6): a public one the parking caller reads.
+    await fake_storage_provider.get_storage(Channel).create(Channel(
+        id="ch-open", provider_id="prov-1", provider="slack", external_id=f"ext-{trigger_id}", access=Access(public=True),
+    ))
     trigger = Trigger(
         id=trigger_id,
         slug="ch-trg",
         name="Channel Trigger",
-        config=ChannelTriggerConfig(provider_id="prov-1"),
+        config=ChannelTriggerConfig(provider_id="prov-1", channel_id="ch-open"),
         enabled=enabled,
         created_at=datetime.now(timezone.utc),
         # Readable by the parking caller (parking needs read on the trigger, access-control P3 Task 4).

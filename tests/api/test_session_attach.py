@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from primer.model.access import Access
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionStatus,
     WorkspaceSession,
 )
+from pydantic import SecretStr
 
 
 def _now() -> datetime:
@@ -16,6 +19,12 @@ def _now() -> datetime:
 
 
 async def _seed_session(fake_storage_provider, *, wid: str, sid: str, last_seq: int):
+    # The workspace row the route's access gate reads (P2 Tasks 2/3): missing workspaces answer their 404.
+    await fake_storage_provider.get_storage(Workspace).create(
+        Workspace(id=wid, template_id="tpl-1", provider_id="local-1", created_at=_now(),
+                  runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                  access=Access()),
+    )
     row = WorkspaceSession(
         id=sid,
         workspace_id=wid,

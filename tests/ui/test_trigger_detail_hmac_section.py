@@ -32,6 +32,14 @@ globalThis.Btn = function (props) { return React.createElement("button", props, 
 globalThis.Icon = function () { return null; };
 globalThis.Banner = function () { return null; };
 globalThis.Modal = function (props) { return React.createElement("div", { "data-testid": "modal" }, props.children, props.footer); };
+// The share seam the detail's Share button subscribes to (ui/components/shared/share-dialog.jsx,
+// ACL-P3-T7): this harness predates it, so the stand-in answers the subscription as a closed dialog.
+globalThis.SHR_useShareOpen = function () { return [false, function () {}]; };
+globalThis.SHR_ShareDialog = function () { return null; };
+// The ownership markers the detail header draws (ui/components/shared/share-dialog.jsx,
+// ACL-P6-T3): same reasoning - the stand-in says none, the markers are not this file's subject.
+globalThis.SHR_useUserNames = function () { return {}; };
+globalThis.SHR_AccessMarkers = function () { return null; };
 window.primerApi = {
   readRefusal: __readRefusal,
   apiFetch: function (method, path, body) {

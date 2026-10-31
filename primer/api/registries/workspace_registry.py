@@ -20,11 +20,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
-from primer.bootstrap.prime import resolve_default_workspace_id
+from primer.bootstrap.prime import is_user_default_workspace, resolve_default_workspace_id
+from primer.access.person import Person
+from primer.access.policy import level_of
 from primer.model.access import Access
 from primer.model.common import dump_for_storage
 from primer.model.except_ import ConflictError, NotFoundError, ValidationError
@@ -315,8 +317,15 @@ class WorkspaceRegistry:
         template: WorkspaceTemplate,
         overrides: WorkspaceTemplateOverrides | None = None,
         workspace_id: str | None = None,
+        person: Person | None = None,
     ) -> "Workspace":
         """Create a new live workspace via the right backend.
+
+        ``person`` is the creator (access-control P4 Task 5): they must be able to USE the template's workspace provider (a use grant, or a
+        public provider; admins any). An unusable provider answers exactly like a missing one (the 404 :meth:`get_backend` raises), and
+        nothing is built. ``None`` (the bootstrap seed, internal callers) checks nothing.
+        It is also who the workspace is created for for the file mounts (access-control P3 SEC, finding 4): a ``document`` file mount (the template's or an
+        override's) is read as them, so a document they cannot read answers as missing.
 
         ``workspace_id`` pins the live instance to a caller-supplied id
         (typically the same id the durable row is keyed by). Forwarding
@@ -365,6 +374,8 @@ class WorkspaceRegistry:
         # The provider's own refusal first, before any input of the request is judged: nothing on this provider is built, whatever the request.
         # A provider that does not exist is get_backend's 404, not these checks'.
         provider = await self._sp.get_storage(WorkspaceProvider).get(template.provider_id)
+        if person is not None and provider is not None and level_of(person, provider.access) is None:
+            raise NotFoundError(f"WorkspaceProvider {template.provider_id!r} does not exist")
         if provider is not None and provider.config.kind == "kubernetes" and getattr(provider.config, "variant", "system") == "agent_sandbox":
             raise WorkspaceNotImplementedError(provider.id)
         # The request's own inputs, all before any backend runs (lead ruling 17): an environment variable name the cluster would
@@ -376,7 +387,7 @@ class WorkspaceRegistry:
             refuse_unsupported_resource_overrides(provider.config.kind, overrides)
         backend = await self.get_backend(template.provider_id)
         resolvers = FileResolvers(
-            document_resolver=make_document_resolver(self._sp),
+            document_resolver=make_document_resolver(self._sp, person),
             secret_resolver=(
                 make_secret_resolver(self._secret_provider)
                 if self._secret_provider is not None
@@ -399,6 +410,7 @@ class WorkspaceRegistry:
         name: str | None = None,
         reply_binding: WorkspaceChannelLink | None = None,
         access: Access | None = None,
+        person: Person | None = None,
     ) -> WorkspaceRow:
         """Create a workspace: the live instance, then its durable row. The one create path of ``POST /v1/workspaces`` and the ``create_workspace``
         tool (ticket 01a16d72): every refusal of :meth:`materialise` applies to both, and both write the same row (:func:`new_workspace_row`, so the
@@ -421,7 +433,7 @@ class WorkspaceRegistry:
         the instance is this create's own and is torn down as before.
         """
         if workspace_id is None:
-            return await self._create(template=template, overrides=overrides, workspace_id=None, name=name, reply_binding=reply_binding, access=access)
+            return await self._create(template=template, overrides=overrides, workspace_id=None, name=name, reply_binding=reply_binding, access=access, person=person)
         lock, holders = self._creating.setdefault(workspace_id, (asyncio.Lock(), [0]))
         holders[0] += 1
         try:
@@ -430,7 +442,7 @@ class WorkspaceRegistry:
                     raise ConflictError(f"Workspace with id {workspace_id!r} already exists")
                 return await self._create(
                     template=template, overrides=overrides, workspace_id=workspace_id, name=name, reply_binding=reply_binding,
-                    access=access,
+                    access=access, person=person,
                 )
         finally:
             holders[0] -= 1
@@ -446,9 +458,10 @@ class WorkspaceRegistry:
         name: str | None,
         reply_binding: WorkspaceChannelLink | None,
         access: Access | None = None,
+        person: Person | None = None,
     ) -> WorkspaceRow:
         """:meth:`create`'s body: materialise, then the row, with the rollback."""
-        live = await self.materialise(template=template, overrides=overrides, workspace_id=workspace_id)
+        live = await self.materialise(template=template, overrides=overrides, workspace_id=workspace_id, person=person)
         try:
             row = new_workspace_row(
                 workspace_id=workspace_id if workspace_id is not None else live.id,
@@ -474,10 +487,10 @@ class WorkspaceRegistry:
             raise
         return row
 
-    async def destroy(self, workspace_id: str, *, before_teardown: Callable[[], Awaitable[None]] | None = None) -> None:
+    async def destroy(self, workspace_id: str) -> None:
         """Destroy the live workspace AND drop the persisted row.
 
-        Refuses the default workspace (prime) with :class:`ReservedWorkspaceError`, as the FIRST thing it does: before the row is
+        Refuses the default workspace (prime) and every user's default workspace with :class:`ReservedWorkspaceError`, as the FIRST thing it does: before the row is
         read, before any backend is built or called, before a session is touched. This is the one funnel every workspace delete passes
         (the REST route and the ``delete_workspace`` tool both end here), so the rule lives here and the layers above only translate
         the error. The default is whatever :func:`~primer.bootstrap.prime.resolve_default_workspace_id` names, so it is the recorded id,
@@ -503,26 +516,21 @@ class WorkspaceRegistry:
 
         From the first step to the row delete :meth:`is_being_destroyed` is true for the id, so a caller whose write to the workspace failed under
         a racing destroy can tell that from a fault (the session wake does), and a session start refuses the workspace
-        (:func:`primer.workspace.session_factory.start_workspace_session`).
+        (:func:`primer.workspace.session_factory.start_workspace_session`; review of #874, D1). The fence is process-local, and a start already
+        past its check when the mark is set can still write its row.
 
-        ``before_teardown`` (review of #874, D1) runs once the workspace is marked as being destroyed and before anything is torn down: the
-        rank scan of a delete (every open session in the workspace must be one the caller may act on) runs here, so a session started from now on
-        is refused instead of being ended unranked. If it raises, nothing is torn down and the error propagates. The fence is process-local
-        (like :meth:`is_being_destroyed`), and a start already past its check when the mark is set can still write its row after the scan.
-
-        Once ``before_teardown`` has passed, and before the backend is reached, the row's ``phase`` is written ``terminating`` (ticket 01a16d72
-        ruling 3; nothing wrote it before), so a reader sees the delete in progress: the probe skips the row and the reply-binding route refuses
-        it. A refused delete (the default workspace, an unknown id, the rank scan) never writes it. If the destroy then fails,
+        Who may delete is decided before this call (owner on the workspace, access-control P2). Once the workspace is marked as being destroyed,
+        and before the backend is reached, the row's ``phase`` is written ``terminating`` (ticket 01a16d72 ruling 3; nothing wrote it before), so a
+        reader sees the delete in progress: the probe skips the row and the reply-binding route refuses it. A refused delete (the default
+        workspace, an unknown id) never writes it. If the destroy then fails,
         the row must not stay ``terminating``, which nothing would ever move again (:meth:`_after_a_failed_destroy`).
         """
-        if workspace_id == await resolve_default_workspace_id(self._sp):
+        if workspace_id == await resolve_default_workspace_id(self._sp) or await is_user_default_workspace(self._sp, workspace_id):
             raise ReservedWorkspaceError(workspace_id)
         row = await self.get_workspace_row(workspace_id)
         # From here to the row delete the runtime may be gone while the row still says the workspace exists: see is_being_destroyed.
         self._destroying[workspace_id] = self._destroying.get(workspace_id, 0) + 1
         try:
-            if before_teardown is not None:
-                await before_teardown()
             marked_from = await self._mark_terminating(workspace_id)
             teardown_started = False
             try:
@@ -566,8 +574,8 @@ class WorkspaceRegistry:
         of the same id in another process: its mark is left as it is, and this destroy puts nothing back).
 
         One field-scoped write fenced on the phase just read, so a concurrent writer's other fields (a rename, the probe's ``last_probe_at``)
-        survive and the phase a failed destroy may put back is the one the mark replaced, not the one :meth:`destroy` read before its rank
-        scan (the probe may have failed the workspace in between; round 2 of #917, item 8). A phase that moved between the read and the
+        survive and the phase a failed destroy may put back is the one the mark replaced, not the one :meth:`destroy` read before the mark
+        (the probe may have failed the workspace in between; round 2 of #917, item 8). A phase that moved between the read and the
         write is read again; one that keeps moving (only the probe moves it, every ~30 s) is marked whatever it is after a few tries.
         """
         storage = self._sp.get_storage(WorkspaceRow)

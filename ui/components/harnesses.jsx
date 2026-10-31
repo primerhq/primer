@@ -119,6 +119,19 @@ function HarnessList() {
 
   const items = list.items;
 
+  // ACL-P6-T3: the marker's viewer + the looked-up owner names (one batched
+  // lookup for the page).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(() => {
+    const out = [];
+    items.forEach((h) => {
+      ((h.access && h.access.owners) || []).forEach((o) => { if (out.indexOf(o) < 0) out.push(o); });
+    });
+    return out;
+  }, [items]);
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   const onCreated = (harness) => {
     setRegisterOpen(false);
     setOutboundOpen(false);
@@ -256,6 +269,7 @@ function HarnessList() {
                         )}
                       </div>
                       <div className="mono muted text-sm" style={{ fontSize: 11 }}>{h.slug}</div>
+                      <SHR_AccessMarkers access={h.access} me={meId} names={ownerNames} />
                       {errText && (
                         <div
                           className="text-sm"
@@ -362,6 +376,10 @@ function HarnessDetail({ id }) {
   const [cascadeDelete, setCascadeDelete] = React.useState(false);
   const [editTrackedOpen, setEditTrackedOpen] = React.useState(false);
 
+  // ACL-P3-T7: the Share dialog (the action bar's Share button or the
+  // palette's entity.share verb dispatches to it while this surface is open).
+  const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
+
   const detail = useResource(
     "harness-detail:" + id,
     (signal) => apiFetch("GET", "/harnesses/" + encodeURIComponent(id), null, { signal }),
@@ -373,6 +391,17 @@ function HarnessDetail({ id }) {
 
   // Poll every 1s while pending_operation is set
   const polling = detail.data?.pending_operation != null;
+
+  // ACL-P6-T3: the marker row of the detail header (the harness's own
+  // access). Unconditional hooks: a missing access block draws nothing.
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(
+    () => ((detail.data && detail.data.access && detail.data.access.owners) || []),
+    [detail.data]
+  );
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   React.useEffect(() => {
     if (!polling) return undefined;
     const timer = setInterval(() => detail.refetch(), 1000);
@@ -493,8 +522,21 @@ function HarnessDetail({ id }) {
               {h.pending_operation}…
             </span>
           )}
+          <span data-testid="harness-access-markers" style={{ display: "inline-flex", gap: 6 }}>
+            <SHR_AccessMarkers access={h.access} me={meId} names={ownerNames} />
+          </span>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="send"
+            data-testid="harness-share"
+            data-verb="entity.share"
+            onClick={() => setShareOpen(true)}
+          >
+            Share
+          </Btn>
           {!isOutbound && (
             <>
               <Btn
@@ -732,6 +774,17 @@ function HarnessDetail({ id }) {
             <span>Also delete the entities this harness tracks (cascade). Leave off to remove only the harness.</span>
           </label>
         </Modal>
+      )}
+
+      {/* ACL-P3-T7: the share dialog (no public-tools section - a harness
+          has no per-tool public exposure). */}
+      {shareOpen && (
+        <SHR_ShareDialog
+          plural="harnesses"
+          id={id}
+          title={h.name || h.slug}
+          onClose={() => setShareOpen(false)}
+        />
       )}
     </div>
   );

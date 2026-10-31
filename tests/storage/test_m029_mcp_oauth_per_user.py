@@ -1,4 +1,4 @@
-"""Migration 27: existing MCP OAuth token sets become per-user (access-control plan P5 Task 2, Decision 4 and the lead's binding answer).
+"""Migration 29: existing MCP OAuth token sets become per-user (access-control plan P5 Task 2, Decision 4 and the lead's binding answer).
 
 A browser token set stored under the bare toolset id becomes the sign-in of the user who connected it (``connected_by``, a username), else of the first
 admin, else (no users: the auth-disabled shape) it stays under the bare id. Client-credentials rows stay the shared row. Every token row is stamped
@@ -39,7 +39,7 @@ USERS = _raw_view("User")
 
 @pytest_asyncio.fixture
 async def sp(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
-    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "m027.sqlite"))
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "m029.sqlite"))
     await provider.initialize()
     try:
         yield provider
@@ -132,13 +132,13 @@ async def test_client_credentials_and_the_registered_client_untouched_and_pendin
 
 
 async def test_second_run_changes_nothing(sp):
-    from primer.storage.migrations.m027_mcp_oauth_per_user import M027McpOAuthPerUser
+    from primer.storage.migrations.m029_mcp_oauth_per_user import M029McpOAuthPerUser
 
     await _an_install(sp)
     await run_migrations(sp, is_fresh_install=False)
     once = {view.__name__: await _rows(sp, view) for view in (TOKENS, PENDING, McpOAuthClient)}
 
-    await M027McpOAuthPerUser().apply(sp)
+    await M029McpOAuthPerUser().apply(sp)
     await sp.set_schema_version(26)
     await run_migrations(sp, is_fresh_install=False)
 
@@ -158,10 +158,10 @@ async def test_a_run_that_died_after_the_copy_finishes_the_move(sp):
     assert "kb" not in after and after[key] == _moved(before["kb"], key, "kb", "u-alice")
 
 
-def test_it_is_registered_as_version_27():
-    from primer.storage.migrations.m027_mcp_oauth_per_user import M027McpOAuthPerUser
+def test_it_is_registered_as_version_29():
+    from primer.storage.migrations.m029_mcp_oauth_per_user import M029McpOAuthPerUser
 
-    assert isinstance(MIGRATIONS[26], M027McpOAuthPerUser) and MIGRATIONS[26].version == 27
+    assert isinstance(MIGRATIONS[28], M029McpOAuthPerUser) and MIGRATIONS[28].version == 29
 
 
 async def test_the_heir_is_an_id_or_an_enabled_admin(sp):

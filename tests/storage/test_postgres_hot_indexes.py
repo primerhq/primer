@@ -39,7 +39,7 @@ def test_registry_declares_the_hot_tables():
     assert set(_HOT_FIELD_INDEXES) == {
         "apitoken", "sessions", "channel", "useridentity",
         "webhookdelivery", "toolapprovalrecord", "artifactlocation", "document",
-        "agent", "graph", "toolset", "workspacetemplate", "workspace", "collection", "trigger", "harness",
+        "agent", "graph", "toolset", "workspacetemplate", "workspace", "externaltoolcall", "collection", "trigger", "harness",
         "modelprofile", "workspaceprovider", "channelprovider", "semanticsearchprovider", "embeddingprovider", "crossencoderprovider", "llmprovider",
     }
 
@@ -211,3 +211,10 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
     assert "channel_provider_external" in await _index_names(sp, "channel")
     assert "artifactlocation_provider_id" in await _index_names(sp, "artifactlocation")
     assert "document_collection_id" in await _index_names(sp, "document")
+
+
+@pytest.mark.parametrize("table", ["toolapprovalrecord", "externaltoolcall"])
+def test_the_cross_workspace_lists_have_a_workspace_id_index(table):
+    """The records and external call lists push ``workspace_id IN <readable>`` into the query (access-control P2 Task 5); index-backed."""
+    (suffix, unique, expr), = (e for e in _HOT_FIELD_INDEXES[table] if e[0] == "workspace_id")
+    assert (suffix, unique, expr) == ("workspace_id", False, "((data->>'workspace_id'))")

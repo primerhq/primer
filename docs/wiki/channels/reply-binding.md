@@ -18,7 +18,7 @@ A workspace's reply binding is the [channel](channels/channels) its sessions use
 - **What an approval request shows.** Only the arguments the gate's preview allows (the policy's `preview_args`, else a default rule). Every other value reads `<hidden>`. The decision still acts on the real arguments.
 - **One binding per workspace.** Setting it again replaces it. Read it with `workspaces__get_workspace`: `reply_binding` is `{channel_id, anchor}`, or `null`.
 - **`anchor`** names one thread in the channel: a Slack thread ts or a Discord thread id. Every approval request, update and answer of every session in the workspace goes into it, except an `system__ask_user` question, which opens the session's own thread in that channel with its own mapping: several sessions share the anchor's thread, and a question posted there would leave the thread mapped to the last asker. Telegram has no threads and ignores it. On Discord, an anchor that is not a thread id is ignored too.
-- **Reach.** From a session outside the default workspace (prime), both tools reach only your own workspace. Another workspace answers `not-found`, exactly as an unknown one, whatever channel you name. From prime, and with no calling session, every workspace is in reach.
+- **Access.** Both tools need `full` access to the workspace for the person behind your run, wherever your session runs. A workspace that person holds no access to answers `not-found`, exactly as an unknown one, whatever channel you name; `read` alone answers `forbidden`.
 
 ## How to
 1. Find the channel's `id` with `system__find_channels` or `system__list_channels`.

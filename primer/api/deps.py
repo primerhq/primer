@@ -569,6 +569,19 @@ def require_user(request: Request = None) -> User | None:  # type: ignore[assign
     return user
 
 
+async def serve_global_settings(request: Request):
+    """FastAPI dependency of the global-settings reads: a non-admin is served every API key with no trailing characters and every URL
+    with no userinfo (:data:`~primer.model.common.SERVING_NON_ADMIN`; security review of P4, finding 6). Admins see what they always saw."""
+    from primer.model.common import SERVING_NON_ADMIN
+
+    user = getattr(request.state, "user", None)
+    token = SERVING_NON_ADMIN.set(isinstance(user, User) and user.role != "admin")
+    try:
+        yield
+    finally:
+        SERVING_NON_ADMIN.reset(token)
+
+
 def require_admin(request: Request = None) -> User | None:  # type: ignore[assignment]
     """FastAPI dependency: valid session AND ``role == "admin"``.
 

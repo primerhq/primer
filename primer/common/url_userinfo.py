@@ -53,6 +53,15 @@ def mask_userinfo(url: str) -> str:
     return f"{scheme}://{masked}@{host}{rest}"
 
 
+def strip_userinfo(url: str) -> str:
+    """``url`` with its userinfo removed entirely (what a non-admin's read of a global setting serves); any other text is returned as it is."""
+    parts = _split(url)
+    if parts is None:
+        return url
+    scheme, _userinfo, host, rest = parts
+    return f"{scheme}://{host}{rest}"
+
+
 class MaskCannotBeRestored(ValueError):
     """A URL carries the mask :func:`mask_userinfo` serves, but the stored URL cannot give the credential back to it.
 
@@ -99,4 +108,4 @@ def restore_userinfo(incoming: str, stored: str) -> str | None:
     return f"{scheme}://{kept[1]}@{host}{rest}"
 
 
-__all__ = ["MASK", "MaskCannotBeRestored", "carries_mask", "mask_userinfo", "restore_userinfo"]
+__all__ = ["MASK", "MaskCannotBeRestored", "carries_mask", "mask_userinfo", "restore_userinfo", "strip_userinfo"]

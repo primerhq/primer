@@ -43,10 +43,9 @@ from pydantic_core import to_jsonable_python
 
 from primer.access.person import person_from_request
 from primer.access.policy import level_of, require
-from primer.api.routers._session_rank import refuse_outranked
-from primer.access.person import person_from_request
-from primer.access.workspaces import readable_workspace_ids, require_workspace
+from primer.access.workspaces import readable_workspace_ids, require_session, require_workspace, scope_to_readable_workspaces
 from primer.api.routers.access import make_access_router
+from primer.channel.checks import channel_for_binding
 from primer.api.deps import (
     get_claim_engine,
     get_collection_storage,
@@ -704,14 +703,38 @@ async def _workspace_template_pre_delete(existing, request: Request) -> None:
         )
 
 
+async def _check_template_provider_use(entity, existing, request: Request) -> None:
+    """The saver may name only a workspace provider they may use; an unchanged provider is not re-checked (access-control P4 Task 5)."""
+    from primer.workspace.provider_use import provider_unusable, provider_unusable_message
+
+    if existing is not None and existing.provider_id == entity.provider_id:
+        return
+    if await provider_unusable(get_storage_provider(request), person_from_request(request), entity.provider_id):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "workspace_provider_not_found", "field": "provider_id", "message": provider_unusable_message(entity.provider_id)},
+        )
+
+
+async def _refuse_unreadable_document_mounts(entity, request: Request) -> None:
+    """The saver must read the collection of every ``document`` file source of a template (access-control P3 SEC, finding 4); refused like a missing document."""
+    from primer.workspace.resolvers import refuse_unreadable_document_mounts
+
+    await refuse_unreadable_document_mounts(get_storage_provider(request), person_from_request(request), entity.files)
+
+
 async def _workspace_template_pre_create(entity, request: Request) -> None:
     await _reject_reserved_workspace_template_create(entity, request)
     _check_template_privilege(entity, None, request)
+    await _check_template_provider_use(entity, None, request)
+    await _refuse_unreadable_document_mounts(entity, request)
 
 
 async def _workspace_template_pre_update(entity, existing, request: Request) -> None:
     await _reject_reserved_workspace_template_update(entity, existing, request)
     _check_template_privilege(entity, existing, request)
+    await _check_template_provider_use(entity, existing, request)
+    await _refuse_unreadable_document_mounts(entity, request)
     # 01a11d32: the password of a url file source and the env values are served masked, and PUT is a full replace, so a client that sends the served body back keeps the stored ones: an
     # admin's password for the same scheme, host, port and user, a user's only for the whole unchanged URL (any other change that carries the mask is a 422 and nothing is stored). After the
     # 403s: a caller who may not write the template never learns what a mask could be restored to.
@@ -829,7 +852,7 @@ async def _enrich_with_session_counts(
                 break
             offset += _SESSION_COUNT_PAGE_SIZE
 
-    default_id = await resolve_default_workspace_id(get_storage_provider(request))
+    default_id = await resolve_default_workspace_id(get_storage_provider(request), person_from_request(request))
     # ``dict(item)``, not ``item.model_dump()``: the field values as the storage read them, so nothing is validated again. A dump
     # re-validates the stored template snapshot with no stored-row context, and a snapshot written before a newer rule (a pvc_size
     # that is not a quantity, a CPU of zero) would answer 500 for the whole list (the review of #869, F1).
@@ -859,6 +882,24 @@ async def _require_workspace(
         get_storage_provider(request),
         person_from_request(request),
         workspace_id,
+        need,
+    )
+
+
+async def _require_session(request: Request, session_id: str, need: AccessLevel) -> WorkspaceSession:
+    """The access gate of every route that acts on a session (P2 Task 3).
+
+    A session inherits the access of the workspace it lives in: a stranger
+    answers the session's missing-row text (spec 9), a person who holds a
+    lower level than ``need`` answers the Phase 1 ``AccessDeniedError``
+    (403); admins and the system principal clear every gate. There is no
+    own-session admission any more: a creator whose grant is revoked loses
+    access. Returns the session row.
+    """
+    return await require_session(
+        get_storage_provider(request),
+        person_from_request(request),
+        session_id,
         need,
     )
 
@@ -938,7 +979,7 @@ async def get_workspace(
     storage_provider=Depends(get_storage_provider),
 ) -> WorkspaceRowOut:
     row = await _require_workspace(request, workspace_id, AccessLevel.READ)
-    default_id = await resolve_default_workspace_id(storage_provider)
+    default_id = await resolve_default_workspace_id(storage_provider, person_from_request(request))
     # The stored field values, not a dump: a dump would re-validate the stored snapshot (see _enrich_with_session_counts).
     return WorkspaceRowOut(**dict(row), is_default=row.id == default_id)
 
@@ -1055,6 +1096,16 @@ async def create_workspace(
     # in the body is ignored (sharing happens on PUT /{id}/access).
     person = person_from_request(request)
     access = Access.owned_by(person.user_id) if person.user_id else Access()
+    if body.reply_binding is not None and await channel_for_binding(storage_provider, person, body.reply_binding.channel_id) is None:
+        # The creator binds a channel they may use (and on a provider they may use): anything else reads as a missing channel, as the bind route.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "channel_not_found",
+                "channel_id": body.reply_binding.channel_id,
+                "message": f"Channel {body.reply_binding.channel_id!r} does not exist.",
+            },
+        )
     try:
         row = await registry.create(
             template=template,
@@ -1063,6 +1114,7 @@ async def create_workspace(
             name=body.name,
             reply_binding=body.reply_binding,
             access=access,
+            person=person,
         )
     except WorkspaceNotImplementedError as exc:
         raise HTTPException(
@@ -1221,11 +1273,9 @@ async def set_workspace_reply_binding(
                 ),
             },
         )
-    channel_storage = sp.get_storage(Channel)
-    channel = await channel_storage.get(body.channel_id)
-    # The binding reads the channel it names: a channel the caller holds no level on answers exactly like a missing one,
-    # in this route's own channel_not_found words (access spec 9).
-    if channel is None or level_of(person_from_request(request), channel.access) is None:
+    # The binding reads the channel it names and uses its provider: a channel the caller holds no level on, or on a provider they may not
+    # use, answers exactly like a missing one, in this route's own channel_not_found words (access spec 9; P4 Task 6).
+    if await channel_for_binding(sp, person_from_request(request), body.channel_id) is None:
         raise HTTPException(
             status_code=422,
             detail={
@@ -1543,6 +1593,7 @@ async def get_session(
     responses=common_responses(404, 422, 500),
 )
 async def rename_session(
+    request: Request,
     body: SessionRenameBody = Body(...),
     workspace_id: str = Path(..., description="Workspace id"),
     session_id: str = Path(..., description="Session id"),
@@ -1558,7 +1609,11 @@ async def rename_session(
     top-level ``GET /sessions/{id}`` read agrees. An empty / null name clears
     the label (the console falls back to the id). Returns the updated
     :class:`SessionInfo`.
+
+    Access (P2 Task 3): a rename is a full act in the session's workspace.
     """
+    # The gate decides first: a stranger answers the session's missing-row text.
+    await _require_session(request, session_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     session = await ws.get_session(session_id)
     if session is None:
@@ -1671,6 +1726,7 @@ async def compact_session_endpoint(
     row = await sessions.get(session_id)
     if row is None or row.workspace_id != workspace_id:
         raise NotFoundError(f"Session {session_id!r} does not exist")
+    await _require_session(request, session_id, AccessLevel.FULL)
     guard_compactable(row)  # 409: graph-bound, or a turn in flight
 
     # Snapshot-first, matching build_agent_executor: a frozen session
@@ -1863,13 +1919,12 @@ async def switch_session_binding(
     and the drain checkpoint applies it before the next turn, so the
     running turn finishes under the binding it started with.
 
-    Ranked like a steer (G3-01 / ticket 01a16a35-a788): the switch
+    Gated like a steer (G3-01 / ticket 01a16a35-a788): the switch
     re-points what the session's next turn runs, so the caller drives
-    the creator's automation. The request's actor at or above the
-    session's creator (or its own session; an admin is never outranked)
-    acts, a lower rank gets 403 ``forbidden_rank`` with the fixed
-    message (``primer.api.routers._session_rank``), before anything is
-    written. The workspace the URL names is the scope the route reads
+    the creator's automation. Access (P2 Task 3): full on the session's
+    workspace (it inherits its access), before anything is written; a
+    stranger answers the session's missing-row text, an admin is never
+    refused. The workspace the URL names is the scope the route reads
     in: a session in another workspace, and a session that is not there
     at all, both answer 404 as an unknown id.
     """
@@ -1882,9 +1937,10 @@ async def switch_session_binding(
     row = await sessions.get(session_id)
     if row is None or row.workspace_id != workspace_id:
         raise NotFoundError(f"Session {session_id!r} does not exist")
-    # The rank rule of a steer, before anything is written: a lower rank re-pointing the session's next turn would drive the
-    # creator's automation (G3-01 / ticket 01a16a35-a788); the creator is exempt (own_session) and an admin is never outranked.
-    refuse_outranked(request, row)
+    # Access (P2 Task 3): a switch re-points what the session's next turn runs, so the
+    # caller drives the creator's automation: full on the session's workspace (G3-01 /
+    # ticket 01a16a35-a788), before anything is written.
+    await _require_session(request, session_id, AccessLevel.FULL)
     if row.status is SessionStatus.ENDED:
         raise ConflictError(
             f"session {session_id!r} has ended; reopen it before switching"
@@ -2039,6 +2095,7 @@ class ResponseFormatBody(BaseModel):
     responses=common_responses(404, 409, 422, 500),
 )
 async def set_session_response_format(
+    request: Request,
     body: ResponseFormatBody,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
@@ -2053,11 +2110,15 @@ async def set_session_response_format(
     fenced on the row's ``workspace_id`` (immutable, so the fence always
     holds): a turn, a park or a flag committed after the read is not written
     back over. The mid-turn refusal is decided on the row read, as before.
+
+    Access (P2 Task 3): full on the session's workspace (it inherits its
+    access), before the mid-turn refusal.
     """
     sessions = storage_provider.get_storage(WorkspaceSession)
     row = await sessions.get(session_id)
     if row is None or row.workspace_id != workspace_id:
         raise NotFoundError(f"Session {session_id!r} does not exist")
+    await _require_session(request, session_id, AccessLevel.FULL)
     if row.turn_status != "idle":
         raise ConflictError(
             "session has a turn in flight; response_format applies from "
@@ -2102,6 +2163,7 @@ class RewindBody(BaseModel):
     responses=common_responses(404, 409, 422, 500),
 )
 async def rewind_session(
+    request: Request,
     body: RewindBody,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
@@ -2133,6 +2195,9 @@ async def rewind_session(
     row = await sessions.get(session_id)
     if row is None or row.workspace_id != workspace_id:
         raise NotFoundError(f"Session {session_id!r} does not exist")
+    # Access (P2 Task 3): a rewind rewrites the run's visible history: full
+    # on the session's workspace (it inherits its access).
+    await _require_session(request, session_id, AccessLevel.FULL)
     if row.turn_status != "idle" or row.parked_status is not None:
         raise ConflictError(
             "session is not idle; rewind requires no turn in flight"
@@ -2233,7 +2298,9 @@ async def steer_session(
     the next turn (steer); to a PAUSED session it resumes; to an ENDED
     session it reopens it as a fresh invocation (divider + run). 409 only
     when an ENDED session is non-restartable (workspace_lost/force_deleted).
-    403 ``forbidden_rank`` when the session's creator outranks the caller.
+    Access (P2 Task 3): full on the session's workspace (it inherits its
+    access), before anything is routed, written or announced; a stranger
+    answers the session's missing-row text.
     """
     from primer.model.external_tool import ExternalToolCall
     from primer.session.enqueue import (
@@ -2255,14 +2322,18 @@ async def steer_session(
 
     sessions = storage_provider.get_storage(WorkspaceSession)
     call_storage = storage_provider.get_storage(ExternalToolCall)
+    # Before anything is routed, written or announced: a results-only body resumes the run too.
+    # Access (P2 Task 3): full on the session's workspace (it inherits its access).
+    await _require_session(request, session_id, AccessLevel.FULL)
+    # The person whose input this is (spec §13 Q1): the request's resolved actor (absent only when auth is off). The turn this steer starts
+    # runs as them, now or when the queue realizes it.
+    by = PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None
     row = await sessions.get(session_id)
     if row is None or row.workspace_id != workspace_id:
         raise NotFoundError(
             f"Session {session_id!r} does not exist on workspace "
             f"{workspace_id!r}"
         )
-    # Before anything is routed, written or announced: a results-only body resumes the run too.
-    refuse_outranked(request, row)
 
     # Registration gate: external_tools requires allow_external_tools on
     # the session's agent (snapshot when frozen, else the live row).
@@ -2375,6 +2446,7 @@ async def steer_session(
                 text=body.instruction,
                 workspace_registry=registry,
                 event_bus=event_bus,
+                by=by,
             )
             return await sessions.get(session_id)
 
@@ -2459,8 +2531,7 @@ async def steer_session(
             extra_payload=extra_payload,
             receipt=routing_receipt,
             deps=deps,
-            # The person whose input starts this turn (spec §13 Q1): the request's resolved actor (absent only when auth is off).
-            by=PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None,
+            by=by,
         )
         # G12-09: the response names the dropped attachments (response-only,
         # like MainSessionOut.created): the send succeeded, the row is
@@ -2506,8 +2577,8 @@ async def restart_session_route(
 ) -> WorkspaceSession:
     """Re-open an ENDED session and invoke it (studio-agents-interact §5.3).
 
-    A person's Restart: it reopens a session an operator cancelled, which no tool call or other message does. 403 ``forbidden_rank`` when the
-    session's creator outranks the caller, before anything is touched.
+    A person's Restart: it reopens a session an operator cancelled, which no tool call or other message does. Access (P2 Task 3): full on the
+    session's workspace (it inherits its access), before anything is touched; a stranger answers the session's missing-row text.
     """
     from primer.model.external_tool import ExternalToolCall
     from primer.session.enqueue import SessionWakeDeps
@@ -2515,10 +2586,7 @@ async def restart_session_route(
     from primer.model.principal import PrincipalRef
     from primer.session.reset import SessionResetDeps, restart_session
 
-    row = await storage_provider.get_storage(WorkspaceSession).get(session_id)
-    if row is not None and row.workspace_id == workspace_id:
-        # A missing session (or one on another workspace) is the 404 ``restart_session`` raises, in its own words.
-        refuse_outranked(request, row)
+    await _require_session(request, session_id, AccessLevel.FULL)
 
     # A restart discards the previous run's in-flight state; resolve any
     # audit rows a prior park left pending (a session that ENDED via
@@ -2577,21 +2645,20 @@ async def interrupt_session(
     approval, an answer or a timer): 409, and nothing is recorded, because no turn is running
     and a flag left on the row would kill the continuation after a later decision. RESUMABLE
     (the event fired and a worker is resuming the parked turn): 409 as well, with its own
-    text, because a graph or subagent resume runs model calls inline. 403
-    ``forbidden_rank`` when the session's creator outranks the caller (ticket
-    01a16d3c-a8bc; ``primer.api.routers._session_rank``), before anything is
-    recorded or published: a Stop acts on a run at the creator's rank.
+    text, because a graph or subagent resume runs model calls inline. Access (P2 Task 3):
+    full on the session's workspace (it inherits its access), before anything is recorded
+    or published; a stranger answers the session's missing-row text.
     """
     from primer.workspace.session_factory import (
         SessionInterruptDeps,
         interrupt_session as _interrupt_session_helper,
     )
 
+    await _require_session(request, session_id, AccessLevel.FULL)
     return await _interrupt_session_helper(
         workspace_id=workspace_id,
         session_id=session_id,
         deps=SessionInterruptDeps(storage_provider=storage_provider, event_bus=event_bus),
-        guard=lambda row: refuse_outranked(request, row),
     )
 
 
@@ -2694,6 +2761,7 @@ async def detach_session(
     responses=common_responses(404, 500),
 )
 async def dismiss_pending_message(
+    request: Request,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     pending_id: str = Path(...),
@@ -2715,6 +2783,9 @@ async def dismiss_pending_message(
             f"Session {session_id!r} does not exist on workspace "
             f"{workspace_id!r}"
         )
+    # Access (P2 Task 3): a dismiss drops a queued steer the session's next
+    # turn would run: full on the session's workspace (it inherits its access).
+    await _require_session(request, session_id, AccessLevel.FULL)
     storage = storage_provider.get_storage(PendingSessionMessage)
     pending = await storage.get(pending_id)
     if pending is None or pending.session_id != session_id:
@@ -3980,6 +4051,7 @@ def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[
     responses=common_responses(500),
 )
 async def list_pending_attention(
+    request: Request,
     workspace_id: str | None = Query(
         default=None, description="Optional: restrict to a single workspace"
     ),
@@ -4033,9 +4105,9 @@ async def list_pending_attention(
     Only sessions with ``parked_status == "parked"`` are included. Items are
     ordered newest-first by the same timestamp exposed as ``created_at`` and
     capped at ``limit`` (default 100); ``total`` reports the full matching
-    count regardless of the cap. No per-workspace ACL exists today (any
-    signed-in user may see any workspace), matching this router's other
-    routes.
+    count regardless of the cap. A non-admin sees only the sessions of
+    workspaces they read (access-control P2 Task 5): the filter is part of
+    the query, so ``total`` counts what they may read.
     """
     from primer.model.storage import OffsetPage
     from primer.storage.q import Q
@@ -4044,7 +4116,11 @@ async def list_pending_attention(
     predicate_q = Q(WorkspaceSession).where("parked_status", "parked")
     if workspace_id is not None:
         predicate_q = predicate_q.where("workspace_id", workspace_id)
-    predicate = predicate_q.build()
+    nothing, predicate = await scope_to_readable_workspaces(
+        get_storage_provider(request), person_from_request(request), predicate_q.build(),
+    )
+    if nothing:
+        return {"items": [], "total": 0}
 
     sessions: list[WorkspaceSession] = []
     offset = 0

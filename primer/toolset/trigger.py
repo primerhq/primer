@@ -67,7 +67,6 @@ from primer.trigger.channel_access import require_channel_trigger_access
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.owner import view_for
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE, caller_scope, refuse_target_out_of_access
-from primer.access.person import person_for_tool
 from primer.access.policy import level_of
 from primer.model.except_ import AccessDeniedError, ConflictError
 from primer.trigger.service import (
@@ -850,6 +849,17 @@ def _make_get_sub_handler(
     return _handler
 
 
+async def _may_read_trigger_channel(storage_provider: Any, person: Any, trigger: Any) -> bool:
+    """Whether ``person`` holds READ on the channel of a channel ``trigger`` (a provider-wide one is admin-only): parking on it reads that channel's events."""
+    from primer.model.except_ import AccessDeniedError, NotFoundError
+
+    try:
+        await require_channel_trigger_access(storage_provider, person, trigger.config)
+    except (AccessDeniedError, NotFoundError):
+        return False
+    return True
+
+
 def _make_create_sub_handler(
     storage_provider: "StorageProvider",
     claim_engine: Any,
@@ -982,6 +992,8 @@ def _trigger_wake_key(session_id: str, trigger_id: str) -> str:
 
 async def _park_refusal(storage_provider: Any, ctx: ToolContext) -> ToolCallResult | None:
     """``forbidden`` when the calling person holds no full on the session they would park (access-control P2 T6), as a saved subscription's owner must."""
+    if person_for_tool(ctx).is_admin:
+        return None  # an admin holds every level, the calling session's workspace row included (as at fire time)
     config = ParkedSessionSubConfig(session_id=ctx.session_id, tool_call_id=ctx.tool_call_id, parked_at=datetime.now(timezone.utc))
     refusal = await refuse_target_out_of_access(storage_provider, _caller(ctx), config)
     return None if refusal is None else _err(refusal, error_type="forbidden")
@@ -1118,6 +1130,7 @@ def _make_subscribe_channel_handler(
             or not trigger.enabled
             or trigger.config.kind != TriggerKind.CHANNEL.value
             or level_of(person_for_tool(ctx), trigger.access) is None  # parking needs read on the trigger (P3 Decision 4)
+            or not await _may_read_trigger_channel(storage_provider, person_for_tool(ctx), trigger)  # and on its channel (P3 SEC, finding 6)
         ):
             return _err(
                 f"channel trigger {args.trigger_id!r} does not exist, is "

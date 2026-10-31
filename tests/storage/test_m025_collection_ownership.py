@@ -1,4 +1,4 @@
-"""Migration 23: existing collections get an owner; ``system`` becomes public (access-control Phase 3, Task 3).
+"""Migration 25: existing collections get an owner; ``system`` becomes public (access-control Phase 3, Task 3).
 
 A Collection row whose access block is absent or empty (no owners, no grants, not public) is owned by the first admin
 (the enabled admin User with the oldest created_at), private; ``system`` becomes public whatever else it carries; an
@@ -20,7 +20,7 @@ from primer.model.provider import SqliteConfig
 from primer.model.storage import OffsetPage
 from primer.model.user import User
 from primer.storage.migrations import MIGRATIONS
-from primer.storage.migrations.m023_collection_ownership import M023CollectionOwnership
+from primer.storage.migrations.m025_collection_ownership import M025CollectionOwnership
 from primer.storage.sqlite import SqliteStorageProvider
 
 _T0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -56,8 +56,8 @@ async def _access(sp, cid: str) -> Access:
     return (await sp.get_storage(Collection).get(cid)).access
 
 
-async def test_registered_as_version_23():
-    assert MIGRATIONS[22].version == 23 and isinstance(MIGRATIONS[22], M023CollectionOwnership)
+async def test_registered_as_version_25():
+    assert MIGRATIONS[24].version == 25 and isinstance(MIGRATIONS[24], M025CollectionOwnership)
 
 
 async def test_unset_rows_go_to_the_oldest_enabled_admin(sp):
@@ -68,7 +68,7 @@ async def test_unset_rows_go_to_the_oldest_enabled_admin(sp):
     await _coll(sp, "kb-1")
     await _coll(sp, "kb-2")
 
-    await M023CollectionOwnership().apply(sp)
+    await M025CollectionOwnership().apply(sp)
 
     for cid in ("kb-1", "kb-2"):
         access = await _access(sp, cid)
@@ -81,7 +81,7 @@ async def test_system_becomes_public_and_internal_collections_stay_admin_only(sp
     await _coll(sp, "_internal_agents", system=True)
     await _coll(sp, "_internal_tools", system=True)
 
-    await M023CollectionOwnership().apply(sp)
+    await M025CollectionOwnership().apply(sp)
 
     system = await _access(sp, "system")
     assert system.public is True and system.owners == [] and system.members == ["public"]
@@ -93,7 +93,7 @@ async def test_a_system_row_with_other_sharing_only_gains_public(sp):
     await _users(sp, ("u-admin", "admin", 0, False))
     await _coll(sp, "system", Access(owners=["u-admin"], grants={"u-x": "read"}), system=True)
 
-    await M023CollectionOwnership().apply(sp)
+    await M025CollectionOwnership().apply(sp)
 
     system = await _access(sp, "system")
     assert system.public is True and system.owners == ["u-admin"] and system.grants == {"u-x": "read"}
@@ -106,7 +106,7 @@ async def test_a_row_that_already_has_access_is_left_alone(sp):
     await _coll(sp, "open", Access(public=True))
     await _coll(sp, "shared", Access(grants={"u-other": "full"}))
 
-    await M023CollectionOwnership().apply(sp)
+    await M025CollectionOwnership().apply(sp)
 
     assert (await _access(sp, "mine")).owners == ["u-other"]
     assert await _access(sp, "open") == Access(public=True)
@@ -118,14 +118,14 @@ async def test_without_an_enabled_admin_user_rows_are_left_for_admins(sp):
     await _coll(sp, "kb")
     await _coll(sp, "system", system=True)
 
-    await M023CollectionOwnership().apply(sp)
+    await M025CollectionOwnership().apply(sp)
 
     assert await _access(sp, "kb") == Access()
     assert (await _access(sp, "system")).public is True  # needs no admin
 
 
 async def test_an_empty_install_is_a_no_op(sp):
-    await M023CollectionOwnership().apply(sp)
+    await M025CollectionOwnership().apply(sp)
     assert (await sp.get_storage(Collection).list(OffsetPage(offset=0, length=50))).items == []
 
 
@@ -135,8 +135,8 @@ async def test_rerunning_changes_nothing(sp):
     await _coll(sp, "system", system=True)
     await _coll(sp, "_internal_graphs", system=True)
 
-    await M023CollectionOwnership().apply(sp)
+    await M025CollectionOwnership().apply(sp)
     first = {c.id: c.access for c in (await sp.get_storage(Collection).list(OffsetPage(offset=0, length=50))).items}
-    await M023CollectionOwnership().apply(sp)
+    await M025CollectionOwnership().apply(sp)
     second = {c.id: c.access for c in (await sp.get_storage(Collection).list(OffsetPage(offset=0, length=50))).items}
     assert first == second

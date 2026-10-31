@@ -20,8 +20,9 @@ CONSOLE side against the contract:
   the registry's lint accepts; the open owned-entity surface subscribes
   (``SHR_onShare``) and the verb's run dispatches to it.
 * a Share button (``data-verb="entity.share"``) sits in the five detail
-  surfaces, and the five list surfaces draw Shared/Public badges from
-  the row's ``access`` field.
+  surfaces, and the eight list surfaces draw Shared/Public badges from
+  the row's ``access`` field (the five P1 kinds plus the P3 ones:
+  collections, triggers, harnesses).
 
 The URL builders and the dialog run here in MiniRacer against the real
 source (the house style of tests/ui/test_nv_g14_*.py and the
@@ -49,6 +50,9 @@ TOOLSETS = (UI / "components" / "toolsets.jsx").read_text(encoding="utf-8")
 TEMPLATES = (UI / "components" / "workspaces" / "templates.jsx").read_text(encoding="utf-8")
 CHANNELS = (UI / "components" / "channels.jsx").read_text(encoding="utf-8")
 DIALOG_SRC = UI / "components" / "shared" / "share-dialog.jsx"
+KNOWLEDGE = (UI / "components" / "knowledge.jsx").read_text(encoding="utf-8")
+TRIGGERS = (UI / "components" / "triggers.jsx").read_text(encoding="utf-8")
+HARNESSES = (UI / "components" / "harnesses.jsx").read_text(encoding="utf-8")
 
 _OPEN_CONTEXTS: list = []
 
@@ -230,16 +234,22 @@ def test_the_channel_share_button_only_offers_it_in_edit_mode() -> None:
 
 def test_the_platform_lists_draw_access_badges_from_the_row() -> None:
     """Every list row carries the row's access (the owned CRUD shape),
-    so a list says at a glance which rows are shared or public without
-    opening them."""
+    so a list says whose each row is without opening it (the P3 kinds -
+    collections, triggers, harnesses - draw them too, from the same
+    field). ACL-P6-T3: the row is the marker component (owner names
+    looked up per page)."""
     for name, src, needle in (
-        ("agents.jsx", AGENTS, "SHR_accessBadges(a.access)"),
-        ("graphs.jsx", GRAPHS, "SHR_accessBadges(g.access)"),
-        ("toolsets.jsx", TOOLSETS, "SHR_accessBadges(t.access)"),
-        ("channels.jsx", CHANNELS, "SHR_accessBadges(c.access)"),
-        ("workspaces/templates.jsx", TEMPLATES, "SHR_accessBadges(t.access)"),
+        ("agents.jsx", AGENTS, "SHR_AccessMarkers access={a.access}"),
+        ("graphs.jsx", GRAPHS, "SHR_AccessMarkers access={g.access}"),
+        ("toolsets.jsx", TOOLSETS, "SHR_AccessMarkers access={t.access}"),
+        ("channels.jsx", CHANNELS, "SHR_AccessMarkers access={c.access}"),
+        ("workspaces/templates.jsx", TEMPLATES, "SHR_accessMarkers(t.access"),
+        ("knowledge.jsx", KNOWLEDGE, "SHR_AccessMarkers access={c.access}"),
+        ("triggers.jsx", TRIGGERS, "SHR_AccessMarkers access={trigger.access}"),
+        ("harnesses.jsx", HARNESSES, "SHR_AccessMarkers access={h.access}"),
     ):
         assert needle in src, name + " does not draw its access badges from the row"
+
 
 
 # ---- the dialog: the real file in MiniRacer ----------------------------------

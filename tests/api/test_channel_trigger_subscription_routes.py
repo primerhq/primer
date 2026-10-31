@@ -8,6 +8,14 @@ through a follow-up GET.
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
+
+from tests.api._sub_targets import seed_sub_targets
+
+@pytest_asyncio.fixture(autouse=True)
+async def _sub_targets(app):
+    await seed_sub_targets(app.state.storage_provider)
+
 
 
 @pytest.mark.asyncio

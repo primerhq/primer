@@ -37,6 +37,9 @@ function Btn(p) { return React.createElement("button", { "data-testid": p["data-
 function Banner(p) { return React.createElement("div", null, p.children); }
 function Icon() { return null; }
 function Modal(p) { return React.createElement("div", null, p.children); }
+// The list's access markers (ui/components/shared/share-dialog.jsx, ACL-P6-T3): the row in this harness
+// carries no access field, so the stand-in says none - the markers are not this file's subject.
+globalThis.SHR_AccessMarkers = function () { return null; };
 """
 
 _DRIVER = """

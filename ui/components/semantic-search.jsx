@@ -1,4 +1,4 @@
-/* global React, Icon, FormField, Btn, Modal, Banner, CardList, Card, relativeTime, fmtDate, PR_fetchAllPages, PR_PagedNote */
+/* global React, Icon, FormField, Btn, Modal, Banner, CardList, Card, relativeTime, fmtDate, PR_fetchAllPages, PR_PagedNote, SHR_useBadge, SHR_UseShare */
 
 // Semantic-Search Provider (SSP) pages — wired to the real API.
 //
@@ -294,7 +294,7 @@ function SSPListPage({ onOpen, pushToast }) {
                 title={p.id}
                 subtitle={p.config?.hostname || ""}
                 pill={<BackendBadge kind={p.provider} />}
-                meta={`${p.config?.db_schema || "public"} · ${p.config?.database || "—"}`}
+                meta={`${p.config?.db_schema || "public"} · ${p.config?.database || "—"}${window.SHR_useBadge(p.access) ? " · " + window.SHR_useBadge(p.access) : ""}`}
                 onClick={() => openRow(p.id)}
               />
             )}
@@ -323,7 +323,18 @@ function SSPListPage({ onOpen, pushToast }) {
                   </td></tr>
                 ) : filtered.map((p) => (
                   <tr key={p.id} onClick={() => openRow(p.id)} style={{ cursor: "pointer" }}>
-                    <td className="mono">{p.id}</td>
+                    <td className="mono">
+                      {p.id}
+                      {window.SHR_useBadge(p.access) ? (
+                        <span
+                          className="pill pill-ended"
+                          data-testid={"ssp-access-badge-" + window.SHR_useBadge(p.access)}
+                          style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
+                        >
+                          <span className="dot"></span>{window.SHR_useBadge(p.access)}
+                        </span>
+                      ) : null}
+                    </td>
                     <td><BackendBadge kind={p.provider} /></td>
                     <td className="mono muted text-sm">
                       {p.config?.hostname || "—"}
@@ -448,6 +459,9 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider, frame, 
   // create only includes them once the operator has actually looked -
   // an untouched create genuinely submits config_fields only.
   const [advancedOpened, setAdvancedOpened] = React.useState(isEdit);
+  // ACL-P4-T7: the create form's Public switch (off by default); the POST
+  // cannot set the access, so save follows it with the access PUT.
+  const [pub, setPub] = React.useState(false);
 
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const isScale = form.provider === "pgvectorscale";
@@ -467,19 +481,36 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider, frame, 
         ? [SSP_CACHE_LIST, `ssp-detail:${existing?.id}`]
         : [SSP_CACHE_LIST],
       onSuccess: (row) => {
-        if (typeof onSaved === "function") {
-          onSaved(row);
-        } else {
-          onClose();
-          if (pushToast) {
-            pushToast({
-              kind: isEdit ? "info" : "success",
-              title: isEdit ? "Provider updated" : "Provider created",
-              detail: `${row?.id || existing?.id} (${row?.provider || existing?.provider})`,
-            });
+        const after = () => {
+          if (typeof onSaved === "function") {
+            onSaved(row);
+          } else {
+            onClose();
+            if (pushToast) {
+              pushToast({
+                kind: isEdit ? "info" : "success",
+                title: isEdit ? "Provider updated" : "Provider created",
+                detail: `${row?.id || existing?.id} (${row?.provider || existing?.provider})`,
+              });
+            }
+            if (!isEdit) navigate(`/ssp/${encodeURIComponent(row.id)}`);
           }
-          if (!isEdit) navigate(`/ssp/${encodeURIComponent(row.id)}`);
+        };
+        // ACL-P4-T7: the POST cannot set the access (the server stamps a
+        // private one and ignores the body), so the switch follows it with
+        // the access PUT, and the handoff waits for it.
+        if (!isEdit && pub) {
+          window.SHR_makePublic("ssp", row.id).then(after, function (err) {
+            if (pushToast) pushToast({
+              kind: "error",
+              title: "Provider created, but it stayed private",
+              detail: (err && (err.detail || err.message)) || "",
+            });
+            after();
+          });
+          return;
         }
+        after();
       },
       onError: (err) => {
         setMutationError(err);
@@ -680,6 +711,17 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider, frame, 
       </details>
 
       {!isEdit ? <SSP_TestConnectBox form={form} isLance={isLance} includeAdvanced={advancedOpened} /> : null}
+      {/* ACL-P4-T7: a new provider defaults private (who can use it is the
+      admin's call); the switch makes the new row public through the access
+      PUT that follows the register. */}
+      {!isEdit && (
+        <FormField label="Public" hint="off by default · who can use this provider is set after it exists">
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input type="checkbox" data-testid="ssp-create-public" checked={pub} onChange={(e) => setPub(e.target.checked)} />
+            <span>Everyone can use this provider</span>
+          </label>
+        </FormField>
+      )}
     </div>
   );
 
@@ -912,6 +954,7 @@ function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
                   </>}
             </div>
           </div>
+          <window.SHR_UseShare plural="ssp" id={p.id} title={p.id} />
           <Btn
             size="sm"
             kind="ghost"

@@ -21,7 +21,7 @@ A subscription says what a trigger's fire does. Every enabled subscription of a 
 - **Channel fields.** A subscription on a `channel` trigger also has `event_matcher` and `reply_target`. These tools do not set them: create channel subscriptions with `system__create_channel_binding` ([bindings](channels/bindings)).
 - **Outcome.** `last_fired_at` and `last_fire_error` (JSON: `code`, `message`, `fire_id`, `scheduled_for`) show the latest delivery; a clean one clears the error. A skip touches neither. Every failed delivery is also a `trigger.delivery_failed` event.
 - **Owner and rank.** Saving a subscription (create or update) makes your run's principal its `owner`. A fresh session it starts runs as that owner, at no more than the lower of the subscription owner's and the trigger owner's current roles. A gone owner (a deleted or disabled account, a revoked or expired token) fails a fresh-session fire with `owner_unresolvable` and starts nothing. A `session_append` or `parked_session` fire may not drive a session that runs above the fire's rank: it fails with `steer_outranks_fire`.
-- **Reach.** From a session outside the default workspace (prime), a config may name only your own workspace or a session in it. Any other answers `not-found`, as an unknown id does, and nothing is stored. The row records that reach (`reach`), and every fire checks it again: a target outside it fails with `target_out_of_reach`. The list leaves out a subscription whose target is outside your workspace, and get, update and delete answer `subscription_not_found` for it. A subscription whose target session is gone is out of reach too: delete it from prime. From prime, or with no calling session, every workspace is in reach.
+- **Access.** A config may name only a workspace, or a session in a workspace, that you hold `full` access to, wherever your session runs. Any other answers `not-found`, as an unknown id does, and nothing is stored. Every fire checks the owner's access again: a target the owner can no longer write fails with `target_out_of_reach`. The list leaves out a subscription whose target workspace you cannot write, and get, update and delete answer `subscription_not_found` for it. A subscription whose target session is gone is left out too: only an admin can delete it.
 
 ## How to
 1. Create the trigger first ([triggers](triggers/triggers)) and keep its `id`.
@@ -93,7 +93,7 @@ Reference: [`trigger__delete_subscription`](reference/tools/trigger/delete_subsc
 ## Gotchas
 - `scheduled_for` is the tick a clock fire is for: a `scheduled` trigger's tick (on time or caught up) or a `delayed` trigger's `fire_at`. It is null for a fire now, a webhook call and a channel event. `fired_at` is when the fire ran.
 - An update cannot change `config`. To point at another target, delete the subscription and create a new one.
-- An update makes you the owner and records your reach, as a create does.
+- An update makes you the owner and checks your access to the target again, as a create does. That is how a subscription disabled on upgrade is turned back on ([triggers](triggers/triggers)).
 - `parallelism` is exactly `skip` or `queue`: any other value answers `validation-error` and nothing is stored.
 - A `session_append` fire never reopens a session an operator cancelled (`skipped_session_ended`). A session that ended any other way is reopened by the message. A missing session is `skipped_session_missing`.
 - The session a fire starts carries `trigger_id`, `subscription_id`, `fire_id` and `fired_at` in its `metadata`.

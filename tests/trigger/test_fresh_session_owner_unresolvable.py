@@ -108,7 +108,7 @@ async def test_a_fire_whose_owner_resolves_is_not_refused_for_it(fake_storage_pr
 
 @pytest.mark.parametrize("kind", ["agent", "graph"])
 async def test_a_fire_of_a_row_saved_before_owners_were_recorded_is_refused(fake_storage_provider, kind):
-    """Migration 24 gives every legacy subscription its trigger's owner; one still without an owner is refused (fail closed)."""
+    """Migration 26 gives every legacy subscription its trigger's owner; one still without an owner is refused (fail closed)."""
     sp = fake_storage_provider
     await _ws(sp)
 

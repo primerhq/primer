@@ -32,7 +32,9 @@ from fastapi import APIRouter, Body, Depends, Path, Request
 from pydantic import BaseModel, Field
 
 from primer.api.approver_guard import enforce_approvers
-from primer.api.routers._session_rank import refuse_outranked
+from primer.access.person import person_from_request
+from primer.access.workspaces import require_session
+from primer.model.access import AccessLevel
 from primer.api.gate_fence import GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
 from primer.api.deps import (
     get_claim_engine,
@@ -313,9 +315,13 @@ class AskUserPendingResponse(BaseModel):
     responses=common_responses(404, 500),
 )
 async def get_ask_user_pending(
+    request: Request,
     session_id: str = Path(...),
     session_storage=Depends(get_session_storage),
 ) -> AskUserPendingResponse:
+    # Access (P2 Task 3): reading a session's prompt needs read on the
+    # workspace it lives in; a stranger answers the session's missing-row text.
+    await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.READ)
     sess = await _load_session_or_404(session_storage, session_id)
     blob = _parked_blob(sess)
     if blob is None:
@@ -457,9 +463,9 @@ async def post_ask_user_respond(
     # under a fresh id, parked on another tool) is a 404 ``gate_not_pending`` (GateNotPendingError), so a client reloads instead of showing an
     # error. A missing session and a park that cannot be read (no state, no tool, no call id, no event key) stay a plain 404.
     sess = await _load_session_or_404(session_storage, session_id)
-    # An answer is a person's input into a run at the session's creator's rank: 403 ``forbidden_rank`` unless the caller ranks at least as high or
-    # the session is their own (ticket 01a16a35, the rule of the REST steer and resume), before the park is read and before anything moves.
-    refuse_outranked(request, sess)
+    # An answer is a person's input into the session's run: full on the workspace the
+    # session lives in (P2 Task 3), before the park is read and before anything moves.
+    await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.FULL)
     blob = _parked_blob(sess)
     if blob is None:
         if sess.parked_status not in ("parked", "resumable"):
@@ -650,8 +656,9 @@ async def post_cancel_yielded_tool(
     entry whose own kind is ``_approval`` is judged (an agent's ``ask_user`` yield or an external wait is cancelled by its owner as
     before). A park that claims to be an approval but resolves to no entry is admin-only.
 
-    Every cancel, of any yield, first passes the rank rule (ticket 01a16a35): 403 ``forbidden_rank`` when the session's creator outranks the
-    caller and the session is not the caller's own, whatever an approval's spec admits. A cancel is the person's input into the run: the
+    Every cancel, of any yield, first passes the access gate (P2 Task 3): full on the
+    workspace the session lives in (it inherits its access), whatever an approval's spec
+    admits. A cancel is the person's input into the run: the
     tool's result carries their ``reason`` and the turn goes on, so a Skip of an ``ask_user`` answers it and a Skip of an approval rejects it.
 
     Distinct from cancel-session (§9.2 of the spec): the tool's
@@ -663,9 +670,8 @@ async def post_cancel_yielded_tool(
     """
     sess = await _load_session_or_404(session_storage, session_id)
     # Every cancel puts the person's input into the run (the tool's result carries their reason, and the turn goes on; a cancelled ask_user is
-    # its answer, a cancelled approval its rejection), so it follows the rank rule of the REST resume (ticket 01a16a35): 403 ``forbidden_rank``
-    # unless the caller ranks at least as high as the session's creator or the session is their own, before the park is read.
-    refuse_outranked(request, sess)
+    # its answer, a cancelled approval its rejection): full on the workspace the session lives in (P2 Task 3), before the park is read.
+    await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.FULL)
     blob = _parked_blob(sess)
     if blob is None:
         raise NotFoundError(

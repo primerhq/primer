@@ -11,11 +11,14 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from pydantic import SecretStr
 
 from primer.graph.invoke_graph import GraphInvocationServices, run_invoke_graph
+from primer.model.access import Access
 from primer.model.chat import Message, ToolCallPart
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalRecord
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.worker.session_resume_coordinator import resume_engine_session, write_approval_record_for_session
@@ -127,6 +130,13 @@ async def test_bob_decides_the_non_primary_child_gate(monkeypatch, client, app, 
     raw_a, raw_b = raws
     sessions = app.state.storage_provider.get_storage(WorkspaceSession)
     await sessions.create(await _agent_park(monkeypatch, raw_a, raw_b))
+    # The workspace row the respond route gates on (P2 Task 3): bob holds full on it, so the gate clears
+    # and the gate's own approver spec decides each decision.
+    await app.state.storage_provider.get_storage(Workspace).create(
+        Workspace(id="ws", template_id="tpl-1", provider_id="local-1", created_at=datetime.now(UTC),
+                  runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                  access=Access(grants={"user-bob": "full"})),
+    )
     await _register_admin(client)
     await _login_user(client, app, "bob")
 

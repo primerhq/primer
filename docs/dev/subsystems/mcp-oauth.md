@@ -92,7 +92,7 @@ toolset never wait on or write each other's row.
 - `primer/storage/migrations/m017_orphan_mcp_oauth_rows.py` removes the sign-ins
   that toolsets deleted before #852 left behind.
 - The per-user OAuth migration (currently
-  `primer/storage/migrations/m027_mcp_oauth_per_user.py`) turns the shared browser
+  `primer/storage/migrations/m029_mcp_oauth_per_user.py`) turns the shared browser
   token sets of an upgraded install into per-person ones.
 
 ## 5. Data model
@@ -188,8 +188,8 @@ deletes nothing more. The keyless `forget_user_sign_ins(storage_provider, user_i
 removes one person's token rows and pending sign-ins on every toolset (the shared
 rows and registered clients stay), for removing a user.
 
-The per-user OAuth migration (`M027McpOAuthPerUser` in
-`primer/storage/migrations/m027_mcp_oauth_per_user.py` at the time of writing) makes
+The per-user OAuth migration (`M029McpOAuthPerUser` in
+`primer/storage/migrations/m029_mcp_oauth_per_user.py` at the time of writing) makes
 an upgraded install's sign-ins per person. A browser token set stored under the bare
 toolset id moves, with its sealed tokens as stored, to the user whose id its
 `connected_by` is, else to the enabled admin whose username it is, else to the
@@ -358,7 +358,7 @@ does not apply `HTTP(S)_PROXY` to these calls.
 refresh races, bearer retry, provider preflight, and retired-library imports;
 `tests/toolset/oauth/test_per_user_tokens.py` covers per-person token sets (whose
 token a call or listing sends, no person no token, the shared rows, per-row lease
-and lock, forget rules), and `tests/storage/test_m027_mcp_oauth_per_user.py` the
+and lock, forget rules), and `tests/storage/test_m029_mcp_oauth_per_user.py` the
 migration.
 `tests/api/test_mcp_oauth_routes.py` covers browser and JSON callbacks, state
 failures, status, and disconnect; `tests/api/test_mcp_oauth_per_user_routes.py` who
