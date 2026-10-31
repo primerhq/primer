@@ -31,10 +31,13 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from primer.access.acting import acting_as
+from primer.access.person import person_from_ref
 from primer.bus.scheduler_tasks import _BackgroundTask
 from primer.common.log import redact_credentials
 from primer.int.coordinator import ROLE_MCP_BRIDGE
 from primer.int.event_bus import EventBus
+from primer.model.principal import PrincipalRef
 from primer.toolset.mcp import McpToolsetProvider
 
 if TYPE_CHECKING:
@@ -130,7 +133,11 @@ class McpTaskBridge(_BackgroundTask):
         if not isinstance(provider, McpToolsetProvider):
             # Toolset id collision — someone else's toolset, not ours.
             return
-        status_result = await provider.poll_task_status(task_id)
+        # The upstream calls act for the parked run's person, so a browser-OAuth toolset sends that person's token and nobody else's; a park
+        # that names nobody gets no browser token (access-control P5 Task 1). The wake below is the bridge's own write and stays system.
+        person = person_from_ref(park.get("person"))
+        with acting_as(person):
+            status_result = await provider.poll_task_status(task_id)
         status = (status_result.status or "").lower()
         if status not in TERMINAL_TASK_STATUSES:
             return  # still working, try again next tick
@@ -165,7 +172,8 @@ class McpTaskBridge(_BackgroundTask):
             return
 
         # status == "completed" — fetch the actual payload
-        payload_dict = await provider.fetch_task_result(task_id)
+        with acting_as(person):
+            payload_dict = await provider.fetch_task_result(task_id)
         # Strip MCP-internal _meta the resume hook doesn't need; keep
         # everything else (isError, content, structuredContent, ...).
         result_for_bus = {
@@ -224,7 +232,9 @@ async def _find_parked_mcp_task_keys(scheduler) -> list[dict]:
     if isinstance(scheduler, PostgresScheduler):
         sql = """
             SELECT data->>'parked_event_key' AS event_key,
-                   data->'parked_state'      AS parked_state
+                   data->'parked_state'      AS parked_state,
+                   data->'turn_person'       AS turn_person,
+                   data->'initiated_by'      AS initiated_by
               FROM sessions
              WHERE data->>'parked_status' = 'parked'
                AND data->>'parked_event_key' LIKE 'mcp_task:%'
@@ -247,6 +257,7 @@ async def _find_parked_mcp_task_keys(scheduler) -> list[dict]:
                     "event_key": row["event_key"],
                     "toolset_id": meta.get("toolset_id"),
                     "task_id": meta.get("task_id"),
+                    "person": _run_person(_json_of(row["turn_person"]), _json_of(row["initiated_by"])),
                 }
             )
         return out
@@ -262,7 +273,27 @@ def _extract_mcp_park(sess) -> dict:
         "event_key": sess.parked_event_key,
         "toolset_id": meta.get("toolset_id"),
         "task_id": meta.get("task_id"),
+        "person": _run_person(getattr(sess, "turn_person", None), getattr(sess, "initiated_by", None)),
     }
+
+
+def _json_of(value: Any) -> Any:
+    """A JSONB column as asyncpg answers it: a string unless a codec is registered."""
+    if isinstance(value, str):
+        import json as _json
+
+        return _json.loads(value)
+    return value
+
+
+def _run_person(turn_person: Any, initiated_by: Any) -> PrincipalRef | None:
+    """The parked run's person, as a turn of the session runs: its ``turn_person``, else its ``initiated_by``; ``None`` when it names nobody."""
+    for ref in (turn_person, initiated_by):
+        if isinstance(ref, PrincipalRef):
+            return ref
+        if isinstance(ref, dict):
+            return PrincipalRef.model_validate(ref)
+    return None
 
 
 __all__ = [
