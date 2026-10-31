@@ -64,8 +64,10 @@ from primer.model.channel_event import (
     NormalizedEventType,
 )
 from primer.model.event_matcher import EventMatcher
+from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
 from primer.model.storage import Op, OffsetPage
+from primer.model.user import User
 from primer.model.trigger import (
     AgentFreshSubConfig,
     ChannelTriggerConfig,
@@ -164,6 +166,16 @@ async def _seed_agent(p) -> Agent:
     return agent
 
 
+#: The person who set the rule up. A fire runs as the trigger's and the subscription's owner and is refused when either lost access (access-control P3):
+#: the tests seed the rows the way a real user's saves leave them, owned by that user.
+OWNER = PrincipalRef(type="user", id="u-e2a", display="e2a", role="user", source="local", user_id="u-e2a")
+OWNED = Access(owners=[OWNER.id])
+
+
+async def _seed_owner(p) -> None:
+    await p.get_storage(User).create(User(id=OWNER.id, username="e2a", created_at=datetime.now(timezone.utc), role="user"))
+
+
 async def _seed_channel(p) -> Channel:
     ch = Channel(
         id="ch-e2a",
@@ -175,6 +187,7 @@ async def _seed_channel(p) -> Channel:
         config=TelegramChannelConfig(
             chats={"enabled": True},
         ),
+        access=OWNED,
     )
     await p.get_storage(Channel).create(ch)
     return ch
@@ -231,6 +244,7 @@ async def test_command_event_starts_a_mapped_session(tmp_path: Path, async_close
     session.
     """
     p = await _provider(tmp_path, async_closers)
+    await _seed_owner(p)
     agent = await _seed_agent(p)
     ch = await _seed_channel(p)
     store = CorrelationStore(p)
@@ -245,12 +259,14 @@ async def test_command_event_starts_a_mapped_session(tmp_path: Path, async_close
             url="ws://127.0.0.1:5959/", token=SecretStr("t"),
         ),
         reply_binding=WorkspaceChannelLink(channel_id=ch.id),
+        access=OWNED,
     )
     await p.get_storage(Workspace).create(ws)
 
     await p.get_storage(Trigger).create(Trigger(
         id="trg-e2a", slug="evt-mapped-session", name="mapped-session rule",
         config=ChannelTriggerConfig(provider_id="cp-e2a", channel_id=ch.id),
+        owner=OWNER, access=OWNED,
         created_at=datetime.now(timezone.utc)))
     await p.get_storage(Subscription).create(Subscription(
         id="sub-e2a", trigger_id="trg-e2a",
@@ -262,6 +278,7 @@ async def test_command_event_starts_a_mapped_session(tmp_path: Path, async_close
         ),
         parallelism="queue",
         enabled=True,
+        owner=OWNER,
         created_at=datetime.now(timezone.utc)))
 
     bus = _RecordingBus()
@@ -327,6 +344,7 @@ async def test_command_event_starts_session_with_reply_binding(
     subscription's ``reply_target`` channel.
     """
     p = await _provider(tmp_path, async_closers)
+    await _seed_owner(p)
     agent = await _seed_agent(p)
     ch = await _seed_channel(p)
     store = CorrelationStore(p)
@@ -344,12 +362,14 @@ async def test_command_event_starts_session_with_reply_binding(
             url="ws://127.0.0.1:5959/", token=SecretStr("t"),
         ),
         reply_binding=WorkspaceChannelLink(channel_id=ch.id),
+        access=OWNED,
     )
     await p.get_storage(Workspace).create(ws)
 
     await p.get_storage(Trigger).create(Trigger(
         id="trg-e2a-sess", slug="evt-fresh-session", name="fresh-session rule",
         config=ChannelTriggerConfig(provider_id="cp-e2a", channel_id=ch.id),
+        owner=OWNER, access=OWNED,
         created_at=datetime.now(timezone.utc)))
     await p.get_storage(Subscription).create(Subscription(
         id="sub-e2a-sess", trigger_id="trg-e2a-sess",
@@ -362,6 +382,7 @@ async def test_command_event_starts_session_with_reply_binding(
         reply_target={"channel_id": ch.id},
         parallelism="queue",
         enabled=True,
+        owner=OWNER,
         created_at=datetime.now(timezone.utc)))
 
     bus = _RecordingBus()
