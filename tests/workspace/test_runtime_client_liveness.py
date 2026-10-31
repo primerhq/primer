@@ -187,5 +187,21 @@ async def test_a_silent_runtime_is_reconnected_after_three_unanswered_heartbeats
         await runner.cleanup()
 
 
+# ---- W55j: an idle stream is not polled -------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("with_abort", [True, False], ids=["abort", "no-abort"])
+async def test_an_idle_stream_waits_without_waking(with_abort: bool) -> None:
+    client, _ = _connected_client()
+    q = _CountingQueue()
+    abort = asyncio.Event() if with_abort else None
+    task = asyncio.create_task(_drain(client, q, abort))
+    await asyncio.sleep(0.5)
+    assert q.gets <= 1, f"the idle stream asked its queue {q.gets} times in half a second"
+    q.put_nowait({"event": "a"})
+    q.put_nowait(_STREAM_CLOSED)
+    assert await asyncio.wait_for(task, timeout=2) == [{"event": "a"}]
+
+
 async def _drain(client: RuntimeClient, q: asyncio.Queue, abort: asyncio.Event | None) -> list:
     return [item async for item in client._iter_stream(1, q, abort=abort)]

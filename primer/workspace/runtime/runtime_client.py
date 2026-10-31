@@ -1037,14 +1037,27 @@ class RuntimeClient:
         *,
         abort: asyncio.Event | None = None,
     ) -> AsyncIterator[Any]:
-        """Yield items from *q* until _STREAM_CLOSED or *abort* fires."""
+        """Yield items from *q* until _STREAM_CLOSED or *abort* fires.
+
+        Waits on the queue and the abort together, so an idle stream sleeps until one of them moves (review W55j).
+        """
         while True:
             if abort is not None and abort.is_set():
                 break
-            try:
-                item = await asyncio.wait_for(q.get(), timeout=0.1)
-            except TimeoutError:
-                continue
+            if abort is None:
+                item = await q.get()
+            else:
+                get = asyncio.ensure_future(q.get())
+                aborted = asyncio.ensure_future(abort.wait())
+                try:
+                    await asyncio.wait({get, aborted}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    aborted.cancel()
+                    if not get.done():
+                        get.cancel()    # a get cancelled before it took an item leaves the item in the queue
+                if not get.done():
+                    break               # the abort fired first
+                item = get.result()
             if item is _STREAM_CLOSED:
                 break
             yield item
