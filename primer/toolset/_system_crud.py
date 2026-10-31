@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
-from primer.access.person import Person, person_for_tool
+from primer.access.person import Person, person_for_tool, tool_identity
 from primer.toolset._collection_access import collection_for
 from primer.access.policy import require, visible_predicate
 from primer.access.service import update_keeping_access
@@ -1287,6 +1287,8 @@ def _call_tool_tool(
                     context=ApprovalContext(
                         tool_name=tool_name, toolset_id=toolset_id, arguments=args.arguments or {},
                         agent_id=None, session_id=None, chat_id=None, requested_at=datetime.now(UTC),
+                        # The MCP caller acting directly, as the MCP endpoint's own gate names it.
+                        identity=await tool_identity(None, registry.storage_provider),
                     ),
                     provider_registry=registry,
                 )
@@ -1313,6 +1315,8 @@ def _call_tool_tool(
                     session_id=ctx.session_id,
                     chat_id=ctx.chat_id,
                     requested_at=datetime.now(UTC),
+                    # The run's person and actor, as the direct gate builds them (P4 Task 1).
+                    identity=await tool_identity(ctx, registry.storage_provider),
                 )
                 verdict = await evaluate_approval_gate(
                     policy=policy,

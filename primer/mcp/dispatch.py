@@ -100,6 +100,7 @@ async def _enforce_approval_gate(
     arguments: dict,
     principal: str | None,
     deps: ExposureDeps,
+    actor: "Principal | None" = None,
 ) -> None:
     """Refuse the call if the tool's effective approval policy is required.
 
@@ -116,6 +117,7 @@ async def _enforce_approval_gate(
     """
     from datetime import datetime, timezone
 
+    from primer.access.person import direct_actor, gate_identity
     from primer.agent.approval import (
         ApprovalContext,
         evaluate_approval_gate,
@@ -142,6 +144,8 @@ async def _enforce_approval_gate(
         session_id=None,
         chat_id=None,
         requested_at=datetime.now(timezone.utc),
+        # The caller acting directly: the person (a token's owner) and actor ``user`` (``system`` with auth disabled).
+        identity=await gate_identity(actor, direct_actor(actor), getattr(deps.provider_registry, "storage_provider", None)),
     )
     verdict = await evaluate_approval_gate(
         policy=policy,
@@ -289,6 +293,7 @@ async def invoke_exposed(
         arguments=arguments,
         principal=principal,
         deps=deps,
+        actor=actor,
     )
     return await invoke_one(
         provider=provider,

@@ -80,7 +80,7 @@ class _FakeToolManager:
 async def test_build_invocation_services_forwards_bound_deps(monkeypatch):
     captured: dict = {}
 
-    async def fake_build(context, *, storage_provider, provider_registry,
+    async def fake_build(context, *, agent_id=None, storage_provider, provider_registry,
                          approval_resolver):
         captured["build"] = dict(
             context=context, storage_provider=storage_provider,

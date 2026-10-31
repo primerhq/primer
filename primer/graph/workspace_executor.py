@@ -56,7 +56,7 @@ from primer.model.graph import (
     _ToolCallNode,
     build_execution_context,
 )
-from primer.model.principal import PrincipalRef
+from primer.model.principal import ActorRef, PrincipalRef
 from primer.model.workspace_session import SessionStatus
 from primer.model.yield_ import YieldToWorker
 from primer.observability.turn_log_writer import (
@@ -365,6 +365,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
                 toolset_providers={},
                 session=workspace_session,
                 initiated_by=who,
+                actor=ActorRef(kind="agent", id=agent.id),
             )
 
         return _resolve
@@ -496,6 +497,8 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
                 # (system fallback when unknown); the worker-built path
                 # threads a real identity via ``self._identity``.
                 initiated_by=self._identity or PrincipalRef.system(),
+                # A ToolCall node acts as its graph (a child graph's node as the child graph: its own executor builds this).
+                actor=ActorRef(kind="graph", id=self._graph.id),
             )
             # Cache only the workspace-only manager; a per-toolset manager
             # must not leak to a later tool_call naming a different toolset.

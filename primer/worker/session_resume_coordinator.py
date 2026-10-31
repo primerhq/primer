@@ -758,9 +758,10 @@ def build_invocation_services(pool: "WorkerPool", session, workspace, executor, 
             resolved.append(await resolve_run_principal(storage_provider, session))
         return dataclasses.replace(context, initiated_by=resolved[0], principal=None)
 
-    async def build_subagent_toolmanager(context):
+    async def build_subagent_toolmanager(context, *, agent_id=None):
         return await _build_subagent_toolmanager(
             await as_session_run(context),
+            agent_id=agent_id,
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             approval_resolver=approval_resolver,

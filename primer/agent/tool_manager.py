@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from primer.access.person import gate_identity
 from primer.agent import tool_listing
 from primer.agent.approval import (
     ApprovalContext,
@@ -61,7 +62,7 @@ from primer.model.except_ import (
     PrimerError,
     UnsupportedContentError,
 )
-from primer.model.principal import PrincipalRef
+from primer.model.principal import ActorRef, PrincipalRef
 from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
@@ -191,6 +192,7 @@ class ToolExecutionManager:
         event_recorder: "Any | None" = None,
         turn_no: int | None = None,
         run_scope: "tuple[str, str] | None" = None,
+        actor: ActorRef | None = None,
     ) -> None:
         # Optional platform event recorder: when wired (worker executor
         # builds), every dispatched call lands a ``tool.called`` event.
@@ -232,6 +234,8 @@ class ToolExecutionManager:
         # child session (``create_workspace_session``) can propagate it —
         # see ``ToolContext.initiated_by``.
         self._initiated_by = initiated_by
+        # The innermost acting entity this manager runs for (``ToolContext.actor``); None means the bound session's agent (:meth:`_actor`).
+        self._actor_override = actor
         # 01a0518b: the enclosing session turn's own turn number, stamped
         # onto every ToolContext this manager builds (mirrors
         # initiated_by's propagation) so nested subagent calls
@@ -333,6 +337,13 @@ class ToolExecutionManager:
             return self._run_scope[0], self._run_scope[1], None
         return None, None, None
 
+    def _actor(self) -> ActorRef | None:
+        """The run's actor: the one the builder set, else the bound session's agent, else None."""
+        if self._actor_override is not None:
+            return self._actor_override
+        agent_id = self._scope()[2]
+        return ActorRef(kind="agent", id=agent_id) if agent_id else None
+
     @property
     def workspace_session_scope(self) -> tuple[str | None, str | None]:
         """(session_id, workspace_id) of the session this manager runs for (:meth:`_scope`), or Nones."""
@@ -354,6 +365,7 @@ class ToolExecutionManager:
         external_call_storage: "Any | None" = None,
         event_recorder: "Any | None" = None,
         turn_no: int | None = None,
+        actor: ActorRef | None = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -383,6 +395,7 @@ class ToolExecutionManager:
             external_tools=external_tools,
             external_call_storage=external_call_storage,
             turn_no=turn_no,
+            actor=actor,
         )
 
     def rebind_workspace(
@@ -415,6 +428,7 @@ class ToolExecutionManager:
             graph_invocation_services=self._graph_services,
             initiated_by=initiated_by or self._initiated_by,
             turn_no=self._turn_no,
+            actor=self._actor_override,
         )
 
     async def list_tools(
@@ -690,6 +704,7 @@ class ToolExecutionManager:
                 # The agent the approval gate names in its context (``ApprovalContext.agent_id``, below): a door that gates another tool for
                 # this run reads it here, so a policy keyed on the agent fires through the door too (audit G6-7).
                 agent_id=agent_id,
+                actor=self._actor(),
             )
         if self._chat_id is not None:
             return ToolContext(
@@ -701,6 +716,7 @@ class ToolExecutionManager:
                 initiated_by=self._initiated_by,
                 turn_no=self._turn_no,
                 principal=principal,
+                actor=self._actor(),
             )
         return None
 
@@ -859,6 +875,9 @@ class ToolExecutionManager:
                     session_id=scope_session_id,
                     chat_id=getattr(self, "_chat_id", None),
                     requested_at=datetime.now(UTC),
+                    identity=await gate_identity(
+                        self._initiated_by, self._actor(), getattr(self._provider_registry, "storage_provider", None),
+                    ),
                 )
                 verdict = await evaluate_approval_gate(
                     policy=policy,

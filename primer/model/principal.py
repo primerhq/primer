@@ -126,6 +126,18 @@ class PrincipalRef(BaseModel):
         )
 
 
+class ActorRef(BaseModel):
+    """The entity acting in a run (access-control spec 6.3): the innermost agent or graph, the user calling directly, or the system.
+
+    It never adds access: every decision is the run's person's. It is carried beside the person so approval rules see who acts for them.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["agent", "graph", "user", "system"]
+    id: str
+
+
 def person_ref(ref: PrincipalRef | None) -> PrincipalRef | None:
     """The ref when it names a person a turn may run as (a user or an API token's owner).
 
@@ -141,4 +153,4 @@ def person_ref(ref: PrincipalRef | None) -> PrincipalRef | None:
     return ref if (ref.type, ref.id) != (unknown.type, unknown.id) else None
 
 
-__all__ = ["Principal", "PrincipalRef", "person_ref"]
+__all__ = ["ActorRef", "Principal", "PrincipalRef", "person_ref"]
