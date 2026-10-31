@@ -52,7 +52,9 @@ def make_access_router(
         storage=Depends(storage_dep),
         users=Depends(_users),
     ) -> AccessView:
-        return await get_access_view(storage, users, entity_id, person_from_request(request), what=f"{name} {entity_id!r}")
+        return await get_access_view(
+            storage, users, entity_id, person_from_request(request), what=f"{name} {entity_id!r}", use_only=use_only,
+        )
 
     @router.put(
         f"/{plural}/{{entity_id}}/access",

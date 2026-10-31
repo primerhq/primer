@@ -108,7 +108,8 @@ def access_tools(*, storage_provider: "StorageProvider") -> dict[str, tuple[Tool
         model, label, _ = _KINDS[args.kind]
         try:
             view = await get_access_view(
-                storage_provider.get_storage(model), users, args.id, person_for_tool(ctx), what=f"{label} {args.id!r}"
+                storage_provider.get_storage(model), users, args.id, person_for_tool(ctx), what=f"{label} {args.id!r}",
+                use_only=args.kind in _USE_ONLY,
             )
         except (NotFoundError, AccessDeniedError) as exc:
             return _refusal(exc)

@@ -101,3 +101,16 @@ async def test_usable_follows_the_grant_and_public(sp, model, rid):
     await _set(sp, model, rid, ADMIN, grants={"ada": "read"}, public=True)
     assert await usable(sp, BOB, model, rid) is not None
     assert await usable(sp, Person("rex", "restricted"), model, rid) is None
+
+
+@pytest.mark.parametrize(("model", "rid"), KINDS)
+async def test_a_grantees_view_has_no_other_grantees_and_an_admins_has_all(sp, model, rid):
+    await _set(sp, model, rid, ADMIN, grants={"ada": "read", "bob": "read"}, public=True)
+    storage, users = sp.get_storage(model), sp.get_storage(User)
+
+    ada = await get_access_view(storage, users, rid, ADA, what="x", use_only=True)
+    assert ada.your_level == "read" and ada.public is True
+    assert ada.owners == [] and ada.grants == [] and ada.public_tools == []
+
+    admin = await get_access_view(storage, users, rid, ADMIN, what="x", use_only=True)
+    assert sorted(g.user.id for g in admin.grants) == ["ada", "bob"] and admin.rev == 1

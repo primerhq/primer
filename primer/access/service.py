@@ -86,11 +86,17 @@ def _view(access: Access, refs: dict[str, UserRef], level: AccessLevel | None) -
 
 
 async def get_access_view(
-    storage: Storage[Any], users: Storage[User], entity_id: str, person: Person, *, what: str
+    storage: Storage[Any], users: Storage[User], entity_id: str, person: Person, *, what: str, use_only: bool = False
 ) -> AccessView:
-    """The sharing of ``entity_id``; needs read access (no access answers not found)."""
+    """The sharing of ``entity_id``; needs read access (no access answers not found).
+
+    For grantable infrastructure (``use_only``) a non-admin gets only ``your_level`` and ``public``: no owners, no grants, so a colleague's
+    use grant cannot be enumerated. Admins see everything.
+    """
     row = await _load(storage, entity_id, what)
     level = require(person, row.access, AccessLevel.READ, what=what)
+    if use_only and not person.is_admin:
+        return AccessView(owners=[], grants=[], public=row.access.public, public_tools=[], rev=0, your_level=level)
     refs = await _user_refs(users, [*row.access.owners, *row.access.grants])
     return _view(row.access, refs, level)
 

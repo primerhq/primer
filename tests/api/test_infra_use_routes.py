@@ -92,6 +92,8 @@ async def test_the_use_grant_is_read_by_a_grantee_and_changed_only_by_an_admin(c
     async with ada, bob:
         view = await ada.get("/v1/model_profiles/p-1/access")
         assert view.status_code == 200 and view.json()["your_level"] == "read" and view.json()["owners"] == []
+        assert view.json()["grants"] == []  # a grantee cannot enumerate the other grants
+        assert [g["user"]["id"] for g in (await client.get("/v1/model_profiles/p-1/access")).json()["grants"]] == ["u-ada"]
         assert (await bob.get("/v1/model_profiles/p-1/access")).status_code == 404  # exists, but reads as missing
         update = {"owners": [], "grants": {"u-ada": "read", "u-bob": "read"}, "public": False}
         assert (await ada.put("/v1/model_profiles/p-1/access", json=update)).status_code == 403  # a grantee cannot widen it
