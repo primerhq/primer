@@ -252,6 +252,16 @@ async def _derive_unique_username(
     return candidate
 
 
+async def _find_live_identity(identity_storage, user_storage, provider_id: str, subject: str) -> UserIdentity | None:
+    """The identity for ``(provider_id, subject)``, or ``None``. A row whose user is gone is deleted and counts as absent (GS-16)."""
+    identity = await _find_identity(identity_storage, provider_id, subject)
+    if identity is not None and await user_storage.get(identity.user_id) is None:
+        with contextlib.suppress(NotFoundError):
+            await identity_storage.delete(identity.id)
+        return None
+    return identity
+
+
 def _reject(status_code: int, error: str, message: str | None = None) -> HTTPException:
     detail: dict[str, str] = {"error": error}
     if message:
@@ -278,12 +288,10 @@ async def _resolve_or_provision_user(
     email: str | None,
 ) -> User:
     """Resolve strictly on ``(provider_id, subject)``. Never auto-links by email."""
-    identity = await _find_identity(identity_storage, provider_id, subject)
+    identity = await _find_live_identity(identity_storage, user_storage, provider_id, subject)
     if identity is not None:
         user = await user_storage.get(identity.user_id)
-        if user is None:
-            # Data-integrity gap (identity row survived a user delete) —
-            # treat as unresolvable, never silently re-provision.
+        if user is None:  # deleted between the check and this read: fail closed, the next sign-in starts clean
             raise _reject(403, "account_disabled", "identity has no matching account")
         if user.disabled:
             raise _reject(403, "account_disabled")
@@ -298,19 +306,24 @@ async def _resolve_or_provision_user(
     # never trusted here) — a misconfigured "admin" must never let the JIT
     # path auto-provision an admin account.
     role = state.sso_default_access if state.sso_default_access in ("restricted", "user") else "restricted"
-    username = await _derive_unique_username(
-        user_storage, provider_id=provider_id, subject=subject, email=email,
-    )
     now = datetime.now(timezone.utc)
-    new_user = User(
-        id=f"user-{uuid.uuid4().hex[:12]}",
-        username=username,
-        email=email,
-        password_hash=None,
-        role=role,
-        created_at=now,
-    )
-    created_user = await user_storage.create(new_user)
+    for attempt in range(_USERNAME_ATTEMPTS):
+        username = await _derive_unique_username(
+            user_storage, provider_id=provider_id, subject=subject, email=email,
+        )
+        try:
+            created_user = await user_storage.create(User(
+                id=f"user-{uuid.uuid4().hex[:12]}",
+                username=username,
+                email=email,
+                password_hash=None,
+                role=role,
+                created_at=now,
+            ))
+            break
+        except ConflictError:  # the name was taken between the check and the write (the unique index): derive another
+            if attempt == _USERNAME_ATTEMPTS - 1:
+                raise _reject(409, "sso_race_unresolved") from None
     try:
         await identity_storage.create(
             UserIdentity(
@@ -344,9 +357,13 @@ async def _resolve_or_provision_user(
     return created_user
 
 
+_USERNAME_ATTEMPTS = 5
+
+
 async def _link_identity(
     *,
     identity_storage,
+    user_storage,
     target_user_id: str,
     provider_id: str,
     subject: str,
@@ -368,7 +385,7 @@ async def _link_identity(
     ``(provider_id, subject)`` is the actual backstop, and we catch
     :class:`ConflictError` and re-resolve rather than letting it 500.
     """
-    existing = await _find_identity(identity_storage, provider_id, subject)
+    existing = await _find_live_identity(identity_storage, user_storage, provider_id, subject)
     if existing is not None:
         if existing.user_id != target_user_id:
             raise _reject(
@@ -681,6 +698,7 @@ async def _complete_oidc_flow(
             raise _reject(403, "account_disabled")
         identity = await _link_identity(
             identity_storage=user_identity_storage,
+            user_storage=user_storage,
             target_user_id=target_user_id,
             provider_id=provider.id,
             subject=subject,

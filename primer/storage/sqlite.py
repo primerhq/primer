@@ -133,6 +133,10 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             "(json_extract(data,'$.provider_id'), json_extract(data,'$.subject'))",
         ),
     ],
+    "user": [
+        # Mirrors the postgres entry (GS-20); created only when no duplicate username exists.
+        ("username_uniq", True, "(json_extract(data,'$.username'))"),
+    ],
     "toolapprovalrecord": [
         # Mirrors postgres._HOT_FIELD_INDEXES' toolapprovalrecord entry --
         # see its comment. SQLite's UNIQUE index treats NULL the same way
@@ -165,7 +169,7 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
 # Tolerate the violation for this (table, suffix) pair only (log and
 # continue without the index); every other hot-field index keeps
 # raising.
-_DUP_TOLERANT_UNIQUE_INDEX = ("serviceversion", "service_version_uniq")
+_DUP_TOLERANT_UNIQUE_INDEXES = (("serviceversion", "service_version_uniq"), ("user", "username_uniq"))
 
 
 def _table_name_for(model_class: type[BaseModel]) -> str:
@@ -808,7 +812,7 @@ class SqliteStorage(Storage[ModelT]):
                             f'ON "{self._table}" {expr}'
                         )
                     except sqlite3.IntegrityError:
-                        if (self._table, suffix) != _DUP_TOLERANT_UNIQUE_INDEX:
+                        if (self._table, suffix) not in _DUP_TOLERANT_UNIQUE_INDEXES:
                             raise
                         # A pre-fix database already holds duplicate
                         # (service_id, version) rows (KN-19j): skip this
@@ -817,8 +821,9 @@ class SqliteStorage(Storage[ModelT]):
                         # commits and reads work without the index.
                         logger.warning(
                             "could not create unique index %s_%s: "
-                            "duplicate (service_id, version) rows already "
-                            "exist; continuing without it (KN-19j)",
+                            "duplicate rows already exist; continuing "
+                            "without it until an admin resolves them "
+                            "(KN-19j, GS-20)",
                             self._table, suffix,
                         )
                 if should_commit:
