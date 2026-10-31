@@ -119,7 +119,12 @@ var ITEMS = []; var MOBILE = false;
 window.primerApi = {
   useRouter: function () { return { navigate: function () {} }; },
   useViewport: function () { return { isMobile: MOBILE }; },
-  useResource: function () { return { data: { items: ITEMS }, loading: false, error: null, refetch: function () {} }; },
+  useResource: function (key) {
+    // A null key is an idle read (the real use-resource.js: enabled = cacheKey != null) -
+    // the marker's name lookup passes one when there is nothing to look up.
+    if (key == null) return { loading: false, data: null, error: null, refetch: function () {} };
+    return { data: { items: ITEMS }, loading: false, error: null, refetch: function () {} };
+  },
   apiFetch: function () { return Promise.resolve({}); },
 };
 """

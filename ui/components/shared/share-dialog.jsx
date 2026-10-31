@@ -51,21 +51,56 @@ function SHR_useShareOpen() {
 }
 window.SHR_useShareOpen = SHR_useShareOpen;
 
-// ---- badges the list rows and cards draw from the row's access -------------
+// ---- markers the list rows and detail headers draw from the row's access ----
 
-// "Public" when anyone can use it, "Shared" when a grant exists; private is
-// the default and says nothing. The row's access is the Access model: grants
-// is the uid -> level map (the /access view's array shape only arrives
-// through the dialog), so a grant is counted by the map's keys.
-function SHR_accessBadges(access) {
+// ACL-P6-T3 (Decision 8): whose a thing is, from the row's stored access (the
+// Access model: ``owners`` a list of ids, ``grants`` the uid -> level MAP,
+// ``public`` a flag), the viewer's user id (``me``; con.viewer), and the
+// looked-up names (SHR_useUserNames): "Owned by you" when the viewer owns
+// it, "Owned by <name>" (an id that names no user says the id) when they do
+// not, "Shared with you (read|full)" for a grant the viewer holds, and
+// "Public" for a public row the viewer does not own. Ownership outranks the
+// viewer's own grant, and a row with no access block says nothing. Replaces
+// the old badge reader (which never drew the owner and read the grant
+// count only).
+function SHR_accessMarkers(access, me, names) {
   var out = [];
   if (!access) return out;
-  if (access.public) out.push("Public");
-  var grants = access.grants;
-  if (grants && (Array.isArray(grants) ? grants.length : Object.keys(grants).length)) out.push("Shared");
+  names = names || {};
+  var owned = !!(me && access.owners && access.owners.indexOf(me) !== -1);
+  if (owned) {
+    out.push("Owned by you");
+  } else if (access.owners && access.owners.length) {
+    out.push("Owned by " + access.owners.map(function (o) { return names[o] || o; }).join(", "));
+  }
+  if (!owned && me && access.grants && access.grants[me]) {
+    out.push("Shared with you (" + access.grants[me] + ")");
+  }
+  if (!owned && access.public) out.push("Public");
   return out;
 }
-window.SHR_accessBadges = SHR_accessBadges;
+window.SHR_accessMarkers = SHR_accessMarkers;
+
+// The pill row every surface draws from the reader (one class for the
+// phone's wrap, one testid scheme): one pill per marker, in the reader's
+// order. No markers, no row.
+function SHR_AccessMarkers({ access, me, names }) {
+  var out = SHR_accessMarkers(access, me, names);
+  if (!out.length) return null;
+  return (
+    <span className="shr-markers" data-testid="shr-access-markers">
+      {out.map(function (m) {
+        var test = m.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+        return (
+          <span key={test} className="pill pill-ended shr-marker" data-testid={"shr-marker-" + test}>
+            <span className="dot"></span>{m}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+window.SHR_AccessMarkers = SHR_AccessMarkers;
 
 // ACL-P3-T7: a row the harness installs (a non-null harness_id) answers 409
 // harness_managed to a direct share - its sharing is the harness's to change.
