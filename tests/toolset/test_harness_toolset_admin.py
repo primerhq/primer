@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import SecretStr
 
+from primer.model.access import Access
 from primer.model.harness import Harness, HarnessStatus
 from primer.model.principal import PrincipalRef
 from primer.model.yield_ import ToolContext
@@ -67,7 +68,7 @@ async def test_register_and_update_refuse_an_unsafe_ref():
     assert bad.is_error, bad.output
 
     await sp.get_storage(Harness).create(
-        Harness(id="hns_1", slug="ok-harness", name="x", git_url="https://h.example/r",
+        Harness(id="hns_1", slug="ok-harness", name="x", git_url="https://h.example/r", access=Access(public=True),
                 created_at=datetime.now(timezone.utc)),
     )
     upd = await provider.call(tool_name="update", arguments={"id": "hns_1", "ref": "-b"})
@@ -80,7 +81,7 @@ async def test_update_cannot_repoint_git_url_and_the_masked_token_keeps_the_real
     # sent back as the served mask keeps the stored one rather than storing the mask.
     sp = _SP()
     await sp.get_storage(Harness).create(
-        Harness(id="hns_1", slug="ok-harness", name="x", git_url="https://h.example/r",
+        Harness(id="hns_1", slug="ok-harness", name="x", git_url="https://h.example/r", access=Access(public=True),
                 git_token=SecretStr("secret"), created_at=datetime.now(timezone.utc)),
     )
     provider = _provider(sp)
@@ -101,7 +102,7 @@ async def test_update_cannot_repoint_git_url_and_the_masked_token_keeps_the_real
 async def test_install_records_who_asked():
     sp = _SP()
     await sp.get_storage(Harness).create(
-        Harness(id="hns_1", slug="ok-harness", name="x", git_url="https://h.example/r",
+        Harness(id="hns_1", slug="ok-harness", name="x", git_url="https://h.example/r", access=Access(public=True),
                 status=HarnessStatus.READY, overrides_schema={"type": "object"},
                 created_at=datetime.now(timezone.utc)),
     )

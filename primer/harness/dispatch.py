@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 import jsonschema
 import jsonschema.exceptions
 
+from primer.access.service import rewrite_keeping_access
 from primer.common.url_userinfo import mask_userinfo
 from primer.harness.dependencies import (
     CanonicalKey,
@@ -317,7 +318,7 @@ async def _release_harness(
         "last_operation_error": last_operation_error,
         "last_operation_at": datetime.now(timezone.utc),
     })
-    await harness_storage.update(updated)
+    await rewrite_keeping_access(harness_storage, updated, what="Harness")
 
 
 def _refuse_changed_inputs(harness: Harness, operation: str) -> str | None:
@@ -639,7 +640,7 @@ async def _do_fetch(
                 "schema_missing_input": schema_missing_input,
                 "dependencies_resolved": resolved_deps,
             })
-            await harness_storage.update(updated)
+            await rewrite_keeping_access(harness_storage, updated, what="Harness")
 
             return next_status, None
 
@@ -960,7 +961,7 @@ async def _do_install(
                     "schema_missing_input": False,
                     "overrides_hash": overrides_hash,
                 })
-                await harness_storage.update(updated)
+                await rewrite_keeping_access(harness_storage, updated, what="Harness")
 
             return HarnessStatus.INSTALLED, None
 
@@ -1018,7 +1019,7 @@ async def _do_sync(
                 "overrides_dirty": False,
                 "schema_missing_input": False,
             })
-            await harness_storage.update(updated)
+            await rewrite_keeping_access(harness_storage, updated, what="Harness")
         return HarnessStatus.INSTALLED, None
 
     if harness.available_commit is None:
@@ -1161,7 +1162,7 @@ async def _do_sync(
                         "schema_missing_input": False,
                     })
                 updated = refreshed.model_copy(update=update_fields)
-                await harness_storage.update(updated)
+                await rewrite_keeping_access(harness_storage, updated, what="Harness")
 
             if error is not None:
                 return HarnessStatus.ERROR, error
@@ -1255,7 +1256,7 @@ async def _do_build(
             "schema_hash": new_schema_hash,
             "last_operation_at": _now_utc(),
         })
-        await harness_storage.update(updated)
+        await rewrite_keeping_access(harness_storage, updated, what="Harness")
 
     # Per-entity HarnessRendering snapshot so the UI can show drift per row.
     # Only the per-template files are interesting; harness.yaml and the
@@ -1381,7 +1382,7 @@ async def _do_push(
             "bundle_hash": result.bundle_hash,
             "last_operation_at": _now_utc(),
         })
-        await harness_storage.update(updated)
+        await rewrite_keeping_access(harness_storage, updated, what="Harness")
 
     return HarnessStatus.INSTALLED, None
 

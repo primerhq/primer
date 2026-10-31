@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from primer.model.access import Access
 from primer.model.harness import Harness, HarnessStatus
 from primer.toolset.harness import build_harness_toolset_provider
 from tests.toolset.test_harness_toolset import _SP, _EventBus
@@ -29,7 +30,7 @@ def _provider(sp):
 async def _seeded() -> tuple[_SP, object]:
     sp = _SP()
     await sp.get_storage(Harness).create(
-        Harness(id="hns_1", slug="url-harness", name="x", git_url=URL, status=HarnessStatus.READY, created_at=datetime.now(timezone.utc)),
+        Harness(id="hns_1", slug="url-harness", name="x", git_url=URL, status=HarnessStatus.READY, created_at=datetime.now(timezone.utc), access=Access(public=True)),
     )
     return sp, _provider(sp)
 

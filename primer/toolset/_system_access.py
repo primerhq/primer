@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from primer.access.person import person_for_tool
 from primer.access.service import LOOKUP_MAX, AccessUpdate, get_access_view, lookup_users, set_access
+from primer.harness.access import apply_harness_access
 from primer.model.agent import Agent
 from primer.model.channel import Channel
 from primer.model.collection import Collection
@@ -19,6 +20,7 @@ from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import AccessDeniedError, ConflictError, NotFoundError
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.graph import Graph
+from primer.model.harness import Harness
 from primer.model.providers.toolset import Toolset
 from primer.model.trigger import Trigger
 from primer.model.user import User
@@ -32,7 +34,7 @@ from primer.toolset.internal import ToolHandler
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
 
-EntityKind = Literal["agent", "graph", "toolset", "workspace_template", "channel", "collection", "trigger"]
+EntityKind = Literal["agent", "graph", "toolset", "workspace_template", "channel", "collection", "trigger", "harness"]
 
 #: kind -> (model, label, allows per-tool public flags)
 _KINDS: dict[str, tuple[type, str, bool]] = {
@@ -43,6 +45,7 @@ _KINDS: dict[str, tuple[type, str, bool]] = {
     "channel": (Channel, "Channel", False),
     "collection": (Collection, "Collection", False),
     "trigger": (Trigger, "Trigger", False),
+    "harness": (Harness, "Harness", False),
 }
 
 
@@ -105,6 +108,8 @@ def access_tools(*, storage_provider: "StorageProvider") -> dict[str, tuple[Tool
                 update,
                 what=f"{label} {args.id!r}",
                 allow_public_tools=allow_public_tools,
+                # A shared harness hands its new access to everything it installed.
+                after_write=(lambda row: apply_harness_access(storage_provider, row)) if args.kind == "harness" else None,
             )
         except (NotFoundError, AccessDeniedError, ConflictError, PrimerValidationError) as exc:
             return _refusal(exc)
@@ -124,7 +129,7 @@ def access_tools(*, storage_provider: "StorageProvider") -> dict[str, tuple[Tool
     get_tool = make_tool(
         id="get_entity_access",
         toolset_id=SYSTEM_TOOLSET_ID,
-        purpose="Read who an agent, graph, toolset, workspace template, channel, collection or trigger is shared with.",
+        purpose="Read who an agent, graph, toolset, workspace template, channel, collection, trigger or harness is shared with.",
         when=(
             "Use when checking an entity's owners, the people it is shared with and at what level (read or full), whether it is "
             "public, and your own level. Needs read access; an entity you cannot read answers type=not-found."
@@ -142,7 +147,7 @@ def access_tools(*, storage_provider: "StorageProvider") -> dict[str, tuple[Tool
     set_tool = make_tool(
         id="set_entity_access",
         toolset_id=SYSTEM_TOOLSET_ID,
-        purpose="Change who an agent, graph, toolset, workspace template, channel, collection or trigger is shared with (owners only).",
+        purpose="Change who an agent, graph, toolset, workspace template, channel, collection, trigger or harness is shared with (owners only).",
         when=(
             "Use when sharing an entity with other users, making it public, handing ownership to someone else, or marking single "
             "toolset tools public. Send the whole desired state (owners, grants, public, public_tools) and the rev you read; a stale "

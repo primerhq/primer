@@ -622,6 +622,9 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "graph": [
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
+    "harness": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
     "useridentity": [
         ("provider_subject_uniq", True, "((data->>'provider_id'), (data->>'subject'))"),
     ],

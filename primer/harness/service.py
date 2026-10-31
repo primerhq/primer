@@ -25,6 +25,8 @@ from primer.harness.diff import diff_renderings
 from primer.harness.hashes import hash_rendered_payload, hash_template_source
 from primer.harness.template import RenderedFile
 from primer.model.except_ import ConflictError
+from primer.access.service import rewrite_keeping_access
+from primer.model.access import Access
 from primer.model.harness import Harness, HarnessRendering, RenderedEntry
 
 logger = logging.getLogger(__name__)
@@ -495,7 +497,6 @@ async def _write_entity_with_body(
     entity: Any,
     content: str | None,
     is_update: bool,
-    owner: Any = None,
 ) -> None:
     """Write an entity row and (for documents) its content-store body row
     inside ONE backend transaction, so the two never diverge.
@@ -510,20 +511,20 @@ async def _write_entity_with_body(
     ``storage.update`` over ``storage.create``.
     """
     async with storage_provider.transaction() as conn:
-        if hasattr(entity, "access"):
-            if is_update:
-                # A sync keeps the sharing the row has (its owners may have shared it); the template never sets it.
-                stored = await storage.get(entity.id, conn=conn)
-                if stored is not None:
-                    entity.access = stored.access
+        if hasattr(entity, "access") and is_update:
+            # A sync writes the row's other fields and never its access: the sharing is the harness's, copied by
+            # ``apply_harness_access`` when it changes, and a revoke that landed since this sync read the row must survive it.
+            stored = await storage.get(entity.id, conn=conn)
+            if stored is not None:
+                await rewrite_keeping_access(storage, entity, what=f"{type(entity).__name__} {entity.id!r}", conn=conn)
             else:
-                # The person who asked for the install owns what it creates (an id-less admin/system: admin-managed).
-                from primer.access.person import person_from_ref
-                from primer.model.access import Access
-
-                user_id = person_from_ref(owner).user_id if owner is not None else None
-                entity.access = Access.owned_by(user_id) if user_id is not None else Access()
-        if is_update:
+                await storage.create(entity, conn=conn)
+        elif hasattr(entity, "access"):
+            # A created row takes the harness's access as it stands now (read inside the transaction).
+            harness = await storage_provider.get_storage(Harness).get(entity.harness_id, conn=conn)
+            entity.access = harness.access if harness is not None else Access()
+            await storage.create(entity, conn=conn)
+        elif is_update:
             await storage.update(entity, conn=conn)
         else:
             await storage.create(entity, conn=conn)
@@ -700,7 +701,6 @@ async def apply_install(
                     # either rolls both back - no committed entity orphaned
                     # without its content row.
                     await _write_entity_with_body(
-                        owner=harness.operation_requested_by,
                         storage_provider=storage_provider,
                         storage=storage,
                         entity=entity,
@@ -884,7 +884,6 @@ async def apply_sync(
             # Entity row + (document) content row in ONE transaction so a
             # failure in either rolls both back - no torn write.
             await _write_entity_with_body(
-                owner=harness.operation_requested_by,
                 storage_provider=storage_provider,
                 storage=storage,
                 entity=entity,
@@ -924,7 +923,6 @@ async def apply_sync(
             # Entity row + (document) content row in ONE transaction so a
             # failure in either rolls both back - no torn write.
             await _write_entity_with_body(
-                owner=harness.operation_requested_by,
                 storage_provider=storage_provider,
                 storage=storage,
                 entity=entity,
