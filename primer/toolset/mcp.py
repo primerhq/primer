@@ -9,8 +9,10 @@ request-translation logic in this file.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, ClassVar
@@ -26,7 +28,8 @@ from primer.common.mcp_errors import classify_mcp_exception
 from primer.int.toolset import ToolsetProvider
 from primer.llm._failure import mask_values
 from primer.model.chat import Tool, ToolCallResult
-from primer.model.except_ import ConfigError, PrimerError
+from primer.model.except_ import AuthRequiredError, ConfigError, PrimerError
+from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.model.provider import (
     HttpConfig,
     McpConfig,
@@ -64,6 +67,10 @@ def is_mcp_task_tool(tool: mcp_types.Tool) -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+#: How long a tool listing is kept, and a listing failure (a dead server is asked once per this, not once per turn).
+LIST_CACHE_TTL_SECONDS = 30.0
+LIST_FAILURE_TTL_SECONDS = 15.0
 
 
 class McpEgressRefused(ConfigError):
@@ -131,8 +138,13 @@ class McpToolsetProvider(ToolsetProvider):
         client_version: str = "0.0.1",
         allowed_stdio_commands: frozenset[str] | None = None,
         egress_guard: bool | Callable[[], Awaitable[bool]] = False,
+        list_cache_ttl_seconds: float = LIST_CACHE_TTL_SECONDS,
+        list_failure_ttl_seconds: float = LIST_FAILURE_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """``egress_guard``: whether an http / sse connection goes through the egress guard (:mod:`primer.toolset.mcp_egress`: internal
+        """``list_cache_ttl_seconds`` / ``list_failure_ttl_seconds``: how long a tool listing, and a listing failure, is kept (see ``_fetch_mcp_tools``).
+
+        ``egress_guard``: whether an http / sse connection goes through the egress guard (:mod:`primer.toolset.mcp_egress`: internal
         addresses refused at connect time, ``PRIMER_EGRESS_ALLOW`` opts them in). A callable is awaited per dispatch, so a role change of the
         toolset's author takes effect without rebuilding the provider. The registry guards every toolset an admin did not author; ``False``
         (the default) leaves a transient or test provider as it was.
@@ -158,6 +170,47 @@ class McpToolsetProvider(ToolsetProvider):
         # ``call`` invocations can route task tools to the yielding
         # path without re-listing.
         self._task_tools: set[str] = set()
+
+        # The listing cache. The provider is cached per toolset (and dropped with it when the toolset changes: ProviderRegistry), the tool manager
+        # is rebuilt every turn, so without this every turn paid a handshake and tools/list per MCP toolset, and a dead server a full listing
+        # timeout. Key: (user, OAuth token fingerprint, egress guard state, config hash), so one person's listing is never another's.
+        self._list_ttl = list_cache_ttl_seconds
+        self._failure_ttl = list_failure_ttl_seconds
+        self._clock = clock
+        self._config_hash = hashlib.sha256(config.model_dump_json().encode()).hexdigest()[:16]
+        self._list_cache: dict[tuple, tuple[float, list[mcp_types.Tool], set[str]]] = {}
+        self._list_failures: dict[tuple, tuple[float, BaseException]] = {}
+
+    def invalidate_listing(self) -> None:
+        """Forget every cached listing and failure (the next listing asks the server)."""
+        self._list_cache.clear()
+        self._list_failures.clear()
+
+    async def _list_key(self) -> tuple:
+        """The cache key for the acting person. Reading the token here is what keeps a sign-out from being hidden by the cache: a person with no
+        usable sign-in raises exactly as an uncached listing would, before any cached entry is looked at."""
+        person = person_for_tool(None)
+        fingerprint = None
+        http_cfg = self._config.config
+        if isinstance(http_cfg, HttpConfig) and http_cfg.oauth is not None and self._oauth is not None:
+            target = OAuthTarget.from_toolset(
+                Toolset(id=self._toolset_id, provider=ToolsetProviderType.MCP, config=self._config), person,
+            )
+            assert target is not None
+            token = await self._oauth.access_token(target)
+            fingerprint = hashlib.sha256(token.encode()).hexdigest()[:16]
+        guard = self._egress_guard
+        guarded = await guard() if callable(guard) else bool(guard)
+        return (person.user_id, fingerprint, guarded, self._config_hash)
+
+    async def note_list_timeout(self) -> None:
+        """A listing of this toolset ran out of time (the turn gave up on it): remember that briefly, so the next turn does not wait the full
+        listing timeout again for a server that has not come back."""
+        try:
+            key = await self._list_key()
+        except Exception:  # noqa: BLE001 - the timeout is already the answer; a key that cannot be built just means no note
+            return
+        self._list_failures[key] = (self._clock() + self._failure_ttl, TimeoutError("did not list its tools in time"))
 
     def _classified(self, exc: Exception) -> PrimerError:
         """``classify_mcp_exception(exc)`` with the toolset's configured header values masked in its text.
@@ -222,6 +275,36 @@ class McpToolsetProvider(ToolsetProvider):
             yield self._mcp_tool_to_primer(mcp_tool)
 
     async def _fetch_mcp_tools(
+        self,
+        *,
+        principal: str | None = None,
+    ) -> list[mcp_types.Tool]:
+        """The tool listing: the cached one while it is fresh, else :meth:`_fetch_mcp_tools_uncached` (whose answer, or failure, is kept briefly).
+
+        A sign-in or auth failure is never kept (signing in again must work at once), and neither is a cancellation.
+        """
+        key = await self._list_key()
+        now = self._clock()
+        hit = self._list_cache.get(key)
+        if hit is not None and hit[0] > now:
+            self._task_tools = set(hit[2])
+            return list(hit[1])
+        failed = self._list_failures.get(key)
+        if failed is not None and failed[0] > now:
+            raise failed[1]
+        try:
+            tools = await self._fetch_mcp_tools_uncached(principal=principal)
+        except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            if not isinstance(exc, (McpSignInRequiredError, AuthRequiredError)):
+                self._list_failures[key] = (self._clock() + self._failure_ttl, exc)
+            raise
+        self._list_failures.pop(key, None)
+        self._list_cache[key] = (self._clock() + self._list_ttl, list(tools), set(self._task_tools))
+        return tools
+
+    async def _fetch_mcp_tools_uncached(
         self,
         *,
         principal: str | None = None,
@@ -292,6 +375,8 @@ class McpToolsetProvider(ToolsetProvider):
             try:
                 result = await session.call_tool(tool_name, arguments=arguments)
             except Exception as exc:
+                # The call failed: the server may have changed under a cached listing (a removed tool, a restart). Re-list on the next turn.
+                self.invalidate_listing()
                 raise self._classified(exc) from exc
 
             return self._mcp_call_result_to_primer(result)
