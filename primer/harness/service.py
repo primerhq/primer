@@ -726,7 +726,7 @@ async def apply_install(
                         existing_harness_id is not None
                         and existing_harness_id != harness.id
                     ):
-                        # Roll back any rows already written in this attempt.
+                        # Roll back any rows already written in this attempt (a document's content row too).
                         for rb_kind, rb_id in reversed(created):
                             try:
                                 await _storage_for_kind(
@@ -734,6 +734,11 @@ async def apply_install(
                                 ).delete(rb_id)
                             except Exception:
                                 pass
+                            if rb_kind == "document":
+                                try:
+                                    await _delete_document_content(storage_provider=storage_provider, document_id=rb_id)
+                                except Exception:
+                                    pass
                         return json.dumps({
                             "code": "apply_id_conflict",
                             "message": (
