@@ -585,6 +585,16 @@ the trigger.
 
 ## Gotchas
 
+- **A channel binding needs access to its trigger and its channel.**
+  A binding is a subscription of its channel trigger:
+  `system::list_channel_bindings` needs `read` on the trigger,
+  `system::create_channel_binding` and `system::delete_channel_binding`
+  need `full` (a trigger you cannot read answers
+  `type=trigger_not_found`, too low a level `type=forbidden`).
+  Creating a binding, like saving a channel trigger, also needs `read`
+  on the channel the trigger fires from (one you cannot read answers
+  `type=not-found`), and a trigger without a `channel_id` (it listens
+  to every channel of the provider) is admin-only.
 - **A reply binding implies all gates forward.** There are no per-gate
   flags. If a workspace has a `reply_binding`, all `ask_user`,
   `tool_approval`, and `inform` gates from its sessions forward to
