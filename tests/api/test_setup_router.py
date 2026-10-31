@@ -398,3 +398,77 @@ async def test_on_a_real_workspace_the_seed_keeps_an_edit_and_only_the_reset_res
     reset = await client.post("/v1/setup/reset_prime_instructions")
     assert reset.status_code == 200, reset.text
     assert await ws.read_file("agents.md") == shipped_prime_agents_md()
+
+
+async def test_reset_agents_keeps_a_share_that_lands_between_its_read_and_write(client, app):
+    """GS-22: the reset patches only its three fields, fenced on access.rev, so a concurrent share is not overwritten."""
+    from primer.model.access import Access
+
+    agents = app.state.storage_provider.get_storage(Agent)
+    real_get = agents.get
+    shared = {"done": False}
+
+    async def get_then_share(agent_id, *a, **kw):
+        row = await real_get(agent_id, *a, **kw)
+        if agent_id == RESERVED_OPERATOR_AGENT and not shared["done"]:
+            shared["done"] = True
+            await agents.patch_if(
+                agent_id,
+                {"access": Access(owners=row.access.owners, grants={"u-friend": "read"}, rev=row.access.rev + 1).model_dump(mode="json")},
+                where={("access", "rev"): [row.access.rev]},
+            )
+        return row
+
+    agents.get = get_then_share
+    try:
+        r = await client.post("/v1/setup/reset_agents")
+    finally:
+        del agents.get
+    assert r.status_code == 200, r.text
+    operator = await real_get(RESERVED_OPERATOR_AGENT)
+    assert operator.access.grants == {"u-friend": "read"}
+    assert operator.system_prompt == list(OPERATOR_PROMPT)
+
+
+async def test_live_check_reads_the_default_profiles_provider_by_id(client, app, monkeypatch):
+    """GS-25: the provider is one `get`, not a page of the listing, and nothing else is probed."""
+    from primer.api.routers import setup as setup_router
+    from primer.model.provider import LLMProvider
+    from tests._support.model_profiles import seed_profile
+    from tests.api.test_model_profiles_router import _seed_provider
+
+    await _seed_provider(client, "live-prov")
+    profile_id = await seed_profile(client, "live-prov", "live-model")
+    sp = app.state.storage_provider
+    calls = {"list": 0, "get": 0, "probed": []}
+
+    class Counting:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def list(self, *a, **kw):
+            calls["list"] += 1
+            return await self._inner.list(*a, **kw)
+
+        async def get(self, *a, **kw):
+            calls["get"] += 1
+            return await self._inner.get(*a, **kw)
+
+    class Provider:
+        def get_storage(self, model):
+            inner = sp.get_storage(model)
+            return Counting(inner) if model is LLMProvider else inner
+
+    async def probe(*, provider_id, providers):
+        calls["probed"].append(provider_id)
+
+    async def default_id(_sp):
+        return profile_id
+
+    monkeypatch.setattr(setup_router, "discover_saved_llm_models", probe)
+    monkeypatch.setattr(setup_router, "default_profile_id", default_id)
+    ok, _ = await setup_router._live_llm_provider_check(Provider())
+    assert ok and calls == {"list": 0, "get": 1, "probed": ["live-prov"]}
