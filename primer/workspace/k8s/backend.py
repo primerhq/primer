@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import os
 import secrets
 import uuid
 from collections.abc import Awaitable
@@ -359,6 +360,11 @@ def _build_statefulset_manifest(
 class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
     """Materialises workspaces as single-replica StatefulSets."""
 
+    # What ``initialize`` built and ``aclose`` must release (review W20): the API client (an aiohttp session) and the service
+    # account's CA bundle written to a temp file. None when the APIs were injected.
+    _api_client: Any = None
+    _ca_file: str | None = None
+
     def __init__(
         self,
         config: KubernetesWorkspaceConfig,
@@ -405,12 +411,14 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                 )
                 ca_file.write(conn.ca_data)
                 ca_file.close()
+                self._ca_file = ca_file.name
                 cfg.ssl_ca_cert = ca_file.name
                 api_client = client.ApiClient(configuration=cfg)
             else:
                 raise ConfigError(
                     f"unknown k8s connection kind {conn.kind!r}"
                 )
+            self._api_client = api_client
             if self._core_v1 is None:
                 self._core_v1 = client.CoreV1Api(api_client)
             if self._apps_v1 is None:
@@ -426,7 +434,24 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                     await ws.aclose()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("aclose on workspace failed: %s", exc)
+                # The handle's aclose only releases it; the runtime connection is its sandbox's (review W20).
+                await close_shielded(ws.sandbox, what=f"workspace {ws.id} runtime client on backend close")
             self._workspaces.clear()
+            if self._api_client is not None:
+                try:
+                    await self._api_client.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("closing the kubernetes API client failed: %s", exc)
+                # The APIs were built on it: a later initialize builds them again.
+                self._api_client = self._core_v1 = self._apps_v1 = self._custom_objects = None
+            if self._ca_file is not None:
+                try:
+                    os.unlink(self._ca_file)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    logger.warning("removing the kubernetes CA file %s failed: %s", self._ca_file, exc)
+                self._ca_file = None
             self._initialised = False
 
     async def create(

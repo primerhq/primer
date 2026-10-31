@@ -133,6 +133,8 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
                     await ws.aclose()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("aclose on workspace failed: %s", exc)
+                # The handle's aclose only releases it; the runtime connection is its sandbox's (review W20).
+                await close_shielded(ws.sandbox, what=f"workspace {ws.id} runtime client on backend close")
             self._workspaces.clear()
             await self._adapter.aclose()
             self._initialised = False

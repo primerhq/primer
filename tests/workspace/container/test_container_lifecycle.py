@@ -81,3 +81,39 @@ async def test_a_removal_that_fails_is_not_reported_as_not_found(tmp_path) -> No
 
     with pytest.raises(RuntimeError, match="daemon busy"):
         await backend.destroy("proj")
+
+
+# ---- W20 -------------------------------------------------------------------------------------------------------------------------
+
+
+async def test_closing_the_backend_closes_the_runtime_connection_of_every_cached_workspace(tmp_path) -> None:
+    backend, adapter = await _backend(tmp_path)
+    await backend.create(_template(), workspace_id="ws-a")
+    await backend.create(_template(), workspace_id="ws-b")
+    assert len(adapter.handed_out) == 2
+
+    await backend.aclose()
+
+    assert [s.closed for s in adapter.handed_out] == [1, 1]
+    assert [s.removed for s in adapter.handed_out] == [0, 0], "closing the backend never removes a container"
+    assert backend._workspaces == {}
+
+
+async def test_closing_the_backend_closes_a_real_runtime_client() -> None:
+    """The review's probe, inverted: the cached workspace's ``WSSandbox`` closes its ``RuntimeClient``."""
+    adapter = MagicMock()
+    adapter.aclose = AsyncMock()
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    client = MagicMock()
+    client.aclose = AsyncMock()
+    client.gone = False
+    sandbox = WSSandbox(runtime_client=client, container_id="c")
+    backend._workspaces["w"] = SandboxWorkspace(
+        workspace_id="w", template=MagicMock(), sandbox=sandbox, state_repo=MagicMock(), truncation_store=MagicMock(),
+        tools=[], backend_kind="container", runtime_meta=WorkspaceRuntimeMeta(url="ws://x", token="t"),
+    )
+
+    await backend.aclose()
+
+    client.aclose.assert_awaited_once()
+    adapter.aclose.assert_awaited_once()
