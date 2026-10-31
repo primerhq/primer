@@ -72,7 +72,7 @@ flowchart LR
   (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access` (workspaces included), plus `GET
   /v1/users/lookup`.
 - Tools: `system__get_entity_access`, `system__set_entity_access`, `system__lookup_users`
-  (`primer/toolset/_system_access.py`; the kinds are agent, graph, toolset, workspace template and channel); the
+  (`primer/toolset/_system_access.py`; the kinds are agent, graph, toolset, workspace template, channel and workspace); the
   generated CRUD tools enforce the same levels; the `workspaces` toolset asks `require_workspace` per tool.
 - Console: `SHR_ShareDialog` (`ui/components/shared/share-dialog.jsx`) for every owned kind, workspaces included.
 
@@ -108,7 +108,7 @@ level `forbidden`.
 | Toolset | `primer/api/routers/providers.py` | system CRUD, `crud` toolset | the only kind with `public_tools` |
 | Workspace template | `primer/api/routers/workspaces.py` | `workspaces` toolset | `local-default` is public with no owner; creating a workspace from it needs read |
 | Channel | `primer/api/routers/channels.py` | system CRUD | |
-| Workspace | `primer/api/routers/workspaces.py`, `tap.py`, `terminal.py` | `workspaces` toolset, the system reply-binding tools, `reset_prime_instructions` | sharing is REST and console only: `_KINDS` has no workspace kind yet |
+| Workspace | `primer/api/routers/workspaces.py`, `tap.py`, `terminal.py` | `workspaces` toolset, the system reply-binding tools, `reset_prime_instructions`, the sharing tools (`kind` `workspace`) | no `public_tools` |
 | Inherited from a workspace | `sessions.py`, `workspaces.py`, `canvas.py`, `yields.py`, `tool_approval.py`, `external_tools.py`, `compute.py` (graph-run logs), `events.py` | `workspaces` toolset (session, file and log tools), `message_session`, `wait_for_event`, trigger subscription targets (`primer/trigger/reach.py`) | the table in section 6.2 |
 
 ## 6. Wiring

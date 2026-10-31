@@ -7,7 +7,7 @@ order: 60
 ---
 ## What it is
 
-Agents, graphs, toolsets, workspace templates, channels and workspaces belong to the users who own them. Each one is private until an owner shares it with chosen users or makes it public. Everything inside a workspace (its files, sessions, canvas, pending questions and approvals, and events) follows the workspace. These tools read and change the sharing of the first five kinds; a workspace is shared from the console or over REST.
+Agents, graphs, toolsets, workspace templates, channels and workspaces belong to the users who own them. Each one is private until an owner shares it with chosen users or makes it public. Everything inside a workspace (its files, sessions, canvas, pending questions and approvals, and events) follows the workspace. These tools read and change that sharing.
 
 ## Concepts
 
@@ -26,7 +26,7 @@ Agents, graphs, toolsets, workspace templates, channels and workspaces belong to
 - **A session has no sharing of its own.** Share the workspace it lives in. A tool that names a workspace or session you cannot read answers `not-found`, exactly as an unknown id, wherever your run lives: a run in prime reaches no more than its person can.
 - **Who a steered turn runs as.** Each turn runs as the person whose message started it. When a peer steers a session you started, that turn runs with the peer's access, not yours: your private toolsets, collections and sign-ins are not lent to it, and the session's `turn_person` names the peer while `initiated_by` still names you. Answering a question or an approval starts no turn: the parked turn keeps its person. A channel reply runs as the session's creator, a trigger fire as its owner.
 - **Revoking.** Remove the grant and the workspace, its sessions and its events answer the peer like missing ones (404, `not-found`), including sessions they started there. Steering, reading and every workspace tool refuse them from then on, and a wait of theirs on its events stops waking.
-- **Where.** In the console, Share on the workspace. Over REST, `GET /v1/workspaces/{id}/access` and `PUT /v1/workspaces/{id}/access` with the same body and `rev` rule as the tools below; `system__set_entity_access` does not take a workspace yet.
+- **Where.** `system__set_entity_access` with `kind` `workspace` (no `public_tools`), Share on the workspace in the console, or `GET /v1/workspaces/{id}/access` and `PUT /v1/workspaces/{id}/access` over REST, all with the same body and `rev` rule.
 
 ## Your default workspace
 
@@ -58,6 +58,12 @@ Share the agent with that user at `read`, keeping yourself as owner:
 
 ```json
 {"toolset_id": "system", "tool_name": "set_entity_access", "arguments": {"kind": "agent", "id": "agent-3f9a1c8d", "owners": ["user-1"], "grants": {"user-2": "read"}, "rev": 0}}
+```
+
+Share your default workspace with that user at `full`, so they can steer its sessions:
+
+```json
+{"toolset_id": "system", "tool_name": "set_entity_access", "arguments": {"kind": "workspace", "id": "ws-user-1", "owners": ["user-1"], "grants": {"user-2": "full"}, "rev": 0}}
 ```
 
 Make two tools of a toolset public without sharing the rest:
