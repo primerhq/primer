@@ -9,8 +9,9 @@ loop; event-based kinds (e.g. a future ``channel`` kind) are excluded.
 
 * ``delayed``  — one-off; disable + null the next-fire pointer so the
   row never re-fires.
-* ``scheduled`` — advance to the next future cron occurrence (in the
-  trigger's timezone).
+* ``scheduled`` — advance to the cron occurrence after the tick the claim
+  fired (``outcome.fired_tick``; after now when it is not given), in the
+  trigger's timezone. A tick that passed during the fire is left due.
 * anything else — null the pointer defensively so the engine doesn't
   re-claim an unsupported kind in a loop.
 
@@ -93,14 +94,14 @@ class TriggerClaimAdapter(ClaimAdapter):
             # doesn't re-claim it. The trigger row stays for audit.
             changes: dict = {"enabled": False, "next_fire_at": None}
         elif kind == "scheduled":
-            # Advance the cron to the next future occurrence. We use
-            # the source-of-truth helper so timezone + DST handling
-            # stay consistent with the source's compute_next_fire_at.
+            # Advance the cron past the tick this claim fired, not past now: a tick that came while the fire ran stays due, and the next
+            # claim applies the trigger's catchup to it (W47). We use the source-of-truth helper so timezone + DST handling stay consistent
+            # with the source's compute_next_fire_at.
             try:
                 nxt = _cron_next(
                     trigger.config.cron,
                     trigger.config.timezone,
-                    after=now,
+                    after=outcome.fired_tick or now,
                 )
             except Exception:
                 # Invalid cron / tz at release time — null the pointer

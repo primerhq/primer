@@ -135,3 +135,61 @@ async def test_last_fire_error_is_scrubbed_on_the_trigger_row(fake_storage_provi
     message = json.loads(row.last_fire_error)["message"]
     assert message == "connect failed: <url> Bearer <redacted>"
 
+
+# ---------------------------------------------------------------------------
+# W47: a tick that passes during the fire
+# ---------------------------------------------------------------------------
+
+
+def _slow_fire(monkeypatch, clock: dict, *, takes: timedelta) -> None:
+    real = dispatch_mod.fire_trigger
+    calls = {"n": 0}
+
+    async def _fire(**kwargs):
+        result = await real(**kwargs)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            clock["now"] += takes
+        return result
+
+    monkeypatch.setattr(dispatch_mod, "fire_trigger", _fire)
+
+
+async def test_a_fire_that_ends_before_the_next_tick_advances_to_it(sp, monkeypatch) -> None:
+    clock, engine, pool = _on_a_fake_clock(monkeypatch, sp, TICK - timedelta(seconds=30))
+    monkeypatch.setattr(service, "_now", lambda: clock["now"])  # the create's next_fire_at too
+    made = await service.create_trigger(
+        slug="minutely", name="m", description=None, config=ScheduledTriggerConfig(cron="* * * * *", timezone="UTC", catchup="all"),
+        deps=service.ServiceDeps(storage_provider=sp, claim_engine=engine),
+    )
+    _slow_fire(monkeypatch, clock, takes=timedelta(seconds=20))
+    clock["now"] = TICK + timedelta(seconds=2)
+    [lease] = await engine.claim_due("w", max_count=5)
+    await run_engine_trigger(pool, lease)  # type: ignore[arg-type]
+    assert (await sp.get_storage(Trigger).get(made.id)).next_fire_at == TICK + timedelta(minutes=1)
+    assert await engine.claim_due("w", max_count=5) == []
+
+
+@pytest.mark.parametrize(("catchup", "takes", "then_fired"), [
+    ("all", timedelta(seconds=70), [TICK + timedelta(minutes=1)]),
+    ("all", timedelta(seconds=130), [TICK + timedelta(minutes=1), TICK + timedelta(minutes=2)]),
+    ("none", timedelta(seconds=130), [TICK + timedelta(minutes=2)]),
+])
+async def test_a_tick_that_passes_during_the_fire_is_fired_by_the_next_claim(sp, monkeypatch, catchup, takes, then_fired) -> None:
+    clock, engine, pool = _on_a_fake_clock(monkeypatch, sp, TICK - timedelta(seconds=30))
+    monkeypatch.setattr(service, "_now", lambda: clock["now"])  # the create's next_fire_at too
+    made = await service.create_trigger(
+        slug="minutely", name="m", description=None, config=ScheduledTriggerConfig(cron="* * * * *", timezone="UTC", catchup=catchup),
+        deps=service.ServiceDeps(storage_provider=sp, claim_engine=engine),
+    )
+    _slow_fire(monkeypatch, clock, takes=takes)
+    clock["now"] = TICK + timedelta(seconds=2)
+    [lease] = await engine.claim_due("w", max_count=5)
+    await run_engine_trigger(pool, lease)  # type: ignore[arg-type]
+    assert (await sp.get_storage(Trigger).get(made.id)).next_fire_at == TICK + timedelta(minutes=1)
+
+    clock["now"] += timedelta(seconds=1)
+    [lease] = await engine.claim_due("w", max_count=5)
+    await run_engine_trigger(pool, lease)  # type: ignore[arg-type]
+    assert await _fired(sp) == [t.isoformat() for t in [TICK, *then_fired]]
+
