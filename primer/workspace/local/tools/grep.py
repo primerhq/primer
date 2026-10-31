@@ -338,6 +338,9 @@ def _grep_files(
     total = 0
     file_count = 0
     for path in files:
+        rel = workspace_relative(workspace_root, path)
+        if rel is None:
+            continue   # a symlink leading out of the workspace
         try:
             with path.open("rb") as fh:
                 head = fh.read(_BINARY_SNIFF_BYTES)
@@ -349,7 +352,6 @@ def _grep_files(
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        rel = workspace_relative(workspace_root, path)
         lines, count = grep_text(
             text, rel, rx=rx, mode=mode, context=context, multiline=multiline, budget=budget,
         )

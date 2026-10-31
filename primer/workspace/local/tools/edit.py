@@ -114,9 +114,14 @@ class Edit(WorkspaceTool):
         # Hold the lock across the ENTIRE read-modify-write so the file the
         # diff is computed from is the same one written back.
         async with lock_ctx:
-            original = await asyncio.to_thread(
-                target.read_text, encoding="utf-8"
-            )
+            try:
+                original = await asyncio.to_thread(
+                    target.read_text, encoding="utf-8"
+                )
+            except UnicodeDecodeError:
+                raise BadRequestError(
+                    f"{args.path!r} is not UTF-8 text; edit changes UTF-8 files only"
+                ) from None
             count = original.count(args.old_string)
             if count == 0:
                 raise BadRequestError(

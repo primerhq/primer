@@ -28,6 +28,8 @@ from primer.workspace.local.tools.grep import (
     grep_budget_error,
     grep_text,
 )
+from primer.workspace.runtime.protocol import ErrorCode
+from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeOpError
 from primer.workspace.sandbox.tools._common import (
     resolve_sandbox_path,
     workspace_relative,
@@ -36,6 +38,9 @@ from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 
 
 _BINARY_SNIFF_BYTES = 1024
+# A runtime read refused for the entry itself (a symlinked directory the runtime lists as a file, a file gone since
+# the walk): the entry is skipped. Any other runtime failure still fails the call.
+_UNREADABLE = frozenset({ErrorCode.ENOENT, ErrorCode.EACCES, ErrorCode.EISDIR, ErrorCode.ENOTDIR})
 
 
 class SandboxGrep(WorkspaceTool):
@@ -94,7 +99,14 @@ class SandboxGrep(WorkspaceTool):
         file_count = 0
         budget = grep_budget()
         for path_abs in files:
-            body = await self._sandbox.read_file(path_abs)
+            try:
+                body = await self._sandbox.read_file(path_abs)
+            except OSError:
+                continue
+            except RuntimeOpError as exc:
+                if exc.code not in _UNREADABLE:
+                    raise
+                continue
             if b"\x00" in body[:_BINARY_SNIFF_BYTES]:
                 continue
             text = body.decode("utf-8", errors="replace")
