@@ -82,15 +82,21 @@ from primer.storage.migrations.m021_entity_ownership import M021EntityOwnership
 from primer.storage.migrations.m022_workspace_ownership import (
     M022WorkspaceOwnership,
 )
-from primer.storage.migrations.m023_collection_ownership import (
-    M023CollectionOwnership,
+from primer.storage.migrations.m023_admin_default_workspace import (
+    M023AdminDefaultWorkspace,
 )
-from primer.storage.migrations.m024_trigger_ownership import M024TriggerOwnership
-from primer.storage.migrations.m025_harness_ownership import (
-    M025HarnessOwnership,
+from primer.storage.migrations.m024_cross_workspace_list_field import (
+    M024CrossWorkspaceListField,
 )
-from primer.storage.migrations.m026_infrastructure_public import (
-    M026InfrastructurePublic,
+from primer.storage.migrations.m025_collection_ownership import (
+    M025CollectionOwnership,
+)
+from primer.storage.migrations.m026_trigger_ownership import M026TriggerOwnership
+from primer.storage.migrations.m027_harness_ownership import (
+    M027HarnessOwnership,
+)
+from primer.storage.migrations.m028_infrastructure_public import (
+    M028InfrastructurePublic,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,10 +138,12 @@ MIGRATIONS: tuple[Migration, ...] = (
     M020HarnessPolicyRekey(),
     M021EntityOwnership(),
     M022WorkspaceOwnership(),
-    M023CollectionOwnership(),
-    M024TriggerOwnership(),
-    M025HarnessOwnership(),
-    M026InfrastructurePublic(),
+    M023AdminDefaultWorkspace(),
+    M024CrossWorkspaceListField(),
+    M025CollectionOwnership(),
+    M026TriggerOwnership(),
+    M027HarnessOwnership(),
+    M028InfrastructurePublic(),
 )
 
 #: Highest version this build knows how to apply.

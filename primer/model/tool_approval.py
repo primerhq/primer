@@ -278,6 +278,13 @@ class ToolApprovalRecord(Identifiable):
         default=None,
         description="Session the gate parked on (None for chat-surface gates).",
     )
+    workspace_id: str | None = Field(
+        default=None,
+        description=(
+            "Workspace of the session the gate parked on (stamped at creation): the field the cross-workspace record list filters on "
+            "(access-control P2 T5). None for chat-surface gates and for rows from before it was recorded."
+        ),
+    )
     chat_id: str | None = Field(
         default=None,
         description="Chat the gate parked on (None for session/graph gates).",

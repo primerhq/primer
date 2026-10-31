@@ -125,7 +125,7 @@ class _Registry:
 
         return SimpleNamespace(phase="ready")
 
-    async def create(self, *, template, overrides=None, workspace_id=None, name=None, reply_binding=None):
+    async def create(self, *, template, overrides=None, workspace_id=None, name=None, reply_binding=None, access=None, person=None):
         row = Workspace(
             id=workspace_id,
             name=name,
@@ -134,13 +134,12 @@ class _Registry:
             created_at=NOW,
             phase="pending",
             runtime_meta=WorkspaceRuntimeMeta(url=f"ws://{workspace_id}", token="t"),
+            access=access or Access(),
         )
         await self.world.sp.get_storage(Workspace).create(row)
         return row
 
-    async def destroy(self, workspace_id: str, *, before_teardown=None) -> None:
-        if before_teardown is not None:
-            await before_teardown()
+    async def destroy(self, workspace_id: str) -> None:
         await self.world.sp.get_storage(Workspace).delete(workspace_id)
         self.workspaces.pop(workspace_id, None)
 
@@ -159,7 +158,7 @@ async def _world() -> tuple:
     await workspaces.create(_ws("ws-2", "private", Access(owners=["u2"], grants={"u3": "read"})))
     await workspaces.create(_ws("ws-pub", "public", Access(public=True)))
     await world.sp.set_default_workspace_id("ws-1")
-    await world.sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(id="tpl", provider_id="local-1", description="template"))
+    await world.sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(id="tpl", provider_id="local-1", description="template", access=Access(public=True)))
     await seed_session(world, sid="ses-a", initiated_by=U1)  # ws-1 (the default)
     await seed_session(world, sid="ses-b", workspace_id="ws-2", initiated_by=U2)
     await seed_session(world, sid="ses-c", workspace_id="ws-pub", initiated_by=U2)

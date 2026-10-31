@@ -1,4 +1,4 @@
-"""Migration 26: existing profiles and providers become public (access-control Phase 4, Task 3, spec 8)."""
+"""Migration 28: existing profiles and providers become public (access-control Phase 4, Task 3, spec 8)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from primer.model.provider import SqliteConfig
 from primer.model.providers.llm import LLMProvider
 from primer.model.workspace import WorkspaceProvider
 from primer.storage.migrations import MIGRATIONS
-from primer.storage.migrations.m026_infrastructure_public import M026InfrastructurePublic
+from primer.storage.migrations.m028_infrastructure_public import M028InfrastructurePublic
 from primer.storage.sqlite import SqliteStorageProvider
 
 
@@ -27,8 +27,8 @@ async def sp(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
         await provider.aclose()
 
 
-def test_registered_as_version_26():
-    assert MIGRATIONS[-1].version == 26 and isinstance(MIGRATIONS[-1], M026InfrastructurePublic)
+def test_registered_as_version_28():
+    assert MIGRATIONS[-1].version == 28 and isinstance(MIGRATIONS[-1], M028InfrastructurePublic)
 
 
 async def test_unset_rows_become_public_and_chosen_sharing_is_left(sp):
@@ -44,8 +44,8 @@ async def test_unset_rows_become_public_and_chosen_sharing_is_left(sp):
         WorkspaceProvider.model_validate({"id": "wp", "provider": "local", "config": {"kind": "local"}})
     )
 
-    await M026InfrastructurePublic().apply(sp)
-    await M026InfrastructurePublic().apply(sp)  # converges
+    await M028InfrastructurePublic().apply(sp)
+    await M028InfrastructurePublic().apply(sp)  # converges
 
     old = await profiles.get("p-old")
     assert old.access.public and "public" in old.access.members

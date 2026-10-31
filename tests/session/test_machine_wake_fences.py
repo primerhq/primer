@@ -350,8 +350,11 @@ async def test_the_cancel_of_a_tool_call_nodes_trigger_wait_names_the_subscripti
     await sessions.create(_graph_park("gs", parked_at=datetime.now(UTC) - timedelta(minutes=5), toolcalls=(wait,), agent_yields=(_ASK_N2,)))
     bus = _HoldBus()
 
-    # Called in-process, as the auth-disabled middleware would hand it over: the request carries the system principal, which the rank rule admits.
-    request = SimpleNamespace(state=SimpleNamespace(actor=PrincipalRef.system()))
+    # Called in-process, as the auth-disabled middleware would hand it over: the request carries the system principal, which clears the access gate.
+    request = SimpleNamespace(
+        state=SimpleNamespace(actor=PrincipalRef.system()),
+        app=SimpleNamespace(state=SimpleNamespace(storage_provider=sp, provider_registry=object())),
+    )
     await post_cancel_yielded_tool(
         request=request, session_id="gs", tool_call_id="uuid-1", body=CancelYieldedToolBody(reason="skip"), session_storage=sessions, event_bus=bus,
         call_storage=sp.get_storage(ExternalToolCall), user=None,

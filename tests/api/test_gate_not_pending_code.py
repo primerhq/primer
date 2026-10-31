@@ -17,10 +17,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import SecretStr
 
 import primer.toolset.system  # noqa: F401  (registers the ask_user resume hook the value-yield resume runs)
 from primer.graph.executor import GraphExecutor
+from primer.model.access import Access
 from primer.model.graph import Graph, GraphNodeMessage, GraphThread, _BeginNode, _EndNode, _StaticEdge, _ToolCallNode
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import Yielded, YieldToWorker, new_gate_id
 from primer.session.persistence import _CoalesceState, stash_graph_scoped_ids, translate_stream_event
@@ -31,6 +34,15 @@ from tests.worker.test_tool_call_node_resume_answers_its_call import _call_id, _
 
 WID = "ws-gnp"
 CODE = "gate_not_pending"
+
+
+async def _ws(sp: Any) -> None:
+    """The workspace row the URL-path lister gates on (P2 Tasks 2/3); the admin ``client`` clears the gate."""
+    await sp.get_storage(Workspace).create(
+        Workspace(id=WID, template_id="tpl-1", provider_id="local-1", created_at=datetime.now(UTC),
+                  runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                  access=Access()),
+    )
 
 
 def _code(answer: Any) -> str | None:
@@ -159,6 +171,7 @@ async def test_the_first_gate_of_a_two_phase_re_park_is_not_pending_and_says_so_
     graph, thread, ts, ms, yld = await _first_park(_graph(), _approval_gate(sid, ids, gates))
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(_graph_row(sid, yld))
+    await _ws(app.state.storage_provider)
     card = [i for i in (await client.get(f"/v1/workspaces/{WID}/sessions/{sid}/yields/pending")).json()["items"] if i["kind"] == "approval"][0]
     banner = (await client.get(f"/v1/sessions/{sid}/tool_approval/pending")).json()
     assert (card["tool_call_id"], card["gate_id"]) == (banner["tool_call_id"], banner["gate_id"]) == (ids[0], gates[0])
@@ -191,6 +204,7 @@ async def test_a_gate_whose_node_re_parked_on_the_tools_own_yield_is_not_pending
     graph, thread, ts, ms, yld = await _first_park(_graph(), _approval_gate(sid, ids, gates))
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(_graph_row(sid, yld))
+    await _ws(app.state.storage_provider)
     card = [i for i in (await client.get(f"/v1/workspaces/{WID}/sessions/{sid}/yields/pending")).json()["items"] if i["kind"] == "approval"][0]
     resumer = make_toolcall_executor(graph, thread, ts, ms, _sleeping(sid, ids))
     _written, repark = await _resume_full(yld.graph_checkpoint, resumer, {"decision": "approved"}, ids[0], event_key=f"tool_approval:{sid}:{ids[0]}")
@@ -215,6 +229,7 @@ async def test_only_a_gate_that_moved_on_carries_the_code_not_a_deleted_session_
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
     row = _graph_row(sid, yld)
     await storage.create(row)
+    await _ws(app.state.storage_provider)
     card = [i for i in (await client.get(f"/v1/workspaces/{WID}/sessions/{sid}/yields/pending")).json()["items"] if i["kind"] == "approval"][0]
 
     await _replace(storage, _running(row))

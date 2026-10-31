@@ -6,7 +6,7 @@ related: [agents/create-and-edit, start-here/roles-and-approvals, agents/invoke-
 ---
 ## What it is
 
-The agent's `tools` list is the model's whole tool surface: each entry is a scoped id, and the runtime exposes exactly the listed tools, never a whole toolset. Two things sit on top of the list: what the session composes onto the run (the workspace file tools, the per-turn console grant, external tools), and the rank rule, which decides when a run, a session or a person may drive another session at all.
+The agent's `tools` list is the model's whole tool surface: each entry is a scoped id, and the runtime exposes exactly the listed tools, never a whole toolset. Two things sit on top of the list: what the session composes onto the run (the workspace file tools, the per-turn console grant, external tools), and the drive rule, which decides when a run, a session or a person may drive another session at all.
 
 ## Concepts
 
@@ -39,20 +39,18 @@ A tool that yields (`system__ask_user`, `workspace_ext__sleep`, `workspace_ext__
 
 ### The rank rule
 
-A run, another session, a person's REST call, or an MCP call with no calling session may drive a session (steer it, restart it, message it, cancel it, resume it, pause it or Stop it) only when the actor ranks at least as high as the rank recorded on the target session. The ranks are system above admin above user above restricted, and one rule answers every such path:
+Driving a session (steering it, restarting it, messaging it, cancelling it, resuming it, pausing it or Stopping it) is decided by access, not rank: the person behind the actor (a run's turn person, a person's REST call, the token's user over MCP) needs `full` access to the session's workspace. `read` alone is refused (`forbidden` from a tool, 403 `access_denied` over REST), and a workspace the person holds no access to answers as an unknown id. Who started the target session does not matter, and a creator who loses access to the workspace loses it to their own sessions too. See [Sharing and access](start-here/sharing-and-access).
 
-- The target's rank is the one recorded on the session when it started (its creator's role). Every run in the session executes at most at that rank, capped by the creator's current role, so the comparison never lets a lower rank drive a higher run.
-- An unattributed session (a null creator) ranks as an ordinary user on both sides. It never ranks as the system.
-- An admin may act on a session recorded as `system` too: one created while auth was disabled, or one whose fire's owners are both system.
-- Own sessions are always reachable by a live request principal (a person's REST call, an MCP call with no calling session): it may act on a session its own account or token started, whatever ranks they carry, so a demoted admin is not locked out of their own sessions. A run does not get this exception: a message or steer from another session compares ranks only, because a trigger-capped run may carry an admin's identity at `user` rank while that admin's own sessions still run at admin.
-- A trigger's fire asks the same rule, so a fire and a peer message cannot disagree about who may drive whom.
+- The turn a drive starts runs as the person whose input it is, not as the session's creator, so it gets that person's tools and access. A resume after a pause or an approval keeps the parked turn's person.
+- Every turn still runs at its person's current role, capped by the role recorded for them. An unattributed session (a null creator) ranks as an ordinary user, never as the system.
+- Rank remains for trigger fires: a `session_append` or `parked_session` fire into a session whose creator ranks above the fire's owners fails with `steer_outranks_fire`.
 
 ## Gotchas
 
 - The grant is the whole surface. A tool the agent does not list cannot be called, even from a built-in toolset whose role the run clears: the refusal is a turn error, not a fed-back result.
 - Two refusals look alike and are not. A role-floor denial is an in-band error result the model recovers from; a call on an unregistered tool ends the turn with an unsupported-content error.
 - Listing `workspace__*` ids in `tools` does not grant the file tools where the session is not workspace-bound; they exist only under a workspace binding.
-- The rank comparison uses the rank recorded on the session, not the creator's role today. A session that started as admin still records admin, but its runs are capped by the creator's current role.
+- A session that started as admin still records admin, but its runs are capped by the current role of the person each turn runs as.
 - An unattributed session is user-rank, never system-rank: nothing about a null creator raises its rank.
 
 ## Related

@@ -9,7 +9,7 @@ related: [sessions/observe-a-session, graphs/run-a-graph, workspaces/create-and-
 `workspaces__create_workspace_session` starts a session: one agent or graph working inside a workspace on the brief you give it. The answer is the new session row; keep its `id`, every other session tool needs it.
 
 ## Concepts
-- **`workspace_id`** names the workspace the session works in. From a session outside the default workspace (prime) you may start sessions only in your own workspace; another one answers `not-found`, as an unknown id does.
+- **`workspace_id`** names the workspace the session works in. Starting a session needs `full` access to that workspace for the person behind your run, wherever your session runs; a workspace that person holds no access to answers `not-found`, as an unknown id does, and `read` alone answers `forbidden`.
 - **`binding`** says what runs: `{"kind": "agent", "agent_id": "..."}` or `{"kind": "graph", "graph_id": "..."}`. Either kind takes an optional `profile_id`, a model profile used for this session instead of the agent's own; in a graph session, by every agent node that names no `profile_id` of its own.
 - **The brief.** An agent gets `initial_instructions`, its first user message. A graph gets `graph_input`, any JSON; when the graph's begin node has an input schema, `graph_input` is required and is checked against it before the session is created.
 - **`auto_start`** (default `true`) arms the first turn at once, and the answer reads `status` `running`. With `false` the session is created `created` and stays inert: nothing runs it until a message reaches it (`workspaces__steer_workspace_session`) or a person starts it from the console.
@@ -65,7 +65,7 @@ From inside your own session, park your turn until the child ends. Use the `id` 
 - A graph that cannot run is refused with every problem listed in one message: no nodes, not exactly one begin node, no end node, an end node the begin node cannot reach, or a loop without `max_iterations`.
 - A `graph_input` that does not match the begin node's schema is refused with the path of the first mismatch.
 - A workspace this deployment refuses (a workspace on a local provider where the workers are remote) is refused with an error that says so; a workspace being deleted answers `not-found`.
-- A session tool from another workspace's session cannot see this session: keep the work in one workspace, or drive it from prime.
+- A session tool sees this session only for a person with access to its workspace (`read` to see it, `full` to drive it): share the workspace with whoever must drive it.
 
 ## Related
 [observe a session](sessions/observe-a-session), [control a session](sessions/control-a-session), [run a graph](graphs/run-a-graph), [create and delete a workspace](workspaces/create-and-delete), [waiting for events](triggers/waiting-for-events).

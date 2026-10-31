@@ -184,12 +184,12 @@ file: a template file source or a cloned repository decides what the
 agents are told just as a hand-written file does, so do not put a
 repository you do not trust at the workspace root.
 
-**Accepted risk: the shared prime workspace.** This is a deliberate
-choice, made by the user on 2026-10-23: the default workspace (prime)
-stays shared by all users, and a workspace stays the trust boundary.
-Any session or user that can write files in a workspace can change the
-instructions of every agent in it, including the shared prime
-workspace, where admins' operator sessions run. The instructions grant
+**Accepted risk: a shared workspace's instructions.** This is a
+deliberate choice, made by the user on 2026-10-23: a workspace stays
+the trust boundary. Any session or user that can write files in a
+workspace (full access) can change the instructions of every agent in
+it, including prime, the first admin's default workspace, whenever it
+is shared at `full`. The instructions grant
 nothing: they are text for the model to read, marked as written by the
 workspace's users, and they add no tool, grant or role. Admins should
 treat prime's `agents.md` as shared input, written by everyone who can
@@ -197,14 +197,19 @@ write files there, and not as a file only admins control.
 
 ## The prime workspace
 
-The default workspace, shown as `prime`, is the one every user meets
-first and the one the operator works from. All users share it.
+The install's original default workspace, shown as `prime`, is the
+first admin's default workspace and the one the operator works from.
+Every other full user gets a private default workspace of their own
+(`ws-<user id>`, created with an operator session at their first
+sign-in as a full user) and reaches prime only when an owner shares it.
 
-- **Find it by `is_default: true`**, never by its name or id: a fresh
-  install's id is `prime`, while an older install keeps the id it had
-  (usually `primer`) and shows `prime` as its name. See "Do not assume
-  the default workspace's id" under Gotchas.
-- **It cannot be deleted.** `workspaces::delete_workspace` returns
+- **`is_default: true` marks the caller's own default**, so it finds
+  prime only for the first admin. Never find a workspace by its name or
+  id: a fresh install's id is `prime`, while an older install keeps the
+  id it had (usually `primer`) and shows `prime` as its name. See "Do
+  not assume the default workspace's id" under Gotchas.
+- **It cannot be deleted**, and neither can any user's default
+  workspace. `workspaces::delete_workspace` returns
   `type=forbidden` and `DELETE /v1/workspaces/{id}` answers 403
   `reserved_workspace`. It can be renamed.
 - **It ships an `agents.md`.** At boot the platform writes its own
@@ -228,8 +233,9 @@ first and the one the operator works from. All users share it.
   in place, and is not read while `agents.md` exists: `shadows` is
   `"AGENTS.md"` then, else null. A symlinked `agents.md` is
   written where it points: with `agents.md` linked to `AGENTS.md`, the
-  reset rewrites `AGENTS.md`. From a session outside
-  prime the tool returns `type=forbidden` and writes nothing; with no
+  reset rewrites `AGENTS.md`. Besides the admin role, the caller's
+  person needs `full` on prime (from any session or none); without it
+  the tool returns `type=forbidden` and writes nothing; with no
   default workspace yet it returns `type=not-found` (the route answers
   404). When the deployment refuses the default workspace (a local
   workspace where the topology forbids one) it returns `type=conflict`
@@ -292,24 +298,28 @@ file I/O tools, and (cross-referenced in [sessions](sessions.md)) the
 session tools. Every tool takes an explicit `workspace_id` because
 it's called from a context with no implicit session.
 
-From a session outside the default workspace (prime), every one of
-these tools that names a workspace reaches only your own workspace:
-`get_workspace`, `delete_workspace`, the file tools
-(`read_workspace_file`, `write_workspace_file`, `list_workspace_files`,
-`get_workspace_file_info`, `delete_workspace_file`),
-`get_workspace_log`, `workspace_tap` and the session tools. Another
-workspace (prime included) answers `type=not-found` exactly as a
-workspace that does not exist, and `list_workspaces` lists only your
-own workspace. A session in prime, and a call with no calling session
-(MCP), reach every workspace. A session outside prime cannot call
-`create_workspace` at all: it answers `type=forbidden` (create
-workspaces from a session in prime or from the console). The same reach
-holds outside this toolset for `system::set_reply_binding`,
-`system::clear_reply_binding`, `system::create_channel_binding` and the
-trigger subscription tools (see
+Workspaces are owned: the creator owns one, it is private until an
+owner shares it (`read` or `full`) or makes it public (read for every
+full user), and each full user has a private default workspace of
+their own. Every one of these tools that names a workspace acts with
+the access of your run's person (the person whose input started the
+turn; over MCP, the token's user), wherever your session runs; being
+in prime grants nothing extra. `get_workspace`, `list_workspaces`,
+`read_workspace_file`, `list_workspace_files`,
+`get_workspace_file_info`, `get_workspace_log`, `workspace_tap` and the
+session reads need `read`; `write_workspace_file`,
+`delete_workspace_file` and the session controls need `full`;
+`delete_workspace` needs `owner`. A workspace your person holds no
+access to (prime included) answers `type=not-found` exactly as a
+workspace that does not exist, too low a level answers
+`type=forbidden`, and `list_workspaces` lists only the workspaces your
+person may read. Any full user may call `create_workspace` and owns
+what it makes. The same rule holds outside this toolset for
+`system::set_reply_binding`, `system::clear_reply_binding` (both
+`full`), `system::create_channel_binding` and the trigger subscription
+tools (the owner needs `full` on the target, see
 [triggers-and-subscriptions](triggers-and-subscriptions.md)). A graph
-session's tools reach what its workspace reaches, with or without a
-holder slot.
+session's tools act with its turn's person, like any other run.
 
 ### Workspace lifecycle
 
@@ -336,29 +346,25 @@ holder slot.
   runtime's own token. Either mistake answers
   `type=validation-error` naming the variable (never its value), as
   does a template whose own `env` or CPU or memory breaks the same
-  rules. Returns the stored row (the REST route answers 201). From a
-  session outside the default workspace (prime) it is refused
-  (`type=forbidden`) before anything is looked up, so the answer
-  confirms neither the template nor the id.
+  rules. Returns the stored row (the REST route answers 201). It needs
+  `read` on the template, and the caller becomes the new workspace's
+  owner (private until shared).
 - `workspaces::get_workspace` - fetch by id.
 - `workspaces::list_workspaces` - paginated.
 - `workspaces::delete_workspace` - destroys the workspace: its
   files and every session's history are deleted with it and its open
   sessions end `workspace_lost`. Returns once the teardown has been
-  requested (the REST route answers 204). The default workspace
-  (prime) cannot be deleted: the tool returns `type=forbidden` and the
-  REST route answers 403 with `extensions.error` `reserved_workspace`;
-  nothing is torn down and its sessions keep running. Deleting a
-  workspace ends every open session in it, so it follows the rank rule
-  of `cancel_workspace_session` for each of them: while one runs at a
-  higher rank than you (an admin's session, when you are a user), the
-  tool answers `type=forbidden` (from a session, in the words of a
-  cancel refused from a session) and the REST route 403
-  `forbidden_rank`, and nothing is torn down. While a delete runs, a
-  new session in that workspace is refused (`type=not-found`). The
-  `list_workspaces` and `get_workspace` rows, like
-  `GET /v1/workspaces` and `GET /v1/workspaces/{id}`, carry
-  `is_default: true` on that one workspace.
+  requested (the REST route answers 204). It needs `owner` on the
+  workspace: a lower level answers `type=forbidden` (REST 403
+  `access_denied`), and nothing is torn down. The default workspace
+  (prime) and every user's default workspace cannot be deleted: the
+  tool returns `type=forbidden` and the REST route answers 403 with
+  `extensions.error` `reserved_workspace`; nothing is torn down and
+  its sessions keep running. While a delete runs, a new session in
+  that workspace is refused (`type=not-found`). The `list_workspaces`
+  and `get_workspace` rows, like `GET /v1/workspaces` and
+  `GET /v1/workspaces/{id}`, carry `is_default: true` on the caller's
+  own default workspace only.
 
 ### Providers and templates
 
@@ -703,9 +709,9 @@ session is outside the group, so it is not killed.
   Primer puts its contents in the system prompt of every agent that
   runs there, so a session that rewrites it changes what the other
   agents are told, whoever started them. The workspace is the trust
-  boundary, and the shared prime workspace is the accepted exception
-  to "separate workspaces for separate users": admins should treat
-  prime's `agents.md` as shared input. See "Workspace instructions
+  boundary: everyone a workspace is shared with at `full` can write
+  its `agents.md`, so treat the `agents.md` of a shared workspace
+  (prime included, when it is shared) as shared input. See "Workspace instructions
   (agents.md)".
 - **Multi-session shared filesystem is collaborative, not
   isolated.** Two simultaneous sessions on the same workspace
@@ -719,11 +725,12 @@ session is outside the group, so it is not killed.
   is shown as `prime`, but its id is `prime` only on an install that
   was set up after the default was recorded; an older install keeps
   the id it always had (usually `primer`) and carries `prime` as its
-  name. Find it by the one row with `is_default: true`, in
+  name. Prime is the first admin's default workspace; every other
+  full user has their own (`ws-<user id>`). `is_default: true`, in
   `list_workspaces` (or `get_workspace`) as in `GET /v1/workspaces`,
-  never by its name: it can be renamed, and any workspace may be
-  called `prime`. (From a session outside prime `list_workspaces`
-  lists only your own workspace, so prime is not among its rows.)
+  marks the caller's own default. Find it by that flag, never by its
+  name: it can be renamed, and any workspace may be called `prime`. (A person who
+  holds no access to prime does not see it among the rows at all.)
 - **Workspace delete is synchronous.** `DELETE /v1/workspaces/{id}`
   (and `delete_workspace`) answers 204 only after the backend
   teardown has been requested and the row is gone. On k8s that

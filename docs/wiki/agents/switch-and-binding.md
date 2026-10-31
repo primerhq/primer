@@ -18,7 +18,7 @@ A session is bound to what runs its turns: an agent or a graph, under a model pr
 - **The two tools.** `switch_to_agent` takes `{agent_id, prompt}` and is the agent-facing name: it queues a switch to that agent and carries the prompt as the handoff reason. `switch_binding` takes `{kind, agent_id | graph_id, profile_id?, reason?}`: it is the only way to hand a session to a graph, and the only way to carry a model profile across the switch. It is the only one of the two that names a graph.
 - **A switch is not a message.** The handoff prompt is stored as the reason for the transcript; it is not delivered to the new agent as a new input. The new agent starts from the next input, with the inherited history as its brief.
 - **Sessions only.** The tools act on the session the call runs in. With no calling session (an MCP call with no session context) the call is a bad-request: the switch is only available in workspace sessions.
-- **The role floor still applies.** The tools are user-tier, so the run's principal must clear the floor, as with any tool call. And a person steering a session from REST is still bound by the rank rule. See [Tool grants and the rank rule](agents/tools-and-grants).
+- **The role floor still applies.** The tools are user-tier, so the run's principal must clear the floor, as with any tool call. And a person steering a session from REST still needs `full` access to its workspace. See [Tool grants and the rank rule](agents/tools-and-grants).
 
 ## How to
 
