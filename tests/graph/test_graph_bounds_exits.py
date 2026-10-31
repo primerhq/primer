@@ -1,0 +1,441 @@
+"""Part 2 Task 49: graph bounds and small exits (AG-M11, AG-M24, AG-L11a-e; lead rulings D7 and D15).
+
+* AG-M11: a subgraph node runs its child inside ``invocation_depth_guard``; a graph that references itself fails at the guard's depth.
+* AG-M24 (D7): a fan-out wider than ``MAX_FANOUT_INSTANCES`` (``PRIMER_MAX_FANOUT_INSTANCES``, default 1000) fails ``fanout_source_invalid``,
+  and a wide superstep never has more node tasks alive than ``max_parallel_nodes``.
+* AG-L11a: a node the resume settles gets its per-node completed / failed turn-log record.
+* AG-L11b: closing ``WorkspaceGraphExecutor.invoke`` closes the base generator at once (the node tasks are cancelled before ``aclose`` returns).
+* AG-L11c: a run closed or cancelled mid-flight is saved ENDED/cancelled, not left RUNNING.
+* AG-L11d: an agent or subgraph node whose input template fails ends the run with ``ended_detail="template_error"``.
+* AG-L11e (D15): a map over an empty list gives its target an empty aggregator and walks the target's out-edges.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+from pathlib import Path
+
+import pytest
+
+from primer.agent.invoke import MAX_INVOCATION_DEPTH
+from primer.graph import _node_refs
+from primer.graph.base import _GraphEndOutputEvent, _GraphErrorEvent
+from primer.graph.executor import GraphExecutor
+from primer.graph.workspace_executor import WorkspaceGraphExecutor
+from primer.model.chat import Done, TextDelta, ToolResultPart
+from primer.model.graph import (
+    FanOutSpec,
+    Graph,
+    GraphNodeMessage,
+    GraphThread,
+    _AgentNodeRef,
+    _BeginNode,
+    _EndNode,
+    _FanInNode,
+    _FanOutNode,
+    _GraphNodeRef,
+    _StaticEdge,
+    _ToolCallNode,
+)
+from primer.model.workspace_session import SessionStatus
+from primer.model.yield_ import Yielded, YieldToWorker
+from primer.observability.turn_log_writer import TurnLogWriter
+from tests.graph.test_max_iterations import _FakeLLM, _agent, _model
+from tests.graph.test_toolcall_dispatch import _InMemoryStorage
+from tests.graph.test_workspace_executor import _RecordingHolder, _make_state_repo
+
+OBJ = {"type": "object"}
+
+
+async def _no_agent(agent_id: str):
+    raise KeyError(agent_id)
+
+
+async def _no_llm(agent):
+    raise NotImplementedError
+
+
+def _executor(graph, threads, msgs, tid, *, dispatcher=None, max_parallel_nodes=16, graph_resolver=None, llm=None):
+    async def agent_resolver(agent_id):
+        return _agent(agent_id)
+
+    async def llm_resolver(agent):
+        return (llm, _model())
+
+    return GraphExecutor(
+        graph=graph,
+        agent_resolver=agent_resolver if llm is not None else _no_agent,  # type: ignore[arg-type]
+        llm_resolver=llm_resolver if llm is not None else _no_llm,  # type: ignore[arg-type]
+        thread_storage=threads, message_storage=msgs, graph_thread_id=tid,  # type: ignore[arg-type]
+        tool_dispatcher=dispatcher,  # type: ignore[arg-type]
+        max_parallel_nodes=max_parallel_nodes, graph_resolver=graph_resolver,
+    )
+
+
+async def _run(graph, **kw):
+    threads, msgs = _InMemoryStorage(GraphThread), _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(graph=graph, thread_storage=threads)  # type: ignore[arg-type]
+    ex = _executor(graph, threads, msgs, thread.id, **kw)
+    events = [e async for e in ex.invoke([])]
+    return ex, events, await threads.get(thread.id)
+
+
+async def _echo(node, arguments, bypass_approval=False):
+    return ToolResultPart(id="x", output=node.id)
+
+
+# ---- AG-M11: subgraph recursion depth --------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_self_referencing_subgraph_fails_at_the_depth_guard(tmp_path: Path):
+    graph = Graph(
+        id="g-self", description="begin -> sub(g-self) -> end",
+        nodes=[_BeginNode(id="begin"), _GraphNodeRef(id="sub", graph_id="g-self"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="sub"), _StaticEdge(from_node="sub", to_node="end")],
+    )
+    resolved = {"n": 0}
+
+    async def graph_resolver(gid: str) -> Graph:
+        resolved["n"] += 1
+        return graph
+
+    repo = await _make_state_repo(tmp_path)
+    ex = WorkspaceGraphExecutor(
+        graph=graph, agent_resolver=_no_agent, llm_resolver=_no_llm,  # type: ignore[arg-type]
+        state_repo=repo, graph_session_id="gsid", graph_resolver=graph_resolver,
+    )
+    [_ async for _ in ex.invoke([])]
+
+    assert resolved["n"] == MAX_INVOCATION_DEPTH
+    st = await ex.load_state()
+    assert (st["status"], st["ended_reason"]) == ("ended", "failed")
+    errors = [
+        json.loads(p.read_text())["node_states"]["sub"].get("error") or ""
+        for p in (tmp_path / ".state").rglob("state.json")
+    ]
+    assert any(f"would exceed max {MAX_INVOCATION_DEPTH}" in e for e in errors), errors
+
+
+# ---- AG-M24 (D7): fan-out width cap and tasks alive -------------------------------------------------------------------
+
+
+def _broadcast_graph(count: int) -> Graph:
+    return Graph(
+        id="g-bc", description="begin -> t0 -> broadcast -> t",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="t0", tool_id="x__t0", arguments={}),
+            _FanOutNode(id="fo", specs=[FanOutSpec(kind="broadcast", target_node_id="t", count=count)]),
+            _ToolCallNode(id="t", tool_id="x__t", arguments={}),
+        ],
+        edges=[_StaticEdge(from_node="begin", to_node="t0"), _StaticEdge(from_node="t0", to_node="fo")],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_over_the_default_cap_fails_fanout_source_invalid():
+    assert _node_refs.MAX_FANOUT_INSTANCES == 1000
+    calls = []
+
+    async def dispatcher(node, arguments):
+        calls.append(node.id)
+        return ToolResultPart(id="x", output="ok")
+
+    _, events, thread = await _run(_broadcast_graph(1001), dispatcher=dispatcher)
+
+    assert (thread.ended_reason, thread.ended_detail) == ("failed", "fanout_source_invalid")
+    assert calls == ["t0"], "no copy runs"
+    assert [e.code for e in events if isinstance(e, _GraphErrorEvent)] == ["fanout_source_invalid"]
+
+
+@pytest.mark.asyncio
+async def test_the_cap_is_configurable_and_bounds_a_map_too(monkeypatch):
+    monkeypatch.setattr(_node_refs, "MAX_FANOUT_INSTANCES", 3)
+    graph = Graph(
+        id="g-map-cap", description="plan -> map",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="plan", tool_id="x__plan", arguments={}, output_schema=OBJ),
+            _FanOutNode(id="fo", specs=[FanOutSpec(kind="map", target_node_id="t", source_node_id="plan", source_path="items")]),
+            _ToolCallNode(id="t", tool_id="x__t", arguments={}),
+        ],
+        edges=[_StaticEdge(from_node="begin", to_node="plan"), _StaticEdge(from_node="plan", to_node="fo")],
+    )
+
+    async def dispatcher(node, arguments):
+        return ToolResultPart(id="x", output=json.dumps({"items": [1, 2, 3, 4]}))
+
+    _, _, thread = await _run(graph, dispatcher=dispatcher)
+    assert (thread.ended_reason, thread.ended_detail) == ("failed", "fanout_source_invalid")
+
+    monkeypatch.setattr(_node_refs, "MAX_FANOUT_INSTANCES", 4)
+    _, _, thread = await _run(graph, dispatcher=dispatcher)
+    assert thread.ended_reason == "completed", "a fan-out AT the cap runs"
+
+
+@pytest.mark.asyncio
+async def test_a_wide_superstep_never_has_more_node_tasks_alive_than_the_bound():
+    alive: dict[str, list[int]] = {"t0": [], "t": []}
+
+    async def dispatcher(node, arguments):
+        alive[node.id].append(len(asyncio.all_tasks()))
+        await asyncio.sleep(0)
+        return ToolResultPart(id="x", output="ok")
+
+    _, _, thread = await _run(_broadcast_graph(50), dispatcher=dispatcher, max_parallel_nodes=2)
+
+    assert thread.ended_reason == "completed"
+    assert len(alive["t"]) == 50
+    baseline = alive["t0"][0]          # tasks alive while one node runs (the test's own and that node's)
+    # at most max_parallel_nodes node tasks, plus the one task that starts them, in place of the single node
+    assert max(alive["t"]) - baseline <= 2, (baseline, max(alive["t"]))
+
+
+# ---- AG-L11a: turn-log records of resumed nodes ----------------------------------------------------------------------
+
+
+def _gated_graph() -> Graph:
+    return Graph(
+        id="g-gated", description="begin -> t (gated) -> end",
+        nodes=[_BeginNode(id="begin"), _ToolCallNode(id="t", tool_id="x__t", arguments={}), _EndNode(id="end", output_template="ok")],
+        edges=[_StaticEdge(from_node="begin", to_node="t"), _StaticEdge(from_node="t", to_node="end")],
+    )
+
+
+class _CaptureWriter(TurnLogWriter):
+    """Shared across the parked and the resumed executor (a storage writer's seq restarts per process, a deferred concern of its own)."""
+
+    def __init__(self, sink: list, node_id: str) -> None:
+        self._sink, self._node_id = sink, node_id
+
+    async def append(self, event) -> int:
+        self._sink.append((self._node_id, event))
+        return len(self._sink)
+
+    async def aclose(self) -> None:
+        pass
+
+
+async def _park_and_resume(resume_dispatcher):
+    graph = _gated_graph()
+    threads, msgs = _InMemoryStorage(GraphThread), _InMemoryStorage(GraphNodeMessage)
+    sink: list = []
+    thread = await GraphExecutor.open_thread(graph=graph, thread_storage=threads)  # type: ignore[arg-type]
+
+    async def gate(node, arguments):
+        raise YieldToWorker(Yielded(tool_name="_approval", event_key="tool_approval:sid:tc-1"), tool_call_id="tc-1")
+
+    ex1 = _executor(graph, threads, msgs, thread.id, dispatcher=gate)
+    ex1._turn_log_factory = lambda nid: _CaptureWriter(sink, nid)
+    with pytest.raises(YieldToWorker) as parked:
+        async for _ in ex1.invoke([]):
+            pass
+    ex2 = _executor(graph, threads, msgs, thread.id, dispatcher=resume_dispatcher)
+    ex2._turn_log_factory = lambda nid: _CaptureWriter(sink, nid)
+    [_ async for _ in ex2.resume_from_checkpoint(parked.value.graph_checkpoint)]
+    return [ev for nid, ev in sink if nid == "t"]
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_node_gets_its_completed_record():
+    events = await _park_and_resume(_echo)
+
+    assert [type(e).__name__ for e in events] == ["TurnLogStarted", "TurnLogCompleted"]
+    assert events[1].node_id == "t"
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_node_that_fails_gets_its_failed_record():
+    async def boom(node, arguments, bypass_approval=False):
+        raise RuntimeError("tool broke")
+
+    events = await _park_and_resume(boom)
+
+    assert [type(e).__name__ for e in events] == ["TurnLogStarted", "TurnLogFailed"]
+    assert "tool broke" in (events[1].error.detail or "")
+    assert events[1].error.extensions == {"ended_detail": "tool_execution_failed"}
+
+
+# ---- AG-L11b / AG-L11c: closing and cancelling a run -----------------------------------------------------------------
+
+
+class _BlockingLLM:
+    """Streams one delta, then waits until cancelled; records the cancellation."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    async def list_models(self):
+        return ["m"]
+
+    def stream(self, **kwargs):
+        return self._impl()
+
+    async def _impl(self):
+        yield TextDelta(text="working", index=0)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+
+def _agent_graph() -> Graph:
+    return Graph(
+        id="g-block", description="begin -> a (blocks) -> end",
+        nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="a", agent_id="x"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="a"), _StaticEdge(from_node="a", to_node="end")],
+    )
+
+
+async def _close_mid_run(tmp_path: Path, **holder):
+    """Start a workspace run whose agent node blocks, take events up to the node's first delta, then close the stream."""
+    llm = _BlockingLLM()
+
+    async def agent_resolver(agent_id):
+        return _agent(agent_id)
+
+    async def llm_resolver(agent):
+        return (llm, _model())
+
+    repo = await _make_state_repo(tmp_path)
+    ex = WorkspaceGraphExecutor(
+        graph=_agent_graph(), agent_resolver=agent_resolver, llm_resolver=llm_resolver,  # type: ignore[arg-type]
+        state_repo=repo, graph_session_id="gsid-close", **holder,
+    )
+    gen = ex.invoke([])
+
+    async def first_delta():
+        async for ev in gen:
+            if getattr(getattr(ev, "extended", None), "inner_type", None) == "text_delta":
+                return
+
+    await asyncio.wait_for(first_delta(), timeout=10)
+    await gen.aclose()
+    return ex, llm
+
+
+@pytest.mark.asyncio
+async def test_closing_the_workspace_invoke_closes_the_run_at_once(tmp_path: Path):
+    _, llm = await _close_mid_run(tmp_path)
+
+    assert llm.cancelled, "the node task was not cancelled by aclose"
+
+
+@pytest.mark.asyncio
+async def test_a_closed_run_is_saved_ended_cancelled(tmp_path: Path):
+    ex, _ = await _close_mid_run(tmp_path)
+
+    st = await ex.load_state()
+    assert (st["status"], st["ended_reason"]) == ("ended", "cancelled")
+
+
+@pytest.mark.asyncio
+async def test_a_closed_run_leaves_the_session_holder_to_the_sessions_cancel_exit(tmp_path: Path):
+    holder = _RecordingHolder()
+    await _close_mid_run(tmp_path, workspace_session=holder, owns_session_lifecycle=True)
+
+    assert holder.status_calls == [], "a Stop rests the session WAITING; the graph's cancelled save must not end its holder"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_is_saved_ended_cancelled():
+    started = asyncio.Event()
+
+    async def dispatcher(node, arguments):
+        started.set()
+        await asyncio.Event().wait()
+
+    graph = _gated_graph()
+    threads, msgs = _InMemoryStorage(GraphThread), _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(graph=graph, thread_storage=threads)  # type: ignore[arg-type]
+    ex = _executor(graph, threads, msgs, thread.id, dispatcher=dispatcher)
+
+    async def consume():
+        async for _ in ex.invoke([]):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(started.wait(), timeout=10)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    t = await threads.get(thread.id)
+    assert (t.status, t.ended_reason) == (SessionStatus.ENDED, "cancelled")
+
+
+# ---- AG-L11d: input-template errors ----------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_agent_input_template_error_carries_template_error():
+    graph = Graph(
+        id="g-tpl", description="begin -> a with a broken template",
+        nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="a", agent_id="x", input_template="{{ nodes.missing.text }}"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="a"), _StaticEdge(from_node="a", to_node="end")],
+    )
+    llm = _FakeLLM(scripts=[[TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop")]])
+
+    _, events, thread = await _run(graph, llm=llm)
+
+    assert (thread.ended_reason, thread.ended_detail) == ("failed", "template_error")
+    assert [(e.code, e.node_id) for e in events if isinstance(e, _GraphErrorEvent)] == [("template_error", "a")]
+    assert llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_subgraph_input_template_error_carries_template_error():
+    child = Graph(id="g-child", description="begin -> end", nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
+                  edges=[_StaticEdge(from_node="begin", to_node="end")])
+    graph = Graph(
+        id="g-parent", description="begin -> sub with a broken template",
+        nodes=[_BeginNode(id="begin"), _GraphNodeRef(id="sub", graph_id="g-child", input_template="{{ nodes.missing.text }}"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="sub"), _StaticEdge(from_node="sub", to_node="end")],
+    )
+
+    async def graph_resolver(gid):
+        return child
+
+    _, _, thread = await _run(graph, graph_resolver=graph_resolver)
+
+    assert (thread.ended_reason, thread.ended_detail) == ("failed", "template_error")
+
+
+# ---- AG-L11e (D15): a map over an empty list --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_map_over_an_empty_list_walks_on_with_an_empty_aggregator():
+    graph = Graph(
+        id="g-empty-map", description="plan -> map -> t -> fan-in -> end",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="plan", tool_id="x__plan", arguments={}, output_schema=OBJ),
+            _FanOutNode(id="fo", specs=[FanOutSpec(kind="map", target_node_id="t", source_node_id="plan", source_path="items")]),
+            _ToolCallNode(id="t", tool_id="x__t", arguments={}),
+            _FanInNode(id="fi", aggregate_template="{{ nodes.t | length }} items"),
+            _EndNode(id="end", output_template="{{ nodes.fi.text }}"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="plan"),
+            _StaticEdge(from_node="plan", to_node="fo"),
+            _StaticEdge(from_node="t", to_node="fi"),
+            _StaticEdge(from_node="fi", to_node="end"),
+        ],
+    )
+    calls = []
+
+    async def dispatcher(node, arguments):
+        calls.append(node.id)
+        return ToolResultPart(id="p", output=json.dumps({"items": []}))
+
+    ex, events, thread = await _run(graph, dispatcher=dispatcher)
+
+    assert [e.text for e in events if isinstance(e, _GraphEndOutputEvent)] == ["0 items"]
+    assert thread.ended_reason == "completed"
+    assert calls == ["plan"], "the target itself never runs"
+    assert ex._context.nodes["t"] == []

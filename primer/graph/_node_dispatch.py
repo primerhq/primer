@@ -33,6 +33,7 @@ import json
 import uuid
 from typing import Any
 
+from primer.agent.invoke import InvocationDepthExceeded, invocation_depth_guard
 from primer.agent.parked_round import ParkedRound
 from primer.graph._node_identity import (
     current_graph_node_id,
@@ -63,7 +64,7 @@ from primer.graph._node_refs import (
     await_tool_dispatch_barrier,
 )
 from primer.common.bounded_template import off_loop
-from primer.graph.template import render_input_template
+from primer.graph.template import InputTemplateError, render_input_template
 from primer.model.chat import (
     ExtendedEvent,
     Message,
@@ -176,7 +177,14 @@ class _NodeDispatchMixin:
         ``fanout_index`` and ``fanout_item``.
         """
         instance = self._fanout_instances.get(node_id)
-        node = self._nodes_by_id[instance.target_node_id if instance is not None else node_id]
+        try:
+            node = self._resolve_node_def(node_id)
+        except KeyError:
+            # AG-M7: the graph was edited while parked and no longer has this ready node. Fail it: the superstep drain waits for a _NodeDone per node.
+            await queue.put(_NodeDone(
+                node_id=node_id, output=None, error=f"node {node_id!r} no longer exists in the graph", ended_detail="topology_drift",
+            ))
+            return
         extra_scope = _fanout_scope(instance)
         try:
             if isinstance(node, _FanOutNode):
@@ -235,6 +243,12 @@ class _NodeDispatchMixin:
                     self._fanout_target_expected_count[tgt] = max(
                         self._fanout_target_expected_count.get(tgt, 0), n
                     )
+                for spec in node.specs:
+                    if spec.kind == "map" and spec.target_node_id not in counts:
+                        # D15 (AG-L11e): a map over an empty list gives its target an empty aggregator and an expected count of 0;
+                        # _compute_next_ready then walks the target's out-edges, so a fan-in after it runs on the empty list.
+                        context.nodes[spec.target_node_id] = []
+                        self._fanout_target_expected_count[spec.target_node_id] = 0
                 # Spec B §2.5 — populate per-instance spec lookup + per-(FanOut,
                 # target) drain state so the outer loop's result-application
                 # path can branch on ``on_failure``.
@@ -460,9 +474,14 @@ class _NodeDispatchMixin:
                 # otherwise collide on) - see primer.graph._node_identity.
                 token = set_current_graph_node_id(node_id)
                 try:
-                    output = await self._stream_subgraph_node(
-                        node, context, queue, extra_scope=extra_scope
-                    )
+                    # AG-M11: the child run counts as a nested invocation, as the invoke_graph tool's does, so a graph that reaches
+                    # itself fails at the guard's depth instead of recursing until a path is too long.
+                    with invocation_depth_guard():
+                        output = await self._stream_subgraph_node(
+                            node, context, queue, extra_scope=extra_scope
+                        )
+                except InvocationDepthExceeded as exc:
+                    raise _SubgraphFailed(f"subgraph {node.graph_id!r} (node {node.id!r}) failed: {exc}") from exc
                 finally:
                     reset_current_graph_node_id(token)
             elif isinstance(node, _AgentNodeRef):
@@ -582,7 +601,7 @@ class _NodeDispatchMixin:
                     error=exc,
                     ended_detail=(
                         exc.ended_detail_code
-                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached)) else None
+                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached, InputTemplateError)) else None
                     ),
                 )
             )
