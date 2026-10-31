@@ -363,6 +363,60 @@ async def test_human_input_into_a_parked_session_follows_the_full_gate(world, ap
     assert (await sp.get_storage(WorkspaceSession).get(SID)).parked_status == "resumable"
 
 
+def _carol_ref(c: SimpleNamespace) -> PrincipalRef:
+    return PrincipalRef(type="user", id=c.carol_id, display="carol", role="user", source="local", user_id=c.carol_id)
+
+
+async def test_a_peers_ask_user_answer_runs_the_resumed_turn_as_the_peer(world, app, client, cast):
+    """Final access review F6 (lead ruling): an answer is model input, like a steer, so a full peer's answer re-attributes the resumed turn to
+    the peer (``turn_person``), and the resume-time workspace check then judges them, never the owner's identity; the owner's own answer keeps it."""
+    from primer.worker.executor_builders import session_run_principal
+
+    sp = app.state.storage_provider
+    carol = _carol_ref(cast)
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.carol_id], grants={cast.dave_id: "full"}))
+    await sp.get_storage(WorkspaceSession).create(
+        _parked_row(SID, by=carol, tool="ask_user", metadata={"prompt": "which file?"}).model_copy(update={"turn_person": carol})
+    )
+    await sp.get_storage(WorkspaceSession).create(
+        _parked_row("ses-own", by=carol, tool="ask_user", metadata={"prompt": "which file?"}).model_copy(update={"turn_person": carol})
+    )
+
+    r = await cast.dave.post(f"/v1/sessions/{SID}/ask_user/respond", json={"tool_call_id": HUMAN_TC, "response": "read hr-notes"})
+    own = await cast.carol.post("/v1/sessions/ses-own/ask_user/respond", json={"tool_call_id": HUMAN_TC, "response": "a.txt"})
+
+    assert r.status_code == 202 and own.status_code == 202, (r.text, own.text)
+    after = await sp.get_storage(WorkspaceSession).get(SID)
+    assert after.parked_status == "resumable" and session_run_principal(after).id == cast.dave_id
+    assert session_run_principal(await sp.get_storage(WorkspaceSession).get("ses-own")).id == cast.carol_id
+
+
+async def test_a_peers_external_tool_results_run_the_resumed_turn_as_the_peer(world, app, client, cast):
+    """F6, the other door of a parked turn: ``tool_results`` on the steer route re-attribute the resumed turn to the submitter, as a steer does."""
+    from primer.model.external_tool import ExternalToolCall
+    from primer.worker.executor_builders import session_run_principal
+
+    sp = app.state.storage_provider
+    carol = _carol_ref(cast)
+    await sp.get_storage(Workspace).create(_workspace(owners=[cast.carol_id], grants={cast.dave_id: "full"}))
+    key = f"external_tool:{SID}:tc-1"
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id=SID, workspace_id=WS, binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.RUNNING, turn_no=1,
+        created_at=NOW, initiated_by=carol, turn_person=carol, parked_status="parked", parked_at=NOW, parked_event_key=key,
+        parked_state={"tool_call_id": "tc-1", "yielded": {"tool_name": "_external", "event_key": key, "resume_metadata": {
+            "original_call": {"id": "tc-1", "name": "lookup", "arguments": {}}, "external_call_row_id": "etool-1"}}},
+    ))
+    await sp.get_storage(ExternalToolCall).create(ExternalToolCall(
+        id="etool-1", session_id=SID, tool_call_id="tc-1", tool_name="lookup", arguments={}, created_at=NOW,
+    ))
+
+    r = await cast.dave.post(f"/v1/workspaces/{WS}/sessions/{SID}/steer", json={"tool_results": [{"tool_call_id": "tc-1", "result": "x"}]})
+
+    assert r.status_code == 200, r.text
+    after = await sp.get_storage(WorkspaceSession).get(SID)
+    assert after.parked_status == "resumable" and session_run_principal(after).id == cast.dave_id
+
+
 async def test_an_approval_decision_needs_full_and_keeps_the_approver_spec(world, app, client, cast):
     """The access gate replaces the rank floor under the gate's approver spec: full lets the spec decide, the spec still refuses the wrong user."""
     sp = app.state.storage_provider

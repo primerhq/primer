@@ -2370,6 +2370,7 @@ async def steer_session(
             engine=engine,
             event_bus=event_bus,
             storage_provider=storage_provider,
+            by=by,  # results are model input: the resumed turn runs as their sender, as a steer's (final access review F6)
         )
         row = await sessions.get(session_id)  # refreshed park state
 

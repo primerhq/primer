@@ -227,10 +227,11 @@ grant therefore stops the next turn and every resume, however it was queued or p
 | `message_session`, steer and restart tools from a session | the sending run's person |
 | Trigger `session_append` fire | the fire's owner (`principal_for_fire`); a fire with no person leaves the session's person |
 | Channel-thread reply | the session's creator (`initiated_by`): channel senders are not primer users |
-| Approval or `ask_user` answer, any park resume | unchanged: the parked turn keeps its person (`by=None`) |
+| `ask_user` answer (`POST /v1/sessions/{id}/ask_user/respond`), external `tool_results` (on the steer route) | the sender: the park flip writes `turn_person` in its own guarded write (`by` of `durably_mark_session_resumable`), so the resume-time workspace check judges the sender |
+| Approval decision, yield cancel, any other park resume | unchanged: the parked turn keeps its person (`by=None`) |
 
-Why: a full-access peer who steers someone else's session must never borrow the creator's private toolsets, collections
-or OAuth tokens. The trigger fire rank floor (`refuse_steer_above_fire`, `may_drive`) is the one rank rule left on a
+Why: a full-access peer who steers someone else's session, answers its `ask_user` or feeds it tool results must never
+borrow the creator's private toolsets, collections or OAuth tokens: each of those is model input. The trigger fire rank floor (`refuse_steer_above_fire`, `may_drive`) is the one rank rule left on a
 session; the steer, approval and canvas routes no longer rank the caller against the creator.
 
 ### 6.4 Events and waits
