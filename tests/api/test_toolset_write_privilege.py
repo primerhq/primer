@@ -16,7 +16,7 @@ from tests.toolset.test_system_toolset_write_privilege import CLIENT_SECRET, PY_
 
 PYTHON = {"id": "ts-py", "provider": "python", "config": {"source": PY_SOURCE, "source_version": 1}}
 PYTHON_OTHER = {**PYTHON, "config": {"source": PY_SOURCE.replace("hello", "hi"), "source_version": 1}}
-HTTP_PLAIN = {"id": "ts-py", "provider": "mcp", "config": {"transport": "http", "config": {"url": "http://127.0.0.1:9/mcp"}}}
+HTTP_PLAIN = {"id": "ts-py", "provider": "mcp", "config": {"transport": "http", "config": {"url": "http://mcp.example.com/mcp"}}}
 NO_PROBE = {"allow_unreachable": "true"}
 
 
@@ -113,7 +113,7 @@ async def _served_with_url(raw_client, toolset_id: str, url: str) -> dict:
 
 
 async def test_a_plain_user_cannot_repoint_a_toolset_while_its_headers_ride_along_masked(raw_client, app):
-    await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
+    await _admin_creates(raw_client, app, _http("http://mcp.example.com/mcp", SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")
     await _share_full(raw_client, "ts-http")
 
@@ -123,11 +123,11 @@ async def test_a_plain_user_cannot_repoint_a_toolset_while_its_headers_ride_alon
 
     assert resp.status_code == 403, resp.text
     assert "re-enter" in resp.json()["detail"], resp.text
-    assert (await raw_client.get("/v1/toolsets/ts-http")).json()["config"]["config"]["url"] == "http://127.0.0.1:9/mcp"
+    assert (await raw_client.get("/v1/toolsets/ts-http")).json()["config"]["config"]["url"] == "http://mcp.example.com/mcp"
 
 
 async def test_a_plain_user_cannot_repoint_a_toolset_while_its_oauth_client_secret_rides_along(raw_client, app):
-    await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET, client_secret=CLIENT_SECRET), **NO_PROBE)
+    await _admin_creates(raw_client, app, _http("http://mcp.example.com/mcp", SECRET, client_secret=CLIENT_SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")
     await _share_full(raw_client, "ts-http")
 
@@ -136,12 +136,12 @@ async def test_a_plain_user_cannot_repoint_a_toolset_while_its_oauth_client_secr
     )
 
     assert resp.status_code == 403, resp.text
-    assert (await raw_client.get("/v1/toolsets/ts-http")).json()["config"]["config"]["url"] == "http://127.0.0.1:9/mcp"
+    assert (await raw_client.get("/v1/toolsets/ts-http")).json()["config"]["config"]["url"] == "http://mcp.example.com/mcp"
 
 
 async def test_a_plain_user_cannot_move_only_the_oauth_token_endpoint_while_the_client_secret_rides_along(raw_client, app):
     """The URL stays put: only the OAuth endpoint moves, so the rule must compare it too."""
-    await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET, client_secret=CLIENT_SECRET), **NO_PROBE)
+    await _admin_creates(raw_client, app, _http("http://mcp.example.com/mcp", SECRET, client_secret=CLIENT_SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")
     await _share_full(raw_client, "ts-http")
     body = (await raw_client.get("/v1/toolsets/ts-http")).json()
@@ -151,11 +151,11 @@ async def test_a_plain_user_cannot_move_only_the_oauth_token_endpoint_while_the_
 
     assert resp.status_code == 403, resp.text
     stored = (await raw_client.get("/v1/toolsets/ts-http")).json()["config"]["config"]["oauth"]
-    assert stored["token_endpoint"] == "http://127.0.0.1:9/token"
+    assert stored["token_endpoint"] == "http://mcp.example.com/token"
 
 
 async def test_a_plain_user_may_repoint_a_toolset_when_it_re_enters_the_secrets(raw_client, app):
-    await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
+    await _admin_creates(raw_client, app, _http("http://mcp.example.com/mcp", SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")
     await _share_full(raw_client, "ts-http")
 
@@ -166,12 +166,12 @@ async def test_a_plain_user_may_repoint_a_toolset_when_it_re_enters_the_secrets(
 
 
 async def test_a_plain_user_keeps_masked_secrets_when_the_endpoint_does_not_change(raw_client, app):
-    await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
+    await _admin_creates(raw_client, app, _http("http://mcp.example.com/mcp", SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")
     await _share_full(raw_client, "ts-http")
 
     resp = await raw_client.put(
-        "/v1/toolsets/ts-http", json=await _served_with_url(raw_client, "ts-http", "http://127.0.0.1:9/mcp"), params=NO_PROBE,
+        "/v1/toolsets/ts-http", json=await _served_with_url(raw_client, "ts-http", "http://mcp.example.com/mcp"), params=NO_PROBE,
     )
 
     assert resp.status_code == 200, resp.text
@@ -180,23 +180,23 @@ async def test_a_plain_user_keeps_masked_secrets_when_the_endpoint_does_not_chan
 
 
 async def test_an_admin_may_change_the_path_of_a_toolset_url_and_keep_its_masked_secrets(raw_client, app):
-    await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
+    await _admin_creates(raw_client, app, _http("http://mcp.example.com/mcp", SECRET), **NO_PROBE)
     await _login(raw_client, "admin")
 
     resp = await raw_client.put(
-        "/v1/toolsets/ts-http", json=await _served_with_url(raw_client, "ts-http", "http://127.0.0.1:9/mcp-v2"), params=NO_PROBE,
+        "/v1/toolsets/ts-http", json=await _served_with_url(raw_client, "ts-http", "http://mcp.example.com/mcp-v2"), params=NO_PROBE,
     )
 
     assert resp.status_code == 200, resp.text
     stored = await app.state.storage_provider.get_storage(Toolset).get("ts-http")
     assert (stored.config.config.url, stored.config.config.headers["Authorization"].get_secret_value()) == (
-        "http://127.0.0.1:9/mcp-v2", SECRET,
+        "http://mcp.example.com/mcp-v2", SECRET,
     )
 
 
 async def test_an_admin_cannot_move_the_host_of_a_toolset_and_keep_its_masked_secrets(raw_client, app):
     """The stored secrets are kept only for the origin they were stored for (ticket 01a1212a): the admin gate lets the write through, the origin rule refuses it."""
-    await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
+    await _admin_creates(raw_client, app, _http("http://mcp.example.com/mcp", SECRET), **NO_PROBE)
     await _login(raw_client, "admin")
 
     resp = await raw_client.put(
@@ -206,7 +206,7 @@ async def test_an_admin_cannot_move_the_host_of_a_toolset_and_keep_its_masked_se
     assert resp.status_code == 422, resp.text
     assert "re-enter the secret" in resp.text and SECRET not in resp.text
     stored = await app.state.storage_provider.get_storage(Toolset).get("ts-http")
-    assert (stored.config.config.url, stored.config.config.headers["Authorization"].get_secret_value()) == ("http://127.0.0.1:9/mcp", SECRET)
+    assert (stored.config.config.url, stored.config.config.headers["Authorization"].get_secret_value()) == ("http://mcp.example.com/mcp", SECRET)
 
 
 # ---- an admin converting an MCP toolset into a python one ----------------------------------------------------------------------

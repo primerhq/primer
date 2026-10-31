@@ -19,6 +19,7 @@ the difference is documented in rest-api.md and in the ``create_toolset`` / ``up
 from __future__ import annotations
 
 from primer.common.entity_checks import EntityCheckError
+from primer.common.netguard import url_targets_internal_literal
 from primer.common.origin import origin_of
 from primer.model.common import preserve_masked_secrets
 from primer.model.except_ import ValidationError as PrimerValidationError
@@ -63,6 +64,17 @@ def launches_a_command(entity: Toolset) -> bool:
     """True for an MCP toolset on the ``stdio`` transport: the primer process spawns its ``command`` on the server host."""
     config = entity.config
     return entity.provider == ToolsetProviderType.MCP and getattr(config, "transport", None) == TransportType.STDIO
+
+
+def targets_an_internal_address(entity: Toolset) -> bool:
+    """True for an http / sse MCP toolset whose URL writes an internal address out (a loopback, link-local, private or metadata IP literal, or
+    ``localhost``): the server would POST to a host inside the network on create and on every listing (SSRF). A name that RESOLVES internal is
+    refused at connect time (:class:`primer.toolset.mcp.McpToolsetProvider`); ``PRIMER_EGRESS_ALLOW`` opts internal servers back in for both."""
+    config = entity.config
+    if entity.provider != ToolsetProviderType.MCP or getattr(config, "transport", None) not in (TransportType.HTTP, TransportType.SSE):
+        return False
+    inner = getattr(config, "config", None)
+    return isinstance(inner, HttpConfig) and url_targets_internal_literal(str(inner.url))
 
 
 def runs_python(entity: Toolset) -> bool:
@@ -135,6 +147,11 @@ _STDIO_REASON = (
 _PYTHON_REASON = (
     "Creating or changing a python toolset requires the admin role: its source runs on the server host. Ask an admin."
 )
+_INTERNAL_URL_REASON = (
+    "Pointing an MCP toolset at an internal address (a loopback, link-local, private or cloud-metadata address, or localhost) requires the admin "
+    "role: the server would send requests there when the toolset is created and every time its tools are listed. Use the address of a public server, "
+    "or ask an admin."
+)
 _REPOINT_REASON = (
     "Changing a toolset's URL or OAuth endpoints while keeping its stored secrets requires the admin role, and the stored secrets are kept only "
     "for the same origin (scheme, host and port): re-enter the secrets (headers, OAuth client secret) when changing the URL, or ask an admin."
@@ -153,12 +170,15 @@ def toolset_admin_reason(entity: Toolset, existing: Toolset | None = None) -> st
     Either side counts: a user may not turn an http toolset into a stdio or python one, nor edit one they did not create (even to
     point it at http). An update that changes the URL or the OAuth endpoints while a secret is sent back masked would carry the
     stored secret to the new endpoint, so it is admin-only too; re-entering the secrets lifts it. Every other write stays
-    user-tier, and a delete launches nothing, so it is not gated.
+    user-tier, and a delete launches nothing, so it is not gated. An http / sse toolset whose URL writes an internal address out is admin-only
+    as well (SSRF); an admin may still configure an internal server.
     """
     if launches_a_command(entity) or (existing is not None and launches_a_command(existing)):
         return _STDIO_REASON
     if runs_python(entity) or (existing is not None and runs_python(existing)):
         return _PYTHON_REASON
+    if targets_an_internal_address(entity):
+        return _INTERNAL_URL_REASON
     if existing is not None and repoints_stored_secrets(entity, existing):
         return _REPOINT_REASON
     if existing is not None and oauth_settings_changed(entity, existing):
@@ -223,6 +243,7 @@ __all__ = [
     "check_toolset_on_create",
     "check_toolset_on_update",
     "launches_a_command",
+    "targets_an_internal_address",
     "oauth_settings_changed",
     "own_python_source_version",
     "repoints_stored_secrets",

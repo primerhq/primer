@@ -36,7 +36,7 @@ def greet(name: str) -> str:
 '''
 PYTHON = {"id": "ts-py", "provider": "python", "config": {"source": PY_SOURCE, "source_version": 1}}
 PYTHON_OTHER = {**PYTHON, "config": {"source": PY_SOURCE.replace("hello", "hi"), "source_version": 1}}
-HTTP_PLAIN = {"id": "ts-py", "provider": "mcp", "config": {"transport": "http", "config": {"url": "http://127.0.0.1:9/mcp"}}}
+HTTP_PLAIN = {"id": "ts-py", "provider": "mcp", "config": {"transport": "http", "config": {"url": "http://mcp.example.com/mcp"}}}
 
 MASK = "**********"
 SECRET = "Bearer s3cret-token"
@@ -50,7 +50,7 @@ def _http(url: str, header: str, client_secret: str | None = None, toolset_id: s
             "url": url,
             "oauth": {
                 "grant": "client_credentials",
-                "token_endpoint": "http://127.0.0.1:9/token",
+                "token_endpoint": "http://mcp.example.com/token",
                 "static_client": {"client_id": "c", "client_secret": client_secret},
             },
         }
@@ -135,7 +135,7 @@ async def test_an_admin_can_create_and_change_a_python_toolset(toolset_and_stora
 
 async def test_a_user_run_cannot_repoint_a_toolset_while_its_headers_ride_along_masked(toolset_and_storage):
     toolset, storage = toolset_and_storage
-    assert not (await _call(toolset, "create_toolset", {"entity": _http("http://127.0.0.1:9/mcp", SECRET)}, _ctx("admin"))).is_error
+    assert not (await _call(toolset, "create_toolset", {"entity": _http("http://mcp.example.com/mcp", SECRET)}, _ctx("admin"))).is_error
 
     result = await _call(
         toolset, "update_toolset", {"id": "ts-http", "entity": _http("http://evil.example/mcp", MASK)}, _ctx("user"),
@@ -144,13 +144,13 @@ async def test_a_user_run_cannot_repoint_a_toolset_while_its_headers_ride_along_
     assert result.is_error and _error_type(result) == "forbidden", result.output
     assert "re-enter" in json.loads(result.output)["message"], result.output
     stored = (await storage.get("ts-http")).config.config
-    assert stored.url == "http://127.0.0.1:9/mcp"
+    assert stored.url == "http://mcp.example.com/mcp"
     assert stored.headers["Authorization"].get_secret_value() == SECRET
 
 
 async def test_a_user_run_cannot_repoint_a_toolset_while_its_oauth_client_secret_rides_along(toolset_and_storage):
     toolset, storage = toolset_and_storage
-    body = _http("http://127.0.0.1:9/mcp", SECRET, client_secret=CLIENT_SECRET)
+    body = _http("http://mcp.example.com/mcp", SECRET, client_secret=CLIENT_SECRET)
     assert not (await _call(toolset, "create_toolset", {"entity": body}, _ctx("admin"))).is_error
 
     result = await _call(
@@ -159,7 +159,7 @@ async def test_a_user_run_cannot_repoint_a_toolset_while_its_oauth_client_secret
     )
 
     assert result.is_error and _error_type(result) == "forbidden", result.output
-    assert (await storage.get("ts-http")).config.config.url == "http://127.0.0.1:9/mcp"
+    assert (await storage.get("ts-http")).config.config.url == "http://mcp.example.com/mcp"
 
 
 @pytest.mark.parametrize(
@@ -171,21 +171,21 @@ async def test_a_user_run_cannot_move_only_the_oauth_endpoints_while_the_client_
     """The URL stays put: only the OAuth endpoints count as the move, so the rule must compare them too."""
     toolset, storage = toolset_and_storage
     assert not (await _call(
-        toolset, "create_toolset", {"entity": _http("http://127.0.0.1:9/mcp", SECRET, client_secret=CLIENT_SECRET)}, _ctx("admin"),
+        toolset, "create_toolset", {"entity": _http("http://mcp.example.com/mcp", SECRET, client_secret=CLIENT_SECRET)}, _ctx("admin"),
     )).is_error
-    body = _http("http://127.0.0.1:9/mcp", SECRET, client_secret=MASK)
+    body = _http("http://mcp.example.com/mcp", SECRET, client_secret=MASK)
     body["config"]["config"]["oauth"].update(oauth_change)
 
     result = await _call(toolset, "update_toolset", {"id": "ts-http", "entity": body}, _ctx("user"))
 
     assert result.is_error and _error_type(result) == "forbidden", result.output
     oauth = (await storage.get("ts-http")).config.config.oauth
-    assert (oauth.token_endpoint, oauth.resource_uri) == ("http://127.0.0.1:9/token", None)
+    assert (oauth.token_endpoint, oauth.resource_uri) == ("http://mcp.example.com/token", None)
 
 
 async def test_a_user_run_may_repoint_a_toolset_when_it_re_enters_the_secrets(toolset_and_storage):
     toolset, storage = toolset_and_storage
-    assert not (await _call(toolset, "create_toolset", {"entity": _http("http://127.0.0.1:9/mcp", SECRET)}, _ctx("admin"))).is_error
+    assert not (await _call(toolset, "create_toolset", {"entity": _http("http://mcp.example.com/mcp", SECRET)}, _ctx("admin"))).is_error
 
     result = await _call(
         toolset, "update_toolset", {"id": "ts-http", "entity": _http("http://other.example/mcp", "Bearer new")}, _ctx("user"),
@@ -198,9 +198,9 @@ async def test_a_user_run_may_repoint_a_toolset_when_it_re_enters_the_secrets(to
 
 async def test_a_user_run_keeps_masked_secrets_when_the_endpoint_does_not_change(toolset_and_storage):
     toolset, storage = toolset_and_storage
-    assert not (await _call(toolset, "create_toolset", {"entity": _http("http://127.0.0.1:9/mcp", SECRET)}, _ctx("admin"))).is_error
+    assert not (await _call(toolset, "create_toolset", {"entity": _http("http://mcp.example.com/mcp", SECRET)}, _ctx("admin"))).is_error
 
-    result = await _call(toolset, "update_toolset", {"id": "ts-http", "entity": _http("http://127.0.0.1:9/mcp", MASK)}, _ctx("user"))
+    result = await _call(toolset, "update_toolset", {"id": "ts-http", "entity": _http("http://mcp.example.com/mcp", MASK)}, _ctx("user"))
 
     assert not result.is_error, result.output
     assert (await storage.get("ts-http")).config.config.headers["Authorization"].get_secret_value() == SECRET
@@ -210,15 +210,15 @@ async def test_an_admin_may_change_the_path_of_a_toolset_url_and_keep_its_masked
     """The admin gate lets an admin make the write; the stored secrets then follow only to the same origin (ticket 01a1212a): another host is refused
     for an admin too (``tests/toolset/test_system_masked_secret_origin.py``), since a run an admin started is an admin caller."""
     toolset, storage = toolset_and_storage
-    assert not (await _call(toolset, "create_toolset", {"entity": _http("http://127.0.0.1:9/mcp", SECRET)}, _ctx("admin"))).is_error
+    assert not (await _call(toolset, "create_toolset", {"entity": _http("http://mcp.example.com/mcp", SECRET)}, _ctx("admin"))).is_error
 
     result = await _call(
-        toolset, "update_toolset", {"id": "ts-http", "entity": _http("http://127.0.0.1:9/mcp-v2", MASK)}, _ctx("admin"),
+        toolset, "update_toolset", {"id": "ts-http", "entity": _http("http://mcp.example.com/mcp-v2", MASK)}, _ctx("admin"),
     )
 
     assert not result.is_error, result.output
     stored = (await storage.get("ts-http")).config.config
-    assert (stored.url, stored.headers["Authorization"].get_secret_value()) == ("http://127.0.0.1:9/mcp-v2", SECRET)
+    assert (stored.url, stored.headers["Authorization"].get_secret_value()) == ("http://mcp.example.com/mcp-v2", SECRET)
 
 
 # ---- an admin converting an MCP toolset into a python one ----------------------------------------------------------------------

@@ -239,6 +239,7 @@ def _make_lifespan(config: AppConfig):
             toolset_factory=_build_default_toolset_factory(
                 allowed_stdio_commands=allowlist,
                 oauth=mcp_oauth,
+                storage_provider=storage_provider,
             ),
             trace_llm_io=config.observability.trace_llm_io,
         )

@@ -1534,16 +1534,19 @@ async def _probe_mcp_reachable(entity: Toolset, request: Request) -> None:
     """
     import asyncio
 
-    from primer.toolset.mcp import McpToolsetProvider
+    from primer.toolset.mcp import McpEgressRefused, McpToolsetProvider
 
     principal = getattr(request.state, "principal", None)
     # Transient provider: this path is only reached for http transport, so the
     # stdio allowlist is irrelevant (None). McpToolsetProvider.list_tools opens
     # and closes its own short-lived session per call, so nothing leaks.
+    # The probe connects from the server: for a caller below admin it goes through the egress guard (a name that resolves to an internal address
+    # is refused, as a literal one already was by ``toolset_admin_reason``), so it cannot scan the internal network (review of workspaces, W25).
     provider = McpToolsetProvider(
         toolset_id=entity.id,
         config=entity.config,  # type: ignore[arg-type]  # http => McpConfig set
         allowed_stdio_commands=None,
+        egress_guard=not person_from_request(request).is_admin,
     )
     try:
         async with asyncio.timeout(8):
@@ -1553,6 +1556,12 @@ async def _probe_mcp_reachable(entity: Toolset, request: Request) -> None:
         # asyncio.timeout raises TimeoutError; the mcp transport raises a
         # classified PrimerError (often wrapped in a BaseExceptionGroup).
         leaf = _informative_leaf(exc)
+        if isinstance(leaf, McpEgressRefused):
+            # Not "create anyway": the row would be guarded at connect time, but nobody below admin points a toolset at an internal address.
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "forbidden_role", "message": f"{leaf.message}. Pointing an MCP toolset at an internal address requires the admin role."},
+            ) from exc
         if _is_connection_failure(leaf):
             raise _toolset_unreachable(
                 entity, leaf, timed_out=isinstance(leaf, TimeoutError)

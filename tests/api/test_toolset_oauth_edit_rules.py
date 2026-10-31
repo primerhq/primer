@@ -17,7 +17,7 @@ def _body(toolset_id: str = "kb") -> dict:
         "config": {
             "transport": "http",
             "config": {
-                "url": "http://127.0.0.1:9/mcp",
+                "url": "http://mcp.example.com/mcp",
                 "headers": {"X-Trace": "trace-test-only"},
                 "oauth": {
                     "grant": "authorization_code",

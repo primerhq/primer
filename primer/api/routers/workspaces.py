@@ -3291,7 +3291,7 @@ async def workspace_log(
 async def workspace_show_commit(
     request: Request,
     workspace_id: str = Path(...),
-    sha: str = Path(..., min_length=7, max_length=64),
+    sha: str = Path(..., pattern=r"^[0-9a-fA-F]{7,64}$", description="Commit object name: 7 to 64 hexadecimal digits"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     user=Depends(require_user),
 ) -> dict:
