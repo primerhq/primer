@@ -112,6 +112,11 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
   }, [items]);
   const ownerNames = window.SHR_useUserNames(ownerIds);
 
+  // ACL-P6-T3: the marker's viewer (con.viewer: /auth/status's principal
+  // projection, the viewer's user id; a signed-out console names nobody).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+
   // Per-row status — fetch /agents/{id}/status once per visible row.
   const [perRowStatus, setPerRowStatus] = React.useState({});
   React.useEffect(() => {
@@ -273,26 +278,9 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
                 <tr key={a.id} onClick={() => openRow(a.id)} style={{ cursor: "pointer" }}>
                   <td className="mono">
                     {a.id}
-                    {SHR_accessBadges(a.access).map((b) => (
-                      <span
-                        key={b}
-                        className="pill pill-ended"
-                        data-testid={"agent-access-badge-" + b}
-                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
-                      >
-                        <span className="dot"></span>{b}
-                      </span>
-                    ))}
-                    {a.access && a.access.owners.length > 0 && (
-                      <span
-                        className="pill pill-ended"
-                        data-testid="agent-owner-badge"
-                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
-                        title={"Owned by " + a.access.owners.map((o) => ownerNames[o] || o).join(", ")}
-                      >
-                        <span className="dot"></span>Owned
-                      </span>
-                    )}
+                    {/* ACL-P6-T3: the marker row (the owner's name through the
+                        looked-up names; "Owned by you" when it is ours). */}
+                    <SHR_AccessMarkers access={a.access} me={meId} names={ownerNames} />
                   </td>
                   <td className="muted text-sm" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {a.description || <span style={{ color: "var(--text-4)" }}>—</span>}
@@ -987,6 +975,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   const shownPaths = voiceShown ? AG_FIELD_PATHS : AG_FIELD_PATHS.filter((path) => path !== "body.tts_voice");
   const otherErrors = AG_otherFieldErrors(fieldErrors, shownPaths);
 
+  // ACL-P6-T3: the marker row of the detail header (the agent's own access;
+  // the names looked up once per page). Unconditional hooks: create mode
+  // looks up nobody (an empty set keys to null).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const detailOwnerIds = React.useMemo(
+    () => ((existing && existing.access && existing.access.owners) || []),
+    [existing]
+  );
+  const detailOwnerNames = window.SHR_useUserNames(detailOwnerIds);
+
   // uiv2 Wave 2 (harness_id): a managed row 409s on any PUT
   // (routers/agents.py) - AG_ConfigTab used to just hide its Edit
   // button and leave the raw-JSON view up; now that direct-edit IS the
@@ -1051,6 +1050,11 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
         ),
       }}
     >
+      {isEdit && existing?.access && (
+        <div data-testid="agent-access-markers" style={{ marginBottom: 8 }}>
+          <SHR_AccessMarkers access={existing.access} me={meId} names={detailOwnerNames} />
+        </div>
+      )}
       {isEdit && <AG_StatusPanel id={existing.id} status={status} />}
       <PK_Grid cols={2}>
         <PK_Field label="Id" help={isEdit ? "The id cannot change after the agent is created." : undefined} error={AG_fieldError(fieldErrors, "body.id")}>

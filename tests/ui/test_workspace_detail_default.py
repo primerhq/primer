@@ -43,6 +43,10 @@ window.primerApi = {
 // The share seam the Settings overlay subscribes to (ui/components/shared/share-dialog.jsx):
 // this harness predates it, so the stand-in answers the subscription as a closed dialog.
 window.SHR_useShareOpen = function () { return [false, function () {}]; };
+// The ownership markers the detail header draws (ui/components/shared/share-dialog.jsx,
+// ACL-P6-T3): same reasoning - the stand-in says none, the markers are not this file's subject.
+window.SHR_useUserNames = function () { return {}; };
+window.SHR_AccessMarkers = function () { return null; };
 window.WorkspaceTap = function () { return null; };
 function Icon() { return null; }
 function Btn(p) { return React.createElement("button", { "data-testid": p["data-testid"], onClick: p.onClick, disabled: p.disabled }, p.children); }

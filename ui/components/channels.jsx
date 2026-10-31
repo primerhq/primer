@@ -757,6 +757,19 @@ function ChannelsPage({ onNavigate, pushToast }) {
     );
   });
 
+  // ACL-P6-T3: the marker's viewer + the looked-up owner names (one batched
+  // lookup for the page).
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const ownerIds = React.useMemo(() => {
+    const out = [];
+    channelItems.forEach((c) => {
+      ((c.access && c.access.owners) || []).forEach((o) => { if (out.indexOf(o) < 0) out.push(o); });
+    });
+    return out;
+  }, [channelItems]);
+  const ownerNames = window.SHR_useUserNames(ownerIds);
+
   const del = useMutation(
     (cid) => apiFetch("DELETE", `/channels/${encodeURIComponent(cid)}`),
     {
@@ -876,16 +889,7 @@ function ChannelsPage({ onNavigate, pushToast }) {
                 <tr key={c.id} onClick={() => setEditing(c)} style={{ cursor: "pointer" }}>
                   <td className="mono">
                     {c.id}
-                    {SHR_accessBadges(c.access).map((b) => (
-                      <span
-                        key={b}
-                        className="pill pill-ended"
-                        data-testid={"channel-access-badge-" + b}
-                        style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
-                      >
-                        <span className="dot"></span>{b}
-                      </span>
-                    ))}
+                    <SHR_AccessMarkers access={c.access} me={meId} names={ownerNames} />
                   </td>
                   <td>
                     <a
@@ -1022,6 +1026,17 @@ function NewChannelModal({ providers, providersList, onClose, onCreated, pushToa
   // shareable surface and the verb's palette gate stays off for it).
   const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
 
+  // ACL-P6-T3: the marker row of the form header (the channel's own access;
+  // this form is the channel's detail surface). Unconditional hooks: create
+  // mode looks up nobody.
+  const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
+  const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
+  const detailOwnerIds = React.useMemo(
+    () => ((existing && existing.access && existing.access.owners) || []),
+    [existing]
+  );
+  const detailOwnerNames = window.SHR_useUserNames(detailOwnerIds);
+
   // Chats config state
   const [chatsEnabled, setChatsEnabled] = React.useState(
     existing?.config?.chats?.enabled ?? false
@@ -1089,6 +1104,11 @@ function NewChannelModal({ providers, providersList, onClose, onCreated, pushToa
         </>
       }
     >
+      {isEdit && existing?.access && (
+        <div data-testid="channel-access-markers" style={{ marginBottom: 10 }}>
+          <SHR_AccessMarkers access={existing.access} me={meId} names={detailOwnerNames} />
+        </div>
+      )}
       <FormField label="id" hint={isEdit ? "locked" : "auto"} err={fieldErrors["body.id"]}>
         <input
           className="input mono"
