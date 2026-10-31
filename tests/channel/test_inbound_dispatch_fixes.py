@@ -271,3 +271,31 @@ async def test_W40_a_second_database_still_gets_its_index(tmp_path: Path):
             assert [r.session_id for r in await CorrelationStore(sp).list_for_channel("ch-1")] == ["s2"]
         finally:
             await sp.aclose()
+
+
+# --------------------------------------------------------------------------- W56h
+
+
+async def test_W56h_clearing_an_answered_gate_keeps_a_newer_gate():
+    sp = _FakeStorageProvider()
+    store = CorrelationStore(sp)
+    await store.upsert_session(channel_id="ch-1", anchor="th-1", workspace_id="w1", session_id="s1", tool_call_id="tc-1", gate_id="g1")
+    # The reply answered tc-1; meanwhile the session asked again on the same thread.
+    await store.upsert_session(channel_id="ch-1", anchor="th-1", workspace_id="w1", session_id="s1", tool_call_id="tc-2", gate_id="g2")
+    await store.clear_gate("ch-1", "th-1", tool_call_id="tc-1")
+    row = await store.lookup("ch-1", "th-1")
+    assert (row.tool_call_id, row.gate_id) == ("tc-2", "g2")
+
+
+async def test_W56h_clear_gate_writes_only_the_gate_fields(tmp_path: Path):
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "gate.sqlite"))
+    await sp.initialize()
+    try:
+        store = CorrelationStore(sp)
+        await store.upsert_session(channel_id="ch-1", anchor="th-1", workspace_id="w1", session_id="s1", tool_call_id="tc-1")
+        await store.clear_gate("ch-1", "th-1", tool_call_id="tc-1")
+        row = await store.lookup("ch-1", "th-1")
+        assert (row.session_id, row.workspace_id, row.tool_call_id, row.gate_id) == ("s1", "w1", None, None)
+        assert row.updated_at is not None
+    finally:
+        await sp.aclose()

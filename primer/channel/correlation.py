@@ -265,22 +265,24 @@ class CorrelationStore:
             return await self._fallback_upsert(record)
         return await self._atomic_upsert(record)
 
-    async def clear_gate(self, channel_id: str, anchor: str) -> None:
+    async def clear_gate(self, channel_id: str, anchor: str, tool_call_id: str | None = None) -> None:
         """Blank a resolved gate's ``tool_call_id``, keeping the mapping.
 
         Without this the next reply in the thread would re-publish onto a
         resume key nobody is waiting on any more, instead of steering the
         mapped session.
+
+        ``tool_call_id`` is the gate the reply answered (default: the one open now). Only the gate fields are written,
+        and only while that gate is still the open one: a newer question the session asked on the same thread since
+        the reply is left open (W56h).
         """
         existing = await self.lookup(channel_id, anchor)
         if existing is None or existing.tool_call_id is None:
             return
-        await self._storage().update(
-            existing.model_copy(update={
-                "tool_call_id": None,
-                "gate_id": None,
-                "updated_at": datetime.now(timezone.utc),
-            })
+        await self._storage().patch_if(
+            existing.id,
+            {"tool_call_id": None, "gate_id": None, "updated_at": datetime.now(timezone.utc).isoformat()},
+            where={"tool_call_id": [tool_call_id or existing.tool_call_id]},
         )
 
     async def clear_for_session(self, session_id: str) -> int:

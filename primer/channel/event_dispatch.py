@@ -253,7 +253,7 @@ class ChannelEventRouter:
                 sessions = self._sp.get_storage(WorkspaceSession)
                 target = await sessions.get(record.session_id)
                 if target is not None and target.status == SessionStatus.ENDED:
-                    await self._correlation.clear_gate(channel_id, anchor)
+                    await self._correlation.clear_gate(channel_id, anchor, record.tool_call_id)
                     delivery = await deliver_steer(
                         session_id=record.session_id,
                         text=await self._steer_text(
@@ -309,13 +309,13 @@ class ChannelEventRouter:
                         logger.info(
                             "channel event: reply for %s/%s names a prompt that has been replaced; steering instead", channel_id, anchor,
                         )
-                        await self._correlation.clear_gate(channel_id, anchor)
+                        await self._correlation.clear_gate(channel_id, anchor, record.tool_call_id)
                     else:
                         # One reply answers one gate. Clearing it here is what
                         # lets the NEXT reply in the same thread steer the
                         # session instead of re-publishing onto a dead resume
                         # key.
-                        await self._correlation.clear_gate(channel_id, anchor)
+                        await self._correlation.clear_gate(channel_id, anchor, record.tool_call_id)
                         return ChannelRouteOutcome(
                             kind="gate", session_id=record.session_id,
                         )
