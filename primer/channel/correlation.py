@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import weakref
 from datetime import datetime, timezone
 
 from primer.model.channel_correlation import ChannelCorrelation
@@ -43,6 +44,10 @@ logger = logging.getLogger(__name__)
 _TABLE = "channelcorrelation"
 _UNIQUE_INDEX = "channelcorrelation_channel_anchor_uniq"
 
+#: Storage providers (one database and schema each) whose unique index this process has ensured. Module-level, not
+#: per store: a store is built per event and per post, and every CREATE INDEX IF NOT EXISTS takes a table lock (W40).
+_INDEX_ENSURED: "weakref.WeakSet[object]" = weakref.WeakSet()
+
 
 class CorrelationStore:
     """CRUD wrapper around :class:`~primer.model.channel_correlation.ChannelCorrelation`.
@@ -56,8 +61,6 @@ class CorrelationStore:
 
     def __init__(self, storage_provider: object) -> None:
         self._sp = storage_provider
-        # One-shot guard so the unique-index DDL runs at most once per store.
-        self._unique_index_ensured = False
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -92,7 +95,7 @@ class CorrelationStore:
     # ------------------------------------------------------------------
 
     async def _ensure_unique_index(self) -> None:
-        """Create the ``(channel_id, anchor)`` unique index once.
+        """Create the ``(channel_id, anchor)`` unique index once per storage provider.
 
         Targets the JSONB ``data`` column's extracted scalars because the
         generic :class:`Storage` lays every model out as ``(id, data)`` with
@@ -100,7 +103,7 @@ class CorrelationStore:
         Idempotent (``IF NOT EXISTS``). Ensures the underlying table exists
         first by touching the handle.
         """
-        if self._unique_index_ensured:
+        if self._sp in _INDEX_ENSURED:
             return
         backend = self._backend()
         # Touch the handle so the base table DDL has run before we index it.
@@ -115,7 +118,7 @@ class CorrelationStore:
             )
             async with self._sp.pool.acquire() as conn:
                 await conn.execute(sql)
-            self._unique_index_ensured = True
+            _INDEX_ENSURED.add(self._sp)
         elif backend == "sqlite":
             sql = (
                 f'CREATE UNIQUE INDEX IF NOT EXISTS "{_UNIQUE_INDEX}" '
@@ -142,7 +145,7 @@ class CorrelationStore:
             # exists ("does not match any... constraint"; live-caught by
             # test_atomic_upsert_inside_a_rolled_back_transaction_is_undone).
             if should_commit:
-                self._unique_index_ensured = True
+                _INDEX_ENSURED.add(self._sp)
 
     def _to_row(self, record: ChannelCorrelation) -> tuple[str, str]:
         """Dump a record to ``(id, data_json)`` -- mirrors the storage

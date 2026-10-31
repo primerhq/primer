@@ -234,3 +234,40 @@ async def test_clear_gate_blanks_the_open_gate_and_keeps_the_mapping():
     await store.clear_gate("ch-1", "th-1")
     row = await store.lookup("ch-1", "th-1")
     assert (row.session_id, row.tool_call_id, row.gate_id) == ("s1", None, None)
+
+
+# --------------------------------------------------------------------------- W40
+
+
+async def test_W40_the_index_ddl_runs_once_for_two_stores(tmp_path: Path, monkeypatch):
+    import aiosqlite
+
+    ddl: list[str] = []
+    real = aiosqlite.Connection.execute
+
+    def _spy(self, sql, *a, **k):
+        if "channelcorrelation_channel_anchor_uniq" in sql and sql.lstrip().upper().startswith("CREATE"):
+            ddl.append(sql)
+        return real(self, sql, *a, **k)
+
+    monkeypatch.setattr(aiosqlite.Connection, "execute", _spy)
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "ddl.sqlite"))
+    await sp.initialize()
+    try:
+        await CorrelationStore(sp).upsert_thread_session(channel_id="ch-1", anchor="a", workspace_id="w", session_id="s1")
+        await CorrelationStore(sp).upsert_thread_session(channel_id="ch-1", anchor="b", workspace_id="w", session_id="s2")
+        assert len(ddl) == 1
+    finally:
+        await sp.aclose()
+
+
+async def test_W40_a_second_database_still_gets_its_index(tmp_path: Path):
+    for name in ("one.sqlite", "two.sqlite"):
+        sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / name))
+        await sp.initialize()
+        try:
+            await CorrelationStore(sp).upsert_thread_session(channel_id="ch-1", anchor="a", workspace_id="w", session_id="s1")
+            await CorrelationStore(sp).upsert_thread_session(channel_id="ch-1", anchor="a", workspace_id="w", session_id="s2")
+            assert [r.session_id for r in await CorrelationStore(sp).list_for_channel("ch-1")] == ["s2"]
+        finally:
+            await sp.aclose()
