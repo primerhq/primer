@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
+from primer.model.access import Access
 from primer.model.channel import Channel
 from primer.model.except_ import ProviderError
 from primer.model.workspace import Workspace, WorkspaceProvider, WorkspaceTemplate
@@ -28,7 +29,7 @@ async def running(sp, wsr) -> Workspace:  # noqa: F811
     """A workspace made through the one create path and promoted as the probe would; a channel to bind it to."""
     await sp.get_storage(WorkspaceProvider).create(_provider())
     await sp.get_storage(WorkspaceTemplate).create(_template())
-    await sp.get_storage(Channel).create(Channel(id="ch-1", provider_id="cp-1", provider="slack", external_id="C1"))
+    await sp.get_storage(Channel).create(Channel(access=Access(public=True), id="ch-1", provider_id="cp-1", provider="slack", external_id="C1"))
     row = await wsr.create(template=_template(), workspace_id=WID)
     return await sp.get_storage(Workspace).patch_if(row.id, {"phase": "running"}, where={"phase": ["pending"]})
 

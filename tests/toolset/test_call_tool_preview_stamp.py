@@ -57,8 +57,17 @@ class _Provider:
         return ToolCallResult(output="ran", is_error=False)
 
 
+class _NoRows:
+    def get_storage(self, _model):
+        return self
+
+    async def get(self, _id):
+        return None  # no user toolset row: the access check has nothing to read
+
+
 class _Registry:
     _sp = None
+    storage_provider = _NoRows()
 
     def __init__(self, providers: dict[str, _Provider]) -> None:
         self._providers = providers

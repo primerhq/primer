@@ -808,7 +808,9 @@ def build_system_toolset(
                 error_type="not-found",
             )
         channel = await _channel_storage.get(args.channel_id)
-        if channel is None:
+        # The binding reads the channel it names: a channel the caller holds no level on answers exactly like a missing one,
+        # in the missing-channel words (access spec 9).
+        if channel is None or level_of(person_for_tool(ctx), channel.access) is None:
             return _err(
                 f"Channel {args.channel_id!r} does not exist",
                 error_type="not-found",

@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
+from primer.model.access import Access
 from primer.api.registries import ProviderRegistry
 from primer.model.channel import Channel
 from primer.model.except_ import ConflictError, NotFoundError
@@ -180,7 +181,7 @@ def _make_workspace(ws_id: str = "ws-1") -> Workspace:
 
 
 def _make_channel(ch_id: str = "chan-1") -> Channel:
-    return Channel(
+    return Channel(access=Access(public=True), 
         id=ch_id,
         provider_id="cp-1",
         provider="slack",
@@ -265,7 +266,7 @@ async def test_create_channel_binding_explicit_target_validates_the_channel(sp: 
 
     await _seed_channel_trigger(sp)
     await sp.get_storage(Channel).create(_make_channel("chan-x"))
-    discord = Channel(
+    discord = Channel(access=Access(public=True), 
         id="chan-dc",
         provider_id="cp-dc",
         provider=ChannelProviderType.DISCORD,
