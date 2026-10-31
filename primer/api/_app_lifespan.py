@@ -102,19 +102,15 @@ def _make_lifespan(config: AppConfig):
         from primer.api import app as _app_facade
         storage_provider = _app_facade._build_storage_provider(config)
         await storage_provider.initialize()
-        await storage_provider.get_content_store().ensure_schema()
-        await storage_provider.get_event_store().ensure_schema()
-        # Ordered data migrations. Runs BEFORE auto-bootstrap so a migration
-        # never has to reason about whether a reserved row exists yet: it
-        # only ever transforms rows that were already there. A fresh install
-        # baselines straight to LATEST_VERSION instead of running the chain
-        # against an empty database.
-        from primer.storage.migrations import is_fresh_install, run_migrations
+        # Content and event schemas, then the ordered data migrations
+        # (``primer init`` runs the same preamble). Runs BEFORE auto-bootstrap
+        # so a migration never has to reason about whether a reserved row
+        # exists yet: it only ever transforms rows that were already there. A
+        # fresh install baselines straight to LATEST_VERSION instead of
+        # running the chain against an empty database.
+        from primer.storage.migrations import prepare_storage
 
-        await run_migrations(
-            storage_provider,
-            is_fresh_install=await is_fresh_install(storage_provider),
-        )
+        await prepare_storage(storage_provider)
 
         from primer.model.provider import SecretProviderConfig
         from primer.secret.factory import SecretProviderFactory
@@ -211,12 +207,18 @@ def _make_lifespan(config: AppConfig):
             secret_provider=secret_provider,
             local_policy=local_workspace_policy,
         )
-        from primer.auth.secret import resolve_secret_box
+        from primer.auth.secret import resolve_secret_box, resolve_session_secret
         from primer.toolset.oauth.service import ToolsetOAuthService
 
+        # Resolved once (env var > db > generated and stored) and shared by the
+        # cookie signer below and the token box, so they never disagree (GS-14).
+        session_secret = (
+            await resolve_session_secret(storage=storage_provider, auth_config=config.auth)
+            if config.auth.enabled or config.encryption_key is None else None
+        )
         mcp_oauth = ToolsetOAuthService(
             storage_provider=storage_provider,
-            secret_box=await resolve_secret_box(config, storage_provider),
+            secret_box=await resolve_secret_box(config, storage_provider, session_secret=session_secret),
             public_url=config.public_url,
             auth_enabled=config.auth.enabled,
         )
@@ -365,17 +367,10 @@ def _make_lifespan(config: AppConfig):
         app.state.internal_collections = None
         app.state.config = config
 
-        # Resolve the cookie-signing secret (env var > db > auto-generate).
-        # Stashed on app.state so the auth router + middleware can sign /
-        # verify session cookies without re-reading from storage on every
-        # request.
+        # The cookie-signing secret resolved above. Stashed on app.state so
+        # the auth router + middleware can sign / verify session cookies
+        # without re-reading from storage on every request.
         if config.auth.enabled:
-            from primer.auth.secret import resolve_session_secret
-
-            session_secret = await resolve_session_secret(
-                storage=storage_provider,
-                auth_config=config.auth,
-            )
             app.state.session_secret = session_secret
             logger.info("auth: session secret resolved")
         else:

@@ -8,7 +8,7 @@ use it without duplication.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -551,14 +551,19 @@ class _FakeStorageProvider:
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         self._bootstrap_completed_at = ts
 
+    @asynccontextmanager
+    async def migration_lock(self):
+        yield
+
     async def set_schema_version(
         self, version: int, *, migrated_at: datetime | None = None,
     ) -> None:
-        self._schema_version = version
+        self._schema_version = max(self._schema_version, version)
         self._last_migration_at = migrated_at or datetime.now(UTC)
 
     async def set_session_secret(self, secret: str) -> None:
-        self._session_secret = secret
+        if getattr(self, "_session_secret", None) is None:
+            self._session_secret = secret
 
     async def set_sso_jit_enabled(self, enabled: bool) -> None:
         self._sso_jit_enabled = enabled

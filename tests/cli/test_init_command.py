@@ -118,3 +118,39 @@ class TestInitCommand:
         assert result.exit_code == 0, result.output
         output_lower = result.output.lower()
         assert "created" in output_lower or "skipped" in output_lower
+
+
+class TestInitBaselinesTheSchema:
+    """GR-8: ``primer init`` runs the same storage preamble as ``primer api``, so the first boot after it has nothing to migrate."""
+
+    def test_init_baselines_and_the_next_boot_applies_nothing(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+
+        from primer.api.app import _build_storage_provider
+        from primer.storage import migrations as mig
+
+        cfg_file = _write_config(tmp_path)
+        result = runner.invoke(cli_mod.app, ["init", "--config", str(cfg_file)])
+        assert result.exit_code == 0, result.output
+
+        applied: list[int] = []
+        for m in mig.MIGRATIONS:
+            async def _spy(_sp, v=m.version):
+                applied.append(v)
+            monkeypatch.setattr(m, "apply", _spy)
+
+        async def _with_storage(fn):
+            sp = _build_storage_provider(cli_mod._load_config(cfg_file, cli_mod.RuntimeMode.API))
+            await sp.initialize()
+            try:
+                return await fn(sp)
+            finally:
+                await sp.aclose()
+
+        state = asyncio.run(_with_storage(lambda sp: sp.get_system_state()))
+        assert state.bootstrap_completed_at is not None
+        assert state.schema_version == mig.LATEST_VERSION and state.last_migration_at is not None
+        assert asyncio.run(_with_storage(mig.prepare_storage)) == mig.LATEST_VERSION
+        assert applied == [], "the first boot after init replays nothing"

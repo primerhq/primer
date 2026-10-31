@@ -47,6 +47,7 @@ Pagination supports both styles required by :class:`primer.int.Storage`:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -126,6 +127,9 @@ ModelT = TypeVar("ModelT", bound=Identifiable)
 # table names predictable, comparable across deployments, and free
 # of any quoting surprises.
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+#: First half of the migration lock's advisory key ("prim"); the second half is ``hashtext(schema)``, so installs in other schemas never wait.
+_MIGRATION_LOCK_KEY = 0x7072696D
 
 
 def _sanitize_identifier(name: str, *, kind: str) -> str:
@@ -443,23 +447,41 @@ class PostgresStorageProvider(StorageProvider):
         async with self.pool.acquire() as conn:
             await conn.execute(sql, ts, "singleton")
 
+    @asynccontextmanager
+    async def migration_lock(self):
+        """A session advisory lock on one pooled connection, held for the whole chain.
+
+        ``pg_try_advisory_lock`` is polled rather than ``pg_advisory_lock``
+        awaited, because a wait longer than the pool's ``command_timeout``
+        would fail the boot. A connection that dies holding the lock ends
+        its session, which releases it, and the pool's reset on release
+        runs ``pg_advisory_unlock_all``.
+        """
+        async with self.pool.acquire() as conn:
+            while not await conn.fetchval("SELECT pg_try_advisory_lock($1, hashtext($2))", _MIGRATION_LOCK_KEY, self._schema):
+                await asyncio.sleep(0.2)
+            try:
+                yield
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock($1, hashtext($2))", _MIGRATION_LOCK_KEY, self._schema)
+
     async def set_schema_version(
         self, version: int, *, migrated_at: datetime | None = None,
     ) -> None:
-        """Stamp ``schema_version`` and ``last_migration_at``."""
+        """Stamp ``schema_version`` (never lower) and ``last_migration_at``."""
         ts = migrated_at or datetime.now(UTC)
         sql = (
             f'UPDATE {self.system_state_table} '
-            f'SET schema_version = $1, last_migration_at = $2 WHERE id = $3'
+            f'SET schema_version = GREATEST(schema_version, $1), last_migration_at = $2 WHERE id = $3'
         )
         async with self.pool.acquire() as conn:
             await conn.execute(sql, version, ts, "singleton")
 
     async def set_session_secret(self, secret: str) -> None:
-        """Persist the cookie-signing HMAC secret on the singleton row."""
+        """Persist the cookie-signing HMAC secret on the singleton row, only when none is stored."""
         sql = (
             f'UPDATE {self.system_state_table} '
-            f'SET session_secret = $1 WHERE id = $2'
+            f'SET session_secret = $1 WHERE id = $2 AND session_secret IS NULL'
         )
         async with self.pool.acquire() as conn:
             await conn.execute(sql, secret, "singleton")

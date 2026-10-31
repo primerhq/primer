@@ -198,8 +198,17 @@ async def run_migrations(
     refusing: the operator is running old code against a newer database and
     needs to know that, not have it silently half-handled.
 
+    The chain runs under :meth:`StorageProvider.migration_lock`, and the
+    version is read inside it: a process that waited while another applied
+    the chain finds nothing left to do (GR-1).
+
     Returns the resulting schema version.
     """
+    async with sp.migration_lock():
+        return await _run_locked(sp, is_fresh_install=is_fresh_install)
+
+
+async def _run_locked(sp: StorageProvider, *, is_fresh_install: bool) -> int:
     state = await sp.get_system_state()
     current = state.schema_version or 0
 
@@ -238,4 +247,16 @@ async def run_migrations(
     return current
 
 
-__all__ = ["LATEST_VERSION", "MIGRATIONS", "Migration", "is_fresh_install", "run_migrations"]
+async def prepare_storage(sp: StorageProvider) -> int:
+    """The storage preamble of every boot, ``primer api`` and ``primer init`` alike (GR-8).
+
+    Ensures the content and event stores' schemas, then applies the pending
+    migrations, or baselines a fresh install to :data:`LATEST_VERSION`.
+    Returns the resulting schema version.
+    """
+    await sp.get_content_store().ensure_schema()
+    await sp.get_event_store().ensure_schema()
+    return await run_migrations(sp, is_fresh_install=await is_fresh_install(sp))
+
+
+__all__ = ["LATEST_VERSION", "MIGRATIONS", "Migration", "is_fresh_install", "prepare_storage", "run_migrations"]

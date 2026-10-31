@@ -104,3 +104,10 @@ def test_the_config_never_shows_the_key():
     assert "visible-nowhere" not in repr(config)
     assert "visible-nowhere" not in config.model_dump_json()
     assert "visible-nowhere" not in str(config.model_dump(mode="json"))
+
+
+async def test_the_fallback_uses_the_session_secret_the_lifespan_already_resolved(fake_storage_provider):
+    """GS-14: the lifespan resolves the session secret once and hands the same value to the cookie signer and the box."""
+    box = await resolve_secret_box(AppConfig(), fake_storage_provider, session_secret="resolved-once")
+    assert SecretBox.from_key_material("resolved-once").decrypt(box.encrypt("tok")) == "tok"
+    assert (await fake_storage_provider.get_system_state()).session_secret is None, "nothing was resolved a second time"
