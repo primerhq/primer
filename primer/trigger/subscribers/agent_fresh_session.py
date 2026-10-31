@@ -116,7 +116,9 @@ class AgentFreshSessionDispatcher:
                 # terminal ENDED to WAITING and the session parks forever,
                 # hanging every caller that waits for a terminal state.
                 autonomous=True,
-                metadata={
+                metadata=None,
+                # Trigger provenance is system metadata: a caller's metadata may not set these keys (security review GS-1).
+                system_metadata={
                     "trigger_id": sub.trigger_id,
                     "subscription_id": sub.id,
                     "fire_id": fire_id,

@@ -60,7 +60,7 @@ def test_sibling_doc_kinds_get_the_same_keyed_fix() -> None:
     were exposed to the identical class of bug even though only the
     session case was reported."""
     src = _studio_src()
-    assert "<window.NV_FileDoc key={tab.ref} path={tab.ref} />" in src
+    assert '<window.NV_FileDoc key={con.wid + ":" + tab.ref} path={tab.ref} />' in src
     assert "<window.NV_DiffDoc key={tab.ref} sha={tab.ref} />" in src
     assert "<window.NV_WikiDoc key={tab.ref} slug={tab.ref} />" in src
 

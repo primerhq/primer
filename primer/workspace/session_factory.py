@@ -69,6 +69,14 @@ from primer.model.workspace_session import (
 
 logger = logging.getLogger(__name__)
 
+# Keys the runtime reads off a session's metadata and trusts, so only an internal writer sets them (security review GS-1): the channel
+# reply binding and its relay flag, the trigger provenance whose subscription_id is the skip gate, the one-turn schema, restart's
+# invocation counter, and graph_input (validated only when it comes through the create's own graph_input field).
+RESERVED_SESSION_METADATA_KEYS = frozenset({
+    "reply_binding", "relay_every_turn", "subscription_id", "trigger_id", "fire_id", "fired_at",
+    "ephemeral_response_format", "invocation", "graph_input",
+})
+
 
 @dataclass
 class SessionFactoryDeps:
@@ -109,6 +117,7 @@ async def start_workspace_session(
     name: str | None = None,
     initiated_by: PrincipalRef | None = None,
     external_tools: "list | None" = None,
+    system_metadata: dict | None = None,
 ) -> WorkspaceSession:
     """Full create flow shared by the REST route and the workspaces tool:
     validate workspace + binding (+ graph_input vs Begin.input_schema),
@@ -119,7 +128,18 @@ async def start_workspace_session(
     Extracted verbatim from ``POST /v1/workspaces/{wid}/sessions``
     (:mod:`primer.api.routers.sessions`) so the REST endpoint and the
     ``create_workspace_session`` MCP tool share one canonical path.
+
+    ``metadata`` is the caller's and may not name a key in
+    :data:`RESERVED_SESSION_METADATA_KEYS` (ValidationError, 422);
+    ``system_metadata`` is an internal creator's (a trigger fire's
+    provenance) and is stored over it.
     """
+    reserved = sorted(RESERVED_SESSION_METADATA_KEYS.intersection(metadata or {}))
+    if reserved:
+        raise ValidationError(
+            f"metadata may not set the system key(s) {', '.join(reserved)}: the runtime sets them itself. Bind a channel with "
+            "PUT /v1/workspaces/{id}/reply_binding, and pass graph input in the graph_input field."
+        )
     workspaces = deps.storage_provider.get_storage(WorkspaceRow)
     agents = deps.storage_provider.get_storage(Agent)
     graphs = deps.storage_provider.get_storage(Graph)
@@ -344,7 +364,7 @@ async def start_workspace_session(
         initial_instructions=initial_instructions,
         graph_input=graph_input,
         auto_start=auto_start,
-        metadata=metadata,
+        metadata={**(metadata or {}), **(system_metadata or {})},
         parent_session_id=parent_session_id,
         autonomous=autonomous,
         session_id=sid,
