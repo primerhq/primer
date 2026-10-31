@@ -45,7 +45,6 @@ import hmac
 import asyncio
 import logging
 import time
-from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -95,18 +94,24 @@ _HEADER_BLOCKLIST = frozenset({
 # In-process per-token rate limiter (sliding window)
 # ---------------------------------------------------------------------------
 
-_rate_windows: dict[str, list[float]] = defaultdict(list)
+#: Least recently used first. The key is the caller-chosen path token, checked before the token is looked up, so
+#: the map is bounded (W45): past the cap the least recently used token's window is dropped.
+_rate_windows: dict[str, list[float]] = {}
+_RATE_LIMIT_MAX_KEYS = 10_000
 
 
 def _check_rate_limit(token: str) -> bool:
     """Return True if the request is within the rate limit, False if exceeded."""
     now = time.monotonic()
     cutoff = now - _RATE_LIMIT_WINDOW_SECS
-    _rate_windows[token] = [t for t in _rate_windows[token] if t > cutoff]
-    if len(_rate_windows[token]) >= _RATE_LIMIT_MAX:
-        return False
-    _rate_windows[token].append(now)
-    return True
+    window = [t for t in _rate_windows.pop(token, ()) if t > cutoff]
+    allowed = len(window) < _RATE_LIMIT_MAX
+    if allowed:
+        window.append(now)
+    _rate_windows[token] = window  # re-inserted: now the most recently used
+    while len(_rate_windows) > _RATE_LIMIT_MAX_KEYS:
+        del _rate_windows[next(iter(_rate_windows))]
+    return allowed
 
 
 # ---------------------------------------------------------------------------
