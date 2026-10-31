@@ -51,9 +51,11 @@ from primer.workspace.state_helpers import (
     VALID_OPS as _VALID_OPS,
     build_message as _build_message,
     commit_text,
+    grep_literal as _grep_literal,
     trailer_line,
     validate_relative_path as _validate_relative_path,
     validate_session_id as _validate_session_id,
+    validate_sha as _validate_sha,
 )
 
 
@@ -503,9 +505,9 @@ class LocalStateRepo:
         if with_files:
             args += ["--numstat", "--no-renames"]
         if session_id is not None:
-            args += ["--grep", f"^{_TRAILER_SESSION}: {session_id}$"]
+            args += ["--grep", f"^{_TRAILER_SESSION}: {_grep_literal(session_id)}$"]
         if agent_id is not None:
-            args += ["--grep", f"^{_TRAILER_AGENT}: {agent_id}$"]
+            args += ["--grep", f"^{_TRAILER_AGENT}: {_grep_literal(agent_id)}$"]
         # AND-match only matters when both --grep flags are present;
         # git treats single --grep without --all-match as a single
         # pattern, which is what we want.
@@ -524,8 +526,7 @@ class LocalStateRepo:
         binary files are surfaced with a ``<binary>`` placeholder so the
         endpoint doesn't 500 on non-text blobs).
         """
-        if not sha:
-            raise ValueError("sha must be non-empty")
+        _validate_sha(sha)
         # 1) Header: subject + parent.
         try:
             head_out, _ = await self._run_git(
@@ -533,10 +534,12 @@ class LocalStateRepo:
                 "--no-patch",
                 "--format=%P%x1f%s%x1f%b",
                 sha,
+                "--",
             )
         except _GitCommandError as exc:
             stderr = exc.stderr.lower()
-            if "unknown revision" in stderr or "bad revision" in stderr:
+            # (Followed by ``--``, git says "bad object"; without it, "unknown revision".)
+            if "unknown revision" in stderr or "bad revision" in stderr or "bad object" in stderr or "not a valid object name" in stderr:
                 raise FileNotFoundError(f"commit {sha!r} not found") from exc
             raise
         header = head_out.strip("\n")
@@ -557,6 +560,7 @@ class LocalStateRepo:
                 "-r",
                 "--name-status",
                 sha,
+                "--",
             )
         except _GitCommandError:
             ns_out = ""
@@ -577,6 +581,7 @@ class LocalStateRepo:
                 "--format=",
                 "--no-color",
                 sha,
+                "--",
             )
         except _GitCommandError:
             patch_out = ""
@@ -617,8 +622,7 @@ class LocalStateRepo:
         Raises :class:`FileNotFoundError` if the path doesn't exist at
         that commit.
         """
-        if not sha:
-            raise ValueError("sha must be non-empty")
+        _validate_sha(sha)
         # ``git show`` writes the blob to stdout. We capture as bytes
         # because callers may store binary blobs.
         try:
