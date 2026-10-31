@@ -130,6 +130,25 @@ def validate_session_id(session_id: str) -> None:
         raise ValueError("session_id contains a null byte")
 
 
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{4,64}$")
+
+
+def validate_sha(sha: str) -> str:
+    """A revision that reaches git is a hex object name (4 to 64 digits), never an option, a ref or a revision expression.
+
+    ``--output=x`` as a revision made ``git show`` write a file (review of workspaces, W13); a hex name cannot start with ``-`` and carries no
+    ``:``, ``..`` or ``~``, so it can only name a commit. Returns ``sha`` unchanged.
+    """
+    if not isinstance(sha, str) or not _SHA_RE.fullmatch(sha):
+        raise ValueError(f"sha {sha!r} must be 4 to 64 hexadecimal digits")
+    return sha
+
+
+def grep_literal(value: str) -> str:
+    """``value`` as a literal inside a ``git log --grep`` basic regular expression (a session id must not act as a pattern)."""
+    return re.sub(r"([\\.\[\]*^$])", r"\\\1", value)
+
+
 def validate_relative_path(rel: str) -> None:
     """Reject paths that would escape the session slot."""
     if not rel:
