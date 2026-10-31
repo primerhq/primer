@@ -385,12 +385,19 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         Returns the marker-aware history snapshot the base loop compacts.
         """
         async with self._session.messages_lock:
-            self._window_token = self._session._state.begin_compaction(self._session.session_id)
-            text = await self._read_messages_jsonl_text()
-            if not text:
-                self._window_last_compaction = (None, None)
-                return []
-            history, last = await asyncio.to_thread(self._history_and_last_compaction, text)
+            token = self._window_token = self._session._state.begin_compaction(self._session.session_id)
+            try:
+                text = await self._read_messages_jsonl_text()
+                if not text:
+                    self._window_last_compaction = (None, None)
+                    return []
+                history, last = await asyncio.to_thread(self._history_and_last_compaction, text)
+            except BaseException:
+                # The callers open the window outside the try that closes it: a read that fails or is cancelled closes
+                # it here, or the flag stays set and the next wake's message is held in memory (AG-M6). No steer can
+                # have been deferred to it: the lock has been held since the flag was set.
+                self._session._state.end_compaction(self._session.session_id, token)
+                raise
             self._window_last_compaction = (last.tokens_after, last.noted)
             return history
 
