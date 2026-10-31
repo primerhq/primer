@@ -73,6 +73,33 @@ async def test_a_container_in_a_state_a_start_cannot_fix_is_not_handed_out(monke
     container.start.assert_not_awaited()
 
 
+# ---- W21: a stopped container is started, then reconnected ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("state", ["exited", "created"])
+async def test_a_stopped_container_is_started_then_reconnected(monkeypatch, state) -> None:
+    adapter, container = _with_container(state)
+    made = _recording_reconnect(monkeypatch, container)
+    sandbox = await adapter.get_sandbox("workspace-ws-1")
+    assert sandbox is not None and sandbox.recovered_token == "tok"
+    assert made == [("tok", 1)], "started once, before the reconnect"
+
+
+async def test_a_stopped_container_that_will_not_start_is_not_handed_out(monkeypatch) -> None:
+    adapter, container = _with_container("exited", start_error=RuntimeError("500 port is already allocated"))
+    made = _recording_reconnect(monkeypatch, container)
+    assert await adapter.get_sandbox("workspace-ws-1") is None
+    assert made == []
+
+
+async def test_a_stopped_container_without_a_token_is_not_started(monkeypatch) -> None:
+    adapter, container = _with_container("exited", env=["X=y"])
+    made = _recording_reconnect(monkeypatch, container)
+    assert await adapter.get_sandbox("workspace-ws-1") is None
+    assert made == []
+    container.start.assert_not_awaited()
+
+
 # ---- W19: remove by name ---------------------------------------------------------------------------------------------------------
 
 

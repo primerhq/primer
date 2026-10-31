@@ -542,11 +542,15 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         ``docker inspect`` (``Config.Env``) and reconnect the
         :class:`RuntimeClient` against the same URL the create path built.
 
+        A stopped container (``exited``, or ``created`` and never started:
+        after a dockerd restart or a host reboot, as no restart policy is
+        set) is started first, then reconnected (review W21).
+
         Returns ``None`` when:
 
         * the container does not exist (``404``);
-        * the container is not ``running`` (a stopped/exited container has
-          no runtime listening to reconnect to);
+        * the container is in a state a start cannot fix (``paused``,
+          ``dead``, ``removing``, ``restarting``), or will not start;
         * the token cannot be recovered from the container env.
 
         This mirrors how :class:`KubernetesWorkspaceBackend` recovers the
@@ -561,7 +565,7 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             raise
         info = await container.show()
         state = info.get("State", {}).get("Status")
-        if state != "running":
+        if state not in ("running", "exited", "created"):
             logger.warning(
                 "get_sandbox(%s): container is %s; cannot reconnect runtime "
                 "to a non-running container. Returning None.",
@@ -578,6 +582,13 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             )
             return None
         reachability = self._reachability_for_reattach()
+        if state != "running":
+            try:
+                await container.start()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("get_sandbox(%s): could not start the %s container: %s", name, state, exc)
+                return None
+            logger.info("get_sandbox(%s): started the %s container", name, state)
         try:
             sandbox = await _make_ws_sandbox(
                 self._docker, container, name, token,
