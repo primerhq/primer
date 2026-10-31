@@ -3,7 +3,8 @@
 // Artifact Store draws it above the cards through window.PC_TYPE_EXTRAS.artifact_storage. It reads GET /artifact_storage_active_config and
 // GET /artifact_storage_providers and writes PUT /artifact_storage_active_config; files stored earlier stay where they are and are still read.
 //
-// - Admin only. The three routes are, so anyone else gets nothing: no control that can only fail, and no request that can only be refused.
+// - ACL-P4 Task 9: the reads are user tier (secrets masked), so everyone sees the selector; only an admin changes it - a non-admin gets
+//   the field with the select disabled and the reason said under it, never a hidden page.
 // - A selection the server refuses (a filesystem root this process cannot use, an S3 row with half a key pair, a store deleted meanwhile)
 //   is said under the field in the server's words (readRefusal, never a code), and the select shows the stored store again.
 // - While a selection is out the select is aria-busy, NOT natively disabled (a focused control that turns disabled drops the focus to
@@ -41,6 +42,9 @@ function AS_options(items, activeId) {
 
 function AS_ActiveStoreField() {
   const api = window.primerApi;
+  // ACL-P4 Task 9: reads are user tier; the switch is an admin's. Without a console there is no person to be an admin, so read-only.
+  const con = typeof NV_useConsole === "function" ? NV_useConsole() : null;
+  const readOnly = !con || con.role !== "admin";
   const active = api.useResource(AS_ACTIVE_KEY, (signal) => api.apiFetch("GET", "/artifact_storage_active_config", null, { signal }), { pollMs: 0 });
   // Every store, every page (PR_fetchAllPages, ui/foundation/api.js); a list cut short says so under the field.
   const stores = api.useResource(AS_STORES_KEY, (signal) => PR_fetchAllPages("/artifact_storage_providers", { signal, apiFetch: api.apiFetch }), { pollMs: 0 });
@@ -91,6 +95,7 @@ function AS_ActiveStoreField() {
   const saving = pending !== null;
 
   const choose = (event) => {
+    if (readOnly) return undefined;
     const next = event && event.target ? event.target.value : "";
     if (outRef.current || !next || next === stored) return undefined;
     outRef.current = true;
@@ -120,9 +125,13 @@ function AS_ActiveStoreField() {
     <PK_Section title="DEFAULT STORE" testid="as-active-store" cols={1}>
       <PK_Field label={AS_LABEL} help={help} error={refusal || loadWords}>
         <select data-testid="as-active-store-select" value={saving ? pending : stored} aria-busy={saving ? "true" : undefined}
+          disabled={readOnly || undefined} title={readOnly ? "Only an admin can change this" : undefined}
           style={{ width: "100%" }} onFocus={() => stores.refetch()} onChange={choose}>
           {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
+        {readOnly ? (
+          <div className="muted" data-testid="as-active-store-readonly-note">Only an admin can change this</div>
+        ) : null}
         {retryButton}
       </PK_Field>
       <PR_PagedNote list={stores.data} noun="artifact stores" testid="as-stores-note" />
@@ -130,11 +139,9 @@ function AS_ActiveStoreField() {
   );
 }
 
-// The extra itself: an admin gets the field, anyone else nothing (and so no request). The catalog hands every extra {rows, reload}; this one
-// reads its own list, so it can ask again when the select takes the focus.
+// The extra itself: everyone gets the field (the reads are user tier, ACL-P4 Task 9); only an admin's select takes a change. The catalog
+// hands every extra {rows, reload}; this one reads its own list, so it can ask again when the select takes the focus.
 function AS_ActiveStoreSelector() {
-  const con = typeof NV_useConsole === "function" ? NV_useConsole() : null;
-  if (!con || con.role !== "admin") return null;
   return <AS_ActiveStoreField />;
 }
 

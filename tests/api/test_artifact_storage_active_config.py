@@ -69,12 +69,16 @@ async def test_the_active_store_cannot_be_deleted(client) -> None:
 
 
 @pytest.mark.parametrize("role", ["user", "restricted"])
-async def test_a_non_admin_can_neither_read_nor_set_it(raw_client, app, role: str) -> None:
+async def test_the_selection_gate_by_role(raw_client, app, role: str) -> None:
+    """Re-pinned (ACL-P4 Task 9): the active selection is global settings, so a full user reads it; the PUT stays the admin's, and restricted gets nothing."""
     from tests.api.test_require_user_admin import _login, _seed
 
     await _seed(app, uid=f"u-active-{role}", username=role, role=role)
     await _login(raw_client, role)
-    assert (await raw_client.get(ACTIVE)).status_code == 403
+    if role == "user":
+        assert (await raw_client.get(ACTIVE)).status_code == 200
+    else:
+        assert (await raw_client.get(ACTIVE)).status_code == 403
     assert (await raw_client.put(ACTIVE, json={"provider_id": "db-2"})).status_code == 403
 
 

@@ -78,9 +78,10 @@ Provider rows and the active-config singleton go through the normal `Storage` in
 | `GET /v1/audio/models`, `GET /v1/audio/voices` | Live enumeration for the pickers. |
 | `GET /v1/capabilities` | `speech.stt_configured` / `speech.tts_configured`. |
 
-Provider CRUD is admin; the audio proxy is a feature surface any signed-in operator may use.
+Provider writes are admin; the provider and active-config reads are user tier with every secret masked
+(ACL-P4 Task 9); the audio proxy is a feature surface any signed-in operator may use.
 
-The console sets these defaults on the ASR and TTS provider pages. `PC_SttActiveSelector` and `PC_TtsActiveSelector` are the `PC_TYPE_EXTRAS` entries for those provider types: they read `/v1/speech_active_config`, replace all three fields together so changing one default keeps the other settings, and use `/v1/audio/voices?provider_id=...` for the chosen TTS provider's Voice list. A TTS provider change clears `tts_voice`, because a voice name is provider-specific. The selectors use the Platform kit, stack on a phone, show loading and retry states, and restore the served value if a PUT is refused.
+The console draws these defaults on the ASR and TTS provider pages. `PC_SttActiveSelector` and `PC_TtsActiveSelector` are the `PC_TYPE_EXTRAS` entries for those provider types: they read `/v1/speech_active_config`, replace all three fields together so changing one default keeps the other settings, and use `/v1/audio/voices?provider_id=...` for the chosen TTS provider's Voice list. A TTS provider change clears `tts_voice`, because a voice name is provider-specific. The selectors use the Platform kit, stack on a phone, show loading and retry states, and restore the served value if a PUT is refused. For a non-admin they draw the same selectors read-only (ACL-P4 Task 9): the selects are natively disabled with "Only an admin can change this" under them, and they make no write.
 
 ## 9. Internal contracts
 

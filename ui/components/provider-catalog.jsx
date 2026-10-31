@@ -1,4 +1,4 @@
-/* global React, window, Btn, Banner, PK_PageHeader, PK_CardGrid, PK_Card, PK_usePagedFilter, PK_Fold, PK_cardFacts, PR_fetchAllPages, PR_PagedNote */
+/* global React, window, Btn, Banner, PK_PageHeader, PK_CardGrid, PK_Card, PK_usePagedFilter, PK_Fold, PK_cardFacts, PR_fetchAllPages, PR_PagedNote, NV_useConsole */
 // ============================================================================
 // Unified provider catalog (Plan 01 kit switch-over, Plan 02 Task 20).
 //
@@ -84,7 +84,7 @@ function PC_cardFor(klass, row, ctx) {
     if (row.default_model) rawFacts.push(`model ${row.default_model}`);
   }
 
-  const menu = isBuiltin ? null : [
+  const menu = isBuiltin || ctx.readOnly ? null : [
     {
       label: "Delete",
       danger: true,
@@ -102,7 +102,7 @@ function PC_cardFor(klass, row, ctx) {
     status: status,
     facts: rawFacts,
     menu: menu,
-    onOpen: () => ctx.onOpen(klass, row),
+    onOpen: () => { if (!ctx.readOnly) ctx.onOpen(klass, row); },
   };
 }
 
@@ -115,6 +115,9 @@ function resolveClassKey(initialClass) {
 
 function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   const { apiFetch, useViewport, toastPush } = window.primerApi || {};
+  // ACL-P4 Task 9: the provider reads are user tier (the global-settings classes are); only an admin registers, edits or deletes.
+  const con = typeof NV_useConsole === "function" ? NV_useConsole() : null;
+  const readOnly = !con || con.role !== "admin";
   const viewport = typeof useViewport === "function" ? useViewport() : { isMobile: false };
   const isMobile = !!(viewport && viewport.isMobile);
 
@@ -345,9 +348,10 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
 
   const cardCtx = React.useMemo(() => ({
     profileCounts: profileCounts,
+    readOnly: readOnly,
     onOpen: openProvider,
     onDelete: deleteProvider,
-  }), [profileCounts]);
+  }), [profileCounts, readOnly]);
 
   const paged = PK_usePagedFilter(allRows, {
     pageSize: 12,
@@ -418,6 +422,8 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
         action={{
           label: "+ Register",
           onClick: () => openRegister(classKey === "all" ? "llm" : classKey),
+          disabled: readOnly || undefined,
+          title: readOnly ? "Only an admin can change this" : undefined,
           testid: "pc-register-open",
         }}
       />

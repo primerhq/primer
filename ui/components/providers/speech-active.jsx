@@ -1,4 +1,4 @@
-/* global React, window */
+/* global React, window, NV_useConsole */
 // speech-active.jsx - the ASR and TTS active selectors shown above their
 // provider cards (plan 02, Task 16; seam I-4). Each selector edits the one
 // ActiveSpeechConfig row as a whole, so changing one default never drops the
@@ -18,6 +18,12 @@ function PC_activeSpeechRows(rows) {
     value: String(row.id),
     label: String(row.id),
   }));
+}
+
+// ACL-P4 Task 9: the speech config reads are user tier; the switch is an admin's. No console means no person to be an admin, so read-only.
+function PC_speechReadOnly() {
+  const con = typeof NV_useConsole === "function" ? NV_useConsole() : null;
+  return !con || con.role !== "admin";
 }
 
 function PC_useActiveSpeech(reload) {
@@ -89,17 +95,22 @@ function PC_ActiveSpeechLoad({ state }) {
 function PC_SttActiveSelector({ rows, reload }) {
   const state = PC_useActiveSpeech(reload);
   if (!state.row) return <PC_ActiveSpeechLoad state={state} />;
+  const readOnly = PC_speechReadOnly();
   const options = PC_activeSpeechRows(rows);
   const value = state.row.stt_provider_id || "";
   return (
     <window.PK_Section title="DEFAULT TRANSCRIPTION" testid="pc-active-stt" cols={1}>
       <window.PK_Field label="Transcribe with">
-        <select data-testid="pc-active-stt-provider" aria-label="Transcribe with" value={value} disabled={state.saving}
+        <select data-testid="pc-active-stt-provider" aria-label="Transcribe with" value={value} disabled={state.saving || readOnly}
+          title={readOnly ? "Only an admin can change this" : undefined}
           onChange={(event) => state.save({ ...state.row, stt_provider_id: event.target.value || null })}>
           <option value="">(none)</option>
           {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
       </window.PK_Field>
+      {readOnly ? (
+        <div className="muted" data-testid="pc-active-stt-readonly-note">Only an admin can change this</div>
+      ) : null}
     </window.PK_Section>
   );
 }
@@ -114,12 +125,14 @@ function PC_TtsActiveSelector({ rows, reload }) {
     { pollMs: 0 },
   );
   if (!state.row) return <PC_ActiveSpeechLoad state={state} />;
+  const readOnly = PC_speechReadOnly();
   const options = PC_activeSpeechRows(rows);
   const voiceNames = voices.data && Array.isArray(voices.data.voices) ? voices.data.voices : [];
   return (
     <window.PK_Section title="DEFAULT VOICE OUTPUT" testid="pc-active-tts" cols={2}>
       <window.PK_Field label="Speak with">
-        <select data-testid="pc-active-tts-provider" aria-label="Speak with" value={state.row.tts_provider_id || ""} disabled={state.saving}
+        <select data-testid="pc-active-tts-provider" aria-label="Speak with" value={state.row.tts_provider_id || ""} disabled={state.saving || readOnly}
+          title={readOnly ? "Only an admin can change this" : undefined}
           onChange={(event) => state.save({ ...state.row, tts_provider_id: event.target.value || null, tts_voice: null })}>
           <option value="">(none)</option>
           {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -127,12 +140,16 @@ function PC_TtsActiveSelector({ rows, reload }) {
       </window.PK_Field>
       <window.PK_Field label="Voice" help={providerId && voices.error ? "Could not list this provider's voices." : null}>
         <select data-testid="pc-active-tts-voice" aria-label="Voice" value={state.row.tts_voice || ""}
-          disabled={state.saving || !providerId || voices.loading}
+          disabled={state.saving || readOnly || !providerId || voices.loading}
+          title={readOnly ? "Only an admin can change this" : undefined}
           onChange={(event) => state.save({ ...state.row, tts_voice: event.target.value || null })}>
           <option value="">(provider default voice)</option>
           {voiceNames.map((voice) => <option key={voice} value={voice}>{voice}</option>)}
         </select>
       </window.PK_Field>
+      {readOnly ? (
+        <div className="muted" data-testid="pc-active-tts-readonly-note">Only an admin can change this</div>
+      ) : null}
     </window.PK_Section>
   );
 }
