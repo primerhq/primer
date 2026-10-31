@@ -63,6 +63,8 @@ async def _seed(sp, *, session_by: PrincipalRef | None, owner: PrincipalRef | No
         "id": "tr-1", "slug": "steer-trigger", "name": "t", "created_at": NOW.isoformat(),
         "config": {"kind": "delayed", "fire_at": NOW.isoformat()},
         "owner": trigger_owner.model_dump(mode="json") if trigger_owner else None,
+        # The trigger's run-as owner and the subscription's owner hold the access the fire-time check asks of them (access-control P3 SEC, findings 3 and 7).
+        "access": {"owners": sorted({r.id for r in (trigger_owner, owner) if r is not None and r.type == "user"})},
     }))
     sub = Subscription.model_validate({
         "id": "sb-1", "trigger_id": "tr-1", "config": config.model_dump(mode="json"), "parallelism": "queue",

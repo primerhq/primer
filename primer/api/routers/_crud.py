@@ -721,11 +721,11 @@ def make_crud_router(
                 # The body's access is ignored (spec anti-goal 1): the row
                 # keeps its stored access.
                 entity.access = existing.access
-            _refuse_harness_id(entity, existing)
             if row_guard is not None:
                 await row_guard(existing, request, True)
             if on_pre_update is not None:
-                await on_pre_update(entity, existing, request)
+                await on_pre_update(entity, existing, request)  # a managed row answers its own 409 first
+            _refuse_harness_id(entity, existing)
             if owned:
                 # Guarded on the stored sharing's rev: a share changed meanwhile answers 409, never a resurrected grant.
                 updated = await update_keeping_access(

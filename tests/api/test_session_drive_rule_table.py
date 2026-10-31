@@ -141,7 +141,7 @@ async def _drive(env: Env, path: str, session_id: str = "ses-t") -> tuple[str, d
         owner = PrincipalRef(type="user", id="u-owner", display="owner", role="user", source="local").model_dump(mode="json")
         await world.sp.get_storage(Trigger).create(Trigger.model_validate({
             "id": "tr-1", "slug": "drive-table", "name": "t", "created_at": NOW.isoformat(), "config": {"kind": "delayed", "fire_at": NOW.isoformat()},
-            "owner": owner,
+            "owner": owner, "access": {"owners": ["u-owner"]},  # the owner holds the access the fire-time check asks of them (P3 SEC)
         }))
         sub = Subscription.model_validate({
             "id": "sb-1", "trigger_id": "tr-1", "config": SessionAppendSubConfig(session_id=session_id).model_dump(mode="json"),
