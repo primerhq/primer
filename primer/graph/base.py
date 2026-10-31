@@ -1444,6 +1444,49 @@ class _BaseGraphExecutor(
             ended_detail=ended_detail,
         )
 
+    async def _fold_successors_before_park(
+        self,
+        settled: set[str],
+        context: GraphContext,
+    ) -> "_GraphErrorEvent | None":
+        """Fold the successors of the nodes that settled in a superstep about to park into ``_ready_set`` (AG-H1).
+
+        The park raises before the main loop walks the superstep's edges, and the resume walks only the RESUMED nodes' edges, so a sibling
+        that finished beside the park lost its whole branch and a FanOut its instances. Folded here (with the drained fan-out plans), the
+        checkpoint carries them and the superstep after the last answer runs them. An edge that cannot be routed does not lose the park:
+        the failure is remembered as a node failure is (the run ends ``failed`` once the park is answered) and the routing error event is
+        returned for the caller to emit, as the main loop emits it.
+        """
+        if not settled:
+            return None
+        try:
+            next_ready = await self._compute_next_ready(settled, context)
+        except _RoutingFailed as exc:
+            logger.warning(
+                "GraphExecutor: routing failed",
+                extra={"graph_id": self._graph.id, "node_id": exc.source_node_id, "error": str(exc)},
+            )
+            if self._pending_ended_reason is None:
+                self._pending_ended_reason = "failed"
+                self._pending_ended_detail = "routing_failed"
+            return _GraphErrorEvent(code="routing_failed", message=str(exc), node_id=exc.source_node_id)
+        except Exception as exc:  # noqa: BLE001 -- ConfigError or a raising router: fail the run after the park, never lose the park to it
+            logger.warning(
+                "GraphExecutor: edge evaluation failed",
+                extra={"graph_id": self._graph.id, "error": str(exc)},
+            )
+            self._last_failure_text = f"edge evaluation failed: {exc}"
+            if self._pending_ended_reason is None:
+                self._pending_ended_reason = "failed"
+            return None
+        for fanout_id, instances in list(self._pending_fanout.items()):
+            for inst in instances:
+                self._fanout_instances[inst.synthesized_id] = inst
+                next_ready.add(inst.synthesized_id)
+            del self._pending_fanout[fanout_id]
+        self._ready_set |= next_ready
+        return None
+
     async def _build_sub_executor(
         self,
         parent_node: _GraphNodeRef,
@@ -2169,6 +2212,15 @@ class _BaseGraphExecutor(
                 or self._pending_agent_yields
                 or self._pending_tool_waits
             ):
+                # AG-H1: the nodes that settled beside the park keep their successors (and a FanOut its instances): folded into
+                # self._ready_set now, so the checkpoint carries them. Not when an un-suppressed failure already dooms the run.
+                if not any_failed:
+                    routing_error = await self._fold_successors_before_park(
+                        {nid for nid in ready_ordered if not (results.get(nid) is not None and results[nid].suspended)},
+                        context,
+                    )
+                    if routing_error is not None:
+                        yield routing_error  # type: ignore[misc]
                 # 01a0812c: NO self._ready_set reset here (deleted, not
                 # adapted - this was the round-4 BLOCKER's exact
                 # mechanism). By this point in the classification loop
@@ -2295,7 +2347,9 @@ class _BaseGraphExecutor(
             #      max_iterations hard reset a few lines up (a `continue`
             #      that restarts the loop with a completely fresh
             #      ready_ordered snapshot next iteration, so it never
-            #      reaches this line either), and this fold itself. Grep
+            #      reaches this line either), the park-time fold
+            #      (_fold_successors_before_park, always followed by the
+            #      park's raise), and this fold itself. Grep
             #      ``self\._ready_set`` in this file to re-verify; nothing
             #      else ever calls .add()/|= on it.
             #   2. ready_ordered (a few lines up) is `sorted(self._ready_set)`
