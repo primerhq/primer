@@ -86,6 +86,7 @@ from primer.common.log import redact_url_secrets
 from primer.model.common import preserve_masked_secrets
 from primer.toolset.toolset_checks import (
     check_mcp_url_resolves_public,
+    check_new_toolset_id,
     check_oauth_resource_uri,
     check_python_toolset,
     oauth_settings_changed,
@@ -1661,6 +1662,10 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
                 ),
             },
         )
+    try:
+        check_new_toolset_id(entity)
+    except EntityCheckError as exc:
+        raise RequestValidationError([{"type": "value_error", "loc": ("body", "id"), "msg": exc.message, "input": None}]) from exc
     _refuse_a_resource_uri_elsewhere(entity)
     await _refuse_a_name_that_resolves_internal(entity, request)
     if _toolset_probe_bypassed(request):
