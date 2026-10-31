@@ -32,6 +32,7 @@ from primer.model.channel_correlation import ChannelCorrelation
 from primer.model.common import dump_for_storage
 from primer.model.except_ import ConflictError
 from primer.model.storage import OffsetPage
+from primer.storage._ddl import execute_create_idempotent
 from primer.storage.q import Q
 
 
@@ -119,7 +120,8 @@ class CorrelationStore:
                 f"((data->>'channel_id'), (data->>'anchor'))"
             )
             async with self._sp.pool.acquire() as conn:
-                await conn.execute(sql)
+                # Two processes (or two concurrent claims) creating it at once race on pg_class; the loser treats it as present.
+                await execute_create_idempotent(conn, sql)
             _INDEX_ENSURED.add(self._sp)
         elif backend == "sqlite":
             sql = (
