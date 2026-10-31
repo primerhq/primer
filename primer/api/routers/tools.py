@@ -22,7 +22,7 @@ import logging
 from fastapi import APIRouter, Depends, Request
 
 from primer.access.person import person_from_request
-from primer.access.policy import visible_predicate
+from primer.access.policy import catalogue_predicate, level_of
 from primer.api.deps import (
     get_principal,
     get_provider_registry,
@@ -78,11 +78,13 @@ async def list_tools(
     items: list[dict] = []
     seen_ids: set[str] = set()
 
-    async def _emit(toolset_id: str) -> None:
+    async def _emit(toolset_id: str, only: frozenset[str] | None = None) -> None:
         try:
             async with asyncio.timeout(_ENUMERATE_TIMEOUT_S):
                 provider = await registry.get_toolset(toolset_id)
                 async for tool in provider.list_tools(principal=principal):
+                    if only is not None and tool.id not in only:
+                        continue  # a row the caller cannot read shows only its public tools
                     scoped = f"{toolset_id}__{tool.id}"
                     if scoped in seen_ids:
                         continue
@@ -130,7 +132,8 @@ async def list_tools(
     # the default 200-row cap. Rows the caller may not read stay out (spec
     # anti-goal 4: filter in storage); admins get a None predicate and keep
     # the unfiltered list.
-    access_pred = visible_predicate(person_from_request(request))
+    person = person_from_request(request)
+    access_pred = catalogue_predicate(person)
     ts_storage = storage_provider.get_storage(Toolset)
     offset = 0
     page_size = 200
@@ -141,7 +144,7 @@ async def list_tools(
                 OffsetPage(offset=offset, length=page_size),
             )
             for row in page.items:
-                await _emit(row.id)
+                await _emit(row.id, None if level_of(person, row.access) is not None else frozenset(row.access.public_tools))
             if len(page.items) < page_size:
                 break
             offset += page_size

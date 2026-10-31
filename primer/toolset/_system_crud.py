@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 
 from primer.access.person import Person, person_for_tool
 from primer.toolset._collection_access import collection_for
-from primer.access.policy import require, visible_predicate
+from primer.access.policy import level_of, require, visible_predicate
 from primer.access.service import update_keeping_access
 from primer.agent.approval import (
     ApprovalContext,
@@ -323,6 +323,13 @@ def _owned_person(ctx: ToolContext | None) -> Person:
     return person_for_tool(ctx)
 
 
+async def _usable_tools(registry: "ProviderRegistry", spelled_id: str, *, ctx: ToolContext | None) -> frozenset[str] | None:
+    """The tools of the toolset the run's person may use: ``None`` every tool, a set only those (access-control P4 Task 2)."""
+    from primer.access.tools import toolset_use
+
+    return (await toolset_use(registry.storage_provider, _owned_person(ctx), [spelled_id]))[spelled_id]
+
+
 async def _toolset_read_refusal(
     registry: "ProviderRegistry",
     spelled_id: str,
@@ -339,8 +346,13 @@ async def _toolset_read_refusal(
     row = await registry.storage_provider.get_storage(Toolset).get(canonical_toolset_id(spelled_id))
     if row is None:
         return None
+    person = _owned_person(ctx)
+    # A row the person holds no level on still opens to the tools it marks public (access-control P4 Task 2). The door passes, then lists, describes
+    # or dispatches only those tools (``_usable_tools``): any other tool of the row is answered as one the toolset does not have.
+    if level_of(person, row.access) is None and person.is_full_user and row.access.public_tools:
+        return None
     try:
-        require(_owned_person(ctx), row.access, AccessLevel.READ, what=f"Toolset {spelled_id!r}")
+        require(person, row.access, AccessLevel.READ, what=f"Toolset {spelled_id!r}")
         return None
     except NotFoundError:
         return _err(not_found_note or f"Toolset {spelled_id!r} does not exist", error_type="not-found")
@@ -1004,6 +1016,7 @@ def _list_toolset_tools_tool(
         refusal = await _toolset_read_refusal(registry, args.toolset_id, ctx=ctx)
         if refusal is not None:
             return refusal
+        usable = await _usable_tools(registry, args.toolset_id, ctx=ctx)
         try:
             provider = await registry.get_toolset(args.toolset_id)
         except NotFoundError as exc:
@@ -1015,7 +1028,8 @@ def _list_toolset_tools_tool(
         try:
             principal = ctx.principal if ctx is not None else None
             async for tool in provider.list_tools(principal=principal):
-                tools_out.append(tool.model_dump(mode="json"))
+                if usable is None or tool.id in usable:
+                    tools_out.append(tool.model_dump(mode="json"))
         except McpSignInRequiredError as exc:
             return _err(str(exc), error_type="sign-in-required")
         return _ok({"tools": tools_out})
@@ -1158,6 +1172,7 @@ class _ListingCache:
 
 async def _listed_tool(
     provider: Any, *, toolset_id: str, tool_name: str, ctx: ToolContext | None, cache: _ListingCache,
+    allowed: frozenset[str] | None = None,
 ) -> Tool | ToolCallResult:
     """The descriptor ``provider`` lists for ``tool_name``, or the refusal ``call_tool`` answers instead (audit G6-8).
 
@@ -1172,7 +1187,7 @@ async def _listed_tool(
     principal = ctx.principal if ctx is not None else None
     key = (toolset_id, principal)
     kept = cache.get(key)
-    if kept is not None and tool_name in kept:
+    if kept is not None and tool_name in kept and (allowed is None or tool_name in allowed):
         return kept[tool_name]
     # Function-local: the turn's listing module is read at call time so a test can lower its clock.
     from primer.agent import tool_listing
@@ -1196,6 +1211,9 @@ async def _listed_tool(
     except Exception as exc:  # noqa: BLE001 - an adapter that fails with a bare exception is a provider failure to the caller
         return _err(f"toolset {toolset_id!r} could not list its tools: {type(exc).__name__}: {exc}", error_type="provider-error")
     cache.put(key, listed)
+    # Only the tools the person may use are said to exist (access-control P4 Task 2): a sibling of a public tool is answered as missing, and its name is not offered.
+    if allowed is not None:
+        listed = {name: tool for name, tool in listed.items() if name in allowed}
     if tool_name in listed:
         return listed[tool_name]
     names = ", ".join(sorted(listed)[:_UNKNOWN_TOOL_NAMES_LISTED])
@@ -1227,6 +1245,7 @@ def _call_tool_tool(
         refusal = await _toolset_read_refusal(registry, toolset_id, ctx=ctx)
         if refusal is not None:
             return refusal
+        usable = await _usable_tools(registry, toolset_id, ctx=ctx)
 
         try:
             provider = await registry.get_toolset(toolset_id)
@@ -1238,7 +1257,7 @@ def _call_tool_tool(
         # The inner tool, as the toolset LISTS it, before anything is decided about it (audit G6-8). An unknown name used to reach the role
         # check, where it fails closed to ``admin``: a user-role run that mistyped a tool was told it "requires the 'admin' role", and a policy
         # was looked up on a name nothing runs. Everything below (the role, the gate, the park, the dispatch) uses the LISTED name.
-        listed = await _listed_tool(provider, toolset_id=toolset_id, tool_name=args.tool_name, ctx=ctx, cache=listings)
+        listed = await _listed_tool(provider, toolset_id=toolset_id, tool_name=args.tool_name, ctx=ctx, cache=listings, allowed=usable)
         if isinstance(listed, ToolCallResult):
             return listed
         tool_name = listed.id
@@ -1392,6 +1411,7 @@ def _call_tool_tool(
                 tool_name=tool_name,
                 arguments=args.arguments,
                 ctx=ctx,
+                storage_provider=registry.storage_provider,
             )
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="tool-call-error")
@@ -1525,6 +1545,7 @@ def _describe_tool_tool(
         )
         if refusal is not None:
             return refusal
+        usable = await _usable_tools(registry, args.toolset_id, ctx=ctx)
         try:
             # One listing answers all three outcomes (found, no such tool with the toolset's names to offer, no such toolset). It is made as the run's own
             # principal, as ``list_toolset_tools`` and ``call_tool`` hand their inner provider, so a toolset with per-user OAuth state answers for the person
@@ -1540,6 +1561,8 @@ def _describe_tool_tool(
             return _err(str(exc), error_type="sign-in-required")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="provider-error")
+        if usable is not None:
+            entries = [e for e in entries if e.tool.id in usable]  # a tool the person may not use is described as missing, its name not offered
         entry = next((e for e in entries if e.tool.id == args.tool_name), None)
         if entry is None:
             names = ", ".join(sorted(e.tool.id for e in entries)[:_DESCRIBE_TOOL_NAMES_LISTED])

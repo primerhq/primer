@@ -452,10 +452,17 @@ class ToolExecutionManager:
             # any non-session caller (chats and bare managers) gets the
             # filter - these tools require a session to function anyway.
             suppress_workspace_ext = self._workspace_session is None
+            # What the run's person may use of each toolset (access-control P4 Task 2), BEFORE any remote listing: a toolset the person
+            # may use no tool of is never contacted, so it costs no connection and no sign-in prompt, and is noticed instead.
+            use = await self._tool_use()
+            for toolset_id, usable in use.items():
+                if usable is not None and not usable:
+                    unavailable[toolset_id] = tool_listing.NO_ACCESS
+                    unavailable_states[toolset_id] = tool_listing.NO_ACCESS
             # The remote toolsets (MCP) are listed first and together, so one that hangs costs the turn its bound once,
             # not once per toolset. The walk below then takes them in registration order like every other toolset.
             remote = await self._list_remote_toolsets(
-                principal=principal, skip_workspace_ext=suppress_workspace_ext,
+                principal=principal, skip_workspace_ext=suppress_workspace_ext, skip=frozenset(unavailable),
             )
             # Toolset-provider tools (each provider yields tools by their
             # bare name; we scope on the way out).
@@ -470,6 +477,9 @@ class ToolExecutionManager:
                     # references one gets the standard "not registered"
                     # rejection in ``_execute_inner``.
                     continue
+                if toolset_id in unavailable:
+                    continue  # no usable tool for this person: noticed above, nothing of it listed
+                usable = use.get(toolset_id)
                 listing = remote.get(toolset_id)
                 if listing is not None and listing.reason is not None:
                     # Cannot list: left out of the turn, nothing of it enters the routing table.
@@ -514,6 +524,10 @@ class ToolExecutionManager:
                     # is the same flag surfaced for the MCP guard. Keyed on
                     # the same session-absent condition.
                     if suppress_workspace_ext and t.requires_workspace:
+                        continue
+                    if usable is not None and t.id not in usable:
+                        # A tool the person may not use stays out of the routing table too, so it is not reachable by any door.
+                        unavailable_states[toolset_id] = tool_listing.SOME_TOOLS
                         continue
                     scoped_id = f"{toolset_id}{_SCOPE_SEPARATOR}{t.id}"
                     # Routing table is built unconditionally so an
@@ -571,6 +585,7 @@ class ToolExecutionManager:
         *,
         principal: str | None,
         skip_workspace_ext: bool,
+        skip: frozenset[str] = frozenset(),
     ) -> dict[str, tool_listing.ToolListing]:
         """List every remote toolset at once, each bounded; toolset id -> what it answered.
 
@@ -584,6 +599,7 @@ class ToolExecutionManager:
             for toolset_id, provider in self._toolsets.items()
             if getattr(provider, "lists_remotely", False) is True
             and not (skip_workspace_ext and toolset_id == WORKSPACE_EXT_TOOLSET_ID)
+            and toolset_id not in skip
         }
         if not remote:
             return {}
@@ -597,6 +613,17 @@ class ToolExecutionManager:
             )
         )
         return dict(zip(remote, listings))
+
+    async def _tool_use(self) -> dict[str, frozenset[str] | None]:
+        """Toolset id -> the tools the run's person may use (``None``: every tool). Empty when the manager has no registry (tests only)."""
+        registry = self._provider_registry
+        sp = getattr(registry, "storage_provider", None)
+        if sp is None:
+            return {}
+        from primer.access.person import person_from_ref
+        from primer.access.tools import toolset_use
+
+        return await toolset_use(sp, person_from_ref(self._initiated_by), self._toolsets)
 
     def unavailable_toolsets(self) -> dict[str, str]:
         """Toolset id -> the state of a toolset left out of this turn (an MCP toolset that could not list its tools); a copy.
