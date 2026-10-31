@@ -12,23 +12,29 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
 
 from primer.agent.invoke import MAX_INVOCATION_DEPTH
+from primer.graph import _node_refs
+from primer.graph.base import _GraphErrorEvent
 from primer.graph.executor import GraphExecutor
 from primer.graph.workspace_executor import WorkspaceGraphExecutor
 from primer.model.chat import ToolResultPart
 from primer.model.graph import (
+    FanOutSpec,
     Graph,
     GraphNodeMessage,
     GraphThread,
     _BeginNode,
     _EndNode,
+    _FanOutNode,
     _GraphNodeRef,
     _StaticEdge,
+    _ToolCallNode,
 )
 from tests.graph.test_max_iterations import _agent, _model
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
@@ -105,3 +111,78 @@ async def test_a_self_referencing_subgraph_fails_at_the_depth_guard(tmp_path: Pa
         for p in (tmp_path / ".state").rglob("state.json")
     ]
     assert any(f"would exceed max {MAX_INVOCATION_DEPTH}" in e for e in errors), errors
+
+
+# ---- AG-M24 (D7): fan-out width cap and tasks alive -------------------------------------------------------------------
+
+
+def _broadcast_graph(count: int) -> Graph:
+    return Graph(
+        id="g-bc", description="begin -> t0 -> broadcast -> t",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="t0", tool_id="x__t0", arguments={}),
+            _FanOutNode(id="fo", specs=[FanOutSpec(kind="broadcast", target_node_id="t", count=count)]),
+            _ToolCallNode(id="t", tool_id="x__t", arguments={}),
+        ],
+        edges=[_StaticEdge(from_node="begin", to_node="t0"), _StaticEdge(from_node="t0", to_node="fo")],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_over_the_default_cap_fails_fanout_source_invalid():
+    assert _node_refs.MAX_FANOUT_INSTANCES == 1000
+    calls = []
+
+    async def dispatcher(node, arguments):
+        calls.append(node.id)
+        return ToolResultPart(id="x", output="ok")
+
+    _, events, thread = await _run(_broadcast_graph(1001), dispatcher=dispatcher)
+
+    assert (thread.ended_reason, thread.ended_detail) == ("failed", "fanout_source_invalid")
+    assert calls == ["t0"], "no copy runs"
+    assert [e.code for e in events if isinstance(e, _GraphErrorEvent)] == ["fanout_source_invalid"]
+
+
+@pytest.mark.asyncio
+async def test_the_cap_is_configurable_and_bounds_a_map_too(monkeypatch):
+    monkeypatch.setattr(_node_refs, "MAX_FANOUT_INSTANCES", 3)
+    graph = Graph(
+        id="g-map-cap", description="plan -> map",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="plan", tool_id="x__plan", arguments={}, output_schema=OBJ),
+            _FanOutNode(id="fo", specs=[FanOutSpec(kind="map", target_node_id="t", source_node_id="plan", source_path="items")]),
+            _ToolCallNode(id="t", tool_id="x__t", arguments={}),
+        ],
+        edges=[_StaticEdge(from_node="begin", to_node="plan"), _StaticEdge(from_node="plan", to_node="fo")],
+    )
+
+    async def dispatcher(node, arguments):
+        return ToolResultPart(id="x", output=json.dumps({"items": [1, 2, 3, 4]}))
+
+    _, _, thread = await _run(graph, dispatcher=dispatcher)
+    assert (thread.ended_reason, thread.ended_detail) == ("failed", "fanout_source_invalid")
+
+    monkeypatch.setattr(_node_refs, "MAX_FANOUT_INSTANCES", 4)
+    _, _, thread = await _run(graph, dispatcher=dispatcher)
+    assert thread.ended_reason == "completed", "a fan-out AT the cap runs"
+
+
+@pytest.mark.asyncio
+async def test_a_wide_superstep_never_has_more_node_tasks_alive_than_the_bound():
+    alive: dict[str, list[int]] = {"t0": [], "t": []}
+
+    async def dispatcher(node, arguments):
+        alive[node.id].append(len(asyncio.all_tasks()))
+        await asyncio.sleep(0)
+        return ToolResultPart(id="x", output="ok")
+
+    _, _, thread = await _run(_broadcast_graph(50), dispatcher=dispatcher, max_parallel_nodes=2)
+
+    assert thread.ended_reason == "completed"
+    assert len(alive["t"]) == 50
+    baseline = alive["t0"][0]          # tasks alive while one node runs (the test's own and that node's)
+    # at most max_parallel_nodes node tasks, plus the one task that starts them, in place of the single node
+    assert max(alive["t"]) - baseline <= 2, (baseline, max(alive["t"]))

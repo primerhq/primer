@@ -2025,23 +2025,30 @@ class _BaseGraphExecutor(
             # tasks (each an LLM loop + workspace persistence). Nodes in a
             # superstep are independent, so bounding to >=1 never deadlocks.
             # A fresh semaphore per superstep keeps the bound local to it.
+            # AG-M24: a slot is taken BEFORE its node's task is created (by a
+            # spawner running beside the drain below, which must keep
+            # resolving dispatch barriers), so a wide fan-out never has more
+            # than max_parallel_nodes node tasks alive. Each node still gets
+            # its own task (its own context), in the same order as before.
             node_semaphore = asyncio.Semaphore(self._max_parallel_nodes)
+            tasks: list[asyncio.Task] = []
 
-            async def _run_node_bounded(
-                nid: str,
-                sem: asyncio.Semaphore = node_semaphore,
-            ) -> None:
-                async with sem:
+            async def _run_node_bounded(nid: str) -> None:
+                try:
                     await self._stream_node(nid, context, queue)
+                finally:
+                    node_semaphore.release()
 
-            tasks: list[asyncio.Task] = [
-                asyncio.create_task(_run_node_bounded(nid))
-                for nid in ready_ordered
-            ]
+            async def _spawn_nodes() -> None:
+                for nid in ready_ordered:
+                    await node_semaphore.acquire()
+                    tasks.append(asyncio.create_task(_run_node_bounded(nid)))
+
+            spawner = asyncio.create_task(_spawn_nodes())
             results: dict[str, _NodeDone] = {}
             done_count = 0
             try:
-                while done_count < len(tasks):
+                while done_count < len(ready_ordered):
                     item = await queue.get()
                     if isinstance(item, _ToolDispatchBarrier):
                         # 01a0518b (seam-split A-graph surface). Resolved the
@@ -2157,11 +2164,13 @@ class _BaseGraphExecutor(
                         yield item
             finally:
                 # Belt-and-braces: tasks should all have completed by now,
-                # but if the caller closed the iterator early, cancel.
-                for t in tasks:
+                # but if the caller closed the iterator early, cancel. The
+                # spawner first: once cancelled it starts no further task.
+                spawner.cancel()
+                for t in (spawner, *tasks):
                     if not t.done():
                         t.cancel()
-                for t in tasks:
+                for t in (spawner, *tasks):
                     try:
                         await t
                     except (asyncio.CancelledError, Exception):
