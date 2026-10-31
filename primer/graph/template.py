@@ -10,7 +10,9 @@ Uses :class:`jinja2.sandbox.SandboxedEnvironment` so template
 authors can't reach Python internals (no ``__import__`` etc.).
 Template syntax errors and missing-attribute errors at render time
 both surface as :class:`BadRequestError` so the failure is
-attributable to the user-supplied template.
+attributable to the user-supplied template. Renders are bounded in time,
+output and repetition (``primer/common/bounded_template.py``); the executor
+runs them off the loop with ``off_loop``.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from jinja2 import StrictUndefined, TemplateError
 from jinja2.exceptions import TemplateSyntaxError
 from jinja2.sandbox import SandboxedEnvironment
 
+from primer.common.bounded_template import BoundedSandboxedEnvironment, render_bounded
 from primer.model.except_ import BadRequestError
 from primer.model.graph import GraphContext
 
@@ -89,7 +92,7 @@ def _strip_fences(value: Any) -> Any:
 # dunder attributes / dangerous built-ins; StrictUndefined = raises
 # on missing attributes rather than silently emitting empty strings
 # (a typo in the user's template should surface immediately).
-_ENV: SandboxedEnvironment = SandboxedEnvironment(
+_ENV: SandboxedEnvironment = BoundedSandboxedEnvironment(
     undefined=StrictUndefined,
     autoescape=False,  # rendering plain text, not HTML
     trim_blocks=False,
@@ -145,13 +148,13 @@ def render_input_template(
     scope: dict[str, Any] = {
         "initial_input": context.initial_input,
         "iteration": context.iteration,
-        "nodes": context.nodes,
+        "nodes": dict(context.nodes),  # a snapshot: the loop may add a node while this renders in a thread
         "ctx": context.ctx,
     }
     if extra_scope:
         scope.update(extra_scope)
     try:
-        return compiled.render(**scope)
+        return render_bounded(compiled, scope)
     except TemplateError as exc:
         raise BadRequestError(
             f"render_input_template: render error: {exc!s}"
@@ -183,12 +186,12 @@ def render_template_safely(
     scope: dict[str, Any] = {
         "initial_input": context.initial_input,
         "iteration": context.iteration,
-        "nodes": context.nodes,
+        "nodes": dict(context.nodes),  # a snapshot: the loop may add a node while this renders in a thread
         "ctx": context.ctx,
     }
     if extra_scope:
         scope.update(extra_scope)
-    return compiled.render(**scope)
+    return render_bounded(compiled, scope)
 
 
 __all__ = ["render_input_template", "render_template_safely"]

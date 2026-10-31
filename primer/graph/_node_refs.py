@@ -120,13 +120,14 @@ async def _render_end_output(end: "_EndNode", context: "GraphContext") -> _EndOu
     * JSON parse failure when output_schema is set → ``end_output_invalid``
     * :class:`jsonschema.ValidationError` → ``end_output_invalid``
     """
+    from primer.common.bounded_template import off_loop
     from primer.graph.template import render_template_safely
 
     if not end.output_template:
         return _EndOutputResult(text="", parsed=None, error_code=None)
 
     try:
-        text = render_template_safely(end.output_template, context)
+        text = await off_loop(render_template_safely, end.output_template, context)
     except Exception as exc:  # noqa: BLE001 -- UndefinedError, TemplateSyntaxError, ...
         return _EndOutputResult(
             text="",
@@ -189,13 +190,14 @@ async def _render_fanin_output(
     * JSON parse failure when output_schema is set → ``end_output_invalid``
     * :class:`jsonschema.ValidationError` → ``end_output_invalid``
     """
+    from primer.common.bounded_template import off_loop
     from primer.graph.template import render_template_safely
 
     if not fanin.aggregate_template:
         return _FanInOutputResult(text="", parsed=None, error_code=None)
 
     try:
-        text = render_template_safely(fanin.aggregate_template, context)
+        text = await off_loop(render_template_safely, fanin.aggregate_template, context)
     except Exception as exc:  # noqa: BLE001 — UndefinedError, TemplateSyntaxError, ...
         return _FanInOutputResult(
             text="",

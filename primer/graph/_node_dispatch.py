@@ -62,6 +62,7 @@ from primer.graph._node_refs import (
     _resolve_toolcall_arguments,
     await_tool_dispatch_barrier,
 )
+from primer.common.bounded_template import off_loop
 from primer.graph.template import render_input_template
 from primer.model.chat import (
     ExtendedEvent,
@@ -340,8 +341,8 @@ class _NodeDispatchMixin:
                 # mapping; Phase 6 wires the approval-yielding path
                 # (`_GraphToolCallYield`).
                 try:
-                    args = _resolve_toolcall_arguments(
-                        node, context, extra_scope=extra_scope
+                    args = await off_loop(
+                        _resolve_toolcall_arguments, node, context, extra_scope=extra_scope
                     )
                 except Exception as exc:  # noqa: BLE001 -- Jinja / JSON parse
                     await queue.put(
@@ -624,8 +625,8 @@ class _NodeDispatchMixin:
             functools.partial(await_tool_dispatch_barrier, queue)
         )
 
-        rendered = render_input_template(
-            node.input_template, context=context, extra_scope=extra_scope
+        rendered = await off_loop(
+            render_input_template, node.input_template, context=context, extra_scope=extra_scope
         )
         sub_input = [Message(role="user", parts=[TextPart(text=rendered)])]
 
