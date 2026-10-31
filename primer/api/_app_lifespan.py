@@ -109,12 +109,11 @@ def _make_lifespan(config: AppConfig):
         # only ever transforms rows that were already there. A fresh install
         # baselines straight to LATEST_VERSION instead of running the chain
         # against an empty database.
-        from primer.storage.migrations import run_migrations
+        from primer.storage.migrations import is_fresh_install, run_migrations
 
-        _state = await storage_provider.get_system_state()
         await run_migrations(
             storage_provider,
-            is_fresh_install=_state.bootstrap_completed_at is None,
+            is_fresh_install=await is_fresh_install(storage_provider),
         )
 
         from primer.model.provider import SecretProviderConfig
