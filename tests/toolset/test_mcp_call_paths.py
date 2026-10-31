@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import json
 import sys
+import time
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock
 
 import mcp.types as mcp_types
 import pytest
@@ -22,7 +25,7 @@ from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import ToolCallPart
 from primer.model.except_ import PrimerError, ProviderError
 from primer.model.principal import PrincipalRef
-from primer.model.provider import McpConfig, StdioConfig, TransportType
+from primer.model.provider import HttpConfig, McpConfig, StdioConfig, TransportType
 from primer.toolset.mcp import McpToolsetProvider
 
 # Answers ``initialize`` with a JSON-RPC error, then waits.
@@ -34,7 +37,7 @@ sys.stdout.flush()
 sys.stdin.readline()
 """
 
-# A server with one tool. ``tools/call`` answers MODE: "structured" (structuredContent only), "text" (a text block beside it).
+# A server with one tool. ``tools/call`` answers MODE: "structured" (structuredContent only), "text" (a text block beside it), "silent" (nothing).
 SERVER = """
 import json, sys
 MODE = sys.argv[1]
@@ -48,6 +51,8 @@ for line in sys.stdin:
     elif m == "tools/list":
         send({"jsonrpc": "2.0", "id": i, "result": {"tools": [{"name": "weather", "inputSchema": {"type": "object"}, "outputSchema": {"type": "object", "properties": {"temp": {"type": "number"}}}}]}})
     elif m == "tools/call":
+        if MODE == "silent":
+            continue
         content = [{"type": "text", "text": "21.5 C"}] if MODE == "text" else []
         send({"jsonrpc": "2.0", "id": i, "result": {"content": content, "structuredContent": {"temp": 21.5}, "isError": False}})
     elif i is not None:
@@ -132,3 +137,75 @@ async def test_characterization_an_empty_result_with_no_structured_content_is_st
     result = provider._mcp_call_result_to_primer(mcp_types.CallToolResult(content=[], is_error=True))
 
     assert (result.output, result.is_error, result.extended) == ("", True, None)
+
+
+# ---- W32 -------------------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.timeout(60)
+async def test_a_stdio_call_that_never_answers_fails_within_the_read_timeout() -> None:
+    provider = _stdio(SERVER, "silent", read_timeout_seconds=1.0)
+    started = time.monotonic()
+
+    with pytest.raises(PrimerError):
+        await provider.call(tool_name="weather", arguments={})
+
+    assert time.monotonic() - started < 30, "the call was not bounded by its read timeout"
+
+
+@pytest.mark.timeout(60)
+async def test_a_call_that_never_answers_is_a_tool_error_through_the_manager() -> None:
+    manager = ToolExecutionManager(
+        toolset_providers={"ext": _stdio(SERVER, "silent", read_timeout_seconds=1.0)},  # type: ignore[dict-item]
+        initiated_by=PrincipalRef(type="user", id="u1", display="u1", role="user", source="local"),
+    )
+
+    result = await manager.execute(ToolCallPart(id="c", name="ext__weather", arguments={}))
+
+    assert result.error is True
+
+
+def test_the_read_timeout_defaults_to_300_seconds_and_must_be_positive() -> None:
+    cfg = McpConfig(transport=TransportType.STDIO, config=StdioConfig(command=["x"]))
+    assert cfg.read_timeout_seconds == 300.0
+    with pytest.raises(ValueError):
+        McpConfig(transport=TransportType.STDIO, config=StdioConfig(command=["x"]), read_timeout_seconds=0)
+
+
+@pytest.mark.parametrize("transport", [TransportType.HTTP, TransportType.SSE])
+async def test_http_sessions_get_the_read_timeout_and_keep_the_sdk_client_defaults(monkeypatch, transport) -> None:
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    session.initialize = AsyncMock()
+    session.list_tools = AsyncMock(return_value=mcp_types.ListToolsResult(tools=[]))
+    sessions: list[dict] = []
+    clients: list[dict] = []
+    transports: list[dict] = []
+
+    def _session(*args, **kwargs):
+        sessions.append(kwargs)
+        return session
+
+    @asynccontextmanager
+    async def _transport(**kwargs):
+        transports.append(kwargs)
+        yield (object(), object())
+
+    @asynccontextmanager
+    async def _client(**kwargs):
+        clients.append(kwargs)
+        yield object()
+
+    monkeypatch.setattr("primer.toolset.mcp.ClientSession", _session)
+    monkeypatch.setattr("mcp.client.streamable_http.streamable_http_client", _transport)
+    monkeypatch.setattr("mcp.client.sse.sse_client", _transport)
+    monkeypatch.setattr("mcp.shared._httpx_utils.create_mcp_http_client", _client)
+    provider = McpToolsetProvider("ts1", McpConfig(transport=transport, config=HttpConfig(url="http://example.test/mcp"), read_timeout_seconds=42.0))
+
+    assert [t async for t in provider.list_tools()] == []
+
+    assert [s.get("read_timeout_seconds") for s in sessions] == [42.0]
+    # The HTTP client keeps the SDK's own timeouts: nothing but headers and auth is passed to it.
+    assert all(set(c) == {"headers", "auth"} for c in clients)
+    assert all("timeout" not in t and "sse_read_timeout" not in t for t in transports)

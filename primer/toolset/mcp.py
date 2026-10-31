@@ -618,7 +618,7 @@ class McpToolsetProvider(ToolsetProvider):
                     async with sse_client(
                         url=http_cfg.url, headers=headers, auth=auth, **sse_kwargs,
                     ) as (read, write):
-                        async with ClientSession(read, write) as session:
+                        async with ClientSession(read, write, read_timeout_seconds=self._config.read_timeout_seconds) as session:
                             await session.initialize()
                             yield session
                 else:
@@ -632,7 +632,7 @@ class McpToolsetProvider(ToolsetProvider):
                         async with streamable_http_client(
                             url=http_cfg.url, http_client=http_client,
                         ) as (read, write):
-                            async with ClientSession(read, write) as session:
+                            async with ClientSession(read, write, read_timeout_seconds=self._config.read_timeout_seconds) as session:
                                 await session.initialize()
                                 yield session
             except (ConfigError, GeneratorExit):
@@ -691,7 +691,7 @@ class McpToolsetProvider(ToolsetProvider):
 
         try:
             read, write = await stack.enter_async_context(stdio_client(params))
-            session = await stack.enter_async_context(ClientSession(read, write))
+            session = await stack.enter_async_context(ClientSession(read, write, read_timeout_seconds=self._config.read_timeout_seconds))
             await session.initialize()
         except FileNotFoundError as exc:
             await stack.aclose()
