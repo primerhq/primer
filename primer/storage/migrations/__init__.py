@@ -197,8 +197,17 @@ async def run_migrations(
     refusing: the operator is running old code against a newer database and
     needs to know that, not have it silently half-handled.
 
+    The chain runs under :meth:`StorageProvider.migration_lock`, and the
+    version is read inside it: a process that waited while another applied
+    the chain finds nothing left to do (GR-1).
+
     Returns the resulting schema version.
     """
+    async with sp.migration_lock():
+        return await _run_locked(sp, is_fresh_install=is_fresh_install)
+
+
+async def _run_locked(sp: StorageProvider, *, is_fresh_install: bool) -> int:
     state = await sp.get_system_state()
     current = state.schema_version or 0
 

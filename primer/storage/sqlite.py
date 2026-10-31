@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -619,14 +620,39 @@ class SqliteStorageProvider(StorageProvider):
             if should_commit:
                 await self.connection.commit()
 
+    @asynccontextmanager
+    async def migration_lock(self):
+        """An exclusive ``flock`` on ``<database>.migrate-lock`` beside the database file.
+
+        A file lock rather than an in-process one, so ``primer init`` beside a
+        running API, or two providers on one file, never run the chain at
+        once. Polled with ``LOCK_NB`` so no blocking call runs on the loop;
+        closing the descriptor releases it. Not the database file itself:
+        closing any descriptor on that would drop SQLite's own locks.
+        """
+        import fcntl  # POSIX only, like the local workspace locks
+
+        path = self._config.path.expanduser()
+        fd = os.open(path.with_name(path.name + ".migrate-lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.05)
+            yield
+        finally:
+            os.close(fd)
+
     async def set_schema_version(
         self, version: int, *, migrated_at: datetime | None = None,
     ) -> None:
-        """Stamp ``schema_version`` and ``last_migration_at``."""
+        """Stamp ``schema_version`` (never lower) and ``last_migration_at``."""
         ts = (migrated_at or datetime.now(timezone.utc)).isoformat()
         sql = (
-            "UPDATE system_state SET schema_version = ?, last_migration_at = ? "
-            "WHERE id = ?"
+            "UPDATE system_state SET schema_version = MAX(schema_version, ?), "
+            "last_migration_at = ? WHERE id = ?"
         )
         async with self._write_guard() as should_commit:
             await self.connection.execute(sql, (version, ts, "singleton"))
