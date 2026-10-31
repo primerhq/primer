@@ -342,7 +342,7 @@ class _BusSubscription(EventSubscription):
         self._prefix = prefix
         self._suffix = suffix
         self._on_reconnect = on_reconnect
-        self._mailbox = Mailbox(maxsize, coalesce=coalesce)
+        self._mailbox = Mailbox(maxsize, coalesce=coalesce, on_loss=on_reconnect)
         self._closed = False
 
     def wants(self, event_key: str) -> bool:

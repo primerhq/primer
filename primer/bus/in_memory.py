@@ -30,12 +30,13 @@ class _InMemorySubscription(EventSubscription):
 
     def __init__(
         self, bus: "InMemoryEventBus", *, key: str | None = None, prefix: str | None = None, suffix: str | None = None, coalesce: bool = False, maxsize: int = DEFAULT_QUEUE_MAXSIZE,
+        on_loss: "Callable[[], None] | None" = None,
     ) -> None:
         self._bus = bus
         self._key = key
         self._prefix = prefix
         self._suffix = suffix
-        self._mailbox = Mailbox(maxsize, coalesce=coalesce)
+        self._mailbox = Mailbox(maxsize, coalesce=coalesce, on_loss=on_loss)
         self._closed = False
 
     def wants(self, event_key: str) -> bool:
@@ -108,11 +109,11 @@ class InMemoryEventBus(EventBus):
     ) -> _InMemorySubscription:
         if self._closed:
             raise RuntimeError("subscribe on closed InMemoryEventBus")
-        # The in-memory bus has no droppable transport, so it never
-        # reconnects and never calls ``on_reconnect``. The parameter
-        # exists only to satisfy the EventBus contract.
-        del on_reconnect
-        sub = _InMemorySubscription(self, key=key, prefix=prefix, suffix=suffix, coalesce=coalesce, maxsize=self._queue_maxsize)
+        # The in-memory bus has no droppable transport, so it never reconnects. A bounded queue that overflowed IS a loss though: ``on_reconnect``
+        # is called (from the consumer's read) when events were dropped, the same signal a reconnect gives.
+        sub = _InMemorySubscription(
+            self, key=key, prefix=prefix, suffix=suffix, coalesce=coalesce, maxsize=self._queue_maxsize, on_loss=on_reconnect,
+        )
         self._subscribers.append(sub)
         return sub
 
