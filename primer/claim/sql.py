@@ -68,17 +68,32 @@ def build_claim_query(
     ctes: list[str] = []
     for adapter in adapters.values():
         entity_ref = _entity_ref(adapter.entity_table)
+        kind = adapter.kind.value
+
+        def _branch(claim_state: str, alias: str, entity_ref: str = entity_ref, kind: str = kind, adapter: ClaimAdapter = adapter) -> str:
+            # Each branch is locked in its own FROM-subquery: FOR UPDATE cannot be applied to a UNION. ``claim_state`` is one of the two disjoint
+            # conditions below, each served by its own partial index (leases_unclaimed_by_kind / leases_expiry_by_kind).
+            return (
+                f"SELECT kind, entity_id, priority_score, next_attempt_at FROM ("
+                f"  SELECT l.kind, l.entity_id, l.priority_score, l.next_attempt_at"
+                f"    FROM {leases_table} l"
+                f"    JOIN {entity_ref} e ON e.id = l.entity_id"
+                f"   WHERE l.kind = '{kind}'"
+                f"     AND {claim_state}"
+                f"     AND l.next_attempt_at <= now()"
+                f"     AND ({adapter.eligibility_sql()})"
+                f"   ORDER BY l.priority_score, l.next_attempt_at"
+                f"   LIMIT $1 FOR UPDATE OF l SKIP LOCKED"
+                f") {alias}"
+            )
+
+        # Unclaimed OR expired, as two branches: the OR on one scan could not use the partial index on unclaimed leases. The branches are disjoint, and
+        # the best $1 of their union are the best $1 of the old single scan, so the claim is the same set in the same order.
         ctes.append(
-            f"{adapter.kind.value}_cand AS ("
-            f"  SELECT l.kind, l.entity_id, l.priority_score, l.next_attempt_at"
-            f"    FROM {leases_table} l"
-            f"    JOIN {entity_ref} e ON e.id = l.entity_id"
-            f"   WHERE l.kind = '{adapter.kind.value}'"
-            f"     AND (l.claimed_by IS NULL OR l.expires_at < now())"
-            f"     AND l.next_attempt_at <= now()"
-            f"     AND ({adapter.eligibility_sql()})"
-            f"   ORDER BY l.priority_score, l.next_attempt_at"
-            f"   LIMIT $1 FOR UPDATE OF l SKIP LOCKED"
+            f"{kind}_cand AS ("
+            f"{_branch('l.claimed_by IS NULL', 'unclaimed')}"
+            f" UNION ALL "
+            f"{_branch('l.claimed_by IS NOT NULL AND l.expires_at < now()', 'expired')}"
             f")"
         )
 
