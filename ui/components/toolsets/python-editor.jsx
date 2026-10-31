@@ -7,7 +7,7 @@
 //
 // It also shows the isolation level this deployment ENFORCES. "rlimit-only"
 // bounds CPU and memory but stops neither filesystem reads nor egress, and an
-// operator deciding whether to trust a tool needs to know which of the four
+// operator deciding whether to trust a tool needs to know which of the
 // levels they are on - a generic "sandboxed" badge would be a lie on one of
 // them.
 
@@ -16,6 +16,11 @@ var PY_ISOLATION_COPY = {
     tone: "--green",
     label: "container",
     detail: "Kernel-enforced: namespaces and cgroups.",
+  },
+  landlock: {
+    tone: "--green",
+    label: "landlock",
+    detail: "Kernel-enforced: the tool reads only the interpreter, TLS and DNS files, and writes only its own scratch folder.",
   },
   seccomp: {
     tone: "--green",
