@@ -31,6 +31,7 @@ from primer.model.graph import Graph
 from primer.model.harness import Harness, HarnessDirection, TrackedEntity
 from primer.model.principal import Principal, PrincipalRef
 from primer.model.provider import SqliteConfig
+from primer.model.storage import OffsetPage
 from primer.model.user import User
 from primer.model.yield_ import ToolContext
 from primer.storage.sqlite import SqliteStorageProvider
@@ -245,3 +246,21 @@ async def test_outbound_export_has_no_access(env):
 
     text = next(f.rendered_text for f in result.files if f.template_path == "templates/mine.yaml")
     assert "\naccess:" not in "\n" + text and "owners" not in text
+
+
+async def test_two_fan_outs_of_different_revs_leave_every_row_at_the_newer_one(env):
+    import asyncio
+
+    for i in range(6):
+        await env.sp.get_storage(Agent).create(_agent(f"ag-x{i}"))
+    harnesses = env.sp.get_storage(Harness)
+    base = await harnesses.get("hns_1")
+    rev5 = base.model_copy(update={"access": Access(owners=[ALICE], grants={BOB: "read"}, rev=5)})
+    rev6 = base.model_copy(update={"access": Access(owners=[ALICE], rev=6)})  # bob's grant revoked
+
+    await asyncio.gather(apply_harness_access(env.sp, rev5), apply_harness_access(env.sp, rev6))
+    await apply_harness_access(env.sp, rev5)  # a straggler of the older fan-out lands last
+
+    for model in (Agent, Graph, Collection):
+        for row in (await env.sp.get_storage(model).list(OffsetPage(offset=0, length=50))).items:
+            assert row.access.rev == 6 and row.access.grants == {}, (model, row.id)

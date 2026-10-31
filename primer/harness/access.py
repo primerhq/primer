@@ -24,13 +24,34 @@ logger = logging.getLogger(__name__)
 INSTALLED_ACCESS_MODELS: tuple[type, ...] = (Agent, Graph, Toolset, Collection)
 
 _PAGE = 200
+_ATTEMPTS = 4
+
+
+async def _copy_to_row(storage: Any, row: Any, harness: Harness, access: dict[str, Any]) -> int:
+    """Copy ``harness.access`` onto one row, never over a newer sharing: 1 when written, else 0.
+
+    Ordered by ``access.rev``: a row already at a higher rev than the harness (a later fan-out got there first) is left alone, and the
+    write is fenced on the rev just observed, so two fan-outs racing on a row cannot resurrect a revoked grant. A lost fence re-reads the
+    row and decides again, a few times at most.
+    """
+    for _ in range(_ATTEMPTS):
+        if row.access.rev > harness.access.rev or row.access == harness.access:
+            return 0
+        rev = row.access.rev
+        where = {"harness_id": [harness.id], ("access", "rev"): [rev, None] if rev == 0 else [rev]}
+        if await storage.patch_if(row.id, {"access": access}, where=where) is not None:
+            return 1
+        row = await storage.get(row.id)
+        if row is None or row.harness_id != harness.id:
+            return 0
+    return 0
 
 
 async def apply_harness_access(storage_provider: Any, harness: Harness) -> int:
-    """Copy ``harness.access`` onto every row installed by ``harness`` (one field-scoped write each); returns how many rows it wrote.
+    """Copy ``harness.access`` onto every row installed by ``harness`` (one field-scoped write each, ordered by rev: see :func:`_copy_to_row`); returns how many rows it wrote.
 
-    Only ``access`` is patched, and only while the row still belongs to the harness (guard on ``harness_id``), so no other field a
-    concurrent writer set is put back and a row an uninstall already released is left alone. Re-running converges.
+    Only ``access`` is patched, and only while the row still belongs to the harness, so no other field a concurrent writer set is put
+    back and a row an uninstall already released is left alone. Re-running converges.
     """
     access = harness.access.model_dump(mode="json")
     written = 0
@@ -41,10 +62,7 @@ async def apply_harness_access(storage_provider: Any, harness: Harness) -> int:
         while True:
             page = await storage.find(predicate, OffsetPage(offset=offset, length=_PAGE))
             for row in page.items:
-                if row.access == harness.access:
-                    continue
-                if await storage.patch_if(row.id, {"access": access}, where={"harness_id": [harness.id]}) is not None:
-                    written += 1
+                written += await _copy_to_row(storage, row, harness, access)
             if len(page.items) < _PAGE:
                 break
             offset += _PAGE
