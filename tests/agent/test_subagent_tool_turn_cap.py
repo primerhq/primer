@@ -23,6 +23,7 @@ import pytest
 
 from primer.agent.invoke import resume_subagent
 from primer.api.registries import ProviderRegistry  # noqa: F401  (the system toolset's registry type)
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import (
     Done,
@@ -70,8 +71,9 @@ class _AlwaysCallsATool:
 
 
 def _agent() -> Agent:
+    # Public: invoke_agent is called with no ctx (an anonymous caller), which reads only public agents.
     return Agent(
-        id="agent-sub", description="subagent", model=AgentModel(profile_id="prov-1--m1"),
+        access=Access(public=True), id="agent-sub", description="subagent", model=AgentModel(profile_id="prov-1--m1"),
         system_prompt=["you are a subagent"], tools=["t1__do_it"], max_tool_turns=CAP,
     )
 
