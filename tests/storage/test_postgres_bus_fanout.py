@@ -39,3 +39,29 @@ async def test_many_subscriptions_share_one_listener_and_each_gets_what_it_asked
     assert listener_bus._listener is None  # the connection went back to the pool with the last subscription
     await listener_bus.aclose()
     await publisher_bus.aclose()
+
+
+@pg
+@pytest.mark.asyncio
+async def test_a_remote_reader_still_gets_ticks_and_deltas_from_publish_but_nothing_from_publish_local(postgres_storage_provider):
+    """Two bus instances stand for two processes. ``publish`` crosses (ticks AND deltas: the default, split-deployment behaviour);
+    ``publish_local`` reaches only the publishing instance's own subscribers."""
+    publisher, remote = PostgresEventBus(postgres_storage_provider), PostgresEventBus(postgres_storage_provider)
+    here = publisher.subscribe(key="session:perf-t7:delta")
+    there = remote.subscribe(prefix="session:perf-t7:")
+    await here.ready()
+    await there.ready()
+
+    await publisher.publish("session:perf-t7:tick", {"seq": 1})
+    await publisher.publish("session:perf-t7:delta", {"class": "text_delta", "delta": "hi"})  # crosses
+    await publisher.publish_local("session:perf-t7:delta", {"class": "text_delta", "delta": "local"})  # stays
+
+    assert [e.event_key for e in await _take(there, 2)] == ["session:perf-t7:tick", "session:perf-t7:delta"]
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(there.__anext__(), 0.5)  # the local frame never left the process
+    got = await _take(here, 2)  # the publisher's own reader: the NOTIFY it published and the local frame
+    assert sorted(e.payload["delta"] for e in got) == ["hi", "local"]
+    for sub in (here, there):
+        await sub.aclose()
+    await publisher.aclose()
+    await remote.aclose()

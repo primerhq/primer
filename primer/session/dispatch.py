@@ -195,6 +195,18 @@ class SessionDispatchDeps:
     scheduler: Any | None = None
     claim_engine: Any | None = None
 
+    # Send the turn's delta and phase frames to this process's subscribers only (``EventBus.publish_local``: no NOTIFY on Postgres). Set from
+    # ``WorkerConfig.deltas_in_process_only``, only by an operator whose one process also serves every tap/SSE reader.
+    deltas_in_process_only: bool = False
+
+
+def _delta_publish(deps: "SessionDispatchDeps") -> Any:
+    """The bus call the turn's delta and phase frames use: ``publish_local`` when the deployment keeps them in process, else ``publish``."""
+    bus = deps.event_bus
+    if deps.deltas_in_process_only and hasattr(bus, "publish_local"):
+        return bus.publish_local
+    return bus.publish
+
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -486,7 +498,7 @@ async def run_one_session_turn(
     from primer.tap.delta import publish_phase_frame
     if deps.event_bus is not None:
         await publish_phase_frame(
-            deps.event_bus.publish, session_id=session_id,
+            _delta_publish(deps), session_id=session_id,
             phase=_agent_phase, turn_no=session.turn_no,
         )
     await _safe_turn_log(turn_log, TurnLogPhase(
@@ -578,7 +590,7 @@ async def run_one_session_turn(
     # the durable record still completes each part (UI falls back gracefully).
     from primer.tap.delta import DeltaBuffer
     delta_buffer = (
-        DeltaBuffer(session_id=session_id, publish=deps.event_bus.publish)
+        DeltaBuffer(session_id=session_id, publish=_delta_publish(deps))
         if deps.event_bus is not None else None
     )
     if delta_buffer is not None:
@@ -766,7 +778,7 @@ async def run_one_session_turn(
                 )
                 if deps.event_bus is not None:
                     await publish_phase_frame(
-                        deps.event_bus.publish, session_id=session_id,
+                        _delta_publish(deps), session_id=session_id,
                         phase=_agent_phase, turn_no=session.turn_no,
                     )
                 await _safe_turn_log(turn_log, TurnLogPhase(
@@ -858,7 +870,7 @@ async def run_one_session_turn(
             )
             if deps.event_bus is not None:
                 await publish_phase_frame(
-                    deps.event_bus.publish, session_id=session_id,
+                    _delta_publish(deps), session_id=session_id,
                     phase=_agent_phase, turn_no=session.turn_no,
                 )
             await _safe_turn_log(turn_log, TurnLogPhase(
@@ -1124,7 +1136,7 @@ async def run_one_session_turn(
             )
             if deps.event_bus is not None:
                 await publish_phase_frame(
-                    deps.event_bus.publish, session_id=session_id,
+                    _delta_publish(deps), session_id=session_id,
                     phase=_agent_phase, turn_no=session.turn_no,
                 )
             await _safe_turn_log(turn_log, TurnLogPhase(
