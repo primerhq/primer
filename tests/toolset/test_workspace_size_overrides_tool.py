@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from primer.model.access import Access
 from primer.api.registries import WorkspaceRegistry
 from pydantic import SecretStr
 
@@ -83,9 +84,9 @@ async def sp() -> _SP:
         id="k3s", provider=WorkspaceProviderType.KUBERNETES,
         config=KubernetesWorkspaceConfig(connection=K8sConnectionInCluster(), namespace="ns", reachability=K8sReachabilityInCluster()),
     ))
-    await templates.create(WorkspaceTemplate(id="tpl-loc", provider_id="loc", description="local"))
-    await templates.create(WorkspaceTemplate(id="tpl-dock", provider_id="dock", description="docker", backend=ContainerTemplateConfig()))
-    await templates.create(WorkspaceTemplate(id="tpl-k3s", provider_id="k3s", description="k8s", backend=KubernetesTemplateConfig(image="rt:1")))
+    await templates.create(WorkspaceTemplate(access=Access(public=True), id="tpl-loc", provider_id="loc", description="local"))
+    await templates.create(WorkspaceTemplate(access=Access(public=True), id="tpl-dock", provider_id="dock", description="docker", backend=ContainerTemplateConfig()))
+    await templates.create(WorkspaceTemplate(access=Access(public=True), id="tpl-k3s", provider_id="k3s", description="k8s", backend=KubernetesTemplateConfig(image="rt:1")))
     return store
 
 
@@ -171,7 +172,7 @@ async def test_a_gpu_count_above_the_cap_is_a_validation_error_on_the_template_w
 
 
 async def test_a_template_with_an_absurd_memory_answers_validation_error_naming_the_template(toolset, sp, calls):
-    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(access=Access(public=True), 
         id="tpl-big", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
         resources=ResourceLimits(memory_bytes=10**30),
     ))
@@ -247,7 +248,7 @@ async def test_a_name_with_a_newline_is_shown_escaped_in_the_message(toolset, ca
 
 @pytest.mark.parametrize("name", ["1BAD", "has space", "a" * 257, ".", "..", "..x", "PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"])
 async def test_a_template_env_the_cluster_would_refuse_answers_validation_error(toolset, sp, calls, name):
-    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(access=Access(public=True), 
         id="tpl-env", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
         env={name: SecretStr("the-secret-value")},
     ))
@@ -278,7 +279,7 @@ async def test_a_kubernetes_env_name_in_the_overrides_creates_the_workspace(tool
 @pytest.mark.parametrize("name", _KUBERNETES_NAMES)
 async def test_a_stored_template_with_a_kubernetes_env_name_still_creates_workspaces(toolset, sp, calls, name):
     """The first (POSIX-only) version of the rule turned such a template into a refusal on every create."""
-    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(access=Access(public=True), 
         id="tpl-env", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
         env={name: SecretStr("v")},
     ))
@@ -309,6 +310,7 @@ async def test_a_stored_template_with_a_disk_no_workspace_may_have_answers_valid
     await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate.model_validate({
         "id": "tpl-old-disk", "provider_id": "k3s", "description": "d",
         "backend": {"kind": "kubernetes", "image": "rt:1", "pvc_size": "lots"},
+        "access": {"public": True},  # the caller must be able to read the template (access control)
     }, context=STORAGE_LOAD_CONTEXT))
 
     result = await toolset.call(tool_name="create_workspace", arguments={"template_id": "tpl-old-disk"}, ctx=caller("user"))

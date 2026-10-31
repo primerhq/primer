@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from primer.model.access import Access
 from primer.api.registries import ProviderRegistry
 from primer.common.secret_box import SecretBox
 from primer.model.mcp_oauth import McpSignInRequiredError
@@ -53,7 +54,8 @@ async def _call(system, tool_name: str, arguments: dict):
 
 
 async def _store(storage_provider, row: Toolset) -> None:
-    await storage_provider.get_storage(Toolset).create(row)
+    # Public: the auth-status / list / describe tools now read the toolset row's access; these tests are about the answer.
+    await storage_provider.get_storage(Toolset).create(row.model_copy(update={"access": Access(public=True)}))
 
 
 async def test_the_status_of_an_unconnected_oauth_toolset(world) -> None:

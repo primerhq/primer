@@ -18,6 +18,7 @@ from httpx import ASGITransport
 
 aiodocker = pytest.importorskip("aiodocker")
 
+from primer.model.access import Access
 from primer.api.app import create_test_app  # noqa: E402
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry  # noqa: E402
 from primer.model.storage import OffsetPage  # noqa: E402
@@ -78,8 +79,8 @@ async def sp() -> _SP:
         ),
     ))
     templates = store.get_storage(WorkspaceTemplate)
-    await templates.create(WorkspaceTemplate(id="tpl-dock", provider_id="dock", description="docker", backend=ContainerTemplateConfig()))
-    await templates.create(WorkspaceTemplate(
+    await templates.create(WorkspaceTemplate(access=Access(public=True), id="tpl-dock", provider_id="dock", description="docker", backend=ContainerTemplateConfig()))
+    await templates.create(WorkspaceTemplate(access=Access(public=True), 
         id="tpl-dock-64", provider_id="dock", description="docker, 64 CPUs", backend=ContainerTemplateConfig(cpu_cores=64),
     ))
     return store
