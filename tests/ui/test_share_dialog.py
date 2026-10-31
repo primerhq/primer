@@ -20,8 +20,9 @@ CONSOLE side against the contract:
   the registry's lint accepts; the open owned-entity surface subscribes
   (``SHR_onShare``) and the verb's run dispatches to it.
 * a Share button (``data-verb="entity.share"``) sits in the five detail
-  surfaces, and the five list surfaces draw Shared/Public badges from
-  the row's ``access`` field.
+  surfaces, and the eight list surfaces draw Shared/Public badges from
+  the row's ``access`` field (the five P1 kinds plus the P3 ones:
+  collections, triggers, harnesses).
 
 The URL builders and the dialog run here in MiniRacer against the real
 source (the house style of tests/ui/test_nv_g14_*.py and the
@@ -49,6 +50,9 @@ TOOLSETS = (UI / "components" / "toolsets.jsx").read_text(encoding="utf-8")
 TEMPLATES = (UI / "components" / "workspaces" / "templates.jsx").read_text(encoding="utf-8")
 CHANNELS = (UI / "components" / "channels.jsx").read_text(encoding="utf-8")
 DIALOG_SRC = UI / "components" / "shared" / "share-dialog.jsx"
+KNOWLEDGE = (UI / "components" / "knowledge.jsx").read_text(encoding="utf-8")
+TRIGGERS = (UI / "components" / "triggers.jsx").read_text(encoding="utf-8")
+HARNESSES = (UI / "components" / "harnesses.jsx").read_text(encoding="utf-8")
 
 _OPEN_CONTEXTS: list = []
 
@@ -231,15 +235,43 @@ def test_the_channel_share_button_only_offers_it_in_edit_mode() -> None:
 def test_the_platform_lists_draw_access_badges_from_the_row() -> None:
     """Every list row carries the row's access (the owned CRUD shape),
     so a list says at a glance which rows are shared or public without
-    opening them."""
+    opening them (the P3 kinds - collections, triggers, harnesses -
+    draw them too, from the same field)."""
     for name, src, needle in (
         ("agents.jsx", AGENTS, "SHR_accessBadges(a.access)"),
         ("graphs.jsx", GRAPHS, "SHR_accessBadges(g.access)"),
         ("toolsets.jsx", TOOLSETS, "SHR_accessBadges(t.access)"),
         ("channels.jsx", CHANNELS, "SHR_accessBadges(c.access)"),
         ("workspaces/templates.jsx", TEMPLATES, "SHR_accessBadges(t.access)"),
+        ("knowledge.jsx", KNOWLEDGE, "SHR_accessBadges(c.access)"),
+        ("triggers.jsx", TRIGGERS, "SHR_accessBadges(trigger.access)"),
+        ("harnesses.jsx", HARNESSES, "SHR_accessBadges(h.access)"),
     ):
         assert needle in src, name + " does not draw its access badges from the row"
+
+
+def test_the_badges_read_the_row_shape() -> None:
+    """The badge reader against the real share-dialog.jsx source: the
+    row's access is the Access model (``grants`` a uid -> level MAP, the
+    /access view's array shape only arrives through the dialog), so a
+    granted row must say Shared - the old array-only check never did."""
+    from ui._mini_react import mini_react_context
+
+    ctx = mini_react_context(_transpiled(DIALOG_SRC))
+    _OPEN_CONTEXTS.append(ctx)
+
+    def badges(spec: str) -> list:
+        return json.loads(
+            ctx.eval("JSON.stringify(SHR_accessBadges(" + spec + "))")
+        )
+
+    assert badges("{public: true, grants: {}}") == ["Public"]
+    assert badges("{public: false, grants: {'u-2': 'read'}}") == ["Shared"]
+    assert badges("{public: true, grants: {'u-2': 'full'}}") == ["Public", "Shared"]
+    assert badges("{public: false, grants: {}}") == []
+    assert badges("null") == []
+    assert badges("undefined") == []
+
 
 
 # ---- the dialog: the real file in MiniRacer ----------------------------------

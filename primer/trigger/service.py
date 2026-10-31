@@ -332,6 +332,41 @@ async def _refuse_trigger_out_of_reach(trigger_id: str, reach: Person | None, de
             raise TriggerNotFound(trigger_id)
 
 
+async def _require_channel_read(sp: Any, config: Any, person: Person, *, as_target: bool = False) -> None:
+    """READ on the channel a channel trigger fires from (:func:`primer.trigger.channel_access.require_channel_trigger_access`).
+
+    An unreadable channel answers as a missing one (``NotFoundError``); ``as_target`` says it as a missing subscription target, the way a subscription's own
+    unreadable target is refused.
+    """
+    from primer.trigger.channel_access import require_channel_trigger_access
+
+    try:
+        await require_channel_trigger_access(sp, person, config)
+    except NotFoundError as exc:
+        if as_target:
+            raise SubscriptionTargetNotFound(str(exc)) from None
+        raise
+
+
+async def _refuse_credential_change_below_owner(trigger: Trigger, config, person: Person | None, deps: ServiceDeps) -> None:
+    """A webhook trigger's token and HMAC secret are changed by an OWNER only, as the rotate is (access-control P3 SEC, finding 3).
+
+    A full grantee may save the rest, but a body that carries a token different from the stored one (the mask, an empty one and the stored one echoed
+    back all keep it), or an HMAC secret different from the stored one (the mask keeps it; none clears it), is refused. Otherwise a full grantee would choose
+    the capability token of someone else's trigger. Admins hold owner, so they are unaffected. ``person`` None (an internal caller) is not checked.
+    """
+    if config.kind != "webhook" or trigger.config.kind != "webhook" or person is None:
+        return
+    from primer.trigger.owner import WEBHOOK_TOKEN_MASK
+
+    token_changes = config.token not in ("", WEBHOOK_TOKEN_MASK, trigger.config.token)
+    new_secret = config.hmac_secret.get_secret_value() if config.hmac_secret is not None else None
+    old_secret = trigger.config.hmac_secret.get_secret_value() if trigger.config.hmac_secret is not None else None
+    secret_changes = new_secret != _SECRET_MASK and new_secret != old_secret
+    if token_changes or secret_changes:
+        await _require_trigger(trigger.id, person, AccessLevel.OWNER, deps)
+
+
 async def update_trigger(
     *,
     trigger_id: str,
@@ -376,6 +411,9 @@ async def update_trigger(
     storage = deps.storage_provider.get_storage(Trigger)
     trigger = await _require_trigger(trigger_id, person, AccessLevel.FULL, deps)
     await _refuse_trigger_out_of_reach(trigger_id, reach, deps)
+    if person is not None:
+        # The saver becomes the run-as owner of the trigger as it will stand: a channel trigger needs READ on its channel even when this save names no config.
+        await _require_channel_read(deps.storage_provider, config if config is not None else trigger.config, person)
     if config is not None and config.kind != trigger.config.kind:
         raise TriggerKindImmutable(
             f"cannot change kind from {trigger.config.kind!r} to {config.kind!r}"
@@ -392,6 +430,7 @@ async def update_trigger(
         trigger.enabled = enabled
     if config is not None:
         _validate_config(config)
+        await _refuse_credential_change_below_owner(trigger, config, person, deps)
         # For webhook triggers, preserve the existing token unless the
         # caller has supplied a non-empty one (rotate path uses rotate_webhook_token
         # explicitly; update is only used for hmac_secret set/clear).
@@ -539,12 +578,15 @@ async def create_subscription(
     """
     if event_matcher is not None:
         validate_text_pattern(event_matcher.text_pattern)
-    await _require_trigger(trigger_id, person, AccessLevel.FULL, deps)
+    trigger = await _require_trigger(trigger_id, person, AccessLevel.FULL, deps)
     if config.kind == "parked_session":
         raise ParkedSessionOnlyFromYield(
             "subscriptions of kind 'parked_session' are only created via "
             "the subscribe_to_trigger yielding tool"
         )
+    if person is not None:
+        # A channel trigger's events ARE channel content: binding onto it needs READ on its channel (access-control P3 SEC, finding 6).
+        await _require_channel_read(deps.storage_provider, trigger.config, person, as_target=True)
     # The owner of the subscription must hold full on its target workspace (access-control P2 T6): a target they hold no full on is
     # answered exactly as one that does not exist, and nothing is stored.
     refusal = await refuse_target_out_of_access(deps.storage_provider, owner, config)

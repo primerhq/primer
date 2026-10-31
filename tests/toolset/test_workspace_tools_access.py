@@ -386,6 +386,7 @@ async def test_trigger_subscription_target_needs_full_on_save_and_fire():
             config=DelayedTriggerConfig(kind="delayed", fire_at=NOW.replace(hour=10)),
             created_at=NOW,
             owner=U2,
+            access=Access(owners=[U2.id]),  # the run-as owner holds the access the fire-time check asks of them (P3 SEC)
         )
     )
     config = AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner")

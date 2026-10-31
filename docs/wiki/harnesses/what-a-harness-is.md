@@ -18,6 +18,7 @@ A harness is a git repository of agents, graphs, collections, documents and tool
 - **Status.** The row's `status` is one of `draft` (newly registered), `ready` (fetched and validated), `installed` (entities applied), `outdated` (upstream moved, or the overrides changed) and `error` (an operation failed; `last_operation_error` carries the reason). The operations are asynchronous: `fetch`, `install`, `sync` and `uninstall` are queued for a worker, and while one is pending the row holds `pending_operation` and refuses updates. Poll `harness__get` until it clears.
 - **The git coordinates.** `git_url` must be `https://` with a host, and `ref` is a branch, tag or commit. `git_token` is write-only for private repositories: reads mask it as `**********`, and they mask a credential kept in the URL the same way.
 - **The writes.** Registering, configuring, fetching, installing, syncing and uninstalling live on [install and sync a harness](harnesses/install-and-sync), and every one of them needs an admin.
+- **Sharing.** A harness is owned and shared like an agent ([sharing and access](start-here/sharing-and-access)), and what it installed shares its access: someone who cannot read the harness sees none of its agents, graphs, toolsets or collections, and sees them once it is shared with them. Share the harness, not an installed row: sharing an installed row directly answers `type=conflict` (`harness_managed`).
 
 ## How to
 1. List what is registered with `harness__list`, filtering by `slug` or `status`.
@@ -45,7 +46,7 @@ Reference: [`harness__list`](reference/tools/harness/list)
 Reference: [`harness__get`](reference/tools/harness/get)
 
 ## Gotchas
-- The reads are open to every user, but every write and operation needs an admin; a lower role is refused with `forbidden`.
+- Listing and reading a harness need `read` access to it (a harness you cannot read answers as if it did not exist), and every write and operation needs an admin; a lower role is refused with `forbidden`.
 - An enqueue is not the operation: `fetch`, `install`, `sync` and `uninstall` answer at once and a worker runs them; poll the row for the result.
 - While an operation is pending, the harness cannot be updated or enqueued again: the call is refused with `type=conflict`.
 - A managed row is locked to its harness: the agent and graph update and delete tools refuse it with `type=conflict`, and REST PUT or DELETE answers 409. Change the bundle and sync instead.

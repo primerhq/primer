@@ -682,7 +682,7 @@ function AG_toolsForSave(selected, stored) {
   return kept.concat(added);
 }
 
-function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading, onShare }) {
+function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading, onShare, onOpenHarness }) {
   // Same modal serves both create (existing == null) and edit
   // (existing == agent row). In edit mode the id field is locked,
   // submit PUT-replaces, and the success callback is just close().
@@ -998,8 +998,14 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             {isEdit && onDelete && (
               <Btn kind="ghost" data-testid="agent-form-delete" onClick={onDelete} style={{ color: "var(--red)" }}>Delete</Btn>
             )}
-            {isEdit && onShare && (
-              <Btn kind="ghost" data-testid="agent-share" data-verb="entity.share" onClick={onShare}>Share</Btn>
+            {isEdit && existing?.harness_id ? (
+              // ACL-P3-T7: a row the harness installed answers 409 harness_managed
+              // to a direct share - the link to the harness replaces Share.
+              <SHR_HarnessShare harnessId={existing.harness_id} onOpen={onOpenHarness} />
+            ) : (
+              isEdit && onShare && (
+                <Btn kind="ghost" data-testid="agent-share" data-verb="entity.share" onClick={onShare}>Share</Btn>
+              )
             )}
           </>
         ),
@@ -1368,6 +1374,7 @@ function AgentDetail({ agentId, pushToast }) {
         onChat={startChat}
         chatLoading={startChatMut.loading}
         onShare={() => setShareOpen(true)}
+        onOpenHarness={() => navigate("/harnesses/" + encodeURIComponent(a.harness_id))}
         onDelete={() => { setDeleteError(null); setConfirmDelete(true); }}
         onClose={() => navigate("/agents")}
         onCreate={() => {

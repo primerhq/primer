@@ -172,6 +172,23 @@ async def preserve_masked_secrets_on_update(entity: Any, existing: Any, request:
 _OnListEnrichHook = Callable[[Any, Request], Awaitable[Any]] | None
 
 
+def _refuse_harness_id(entity: Any, existing: Any | None) -> None:
+    """``harness_id`` is never writable through a body: only the harness service sets it (create) or changes it (update).
+
+    A body that sets it on create, or differs from the stored value on update, answers 422 and the stored value is kept. Without this a full grantee
+    could point someone's row at a harness of their own (the fan-out would then hand it to them) or at one that does not exist (nothing could share
+    the row again). A model with no ``harness_id`` is not affected.
+    """
+    if not hasattr(entity, "harness_id"):
+        return
+    stored = getattr(existing, "harness_id", None) if existing is not None else None
+    if entity.harness_id != stored:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "harness_id_forbidden", "message": "harness_id may only be set by the harness dispatch."},
+        )
+
+
 def make_crud_router(
     *,
     model_cls: type[_ModelT],
@@ -447,6 +464,7 @@ def make_crud_router(
             refuse_served_masks(entity)
             if on_pre_create is not None:
                 await on_pre_create(entity, request)
+            _refuse_harness_id(entity, None)  # after the kind's own hook, so its more specific answer stays
             created = await storage.create(entity)
             if on_create is not None:
                 await on_create(created.id, request)
@@ -716,7 +734,8 @@ def make_crud_router(
             if row_guard is not None:
                 await row_guard(existing, request, True)
             if on_pre_update is not None:
-                await on_pre_update(entity, existing, request)
+                await on_pre_update(entity, existing, request)  # a managed row answers its own 409 first
+            _refuse_harness_id(entity, existing)
             if owned or grantable:
                 # Guarded on the stored sharing's rev: a share changed meanwhile answers 409, never a resurrected grant.
                 updated = await update_keeping_access(

@@ -192,9 +192,12 @@ path-addressed document tools, and the per-collection extras.
   An id reserved for the platform (any that starts with `_internal_`,
   and `system`) is refused with `type=validation-error` naming `id`
   (`collection_id_reserved` over REST).
-- `system::update_collection` - partial update. `embedder` and
-  `search_provider_id` are not editable post-create - attempting
-  triggers 422.
+- `system::update_collection` - replaces the whole row and needs
+  `full` access. The sharing (`access`) is kept as stored whatever the
+  body sends, and the `search` block cannot change here: send the
+  stored block back unchanged, or the update is refused with
+  `type=forbidden` (turn search on, change or off with
+  `PUT` / `DELETE /v1/collections/{id}/search`, owners only).
 - `system::delete_collection` - deletes the collection TOGETHER WITH its
   documents, their content and its vector chunks (the vector namespace
   first, then the documents, then the collection). If the vector store
@@ -316,6 +319,15 @@ searchable via `system::search_collection`.
 
 ## Gotchas
 
+- **A collection is shared, and its documents share its access.**
+  `read` lists, reads, greps and searches the documents, `full` writes,
+  moves, deletes and imports them, `owner` deletes the collection,
+  shares it (`system::set_entity_access` with `kind: "collection"`) and
+  turns search on or off. A collection you cannot read answers as if it
+  did not exist (`type=not-found`), and `system::find_documents` and
+  `system::get_document` only reach collections you can read. The
+  platform wiki (`system`) is public and read-only for everyone; the
+  `_internal_` collections are admin-only.
 - **Documents are addressed by path, not id.** Read, write, and move
   with `(collection_id, path)`. Writing to an existing path replaces
   that document - the path is its identity and a natural idempotency
