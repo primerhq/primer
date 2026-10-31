@@ -1047,7 +1047,14 @@ def _make_subscribe_handler(
         trigger_storage = storage_provider.get_storage(Trigger)
         trigger = await trigger_storage.get(args.trigger_id)
         # Parking needs read on the trigger (P3 Decision 4): one the caller cannot read answers as one that does not exist.
-        if trigger is None or not trigger.enabled or level_of(person_for_tool(ctx), trigger.access) is None:
+        person = person_for_tool(ctx)
+        # A channel trigger also needs READ on its channel (a provider-wide one is admin-only), as subscribe_to_channel_event asks (final review F7).
+        if (
+            trigger is None
+            or not trigger.enabled
+            or level_of(person, trigger.access) is None
+            or not await _may_read_trigger_channel(storage_provider, person, trigger)
+        ):
             return _err(
                 f"trigger {args.trigger_id!r} does not exist or is disabled",
                 error_type="trigger_not_found_or_disabled",

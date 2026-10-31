@@ -184,8 +184,8 @@ async def test_a_full_grantee_who_edits_becomes_the_run_as_owner_and_access_is_k
     assert r.status_code == 200, r.text
     row = await sp.get_storage(Trigger).get(TID)
     assert row.owner.id == CAROL and row.name == "renamed"
-    # The token is re-minted when the run-as owner changes: whoever knew the old one does not ride along.
-    assert row.config.token != TOKEN
+    # A full grantee's rename never swaps the token out from under the owner (final review F1); only an OWNER's save re-mints it.
+    assert row.config.token == TOKEN
     assert row.access.owners == [ALICE] and row.access.grants == {BOB: "read", CAROL: "full"}
 
 

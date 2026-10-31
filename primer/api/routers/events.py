@@ -22,6 +22,7 @@ from primer.access.workspaces import require_workspace
 from primer.api.deps import (
     get_event_subscription_storage,
     get_storage_provider,
+    require_admin,
     require_user,
 )
 from primer.api.routers._crud import make_crud_router
@@ -105,6 +106,8 @@ async def list_events(
         entity_kind=entity_kind, entity_id=entity_id,
         workspace_id=workspace_id, since=since,
     )
+    # A non-admin's head is the newest event of the readable workspace they named, never the global log's (which counts unreadable workspaces).
+    max_id = await store.max_id() if is_admin else max((e.id for e in items), default=after_id)
     if event_type:
         items = [e for e in items if fnmatchcase(e.event_type, event_type)]
     if not is_admin:
@@ -118,7 +121,7 @@ async def list_events(
     # EVERY read is redacted, the admin's included: the gate is access
     # control, not an excuse to ship stored secrets to a browser.
     items = [redact_event(e) for e in items]
-    return EventListResponse(items=items, max_id=await store.max_id())
+    return EventListResponse(items=items, max_id=max_id)
 
 
 class _PausedBody(BaseModel):
@@ -128,7 +131,9 @@ class _PausedBody(BaseModel):
 @events_router.post(
     "/event_subscriptions/{subscription_id}/paused",
     summary="Pause or resume an event subscription",
-    responses=common_responses(404, 500),
+    responses=common_responses(403, 404, 500),
+    # Event subscriptions are admin-only (access-control spec decision 3): pausing system-cdc or another user's wait is not a user act.
+    dependencies=[Depends(require_admin)],
 )
 async def set_subscription_paused(
     request: Request,
