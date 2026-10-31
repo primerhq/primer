@@ -12,10 +12,11 @@ from typing import Any
 
 from primer.access.person import Person
 from primer.access.policy import level_of
-from primer.model.collection import CollectionSearchConfig
+from primer.model.collection import Collection, CollectionSearchConfig
 from primer.model.providers.cross_encoder import CrossEncoderProvider
 from primer.model.providers.embedding import EmbeddingProvider
 from primer.model.providers.vector import SemanticSearchProvider
+from primer.model.user import User
 
 
 def _providers(cfg: CollectionSearchConfig) -> list[tuple[type, str]]:
@@ -38,4 +39,18 @@ async def unusable_search_provider(storage_provider: Any, person: Person, cfg: C
     return None
 
 
-__all__ = ["unusable_search_provider"]
+async def owners_may_use(storage_provider: Any, collection: Collection) -> bool:
+    """Whether some owner of ``collection`` may use every provider its search names. Indexing spends them on the owners' behalf, so it
+    asks this as a defence behind the enable check (security review of P4, finding 2). A collection with no owner (a platform or admin
+    row) passes."""
+    if collection.search is None or not collection.access.owners:
+        return True
+    users = storage_provider.get_storage(User)
+    for user_id in collection.access.owners:
+        user = await users.get(user_id)
+        if user is not None and await unusable_search_provider(storage_provider, Person(user_id, user.role), collection.search) is None:
+            return True
+    return False
+
+
+__all__ = ["owners_may_use", "unusable_search_provider"]

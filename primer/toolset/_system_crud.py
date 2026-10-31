@@ -1827,6 +1827,15 @@ def _collection_extras(
                 "and the document tree remain available",
                 error_type="conflict",
             )
+        # The searcher must be able to use the providers the search names, as on the REST route and the collections tool (P4 Task 6).
+        from primer.knowledge.search_use import unusable_search_provider
+
+        if await unusable_search_provider(storage_provider, person_for_tool(ctx), coll.search) is not None:
+            return _err(
+                f"semantic search is not available to you on collection {args.collection_id!r}; grep and the document tree "
+                "remain available.",
+                error_type="conflict",
+            )
 
         try:
             embedder = await provider_registry.get_embedder(
@@ -2087,6 +2096,7 @@ def _document_service_factory(
                         provider_registry=provider_registry,
                         semantic_search_registry=semantic_search_registry,
                         content_store=storage_provider.get_content_store(),
+                        storage_provider=storage_provider,
                     )
                 except Exception:  # noqa: BLE001 - best-effort indexing
                     logger.exception(

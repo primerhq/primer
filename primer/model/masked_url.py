@@ -21,8 +21,13 @@ from typing import Annotated
 
 from pydantic import HttpUrl, PlainSerializer, SerializationInfo
 
-from primer.common.url_userinfo import mask_userinfo
-from primer.model.common import STORAGE_DUMP_CONTEXT
+from primer.common.url_userinfo import mask_userinfo, strip_userinfo
+from primer.model.common import SERVING_NON_ADMIN, STORAGE_DUMP_CONTEXT
+
+
+def _for_storage(info: SerializationInfo) -> bool:
+    context = info.context
+    return isinstance(context, dict) and all(context.get(key) == flag for key, flag in STORAGE_DUMP_CONTEXT.items())
 
 
 def _serialize_url(value, info: SerializationInfo):
@@ -35,10 +40,18 @@ def _serialize_url(value, info: SerializationInfo):
     """
     if not info.mode_is_json():
         return value
-    context = info.context
-    if isinstance(context, dict) and all(context.get(key) == flag for key, flag in STORAGE_DUMP_CONTEXT.items()):
+    if _for_storage(info):
         return str(value)
+    if SERVING_NON_ADMIN.get():
+        return strip_userinfo(str(value))  # a non-admin's read of a global setting: no userinfo at all
     return mask_userinfo(str(value))
+
+
+def _serialize_url_stripped_for_non_admin(value, info: SerializationInfo):
+    """A URL served as typed (to an admin, and stored), except that a non-admin's read of a global setting gets it with no userinfo."""
+    if info.mode_is_json() and not _for_storage(info) and SERVING_NON_ADMIN.get():
+        return strip_userinfo(value)
+    return value
 
 
 # NEVER dump a model that holds one with ``serialize_as_any=True`` or a ``SerializeAsAny`` annotation: in pydantic 2.13 that skips a field's own serializer, so the URL password would be served in
@@ -57,4 +70,10 @@ MaskedUserinfoStr = Annotated[
 #: The harness ``git_url`` and its resolved dependencies' ``git_url`` are the shared ``str`` flavour (one rule, one serializer; the review of #722, nit N6).
 MaskedGitUrl = MaskedUserinfoStr
 
-__all__ = ["MaskedGitUrl", "MaskedUserinfoStr", "MaskedUserinfoUrl"]
+#: A plain ``str`` URL an admin is served as typed (the S3 ``endpoint_url``); only a non-admin's read strips its userinfo.
+NonAdminStrippedUrlStr = Annotated[
+    str,
+    PlainSerializer(_serialize_url_stripped_for_non_admin, when_used="always"),
+]
+
+__all__ = ["MaskedGitUrl", "MaskedUserinfoStr", "MaskedUserinfoUrl", "NonAdminStrippedUrlStr"]
