@@ -872,3 +872,36 @@ async def test_end_all_sessions_ends_what_is_live_and_one_failure_does_not_skip_
 
     assert await second.status() == SessionStatus.ENDED, "a session that could not be ended must not skip the next one"
     assert any("aclose on session failed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_second_listing_makes_no_history_call_and_skips_slotless_ids(tmp_path: Path) -> None:
+    """W42: the console pages the listing; a repeat within the TTL does not reread the commit history or ask again about an id with no slot."""
+    sb = FakeSandbox(root=tmp_path)
+    ws_api = await SandboxWorkspace.materialise(
+        workspace_id="ws-ttl", template=_template(), sandbox=sb, backend_kind="container", runtime_meta=_runtime_meta(),
+    )
+    await ws_api.start_session(_binding("ag-a"), id="sess-ttl-1")
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-ttl", template=_template(), sandbox=sb, backend_kind="container", runtime_meta=_runtime_meta(),
+    )
+    calls = {"history": 0, "info": 0}
+    repo = ws._state_repo
+    real_ids, real_info = repo.list_session_ids, repo.load_session_info
+
+    async def counted_ids():
+        calls["history"] += 1
+        return [*(await real_ids()), "sess-gone"]  # a deleted session still named by the history
+
+    async def counted_info(sid):
+        calls["info"] += 1
+        return None if sid == "sess-gone" else await real_info(sid)
+
+    repo.list_session_ids, repo.load_session_info = counted_ids, counted_info
+
+    first = await ws.list_sessions()
+    info_after_first = calls["info"]
+    second = await ws.list_sessions()
+
+    assert [i.session_id for i in first] == [i.session_id for i in second] == ["sess-ttl-1"]
+    assert calls["history"] == 1 and calls["info"] == info_after_first
