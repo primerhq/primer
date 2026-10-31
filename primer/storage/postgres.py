@@ -616,6 +616,10 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "apitoken": [
         ("token_hash_uniq", True, "((data->>'token_hash'))"),
     ],
+    "user": [
+        # Two concurrent creates of one name (GS-20); created only when no duplicates exist (see _DUP_TOLERANT_UNIQUE_INDEX_NAMES).
+        ("username_uniq", True, "((data->>'username'))"),
+    ],
     "sessions": [
         ("status", False, "((data->>'status'))"),
         # Cross-workspace list filters push `workspace_id IN <readable>`
@@ -727,14 +731,14 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
 }
 
 
-# The one hot-field index created over possibly-dirty rows (KN-19j): a
-# pre-fix database can already hold duplicate (service_id, version)
-# pairs -- the race the index exists to stop -- and CREATE UNIQUE
-# INDEX over them would fail inside _ensure_table and break every later
-# ServiceVersion read and write. Its creation runs under a savepoint
-# that tolerates the unique violation (log and continue without the
-# index); every other hot-field index keeps raising.
-_DUP_TOLERANT_UNIQUE_INDEX_NAME = "serviceversion_service_version_uniq"
+# The hot-field indexes created over possibly-dirty rows (KN-19j, GS-20): a
+# pre-fix database can already hold duplicate (service_id, version) pairs or
+# duplicate usernames -- the races the indexes exist to stop -- and CREATE
+# UNIQUE INDEX over them would fail inside _ensure_table and break every
+# later read and write of the table. Their creation runs under a savepoint
+# that tolerates the unique violation (log and continue without the index,
+# for an admin to resolve); every other hot-field index keeps raising.
+_DUP_TOLERANT_UNIQUE_INDEX_NAMES = ("serviceversion_service_version_uniq", "user_username_uniq")
 
 
 def _hot_field_index_ddl(table: str, qualified: str) -> list[str]:
@@ -824,7 +828,7 @@ class PostgresStorage(Storage[ModelT]):
                     await conn.execute(ddl_table)
                     await conn.execute(ddl_index)
                     for ddl in ddl_hot:
-                        if _DUP_TOLERANT_UNIQUE_INDEX_NAME in ddl:
+                        if any(f'"{name}"' in ddl for name in _DUP_TOLERANT_UNIQUE_INDEX_NAMES):
                             # A failed statement aborts the whole
                             # Postgres transaction, so this one index
                             # (possibly dirty rows, KN-19j) runs under a
@@ -851,7 +855,7 @@ class PostgresStorage(Storage[ModelT]):
         self._table_ensured = True
 
     async def _create_dup_tolerant_index(self, conn: Any, ddl: str) -> None:
-        """Create the serviceversion unique index over possibly-dirty rows.
+        """Create a duplicate-tolerant unique index (serviceversion, user) over possibly-dirty rows.
 
         Pre-fix databases hold duplicate (service_id, version) pairs --
         the race the index exists to stop (KN-19j) -- and CREATE UNIQUE
@@ -860,18 +864,17 @@ class PostgresStorage(Storage[ModelT]):
         unique violation roll back to it, warn once, and continue
         without the index (the enclosing commit releases the savepoint).
         """
-        await conn.execute("SAVEPOINT serviceversion_unique_index")
+        await conn.execute("SAVEPOINT tolerant_unique_index")
         try:
             await conn.execute(ddl)
         except asyncpg.UniqueViolationError:
             await conn.execute(
-                "ROLLBACK TO SAVEPOINT serviceversion_unique_index",
+                "ROLLBACK TO SAVEPOINT tolerant_unique_index",
             )
             logger.warning(
-                "could not create unique index %s: duplicate (service_id, "
-                "version) rows already exist; continuing without it "
-                "(KN-19j)",
-                _DUP_TOLERANT_UNIQUE_INDEX_NAME,
+                "could not create the unique index in %r: duplicate rows already "
+                "exist; continuing without it until an admin resolves them (KN-19j, GS-20)",
+                ddl,
             )
 
     # ---------- Serialisation ---------------------------------------------

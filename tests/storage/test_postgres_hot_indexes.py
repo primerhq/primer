@@ -32,7 +32,7 @@ from primer.storage.sqlite import _SQLITE_HOT_FIELD_INDEXES
 
 
 def test_registry_declares_the_hot_tables():
-    """token_hash / session status / channel routing / useridentity
+    """token_hash / unique username / session status / channel routing / useridentity
     uniqueness / webhook recovery / tool-approval-record gate key /
     artifact-location routing / document collection reads / the eight
     access-members GIN indexes are all registered."""
@@ -41,7 +41,7 @@ def test_registry_declares_the_hot_tables():
         "webhookdelivery", "toolapprovalrecord", "artifactlocation", "document",
         "agent", "graph", "toolset", "workspacetemplate", "workspace", "externaltoolcall", "collection", "trigger", "harness",
         "modelprofile", "workspaceprovider", "channelprovider", "semanticsearchprovider", "embeddingprovider", "crossencoderprovider", "llmprovider",
-        "serviceversion",
+        "serviceversion", "user",
     }
 
 
