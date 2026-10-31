@@ -29,6 +29,8 @@ Returns a :class:`ChannelRouteOutcome` naming what it did.
 from __future__ import annotations
 
 import logging
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from primer.channel.correlation import CorrelationStore
@@ -78,6 +80,28 @@ class ChannelRouteOutcome:
     kind: str
     session_id: str | None = None
     fire_ids: list[str] = field(default_factory=list)
+
+
+#: Inbound events already routed by this process (W33), oldest first: ``(provider_id, room_external_id, type, event_id)``
+#: -> when first seen (monotonic). A platform redelivers an event it thinks was missed (a Slack ack later than 3 s, an
+#: unconfirmed Telegram update); routing it again would start a second session or steer twice.
+_SEEN_EVENTS: OrderedDict[tuple, float] = OrderedDict()
+_SEEN_EVENTS_MAX = 10_000
+_SEEN_EVENTS_TTL_SECONDS = 600.0
+
+
+def _first_delivery(key: tuple) -> bool:
+    """Record ``key`` and answer whether this is its first delivery inside the TTL. The set stays bounded."""
+    now = time.monotonic()
+    while _SEEN_EVENTS:
+        oldest, seen_at = next(iter(_SEEN_EVENTS.items()))
+        if now - seen_at < _SEEN_EVENTS_TTL_SECONDS and len(_SEEN_EVENTS) < _SEEN_EVENTS_MAX:
+            break
+        del _SEEN_EVENTS[oldest]
+    if key in _SEEN_EVENTS:
+        return False
+    _SEEN_EVENTS[key] = now
+    return True
 
 
 def _artefacts(result) -> list[tuple[str, str | None]]:
@@ -221,7 +245,27 @@ class ChannelEventRouter:
         channel: Channel | None,
         media_parts: list | None = None,
     ) -> ChannelRouteOutcome:
-        """Route one normalized inbound event and report what it did."""
+        """Route one normalized inbound event and report what it did.
+
+        A redelivery of an event this process already routed (same provider, room, type and event id) is ignored.
+        """
+        key = (event.provider_id, event.room_external_id, getattr(event.type, "value", event.type), event.event_id)
+        if event.event_id and not _first_delivery(key):
+            logger.info("channel event %s in %s was delivered again; already routed", event.event_id, event.room_external_id)
+            return ChannelRouteOutcome(kind="ignored")
+        try:
+            return await self._route(event=event, channel=channel, media_parts=media_parts)
+        except BaseException:
+            _SEEN_EVENTS.pop(key, None)  # routing failed: a redelivery may try again
+            raise
+
+    async def _route(
+        self,
+        *,
+        event: ChannelEvent,
+        channel: Channel | None,
+        media_parts: list | None,
+    ) -> ChannelRouteOutcome:
         channel_id = event.channel_id or (channel.id if channel is not None else None)
 
         # The SDK-free normalizers only set ``room_external_id`` (the platform

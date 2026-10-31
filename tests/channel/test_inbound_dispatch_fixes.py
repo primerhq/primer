@@ -336,3 +336,52 @@ async def test_W56b_two_attachments_with_one_name_both_land():
     )
     assert paths == ["media/f1/image.png", "media/f1/1-image.png", "media/f1/c.png"]
     assert ws.files == {"media/f1/image.png": b"A", "media/f1/1-image.png": b"B", "media/f1/c.png": b"C"}
+
+
+# --------------------------------------------------------------------------- W33
+
+
+async def test_W33_a_redelivered_event_is_routed_once():
+    sp = _FakeStorageProvider()
+    await _seed(sp)
+    fires = _Fires(sp, start_sessions=False)
+    first = await _router(sp, fires).route_event(event=_event(1, surface="channel"), channel=None)
+    again = await _router(sp, fires).route_event(event=_event(1, surface="channel"), channel=None)
+    assert first.kind == "fired" and again.kind == "ignored"
+    assert len(fires.calls) == 1
+
+
+async def test_W33_a_redelivery_while_the_first_is_still_routing_is_dropped():
+    sp = _FakeStorageProvider()
+    await _seed(sp)
+    fires = _Fires(sp, delay=0.05, start_sessions=False)
+    router = _router(sp, fires)
+    await asyncio.gather(*(router.route_event(event=_event(1, surface="channel"), channel=None) for _ in range(3)))
+    assert len(fires.calls) == 1
+
+
+async def test_W33_an_event_whose_routing_raised_can_be_redelivered(monkeypatch):
+    sp = _FakeStorageProvider()
+    await _seed(sp)
+    fires = _Fires(sp, start_sessions=False)
+    router = _router(sp, fires)
+    real = router._resolve_channel_triggers
+    calls = {"n": 0}
+
+    async def _flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("storage blip")
+        return await real(*a, **k)
+
+    monkeypatch.setattr(router, "_resolve_channel_triggers", _flaky)
+    with pytest.raises(RuntimeError):
+        await router.route_event(event=_event(1, surface="channel"), channel=None)
+    assert (await router.route_event(event=_event(1, surface="channel"), channel=None)).kind == "fired"
+
+
+def test_W33_the_seen_set_is_bounded(monkeypatch):
+    monkeypatch.setattr(ed, "_SEEN_EVENTS_MAX", 50)
+    for i in range(500):
+        ed._first_delivery(("cp-1", "777", "message.posted", f"m{i}"))
+    assert len(ed._SEEN_EVENTS) <= 50
