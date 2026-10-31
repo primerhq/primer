@@ -92,6 +92,10 @@ class ReleaseOutcome:
     # while the row still carries it, and refuses the write when it is ``None``: a ``None``
     # token never matches, so a token-less release cannot move a row someone else now owns.
     claim_token: str | None = None
+    # A TRIGGER claim's due tick (the ``scheduled_for`` of its last fire): ``TriggerClaimAdapter.on_release`` advances ``next_fire_at``
+    # from it, not from the release's clock, so a tick that passed while the fire ran is still due to the next claim (W47). ``None``: from
+    # the release's clock.
+    fired_tick: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.entity_noop and (self.park is not None or self.preserve_park):

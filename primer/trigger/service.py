@@ -157,6 +157,11 @@ class ServiceDeps:
     workspace_registry: Any | None = None
 
 
+# A fire's bookkeeping (``fire_trigger`` writes them field by field): an update or a rotate read before the fire landed must not put the old
+# values back (W49), or a redelivery of the fire's claim would fire again the ticks ``_not_fired_yet`` skips.
+_FIRE_FIELDS = ("last_fired_at", "last_fired_id", "last_fire_error")
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -475,7 +480,7 @@ async def update_trigger(
         if trigger.enabled else None
     )
     # Every field but the sharing, guarded on its rev (P3 Decision 8): a sharing change made meanwhile is a conflict, never undone.
-    trigger = await update_keeping_access(storage, trigger, trigger, what=f"Trigger {trigger_id!r}")
+    trigger = await update_keeping_access(storage, trigger, trigger, what=f"Trigger {trigger_id!r}", keep=_FIRE_FIELDS)
     if trigger.enabled:
         await _upsert_claim_if_eligible(trigger, deps=deps)
     else:
@@ -764,7 +769,7 @@ async def rotate_webhook_token(
     new_token = _mint_webhook_token()
     trigger.config = trigger.config.model_copy(update={"token": new_token})
     trigger.owner = owner
-    return await update_keeping_access(storage, trigger, trigger, what=f"Trigger {trigger_id!r}")
+    return await update_keeping_access(storage, trigger, trigger, what=f"Trigger {trigger_id!r}", keep=_FIRE_FIELDS)
 
 
 async def get_subscription(

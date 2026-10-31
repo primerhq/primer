@@ -60,6 +60,14 @@ async def _extract_pdf(data: bytes) -> str:
     )
 
 
+def _pretty_json(raw: bytes | bytearray) -> str:
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        return json.dumps(json.loads(text), indent=2, ensure_ascii=False)
+    except ValueError:
+        return text
+
+
 class LocalAdapter(WebFetchAdapter):
     def __init__(
         self,
@@ -99,8 +107,9 @@ class LocalAdapter(WebFetchAdapter):
         except UnsupportedContentEncoding as exc:
             raise WebFetchProviderError(f"local fetch: {exc}") from exc
 
+        # Extraction and the pretty-print are CPU work on up to the raw cap: off the loop (W23).
         if ct in ("text/html", "application/xhtml+xml", ""):
-            return self._extract_html(raw, ct, final_url, status)
+            return await asyncio.to_thread(self._extract_html, raw, ct, final_url, status)
         if ct == "application/pdf":
             md = await _extract_pdf(raw)
             return FetchedPage(
@@ -108,11 +117,7 @@ class LocalAdapter(WebFetchAdapter):
                 content_type=ct, status=status,
             )
         if ct == "application/json":
-            text = raw.decode("utf-8", errors="replace")
-            try:
-                pretty = json.dumps(json.loads(text), indent=2, ensure_ascii=False)
-            except ValueError:
-                pretty = text
+            pretty = await asyncio.to_thread(_pretty_json, raw)
             return FetchedPage(
                 final_url=final_url, title="",
                 content_markdown=f"```json\n{pretty}\n```",
