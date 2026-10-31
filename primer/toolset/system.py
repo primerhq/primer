@@ -161,7 +161,8 @@ from primer.model.yield_ import ToolContext, Yielded
 from primer.session.peer_messages import ACCESS_NOTE
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
-from primer.storage.references import LLM_PROVIDER_REFERENCES, MODEL_PROFILE_GRAPH_REFERENCE
+from primer.storage.provider_cascade import delete_llm_provider_profiles
+from primer.storage.references import MODEL_PROFILE_GRAPH_REFERENCE
 from primer.artifact.checks import (
     ARTIFACT_DEFAULT_WRITE_NOTE,
     ARTIFACT_DELETE_NOTE,
@@ -448,7 +449,6 @@ def build_system_toolset(
         # reserved bootstrap ids (REST: create 409, delete 403)
         "llm_provider": CrudGuards(
             kind="llm_provider", reserved_create_ids=RESERVED_LLM_IDS, reserved_delete_ids=RESERVED_LLM_IDS,
-            references=tuple(ToolReference.from_spec(spec) for spec in LLM_PROVIDER_REFERENCES),
         ),
         "embedding_provider": CrudGuards(
             kind="embedding_provider", reserved_create_ids=RESERVED_EMBEDDER_IDS, reserved_delete_ids=RESERVED_EMBEDDER_IDS,
@@ -716,7 +716,11 @@ def build_system_toolset(
     async def _artifact_provider_pre_delete(existing: ArtifactStorageProvider) -> None:
         await check_artifact_provider_delete(storage_provider, existing.id)
 
+    async def _llm_provider_pre_delete(existing: LLMProvider) -> None:
+        await delete_llm_provider_profiles(storage_provider, existing.id)
+
     pre_deletes_by_label: dict[str, Any] = {
+        "llm_provider": _llm_provider_pre_delete,
         "artifact_storage_provider": _artifact_provider_pre_delete,
         "collection": _collection_pre_delete,
         "toolset": _toolset_pre_delete,
