@@ -181,6 +181,26 @@ async def _finalize_delivery(
         )
 
 
+async def _record_fire(storage_provider: Any, delivery_id: str | None, fire_id: str | None) -> None:
+    """Record on a still-pending delivery row that its trigger has fired (W12).
+
+    The row stays ``pending`` (the poll endpoint reports the run as going) but carries the ``fire_id``, which the
+    recovery sweep reads as "already fired": an interactive hold keeps its row pending for as long as the run lasts,
+    well past the sweep's grace. A field patch guarded on ``pending``, so it never reopens or overwrites a finished
+    row. Best effort, like the finalize.
+    """
+    if delivery_id is None or fire_id is None:
+        return
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    try:
+        await storage_provider.get_storage(WebhookDelivery).patch_if(
+            delivery_id, {"fire_id": fire_id}, where={"status": ["pending"]},
+        )
+    except Exception:  # noqa: BLE001 -- advisory marking, never fatal
+        logger.debug("webhook delivery fire record failed for %s", delivery_id, exc_info=True)
+
+
 async def _finalize_hold(
     storage_provider: Any, delivery_id: str | None, held: HeldFire,
 ) -> None:
@@ -257,6 +277,7 @@ async def _dispatch_webhook(
             deps=dispatch_deps,
             extra_context=extra_context,
         )
+        await _record_fire(storage_provider, delivery_id, result.fire_id)
         logger.info(
             "webhook dispatched trigger=%s fire_id=%s dispatched=%d",
             trigger_id,
@@ -445,6 +466,7 @@ async def receive_webhook(
                 ),
                 workspace_registry=workspace_registry,
                 wait_timeout=HOLD_MAX_SECONDS,
+                on_fired=lambda result: _record_fire(sp, row_id, result.fire_id),
             ),
             name=f"webhook-hold-{delivery_id}",
         )
