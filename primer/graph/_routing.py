@@ -154,6 +154,11 @@ class _RoutingMixin:
                 "the source node produced output"
             )
         router = edge.router
+        if isinstance(router, _JsonPathRouter) and isinstance(source_output, list):
+            raise ConfigError(
+                f"json_path router on edge from {edge.from_node!r}: the source is a fan-out target, whose output is the "
+                "list of its copies' outputs; route from a node after them (a fan_in)"
+            )
         if isinstance(router, _JsonPathRouter):
             # ``parsed is None`` means the source node's structured output
             # did not parse as JSON -- e.g. a model wrapped it in a ```json

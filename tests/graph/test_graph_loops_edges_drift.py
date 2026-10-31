@@ -19,13 +19,21 @@ import pytest
 
 from primer.graph.base import _GraphErrorEvent
 from primer.graph.executor import GraphExecutor
+from primer.graph.router import RouterRegistry
 from primer.model.chat import ToolResultPart
 from primer.model.graph import (
+    BranchCondition,
+    FanOutSpec,
     Graph,
     GraphNodeMessage,
     GraphThread,
+    JsonPathBranch,
     _BeginNode,
+    _CallableRouter,
+    _ConditionalEdge,
     _EndNode,
+    _FanOutNode,
+    _JsonPathRouter,
     _StaticEdge,
     _ToolCallNode,
 )
@@ -149,3 +157,82 @@ async def test_a_deleted_pending_toolcall_node_ends_topology_drift_instead_of_ra
     assert (t.status, t.ended_reason, t.ended_detail) == (SessionStatus.ENDED, "failed", "topology_drift")
     drift = [e for e in events if isinstance(e, _GraphErrorEvent) and e.code == "topology_drift"]
     assert [e.node_id for e in drift] == ["a"] and "no longer" in drift[0].message
+
+
+# ---- AG-M8: edge evaluation errors -----------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_json_path_edge_from_a_fan_out_target_ends_failed_with_a_clear_reason():
+    graph = Graph(
+        id="g-cond-from-target", description="conditional from a fan-out target",
+        nodes=[
+            _BeginNode(id="begin"),
+            _FanOutNode(id="fo", specs=[FanOutSpec(kind="broadcast", target_node_id="t", count=2)]),
+            _ToolCallNode(id="t", tool_id="x__work", arguments={}, output_schema=OBJ),
+            _EndNode(id="end", output_template="done"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="fo"),
+            _ConditionalEdge(from_node="t", router=_JsonPathRouter(
+                branches=[JsonPathBranch(conditions=[BranchCondition(path="ok", op="exists")], to_node="end")], default_to="end",
+            )),
+        ],
+    )
+
+    async def dispatcher(node, arguments):
+        return ToolResultPart(id="w", output='{"ok": true}')
+
+    ex, _, exc, thread = await _run(graph, dispatcher)
+
+    assert exc is None
+    assert (thread.status, thread.ended_reason, thread.ended_detail) == (SessionStatus.ENDED, "failed", None)
+    assert "fan-out target" in (ex._last_failure_text or "")
+
+
+def _raising_router_graph() -> Graph:
+    return Graph(
+        id="g-raising-router", description="t -> a callable router that raises",
+        nodes=[_BeginNode(id="begin"), _ToolCallNode(id="t", tool_id="x__t", arguments={}), _EndNode(id="end", output_template="done")],
+        edges=[_StaticEdge(from_node="begin", to_node="t"), _ConditionalEdge(from_node="t", router=_CallableRouter(callable_id="boom"))],
+    )
+
+
+def _raising_registry() -> RouterRegistry:
+    def boom(ctx, src):
+        raise RuntimeError("router exploded")
+
+    reg = RouterRegistry()
+    reg.register("boom", boom)
+    return reg
+
+
+@pytest.mark.asyncio
+async def test_a_raising_callable_router_ends_the_run_failed():
+    ex, _, exc, thread = await _run(_raising_router_graph(), _ok, _raising_registry())
+
+    assert exc is None
+    assert (thread.status, thread.ended_reason, thread.ended_detail) == (SessionStatus.ENDED, "failed", None)
+    assert ex.last_done_reason == "graph_failed"
+    assert "router exploded" in (ex._last_failure_text or "")
+
+
+@pytest.mark.asyncio
+async def test_a_raising_callable_router_after_a_resume_ends_the_run_failed():
+    graph = _raising_router_graph()
+    threads, msgs = _InMemoryStorage(GraphThread), _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(graph=graph, thread_storage=threads)  # type: ignore[arg-type]
+
+    async def gate(node, arguments):
+        raise YieldToWorker(Yielded(tool_name="_approval", event_key="tool_approval:sid:tc-1"), tool_call_id="tc-1")
+
+    with pytest.raises(YieldToWorker) as parked:
+        async for _ in _make(graph, threads, msgs, thread.id, gate, _raising_registry()).invoke([]):
+            pass
+    ex2 = _make(graph, threads, msgs, thread.id, _ok, _raising_registry())
+    [ev async for ev in ex2.resume_from_checkpoint(parked.value.graph_checkpoint)]
+
+    t = await threads.get(thread.id)
+    assert (t.status, t.ended_reason, t.ended_detail) == (SessionStatus.ENDED, "failed", None)
+    assert ex2.last_done_reason == "graph_failed"
+    assert "router exploded" in (ex2._last_failure_text or "")

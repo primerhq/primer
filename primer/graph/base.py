@@ -1301,7 +1301,7 @@ class _BaseGraphExecutor(
                 )
                 await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="routing_failed")
                 return
-            except ConfigError as exc:
+            except Exception as exc:  # noqa: BLE001 -- ConfigError or a raising router (AG-M8): never escapes
                 # The main loop's own answer to an edge that cannot be evaluated: log it, remember why, end the run ``failed`` with no detail. It used to leave this
                 # method as a raw exception and the thread was never saved as ended (ticket 01a12625-436c).
                 logger.warning(
@@ -2360,7 +2360,7 @@ class _BaseGraphExecutor(
                 ended_reason = "failed"
                 ended_detail = "routing_failed"
                 break
-            except ConfigError as exc:
+            except Exception as exc:  # noqa: BLE001 -- ConfigError or a raising router (AG-M8): end failed, never leave the run RUNNING
                 logger.warning(
                     "GraphExecutor: edge evaluation failed",
                     extra={"graph_id": self._graph.id, "error": str(exc)},
