@@ -831,4 +831,28 @@ def make_crud_router(
     return router
 
 
-__all__ = ["make_crud_router", "preserve_masked_secrets_on_update"]
+def read_write_routers(router: APIRouter) -> tuple[APIRouter, APIRouter]:
+    """Split a built router into its GET (read) and non-GET (write) parts.
+
+    Returns ``(read_router, write_router)`` whose route lists reference the
+    same routes partitioned by verb: every GET route goes to the read part,
+    and every other route stays in the write part (create / update / delete,
+    the ``_test`` probes, and ``POST /<plural>/find`` - a read in shape but
+    a POST in verb, so it keeps the stricter tier). Mount each part under
+    its own dependency tier: the read part at the user tier, the write part
+    at the admin tier (ACL-P4 Task 9: global settings readable by everyone,
+    writes admin-only). The original router keeps its own routes (tests
+    still mount it), so the split parts must never be mounted on the same
+    app as it.
+    """
+    read = APIRouter(tags=list(router.tags))
+    write = APIRouter(tags=list(router.tags))
+    for route in router.routes:
+        # A GET route carries HEAD too (Starlette adds it), so the read test
+        # admits both; everything else is a write.
+        methods = getattr(route, "methods", None) or set()
+        (read if methods <= {"GET", "HEAD"} else write).routes.append(route)
+    return read, write
+
+
+__all__ = ["make_crud_router", "preserve_masked_secrets_on_update", "read_write_routers"]

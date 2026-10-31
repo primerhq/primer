@@ -137,9 +137,12 @@ The entities:
   config: {api_key}}` was a 422: `provider` is not a model field and the
   config had no `type` (design 13.4).
 - `ui/components/web-settings.jsx`: `WEB_SettingsPage`, the Platform › Web page
-  (`view=platform:web`), where an admin sets the web search and the web fetch
-  active config (mode, and the default or the ordered list) and registers and
-  edits the fetchers; `WEB_ActiveConfigSection` draws one setting.
+  (`view=platform:web`), where everyone reads the web search and web fetch active
+  config (the reads are user tier with secrets masked, ACL-P4 Task 9) and an admin
+  sets it (mode, and the default or the ordered list) and registers and edits the
+  fetchers; a non-admin sees the same page with the write controls disabled and
+  "Only an admin can change this" under them. `WEB_ActiveConfigSection` draws one
+  setting.
 
 ## 5. Data model
 
@@ -429,7 +432,7 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
   (`tests/ui/_web_settings_harness.py`: the real kit and foundation, refusals
   from the real router): the exact PUT bodies, the missing-id option, the
   last member that cannot be unticked, one PUT at a time, the fetcher cards,
-  the Register overlay, the admin-only notice and the palette verb.
+  the Register overlay, the read-only rendering for a non-admin and the palette verb.
   `tests/ui_e2e/test_web_settings_journey.py` drives it in a browser.
 - `tests/toolset/web/test_factory.py` and `tests/toolset/web/test_tools.py` cover
   the toolset: `list_tools` yielding exactly two ids, dispatch through a fake

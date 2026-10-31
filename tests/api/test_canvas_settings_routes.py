@@ -54,9 +54,12 @@ async def test_an_invalid_body_is_422_and_stores_nothing(client, fake_storage_pr
     assert await fake_storage_provider.get_storage(CanvasSettings).get(CANVAS_SETTINGS_ID) is None
 
 
-async def test_settings_are_admin_only(client, carol, fake_storage_provider):
-    for r in (await carol.get("/v1/canvas_settings"), await carol.put("/v1/canvas_settings", json={"strict_mode": True})):
-        assert r.status_code == 403 and r.json()["extensions"]["error"] == "forbidden_role"
+async def test_reads_open_to_users_writes_admin_only(client, carol, fake_storage_provider):
+    # ACL-P4 Task 9: canvas settings are global settings - a full user reads
+    # them; the PUT stays the admin's.
+    assert (await carol.get("/v1/canvas_settings")).status_code == 200
+    r = await carol.put("/v1/canvas_settings", json={"strict_mode": True})
+    assert r.status_code == 403 and r.json()["extensions"]["error"] == "forbidden_role"
     assert await fake_storage_provider.get_storage(CanvasSettings).get(CANVAS_SETTINGS_ID) is None
     assert (await client.get("/v1/canvas_settings")).status_code == 200
 

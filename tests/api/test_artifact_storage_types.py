@@ -184,15 +184,18 @@ async def test_the_s3_label_and_help(client) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["user", "restricted"])
-async def test_a_non_admin_cannot_read_the_types(raw_client, app, role: str) -> None:
-    """N1: system configuration is admin only, like every sibling class (the helper router is mounted with the admin gate, not the user gate)."""
+async def test_the_types_gate_by_role(raw_client, app, role: str) -> None:
+    """N1, re-pinned (ACL-P4 Task 9): ``_types`` is global-settings metadata, so a full user reads it; a restricted user still gets nothing."""
     from tests.api.test_require_user_admin import _login, _seed
 
     await _seed(app, uid=f"u-{role}", username=role, role=role)
     await _login(raw_client, role)
     r = await raw_client.get("/v1/artifact_storage_providers/_types")
-    assert r.status_code == 403, r.text
-    assert r.json()["extensions"]["error"] == "forbidden_role"
+    if role == "user":
+        assert r.status_code == 200, r.text
+    else:
+        assert r.status_code == 403, r.text
+        assert r.json()["extensions"]["error"] == "forbidden_role"
 
 
 @pytest.mark.asyncio

@@ -218,6 +218,9 @@ function WEB_ActiveConfigSection(props) {
   var cols = props.cols !== undefined ? props.cols : 2;
   var onManageProviders = props.onManageProviders;
   var children = props.children;
+  // ACL-P4 Task 9: a non-admin reads the section but changes nothing; the
+  // controls stay visible and say why they take no input.
+  var readOnly = !!props.readOnly;
 
   var [saving, setSaving] = React.useState(false);
   var [fieldError, setFieldError] = React.useState(null);
@@ -383,7 +386,7 @@ function WEB_ActiveConfigSection(props) {
         key: r.key,
         label: r.label,
         checked: false,
-        disabled: false,
+        disabled: readOnly || undefined,
         extra: null,
       };
     }
@@ -402,7 +405,7 @@ function WEB_ActiveConfigSection(props) {
           kind="ghost"
           data-testid={t + "-up:" + r.key}
           aria-label={"Move " + r.key + " up"}
-          disabled={isFirst}
+          disabled={isFirst || readOnly}
           blocked={saving}
           onClick={function () {
             var next = WEB_moveMember(cfg, r.key, -1);
@@ -416,7 +419,7 @@ function WEB_ActiveConfigSection(props) {
           kind="ghost"
           data-testid={t + "-down:" + r.key}
           aria-label={"Move " + r.key + " down"}
-          disabled={isLast}
+          disabled={isLast || readOnly}
           blocked={saving}
           onClick={function () {
             var next = WEB_moveMember(cfg, r.key, 1);
@@ -432,7 +435,7 @@ function WEB_ActiveConfigSection(props) {
       key: r.key,
       label: r.label,
       checked: true,
-      disabled: false,
+      disabled: readOnly || undefined,
       extra: extraNode,
     };
   });
@@ -448,6 +451,7 @@ function WEB_ActiveConfigSection(props) {
             ]}
             value={cfg ? cfg.mode : "single"}
             onChange={handleModeChange}
+            disabled={readOnly || undefined}
             testid={t + "-mode"}
             ariaLabel={info.title + " mode"}
           />
@@ -469,6 +473,7 @@ function WEB_ActiveConfigSection(props) {
               aria-label={info.defaultLabel}
               value={currentSingleId}
               onChange={handleDefaultChange}
+              disabled={readOnly || undefined}
               aria-busy={saving ? "true" : "false"}
             >
               {isCurrentMissing ? (
@@ -487,6 +492,11 @@ function WEB_ActiveConfigSection(props) {
           </PK_Field>
         )}
       </PK_Grid>
+      {readOnly ? (
+        <div className="muted" data-testid={t + "-readonly-note"}>
+          Only an admin can change this
+        </div>
+      ) : null}
       {kind === "search" ? (
         <div style={{ marginTop: 8 }}>
           <Btn
@@ -583,13 +593,16 @@ function WEB_emptyText(q, total) {
 function WEB_SettingsPage() {
   var con = (typeof NV_useConsole === "function") ? NV_useConsole() : { role: "admin", goView: function () {} };
   var isAdmin = con && con.role === "admin";
+  // ACL-P4 Task 9: everyone reads the web settings (secrets masked by the
+  // server); only an admin changes them.
+  var readOnly = !isAdmin;
   var viewport = (window.primerApi && typeof window.primerApi.useViewport === "function")
     ? window.primerApi.useViewport()
     : { isMobile: false };
   var isMobile = !!(viewport && viewport.isMobile);
 
-  var searchRes = WEB_useKind("search", isAdmin);
-  var fetchRes = WEB_useKind("fetch", isAdmin);
+  var searchRes = WEB_useKind("search", true);
+  var fetchRes = WEB_useKind("fetch", true);
 
   var fetchProviders = (fetchRes.providers && fetchRes.providers.data)
     ? (Array.isArray(fetchRes.providers.data) ? fetchRes.providers.data : (fetchRes.providers.data.items || []))
@@ -605,18 +618,6 @@ function WEB_SettingsPage() {
 
   var [overlayRow, setOverlayRow] = React.useState(null);
   var [overlayOpen, setOverlayOpen] = React.useState(false);
-
-  if (!isAdmin) {
-    return (
-      <div data-testid="web-admin-only">
-        <Banner
-          kind="info"
-          title="Web settings need the admin role"
-          detail="An admin chooses which providers answer web searches and page fetches."
-        />
-      </div>
-    );
-  }
 
   var RegisterOverlay = window.PC_RegisterOverlay;
   var hasOverlay = typeof RegisterOverlay === "function";
@@ -635,9 +636,12 @@ function WEB_SettingsPage() {
   var headerAction = hasOverlay ? {
     label: "+ Fetcher",
     onClick: function () {
+      if (readOnly) return;
       setOverlayRow(null);
       setOverlayOpen(true);
     },
+    disabled: readOnly || undefined,
+    title: readOnly ? "Only an admin can change this" : undefined,
     testid: "web-add-fetcher",
   } : null;
 
@@ -673,6 +677,7 @@ function WEB_SettingsPage() {
         active={searchRes.active}
         providers={searchRes.providers}
         cols={sectionCols}
+        readOnly={readOnly}
         onManageProviders={function () {
           con.goView("platform", "providers", "web_search");
         }}
@@ -682,6 +687,7 @@ function WEB_SettingsPage() {
         active={fetchRes.active}
         providers={fetchRes.providers}
         cols={sectionCols}
+        readOnly={readOnly}
       >
         <div style={{ marginTop: 16 }}>
           <PK_CardGrid testid="web-fetchers">
@@ -702,6 +708,7 @@ function WEB_SettingsPage() {
                     subtitle={card.subtitle}
                     facts={card.facts}
                     onOpen={function () {
+                      if (readOnly) return;
                       setOverlayRow(row);
                       setOverlayOpen(true);
                     }}

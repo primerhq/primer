@@ -146,8 +146,8 @@ rows.
 - `primer/canvas/files.py` - the capability URLs for a workspace file a canvas shows.
 - `primer/model/canvas.py` - `SessionCanvas`, `CanvasEvent` and `CanvasSettings`, and the
   constants.
-- `primer/api/routers/canvas.py` - the HTTP surface (the frame, the files, the console routes, the
-  admin settings).
+- `primer/api/routers/canvas.py` - the HTTP surface (the frame, the files, the console routes, and the
+  settings: the `GET` is user tier (ACL-P4 Task 9) and the `PUT` stays admin, split by `read_write_routers`).
 - `primer/toolset/canvas.py` - the `canvas` toolset and its three tools.
 - `ui/canvas/` - the frame: the template, the CSS, the trusted renderer and the Html bootstrap.
 
@@ -227,8 +227,8 @@ system tools (`system__get_canvas_settings`, `system__update_canvas_settings`), 
 newest events with what the users entered); `GET .../canvas?format=lang` reads it as a Canvas Lang
 program; `POST .../canvas/ops` writes an operator's batch; `DELETE .../canvas` clears it; and
 `POST .../canvas/events` records a person's click or choice and hands it to the agent. Each write
-follows the rank rule of a steer (a token acts as its owner). The admin's settings are
-`GET` and `PUT /v1/canvas_settings`.
+follows the rank rule of a steer (a token acts as its owner). The settings are `GET /v1/canvas_settings`
+(user tier since ACL-P4 Task 9, restricted users get nothing) and `PUT /v1/canvas_settings` (admin).
 
 **The frame.** The console never puts canvas content into its own DOM: it mounts an iframe with
 `sandbox="allow-scripts allow-forms"`, a static page served outside `/v1` with its own policy

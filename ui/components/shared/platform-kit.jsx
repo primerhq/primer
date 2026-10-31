@@ -117,7 +117,8 @@ function PK_PageHeader(props) {
       ) : null}
       {action ? (
         <button type="button" className="pk-action" data-testid={action.testid}
-          onClick={function () { action.onClick(); }}>{action.label}</button>
+          disabled={action.disabled || undefined} title={action.title || undefined}
+          onClick={function () { if (!action.disabled) action.onClick(); }}>{action.label}</button>
       ) : null}
     </div>
   );
