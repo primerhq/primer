@@ -7,9 +7,10 @@ A browser (`authorization_code`) sign-in belongs to one person: its tokens are
 keyed by (toolset, user), and a call or a listing sends only the token of the
 person it acts for, never another person's (access-control spec 6.5). A
 client-credentials sign-in is one shared row per toolset, used by every caller,
-and so is any sign-in of the system person of an auth-disabled install. The
-sign-in routes still require the admin role; they act on the caller's own
-sign-in. The provider and agent integration is described in
+and so is any sign-in of the system person of an auth-disabled install. Any
+full user who may use the toolset (a level on it, or a public tool of it) signs
+in for themselves; connecting the shared client-credentials sign-in needs full
+access on the toolset. The provider and agent integration is described in
 [provider-pattern](../architecture/provider-pattern.md) and [agents](agents.md);
 the person rules in [access-control](../architecture/access-control.md).
 
@@ -120,7 +121,7 @@ across sites. The console must therefore be opened on the host the callback
 uses: with `PRIMER_PUBLIC_URL` set, open the console at that URL, or the cookie
 is set for one host and the callback lands on another.
 
-For client credentials, an admin starts sign-in and Primer obtains the shared token
+For client credentials, someone with full access on the toolset starts sign-in and Primer obtains the shared token
 immediately. During normal MCP traffic, `McpBearerAuth` sends the call's token (its
 person's, or the shared one) on every request. A 401 triggers at most one refresh and one retry. When the server
 rejects the refreshed token too, a browser sign-in is signed out with the reason
@@ -199,7 +200,7 @@ started without the key or with another one, a rolling deploy that introduces it
 fails only its own calls: they answer `needs_sign_in` with the `KEY_CHANGED`
 reason, and the process logs an ERROR that names the toolset and says the
 encryption key differs. It never clears the shared tokens, so the processes that
-can open them keep using them; only an admin Disconnect or Reconnect replaces the
+can open them keep using them; only a Disconnect or Reconnect of that sign-in replaces the
 row (lead ruling on audit G4-10). The status a process serves is its own view, so
 a misconfigured process reports `needs_sign_in` while the others report
 `connected`.
@@ -210,21 +211,34 @@ the rest of the deployment, so API and worker pods observe one shared state.
 
 The REST surface is:
 
-- `POST /v1/toolsets/{id}/oauth/start`, admin only, starts or restarts the
-  caller's own browser sign-in, or connects the shared client-credentials one.
+- `POST /v1/toolsets/{id}/oauth/start` starts or restarts the caller's own
+  browser sign-in (any full user who may use the toolset), or connects the shared
+  client-credentials one (full access on the toolset).
 - `GET /v1/toolsets/{id}/oauth/callback`, public, consumes an authorization-code
   callback without requiring the browser to hold a Primer session; it requires the
-  `primer_mcp_oauth` cookie the start answer set in the same browser.
-- `GET /v1/toolsets/{id}/oauth/status`, user tier, returns the caller's
-  `ToolsetAuthStatus`.
-- `POST /v1/toolsets/{id}/oauth/disconnect`, admin only, ends the caller's
-  pending sign-ins, revokes when possible and deletes the caller's sign-in (the
-  shared one for client credentials).
+  `primer_mcp_oauth` cookie the start answer set in the same browser. It writes the
+  row of the person who started the sign-in only when that person still exists, is
+  enabled and a full user, and may still use the toolset, and when no other person
+  is signed in on the callback's request; otherwise `invalid_state` and nothing is
+  written.
+- `GET /v1/toolsets/{id}/oauth/status`, for anyone who may use the toolset,
+  returns the caller's `ToolsetAuthStatus` (`per_user` is true for a browser
+  sign-in: the caller's own).
+- `POST /v1/toolsets/{id}/oauth/disconnect` ends the caller's pending sign-ins,
+  revokes when possible and deletes the caller's own browser sign-in (other
+  people's stay), or the shared client-credentials one (full access on the
+  toolset).
+
+A toolset the caller may not use answers exactly like a missing one (404) on every
+route; a restricted user gets the user tier's 403. There is no route that ends
+every person's sign-in: changing the toolset's OAuth settings, or deleting it,
+forgets them all.
 
 The callback returns a 303 to the console for a browser request whose `Accept`
 header includes `text/html`; other clients receive JSON or an RFC 7807 problem.
 `system::get_toolset_auth_status` is a user-tier, read-only system tool that returns
-the run's person's status without credentials. A direct MCP call that needs a sign-in maps to
+the run's person's status without credentials, and the missing-toolset answer to a
+run whose person may not use the toolset. A direct MCP call that needs a sign-in maps to
 409 `/errors/mcp-sign-in-required`.
 
 ## 9. Internal contracts
