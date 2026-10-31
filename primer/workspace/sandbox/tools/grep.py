@@ -12,7 +12,6 @@ coroutine.
 
 from __future__ import annotations
 
-import fnmatch
 from typing import ClassVar
 
 from pydantic import BaseModel
@@ -24,6 +23,7 @@ from primer.model.except_ import NotFoundError
 from primer.workspace.local.tools.grep import (
     GrepArgs,
     compile_grep_pattern,
+    glob_matches,
     grep_budget,
     grep_budget_error,
     grep_text,
@@ -99,7 +99,7 @@ class SandboxGrep(WorkspaceTool):
         else:
             # The walk skips the reserved trees (one read RPC per file, git objects included), unless it starts inside one.
             inside = reserved_tree(workspace_relative(self._root, target_abs), self._reserved)
-            await self._collect_files(target_abs, args.glob, files, () if inside else self._reserved)
+            await self._collect_files(target_abs, args.glob, files, () if inside else self._reserved, target_abs)
 
         out_lines: list[str] = []
         match_count = 0
@@ -160,19 +160,18 @@ class SandboxGrep(WorkspaceTool):
         glob_filter: str | None,
         out: list[str],
         skip: tuple[str, ...],
+        base: str,
     ) -> None:
         for entry in await self._sandbox.list_dir(dir_abs):
             child_abs = f"{dir_abs}/{entry.path}"
             if skip and reserved_tree(workspace_relative(self._root, child_abs), skip):
                 continue
             if entry.kind == "dir":
-                await self._collect_files(child_abs, glob_filter, out, skip)
+                await self._collect_files(child_abs, glob_filter, out, skip, base)
                 continue
             if entry.kind != "file":
                 continue
-            if glob_filter is not None and not fnmatch.fnmatch(
-                entry.path, glob_filter,
-            ):
+            if glob_filter is not None and not glob_matches(workspace_relative(base, child_abs), glob_filter):
                 continue
             out.append(child_abs)
 
