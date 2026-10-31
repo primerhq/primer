@@ -1,13 +1,13 @@
 ---
 title: "Sharing and access"
-summary: "Who may read, change, share or delete an agent, graph, toolset, workspace template or channel, and how to share one."
+summary: "Who may read, change, share or delete an agent, graph, toolset, template, channel, collection, trigger or harness, and how to share one."
 tools: [system__get_entity_access, system__set_entity_access, system__lookup_users]
 related: [start-here/roles-and-approvals, agents/create-and-edit]
 order: 60
 ---
 ## What it is
 
-Agents, graphs, toolsets, workspace templates and channels belong to the users who own them. Each one is private until an owner shares it with chosen users or makes it public. These tools read and change that sharing.
+Agents, graphs, toolsets, workspace templates, channels, collections, triggers and harnesses belong to the users who own them. Each one is private until an owner shares it with chosen users or makes it public. These tools read and change that sharing.
 
 ## Concepts
 
@@ -17,6 +17,17 @@ Agents, graphs, toolsets, workspace templates and channels belong to the users w
 - **Admins** hold `owner` on everything. A `restricted` account reaches nothing.
 - **Your runs act as you.** An agent never brings access of its own: what a run can read or change is what the person behind it can.
 - **Not found means not yours.** An entity you cannot read answers exactly like one that does not exist.
+- **Some things share with their parent.** A document has the access of its collection, a subscription (or channel binding) the access of its trigger, and what a harness installed the access of the harness. Share the parent, never the child: sharing an installed row directly answers `type=conflict` (`harness_managed`).
+
+## What each level allows
+
+| Kind | read | full | owner |
+|---|---|---|---|
+| Collection | list, read, grep and search its documents | write, move, delete and import documents | delete it, share it, turn search on or off |
+| Trigger | see it and its subscriptions, park on it | edit it, fire it now, manage its subscriptions and channel bindings | delete it, share it, rotate its webhook token |
+| Harness | see it and what it installed | (harness writes are admin-only for now) | share it |
+
+The platform wiki (the `system` collection) is public and read-only for everyone. A trigger on a channel needs `read` on that channel when you save it, and a trigger without a channel is admin-only. A trigger still runs as whoever saved it last.
 
 ## How to
 
@@ -44,6 +55,12 @@ Share the agent with that user at `read`, keeping yourself as owner:
 {"toolset_id": "system", "tool_name": "set_entity_access", "arguments": {"kind": "agent", "id": "agent-3f9a1c8d", "owners": ["user-1"], "grants": {"user-2": "read"}, "rev": 0}}
 ```
 
+Share a collection with a teammate who may edit its documents:
+
+```json
+{"toolset_id": "system", "tool_name": "set_entity_access", "arguments": {"kind": "collection", "id": "kb-onboarding", "owners": ["user-1"], "grants": {"user-2": "full"}, "rev": 0}}
+```
+
 Make two tools of a toolset public without sharing the rest:
 
 ```json
@@ -56,6 +73,7 @@ Make two tools of a toolset public without sharing the rest:
 - An entity always keeps at least one owner. To hand one over, list the new owner and, if you still want access, give yourself a grant.
 - `access` in a create or update body is ignored: sharing changes only through `set_entity_access`.
 - Only enabled full users can be owners or grantees; a restricted or disabled account is refused.
+- A collection's search settings change only through its search routes, by an owner: replacing the whole collection with a different `search` block is refused.
 
 ## Related
 
