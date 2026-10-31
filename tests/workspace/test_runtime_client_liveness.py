@@ -146,5 +146,46 @@ async def test_a_ping_on_a_client_that_never_connects_answers_false(monkeypatch)
         await client.aclose()
 
 
+# ---- W22: the heartbeat notices a runtime that stopped answering -----------------------------------------------------------------
+
+
+async def test_a_silent_runtime_is_reconnected_after_three_unanswered_heartbeats(monkeypatch) -> None:
+    connections = 0
+    stop = asyncio.Event()
+
+    async def handler(request):
+        nonlocal connections
+        connections += 1
+        ws = web.WebSocketResponse(autoping=False)
+        await ws.prepare(request)
+        hello = json.loads((await ws.receive()).data)
+        await ws.send_str(json.dumps({"req_id": hello["req_id"], "ok": True, "result": {"protocol": "1.4"}}))
+        await stop.wait()  # silent: never reads, never answers, keeps the TCP connection open
+        return ws
+
+    app = web.Application()
+    app.router.add_get("/", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    monkeypatch.setattr(RuntimeClient, "_HEARTBEAT_INTERVAL_S", 0.05)
+    monkeypatch.setattr(RuntimeClient, "_HEALTH_TIMEOUT_S", 0.05, raising=False)
+    monkeypatch.setattr(RuntimeClient, "_RECONNECT_DELAYS", (0.05,))
+    client = RuntimeClient(url=f"ws://127.0.0.1:{port}/", token="t")
+    await client.connect()
+    try:
+        for _ in range(200):
+            if connections >= 2:
+                break
+            await asyncio.sleep(0.025)
+        assert connections >= 2, "the heartbeat never noticed the silent runtime"
+    finally:
+        await client.aclose()
+        stop.set()
+        await runner.cleanup()
+
+
 async def _drain(client: RuntimeClient, q: asyncio.Queue, abort: asyncio.Event | None) -> list:
     return [item async for item in client._iter_stream(1, q, abort=abort)]

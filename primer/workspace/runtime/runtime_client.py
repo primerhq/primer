@@ -825,14 +825,15 @@ class RuntimeClient:
         self._pong_received = True
 
     async def _heartbeat_loop(self) -> None:
-        """Ping the server every ``_HEARTBEAT_INTERVAL_S`` seconds.
+        """Check the runtime answers, every ``_HEARTBEAT_INTERVAL_S`` seconds.
 
-        Sends a WS PING and waits one full interval for a PONG.  Because
-        aiohttp's client async-for does not surface PONG frames, we instead
-        send an ``health`` RPC (which does travel through the normal response
-        path) as a lightweight liveness probe.  After
-        ``_HEARTBEAT_MAX_MISSED`` consecutive failures the connection is
-        force-closed and the reconnect loop takes over.
+        Sends a ``health`` request (it travels the normal response path, so
+        an answer proves the runtime is there; a WS PING only proves the
+        frame was written, which a half-open connection accepts, review W22)
+        and waits ``_HEALTH_TIMEOUT_S`` for the answer. Any answer, an error
+        one included, counts as alive. After ``_HEARTBEAT_MAX_MISSED``
+        consecutive unanswered ones the connection is force-closed and the
+        reconnect loop takes over.
         """
         missed = 0
         try:
@@ -841,13 +842,11 @@ class RuntimeClient:
                 ws = self._ws
                 if ws is None or ws.closed:
                     break
-                # Use a raw WS ping; aiohttp handles the pong internally and
-                # keeps the connection alive.  We additionally send a health
-                # RPC once every _HEARTBEAT_MAX_MISSED intervals so we can
-                # detect silent server death.
                 try:
-                    await asyncio.wait_for(ws.ping(), timeout=self._HEARTBEAT_INTERVAL_S)
+                    await self._send_request(OpName.HEALTH, {}, timeout=self._HEALTH_TIMEOUT_S)
                     missed = 0
+                except RuntimeError:
+                    missed = 0      # answered (an error), or the connection dropped: the receive loop handles a drop
                 except (TimeoutError, ConnectionError, aiohttp.ClientError):
                     missed += 1
                     logger.warning(
