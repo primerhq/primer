@@ -59,7 +59,7 @@ def toolset(sp, wsr):  # noqa: F811
 async def agent_sandbox(sp):  # noqa: F811
     """A Kubernetes provider with ``variant: agent_sandbox`` and a template on it, written straight to storage."""
     await sp.get_storage(WorkspaceProvider).create(
-        WorkspaceProvider(
+        WorkspaceProvider(access=Access(public=True), 
             id="k8s-as",
             provider=WorkspaceProviderType.KUBERNETES,
             config=KubernetesWorkspaceConfig.model_validate(
@@ -125,7 +125,7 @@ async def test_the_refusal_is_in_the_one_point_every_create_passes(wsr, agent_sa
 async def test_a_system_variant_kubernetes_provider_is_still_built(toolset, sp, built) -> None:  # noqa: F811
     """Only ``agent_sandbox`` is refused: the default ``system`` variant goes on to its backend."""
     await sp.get_storage(WorkspaceProvider).create(
-        WorkspaceProvider(
+        WorkspaceProvider(access=Access(public=True), 
             id="k8s-sys",
             provider=WorkspaceProviderType.KUBERNETES,
             config=KubernetesWorkspaceConfig.model_validate(

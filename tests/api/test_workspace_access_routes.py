@@ -234,7 +234,7 @@ async def _mk_workspace(
 async def _seed_base(env: _Env) -> None:
     """The provider + template every created/seeded workspace references."""
     await env.sp.get_storage(WorkspaceProvider).create(
-        WorkspaceProvider(
+        WorkspaceProvider(access=Access(public=True), 
             id="local-1",
             provider=WorkspaceProviderType.LOCAL,
             config=LocalWorkspaceConfig(root_path="/tmp/ws-access-routes"),
