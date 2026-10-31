@@ -9,6 +9,8 @@ with one helper: B's REST client and B's MCP client (a bearer token with the ``m
 * owner transfer: the new owner deletes;
 * public: C, once promoted from restricted, reads it; restricted C reads nothing.
 
+The grantable infrastructure (a model profile and the six providers) has use grants only: an admin sets them, the grantee reads their own level, nobody else sees the view.
+
 Then the inherited rows follow their parent (a document its collection, a subscription its trigger), the grantable infrastructure (an agent on a private
 profile is refused for B until the admin grants use), the event attribution (A's create is A's, B reads no event of A's private workspace) and the
 lifecycle (the admin deletes A: A's sole-owned rows are the admin's, B's grants on them survive; the admin demotes B: B reads nothing, promotion restores it).
@@ -144,6 +146,17 @@ async def _make_trigger(c, suffix, ctx):
     return made.json()["id"]
 
 
+async def _make_channel(c, suffix, ctx):
+    providers = (await c.get("/v1/channel_providers", params={"limit": 200})).json()
+    items = providers.get("items", []) if isinstance(providers, dict) else []
+    if not items:
+        pytest.skip("no channel provider this user may use on this server")
+    rid = f"mx-ch-{suffix}"
+    made = await c.post("/v1/channels", json={"id": rid, "provider_id": items[0]["id"], "provider": items[0].get("provider", "slack"), "external_id": f"MX{suffix}"[:30]})
+    assert made.status_code == 201, made.text
+    return rid
+
+
 async def _make_harness(c, suffix, ctx):
     # Harness writes are admin-only: the admin creates it, and the owner column is the admin.
     made = await c.post("/v1/harnesses", json={"slug": f"mx-hn-{suffix}", "name": "matrix", "git_url": "https://github.com/example/matrix.git"})
@@ -164,6 +177,8 @@ KINDS = [
          mcp_update=lambda rid: {"id": rid}, rest_update=lambda row: {**row, "name": "renamed"}),
     Kind("trigger", "triggers", _make_trigger, ("trigger__get", "trigger__update", "trigger__delete"),
          mcp_update=lambda rid: {"id": rid, "name": "edited"}, rest_update=lambda row: {"name": "edited"}),
+    Kind("channel", "channels", _make_channel, ("crud__get_channel", "crud__update_channel", "crud__delete_channel"),
+         rest_update=lambda row: row),
     Kind("harness", "harnesses", _make_harness, ("harness__get", "harness__get", "harness__get"), writable=False),
 ]
 
@@ -202,28 +217,36 @@ class McpDoor:
     def __init__(self, session) -> None:
         self.session = session
 
-    async def _call(self, tool: str, arguments: dict) -> str:
+    async def _call(self, tool: str, arguments: dict) -> tuple[str, str]:
         try:
             result = await self.session.call_tool(tool, arguments=arguments)
         except Exception as exc:  # noqa: BLE001 - the SDK raises the JSON-RPC error for a tool that is not exposed
-            return MISSING if "not exposed" in str(exc).lower() or "method" in str(exc).lower() else f"error-{exc!r}"
+            return (MISSING if "not exposed" in str(exc).lower() or "method" in str(exc).lower() else f"error-{exc!r}"), ""
+        text = " ".join(getattr(part, "text", "") for part in result.content)
         if not result.isError:
-            return OK
-        text = " ".join(getattr(part, "text", "") for part in result.content).lower()
+            return OK, text
         try:
-            kind = str(json.loads(text).get("type", "")).lower()
+            error = str(json.loads(text).get("type", "")).lower()
         except ValueError:
-            kind = text
-        return DENIED if "forbidden" in kind or "access_denied" in kind else MISSING if "not" in kind and "found" in kind or "not-found" in kind else f"tool-error-{kind}"
+            error = text.lower()
+        if "forbidden" in error or "access_denied" in error:
+            return DENIED, text
+        return (MISSING, text) if "not" in error and "found" in error or "not-found" in error else (f"tool-error-{error}", text)
 
     async def get(self, kind: Kind, rid: str) -> str:
-        return await self._call(kind.tools[0], {"id": rid})
+        return (await self._call(kind.tools[0], {"id": rid}))[0]
 
     async def update(self, kind: Kind, rid: str) -> str:
-        return await self._call(kind.tools[1], kind.mcp_update(rid))
+        outcome, text = await self._call(kind.tools[0], {"id": rid})  # the whole row first, as the REST door does
+        if outcome != OK:
+            return outcome
+        arguments = kind.mcp_update(rid)
+        if "entity" in arguments:
+            arguments = {"id": rid, "entity": kind.rest_update(json.loads(text))}
+        return (await self._call(kind.tools[1], arguments))[0]
 
     async def delete(self, kind: Kind, rid: str) -> str:
-        return await self._call(kind.tools[2], {"id": rid})
+        return (await self._call(kind.tools[2], {"id": rid}))[0]
 
     async def listed(self, kind: Kind, rid: str) -> bool:  # the MCP door lists through the same get: absent rows are not found
         return await self.get(kind, rid) == OK
@@ -298,6 +321,57 @@ async def test_every_level_of_every_owned_kind_through_rest_and_mcp(client, base
                     assert await RestDoor(b).delete(kind, rid) == OK, kind.name
         finally:
             await client.delete(f"/v1/{kind.plural}/{rid}")
+
+
+# ---- 1b. grantable infrastructure: use grants, admin-only edits -------------------------------------------------------------------------------
+
+#: (REST plural, the ``kind`` of ``system__get_entity_access`` / ``system__set_entity_access``). One row of each already exists on a bootstrapped server.
+GRANTABLE = [
+    ("model_profiles", "model_profile"),
+    ("llm_providers", "llm_provider"),
+    ("embedding_providers", "embedding_provider"),
+    ("cross_encoder_providers", "cross_encoder_provider"),
+    ("semantic_search_providers", "semantic_search_provider"),
+    ("workspace_providers", "workspace_provider"),
+    ("channel_providers", "channel_provider"),
+]
+
+
+@pytest.mark.parametrize(("plural", "kind"), GRANTABLE, ids=[k for _p, k in GRANTABLE])
+async def test_a_use_grant_is_set_by_the_admin_alone_and_read_by_its_grantee(client, base_url, unique_suffix, plural: str, kind: str) -> None:
+    rows = (await client.get(f"/v1/{plural}", params={"limit": 200})).json()
+    items = rows.get("items", []) if isinstance(rows, dict) else []
+    if not items:
+        pytest.skip(f"no {kind} on this server")
+    rid = items[0]["id"]
+    before = (await client.get(f"/v1/{plural}/{rid}/access")).json()
+    async with (
+        _user(client, base_url, f"mx-g-{unique_suffix}") as (g_id, grantee),
+        _user(client, base_url, f"mx-n-{unique_suffix}") as (_n_id, nobody),
+        _user(client, base_url, f"mx-r-{unique_suffix}", role="restricted") as (_r_id, restricted),
+    ):
+        try:
+            # none: neither a plain user nor a restricted one sees the access view; admin and non-admin writes are 404/403
+            for who in (nobody, restricted):
+                assert (await who.get(f"/v1/{plural}/{rid}/access")).status_code in (403, 404), kind
+            await _share(client, plural, rid, "", {g_id: "read"}, owners=[], public=False)
+            # read (= use): the grantee reads the view of their own level, and cannot change it
+            view = await grantee.get(f"/v1/{plural}/{rid}/access")
+            assert view.status_code == 200 and view.json()["your_level"] == "read", (kind, view.text)
+            assert view.json()["owners"] == [] and view.json()["grants"] == [], "a use grant does not list its peers"
+            assert (await grantee.put(f"/v1/{plural}/{rid}/access", json={"owners": [], "grants": {}, "rev": 0})).status_code in (403, 404), kind
+            # owner: only an admin edits; full is not a use grant
+            refused = await client.put(f"/v1/{plural}/{rid}/access", json={"owners": [g_id], "grants": {}, "rev": view.json()["rev"] or 0})
+            assert refused.status_code in (400, 422), (kind, refused.text)
+            # the nobody and the restricted user still cannot see it
+            for who in (nobody, restricted):
+                assert (await who.get(f"/v1/{plural}/{rid}/access")).status_code in (403, 404), kind
+        finally:
+            await client.put(
+                f"/v1/{plural}/{rid}/access",
+                json={"owners": [], "grants": {g["user"]["id"]: g["level"] for g in before["grants"]}, "public": before["public"],
+                      "public_tools": [], "rev": (await client.get(f"/v1/{plural}/{rid}/access")).json()["rev"]},
+            )
 
 
 # ---- 2. inherited rows ------------------------------------------------------------------------------------------------------------------------
