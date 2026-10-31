@@ -1,4 +1,4 @@
-"""Migration 24: give existing triggers an owner, and every subscription its trigger's owner (access-control Phase 3, Task 4).
+"""Migration 26: give existing triggers an owner, and every subscription its trigger's owner (access-control Phase 3, Task 4).
 
 Before access control a trigger recorded who saved it (``Trigger.owner``, a principal the fires run as) but nothing about who
 may see or change it. A trigger whose ``access`` block is absent or empty (no owners, no grants, not public) gets one:
@@ -82,10 +82,10 @@ async def _read_all(store) -> list[Any]:
         offset += _PAGE
 
 
-class M024TriggerOwnership:
+class M026TriggerOwnership:
     """Stamp an owner on every trigger that has none; give every ownerless subscription its trigger's owner."""
 
-    version = 24
+    version = 26
     description = "give existing triggers an owner and every subscription its trigger's owner"
 
     async def apply(self, sp: StorageProvider) -> None:
@@ -145,4 +145,4 @@ class M024TriggerOwnership:
             )
 
 
-__all__ = ["M024TriggerOwnership"]
+__all__ = ["M026TriggerOwnership"]

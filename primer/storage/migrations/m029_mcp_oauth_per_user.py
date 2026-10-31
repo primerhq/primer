@@ -1,4 +1,4 @@
-"""Migration 27: MCP OAuth token sets become per person (access-control plan P5 Task 2, Decision 4).
+"""Migration 29: MCP OAuth token sets become per person (access-control plan P5 Task 2, Decision 4).
 
 Before this step a toolset had ONE token row, stored under the toolset id, used by every caller. A browser (``authorization_code``) sign-in now
 belongs to one person, stored under ``token_key(toolset, user)`` and naming both in ``toolset_id`` / ``user_id``; a client-credentials sign-in stays
@@ -75,10 +75,10 @@ async def _all_rows(store) -> list[Identifiable]:
             return rows
 
 
-class M027McpOAuthPerUser:
+class M029McpOAuthPerUser:
     """Move each browser token set to the person who connected it (else the first admin), stamp every token row, drop pending sign-ins."""
 
-    version = 27
+    version = 29
     description = "MCP OAuth browser token sets become the sign-in of the person who connected them; pending sign-ins are dropped"
 
     async def apply(self, sp: StorageProvider) -> None:
@@ -128,4 +128,4 @@ class M027McpOAuthPerUser:
             logger.info("MCP OAuth sign-ins are per person now", extra={"moved": moved, "stamped": stamped, "pending_dropped": dropped})
 
 
-__all__ = ["M027McpOAuthPerUser"]
+__all__ = ["M029McpOAuthPerUser"]

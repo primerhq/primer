@@ -13,11 +13,13 @@ trigger's subscriptions start, at the owners' rank. Before this, any ``role=user
 
 from __future__ import annotations
 
+import pytest_asyncio
 from datetime import datetime, timezone
 
 from primer.auth.passwords import hash_password
 from primer.model.trigger import Trigger
 from primer.model.user import User
+from tests.api._sub_targets import seed_sub_targets
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 
 MASK = "•••redacted•••"
@@ -71,6 +73,11 @@ def _code(resp) -> str | None:
 
 async def _stored(app, tid: str) -> Trigger:
     return await app.state.storage_provider.get_storage(Trigger).get(tid)
+
+@pytest_asyncio.fixture(autouse=True)
+async def _sub_targets(app):
+    await seed_sub_targets(app.state.storage_provider)
+
 
 
 async def test_a_user_sees_the_mask_on_an_admin_webhook_trigger_and_the_owner_and_an_admin_see_the_token(client, app):

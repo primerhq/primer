@@ -125,51 +125,47 @@ A `Subscription` row:
   `parallelism` says) until the session is resumed, and `skip` does
   not skip it.
 - `enabled` - bool.
-- `reach` - server-set, read-only: the one workspace this subscription
-  may start or feed a session in. It is the workspace of the session
-  that last saved the row (created or updated it) when that session was
-  outside the default workspace (prime); `null` (every workspace) when
-  it was saved from prime, by a person, over MCP, or before reach was
-  recorded.
+- `reach` - a legacy, read-only field: rows saved before workspace
+  access recorded the saving session's workspace here. It is no
+  longer written or checked; the owner's access decides (below).
 
-From a session outside the default workspace (prime),
-`trigger::create_subscription` and `system::create_channel_binding`
-accept only a config that names your own workspace
-(`agent_fresh_session`, `graph_fresh_session`) or a session in it
-(`session_append`). Any other target, and a target that does not
-exist, answers `type=not-found` in the words of a target that does
-not exist (`Workspace '<id>' does not exist`, or
+A subscription starts or feeds a session in a workspace, so its owner
+(the saver) must hold `full` access to that workspace, wherever the
+saving session runs. `trigger::create_subscription` and
+`system::create_channel_binding` accept only a config that names such
+a workspace (`agent_fresh_session`, `graph_fresh_session`) or a
+session in one (`session_append`). Any other target, and a target
+that does not exist, answers `type=not-found` in the words of a target
+that does not exist (`Workspace '<id>' does not exist`, or
 `Session '<id>' does not exist in this workspace`), and nothing is
 stored. `trigger::update_subscription` on a subscription whose target
-is outside your reach answers `type=subscription_not_found`, exactly
-as an unknown subscription id, and changes nothing. From prime, and
-with no calling session, every workspace is reachable. Every fire
-checks the recorded `reach` again: a target outside it is refused with
+you cannot write answers `type=subscription_not_found`, exactly as an
+unknown subscription id, and changes nothing. Every fire checks the
+owner's access again (a grant revoked after the save, a target session
+that moved): a target the owner cannot write is refused with
 `error_code` `target_out_of_reach` (a failed delivery, shown in the
 subscription's `last_fire_error` and a `trigger.delivery_failed`
-event), and no session is started or fed.
+event), and no session is started or fed. Admins hold every level.
 
 A trigger itself is in no workspace, but updating, firing or deleting
-it acts on every subscription of it. From a session outside prime,
+it acts on every subscription of it. For anyone but an admin,
 `trigger::update`, `trigger::fire_now` and `trigger::delete` answer
 `type=trigger_not_found`, exactly as an unknown trigger, when any of
-the trigger's subscriptions starts or feeds a session outside your own
-workspace. This is asked after the trigger's own access (see
-Gotchas).
+the trigger's subscriptions starts or feeds a session in a workspace
+you do not hold `full` access to. This is asked after the trigger's own access (see
+Gotchas), so such a trigger answers `trigger_not_found`, never `forbidden`.
 
-Reading and deleting subscriptions follow the same reach. From a
-session outside prime, `trigger::list_subscriptions` and
+Reading and deleting subscriptions follow the same rule. For anyone
+but an admin, `trigger::list_subscriptions` and
 `system::list_channel_bindings` list only the subscriptions whose
-target is your own workspace or a session in it; the others are left
-out, as if they did not exist. `trigger::get_subscription`,
+target workspace you hold `full` access to; the others are left out,
+as if they did not exist. `trigger::get_subscription`,
 `trigger::delete_subscription` and `system::delete_channel_binding`
 answer such a subscription with `type=subscription_not_found`, exactly
 as an unknown subscription id, and delete nothing. A subscription
 whose target session no longer exists is in no workspace, so it is
-out of reach too: delete it from prime or from the console.
-`trigger::list` and `trigger::get` serve every trigger (a trigger is
-in no workspace). From prime, and with no calling session, every
-subscription is listed, read and deleted as before.
+left out too: only an admin can delete it. `trigger::list` and
+`trigger::get` serve every trigger (a trigger is in no workspace).
 
 ### The `channel` trigger kind
 
@@ -493,8 +489,10 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   editing someone else's subscription hands it your rank, not theirs,
   and a row you save from inside a run is capped at that run's rank
   for good (re-saving cannot raise it). A `session_append` or
-  `parked_session` subscription cannot steer a session that runs above
-  the fire's rank: the fire fails with `steer_outranks_fire`. A
+  `parked_session` subscription cannot steer a session whose creator
+  ranks above the fire: the fire fails with `steer_outranks_fire`. The
+  turn a `session_append` fire starts runs as the subscription's owner
+  (capped as above), not as the session's creator. A
   `session_append` fire never reopens a session an operator cancelled,
   even one queued on the session before the Cancel: only a person
   reopens it. The fire is skipped with `skipped_session_ended`.

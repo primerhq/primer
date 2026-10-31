@@ -67,7 +67,6 @@ from primer.trigger.channel_access import require_channel_trigger_access
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.owner import view_for
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE, caller_scope, refuse_target_out_of_access
-from primer.access.person import person_for_tool
 from primer.access.policy import level_of
 from primer.model.except_ import AccessDeniedError, ConflictError
 from primer.trigger.service import (
@@ -993,6 +992,8 @@ def _trigger_wake_key(session_id: str, trigger_id: str) -> str:
 
 async def _park_refusal(storage_provider: Any, ctx: ToolContext) -> ToolCallResult | None:
     """``forbidden`` when the calling person holds no full on the session they would park (access-control P2 T6), as a saved subscription's owner must."""
+    if person_for_tool(ctx).is_admin:
+        return None  # an admin holds every level, the calling session's workspace row included (as at fire time)
     config = ParkedSessionSubConfig(session_id=ctx.session_id, tool_call_id=ctx.tool_call_id, parked_at=datetime.now(timezone.utc))
     refusal = await refuse_target_out_of_access(storage_provider, _caller(ctx), config)
     return None if refusal is None else _err(refusal, error_type="forbidden")

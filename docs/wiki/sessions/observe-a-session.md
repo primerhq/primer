@@ -30,7 +30,7 @@ Four read-only tools tell you what a session is doing: `workspaces__list_workspa
 | `trigger:` | `workspace_ext__subscribe_to_trigger` |
 
   `list_my_sessions` names the same wait in words in `parked_on` (`ask_user`, `approval`, `wait_for_event`, `sleep`, `watch_files`, `subscribe_to_trigger`).
-- From a session outside the default workspace (prime) these tools reach only your own workspace; another one answers `not-found`, as an unknown id does.
+- These tools need `read` access to the workspace for the person behind your run, wherever your session runs; a workspace that person holds no access to answers `not-found`, as an unknown id does.
 
 ## How to
 1. List the workspace's sessions, or find them across workspaces with `workspaces__find_sessions`.

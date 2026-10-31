@@ -18,9 +18,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import SecretStr
 
+from primer.model.access import Access
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalRecord
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionStatus,
@@ -206,6 +209,12 @@ async def test_session_pending_yields_lists_mixed_approval_and_ask_user_gates(
     sess = _mixed_checkpoint_session(session_id="g-mixed1", workspace_id="ws-g")
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(sess)
+    # The workspace row the lister gates on (P2 Tasks 2/3): a missing workspace answers its 404.
+    await app.state.storage_provider.get_storage(Workspace).create(
+        Workspace(id="ws-g", template_id="tpl-1", provider_id="local-1", created_at=datetime.now(UTC),
+                  runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                  access=Access()),
+    )
 
     resp = await client.get("/v1/workspaces/ws-g/sessions/g-mixed1/yields/pending")
     assert resp.status_code == 200, resp.text
@@ -242,6 +251,12 @@ async def test_session_pending_yields_lists_every_concurrent_approval_gate(
     sess = _two_gate_graph_parked_session(session_id="g-multi1", workspace_id="ws-g")
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(sess)
+    # The workspace row the lister gates on (P2 Tasks 2/3): a missing workspace answers its 404.
+    await app.state.storage_provider.get_storage(Workspace).create(
+        Workspace(id="ws-g", template_id="tpl-1", provider_id="local-1", created_at=datetime.now(UTC),
+                  runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                  access=Access()),
+    )
 
     resp = await client.get("/v1/workspaces/ws-g/sessions/g-multi1/yields/pending")
     assert resp.status_code == 200, resp.text
