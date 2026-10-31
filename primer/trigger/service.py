@@ -18,6 +18,7 @@ trigger's ``owner`` (its last saver) and each subscription's owner (:mod:`primer
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -76,6 +77,13 @@ class ParkedSessionOnlyFromYield(Exception):
     """A subscription with ``kind='parked_session'`` was supplied through the
     public create path. Those are only created via the ``subscribe_to_trigger``
     yielding tool."""
+
+
+class WebhookTokenInvalid(ValueError):
+    """A caller-chosen webhook token that is not 32 lowercase hex characters (the shape the server mints)."""
+
+
+_WEBHOOK_TOKEN_SHAPE = re.compile(r"[0-9a-f]{32}")
 
 
 class TriggerSlugConflict(Exception):
@@ -455,6 +463,11 @@ async def update_trigger(
         ):
             config = config.model_copy(update={"token": trigger.config.token})
         elif config.kind == "webhook":
+            # A token nobody but the caller knows must still be unguessable and unique-looking: only the shape the server mints is kept (GI-24).
+            if not _WEBHOOK_TOKEN_SHAPE.fullmatch(config.token):
+                raise WebhookTokenInvalid(
+                    "a webhook token is 32 lowercase hex characters; leave it empty to keep the stored one, or rotate it for a new one"
+                )
             adopted = False
         # The hmac_secret mask (a SecretStr serialised by a read) round-trips
         # to the stored secret, never to the literal mask.
