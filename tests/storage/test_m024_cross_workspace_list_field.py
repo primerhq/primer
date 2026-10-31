@@ -74,4 +74,5 @@ async def test_the_migration_is_idempotent(sp) -> None:
 
 
 def test_the_migration_is_registered_after_23() -> None:
-    assert [m.version for m in MIGRATIONS][-2:] == [23, 24]
+    versions = [m.version for m in MIGRATIONS]
+    assert versions[versions.index(23):versions.index(24) + 1] == [23, 24]

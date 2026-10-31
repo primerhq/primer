@@ -158,6 +158,11 @@ def _ws_row(wid: str, access: Access) -> Workspace:
     )
 
 
+#: The access every ordinary caller of these worlds holds on a seeded trigger (access-control P3: a trigger is owned, and the doors ask its level before the
+#: reach of its subscriptions): ada owns it, the other accounts hold full.
+TRIGGER_FULL = Access(owners=["u-ada"], grants={"u-user": "full", "u-mcp": "full", "u-root": "full"}, rev=1)
+
+
 class _Slot(FakeSlot):
     """The on-disk slot, as the get tool uses it. The pause and resume tools never touch it: they write the session row (ticket 01a16d3c-9984)."""
 
@@ -1117,11 +1122,15 @@ RECORDED = {"own workspace": None, P: None, "no session": None}
 
 
 async def _seed_triggers(world: WsWorld) -> None:
+    await world.sp.get_storage(Channel).create(Channel(
+        access=Access(public=True), id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM, external_id="777",
+        config=TelegramChannelConfig(),
+    ))
     triggers = world.sp.get_storage(Trigger)
-    await triggers.create(Trigger(
+    await triggers.create(Trigger(access=TRIGGER_FULL, 
         id=TRIGGER, slug="tr-one", name="t", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
-    await triggers.create(Trigger(id=CHANNEL_TRIGGER, slug="tr-ch", name="c", created_at=NOW, owner=USER, config=ChannelTriggerConfig(provider_id="cp-1")))
+    await triggers.create(Trigger(access=TRIGGER_FULL, id=CHANNEL_TRIGGER, slug="tr-ch", name="c", created_at=NOW, owner=USER, config=ChannelTriggerConfig(provider_id="cp-1", channel_id="ch-1")))
 
 
 async def _subscriptions(world: WsWorld) -> dict[str, Subscription]:
@@ -1555,7 +1564,7 @@ async def _trigger_world(target_workspace: str = "ws-2", owner: PrincipalRef = A
     session in ``target_workspace``. The fire of the subscription is gated on ``owner``'s level on the target (P2 T6), so the caller passes the
     person who holds it."""
     world = await _ws_world()
-    await world.sp.get_storage(Trigger).create(Trigger(
+    await world.sp.get_storage(Trigger).create(Trigger(access=TRIGGER_FULL, 
         id="tr-x", slug="tr-x", name="t", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
     await world.sp.get_storage(Subscription).create(Subscription(
@@ -1642,7 +1651,7 @@ async def test_update_from_outside_prime_cannot_re_enable_a_trigger_that_starts_
     """Probe B of the #874 review: a person's disabled trigger whose subscription starts a session in prime. A session in ws-1 re-enabled it and set
     it due, and the worker's next fire started a session in prime. Refused now, so the fire finds the trigger disabled."""
     world = await _fire_world()
-    await world.sp.get_storage(Trigger).create(Trigger(
+    await world.sp.get_storage(Trigger).create(Trigger(access=TRIGGER_FULL, 
         id="tr-off", slug="tr-off", name="nightly", created_at=NOW, owner=ADMIN, enabled=False,
         config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=30)),
     ))
@@ -2265,7 +2274,7 @@ async def test_the_rest_update_and_delete_touch_a_trigger_only_when_the_caller_r
         "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
         "carol's token then admin": PrincipalRef(type="api_token", id=f"at-{carol_id}", display="automation", role="admin", source="internal"),
     }[owner_name]
-    await sp.get_storage(Trigger).create(Trigger(
+    await sp.get_storage(Trigger).create(Trigger(access=TRIGGER_FULL, 
         id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
     await sp.get_storage(Subscription).create(Subscription(
@@ -2487,7 +2496,7 @@ async def test_the_rest_subscription_routes_serve_and_delete_whatever_the_target
     """Ruling 4: a person over REST reaches every workspace, so the REST subscription routes pass no reach and list, get and delete a subscription
     whatever its target (here a user-role account)."""
     store = fake_storage_provider.get_storage(Subscription)
-    await fake_storage_provider.get_storage(Trigger).create(Trigger(
+    await fake_storage_provider.get_storage(Trigger).create(Trigger(access=TRIGGER_FULL, 
         id=TRIGGER, slug="tr-one", name="t", created_at=NOW, owner=USER, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
     for name in ("fresh-ws1", "fresh-ws2", "fresh-prime"):

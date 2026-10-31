@@ -125,7 +125,7 @@ class _Registry:
 
         return SimpleNamespace(phase="ready")
 
-    async def create(self, *, template, overrides=None, workspace_id=None, name=None, reply_binding=None, access=None):
+    async def create(self, *, template, overrides=None, workspace_id=None, name=None, reply_binding=None, access=None, person=None):
         row = Workspace(
             id=workspace_id,
             name=name,
