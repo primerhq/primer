@@ -106,6 +106,8 @@ async def list_events(
         entity_kind=entity_kind, entity_id=entity_id,
         workspace_id=workspace_id, since=since,
     )
+    # A non-admin's head is the newest event of the readable workspace they named, never the global log's (which counts unreadable workspaces).
+    max_id = await store.max_id() if is_admin else max((e.id for e in items), default=after_id)
     if event_type:
         items = [e for e in items if fnmatchcase(e.event_type, event_type)]
     if not is_admin:
@@ -119,7 +121,7 @@ async def list_events(
     # EVERY read is redacted, the admin's included: the gate is access
     # control, not an excuse to ship stored secrets to a browser.
     items = [redact_event(e) for e in items]
-    return EventListResponse(items=items, max_id=await store.max_id())
+    return EventListResponse(items=items, max_id=max_id)
 
 
 class _PausedBody(BaseModel):
