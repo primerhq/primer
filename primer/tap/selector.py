@@ -123,6 +123,31 @@ def session_predicate_for_storage(workspace_id: str, selector: TapSelector) -> P
     )
 
 
+def pinned_session_ids(selector: TapSelector) -> frozenset[str] | None:
+    """The session ids ``selector.sessions`` confines the tap to (``id`` EQ or IN, also under AND/OR), or ``None`` when it does not pin ``id``."""
+
+    def pins(node: Any) -> frozenset[str] | None:
+        if not isinstance(node, Predicate):
+            return None
+        if node.op in (Op.AND, Op.OR):
+            left, right = pins(node.left), pins(node.right)
+            if node.op is Op.AND:
+                if left is not None and right is not None:
+                    return left & right
+                return left if left is not None else right
+            return left | right if left is not None and right is not None else None
+        if not (isinstance(node.left, FieldRef) and node.left.name == "id" and isinstance(node.right, Value)):
+            return None
+        value = node.right.value
+        if node.op is Op.EQ and isinstance(value, str):
+            return frozenset({value})
+        if node.op is Op.IN and isinstance(value, list) and all(isinstance(v, str) for v in value):
+            return frozenset(value)
+        return None
+
+    return pins(selector.sessions) if selector.sessions is not None else None
+
+
 # ---------------------------------------------------------------------------
 # event_matches
 # ---------------------------------------------------------------------------
