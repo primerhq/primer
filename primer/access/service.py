@@ -23,6 +23,9 @@ from primer.model.user import User
 #: Upper bound of one user lookup page.
 LOOKUP_MAX = 20
 
+#: The ids form of the lookup (the console's owner/grantee badges): one batched query for at most this many ids.
+NAMES_MAX = 200
+
 
 class UserRef(BaseModel):
     """A user as the sharing surfaces show them: id and username only, never the rest of the account."""
@@ -191,13 +194,35 @@ async def lookup_users(users: Storage[User], person: Person, q: str, limit: int 
     return [UserRef(id=u.id, username=u.username) for u in page.items]
 
 
+async def lookup_user_names(users: Storage[User], person: Person, ids: list[str]) -> list[UserRef]:
+    """The usernames of the given ids (the console's badges name owners and grantees): one query, unknown ids absent.
+
+    Disabled and restricted users ARE resolved (an owner may have been demoted or the account locked; the console must
+    still name them), unlike :func:`lookup_users`, which offers only shareable accounts. The answer is id and username
+    only, never the role or the rest of the account. Full users only.
+    """
+    if not person.is_full_user:
+        raise AccessDeniedError("looking up user names needs a full account")
+    unique = list(dict.fromkeys(ids))
+    if not unique:
+        return []
+    if len(unique) > NAMES_MAX:
+        raise ValidationError(f"at most {NAMES_MAX} user ids per names lookup, got {len(unique)}")
+    predicate = Predicate(left=FieldRef(name="id"), op=Op.IN, right=Value(value=unique))
+    page = await users.find(predicate, OffsetPage(offset=0, length=len(unique)))
+    by_id = {u.id: u.username for u in page.items}
+    return [UserRef(id=uid, username=by_id[uid]) for uid in unique if uid in by_id]
+
+
 __all__ = [
     "LOOKUP_MAX",
+    "NAMES_MAX",
     "AccessUpdate",
     "AccessView",
     "GrantView",
     "UserRef",
     "get_access_view",
+    "lookup_user_names",
     "lookup_users",
     "rewrite_keeping_access",
     "set_access",

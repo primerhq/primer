@@ -48,10 +48,13 @@ flowchart LR
   filter; `None` for admins) and `tool_is_public`.
 - `primer/access/service.py`: `get_access_view`, `set_access` (owners only; the whole desired state; refuses an empty
   owner list, unknown, disabled or restricted users, and per-tool flags on kinds without tools; writes the `access`
-  block alone with `patch_if` guarded on `access.rev`) and `lookup_users` (username prefix, id and username only).
+  block alone with `patch_if` guarded on `access.rev`), `lookup_users` (username prefix, id and username only) and
+  `lookup_user_names` (the ids form the console's badges call: one query over at most 200 ids, unknown ids absent,
+  disabled and restricted users still named).
 - REST: `make_crud_router(..., owned=True)` (`primer/api/routers/_crud.py`), or `row_guard` plus `list_filter` for a
   kind that inherits its parent's access (documents from their collection), and `make_access_router(...)`
-  (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access`, plus `GET /v1/users/lookup`.
+  (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access`, plus `GET /v1/users/lookup` (the
+  username-prefix `q`; the ids form `?ids=` names the ids the console's badges show, at most 200).
 - Tools: `system__get_entity_access`, `system__set_entity_access`, `system__lookup_users`
   (`primer/toolset/_system_access.py`); the generated CRUD tools enforce the same levels.
 - Phase 4: `primer/model/access.py` `Grantable` (the mixin of grantable infrastructure) and `TOOLS_PUBLIC_TOKEN`;

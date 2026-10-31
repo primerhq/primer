@@ -94,6 +94,48 @@ window.SHR_makePublic = function (plural, id) {
   });
 };
 
+// ACL-P6-T3a: the id -> username map for the badges that only have ids (a list's
+// rows: the access view carries usernames, but a row's access.owners / grants are
+// ids). One batched lookup per set of not-yet-resolved ids (the route caps it at
+// 200), and an id resolved once is never fetched again for the page. The map
+// always answers every requested id: the username, or the id while it is loading
+// or when it names no user.
+var SHR_NAME_CACHE = {};
+function SHR_useUserNames(ids) {
+  var api = window.primerApi;
+  var uniq = [];
+  var seen = {};
+  (Array.isArray(ids) ? ids : []).forEach(function (id) {
+    if (id && !seen[id]) { seen[id] = true; uniq.push(id); }
+  });
+  var missing = uniq.filter(function (id) { return !SHR_NAME_CACHE[id]; });
+  // shortcut: the route caps a lookup at 200 ids; a badge set past that fetches the
+  // first 200 (sorted, so the key is stable) and says the raw id for the rest.
+  var fetchIds = missing.slice().sort().slice(0, 200);
+  var res = api.useResource(
+    fetchIds.length ? "shr-user-names:" + fetchIds.join(",") : null,
+    function (signal) { return SH_api.userNames(fetchIds, signal); },
+    { pollMs: null }
+  );
+  React.useEffect(function () {
+    if (!res || !res.data) return;
+    (res.data || []).forEach(function (r) {
+      if (r && r.id) SHR_NAME_CACHE[r.id] = r.username || r.id;
+    });
+  }, [res && res.data]);
+  var names = {};
+  uniq.forEach(function (id) { names[id] = SHR_NAME_CACHE[id] || id; });
+  // The window between the data landing and the effect filling the cache: the
+  // fresh data answers its own ids too.
+  if (res && res.data) {
+    (res.data).forEach(function (r) {
+      if (r && r.id && r.username) names[r.id] = r.username;
+    });
+  }
+  return names;
+}
+window.SHR_useUserNames = SHR_useUserNames;
+
 // ACL-P4-T7: the "Who can use" affordance of the grantable-infrastructure
 // detail overlays: the button (the entity.share verb's pointer) and the
 // dialog's useOnly mode. The overlay subscribes through the same seam the
