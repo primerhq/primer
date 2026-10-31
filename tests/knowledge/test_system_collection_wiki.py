@@ -21,6 +21,7 @@ from primer.knowledge.system_collection import (
 )
 from primer.knowledge.tree import DocumentTreeService
 from primer.knowledge.wiki.stamp import read_stamp
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 from primer.model.collection import Collection
 from primer.model.except_ import NotFoundError
@@ -63,6 +64,9 @@ WIKI_FILES: dict[str, str] = {
         "See [get_datetime](reference/tools/misc/get_datetime) for the exact call.\n"
     ),
 }
+
+# The live map lists only public entities (access-control P3 Decision 7): the rows it should show are public.
+_PUBLIC = Access(public=True)
 
 
 @pytest_asyncio.fixture
@@ -130,7 +134,7 @@ async def test_every_tool_gets_a_reference_page(sp, wiki):
 
 async def test_the_live_map_lives_under_this_install(sp, wiki):
     await sp.get_storage(Agent).create(
-        Agent(id="agent-a", description="helper",
+        Agent(access=_PUBLIC, id="agent-a", description="helper",
               model=AgentModel(profile_id="prov--m"))
     )
     await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
@@ -212,7 +216,7 @@ async def test_the_live_map_is_converged_even_when_the_wiki_is_left_alone(sp, wi
     """The stamp gates the wiki only: an older build still writes the live map."""
     await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.7.0")
     await sp.get_storage(Agent).create(
-        Agent(id="agent-late", description="arrived after the wiki settled",
+        Agent(access=_PUBLIC, id="agent-late", description="arrived after the wiki settled",
               model=AgentModel(profile_id="prov--m"))
     )
     await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
@@ -257,7 +261,7 @@ async def test_the_collection_is_titled_platform_wiki_and_keeps_its_search_block
 async def test_converge_entity_writes_under_this_install(sp, wiki):
     await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
     await sp.get_storage(Agent).create(
-        Agent(id="agent-cdc", description="written by the cdc hook",
+        Agent(access=_PUBLIC, id="agent-cdc", description="written by the cdc hook",
               model=AgentModel(profile_id="prov--m"))
     )
     wrote = await converge_entity(sp, entity_type="agent", entity_id="agent-cdc")
@@ -304,7 +308,7 @@ async def test_orphaned_content_row_recovers_on_regenerate_and_converge(sp, wiki
     from primer.model.collection import Document
 
     await sp.get_storage(Agent).create(
-        Agent(id="agent-a", description="helper", model=AgentModel(profile_id="prov--m"))
+        Agent(access=_PUBLIC, id="agent-a", description="helper", model=AgentModel(profile_id="prov--m"))
     )
     await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
 
@@ -328,7 +332,7 @@ async def test_orphaned_content_row_recovers_on_regenerate_and_converge(sp, wiki
     agent_doc = (await _read(sp, "this-install/agents/agent-a")).document
     await docs.delete(agent_doc.id)
     await sp.get_storage(Agent).update(
-        Agent(id="agent-a", description="updated helper", model=AgentModel(profile_id="prov--m"))
+        Agent(access=_PUBLIC, id="agent-a", description="updated helper", model=AgentModel(profile_id="prov--m"))
     )
     assert await converge_entity(sp, entity_type="agent", entity_id="agent-a") is True
     assert "updated helper" in (await _read(sp, "this-install/agents/agent-a")).body
@@ -337,9 +341,9 @@ async def test_orphaned_content_row_recovers_on_regenerate_and_converge(sp, wiki
 async def test_non_slug_live_entity_ids_get_collision_safe_slugs_and_do_not_stop_wiki(sp, wiki):
     from primer.model.graph import Graph
 
-    await sp.get_storage(Graph).create(Graph(id="Team-Graph", description="upper"))
-    await sp.get_storage(Graph).create(Graph(id="team-graph", description="lower"))
-    await sp.get_storage(Collection).create(Collection(id="Docs", description="team docs"))
+    await sp.get_storage(Graph).create(Graph(access=_PUBLIC, id="Team-Graph", description="upper"))
+    await sp.get_storage(Graph).create(Graph(access=_PUBLIC, id="team-graph", description="lower"))
+    await sp.get_storage(Collection).create(Collection(access=_PUBLIC, id="Docs", description="team docs"))
 
     await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
 
@@ -449,11 +453,11 @@ async def test_missing_reserved_toolset_is_degraded_and_refuses_to_claim(sp, wik
 async def test_converge_entity_preserves_live_index_summary(sp, wiki):
     await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
     await sp.get_storage(Agent).create(
-        Agent(id="agent-x", description="d", model=AgentModel(profile_id="p--m")),
+        Agent(access=_PUBLIC, id="agent-x", description="d", model=AgentModel(profile_id="p--m")),
     )
     await converge_entity(sp, entity_type="agent", entity_id="agent-x")
     after = (await _read(sp, "this-install/agents")).document.meta
-    assert after["summary"] == "every agent on this install"
+    assert after["summary"] == "every public agent on this install"
 
 
 async def test_entity_created_mid_pass_is_not_pruned_by_prune_live(sp, wiki, monkeypatch):
@@ -465,7 +469,7 @@ async def test_entity_created_mid_pass_is_not_pruned_by_prune_live(sp, wiki, mon
     async def snapshot_then_cdc(storage_provider):
         live = await real_live_pages(storage_provider)
         await sp.get_storage(Agent).create(
-            Agent(id="agent-late", description="created mid-pass", model=AgentModel(profile_id="p--m")),
+            Agent(access=_PUBLIC, id="agent-late", description="created mid-pass", model=AgentModel(profile_id="p--m")),
         )
         assert await converge_entity(sp, entity_type="agent", entity_id="agent-late") is True
         return live
@@ -484,11 +488,11 @@ async def test_non_ascii_descriptions_and_workspace_names_remain_readable_utf8(s
     from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 
     await sp.get_storage(Agent).create(
-        Agent(id="agent-utf8", description="café مرحبا", model=AgentModel(profile_id="p--m")),
+        Agent(access=_PUBLIC, id="agent-utf8", description="café مرحبا", model=AgentModel(profile_id="p--m")),
     )
     await sp.get_storage(Workspace).create(
         Workspace(
-            id="ws-utf8",
+            access=_PUBLIC, id="ws-utf8",
             name="café مرحبا",
             template_id="default",
             provider_id="local",
@@ -522,7 +526,7 @@ async def test_prune_live_does_not_keep_stale_slug_matching_hashed_entity_id(sp,
     assert mapped_slug != entity_id
 
     await sp.get_storage(Agent).create(
-        Agent(id=entity_id, description="hashed slug", model=AgentModel(profile_id="p--m")),
+        Agent(access=_PUBLIC, id=entity_id, description="hashed slug", model=AgentModel(profile_id="p--m")),
     )
     await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
 

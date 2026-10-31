@@ -46,7 +46,7 @@ def _agent(agent_id: str, access: Access | None = None) -> Agent:
 
 
 async def test_registered_as_version_21():
-    assert MIGRATIONS[-1].version == 21 and isinstance(MIGRATIONS[-1], M021EntityOwnership)
+    assert MIGRATIONS[20].version == 21 and isinstance(MIGRATIONS[20], M021EntityOwnership)
 
 
 async def test_rows_go_to_the_oldest_admin_and_seeded_ones_become_public(sp):

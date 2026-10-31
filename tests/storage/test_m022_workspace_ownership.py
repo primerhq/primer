@@ -58,7 +58,7 @@ async def _ws(sp, workspace_id: str, access: Access | None = None) -> None:
 
 
 async def test_registered_as_version_22():
-    assert MIGRATIONS[-1].version == 22 and isinstance(MIGRATIONS[-1], M022WorkspaceOwnership)
+    assert MIGRATIONS[21].version == 22 and isinstance(MIGRATIONS[21], M022WorkspaceOwnership)
 
 
 async def test_unset_rows_go_to_the_oldest_admin_including_the_default_workspace(sp):

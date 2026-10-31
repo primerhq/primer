@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from primer.knowledge.indexing import index_documents
+from primer.knowledge.row_writes import write_collection_fields
 from primer.model.collection import Collection, CollectionSearchConfig, Document
 from primer.model.except_ import ConflictError, NotFoundError, PrimerError, ProviderError
 from primer.model.provider import (
@@ -74,8 +75,8 @@ async def _collection_documents(
 
 async def _write_search(storage_provider, collection: Collection,
                         cfg: CollectionSearchConfig | None) -> Collection:
-    updated = collection.model_copy(update={"search": cfg})
-    return await storage_provider.get_storage(Collection).update(updated)
+    # The search block only: a whole-row write of the row as read would undo a sharing change made meanwhile (P3 Decision 8).
+    return await write_collection_fields(storage_provider.get_storage(Collection), collection, {"search": cfg})
 
 
 async def enable_search(storage_provider, provider_registry, ssr, *,

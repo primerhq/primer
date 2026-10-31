@@ -8,6 +8,7 @@ from primer.knowledge.system_collection import (
     SYSTEM_COLLECTION_ID, regenerate_system_collection,
 )
 from primer.knowledge.tree import DocumentTreeService
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 from primer.model.collection import Collection
 from primer.model.except_ import NotFoundError
@@ -15,6 +16,9 @@ from primer.model.provider import (
     SqliteConfig, StorageProviderConfig, StorageProviderType,
 )
 from primer.storage.factory import StorageProviderFactory
+
+# The live map lists only public entities (access-control P3 Decision 7): the rows it should show are public.
+_PUBLIC = Access(public=True)
 
 
 @pytest_asyncio.fixture
@@ -32,7 +36,7 @@ async def sp(tmp_path):
 
 async def test_regeneration_builds_subtrees_without_any_embedder(sp):
     await sp.get_storage(Agent).create(
-        Agent(id="agent-a", description="helper",
+        Agent(access=_PUBLIC, id="agent-a", description="helper",
               model=AgentModel(profile_id="prov--m"))
     )
     n = await regenerate_system_collection(sp, toolset_providers={})
@@ -50,7 +54,7 @@ async def test_regeneration_builds_subtrees_without_any_embedder(sp):
 
 async def test_regeneration_is_idempotent_and_prunes_stale(sp):
     agents = sp.get_storage(Agent)
-    await agents.create(Agent(id="agent-a", description="helper",
+    await agents.create(Agent(access=_PUBLIC, id="agent-a", description="helper",
                               model=AgentModel(profile_id="prov--m")))
     await regenerate_system_collection(sp, toolset_providers={})
     await agents.delete("agent-a")
@@ -131,7 +135,7 @@ async def test_regeneration_indexes_only_what_changed(sp):
     pass has to converge rather than overwrite.
     """
     await sp.get_storage(Agent).create(
-        Agent(id="agent-a", description="helper",
+        Agent(access=_PUBLIC, id="agent-a", description="helper",
               model=AgentModel(profile_id="prov--m"))
     )
     await regenerate_system_collection(sp, toolset_providers={})
@@ -171,7 +175,7 @@ async def test_entity_write_converges_and_indexes_that_entity(sp):
 
     store = _RecordingStore()
     await sp.get_storage(Agent).create(
-        Agent(id="agent-new", description="a distinctive purpose",
+        Agent(access=_PUBLIC, id="agent-new", description="a distinctive purpose",
               model=AgentModel(profile_id="prov--m"))
     )
     wrote = await converge_entity(
@@ -271,7 +275,7 @@ async def test_regeneration_survives_a_page_created_underneath_it(sp, monkeypatc
     from primer.model.except_ import ConflictError
 
     await sp.get_storage(Agent).create(
-        Agent(id="agent-raced", description="helper",
+        Agent(access=_PUBLIC, id="agent-raced", description="helper",
               model=AgentModel(profile_id="prov--m"))
     )
 
