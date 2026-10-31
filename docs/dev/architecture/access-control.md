@@ -208,7 +208,8 @@ what the edit adds.
   `set_reply_binding` tool, a channel trigger) needs it too; otherwise the channel reads as missing.
 - **Search providers.** `enable_search(person=)` needs use of the embedder, the vector store and the cross-encoder
   (else the existing not-registered 409), and so does every search (`primer/knowledge/search_use.py`): REST answers 409 and
-  points to grep and the tree, the `collections` tool falls back to fulltext on `auto` and refuses `semantic`. A collection
+  points to grep and the tree, the `collections` tool falls back to fulltext on `auto` and refuses `semantic`, and
+  `system__search_collection` refuses (`conflict`, the REST words) before it embeds anything. A collection
   create whose `search` block names providers runs the same check for the saver (`check_collection_search_use`, REST 409,
   tool `conflict`, the same not-registered words); a whole-row update cannot change `search` at all. Indexing writes by
   full users are not a use of their own, but indexing (`index_document`, `index_documents`, given the storage) refuses to

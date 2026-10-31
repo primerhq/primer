@@ -75,3 +75,36 @@ async def test_create_collection_naming_usable_search_providers_is_stored(sp):
 
     assert not res.is_error, res.output
     assert (await sp.get_storage(Collection).get("mine")).search is not None
+
+
+class _CountingEmb:
+    calls = 0
+
+    async def embed(self, *, model, inputs):
+        type(self).calls += 1
+        vecs = [type("V", (), {"vector": [0.1] * 4})() for _ in inputs]
+        return type("R", (), {"embeddings": vecs})()
+
+
+class _EmptyStore:
+    async def search(self, coll_id, vector, top_k):
+        return []
+
+
+async def test_search_collection_refuses_providers_the_searcher_may_not_use(sp):
+    """Security review finding 3: ``system__search_collection`` asks the same person check as the REST route and the collections tool."""
+    await sp.get_storage(Collection).create(Collection(id="kb", description="wiki", access=Access(public=True), search=_cfg("priv")))
+    reg, ssr = AsyncMock(), AsyncMock()
+    reg.get_embedder = AsyncMock(return_value=_CountingEmb())
+    ssr.get_store = AsyncMock(return_value=_EmptyStore())
+    system = build_system_toolset(storage_provider=sp, provider_registry=reg, semantic_search_registry=ssr)
+    _CountingEmb.calls = 0
+
+    refused = await system.call(tool_name="search_collection", arguments={"collection_id": "kb", "query": "q"}, ctx=_ctx("ada"))
+
+    assert refused.is_error and json.loads(refused.output)["type"] == "conflict", refused.output
+    assert "not available to you" in refused.output
+    assert _CountingEmb.calls == 0 and reg.get_embedder.await_count == 0
+
+    allowed = await system.call(tool_name="search_collection", arguments={"collection_id": "kb", "query": "q"}, ctx=_ctx("root", "admin"))
+    assert not allowed.is_error, allowed.output
