@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 _EXTERNAL_TOOLSET_ID = "external"
 
 # ``(toolset_id, tool_name) -> the tool's args_schema``, or None when the tool cannot be found (primer/agent/tool_schemas.py ``find_tool_schema``).
+# The roles an account can hold (``User.role``); an approver spec naming any other admits nobody but admins.
+APPROVER_ROLES = frozenset({"admin", "user", "restricted"})
+
 ToolSchemaOf = Callable[[str, str], Awaitable["dict[str, Any] | None"]]
 
 
@@ -96,7 +99,14 @@ async def check_policy_unique(
 
 
 async def check_approval_config(entity: ToolApprovalPolicy, *, storage_provider: "StorageProvider") -> None:
-    """A Rego policy must compile; an LLM judge must name a stored provider and a model that provider publishes."""
+    """A Rego policy must compile; an LLM judge must name a stored provider and a model that provider publishes; approver roles must be real roles."""
+    unknown = [role for role in (entity.approvers.roles if entity.approvers is not None else []) if role not in APPROVER_ROLES]
+    if unknown:
+        raise EntityCheckError(
+            "validation",
+            f"unknown approver role(s) {unknown!r}: a role is one of {sorted(APPROVER_ROLES)} (a misspelled role admits nobody but admins)",
+            field="approvers.roles",
+        )
     cfg = entity.approval
     if isinstance(cfg, PolicyApprovalConfig):
         from primer.agent.rego import RegoCompileError, evaluate_policy
