@@ -100,7 +100,11 @@ async def test_the_tool_and_the_route_hand_the_fire_the_same_collaborators(app, 
     await _seed(sp)
 
     assert (await client.post("/v1/triggers/tr-tool/fire_now")).status_code == 200
-    tool = await app.state.provider_registry._trigger_toolset_provider.call(tool_name="fire_now", arguments={"id": "tr-tool"})
+    token = current_actor.set(Principal(type="user", id="u-adm", display="adm", role="admin", source="local", user_id="u-adm"))
+    try:
+        tool = await app.state.provider_registry._trigger_toolset_provider.call(tool_name="fire_now", arguments={"id": "tr-tool"})
+    finally:
+        current_actor.reset(token)
     assert not tool.is_error, tool.output
 
     rest_deps, tool_deps = seen
