@@ -122,7 +122,9 @@ class GraphFreshSessionDispatcher:
                 initial_instructions=None,
                 graph_input=graph_input,
                 auto_start=True,
-                metadata={
+                metadata=None,
+                # Trigger provenance is system metadata: a caller's metadata may not set these keys (security review GS-1).
+                system_metadata={
                     "trigger_id": sub.trigger_id,
                     "subscription_id": sub.id,
                     "fire_id": fire_id,
