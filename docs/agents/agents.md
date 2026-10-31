@@ -612,6 +612,24 @@ Read the description + system_prompt to confirm fit.
   the agent, a `_approval` yield happens transparently - the
   agent's next message contains the tool result (or rejection).
 
+## Tool availability and who a run acts as
+
+A run acts as the person behind it, and the tools it sees are the tools that person may use. A toolset the person may not
+read is left out of the run's tool list; the model is told once, in the system notice it already gets for an unreachable
+toolset, with the state `not available to you`. A toolset the person may use only in part (its owner marked single tools
+public) is noticed as `some tools not available to you`, and only the public tools are offered. `system::call_tool`,
+`system::describe_tool` and `system::list_toolset_tools` answer a tool the person may not use exactly as a missing one
+(`type=not-found`), and an approved call that re-runs after the toolset was unshared is refused the same way. Built-in toolsets
+(`system`, `workspaces`, `misc`, `web`, `collections`, `harness`) are open to every full user.
+
+A model profile has a use grant too. If the profile an agent (or a graph node, or a session override) names is not usable by
+the person the turn runs as, the turn does not run: the session is paused with its park kept and an error record says
+`model profile 'X' is not available to the person this turn runs as; an admin can grant its use` (`model_profile_unusable`).
+Tell the user to ask an admin, then resume. A sub-agent you start with `invoke_agent` is checked as you, and answers a
+`forbidden` tool error. Saving an agent that names a profile you may not use is refused as `model_profile_not_found`, the
+same answer as a profile that does not exist; `GET /v1/agents/{id}/status` shows it as one issue, `ModelProfile 'X' is not
+available to you`.
+
 ## Related
 
 - [graphs](graphs.md) - graphs orchestrate multiple agents.
