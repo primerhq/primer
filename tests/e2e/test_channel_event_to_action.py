@@ -45,6 +45,7 @@ from pydantic import SecretStr
 
 # Importing the action dispatcher modules registers them under their kind.
 import primer.trigger.subscribers.agent_fresh_session  # noqa: F401
+from primer.model.access import Access
 from primer.channel.correlation import CorrelationStore
 from primer.channel.event_dispatch import ChannelEventRouter
 from primer.channel.reply_binding import (
@@ -154,6 +155,7 @@ async def _provider(tmp_path: Path, async_closers) -> SqliteStorageProvider:
 
 async def _seed_agent(p) -> Agent:
     agent = Agent(
+        access=Access(public=True),  # the fire runs as the subscription's owner (none here): public agents only
         id="ag-e2a",
         description="event-to-action agent",
         model=AgentModel(profile_id="prov--model"),
