@@ -43,7 +43,7 @@ from pydantic_core import to_jsonable_python
 
 from primer.access.person import person_from_request
 from primer.access.policy import level_of, require
-from primer.access.workspaces import readable_workspace_ids, require_session, require_workspace
+from primer.access.workspaces import readable_workspace_ids, require_session, require_workspace, scope_to_readable_workspaces
 from primer.api.routers.access import make_access_router
 from primer.api.deps import (
     get_claim_engine,
@@ -4006,6 +4006,7 @@ def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[
     responses=common_responses(500),
 )
 async def list_pending_attention(
+    request: Request,
     workspace_id: str | None = Query(
         default=None, description="Optional: restrict to a single workspace"
     ),
@@ -4059,9 +4060,9 @@ async def list_pending_attention(
     Only sessions with ``parked_status == "parked"`` are included. Items are
     ordered newest-first by the same timestamp exposed as ``created_at`` and
     capped at ``limit`` (default 100); ``total`` reports the full matching
-    count regardless of the cap. No per-workspace ACL exists today (any
-    signed-in user may see any workspace), matching this router's other
-    routes.
+    count regardless of the cap. A non-admin sees only the sessions of
+    workspaces they read (access-control P2 Task 5): the filter is part of
+    the query, so ``total`` counts what they may read.
     """
     from primer.model.storage import OffsetPage
     from primer.storage.q import Q
@@ -4070,7 +4071,11 @@ async def list_pending_attention(
     predicate_q = Q(WorkspaceSession).where("parked_status", "parked")
     if workspace_id is not None:
         predicate_q = predicate_q.where("workspace_id", workspace_id)
-    predicate = predicate_q.build()
+    nothing, predicate = await scope_to_readable_workspaces(
+        get_storage_provider(request), person_from_request(request), predicate_q.build(),
+    )
+    if nothing:
+        return {"items": [], "total": 0}
 
     sessions: list[WorkspaceSession] = []
     offset = 0

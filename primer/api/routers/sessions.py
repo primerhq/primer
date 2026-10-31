@@ -19,7 +19,7 @@ from primer.model.external_tool import (
 )
 
 from primer.access.person import person_from_request
-from primer.access.workspaces import require_session, require_workspace
+from primer.access.workspaces import require_session, require_workspace, scope_to_readable_workspaces
 from primer.model.access import AccessLevel
 from primer.api.deps import (
     get_claim_engine,
@@ -32,7 +32,7 @@ from primer.api.deps import (
     get_workspace_storage,
 )
 from primer.api.errors import common_responses
-from primer.api.pagination import FindRequest, parse_order_by, parse_page
+from primer.api.pagination import FindRequest, empty_page, parse_order_by, parse_page
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.timeline import build_turn_timeline
 from primer.model.except_ import (
@@ -625,6 +625,7 @@ def _and(predicates: list[Predicate]) -> Predicate:
     responses=common_responses(400, 422, 500),
 )
 async def list_sessions(
+    request: Request,
     page: PageRequest = Depends(parse_page),
     order_by: list[OrderBy] | None = Depends(parse_order_by),
     status: Annotated[
@@ -689,6 +690,7 @@ async def list_sessions(
         ),
     ] = None,
     sessions=Depends(get_session_storage),
+    storage_provider=Depends(get_storage_provider),
 ):
     """List sessions across workspaces, optionally filtered.
 
@@ -753,8 +755,14 @@ async def list_sessions(
                 right=Value(value=graph_id),
             )
         )
-    if filters:
-        return await sessions.find(_and(filters), page, order_by=order_by)
+    # Access (P2 Task 5): a non-admin lists only the sessions of workspaces they read, pushed into the query so the page and the total count them.
+    nothing, scoped = await scope_to_readable_workspaces(
+        storage_provider, person_from_request(request), _and(filters) if filters else None,
+    )
+    if nothing:
+        return empty_page(page)
+    if scoped is not None:
+        return await sessions.find(scoped, page, order_by=order_by)
     return await sessions.list(page, order_by=order_by)
 
 
@@ -764,10 +772,18 @@ async def list_sessions(
     responses=common_responses(400, 422, 500),
 )
 async def find_sessions(
+    request: Request,
     body: FindRequest,
     sessions=Depends(get_session_storage),
+    storage_provider=Depends(get_storage_provider),
 ):
-    return await sessions.find(body.predicate, body.page, order_by=body.order_by)
+    # Access (P2 Task 5): ANDed with the caller's readable workspaces, so a predicate cannot widen it.
+    nothing, scoped = await scope_to_readable_workspaces(
+        storage_provider, person_from_request(request), body.predicate,
+    )
+    if nothing:
+        return empty_page(body.page)
+    return await sessions.find(scoped, body.page, order_by=body.order_by)
 
 
 class RecentSessionRow(BaseModel):
@@ -820,9 +836,11 @@ _RECENT_MAX_LIMIT = 100
     responses=common_responses(400, 422, 500),
 )
 async def recent_sessions(
+    request: Request,
     limit: int = Query(default=_RECENT_DEFAULT_LIMIT, ge=1, le=_RECENT_MAX_LIMIT),
     sessions=Depends(get_session_storage),
     workspaces=Depends(get_workspace_storage),
+    storage_provider=Depends(get_storage_provider),
 ) -> RecentSessionsResponse:
     """Cross-workspace "recent sessions", scoped to live workspaces only.
 
@@ -854,9 +872,15 @@ async def recent_sessions(
             break
         offset += 200
 
-    candidates = await sessions.list(
-        OffsetPage(offset=0, length=_RECENT_SCAN_WINDOW),
-        order_by=[OrderBy(field="created_at", direction="desc")],
+    # Access (P2 Task 5): the readable workspaces filter the candidate query itself, BEFORE the window: filtering the window afterwards would let
+    # 200 newer sessions of other users push a person's own out of it and leave their feed empty.
+    nothing, scoped = await scope_to_readable_workspaces(storage_provider, person_from_request(request))
+    if nothing:
+        return RecentSessionsResponse(items=[])
+    order = [OrderBy(field="created_at", direction="desc")]
+    window = OffsetPage(offset=0, length=_RECENT_SCAN_WINDOW)
+    candidates = (
+        await sessions.find(scoped, window, order_by=order) if scoped is not None else await sessions.list(window, order_by=order)
     )
 
     rows: list[RecentSessionRow] = []

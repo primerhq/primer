@@ -35,7 +35,7 @@ from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.access.person import person_from_request
-from primer.access.workspaces import require_session
+from primer.access.workspaces import require_session, scope_to_readable_workspaces
 from primer.model.access import AccessLevel
 from primer.api.approver_guard import enforce_approvers
 from primer.api.gate_fence import GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
@@ -43,7 +43,7 @@ from primer.session.pending_gates import enumerate_pending_gates, resolve_pendin
 from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
 from primer.session.yields import durably_wake_session
 from primer.model.workspace_session import WorkspaceSession
-from primer.model.storage import OffsetPage, OffsetPageResponse, OrderBy
+from primer.model.storage import OffsetPage, OffsetPageResponse, Op, OrderBy, Predicate
 from primer.storage.q import Q
 from primer.model.tool_approval import (
     LlmApprovalConfig,
@@ -376,6 +376,7 @@ async def _publish_decision(
             reason=reason,
             agent_id=getattr(sess.binding, "agent_id", None),
             session_id=id_str,
+            workspace_id=sess.workspace_id,
             requested_at=sess.parked_at,
             decided_by=decided_by,
             gate_event_key=event_key,
@@ -620,7 +621,13 @@ def make_tool_approval_ops_router() -> APIRouter:
         storage = sp.get_storage(ToolApprovalRecord)
         page = OffsetPage(offset=offset, length=length)
         order = [OrderBy(field="decided_at", direction="desc")]
+        # Access (P2 Task 5): a non-admin lists only the records of workspaces they read, in the query (a chat gate, which has no workspace, is an admin's).
+        nothing, scoped = await scope_to_readable_workspaces(sp, person_from_request(request))
+        if nothing:
+            return OffsetPageResponse(offset=offset, length=0, total=0, items=[])
         if status == "all" and session_id is None and gate_event_key is None:
+            if scoped is not None:
+                return await storage.find(scoped, page, order_by=order)
             return await storage.list(page, order_by=order)
         query = Q(ToolApprovalRecord)
         if session_id is not None:
@@ -629,7 +636,10 @@ def make_tool_approval_ops_router() -> APIRouter:
             query = query.where("gate_event_key", gate_event_key)
         if status != "all":
             query = query.where("decision", status)
-        return await storage.find(query.build(), page, order_by=order)
+        predicate = query.build()
+        if scoped is not None:
+            predicate = Predicate(left=scoped, op=Op.AND, right=predicate)
+        return await storage.find(predicate, page, order_by=order)
 
     return router
 

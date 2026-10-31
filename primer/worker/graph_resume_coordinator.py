@@ -126,6 +126,7 @@ async def write_approval_record_for_graph(
         reason=reason,
         agent_id=getattr(session.binding, "agent_id", None),
         session_id=session.id,
+        workspace_id=session.workspace_id,
         requested_at=session.parked_at,
         # Stamped by the respond route (P6); synthesized verdicts
         # (timeout/cancel) carry none.

@@ -17,7 +17,7 @@ from primer.access.person import Person
 from primer.access.policy import level_of, require, visible_predicate
 from primer.model.access import LEVEL_RANK, AccessLevel
 from primer.model.except_ import NotFoundError
-from primer.model.storage import OffsetPage
+from primer.model.storage import OffsetPage, Op, Predicate
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import WorkspaceSession
 
@@ -127,3 +127,27 @@ async def readable_workspace_ids(
         if len(items) < _PAGE_SIZE:
             return ids
         offset += _PAGE_SIZE
+
+
+async def scope_to_readable_workspaces(
+    sp: "StorageProvider",
+    person: Person,
+    predicate: Predicate | None = None,
+    *,
+    field: str = "workspace_id",
+) -> tuple[bool, Predicate | None]:
+    """``(nothing_readable, predicate)`` for a cross-workspace list: ``predicate`` ANDed with ``field IN <readable workspace ids>``.
+
+    Admins get ``predicate`` back unchanged (``None`` when they passed none: no filter). A person who reads no workspace gets
+    ``(True, ...)``: the caller answers an empty page without a query. The filter is part of the query, so a page and its total are
+    counted over what the person may read (plan P2 Task 5; a post-filter would leak the others' count and starve the window).
+    """
+    from primer.model.storage import FieldRef, Value
+
+    ids = await readable_workspace_ids(sp, person)
+    if ids is None:
+        return False, predicate
+    if not ids:
+        return True, predicate
+    scoped = Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=ids))
+    return False, scoped if predicate is None else Predicate(left=scoped, op=Op.AND, right=predicate)
