@@ -126,4 +126,19 @@ class PrincipalRef(BaseModel):
         )
 
 
-__all__ = ["Principal", "PrincipalRef"]
+def person_ref(ref: PrincipalRef | None) -> PrincipalRef | None:
+    """The ref when it names a person a turn may run as (a user or an API token's owner).
+
+    None when it names nobody: a missing ref, the unattributed stand-in, a
+    legacy trigger-typed row, or the system principal. A turn started by a
+    message with no person behind it keeps the person it ran with before
+    (access-control spec §13 Q1), so callers write ``turn_person`` only from
+    a ref this returns.
+    """
+    if ref is None or ref.type not in ("user", "api_token"):
+        return None
+    unknown = PrincipalRef.unattributed()
+    return ref if (ref.type, ref.id) != (unknown.type, unknown.id) else None
+
+
+__all__ = ["Principal", "PrincipalRef", "person_ref"]

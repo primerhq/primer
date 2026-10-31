@@ -19,7 +19,9 @@ from primer.events.redaction import (
     redact_payload,
     secret_field_names,
 )
+from primer.model.access import Access
 from primer.model.user import User
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 
 
@@ -122,6 +124,15 @@ async def test_user_reads_are_scoped_and_allowlisted(client, app) -> None:
     # The platform log is not theirs: a workspace filter is mandatory.
     bare = await client.get(f"/v1/events?after_id={base}")
     assert bare.status_code in (400, 422), bare.text
+
+    # The feed they may read exists as a row the access layer can judge
+    # (Phase 2, Task 7): a named workspace the reader holds no level on is 404.
+    await app.state.storage_provider.get_storage(Workspace).create(Workspace(
+        id="ws-red", template_id="t", provider_id="p",
+        created_at=datetime.now(timezone.utc),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
+        access=Access(owners=["user-red"]),
+    ))
 
     scoped = await client.get(
         f"/v1/events?after_id={base}&workspace_id=ws-red"

@@ -42,9 +42,11 @@ from primer.canvas.delivery import (
 from primer.canvas.lang import parse_program
 from primer.canvas.service import CanvasService
 from primer.events.dispatcher import EventDispatcher
+from primer.model.access import Access
 from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
 from primer.model.user import User
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext, YieldToWorker
 from primer.session.enqueue import SessionWakeDeps, wake_session
@@ -89,6 +91,14 @@ async def sp(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
     provider = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "delivery.sqlite")))
     await provider.initialize()
     await provider.get_event_store().ensure_schema()
+    # The workspace as a row the access layer can judge (Phase 2, Task 7): a
+    # non-admin may read its event feed only when they hold a level on it.
+    await provider.get_storage(Workspace).create(Workspace(
+        id=WORKSPACE, template_id="t", provider_id="p",
+        created_at=datetime.now(UTC),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
+        access=Access(owners=["u-admin"], grants={"u-other": "read"}),
+    ))
     try:
         yield provider
     finally:

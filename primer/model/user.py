@@ -62,6 +62,11 @@ class User(Identifiable):
         "Defaults to 'user' so existing constructors keep working; call "
         "sites that provision the admin account pass role='admin' explicitly.",
     )
+    default_workspace_id: str | None = Field(
+        default=None,
+        description="The user's private default workspace (access-control spec 6.7): created at their first sign-in as a "
+        "full user and never deletable. None for a user who has not yet signed in as a full user (a restricted user has none).",
+    )
     disabled: bool = Field(
         default=False,
         description="If True, the account is locked out: auth middleware "

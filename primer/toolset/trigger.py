@@ -58,13 +58,12 @@ from primer.model.trigger import (
     TriggerKind,
 )
 from primer.model.yield_ import ToolContext, Yielded
-from primer.session.peer_messages import caller_reach
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.owner import view_for
-from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE
+from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE, caller_scope, refuse_target_out_of_access
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ServiceDeps,
@@ -205,9 +204,9 @@ class _SubscribeChannelArgs(BaseModel):
 
 #: What a session outside prime reads about the tools that act on a whole trigger (review of #874, B1).
 _TRIGGER_REACH_NOTE = (
-    " From a session outside the default workspace (prime) a trigger with a "
-    "subscription that starts or feeds a session outside your own workspace "
-    "answers ``type=trigger_not_found``, as an unknown trigger does."
+    " A trigger with a subscription that starts or feeds a session in a workspace "
+    "you do not hold full access to answers ``type=trigger_not_found``, as an "
+    "unknown trigger does."
 )
 
 
@@ -724,7 +723,7 @@ def _make_update_handler(
                 from_run=from_run,
                 in_session=in_session,
                 # From a session outside prime: refused as an unknown trigger when a subscription of it reaches outside (review of #874, B1).
-                reach=await caller_reach(storage_provider, ctx),
+                reach=caller_scope(ctx),
                 deps=deps,
             )
         except TriggerNotFound as exc:
@@ -761,7 +760,7 @@ def _make_delete_handler(
         try:
             await delete_trigger(
                 trigger_id=args.id, caller=caller, from_run=from_run, in_session=in_session,
-                reach=await caller_reach(storage_provider, ctx), deps=deps,
+                reach=caller_scope(ctx), deps=deps,
             )
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
@@ -799,7 +798,7 @@ def _make_fire_now_handler(
         caller, from_run, in_session = _fire_caller(ctx)
         try:
             result = await fire_now(
-                trigger_id=args.id, caller=caller, from_run=from_run, in_session=in_session, reach=await caller_reach(storage_provider, ctx),
+                trigger_id=args.id, caller=caller, from_run=from_run, in_session=in_session, reach=caller_scope(ctx),
                 deps=deps,
             )
         except TriggerNotFound as exc:
@@ -836,7 +835,7 @@ def _make_list_subs_handler(
             return _err(str(exc), error_type="trigger_not_found")
         # From a session outside prime, a subscription whose target is out of reach is left out (ticket 01a16c22).
         items = await list_subscriptions(
-            trigger_id=args.trigger_id, reach=await caller_reach(storage_provider, ctx), deps=deps,
+            trigger_id=args.trigger_id, reach=caller_scope(ctx), deps=deps,
         )
         # A non-manager sees only the owner's display and role (A-20).
         caller = _caller(ctx)
@@ -863,7 +862,7 @@ def _make_get_sub_handler(
                 trigger_id=args.trigger_id,
                 subscription_id=args.subscription_id,
                 # Out of the caller's reach answers as an unknown subscription (ticket 01a16c22).
-                reach=await caller_reach(storage_provider, ctx),
+                reach=caller_scope(ctx),
                 deps=deps,
             )
         except SubscriptionNotFound as exc:
@@ -896,7 +895,7 @@ def _make_create_sub_handler(
                 enabled=args.enabled,
                 owner=_caller(ctx),
                 # A session outside prime may name only its own workspace or a session in it; the row records that reach for every fire.
-                reach=await caller_reach(storage_provider, ctx),
+                reach=caller_scope(ctx),
                 deps=deps,
             )
         except TriggerNotFound as exc:
@@ -942,7 +941,7 @@ def _make_update_sub_handler(
                 subscription_id=args.subscription_id,
                 owner=_caller(ctx),
                 # A subscription whose target is out of the caller's reach answers as an unknown one (review of #874, C1).
-                reach=await caller_reach(storage_provider, ctx),
+                reach=caller_scope(ctx),
                 deps=deps,
                 **kwargs,
             )
@@ -969,7 +968,7 @@ def _make_delete_sub_handler(
                 trigger_id=args.trigger_id,
                 subscription_id=args.subscription_id,
                 # Out of the caller's reach answers as an unknown subscription and deletes nothing (ticket 01a16c22).
-                reach=await caller_reach(storage_provider, ctx),
+                reach=caller_scope(ctx),
                 deps=deps,
             )
         except SubscriptionNotFound as exc:
@@ -988,6 +987,13 @@ def _trigger_wake_key(session_id: str, trigger_id: str) -> str:
     01a1208d, #702 review B1).
     """
     return f"trigger:{session_id}:{trigger_id}"
+
+
+async def _park_refusal(storage_provider: Any, ctx: ToolContext) -> ToolCallResult | None:
+    """``forbidden`` when the calling person holds no full on the session they would park (access-control P2 T6), as a saved subscription's owner must."""
+    config = ParkedSessionSubConfig(session_id=ctx.session_id, tool_call_id=ctx.tool_call_id, parked_at=datetime.now(timezone.utc))
+    refusal = await refuse_target_out_of_access(storage_provider, _caller(ctx), config)
+    return None if refusal is None else _err(refusal, error_type="forbidden")
 
 
 def _no_session_to_park(tool: str, ctx: ToolContext | None) -> ToolCallResult | None:
@@ -1043,6 +1049,9 @@ def _make_subscribe_handler(
                 error_type="trigger_not_found_or_disabled",
             )
 
+        if (refusal := await _park_refusal(storage_provider, ctx)) is not None:
+            return refusal
+
         sub_id = f"sb-{uuid4().hex[:12]}"
         sub = Subscription(
             id=sub_id,
@@ -1057,8 +1066,6 @@ def _make_subscribe_handler(
             enabled=True,
             created_at=datetime.now(timezone.utc),
             owner=_caller(ctx),
-            # The target is the calling session itself, always within its reach; recorded so the fire checks it like every other row.
-            reach=await caller_reach(storage_provider, ctx),
         )
         await storage_provider.get_storage(Subscription).create(sub)
         return Yielded(
@@ -1125,6 +1132,9 @@ def _make_subscribe_channel_handler(
                 error_type="trigger_not_found_or_disabled",
             )
 
+        if (refusal := await _park_refusal(storage_provider, ctx)) is not None:
+            return refusal
+
         sub_id = f"sb-{uuid4().hex[:12]}"
         sub = Subscription(
             id=sub_id,
@@ -1140,7 +1150,6 @@ def _make_subscribe_channel_handler(
             enabled=True,
             created_at=datetime.now(timezone.utc),
             owner=_caller(ctx),
-            reach=await caller_reach(storage_provider, ctx),
         )
         await storage_provider.get_storage(Subscription).create(sub)
         return Yielded(

@@ -335,6 +335,20 @@ function NV_useSessionList() {
 window.NV_useSessionList = NV_useSessionList;
 window.NV_anySessionRunning = NV_anySessionRunning;
 
+// ACL-P2-T10: the rail's workspace groups - Mine (the viewer owns the row), Shared with me (a grant names the
+// viewer), Public (a public row, or a row no clause names: an admin sees every row, and one they hold nothing
+// on lands here; a pre-Phase-2 row with no access block is public-shaped). From the row's stored access and
+// the viewer's user id (con.viewer: /auth/status's principal projection). Ownership outranks a grant, a grant
+// outranks public, and no viewer id (signed out) names nobody.
+var NV_wsGroupOf = function (w, viewerId) {
+  var a = w && w.access;
+  if (!a) return "public";
+  if (viewerId && a.owners && a.owners.indexOf(viewerId) !== -1) return "mine";
+  if (viewerId && a.grants && a.grants[viewerId]) return "shared";
+  return "public";
+};
+window.NV_wsGroupOf = NV_wsGroupOf;
+
 function NV_Rail(props) {
   // Every workspace (SH_api.workspaces reads every page): polled every 15 s per page read, so a list of three pages costs one request per 15 s
   // on average, as the one page it replaced did (PR_usePagedResource, ui/foundation/api.js).
@@ -361,6 +375,11 @@ function NV_Rail(props) {
       wsRes.refetch();
     }
   }, [props.selectedWorkspaceId, wsRes.data]);
+  // ACL-P2-T10: the viewer's user id for the group split (con.viewer: /auth/status's principal projection;
+  // a signed-out console has no viewer and every groupable row lands in Public).
+  var con = NV_useConsole();
+  var viewerId = con && con.viewer && (con.viewer.user_id || con.viewer.id) || null;
+  var wsGroups = [["mine", "Mine"], ["shared", "Shared with me"], ["public", "Public"]];
   var sessRes = NV_useSessionList();
   var inboxRes = window.primerApi.useResource(
     "nv-rail-inbox",
@@ -544,75 +563,86 @@ function NV_Rail(props) {
               data-testid="nv-rail-ws-retry" onClick={function () { wsRes.refetch(); }}>Retry</button>
           </div>
         ) : null}
-        {workspaces.map(function (w) {
-          var isSelected = w.id === props.selectedWorkspaceId;
-          var isOpen = !!expanded[w.id];
-          var wsSessions = sessionsByWs[w.id] || [];
-          var sessionCount = NV_Rail_sessionCount(w, wsSessions);
-          var attnCount = Object.keys(attentionSidsByWs[w.id] || {}).length;
+        {wsGroups.map(function (g) {
+          var rows = workspaces.filter(function (w) {
+            return NV_wsGroupOf(w, viewerId) === g[0];
+          });
+          if (!rows.length) return null;
           return (
-            <div key={w.id}>
-              <button type="button" className="nv-rail-ws-row" data-testid={"nv-rail-ws:" + w.id}
-                data-selected={isSelected ? "true" : "false"}
-                data-verb="workspace.switch"
-                onClick={function () {
-                  if (typeof props.onSelectWorkspace === "function") props.onSelectWorkspace(w.id);
-                  setExpanded(function (prev) {
-                    var next = Object.assign({}, prev);
-                    next[w.id] = !prev[w.id];
-                    return next;
-                  });
-                }}
-                onContextMenu={function (ev) {
-                  ev.preventDefault();
-                  ev.stopPropagation();
-                  setMenu({ kind: "workspace", w: w, x: ev.clientX, y: ev.clientY });
-                }}>
-                <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"
-                  style={{ flexShrink: 0, transform: "rotate(" + (isOpen ? 90 : 0) + "deg)" }}>
-                  <path d="M3.5 2 6.5 5 3.5 8" />
-                </svg>
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" style={{ flexShrink: 0 }}>
-                  <path d="M1.5 3.5 6 1l4.5 2.5v5L6 11 1.5 8.5Z M6 6v5M1.5 3.5 6 6l4.5-2.5" />
-                </svg>
-                <span className="nv-rail-name">{w.name || w.id}</span>
-                {attnCount > 0 ? <span className="nv-rail-attn-count">{attnCount}</span> : null}
-                {/* UX reconcile wave 1 (audit A item 17): a bare count read as
-                    an unlabeled second number next to the attention count -
-                    spell out the unit, same as the reference. */}
-                <span className="nv-rail-session-count" data-testid={"nv-rail-ws-count:" + w.id}>
-                  {sessionCount} {sessionCount === 1 ? "session" : "sessions"}
-                </span>
-              </button>
-              {isOpen ? <NV_Rail_WsSessions key={"wss:" + w.id} wid={w.id} tick={sessTick} fallback={wsSessions} count={sessionCount}
-                render={function (rows) { return rows.map(function (s) {
-                var sid = s.session_id;
-                var ident = NV_identity(s.binding);
-                var isAttention = !!(attentionSidsByWs[w.id] && attentionSidsByWs[w.id][sid]);
+            <div key={g[0]}>
+              <div className="nv-rail-group" data-testid={"nv-rail-ws-group:" + g[0]}>{g[1]}</div>
+              {rows.map(function (w) {
+                var isSelected = w.id === props.selectedWorkspaceId;
+                var isOpen = !!expanded[w.id];
+                var wsSessions = sessionsByWs[w.id] || [];
+                var sessionCount = NV_Rail_sessionCount(w, wsSessions);
+                var attnCount = Object.keys(attentionSidsByWs[w.id] || {}).length;
                 return (
-                  <button type="button" key={sid} className="nv-rail-ws-session"
-                    data-testid={"nv-rail-ws-session:" + sid}
-                    onClick={function () {
-                      if (typeof props.onSelectWorkspace === "function") props.onSelectWorkspace(w.id);
-                      openSession(s);
-                    }}
-                    onContextMenu={function (ev) {
-                      ev.preventDefault();
-                      ev.stopPropagation();
-                      setMenu({ kind: "session", s: s, wid: w.id, x: ev.clientX, y: ev.clientY });
-                    }}>
-                    <svg width="10" height="10" viewBox="0 0 12 12" style={{ flexShrink: 0, color: ident.color }}>
-                      <path d={ident.d} fill="currentColor" />
-                    </svg>
-                    <span className="nv-rail-name">{s.name || sid}</span>
-                    {isAttention ? (
-                      <span className="nv-dot-attention" title="needs you" />
-                    ) : (
-                      <NV_Rail_SessionPulse wid={w.id} sid={sid} />
-                    )}
-                  </button>
+                  <div key={w.id}>
+                    <button type="button" className="nv-rail-ws-row" data-testid={"nv-rail-ws:" + w.id}
+                      data-selected={isSelected ? "true" : "false"}
+                      data-verb="workspace.switch"
+                      onClick={function () {
+                        if (typeof props.onSelectWorkspace === "function") props.onSelectWorkspace(w.id);
+                        setExpanded(function (prev) {
+                          var next = Object.assign({}, prev);
+                          next[w.id] = !prev[w.id];
+                          return next;
+                        });
+                      }}
+                      onContextMenu={function (ev) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        setMenu({ kind: "workspace", w: w, x: ev.clientX, y: ev.clientY });
+                      }}>
+                      <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"
+                        style={{ flexShrink: 0, transform: "rotate(" + (isOpen ? 90 : 0) + "deg)" }}>
+                        <path d="M3.5 2 6.5 5 3.5 8" />
+                      </svg>
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" style={{ flexShrink: 0 }}>
+                        <path d="M1.5 3.5 6 1l4.5 2.5v5L6 11 1.5 8.5Z M6 6v5M1.5 3.5 6 6l4.5-2.5" />
+                      </svg>
+                      <span className="nv-rail-name">{w.name || w.id}</span>
+                      {attnCount > 0 ? <span className="nv-rail-attn-count">{attnCount}</span> : null}
+                      {/* UX reconcile wave 1 (audit A item 17): a bare count read as
+                          an unlabeled second number next to the attention count -
+                          spell out the unit, same as the reference. */}
+                      <span className="nv-rail-session-count" data-testid={"nv-rail-ws-count:" + w.id}>
+                        {sessionCount} {sessionCount === 1 ? "session" : "sessions"}
+                      </span>
+                    </button>
+                    {isOpen ? <NV_Rail_WsSessions key={"wss:" + w.id} wid={w.id} tick={sessTick} fallback={wsSessions} count={sessionCount}
+                      render={function (rows) { return rows.map(function (s) {
+                      var sid = s.session_id;
+                      var ident = NV_identity(s.binding);
+                      var isAttention = !!(attentionSidsByWs[w.id] && attentionSidsByWs[w.id][sid]);
+                      return (
+                        <button type="button" key={sid} className="nv-rail-ws-session"
+                          data-testid={"nv-rail-ws-session:" + sid}
+                          onClick={function () {
+                            if (typeof props.onSelectWorkspace === "function") props.onSelectWorkspace(w.id);
+                            openSession(s);
+                          }}
+                          onContextMenu={function (ev) {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            setMenu({ kind: "session", s: s, wid: w.id, x: ev.clientX, y: ev.clientY });
+                          }}>
+                          <svg width="10" height="10" viewBox="0 0 12 12" style={{ flexShrink: 0, color: ident.color }}>
+                            <path d={ident.d} fill="currentColor" />
+                          </svg>
+                          <span className="nv-rail-name">{s.name || sid}</span>
+                          {isAttention ? (
+                            <span className="nv-dot-attention" title="needs you" />
+                          ) : (
+                            <NV_Rail_SessionPulse wid={w.id} sid={sid} />
+                          )}
+                        </button>
+                      );
+                    }); }} /> : null}
+                  </div>
                 );
-              }); }} /> : null}
+              })}
             </div>
           );
         })}

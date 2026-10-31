@@ -235,15 +235,16 @@ can run an agent or graph headlessly end to end.
   workspace, `workspaces::list_my_sessions` (`state`, `parked_on`).
   Args: `workspace_id`, `session_id`.
 - `workspaces::list_workspace_sessions` - list sessions on a
-  workspace. From a session outside the default workspace (prime) only
-  your own workspace is reachable: another one answers
-  `type=not-found`, exactly as a workspace that does not exist.
+  workspace (needs `read` on it). A workspace your person holds no
+  access to answers `type=not-found`, exactly as a workspace that does
+  not exist.
 - `workspaces::find_sessions` - find sessions across every
   workspace by workspace, agent, state or initiator, newest first.
   Args: optional `workspace_id`, `agent_id`, `state`, `initiated_by`,
   `limit` (1..200, default 20). Returns the page of session rows,
-  like `POST /v1/sessions/find`. From a session outside the default
-  workspace it finds only your own workspace's sessions.
+  like `POST /v1/sessions/find`. It searches the workspaces your
+  person may read, wherever your session runs; a named `workspace_id`
+  your person holds no access to answers `type=not-found`.
 - `workspaces::pause_workspace_session` - pause a session, the same
   operation as `POST .../pause`: an idle or not yet started session is
   paused at once (`status: "paused"`); on a running one it sets
@@ -253,32 +254,32 @@ can run an agent or graph headlessly end to end.
   turn until it is resumed or a person messages it; an autonomous session
   whose turn ends it still ends. Returns the session
   row; `type=conflict` when the session has ended, or when its status
-  changed under the call twice (try again); `type=forbidden` when the
-  session runs at a higher rank than you (or your run).
+  changed under the call twice (try again); `type=forbidden` when your
+  person holds less than `full` on the session's workspace.
 - `workspaces::resume_workspace_session` - start or resume a session,
   the same operation as `POST .../resume`: a paused, waiting or never
   started (`auto_start=false`) session goes `running` and is queued for
   its next turn; a running one is returned as it is, with nothing
   changed. Returns the session row; `type=conflict` when the session
   has ended, or when its status changed under the call twice (try
-  again); `type=forbidden` when the session runs at a higher rank than
-  you (or your run).
-- `workspaces::steer_workspace_session` - send a user instruction (an idle or ended session starts its next turn with it; a busy, parked or paused one, or one with older messages still waiting, reads it at its next turn boundary, after those messages: first in, first out; a queued message is delivered even when no other message follows it; it never answers an `ask_user`). Called from inside a workspace session it is a message from that session, with every limit of `workspaces::message_session`: the target sees a user message that starts with `[from session <your session id> (agent <your agent id>)]`; a session outside your reach (your own workspace, or any workspace from the default one) answers `type=not-found` exactly as an unknown id; `type=forbidden` when the target runs at a higher rank than your run; `type=hop-limit` at 8 messages in a chain; `type=rate-limited` at 20 messages per 10 minutes; `type=conflict` for a session an operator cancelled (only a person reopens it), an ended session that cannot reopen, or a full queue. Called with no session (MCP) the caller must rank at least as high as the session's creator (`type=forbidden`), and a cancelled session is refused too.
-- From a session outside the default workspace (prime), every one of
-  these tools that names a session or a workspace reaches only your own
-  workspace: cancel, get, read messages, pause, resume, interrupt,
-  create, list, find, steer and restart (and the workspace tools:
-  `delete_workspace`, `get_workspace`, `list_workspaces`, the file
-  tools, `get_workspace_log` and `workspace_tap`, see
-  [workspaces](workspaces.md)). Another workspace answers
-  `type=not-found` exactly as an unknown id does. Cancel, resume, pause
-  and interrupt are also refused (`type=forbidden`) when the session runs
-  at a higher rank than your run, except on your own session: a session
-  may always stop, pause, cancel or resume itself. With no calling session (MCP) the caller
-  keeps its reach, and cancel, resume, pause and interrupt follow the same
-  rank rule (a person may always act on a session they started; an API
-  token ranks as its owner). Their REST routes follow it too (403
-  `forbidden_rank`).
+  again); `type=forbidden` when your person holds less than `full` on
+  the session's workspace. A resume of a parked turn keeps the person
+  it parked with; a session that never ran a turn runs its first as you.
+- `workspaces::steer_workspace_session` - send a user instruction (an idle or ended session starts its next turn with it; a busy, parked or paused one, or one with older messages still waiting, reads it at its next turn boundary, after those messages: first in, first out; a queued message is delivered even when no other message follows it; it never answers an `ask_user`). Called from inside a workspace session it is a message from that session, with every limit of `workspaces::message_session`: the target sees a user message that starts with `[from session <your session id> (agent <your agent id>)]`; a session in a workspace your person holds no access to answers `type=not-found` exactly as an unknown id; `type=forbidden` when your person holds only `read` on the target's workspace (a message needs `full`); `type=hop-limit` at 8 messages in a chain; `type=rate-limited` at 20 messages per 10 minutes; `type=conflict` for a session an operator cancelled (only a person reopens it), an ended session that cannot reopen, or a full queue. Called with no session (MCP) the token's user needs `full` on the session's workspace (`type=forbidden`), and a cancelled session is refused too. Either way the turn the steer starts runs as the person behind it (your run's person, or the token's user), not as the session's creator.
+- Every one of these tools that names a session or a workspace acts
+  with the access of your run's person (over MCP, the token's user),
+  wherever your session runs: a session has the access of the workspace
+  it lives in. Get, read messages, list and find need `read`; cancel,
+  pause, resume, interrupt, create, steer and restart need `full` (and
+  the workspace tools: `delete_workspace` needs `owner`, the file
+  writes `full`, `get_workspace`, `list_workspaces`, the file reads,
+  `get_workspace_log` and `workspace_tap` `read`, see
+  [workspaces](workspaces.md)). A workspace your person holds no access
+  to answers `type=not-found` exactly as an unknown id does; too low a
+  level answers `type=forbidden`. Who started the session does not
+  matter, and a creator who loses access to the workspace loses it to
+  their own sessions too. Their REST routes follow the same levels (404
+  for no access, 403 `access_denied` for too low a level).
 - `workspaces::restart_workspace_session` - reopen an ENDED session and run it again with optional `input`. From inside a workspace session it is a message from that session like the steer above: `input` is required, the same limits apply, the reopened turn carries the hop count, and a session that has not ended is `type=conflict`. A session an operator cancelled is never reopened by this tool (`type=conflict`); a person reopens it (the console, `POST .../restart`).
 - `workspaces::interrupt_workspace_session` - Stop the turn a session is
   running without ending the session. Args: `workspace_id`, `session_id`.
@@ -288,8 +289,8 @@ can run an agent or graph headlessly end to end.
   idle, paused or not started), nothing was recorded and nothing will
   stop. `type=conflict` when the session has ended or is parked waiting on
   an approval, an answer or a timer (cancel it instead);
-  `type=forbidden` when the session runs at a higher rank than you (or
-  your run); `type=not-found` for an unknown session. It is the same operation as the
+  `type=forbidden` when your person holds less than `full` on the
+  session's workspace; `type=not-found` for an unknown session. It is the same operation as the
   console's Stop button, one implementation behind both. It does not end
   the session, so a parent waiting for a stopped child to END waits on:
   use `workspaces::cancel_workspace_session` to end one.
@@ -513,13 +514,15 @@ POST /v1/sessions/{session_id}/ask_user/respond   {"tool_call_id": "...", "respo
 POST /v1/sessions/{session_id}/yields/{tool_call_id}/cancel
 ```
 
-An answer and a cancel are a person's input into a run at the session's
-creator's rank, so both follow the rank rule of the steer and resume routes:
-when the session's creator outranks you and the session is not your own, they
-answer `403` with `extensions.error = "forbidden_rank"` and one fixed message,
-and nothing is answered, cancelled or resumed (an API token ranks as its owner;
-an admin is never outranked). A reply in a channel thread is not ranked, by
-design: it comes through a reply binding a person set up.
+An answer and a cancel act on the session, so both need `full` access to
+the session's workspace, like the steer and resume routes: `read` alone
+answers `403` with `extensions.code = "access_denied"`, a person with no access
+gets the session's 404, and nothing is answered, cancelled or resumed (an API
+token acts as its owner; an admin holds every level). `ask_user/pending` needs
+`read`. An answer does not change who the turn runs as: the parked turn resumes
+as the person it parked with. A reply in a channel thread is not checked
+against workspace access, by design: it comes through a reply binding a person
+set up.
 
 `ask_user/pending` returns the `tool_call_id`, the `gate_id` (the id of THIS
 prompt, minted when it was asked; `null` for a prompt parked before gates had
@@ -570,12 +573,11 @@ endpoints answer a graph session parked mid-run on an `ask_user` node (see
 operator in prime manages sessions in OTHER workspaces, so this is
 the tool it uses; the top-level `POST /v1/sessions/find` route is
 the same storage query over HTTP. All four filters are optional and
-AND together; with no filter it lists every session, newest first,
-capped by `limit` (1..200, default 20, no offset). Only a session in
-the default workspace (prime) finds sessions of other workspaces:
-from any other session the finder is scoped to that session's own
-workspace, and another `workspace_id` finds nothing, as an unknown
-one does. The `state`
+AND together; with no filter it lists every session in the
+workspaces your run's person may read, newest first, capped by
+`limit` (1..200, default 20, no offset), wherever your session runs.
+A `workspace_id` your person holds no access to answers
+`type=not-found`, as an unknown one does. The `state`
 filter takes the derived state every row serves (`waiting`,
 `running`, `parked`, `ended`); `initiated_by` is the initiating
 principal's id (`PrincipalRef.id`), not its display name.

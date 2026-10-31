@@ -29,6 +29,17 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _mcp_admin():
+    """These tools run with no calling session: the MCP endpoint, whose live actor is the person they act as (access-control P2 T6)."""
+    from primer.mcp.server import current_actor
+    from primer.model.principal import Principal
+
+    token = current_actor.set(Principal(type="user", id="admin-mcp", display="admin-mcp", role="admin", source="local", user_id="admin-mcp"))
+    yield
+    current_actor.reset(token)
+
+
 @pytest.fixture
 async def sp(tmp_path):
     provider = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "stored.sqlite")))

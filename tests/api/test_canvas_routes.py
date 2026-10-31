@@ -5,12 +5,12 @@ the canvas suite's recording fake, so the transcript records and the instruction
 
 The lead's rulings on S6 pinned here:
 
-1. ``POST .../canvas/events`` drives a session like a steer: the rank rule (``refuse_outranked``) before anything is read or written, an
-   admin never outranked, a token acting as its owner, a person's own session always theirs (the WHO table). The operator's writes
-   (``POST .../canvas/ops``, ``DELETE .../canvas``) put input into the session too and follow the same rule. It hands off to
+1. ``POST .../canvas/events`` drives a session like a steer: full on the session's workspace (P2 Task 3) before anything is read or written,
+   an admin never refused, a token acting as its owner, the workspace's access deciding who acts (the WHO table). The operator's writes
+   (``POST .../canvas/ops``, ``DELETE .../canvas``) put input into the session too and follow the same gate. It hands off to
    ``deliver_canvas_event`` and never writes the input into a structured copy.
-2. ``GET .../canvas`` serves the values and the newest events WITH their input to any signed-in user (the shared session read), while the
-   event feed keeps removing it for a non-admin (#872).
+2. ``GET .../canvas`` serves the values and the newest events WITH their input to a holder of read on the session's workspace (the shared
+   session read; a stranger gets the session's missing-row 404), while the event feed keeps removing it for a non-admin (#872).
 3. The cap on events that do not wake the agent answers 429 ``silent_rate_limited`` and records nothing.
 """
 
@@ -25,12 +25,13 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport
 
-from primer.authz import OUTRANKED_MESSAGE
 from primer.canvas.files import referenced_files
+from primer.model.access import Access
 from primer.model.canvas import MAX_EVENT_BODY_BYTES, MAX_SILENT_EVENTS_PER_MINUTE, SessionCanvas
 from primer.model.principal import PrincipalRef
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
-from tests.api.test_session_steer_restart_rank import WHO, _token_client, _user_id
+from tests.api.test_session_steer_restart_rank import WHO, _token_client, _user_id, _workspace as _seed_workspace
 from tests.canvas._fakes import FakeWorkspace
 
 WS = "ws-1"
@@ -421,10 +422,19 @@ async def test_file_urls_are_minted_for_referenced_files(client, fake_storage_pr
 # ---- the shared read (ruling 2) ------------------------------------------------------------------------------------------------------
 
 
-async def test_any_user_reads_the_values_and_events_with_their_input_while_the_feed_hides_it(client, carol, fake_storage_provider, ws):
+async def test_any_user_reads_the_values_and_events_with_their_input_while_the_feed_hides_it(client, carol, fake_storage_provider, ws, app):
     """The lead's ruling 2 on S6: GET .../canvas is the shared session read, values and the newest events WITH what was entered; the
     REST event feed keeps removing the input for a non-admin (#872)."""
     await _seed(fake_storage_provider, status=SessionStatus.RUNNING, turn_status="running", by=ADMIN)
+    # The workspace as a row the access layer can judge (Phase 2, Task 7):
+    # carol reads its event feed through a read grant.
+    carol_id = await _user_id(app, "carol")
+    await fake_storage_provider.get_storage(Workspace).create(Workspace(
+        id=WS, template_id="t", provider_id="p",
+        created_at=datetime.now(UTC),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
+        access=Access(owners=[ADMIN.id], grants={carol_id: "read"}),
+    ))
     await _draw(client)
     assert (await client.post(_url(tail="/events"), json={"element": "genre", "kind": "change", "value": "Classical"})).status_code == 202
     emit = {"element": "viz", "kind": "emit", "name": "submit", "data": {"note": SECRET_NOTE}}
@@ -459,7 +469,7 @@ async def test_reads_never_mark_events_seen(client, fake_storage_provider, ws):
     assert (row.seen_event_seq, row.seen_ahead) == (0, [])
 
 
-# ---- the rank rule (ruling 1) --------------------------------------------------------------------------------------------------------
+# ---- the access gate (P2 Task 3) -------------------------------------------------------------------------------------------------------
 
 #: action -> (method, tail, body, the answer of an accepted request).
 ACTIONS = {
@@ -469,20 +479,23 @@ ACTIONS = {
 }
 
 
-async def _creator(app, started_by: str) -> PrincipalRef:
+async def _creator(app, access_spec: str) -> PrincipalRef | None:
+    """The row's initiator (realism only: the access gate no longer consults it)."""
     carol_id = await _user_id(app, "carol")
     return {
         "admin": ADMIN,
         "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
         "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
-    }[started_by]
+        "carol read": None,
+    }[access_spec]
 
 
 @pytest.mark.parametrize("who", list(WHO))
 @pytest.mark.parametrize("action", list(ACTIONS))
-async def test_a_persons_canvas_input_reaches_a_session_only_at_or_below_their_rank(app, client, carol, fake_storage_provider, ws, action, who):
-    started_by, asker, accepted = WHO[who]
-    await _seed(fake_storage_provider, by=await _creator(app, started_by))
+async def test_a_persons_canvas_input_follows_the_workspace_access(app, client, carol, fake_storage_provider, ws, action, who):
+    access_spec, asker, accepted = WHO[who]
+    await _seed(fake_storage_provider, by=await _creator(app, access_spec))
+    await _seed_workspace(fake_storage_provider, app, access_spec, await _user_id(app, "carol"), wid=WS)
     await _draw(client)                                    # the admin may draw on any session
     before_canvas = (await _canvas(fake_storage_provider)).model_dump(mode="json")
     before_session = (await fake_storage_provider.get_storage(WorkspaceSession).get("s1")).model_dump(mode="json")
@@ -499,8 +512,12 @@ async def test_a_persons_canvas_input_reaches_a_session_only_at_or_below_their_r
         r = await getattr({"carol": carol, "admin": client}[asker], method)(_url(tail=tail), **kwargs)
 
     if not accepted:
-        assert r.status_code == 403, f"{who} could {action}: {r.text}"
-        assert (r.json()["detail"], r.json()["extensions"]["error"]) == (OUTRANKED_MESSAGE, "forbidden_rank")
+        if access_spec == "carol read":
+            assert r.status_code == 403, f"{who} could {action}: {r.text}"
+            assert r.json()["detail"] == "Session 's1' needs full access"
+        else:
+            assert r.status_code == 404, f"{who} could {action}: {r.text}"
+            assert r.json()["detail"] == "Session 's1' does not exist"
         assert (await _canvas(fake_storage_provider)).model_dump(mode="json") == before_canvas, f"a refused {action} wrote the canvas"
         assert (await fake_storage_provider.get_storage(WorkspaceSession).get("s1")).model_dump(mode="json") == before_session
         assert await fake_storage_provider.get_event_store().read_after(0) == events_before, f"a refused {action} was announced"
@@ -512,20 +529,23 @@ async def test_a_persons_canvas_input_reaches_a_session_only_at_or_below_their_r
 
 
 @pytest.mark.parametrize("action", list(ACTIONS))
-async def test_an_admin_acts_on_a_session_recorded_as_system_and_a_user_does_not(client, carol, fake_storage_provider, ws, action):
+async def test_an_admin_acts_on_a_system_recorded_session_and_a_stranger_gets_the_missing_row(app, client, carol, fake_storage_provider, ws, action):
     await _seed(fake_storage_provider, by=PrincipalRef.system())
+    await _seed_workspace(fake_storage_provider, app, "admin", await _user_id(app, "carol"), wid=WS)
     await _draw(client)
     method, tail, body, ok = ACTIONS[action]
     kwargs = {"json": body} if body is not None else {}
     refused = await getattr(carol, method)(_url(tail=tail), **kwargs)
-    assert refused.status_code == 403, refused.text
+    assert refused.status_code == 404, refused.text
+    assert refused.json()["detail"] == "Session 's1' does not exist"
     assert (await getattr(client, method)(_url(tail=tail), **kwargs)).status_code == ok
 
 
-async def test_any_user_reads_a_session_they_could_not_drive(client, carol, fake_storage_provider, ws):
-    """Reading is the shared session read: no rank rule."""
+async def test_a_reader_reads_a_session_they_cannot_drive(app, client, carol, fake_storage_provider, ws):
+    """Reading needs read on the session's workspace: carol's read grant admits the read and refuses the full acts (above)."""
     await _seed(fake_storage_provider, by=ADMIN)
     await _draw(client)
+    await _seed_workspace(fake_storage_provider, app, "carol read", await _user_id(app, "carol"), wid=WS)
     r = await carol.get(_url())
     assert r.status_code == 200 and r.json()["element_count"] == 8
 

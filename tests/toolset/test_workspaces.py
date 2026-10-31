@@ -21,6 +21,7 @@ from primer.internal_collections import (
     INTERNAL_COLLECTION_IDS,
     build_subsystem,
 )
+from primer.mcp.server import current_actor
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.internal import (
     INTERNAL_COLLECTIONS_CONFIG_ID,
@@ -381,6 +382,19 @@ class _FakePR:
 # ===========================================================================
 # Fixtures
 # ===========================================================================
+
+
+@pytest.fixture(autouse=True)
+def _actor():
+    """No calling session: the calls of this file act as the MCP endpoint's admin actor (this file tests the tools'
+    mechanics, not access; the access rules are pinned by ``test_workspace_tools_access.py``)."""
+    from primer.model.principal import Principal
+
+    token = current_actor.set(Principal(type="user", id="u-root", display="root", role="admin", source="local", user_id="u-root"))
+    try:
+        yield
+    finally:
+        current_actor.reset(token)
 
 
 @pytest.fixture
@@ -1918,6 +1932,7 @@ async def rows(sp) -> None:
     tool asks the store for.
     """
     from primer.model.principal import PrincipalRef
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
     from primer.model.workspace_session import (
         AgentSessionBinding,
         SessionStatus,
@@ -1926,6 +1941,13 @@ async def rows(sp) -> None:
 
     store = sp.get_storage(WorkspaceSession)
     base = datetime(2026, 10, 18, 12, 0, 0, tzinfo=timezone.utc)
+
+    # The two workspaces the sessions live in: the access guard asks the row, which must exist.
+    for ws_id in ("ws-a", "ws-b"):
+        await sp.get_storage(Workspace).create(Workspace(
+            id=ws_id, template_id="tpl", provider_id="local-1", created_at=base,
+            runtime_meta=WorkspaceRuntimeMeta(url=f"ws://{ws_id}", token="t"),
+        ))
 
     def row(sid, ws, agent, status, turn_status, created, initiated):
         return WorkspaceSession(

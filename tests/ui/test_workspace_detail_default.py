@@ -40,6 +40,9 @@ window.primerApi = {
   useMutation: function (fn) { return { loading: false, mutate: function () { LOG.deletes.push(1); return fn(); } }; },
   apiFetch: function () { return Promise.resolve({}); },
 };
+// The share seam the Settings overlay subscribes to (ui/components/shared/share-dialog.jsx):
+// this harness predates it, so the stand-in answers the subscription as a closed dialog.
+window.SHR_useShareOpen = function () { return [false, function () {}]; };
 window.WorkspaceTap = function () { return null; };
 function Icon() { return null; }
 function Btn(p) { return React.createElement("button", { "data-testid": p["data-testid"], onClick: p.onClick, disabled: p.disabled }, p.children); }

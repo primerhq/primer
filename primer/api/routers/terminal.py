@@ -41,8 +41,11 @@ from typing import Any, Protocol
 
 from fastapi import APIRouter, Query, WebSocket
 
+from primer.access.person import person_from_request
+from primer.access.workspaces import require_workspace
 from primer.api.deps import require_auth_ws, require_role_ws, require_user_ws
-from primer.model.except_ import NotFoundError
+from primer.model.access import AccessLevel
+from primer.model.except_ import AccessDeniedError, NotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +172,27 @@ async def workspace_terminal_ws(
         await websocket.accept()
         await websocket.close(code=1011, reason="workspace_registry_unavailable")
         return
+
+    # Access (P2 Task 2): the terminal is a shell inside the workspace, so
+    # it needs FULL on the workspace (admin clears the gate by role). A
+    # stranger answers the missing-workspace close (4404: an unreadable
+    # workspace is indistinguishable from a missing one, spec 9); a level
+    # holder below FULL answers 4403. ``person_from_request`` reads only
+    # ``state.actor``, which the auth middleware sets on websocket scopes too.
+    person = person_from_request(websocket)  # type: ignore[arg-type]
+    if not person.is_admin:
+        try:
+            await require_workspace(
+                websocket.app.state.storage_provider, person, workspace_id, AccessLevel.FULL,
+            )
+        except NotFoundError:
+            await websocket.accept()
+            await websocket.close(code=4404, reason="workspace_not_found")
+            return
+        except AccessDeniedError:
+            await websocket.accept()
+            await websocket.close(code=4403, reason="forbidden")
+            return
 
     # Resolve the live workspace handle (404-close on missing/destroyed).
     try:

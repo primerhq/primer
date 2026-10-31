@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import PeerAttribution, WorkspaceSession
 from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, queued_attribution, wake_session
 from primer.session.pending_messages import PendingQueueFull, store_pending_steer
@@ -55,6 +56,7 @@ async def deliver_steer(
     workspace_registry: Any,
     event_bus: Any = None,
     peer: PeerAttribution | None = None,
+    by: PrincipalRef | None = None,
 ) -> SteerDelivery:
     """Steer ``session_id`` with ``text``, honouring the parallelism mode.
 
@@ -67,6 +69,10 @@ async def deliver_steer(
     is woken, and into the pending row's ``attribution`` when the message
     is queued, so the sender and the hop count reach the USER_INPUT record
     whichever way the message is delivered.
+
+    ``by`` (access-control spec §13 Q1) names the person whose input this
+    steer is: the wake that lands runs the turn as them, and the queue keeps
+    them (``attribution["by"]``) when the steer waits behind a turn.
 
     The outcome is ``DELIVERED_QUEUED`` when the message was stored and not
     written: the target had a turn open, or :func:`wake_session` held the
@@ -118,8 +124,10 @@ async def deliver_steer(
                 workspace_registry=workspace_registry,
                 event_bus=event_bus,
                 # A peer's sender and hops, or the mark of a message no person wrote (a trigger fire, a tool call): the drain that realizes it
-                # reads them (``queued_attribution``; such a message does not reopen a session an operator cancelled).
+                # reads them (``queued_attribution``; such a message does not reopen a session an operator cancelled). So does the person whose
+                # input this is (spec §13 Q1): the realized turn runs as them.
                 attribution=queued_attribution(peer, by_a_person=human_intent),
+                by=by,
             )
         except PendingQueueFull:
             return SteerDelivery(outcome=DELIVERED_QUEUE_FULL, session_id=session_id)
@@ -141,6 +149,7 @@ async def deliver_steer(
             peer=peer,
             open_turn=parallelism,
             receipt=receipt,
+            by=by,
         )
     except PendingQueueFull:
         # The pause hold stored nothing: the queue it would have joined is full and the message is a peer's.

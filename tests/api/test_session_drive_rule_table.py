@@ -1,4 +1,5 @@
-"""One rule table governs every path that drives another session (lead rulings 1 to 3 of the G7 fixes; audit G7-01, G7-05, G7-06).
+"""One rule table governs every path that drives another session (lead rulings 1 to 3 of the G7 fixes; audit G7-01, G7-05, G7-06; the tools' column re-asked
+against the access rule, access-control P2 T6).
 
 A path drives a session when it puts input into it; the session then runs a turn at its creator's rank. The table in
 ``docs/dev/subsystems/sessions.md`` (section 9, "One rule table") is pinned here row by row: every path runs every scenario, through the code a real
@@ -8,13 +9,22 @@ caller reaches it by:
   :func:`primer.agent.inner_dispatch.dispatch_inner_tool`, the way ``system__call_tool`` reaches a tool;
 * the steer and restart tools with no calling session through the same dispatch with no context and the request's actor on ``current_actor``, as the
   MCP endpoint calls them;
-* the REST steer and restart routes over HTTP, through the auth middleware, as a logged-in user-role account;
+* the REST steer and restart routes over HTTP, through the auth middleware, as a logged-in user-role account. Those two rows now gate on workspace
+  access (P2 Task 3) instead of the rank rule: carol owns the target workspace on every row but ``outranked``, where she holds no grant at all and the
+  missing-row 404 (``N``) replaces the rank refusal;
 * the trigger's ``session_append`` dispatcher.
 
 The actor ranks ``user`` on every path. Scenarios: the target was started by an admin (``outranked``); by a user (``same rank``); it is in another
 workspace than the sending session's (``out of reach``; the sender is not in the default workspace); an operator cancelled it (``cancelled``); the
 sending session's turn is already 8 hops from a person (``hop limit``); the sending session is in the default workspace and the target in another
-(``from prime``: prime is the management plane). A refused drive writes nothing to the target.
+(``from prime``). A refused drive writes nothing to the target.
+
+The tools no longer rank the caller: the run's person (its ``initiated_by`` in a session, the token's user with no calling session) must hold full on
+the target's workspace, and a workspace the person holds no level on answers ``not-found`` as an unknown id. The in-session rows therefore deliver even
+an ``outranked`` target (``outranked`` names the target's creator, which no longer refuses the caller), and ``out of reach`` is refused because the
+person holds no level on ``ws-2`` (it belongs to the admin there, and to the person in ``from prime``). The no-session rows act as a token with no user
+behind it and so hold no level anywhere. The REST rows keep the rank rule, and a trigger's fire asks the subscription OWNER's level on the target (a
+grant the seed gives it on every workspace) and, as before, the fire's own rank against the target's creator (``outranked``).
 """
 
 from __future__ import annotations
@@ -26,13 +36,17 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from httpx import ASGITransport
+from pydantic import SecretStr
 
 import primer.trigger.subscribers.session_append as sa
 from primer.agent.inner_dispatch import dispatch_inner_tool
 from primer.mcp.server import current_actor
+from primer.model.access import Access
 from primer.model.principal import Principal, PrincipalRef
+from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.trigger import SessionAppendSubConfig, Subscription, Trigger
 from primer.model.user import User
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus
 from primer.model.yield_ import ToolContext
 from primer.session.peer_messages import MAX_PEER_HOPS
@@ -47,15 +61,18 @@ ADMIN = PrincipalRef(type="user", id="u-root", display="root", role="admin", sou
 D, F, N, C, H, S = "delivered", "forbidden", "not-found", "conflict", "hop-limit", "skipped"
 P = "from prime"  # the sending session is in the default workspace, the target in another (review of #853, N6)
 
-#: path -> (kind of drive, what each scenario answers). The columns are the table's.
+#: path -> (kind of drive, what each scenario answers). The columns are the table's. The in-session and no-session TOOL rows are the access
+#: rule: the run's person (its ``initiated_by`` in a session, the token's user with no session) must hold full on the target's workspace, so
+#: ``outranked`` delivers (the target's creator no longer refuses the caller) and ``out of reach`` is not-found (no level on ws-2 there). The
+#: REST rows follow the workspace access the session inherits (P2 Task 3: the caller's level on the target's workspace); the trigger row asks the subscription owner's level (a grant the seed gives it) and then the fire's rank.
 TABLE: dict[str, tuple[str, dict[str, str]]] = {
-    "message_session":            ("steer", {"outranked": F, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H, P: D}),
-    "steer tool, in a session":   ("steer", {"outranked": F, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H, P: D}),
-    "restart tool, in a session": ("restart", {"outranked": F, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H, P: D}),
-    "steer tool, no session":     ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": C, "hop limit": D, P: D}),
-    "restart tool, no session":   ("restart", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": C, "hop limit": D, P: D}),
-    "REST steer":                 ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D, P: D}),
-    "REST restart":               ("restart", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D, P: D}),
+    "message_session":            ("steer", {"outranked": D, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H, P: D}),
+    "steer tool, in a session":   ("steer", {"outranked": D, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H, P: D}),
+    "restart tool, in a session": ("restart", {"outranked": D, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H, P: D}),
+    "steer tool, no session":     ("steer", {"outranked": D, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": D, P: D}),
+    "restart tool, no session":   ("restart", {"outranked": D, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": D, P: D}),
+    "REST steer":                 ("steer", {"outranked": N, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D, P: D}),
+    "REST restart":               ("restart", {"outranked": N, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D, P: D}),
     "trigger session_append":     ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": S, "hop limit": D, P: D}),
 }
 SCENARIOS = ["outranked", "same rank", "out of reach", "cancelled", "hop limit", P]
@@ -74,6 +91,16 @@ async def _seed(world: World, path: str, scenario: str) -> str:
     kind = TABLE[path][0]
     if scenario == P:
         await world.sp.set_default_workspace_id("ws-1")  # the sender's workspace is prime
+    # The access rule (P2 T6) asks the acting person's level on the target's workspace: u-user (the in-session run's initiator and the no-session
+    # token's user) holds full on ws-1 always, and on ws-2 only in ``from prime``; in every other scenario ws-2 belongs to the admin, so the
+    # person holds nothing there and the target answers as one that does not exist. The trigger row's owner (u-owner) holds a full grant on
+    # every workspace, so its fire gate never refuses and its rank column still reads the target's creator.
+    for wid, owner in (("ws-1", "u-user"), ("ws-2", "u-user" if scenario == P else "u-root")):
+        await world.sp.get_storage(Workspace).create(Workspace(
+            id=wid, name=wid, template_id="tpl", provider_id="local-1", created_at=NOW, phase="running",
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
+            access=Access(owners=[owner], grants={"u-owner": "full"}),
+        ))
     await seed_session(
         world, sid="ses-a", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER,
         peer_hops=MAX_PEER_HOPS if scenario == "hop limit" else 0, created_at=NOW,
@@ -99,7 +126,18 @@ async def _rest_env(app, admin, sp, path: str, scenario: str) -> Env:
     client = httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
     login = await client.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})
     assert login.status_code == 200, login.text
-    return Env(world=world, rest=client, target_workspace=await _seed(world, path, scenario))
+    target_workspace = await _seed(world, path, scenario)
+    if path.startswith("REST"):
+        # The target's workspace row (P2 Task 3): carol owns it on every row but ``outranked``,
+        # where the admin owns it and she holds no level, so the gate answers the missing-row 404.
+        users = sp.get_storage(User)
+        page = await users.find(
+            Predicate(left=FieldRef(name="username"), op=Op.EQ, right=Value(value="carol")), OffsetPage(offset=0, length=1),
+        )
+        owner = "u-root" if scenario == "outranked" else page.items[0].id
+        row = await sp.get_storage(Workspace).get(target_workspace)  # _seed made it; the REST rows swap in the access they test
+        await sp.get_storage(Workspace).update(row.model_copy(update={"access": Access(owners=[owner])}))
+    return Env(world=world, rest=client, target_workspace=target_workspace)
 
 
 def _tool_outcome(result) -> tuple[str, dict]:
@@ -146,7 +184,9 @@ async def _drive(env: Env, path: str, session_id: str = "ses-t") -> tuple[str, d
         return _tool_outcome(await dispatch_inner_tool(
             provider=toolset, toolset_id=WORKSPACES_TOOLSET_ID, tool_name=tool, arguments=arguments, ctx=ctx,
         ))
-    token = current_actor.set(Principal(type="user", id="u-mcp", display="mcp", role="user", source="local"))
+    # The no-session tool acts as the token's user (access-control P2 T6): a token with no user behind it holds no level and would answer
+    # not-found everywhere.
+    token = current_actor.set(Principal(type="user", id="u-mcp", display="mcp", role="user", source="local", user_id="u-user"))
     try:
         return _tool_outcome(await dispatch_inner_tool(
             provider=toolset, toolset_id=WORKSPACES_TOOLSET_ID, tool_name=tool, arguments=arguments, ctx=None,
@@ -168,9 +208,13 @@ async def _check(env: Env, path: str, scenario: str) -> None:
         else:
             assert after.model_dump(mode="json") == before, f"{path} wrote to the target it refused ({scenario})"
         if outcome == N:
-            # Out of reach answers exactly as an id that does not exist, so the id is never confirmed.
+            # Out of reach answers exactly as an id that does not exist, so the id is never confirmed. The
+            # per-request audit id is stripped: the check is about the answer's shape, not its correlation id.
+            def _stable(body: dict) -> dict:
+                return {**body, "extensions": {k: v for k, v in (body.get("extensions") or {}).items() if k != "request_id"}}
+
             _, unknown = await _drive(env, path, session_id="ses-nobody")
-            assert json.dumps(body).replace("ses-t", "<id>") == json.dumps(unknown).replace("ses-nobody", "<id>"), (body, unknown)
+            assert json.dumps(_stable(body)).replace("ses-t", "<id>") == json.dumps(_stable(unknown)).replace("ses-nobody", "<id>"), (body, unknown)
     finally:
         if env.rest is not None:
             await env.rest.aclose()

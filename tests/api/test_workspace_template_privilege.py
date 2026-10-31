@@ -129,8 +129,10 @@ async def test_a_user_cannot_grant_the_terminal(app, user) -> None:  # noqa: F81
 
     r = await user.put("/v1/workspaces/ws-term/terminal_access", json={"enabled": True})
 
-    assert r.status_code == 403, r.text
-    assert r.json()["extensions"]["error"] == "forbidden_role"
+    # P2 Task 2: the grant needs the owner; a non-owner answers the missing-row
+    # text (spec 9) and the flag never moves.
+    assert r.status_code == 404, r.text
+    assert r.json()["type"] == "/errors/not-found", r.text
     row = await app.state.storage_provider.get_storage(Workspace).get("ws-term")
     assert row.terminal_user_access is False
 
@@ -142,7 +144,7 @@ async def test_a_user_cannot_revoke_the_terminal_either(app, admin, user) -> Non
 
     r = await user.put("/v1/workspaces/ws-term/terminal_access", json={"enabled": False})
 
-    assert r.status_code == 403, r.text
+    assert r.status_code == 404, r.text
     row = await app.state.storage_provider.get_storage(Workspace).get("ws-term")
     assert row.terminal_user_access is True
 

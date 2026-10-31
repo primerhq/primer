@@ -87,9 +87,10 @@ def _workspace() -> Workspace:
 
 
 async def _seed_channel_world(app) -> None:
-    """A running workspace and a channel owned by ``owner-a``: the seeded users hold no level."""
+    """A running workspace owned by ``u-b`` (binding needs a full write on it) and a channel owned by ``owner-a``: the seeded
+    users hold no level on the channel."""
     sp = app.state.storage_provider
-    await sp.get_storage(Workspace).create(_workspace())
+    await sp.get_storage(Workspace).create(_workspace().model_copy(update={"access": Access(owners=["u-b"])}))
     await sp.get_storage(Channel).create(
         Channel(id=CHANNEL, provider_id="cp-1", provider="slack", external_id="C1", access=Access(owners=[OWNER])),
     )

@@ -61,12 +61,23 @@ class _IO:
 
 class _Provider:
     def __init__(self) -> None:
+        from primer.model.access import Access
+        from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
         from tests.conftest import _InMemoryStorage
 
         self.store = _InMemoryStorage(WorkspaceSession)
+        self._workspaces = _InMemoryStorage(Workspace)
+        # The single public row the tap guard asks the caller's read on (access-control P2 T6).
+        self._workspaces._data[_WID] = Workspace(
+            id=_WID, name=_WID, template_id="tpl", provider_id="local-1", created_at=_NOW, phase="running",
+            runtime_meta=WorkspaceRuntimeMeta(url=f"ws://{_WID}", token="t"),
+            access=Access(public=True),
+        )
 
     def get_storage(self, model_cls):  # noqa: ANN001
-        return self.store
+        from primer.model.workspace import Workspace
+
+        return self._workspaces if model_cls is Workspace else self.store
 
 
 def _session(sid: str = "s1") -> WorkspaceSession:

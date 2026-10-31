@@ -4,7 +4,9 @@ The fired run is the subscription owner's, and a run whose creator is deleted, d
 refused at its first turn (``resolve_run_principal``, lead ruling 2 of the G7 fixes). ``principal_for_fire`` fails closed to
 ``user`` for such an owner, so the ``agent_fresh_session`` and ``graph_fresh_session`` dispatchers used to make a session that
 then failed unseen while the fire reported ``ok``. They now answer ``ok=False``, ``error_code="owner_unresolvable"``, and make
-no session, so the failure shows on the subscription.
+no session, so the failure shows on the subscription. The access check (P2 T6) runs before it: the owner's person must hold full on
+the target workspace statically (a role the person still carries), and the owner resolution here is what catches the gone user or
+token the static role cannot see.
 """
 
 from __future__ import annotations
@@ -15,17 +17,29 @@ import pytest
 
 import primer.trigger.subscribers.agent_fresh_session as afs
 import primer.trigger.subscribers.graph_fresh_session as gfs
+from primer.model.access import Access
 from primer.model.api_token import ApiToken
 from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage
 from primer.model.trigger import AgentFreshSubConfig, GraphFreshSubConfig, Subscription
 from primer.model.user import User
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import WorkspaceSession
 from primer.trigger.subscribers import DispatchDeps
 
 NOW = datetime.now(UTC)
 USER = PrincipalRef(type="user", id="u-ada", display="ada", role="admin", source="local")
 TOKEN = PrincipalRef(type="api_token", id="tok-1", display="ci", role="admin", source="internal")
+
+
+async def _ws(sp) -> None:
+    """The target workspace, owned by the suite's user: the access check (P2 T6) passes statically, so the owner-resolution
+    question these tests ask is the one that decides."""
+    await sp.get_storage(Workspace).create(Workspace(
+        id="ws-1", template_id="local-default", provider_id="local", created_at=NOW,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://ws-1", token="t"),
+        access=Access(owners=["u-ada"]),
+    ))
 
 
 def _sub(kind: str, owner: PrincipalRef | None) -> Subscription:
@@ -64,6 +78,7 @@ async def _sessions(sp) -> list:
 )
 async def test_a_fire_whose_subscription_owner_is_gone_is_refused_and_makes_no_session(fake_storage_provider, kind, owner, seed):
     sp = fake_storage_provider
+    await _ws(sp)
     if seed == "disabled":
         await sp.get_storage(User).create(User(id="u-ada", username="ada", created_at=NOW, role="admin", disabled=True))
     if seed in ("revoked", "expired"):
@@ -84,6 +99,7 @@ async def test_a_fire_whose_subscription_owner_is_gone_is_refused_and_makes_no_s
 @pytest.mark.parametrize("owner", [USER, None], ids=["a current user", "a row saved before owners were recorded"])
 async def test_a_fire_whose_owner_resolves_or_was_never_recorded_is_not_refused_for_it(fake_storage_provider, kind, owner):
     sp = fake_storage_provider
+    await _ws(sp)
     await sp.get_storage(User).create(User(id="u-ada", username="ada", created_at=NOW, role="admin"))
 
     res = await _fire(sp, kind, owner)

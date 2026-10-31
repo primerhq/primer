@@ -17,6 +17,8 @@ from fnmatch import fnmatchcase
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
 from pydantic import BaseModel, Field
 
+from primer.access.person import person_from_request
+from primer.access.workspaces import require_workspace
 from primer.api.deps import (
     get_event_subscription_storage,
     get_storage_provider,
@@ -27,6 +29,7 @@ from primer.api.errors import common_responses
 from primer.events.filters import validate_filter
 from primer.events.redaction import redact_event
 from primer.events.visibility import user_safe, without_input
+from primer.model.access import AccessLevel
 from primer.model.event import Event, EventSubscription
 from primer.model.except_ import (
     NotFoundError,
@@ -59,6 +62,7 @@ class EventListResponse(BaseModel):
     responses=common_responses(500),
 )
 async def list_events(
+    request: Request,
     after_id: int = Query(0, ge=0, description="Return events with id above this."),
     limit: int = Query(100, ge=1, le=500),
     event_type: str | None = Query(
@@ -79,6 +83,14 @@ async def list_events(
         raise SemanticValidationError(
             "non-admin event reads must name a workspace_id"
         )
+    if not is_admin:
+        # The named workspace must be one the caller may read: an id
+        # that is missing or out of access answers like a missing row
+        # (spec 9). Admins read any feed.
+        await require_workspace(
+            storage_provider, person_from_request(request),
+            workspace_id, AccessLevel.READ,
+        )
     store = storage_provider.get_event_store()
     prefix = None
     if event_type:
@@ -96,9 +108,10 @@ async def list_events(
     if event_type:
         items = [e for e in items if fnmatchcase(e.event_type, event_type)]
     if not is_admin:
-        # Sessions are a shared read (any user may open any session), so the
-        # feed does not scope events to sessions; it drops the INPUT of a
-        # canvas interaction, which never leaves its session (audit G8-08).
+        # The feed is scoped to a workspace the caller can read (above), whose
+        # sessions they may all open, so it does not scope events to sessions;
+        # it drops the INPUT of a canvas interaction, which never leaves its
+        # session (audit G8-08).
         # An admin reads the full event: the one door to another session's
         # input.
         items = [without_input(e) for e in items if user_safe(e.event_type)]

@@ -18,11 +18,12 @@ from __future__ import annotations
 
 from primer.access.person import person_from_ref
 from primer.access.policy import level_of
+from primer.model.access import LEVEL_RANK, AccessLevel
 
 import logging
 from typing import TYPE_CHECKING
 
-from primer.authz import RunRefused
+from primer.authz import RunRefused, WorkspaceAccessRevoked
 from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.pool import _toolset_ids_from_scoped
@@ -46,13 +47,14 @@ def _pool_event_recorder(pool):
 
 
 def session_run_principal(session) -> PrincipalRef:
-    """The principal recorded for ``session``: its ``initiated_by``, else an unattributed (ordinary) user.
+    """The principal a turn of ``session`` runs as: its ``turn_person`` (the person whose input started the turn, access-control spec §13
+    Q1), else its ``initiated_by``, else an unattributed (ordinary) user.
 
-    Never the system principal, which clears every role floor (security review A-20): a row saved before attribution landed, and the
-    "main" session a workspace create used to seed, name no initiator, and a user can reach both. A run is NOT ranked by this alone:
-    :func:`resolve_run_principal` re-reads the creator's role now (lead ruling 2 of the G7 fixes, G6-6).
+    Never the system principal, which clears every role floor (security review A-20): a row saved before attribution landed names no
+    initiator, and a user can reach it. A run is NOT ranked by this alone:
+    :func:`resolve_run_principal` re-reads the person's role now (lead ruling 2 of the G7 fixes, G6-6).
     """
-    return getattr(session, "initiated_by", None) or PrincipalRef.unattributed()
+    return getattr(session, "turn_person", None) or getattr(session, "initiated_by", None) or PrincipalRef.unattributed()
 
 
 def _is_unattributed(ref: PrincipalRef) -> bool:
@@ -90,6 +92,31 @@ async def resolve_run_principal(storage_provider, session) -> PrincipalRef:
         "session %s runs at its creator's current role %r, not the recorded %r", getattr(session, "id", "?"), role, ref.role,
     )
     return ref.model_copy(update={"role": role})
+
+
+async def refuse_run_without_workspace_access(storage_provider, session, principal: PrincipalRef) -> None:
+    """Raise :class:`WorkspaceAccessRevoked` unless ``principal`` (the turn's person) still holds full on the session's workspace.
+
+    Access-control P2: a revoked grant stops the next turn and every resume, wherever it was queued or parked. Asked once per build, beside
+    the bound agent's or graph's read check and with its fallbacks: a pool with no storage (tests only) asks nothing, admins and the system
+    principal pass, and a workspace row that is gone asks nothing (no row, nothing to protect: the registry serves no such workspace).
+    """
+    if storage_provider is None:
+        return
+    person = person_from_ref(principal)
+    if person.is_admin:
+        return
+    from primer.model.workspace import Workspace
+
+    row = await storage_provider.get_storage(Workspace).get(session.workspace_id)
+    if row is None:
+        return
+    level = level_of(person, row.access)
+    if level is None or LEVEL_RANK[level] < LEVEL_RANK[AccessLevel.FULL]:
+        raise WorkspaceAccessRevoked(
+            f"session {getattr(session, 'id', '?')!r} does not run: {principal.display!r} no longer has full access to workspace "
+            f"{session.workspace_id!r}"
+        )
 
 
 if TYPE_CHECKING:
@@ -386,6 +413,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # they rank as an ordinary user, never as system (security review A-20).
     # The role is the creator's CURRENT one, capped by the recorded one, and a creator that cannot be resolved refuses the run (G7 ruling 2, G6-6).
     initiated_by = await resolve_run_principal(pool._storage, session)
+    await refuse_run_without_workspace_access(pool._storage, session, initiated_by)
     # The turn's person must still be able to read the bound agent (a revoked grant stops the next turn). A frozen snapshot's
     # access may be stale, so the live row decides.
     # A pool built without storage (tests only) has no row to ask, as resolve_run_principal does.
@@ -554,6 +582,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # create_workspace_session inherits it (see build_agent_executor). An
     # unattributed row fails closed, as in build_agent_executor, and the role is the creator's current one (resolve_run_principal).
     initiated_by = await resolve_run_principal(pool._storage, session)
+    await refuse_run_without_workspace_access(pool._storage, session, initiated_by)
     # The turn's person must still be able to read the bound graph (a revoked grant stops the next turn); a frozen snapshot's
     # access may be stale, so the live row decides.
     if pool._storage is not None:

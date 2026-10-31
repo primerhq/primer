@@ -79,6 +79,9 @@
   const _BARE_SENTENCES = {
     auth_required: "Your session has ended; sign in again.",
     forbidden_role: "Your role does not allow this.",
+    // ACL-P2-T10: a 403 whose code is access_denied (the require() refusal of the access routes: a level
+    // below the one the write needs). With the server's own words it says them; bare, it says this.
+    access_denied: "You don't have enough access for this.",
   };
 
   // "in_use_by: 1 agent(s) reference 'p-1' (first: 'builder')" (primer/api/routers/_references.py): the count is the size of a one-row page, so it only

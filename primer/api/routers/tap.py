@@ -45,6 +45,9 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.responses import StreamingResponse
 
+from primer.access.person import person_from_request
+from primer.access.workspaces import require_workspace
+from primer.model.access import AccessLevel
 from primer.model.storage import FieldRef, Op, OffsetPage, Predicate, Value
 from primer.model.user import User
 from primer.model.workspace_session import WorkspaceSession
@@ -406,6 +409,12 @@ async def workspace_tap(
         raise HTTPException(status_code=403, detail={"error": "forbidden_role"})
 
     app_state = request.app.state
+    # Access (P2 Task 2): the tap streams live workspace activity, so it
+    # needs READ on the workspace. A stranger answers the missing-workspace
+    # 404 before anything about the stream is confirmed.
+    await require_workspace(
+        app_state.storage_provider, person_from_request(request), workspace_id, AccessLevel.READ,
+    )
     router = getattr(app_state, "workspace_tap_router", None)
     if router is None:
         raise HTTPException(

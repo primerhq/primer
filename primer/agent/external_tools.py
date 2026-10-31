@@ -138,6 +138,7 @@ class ExternalToolsetProvider(ToolsetProvider):
         now = datetime.now(UTC)
         row = ExternalToolCall(
             session_id=ctx.session_id,
+            workspace_id=ctx.workspace_id,
             chat_id=ctx.chat_id,
             node_id=self._node_id,
             tool_call_id=ctx.tool_call_id,

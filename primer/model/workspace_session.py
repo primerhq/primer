@@ -505,6 +505,18 @@ class WorkspaceSession(Identifiable):
             "system principal (PrincipalRef.system())."
         ),
     )
+    turn_person: PrincipalRef | None = Field(
+        default=None,
+        description=(
+            "The person whose input started the turn this session runs as "
+            "(access-control spec §13 Q1): written by the wake that arms the "
+            "turn, and by a resume of a session that never ran a turn. A "
+            "turn runs as this person (re-ranked by resolve_run_principal); "
+            "a resume of a parked turn keeps it. None on historical rows and "
+            "on a session that never ran a turn -> readers fall back to "
+            "initiated_by."
+        ),
+    )
     _validate_response_format = field_validator("response_format")(
         _validate_response_format_schema
     )
@@ -1216,9 +1228,15 @@ PEER_PAYLOAD_KEY = "peer"
 
 MACHINE_ATTRIBUTION_KEY = "machine"
 """The key that marks a queued message no person wrote and no other session sent (a trigger fire, a tool call with no calling session):
-``PendingSessionMessage.attribution == {"machine": True}``. The drain reads it when it realizes the message: such a message, like a peer's, does not
+``PendingSessionMessage.attribution["machine"] is True``. The drain reads it when it realizes the message: such a message, like a peer's, does not
 reopen a session an operator cancelled (lead ruling 1 of the G7 fixes), while a person's queued steer (no attribution) still does. A row queued
-before the key existed has none and is read as a person's."""
+before the key existed has none and is read as a person's. It can ride with :data:`BY_ATTRIBUTION_KEY`: the person the message is FROM (a fire's
+owner) and whether a PERSON typed it are two separate questions."""
+
+BY_ATTRIBUTION_KEY = "by"
+"""The key, in ``PendingSessionMessage.attribution``, of the person whose input the queued message is (spec 13 Q1): a ``PrincipalRef`` dump. The
+drain reads it when it realizes the message and wakes with it, so the realized turn runs as that person. Absent on a row queued before the key
+existed (the realized turn keeps the person the row already ran with)."""
 
 CANVAS_EVENT_PAYLOAD_KEY = "canvas_event"
 """The key a canvas click lives under (pivot P5): in the ``payload`` of the USER_INPUT record its ``<canvas_event>`` block becomes, and in the
@@ -1325,6 +1343,7 @@ __all__ = [
     "GraphSessionBinding",
     "Instruction",
     "CANVAS_DIGEST_PAYLOAD_KEY",
+    "BY_ATTRIBUTION_KEY",
     "CANVAS_EVENT_PAYLOAD_KEY",
     "MACHINE_ATTRIBUTION_KEY",
     "NON_ENDED_STATUSES",

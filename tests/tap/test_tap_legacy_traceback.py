@@ -96,9 +96,12 @@ async def test_read_record_by_seq_strips_the_traceback() -> None:
 @pytest.mark.asyncio
 async def test_mcp_workspace_tap_drain_tool_strips_the_traceback() -> None:
     """The user-callable MCP drain: no traceback in its tool output."""
-    provider = _Provider()
+    # The MCP tap test's provider: it also holds the public workspace row the tap guard reads (access-control P2 T6).
+    from tests.tap.test_mcp_tap_tool import _Provider as _TapProvider
+
+    provider = _TapProvider()
     io = _FakeWorkspaceIO()
-    await _seed_session(provider.store, "s1")
+    await _seed_session(provider._sessions, "s1")
     io.write(_msg_path("s1"), _legacy_error_line(1))
     ts = _build(provider, io)
     result = await ts.call(
