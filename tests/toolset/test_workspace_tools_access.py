@@ -139,9 +139,7 @@ class _Registry:
         await self.world.sp.get_storage(Workspace).create(row)
         return row
 
-    async def destroy(self, workspace_id: str, *, before_teardown=None) -> None:
-        if before_teardown is not None:
-            await before_teardown()
+    async def destroy(self, workspace_id: str) -> None:
         await self.world.sp.get_storage(Workspace).delete(workspace_id)
         self.workspaces.pop(workspace_id, None)
 

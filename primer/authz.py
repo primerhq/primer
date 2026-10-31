@@ -112,11 +112,27 @@ RUN_REFUSED_MESSAGE = "this session's creator can no longer run it"
 RUN_REFUSED_CODE = "run_refused"
 
 
+#: What a run refused because its person lost full access to the session's workspace records (access-control P2): fixed, so it names nobody.
+WORKSPACE_ACCESS_REVOKED_MESSAGE = "the person this turn runs as no longer has full access to this workspace"
+WORKSPACE_ACCESS_REVOKED_CODE = "workspace_access_revoked"
+
+
 class RunRefused(PrimerError):
     """A run of a session is refused because its creator can no longer be resolved: the user was deleted or disabled, or the API token was revoked
     or has expired (G6-6, the lead's addendum to ruling 2 of the G7 fixes). Such a run does not execute at all, not even at a lower rank: a turn
-    ends ``failed`` and a resume ends the session ``failed``, each with an ERROR record carrying :data:`RUN_REFUSED_MESSAGE` and
-    ``last_turn_error.code`` :data:`RUN_REFUSED_CODE`."""
+    ends ``failed`` and a resume ends the session ``failed``, each with an ERROR record carrying :attr:`record_message` and
+    ``last_turn_error.code`` :attr:`record_code`."""
+
+    record_message: str = RUN_REFUSED_MESSAGE
+    record_code: str = RUN_REFUSED_CODE
+
+
+class WorkspaceAccessRevoked(RunRefused):
+    """A run is refused because the person it runs as no longer holds full on the session's workspace (access-control P2: a revoked grant
+    stops the next turn and every resume, as a deleted account does)."""
+
+    record_message = WORKSPACE_ACCESS_REVOKED_MESSAGE
+    record_code = WORKSPACE_ACCESS_REVOKED_CODE
 
 
 def rank_label(ref: "Principal | PrincipalRef | None") -> str:
@@ -161,4 +177,4 @@ def _role_allows(actor: "Principal | PrincipalRef | None", need: str) -> bool:
     return _ROLE_RANK.get(actor.role, -1) >= _ROLE_RANK.get(need, 99)
 
 
-__all__ = ["OUTRANKED_MESSAGE", "RUN_REFUSED_CODE", "RUN_REFUSED_MESSAGE", "RunRefused", "_ROLE_RANK", "_role_allows", "may_drive", "principal_rank", "rank_label", "same_principal"]
+__all__ = ["OUTRANKED_MESSAGE", "RUN_REFUSED_CODE", "RUN_REFUSED_MESSAGE", "WORKSPACE_ACCESS_REVOKED_CODE", "WORKSPACE_ACCESS_REVOKED_MESSAGE", "RunRefused", "WorkspaceAccessRevoked", "_ROLE_RANK", "_role_allows", "may_drive", "principal_rank", "rank_label", "same_principal"]

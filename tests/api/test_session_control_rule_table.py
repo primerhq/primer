@@ -1302,8 +1302,8 @@ async def test_a_fire_never_starts_or_feeds_a_session_the_owner_holds_no_full_on
 
 # -- delete_workspace and the owner rule (F3) --------------------------------------------------------------------------------------------------
 #
-# The tool's delete needs owner on the workspace (access-control P2 T6, where the cancel's rank rule lived for it); the REST delete keeps the rank
-# rule of the REST cancel (a session the caller may not act on holds the delete back, through the scan ``destroy`` runs as ``before_teardown``).
+# The tool's delete and the REST delete need owner on the workspace (access-control P2, where the cancel's rank rule and the scan of the
+# workspace's open sessions lived for them).
 
 
 async def _admin_session_in_ws2(world: WsWorld, *, status: SessionStatus = SessionStatus.WAITING) -> None:
@@ -1489,6 +1489,12 @@ async def test_the_tools_of_a_graph_session_with_no_holder_slot_act_as_the_run_s
     run's person: a person with no level on ws-2 (u-user) is told it does not exist wherever the graph session sits, and its owner (u-ada)
     deletes it from either."""
     world = await _ws_world()
+    # The run's person holds full on the graph session's own workspace, or the turn would not run at all (access-control P2: the worker
+    # re-checks it at build); what is pinned here is the level the node's tools ask on ws-2.
+    own_row = await world.sp.get_storage(Workspace).get(own)
+    await world.sp.get_storage(Workspace).update(own_row.model_copy(update={
+        "access": own_row.access.model_copy(update={"grants": {**own_row.access.grants, initiator.user_id: "full"}}),
+    }))
     graph = _runnable_graph()
     row = WorkspaceSession(
         id="ses-g", workspace_id=own, binding=GraphSessionBinding(graph_id=graph.id, graph_snapshot=graph), status=SessionStatus.RUNNING,
@@ -2499,27 +2505,24 @@ async def test_the_rest_subscription_routes_serve_and_delete_whatever_the_target
     assert await store.get(_sid(TRIGGER, "fresh-prime")) is None
 
 
-# -- the rank scan of a delete is fenced against a session started meanwhile (review of #874, D1) ---------------------------------------------
+# -- a delete is fenced against a session started meanwhile (review of #874, D1) ---------------------------------------------------------------
 #
-# The rank scan itself runs on the REST delete only (access-control P2 T6: the tool's delete is gated on the person's owner level, not on the
-# sessions' ranks). What every scan shares is the fence: ``destroy`` runs its ``before_teardown`` once the workspace is marked as being destroyed
-# and before anything is torn down, and a session start refuses a marked workspace.
+# Once ``destroy`` marks the workspace as being destroyed, and before anything is torn down, a session start refuses the workspace. (The rank
+# scan that used to run in that window is gone: the delete needs owner on the workspace, access-control P2.)
 
 
-async def test_a_session_started_while_a_delete_runs_its_scan_is_refused():
-    """Probe D of the #874 review, at the fence every scan shares: the scan runs once the workspace is marked as being destroyed, and a session
-    start refuses such a workspace: an admin's start that lands after the scan is refused (as a workspace that does not exist), so the delete
-    ends no session it did not see in the scan."""
+async def test_a_session_started_while_a_delete_runs_is_refused():
+    """Probe D of the #874 review: a session start that lands once the workspace is marked as being destroyed is refused (as a workspace that
+    does not exist), so the delete ends no session started under it."""
     from primer.workspace.session_factory import SessionFactoryDeps, start_workspace_session
-    from primer.workspace.session_reconcile import open_sessions_on
 
     world = await _ws_world()
     await world.sp.get_storage(Agent).create(Agent(access=Access(public=True), id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]))
     admin_start: dict = {}
 
-    async def _scan_then_an_admin_starts_a_session() -> None:
-        async for _row in open_sessions_on(world.sp, "ws-2"):
-            pass
+    real_mark = world.workspaces._mark_terminating
+
+    async def _an_admin_starts_a_session_then_mark(workspace_id: str):
         try:
             admin_start["session"] = await start_workspace_session(
                 workspace_id="ws-2", binding=AgentSessionBinding(agent_id="planner"), initial_instructions="hi", graph_input=None,
@@ -2528,8 +2531,10 @@ async def test_a_session_started_while_a_delete_runs_its_scan_is_refused():
             )
         except NotFoundError as exc:
             admin_start["refused"] = exc.message
+        return await real_mark(workspace_id)
 
-    await world.workspaces.destroy("ws-2", before_teardown=_scan_then_an_admin_starts_a_session)
+    world.workspaces._mark_terminating = _an_admin_starts_a_session_then_mark  # type: ignore[method-assign]
+    await world.workspaces.destroy("ws-2")
 
     assert admin_start == {"refused": "Workspace 'ws-2' does not exist"}, admin_start
     assert await world.sp.get_storage(Workspace).get("ws-2") is None
@@ -2537,10 +2542,10 @@ async def test_a_session_started_while_a_delete_runs_its_scan_is_refused():
     assert [s.id for s in sessions if s.initiated_by == ADMIN] == [], "the delete ended an admin's session it never scanned"
 
 
-# -- the delete's scan fails loud (review of #874, E1) -----------------------------------------------------------------------------------------
+# -- the open-session scan fails loud (review of #874, E1) -------------------------------------------------------------------------------------
 #
-# The scan runs as ``destroy``'s ``before_teardown`` (the REST delete's rank scan; the tool's delete no longer scans, the person's owner level
-# decides). A scan that cannot see every session fails loud, and a loud scan tears nothing down.
+# ``open_sessions_on`` was the delete's rank scan; the delete no longer scans (owner decides, access-control P2), and the reader keeps its rule: a
+# scan that cannot see every session fails loud.
 
 
 async def test_open_sessions_on_raises_on_a_repeated_cursor():
@@ -2562,37 +2567,6 @@ async def test_open_sessions_on_raises_on_a_repeated_cursor():
         async for row in open_sessions_on(SimpleNamespace(get_storage=lambda cls: _Sessions()), "ws-2"):
             seen.append(row)
     assert seen == ["s1", "s2"] and asked == [None, "c1"]
-
-
-async def test_a_delete_whose_scan_cannot_see_every_session_tears_nothing_down(monkeypatch):
-    """The delete's scan reads the open sessions of ws-2 through the real storage, which here repeats a cursor before the page holding an admin's
-    session: the scan fails loud and the delete refuses (nothing is torn down) instead of ending a session it never saw."""
-    from primer.model.except_ import PrimerError
-    from primer.workspace.session_reconcile import open_sessions_on
-
-    world = await _ws_world()
-    await _admin_session_in_ws2(world)
-    store = world.sp.get_storage(WorkspaceSession)
-    real_find = store.find
-
-    async def _find_repeating_a_cursor(predicate, page, *args, **kwargs):
-        if getattr(page, "cursor", "absent") == "absent":  # an offset page: not the scan
-            return await real_find(predicate, page, *args, **kwargs)
-        rows = {"ses-o": await store.get("ses-o"), "ses-t": await store.get("ses-t")}
-        first = page.cursor is None
-        return SimpleNamespace(items=[rows["ses-o" if first else "ses-t"]], next_cursor="c1", total=None)
-
-    monkeypatch.setattr(store, "find", _find_repeating_a_cursor)
-    before = await world.snapshot()
-
-    async def _scan() -> None:
-        async for _row in open_sessions_on(world.sp, "ws-2"):
-            pass
-
-    with pytest.raises(PrimerError, match="repeated"):
-        await world.workspaces.destroy("ws-2", before_teardown=_scan)
-
-    assert await world.snapshot() == before
 
 
 # -- one scope for every identity a holder-less manager builds (review of #874, G1) ----------------------------------------------------------

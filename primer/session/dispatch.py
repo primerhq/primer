@@ -386,7 +386,7 @@ async def run_one_session_turn(
             # The session's creator can no longer run it (G6-6; review of #853, N5): not a fault, so a warning without a traceback, and the
             # transcript and the row say why (an ERROR record with a fixed message, ``last_turn_error``) before the session ends failed.
             logger.warning("session %s does not run: %s; ending failed", session_id, build_error)
-            await record_refused_run(session_storage, deps.workspace_io, flipped, event_bus=deps.event_bus)
+            await record_refused_run(session_storage, deps.workspace_io, flipped, event_bus=deps.event_bus, refused=build_error)
         else:
             logger.exception(
                 "session %s failed to build executor; ending failed",
@@ -2661,16 +2661,21 @@ class _NoTap:
         return None
 
 
-async def record_refused_run(session_storage: Any, workspace_io: Any, session: WorkspaceSession, *, event_bus: Any = None) -> None:
+async def record_refused_run(
+    session_storage: Any, workspace_io: Any, session: WorkspaceSession, *, event_bus: Any = None, refused: Any = None,
+) -> None:
     """Record that a run of ``session`` was refused because its creator can no longer run it (``RunRefused``; review of #853, N5).
 
     ``last_turn_error`` (code :data:`~primer.authz.RUN_REFUSED_CODE`) on the row, and an ERROR record whose ``message`` is the fixed
     :data:`~primer.authz.RUN_REFUSED_MESSAGE` (it names nobody) in the transcript, at a seq reserved on the row first. Called by the turn's exit
     when the executor cannot be built for it, and by the worker pool when a resume is refused, before either ends the session ``failed``.
-    Best effort: a failure is logged and the session still ends.
+    Best effort: a failure is logged and the session still ends. ``refused`` (the ``RunRefused`` raised) supplies its own fixed words and code
+    (``WorkspaceAccessRevoked``: the turn's person lost full access to the workspace); without one the creator's words are recorded.
     """
+    message = getattr(refused, "record_message", RUN_REFUSED_MESSAGE)
+    code = getattr(refused, "record_code", RUN_REFUSED_CODE)
     try:
-        await _record_last_turn_error(session_storage, session.id, RUN_REFUSED_CODE, session.binding_epoch)
+        await _record_last_turn_error(session_storage, session.id, code, session.binding_epoch)
         reserved = await reserve_next_seq(session_storage, session.id)
         if reserved is None:
             return
@@ -2679,7 +2684,7 @@ async def record_refused_run(session_storage: Any, workspace_io: Any, session: W
         await _flush_and_tick(_TickOnly(event_bus), writer, session.id, SessionMessageRecord(  # type: ignore[arg-type]
             seq=1,  # overwritten by the writer's counter
             kind=SessionMessageKind.ERROR,
-            payload={"message": RUN_REFUSED_MESSAGE, "code": RUN_REFUSED_CODE},
+            payload={"message": message, "code": code},
             created_at=_now(),
         ))
     except Exception:  # noqa: BLE001 -- the record says why; the end must land whatever happens to it

@@ -241,7 +241,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
         # The creator can no longer run it (G6-6): a warning, not a fault, and the transcript and the row say why in fixed words before the
         # graph ends failed (review of #853, N5).
         logger.warning("resume: graph session %s does not run: %s; ending failed", sid, refused)
-        await _record_refused_run(pool, session)
+        await _record_refused_run(pool, session, refused)
         return await end_graph(pool, session, reason="failed")
     except Exception:
         logger.exception(
@@ -991,7 +991,7 @@ def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None)
     )
 
 
-async def _record_refused_run(pool, session) -> None:
+async def _record_refused_run(pool, session, refused=None) -> None:
     """The refused run's ERROR record and ``last_turn_error`` (``primer.session.dispatch.record_refused_run``), through the pool's workspace IO."""
     from primer.session.dispatch import record_refused_run
     from primer.model.workspace_session import WorkspaceSession
@@ -999,4 +999,6 @@ async def _record_refused_run(pool, session) -> None:
 
     io_shim = _WorkspaceIOShim(workspace_registry=pool._workspace_registry)
     io_shim.register_session(session.id, session.workspace_id)
-    await record_refused_run(pool._storage.get_storage(WorkspaceSession), io_shim, session, event_bus=getattr(pool, "_event_bus", None))
+    await record_refused_run(
+        pool._storage.get_storage(WorkspaceSession), io_shim, session, event_bus=getattr(pool, "_event_bus", None), refused=refused,
+    )

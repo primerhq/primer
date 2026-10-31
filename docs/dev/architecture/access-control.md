@@ -63,7 +63,8 @@ flowchart LR
 - The turn person: `WorkspaceSession.turn_person`, `primer.model.principal.person_ref` (a ref that names a person, or
   `None`), `BY_ATTRIBUTION_KEY` on a queued message, the `by` argument of `wake_session`, `deliver_steer`,
   `store_pending_steer`, `restart_session`, `resume_session` and `deliver_canvas_event`, and
-  `primer.worker.executor_builders.session_run_principal` / `resolve_run_principal`.
+  `primer.worker.executor_builders.session_run_principal` / `resolve_run_principal`, and the build-time re-check
+  `refuse_run_without_workspace_access` with its refusal `primer.authz.WorkspaceAccessRevoked`.
 - The default workspace: `User.default_workspace_id`; `primer/bootstrap/prime.py` `ensure_user_default_workspace`,
   `user_default_workspace_id` (`ws-<user id>`), `is_user_default_workspace` and `resolve_default_workspace_id(sp,
   person=None)`; `primer/api/user_default.py` `ensure_default_for_request`; `default_workspace_id` on `GET
@@ -72,7 +73,7 @@ flowchart LR
   (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access` (workspaces included), plus `GET
   /v1/users/lookup`.
 - Tools: `system__get_entity_access`, `system__set_entity_access`, `system__lookup_users`
-  (`primer/toolset/_system_access.py`; the kinds are agent, graph, toolset, workspace template and channel); the
+  (`primer/toolset/_system_access.py`; the kinds are agent, graph, toolset, workspace template, channel and workspace); the
   generated CRUD tools enforce the same levels; the `workspaces` toolset asks `require_workspace` per tool.
 - Console: `SHR_ShareDialog` (`ui/components/shared/share-dialog.jsx`) for every owned kind, workspaces included.
 
@@ -108,7 +109,7 @@ level `forbidden`.
 | Toolset | `primer/api/routers/providers.py` | system CRUD, `crud` toolset | the only kind with `public_tools` |
 | Workspace template | `primer/api/routers/workspaces.py` | `workspaces` toolset | `local-default` is public with no owner; creating a workspace from it needs read |
 | Channel | `primer/api/routers/channels.py` | system CRUD | |
-| Workspace | `primer/api/routers/workspaces.py`, `tap.py`, `terminal.py` | `workspaces` toolset, the system reply-binding tools, `reset_prime_instructions` | sharing is REST and console only: `_KINDS` has no workspace kind yet |
+| Workspace | `primer/api/routers/workspaces.py`, `tap.py`, `terminal.py` | `workspaces` toolset, the system reply-binding tools, `reset_prime_instructions`, the sharing tools (`kind` `workspace`) | no `public_tools` |
 | Inherited from a workspace | `sessions.py`, `workspaces.py`, `canvas.py`, `yields.py`, `tool_approval.py`, `external_tools.py`, `compute.py` (graph-run logs), `events.py` | `workspaces` toolset (session, file and log tools), `message_session`, `wait_for_event`, trigger subscription targets (`primer/trigger/reach.py`) | the table in section 6.2 |
 
 ## 6. Wiring
@@ -156,13 +157,18 @@ in the same `patch_if` (`_write_the_wake` in `primer/session/enqueue.py`), and b
 run a turn. A turn runs as `turn_person`, else `initiated_by`, else the unattributed stand-in (`session_run_principal`),
 re-ranked by the person's current role and refused when the account is deleted or disabled (`resolve_run_principal`).
 That principal becomes the tools' `ctx.initiated_by`, so `person_for_tool` and every check above see the turn's person;
-the bound agent or graph is re-read every turn and needs read for that person.
+the bound agent or graph is re-read every turn and needs read for that person, and the person must still hold full on the
+session's workspace (`refuse_run_without_workspace_access` in `primer/worker/executor_builders.py`, asked when the worker
+builds a turn or a resume; admins pass, and a pool without storage or a workspace row that is gone asks nothing). A revoked
+grant therefore stops the next turn and every resume, however it was queued or parked: the build raises
+`WorkspaceAccessRevoked` (a `RunRefused`), the transcript gets an ERROR record with the fixed words of
+`WORKSPACE_ACCESS_REVOKED_MESSAGE` and `last_turn_error.code` `workspace_access_revoked`, and the session ends failed.
 
 | Input | The turn runs as |
 |---|---|
 | REST steer, restart, resume | the request's actor |
 | Canvas click that wakes the agent | the clicker |
-| A message queued behind an open turn (`deliver_steer`, a canvas click, a wake that defers) | its sender, kept as `attribution["by"]` and passed on when the drain realizes it; see 6.7 for the REST steer |
+| A message queued behind an open turn (a REST steer, `deliver_steer`, a canvas click, a wake that defers) | its sender, kept as `attribution["by"]` and passed on when the drain realizes it |
 | `message_session`, steer and restart tools from a session | the sending run's person |
 | Trigger `session_append` fire | the fire's owner (`principal_for_fire`); a fire with no person leaves the session's person |
 | Channel-thread reply | the session's creator (`initiated_by`): channel senders are not primer users |
@@ -213,17 +219,11 @@ leaves their default workspace in place, reachable only by admins.
 
 ### 6.7 Not yet scoped
 
-These cross-workspace lists do not filter by readable workspaces yet (plan Task 5): `GET /v1/sessions`, `POST
-/v1/sessions/find`, `GET /v1/sessions/recent`, `GET /v1/yields/pending`, `GET /v1/external_tool_calls` and `GET
-/v1/tool_approval/records`. A live tap or terminal connection is checked when it opens, not again after a revoke. The
-worker does not ask the turn person's level on the session's own workspace when it builds a turn (only read on the bound
-agent or graph), and the in-session file tools (the `workspace` toolset) act on the session's workspace without asking,
-so a turn already armed in a workspace whose grant was revoked still runs and reaches its files; every REST route and
-`workspaces` tool refuses the revoked person.
-
-A REST steer that finds a turn open is stored straight to the queue by `steer_session` (`store_pending_steer` on the
-`ROUTE_PENDING` path) without its sender, so when the drain realizes it the turn keeps the person the session last ran
-as. A steer that reaches `wake_session` (an idle session, or one the wake itself queues under the lock) carries it.
+These cross-workspace lists do not filter by readable workspaces on this branch (plan Task 5, landing separately): `GET
+/v1/sessions`, `POST /v1/sessions/find`, `GET /v1/sessions/recent`, `GET /v1/yields/pending`, `GET
+/v1/external_tool_calls` and `GET /v1/tool_approval/records`. A live tap or terminal connection is checked when it opens,
+not again after a revoke (a Phase 6 ticket). A turn already running when a grant is revoked runs to its end, its
+in-session file tools included; the next turn or resume is refused (6.3).
 
 ## 7. Testing patterns
 
@@ -235,7 +235,8 @@ as. A steer that reaches `wake_session` (an idle session, or one the wake itself
   session routes use the same harness: `test_workspace_access_routes.py`, `test_session_access_routes.py` (including
   `test_creator_loses_access_with_the_grant`) and `test_user_default_workspace_routes.py`.
 - `tests/session/test_turn_person.py`: who each turn runs as (`test_steered_turn_runs_as_the_peer`, queued steers,
-  resumes, channel input).
+  resumes, channel input); `tests/api/test_queued_steer_keeps_its_sender.py` for a REST steer queued behind an open turn;
+  `tests/worker/test_turn_needs_workspace_access.py` for the build-time re-check after a revoke.
 - `tests/toolset/test_system_access_tools.py` and `tests/toolset/test_workspace_tools_access.py`: tool refusals and the
   MCP path (set and reset `current_actor`), including `test_default_workspace_no_longer_reaches_everything`.
 - `tests/events/test_event_access.py`: the event feed and `test_wait_for_event_is_scoped_to_readable_workspaces`.
@@ -243,7 +244,8 @@ as. A steer that reaches `wake_session` (an idle session, or one the wake itself
 - `tests/storage/test_access_index.py`, `tests/storage/test_m021_entity_ownership.py` and
   `tests/storage/test_m022_workspace_ownership.py`: the GIN index (Postgres lane) and the migration rules.
 - `tests/ui/test_share_dialog.py` and `tests/ui/test_workspace_sharing_ui.py`: the share dialog, the rail's Mine /
-  Shared with me / Public groups and the read-only affordances.
+  Shared with me / Public groups and the read-only affordances; `tests/ui/test_decide_ui_controls.py`: the decide
+  controls follow the workspace level (`SH_mayDecideFor`, `SH_workspaceLevel`).
 - `tests/e2e/test_access_p1_journey.py` and `tests/e2e/test_access_p2_journey.py`: two-user journeys over the live API
   (CI only).
 

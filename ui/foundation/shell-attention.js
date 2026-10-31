@@ -123,51 +123,35 @@ function SH_viewerQualifies(approvers, viewer) {
   return (approvers.users || []).indexOf(v.username) >= 0;
 }
 
-// The browser mirror of authz.may_drive for human-input affordances. This is
-// not an authorization boundary: every mutation is checked again by the
-// server. Unknown viewer or session data fails open, so a loading or failed
-// read does not hide an action on a guess. A known system actor and an admin
-// are never outranked, and a demoted person or token may still decide their
-// own session by the same type-and-id identity rule as the server.
-var SH_ROLE_RANK = { restricted: 0, user: 1, admin: 2 };
-
-function SH_mayDecideFor(viewer, session) {
-  var v = viewer || null;
-  var creator = session && session.initiated_by;
-  if (!v || !session) return true;
-  if (v.type === "system" || v.role === "admin") return true;
-  if (!v.role || !v.type || !v.id) return true;
-  if (!creator) {
-    if (Object.prototype.hasOwnProperty.call(session, "initiated_by")) {
-      // the row carries `initiated_by: null`: the server ranks a session with no
-      // recorded creator as an ordinary `user` (principal_rank), so the console
-      // ranks it the same. The id is the server's unattributed stand-in
-      // (PrincipalRef.unattributed), which is also what gets the synthetic
-      // creator past the partial-creator check below (an empty id fails open)
-      creator = { type: "user", id: "unattributed", role: "user" };
-    } else {
-      return true;
-    }
-  }
-  if (!creator.role || !creator.type || !creator.id) return true;
-  if ((v.type === "user" || v.type === "api_token")
-      && v.type === creator.type && v.id === creator.id) return true;
-  if (creator.type === "system") return false;
-  if (SH_ROLE_RANK[v.role] === undefined || SH_ROLE_RANK[creator.role] === undefined) return true;
-  return SH_ROLE_RANK[v.role] >= SH_ROLE_RANK[creator.role];
+// The viewer's level on a workspace row, from the row's stored `access` (mirrors level_of in primer/access/policy.py): "owner",
+// "full", "read", or null for none. `undefined` when it cannot be told (no viewer, no row, a row with no access block), so a caller
+// that has not loaded the row fails open. Admins and a system actor hold owner everywhere; public is read for a full user.
+function SH_workspaceLevel(viewer, row) {
+  if (!viewer || !row || !row.access) return undefined;
+  if (viewer.type === "system" || viewer.role === "admin") return "owner";
+  var uid = viewer.user_id || (viewer.type === "user" ? viewer.id : null);
+  var a = row.access;
+  if (uid && (a.owners || []).indexOf(uid) !== -1) return "owner";
+  if (uid && a.grants && a.grants[uid]) return a.grants[uid];
+  if (a.public && viewer.role !== "restricted") return "read";
+  return null;
 }
 
-function SH_rankDecisionWords(session) {
-  var creator = session && session.initiated_by;
-  // A loaded row whose creator is not recorded (the key present with null) ranks as a user on the server (principal_rank),
-  // so it reads the user words, as a user-role creator does; a row still loading (no key) or a system creator keeps the admin words.
-  if (!creator && session && Object.prototype.hasOwnProperty.call(session, "initiated_by")) {
-    return "Only a user or admin can decide this.";
-  }
-  if (creator && creator.type !== "system" && creator.role === "user") {
-    return "Only a user or admin can decide this.";
-  }
-  return "Only an admin can decide this.";
+// The browser mirror of the server's gate on a person's input into a session (access-control P2): answering a question, deciding an
+// approval, cancelling a yield needs full access on the session's workspace (require_session FULL; an approval's approver spec is checked
+// on top, by SH_viewerQualifies). Not an authorization boundary: every mutation is checked again by the server. `level` is the viewer's
+// level on the session's workspace (SH_workspaceLevel, or the access view's your_level); an unknown level (undefined), viewer or session
+// fails open, so a loading or failed read does not hide an action on a guess. Admins and a system actor always may. The session's
+// creator and its rank no longer decide.
+function SH_mayDecideFor(viewer, session, level) {
+  if (!viewer || !session) return true;
+  if (viewer.type === "system" || viewer.role === "admin") return true;
+  if (level === undefined) return true;
+  return level === "full" || level === "owner";
+}
+
+function SH_accessDecisionWords() {
+  return "You need full access to this workspace to decide this.";
 }
 
 // The approval card's routing label. "anyone" stays exactly as it reads
@@ -381,7 +365,8 @@ window.SH_emptyTriage = SH_emptyTriage;
 window.SH_triageKey = SH_triageKey;
 window.SH_applyTriage = SH_applyTriage;
 window.SH_mayDecideFor = SH_mayDecideFor;
-window.SH_rankDecisionWords = SH_rankDecisionWords;
+window.SH_workspaceLevel = SH_workspaceLevel;
+window.SH_accessDecisionWords = SH_accessDecisionWords;
 window.SH_isStaleGate = SH_isStaleGate;
 window.SH_isMovedOnGate = SH_isMovedOnGate;
 window.SH_movedOnWords = SH_movedOnWords;
