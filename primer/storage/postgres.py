@@ -705,6 +705,16 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
 }
 
 
+# The one hot-field index created over possibly-dirty rows (KN-19j): a
+# pre-fix database can already hold duplicate (service_id, version)
+# pairs -- the race the index exists to stop -- and CREATE UNIQUE
+# INDEX over them would fail inside _ensure_table and break every later
+# ServiceVersion read and write. Its creation runs under a savepoint
+# that tolerates the unique violation (log and continue without the
+# index); every other hot-field index keeps raising.
+_DUP_TOLERANT_UNIQUE_INDEX_NAME = "serviceversion_service_version_uniq"
+
+
 def _hot_field_index_ddl(table: str, qualified: str) -> list[str]:
     """Return the ``CREATE INDEX IF NOT EXISTS`` statements for *table*'s hot
     fields (empty when the table has none registered)."""
@@ -792,7 +802,14 @@ class PostgresStorage(Storage[ModelT]):
                     await conn.execute(ddl_table)
                     await conn.execute(ddl_index)
                     for ddl in ddl_hot:
-                        await conn.execute(ddl)
+                        if _DUP_TOLERANT_UNIQUE_INDEX_NAME in ddl:
+                            # A failed statement aborts the whole
+                            # Postgres transaction, so this one index
+                            # (possibly dirty rows, KN-19j) runs under a
+                            # savepoint; the others keep raising.
+                            await self._create_dup_tolerant_index(conn, ddl)
+                        else:
+                            await conn.execute(ddl)
         except CONCURRENT_CREATE_RACE as exc:
             # Concurrent-creation race (see primer.storage._ddl): another
             # process won the race and created the table + index atomically
@@ -810,6 +827,30 @@ class PostgresStorage(Storage[ModelT]):
         # Reached only when the DDL committed (a race loss means the other
         # process committed the same table): mark this handle ensured.
         self._table_ensured = True
+
+    async def _create_dup_tolerant_index(self, conn: Any, ddl: str) -> None:
+        """Create the serviceversion unique index over possibly-dirty rows.
+
+        Pre-fix databases hold duplicate (service_id, version) pairs --
+        the race the index exists to stop (KN-19j) -- and CREATE UNIQUE
+        INDEX over them fails. A failed statement aborts the whole
+        Postgres transaction, so the index runs under a SAVEPOINT: on a
+        unique violation roll back to it, warn once, and continue
+        without the index (the enclosing commit releases the savepoint).
+        """
+        await conn.execute("SAVEPOINT serviceversion_unique_index")
+        try:
+            await conn.execute(ddl)
+        except asyncpg.UniqueViolationError:
+            await conn.execute(
+                "ROLLBACK TO SAVEPOINT serviceversion_unique_index",
+            )
+            logger.warning(
+                "could not create unique index %s: duplicate (service_id, "
+                "version) rows already exist; continuing without it "
+                "(KN-19j)",
+                _DUP_TOLERANT_UNIQUE_INDEX_NAME,
+            )
 
     # ---------- Serialisation ---------------------------------------------
 
