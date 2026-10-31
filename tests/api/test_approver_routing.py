@@ -27,6 +27,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
+from tests.api._sub_targets import grant_full
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 
 
@@ -239,6 +240,8 @@ async def _login_user(client, app, username: str) -> None:
         password_hash=await hash_password(username + "pass1"),
         created_at=datetime.now(timezone.utc), role="user",
     ))
+    # The parked sessions live in these workspaces and inherit their access: a decider needs full on them (access-control P2 T3).
+    await grant_full(app.state.storage_provider, "user-" + username)
     login = await client.post(
         "/v1/auth/login",
         json={"username": username, "password": username + "pass1"},

@@ -15,8 +15,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from primer.mcp.server import current_actor
+from primer.model.principal import Principal
 from primer.model.storage import OffsetPage
 from primer.model.trigger import DelayedTriggerConfig, SessionAppendSubConfig, Subscription, Trigger
+from tests.api._sub_targets import seed_sub_targets
 
 BAD_SLUGS = ["Nightly-Digest", "nightly_digest", "9-lives", "has space", "-leading-dash"]
 
@@ -145,9 +148,15 @@ async def test_rest_refuses_a_parallelism_that_is_not_skip_or_queue_on_create_an
 async def test_skip_and_queue_are_still_taken_on_update(app, client, value):
     sp = app.state.storage_provider
     await _seed_trigger_with_sub(sp)
+    await seed_sub_targets(sp)
     tools = app.state.provider_registry._trigger_toolset_provider
 
-    result = await tools.call(tool_name="update_subscription", arguments={"trigger_id": "tr-in", "subscription_id": "sb-in", "parallelism": value})
+    # The MCP door names the request's person; an admin holds full on the subscription's target workspace (access-control P2 T6).
+    token = current_actor.set(Principal(type="user", id="u-adm", display="adm", role="admin", source="local", user_id="u-adm"))
+    try:
+        result = await tools.call(tool_name="update_subscription", arguments={"trigger_id": "tr-in", "subscription_id": "sb-in", "parallelism": value})
+    finally:
+        current_actor.reset(token)
     assert not result.is_error, result.output
     assert (await sp.get_storage(Subscription).get("sb-in")).parallelism == value
     response = await client.put("/v1/triggers/tr-in/subscriptions/sb-in", json={"parallelism": value})

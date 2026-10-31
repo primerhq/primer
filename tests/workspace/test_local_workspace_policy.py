@@ -147,6 +147,12 @@ class _Storage:
     async def delete(self, id: str) -> None:
         del self.rows[id]
 
+    async def find(self, predicate: Any, page: Any) -> Any:
+        """No user names any of these workspaces as a default (``is_user_default_workspace``, access-control spec 6.7)."""
+        from types import SimpleNamespace
+
+        return SimpleNamespace(items=[])
+
     async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
         """The storage contract's guarded field write, with the reference semantics: a destroy marks the row ``terminating`` with one
         (ticket 01a16d72 ruling 3)."""
