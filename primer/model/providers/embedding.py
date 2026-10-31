@@ -12,6 +12,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field, model_validator
 
+from primer.model.access import Grantable
 from primer.model.common import Identifiable
 from primer.model.providers._shared import ApiKeySecret, Limits, _HttpApiKeyConfig
 from primer.model.providers.llm import GoogleConfig
@@ -106,7 +107,7 @@ class EmbeddingModel(BaseModel):
     )
 
 
-class EmbeddingProvider(Identifiable):
+class EmbeddingProvider(Grantable, Identifiable):
     """A configured embedding provider entry.
 
     One ``EmbeddingProvider`` describes a single vector-embedding backend the

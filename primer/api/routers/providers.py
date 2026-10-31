@@ -698,6 +698,7 @@ async def draft_test_cross_encoder_provider(body: _ModelProviderDraft) -> dict[s
 
 llm_provider_router = make_crud_router(
     model_cls=LLMProvider,
+    grantable=True,
     storage_dep=get_llm_provider_storage,
     plural="llm_providers",
     tag="llm-providers",
@@ -1023,6 +1024,7 @@ async def _dispatch_llm_probe(provider: str, config: dict[str, Any]) -> dict:
 
 embedding_provider_router = make_crud_router(
     model_cls=EmbeddingProvider,
+    grantable=True,
     storage_dep=get_embedding_provider_storage,
     plural="embedding_providers",
     tag="embedding-providers",
@@ -1259,6 +1261,7 @@ async def _probe_openai_compatible_models(config: dict[str, Any]) -> dict:
 
 cross_encoder_provider_router = make_crud_router(
     model_cls=CrossEncoderProvider,
+    grantable=True,
     storage_dep=get_cross_encoder_provider_storage,
     plural="cross_encoder_providers",
     tag="cross-encoder-providers",

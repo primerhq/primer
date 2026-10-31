@@ -25,6 +25,13 @@ from tests.toolset.test_workspaces import _StubBackend
 
 _TOKEN = "sa-token-that-must-never-be-served"
 
+def _pub(row):
+    """The row a user may use: these suites check the shape of a user's choices, so every row is public."""
+    from primer.model.access import Access
+
+    return row.model_copy(update={"access": Access(public=True)})
+
+
 
 @pytest.fixture
 async def world(tmp_path: Path):
@@ -95,7 +102,7 @@ async def test_the_tool_is_user_tier_and_conforms(world) -> None:
 async def test_a_user_run_gets_the_same_choices_as_the_route(world) -> None:
     sp, toolset = world
     for row in (_kubernetes("k3s"), _container("dock")):
-        await sp.get_storage(WorkspaceProvider).create(row)
+        await sp.get_storage(WorkspaceProvider).create(_pub(row))
 
     is_error, answer = await _call(toolset, "list_workspace_provider_choices", ctx=_ctx("user"))
 
@@ -109,7 +116,7 @@ async def test_a_user_run_gets_the_same_choices_as_the_route(world) -> None:
 @pytest.mark.asyncio
 async def test_the_choices_serve_nothing_of_the_connection(world) -> None:
     sp, toolset = world
-    await sp.get_storage(WorkspaceProvider).create(_kubernetes("k3s"))
+    await sp.get_storage(WorkspaceProvider).create(_pub(_kubernetes("k3s")))
 
     result = await toolset.call(tool_name="list_workspace_provider_choices", arguments={}, ctx=_ctx("user"))
 
@@ -131,7 +138,7 @@ async def test_the_tool_pages_through_every_provider(world, monkeypatch) -> None
     sp, toolset = world
     monkeypatch.setattr(provider_choices, "_PAGE", 2)
     for n in (3, 1, 2, 5, 4):
-        await sp.get_storage(WorkspaceProvider).create(_container(f"p-{n}"))
+        await sp.get_storage(WorkspaceProvider).create(_pub(_container(f"p-{n}")))
 
     is_error, answer = await _call(toolset, "list_workspace_provider_choices", ctx=_ctx("user"))
 

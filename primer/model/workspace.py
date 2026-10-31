@@ -46,7 +46,7 @@ from pydantic import (
 )
 from pydantic import ValidationError as PydanticValidationError
 
-from primer.model.access import Owned
+from primer.model.access import Owned, Grantable
 from primer.model.common import Describeable, Identifiable, reading_a_stored_row
 from primer.model.masked_url import MaskedUserinfoUrl
 
@@ -1506,7 +1506,7 @@ WorkspaceProviderConfig = Annotated[
 ]
 
 
-class WorkspaceProvider(Identifiable):
+class WorkspaceProvider(Grantable, Identifiable):
     """A configured workspace backend.
 
     Mirrors the ``LLMProvider`` / ``StorageProviderConfig`` /

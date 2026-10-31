@@ -533,6 +533,7 @@ def _ref_workspace_storage(request: Request):
 
 provider_router = make_crud_router(
     model_cls=WorkspaceProvider,
+    grantable=True,
     storage_dep=get_workspace_provider_storage,
     plural="workspace_providers",
     tag="workspace-providers",
@@ -573,6 +574,7 @@ provider_choices_router = APIRouter(tags=["workspace-providers"])
     responses=common_responses(500),
 )
 async def list_workspace_provider_choices(
+    request: Request,
     storage=Depends(get_workspace_provider_storage),
 ) -> WorkspaceProviderChoices:
     """Every workspace provider as ``{id, kind, label, default_image}``, sorted by id.
@@ -581,7 +583,7 @@ async def list_workspace_provider_choices(
     ``containerd`` or ``Kubernetes``). ``default_image`` is the image a container provider runs when a template names none, and ``null``
     for the other kinds. The provider's configuration is never part of the answer.
     """
-    return await list_provider_choices(storage)
+    return await list_provider_choices(storage, person_from_request(request))
 
 
 # ===========================================================================

@@ -622,6 +622,27 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "graph": [
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
+    "modelprofile": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
+    "workspaceprovider": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
+    "channelprovider": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
+    "semanticsearchprovider": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
+    "embeddingprovider": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
+    "crossencoderprovider": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
+    "llmprovider": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
     "harness": [
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],

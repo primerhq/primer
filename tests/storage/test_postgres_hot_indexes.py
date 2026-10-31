@@ -40,6 +40,7 @@ def test_registry_declares_the_hot_tables():
         "apitoken", "sessions", "channel", "useridentity",
         "webhookdelivery", "toolapprovalrecord", "artifactlocation", "document",
         "agent", "graph", "toolset", "workspacetemplate", "workspace", "collection", "trigger", "harness",
+        "modelprofile", "workspaceprovider", "channelprovider", "semanticsearchprovider", "embeddingprovider", "crossencoderprovider", "llmprovider",
     }
 
 

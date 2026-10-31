@@ -105,21 +105,33 @@ async def set_access(
     what: str,
     allow_public_tools: bool = False,
     after_write: Callable[[Any], Awaitable[None]] | None = None,
+    use_only: bool = False,
 ) -> AccessView:
     """Replace the sharing of ``entity_id``; owners only. Writes the ``access`` block alone, guarded on its ``rev``.
 
     A row a harness installed (it has a ``harness_id``) is shared through its harness, never directly: 409 ``harness_managed``.
     ``after_write`` runs with the written row once the write has landed (a harness fans its access out to what it installed).
+
+    ``use_only`` is the shape of grantable infrastructure (a model profile, a provider; spec 6.1): no owners, only ``read`` grants (meaning
+    *use*), no per-tool flags. Admins hold ``owner`` by role, so ``require(..., OWNER)`` leaves the edit to them alone; a grantee reads the
+    view and anyone else answers not found. Harness inheritance does not apply to these rows.
     """
     row = await _load(storage, entity_id, what)
     require(person, row.access, AccessLevel.OWNER, what=what)
-    if getattr(row, "harness_id", None):
+    if getattr(row, "harness_id", None) and not use_only:
         raise ConflictError(f"{what} is managed by a harness (harness_managed); share the harness instead", code="harness_managed")
     current: Access = row.access
     if update.rev is not None and update.rev != current.rev:
         raise ConflictError(f"the sharing of {what} changed since rev {update.rev}; reload it")
     owners = list(dict.fromkeys(update.owners))
-    if not owners:
+    if use_only:
+        if owners:
+            raise ValidationError(f"{what} is shared by use grants only; it has no owners")
+        if any(level != "read" for level in update.grants.values()):
+            raise ValidationError(f"{what} is shared by use grants only: a grant is 'read' (use)")
+        if update.public_tools:
+            raise ValidationError(f"{what} has no tools to make public")
+    elif not owners:
         raise ValidationError("an entity needs at least one owner")
     if update.public_tools and not allow_public_tools:
         raise ValidationError(f"{what} has no tools to make public")

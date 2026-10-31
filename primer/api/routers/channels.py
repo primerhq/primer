@@ -150,6 +150,7 @@ async def _channel_provider_on_pre_update(entity: ChannelProvider, existing: Cha
 def make_channel_provider_router() -> APIRouter:
     return make_crud_router(
         model_cls=ChannelProvider,
+        grantable=True,
         storage_dep=_get_channel_provider_storage,
         plural="channel_providers",
         tag="channel_providers",

@@ -275,6 +275,7 @@ async def test_semantic_search_provider_draft(
 
 semantic_search_router = make_crud_router(
     model_cls=SemanticSearchProvider,
+    grantable=True,
     storage_dep=get_semantic_search_storage,
     plural="ssp",
     tag="semantic-search-providers",
