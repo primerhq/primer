@@ -299,6 +299,9 @@ class SlackChannelAdapter(ChannelAdapter):
             url = f.get("url_private_download") or f.get("url_private")
             if not url:
                 continue
+            if not url.startswith("https://files.slack.com/"):   # the bot token goes to Slack's file host only
+                logger.warning("slack: not fetching a file outside https://files.slack.com: %s", url)
+                continue
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(
