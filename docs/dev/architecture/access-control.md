@@ -253,7 +253,12 @@ Every full user (role `user` or `admin`, not disabled) has a private default wor
 last sign-in), all through `ensure_default_for_request`, which never fails a sign-in and makes the status probe wait 60 s
 after a failure. The workspace is `ws-<user id>`, materialised from the configured default template (else
 `local-default`), owned by the user and private, with the user's own operator `main` session; the work is idempotent
-under a per-user lock, and a lost create race reads as success. The first admin with no default adopts the install-wide
+under a per-user lock, and a lost create race reads as success. The `ws-<user id>` id space is reserved: a client create
+(REST and the `create_workspace` tool, both through `WorkspaceRegistry.create`) of any `ws-user-...` id (every account id
+is `user-<hex>`, so users not created yet are covered) or of `ws-<an existing user's id>` is refused 409 / `type=conflict`
+(`is_reserved_user_default_id`). An existing row with the id is adopted only when it is the user's alone and private
+(sole owner, no grants, not public); any other row (a squat made before the reservation) is left as it is, a warning is
+logged, and the next free `ws-<user id>-<n>` is created and recorded instead. The first admin with no default adopts the install-wide
 default (`prime`, or the legacy `primer`) instead, when it has no owner and is not public (`patch_if` on `access.rev`
 0 to 1). A restricted user gets none until promoted.
 
