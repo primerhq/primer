@@ -229,6 +229,17 @@ class AuthMiddleware:
         if user is not None and payload.epoch != user.session_epoch:
             return None, None, None
 
+        # An SSO cookie lives only as long as the provider that minted it: a disabled or deleted provider ends its sessions (GS-37).
+        if user is not None and payload.src != "local":
+            try:
+                from primer.model.oidc import OidcProvider
+                provider = await storage_provider.get_storage(OidcProvider).get(payload.src)
+            except Exception:  # noqa: BLE001
+                logger.exception("auth middleware: provider lookup failed")
+                return None, None, None
+            if provider is None or not provider.enabled:
+                return None, None, None
+
         expires_at = payload.issued_at + timedelta(seconds=max_age) if payload.issued_at is not None else None
         return user, payload.src, expires_at
 

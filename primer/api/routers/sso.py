@@ -24,7 +24,7 @@ Authenticated router (``sso_authed_router``, ``require_user`` applied at
 ``include_router`` time in ``_app_routes.py``) — account linking + the
 caller's linked-identity list:
 
-* ``GET /{provider_id}/link``      — same Authorization Code + PKCE
+* ``POST /{provider_id}/link``     — same Authorization Code + PKCE
   flow as ``/{provider_id}/login``, but requires an active session and
   stamps the signed state with ``mode="link"`` plus the CURRENT user's
   id (never a URL/query param). Reuses the exact same
@@ -81,7 +81,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from primer.api.deps import (
@@ -92,6 +92,7 @@ from primer.api.deps import (
 )
 from primer.api.routers.auth import _set_session_cookie
 from primer.api.user_default import ensure_default_for_request
+from primer.auth.user_writes import write_user_fields
 from primer.auth import oidc
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.oidc import OidcProvider, UserIdentity
@@ -256,6 +257,15 @@ def _reject(status_code: int, error: str, message: str | None = None) -> HTTPExc
     if message:
         detail["message"] = message
     return HTTPException(status_code=status_code, detail=detail)
+
+
+def _public_failure(status_code: int, error: str, message: str, exc: Exception) -> HTTPException:
+    """A refusal that carries FIXED words: the exception text (a discovery URL, a token endpoint's body) goes to the log under an error id."""
+    error_id = uuid.uuid4().hex[:12]
+    logger.warning("sso failure error_id=%s error=%s detail=%s", error_id, error, exc)
+    refusal = _reject(status_code, error, message)
+    refusal.detail["error_id"] = error_id
+    return refusal
 
 
 async def _resolve_or_provision_user(
@@ -436,7 +446,7 @@ async def _begin_oidc_flow(
         metadata = await oidc.discover(provider.discovery_url)
         await oidc.fetch_jwks(metadata.jwks_uri)
     except oidc.OidcError as exc:
-        raise _reject(502, "provider_unreachable", str(exc)) from exc
+        raise _public_failure(502, "provider_unreachable", "The sign-in provider could not be reached.", exc) from exc
 
     code_verifier, code_challenge = oidc.make_pkce()
     state_value = oidc.gen_state()
@@ -513,14 +523,17 @@ async def sso_login(
         return response
 
 
-@sso_authed_router.get("/{provider_id}/link")
+@sso_authed_router.post("/{provider_id}/link")
 async def sso_link(
     provider_id: str,
     request: Request,
     return_to: str | None = Query(default=None),
     storage=Depends(get_oidc_provider_storage),
-) -> RedirectResponse:
+) -> JSONResponse:
     """Authenticated equivalent of ``/login`` -- links a provider identity.
+
+    A POST that answers ``{"url": <IdP authorize URL>}`` with the state cookie set; the console follows the URL. A GET used to
+    start the link, so a page the user merely visited could make their browser begin one (GS-39).
 
     ``require_user`` runs at include-router time (see ``_app_routes.py``),
     so by the time this handler executes ``request.state.user`` is always
@@ -529,10 +542,13 @@ async def sso_link(
     stamped into the SIGNED state, never trusted from the URL/query.
     """
     user: User = request.state.user
-    return await _begin_oidc_flow(
+    started = await _begin_oidc_flow(
         provider_id=provider_id, request=request, return_to=return_to, storage=storage,
         extra_state={"mode": "link", "user_id": user.id},
     )
+    answer = JSONResponse({"url": started.headers["location"]})
+    answer.raw_headers.extend(h for h in started.raw_headers if h[0] == b"set-cookie")
+    return answer
 
 
 @sso_router.get("/{provider_id}/callback", name="sso_callback")
@@ -641,7 +657,7 @@ async def _complete_oidc_flow(
             id_token, provider=provider, metadata=metadata, jwks=jwks, nonce=nonce,
         )
     except oidc.OidcError as exc:
-        raise _reject(400, "sso_validation_failed", str(exc)) from exc
+        raise _public_failure(400, "sso_validation_failed", "Sign-in with the provider could not be completed.", exc) from exc
 
     subject = claims["sub"]
     email = claims.get("email") if claims.get("email_verified") is True else None
@@ -767,11 +783,18 @@ async def unlink_sso_identity(
         await identity_storage.delete(identity_id)
     except NotFoundError:
         pass  # already gone -- unlink is idempotent from the caller's view
+    # Every session this identity opened ends (GS-41); the caller keeps theirs unless it came through this very provider.
+    saved = await write_user_fields(get_storage_provider(request).get_storage(User), user.id, {}, bump_epoch=True)
+    response = Response(status_code=204)
+    actor = getattr(request.state, "actor", None)
+    source = getattr(actor, "source", None) or "local"
+    if getattr(request.state, "api_token", None) is None and source != row.provider_id:
+        _set_session_cookie(request, response, saved, src=source)
     logger.info(
         "sso.unlink success user_id=%s identity_id=%s provider_id=%s",
         user.id, identity_id, row.provider_id,
     )
-    return Response(status_code=204)
+    return response
 
 
 __all__ = ["sso_router", "sso_authed_router"]
