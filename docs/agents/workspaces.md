@@ -373,7 +373,8 @@ session's tools act with its turn's person, like any other run.
   `workspaces::list_workspace_providers` /
   `workspaces::delete_workspace_provider` - the registered compute
   substrates (local / Docker / Kubernetes and any custom backends).
-- `workspaces::list_workspace_provider_choices` - every provider by
+- `workspaces::list_workspace_provider_choices` - the providers the
+   caller may use (a use grant, or public; an admin all of them), by
   `id`, `kind` (`local`, `container` or `kubernetes`), `label` (`Local`,
   `Docker`, `Podman`, `containerd` or `Kubernetes`) and `default_image`
   (the image a container provider's template runs when it names none,

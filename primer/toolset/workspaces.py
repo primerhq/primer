@@ -1440,7 +1440,7 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "list_workspace_provider_choices",
         (
-            "List every workspace provider by id, kind and label, sorted by id: ``items`` of ``{id, kind, label, default_image}``. "
+            "List the workspace providers you may use (a use grant, or public; an admin all of them) by id, kind and label, sorted by id: ``items`` of ``{id, kind, label, default_image}``. "
             "``kind`` is ``local``, ``container`` or ``kubernetes``; ``label`` is Local, Docker, Podman, containerd or Kubernetes; "
             "``default_image`` is the image a container provider runs when a template names none (``primer/workspace-runtime:1.1``), "
             "null for the other kinds. Never returns a provider's configuration. Takes no arguments."
