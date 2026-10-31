@@ -34,6 +34,10 @@ from primer.toolset.python_runner.protocol import ShimResponse, parse_response
 # module docstring.
 _BASE_ENV = {"PATH": "/usr/bin:/bin"}
 
+# What the host holds of a tool's output: the response line, and the end of stderr for a crash report.
+STDOUT_CAP_BYTES = 16 * 1024 * 1024
+STDERR_TAIL_BYTES = 64 * 1024
+
 _MACOS_SANDBOX_PROFILE = (
     "(version 1)"
     "(deny default)"
@@ -78,6 +82,55 @@ def _timeout_error() -> ShimResponse:
             "traceback": "",
         },
     )
+
+
+def _output_too_large_error() -> ShimResponse:
+    return ShimResponse(
+        ok=False,
+        error={
+            "type": "OutputTooLargeError",
+            "message": f"the tool wrote more than {STDOUT_CAP_BYTES >> 20} MiB of output and was killed",
+            "traceback": "",
+        },
+    )
+
+
+async def _communicate_capped(
+    proc: asyncio.subprocess.Process, data: bytes
+) -> tuple[bytes | None, bytes]:
+    """``proc.communicate(data)`` that holds at most :data:`STDOUT_CAP_BYTES` of stdout and the last
+    :data:`STDERR_TAIL_BYTES` of stderr. A pipe has no RLIMIT_FSIZE, so a printing loop would otherwise fill API memory.
+    Returns ``(None, b"")`` as soon as stdout passes the cap; the caller kills the group."""
+    async def feed() -> None:
+        try:
+            proc.stdin.write(data)
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass          # the shim exited without reading its request; its exit code and output say why
+        finally:
+            proc.stdin.close()
+
+    async def tail() -> bytes:
+        kept = bytearray()
+        while chunk := await proc.stderr.read(1 << 16):
+            kept += chunk
+            del kept[:-STDERR_TAIL_BYTES]
+        return bytes(kept)
+
+    feeding, draining = asyncio.ensure_future(feed()), asyncio.ensure_future(tail())
+    try:
+        out = bytearray()
+        while chunk := await proc.stdout.read(1 << 16):
+            out += chunk
+            if len(out) > STDOUT_CAP_BYTES:
+                return None, b""
+        await feeding
+        stderr = await draining
+        await proc.wait()
+        return bytes(out), stderr
+    finally:
+        feeding.cancel()
+        draining.cancel()
 
 
 class Runner(ABC):
@@ -126,9 +179,12 @@ class LocalHardenedRunner(Runner):
         finished = False
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(json.dumps(request).encode()),
+                _communicate_capped(proc, json.dumps(request).encode()),
                 timeout=timeout_seconds,
             )
+            if stdout is None:
+                # Past the cap: the finally below kills the group.
+                return _output_too_large_error()
             finished = True
         except TimeoutError:
             # The wall clock is the real guarantee; RLIMIT_CPU only catches

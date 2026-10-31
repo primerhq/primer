@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from primer.toolset.python_runner import runners as runners_mod
 from primer.toolset.python_runner._shim import SHIM_SOURCE
 from primer.toolset.python_runner.protocol import build_request
 from primer.toolset.python_runner.runners import IsolationLevel, LocalHardenedRunner
@@ -85,3 +86,49 @@ def test_a_tool_cannot_leave_its_process_group(call: str) -> None:
         "        return 'refused'\n"
     )
     assert _shim(module) == {"ok": True, "value": "refused"}
+
+
+# --------------------------------------------------------------------------- GS-11: output cap
+
+
+async def test_stdout_past_the_cap_kills_the_tool_and_is_never_buffered_whole(runner, monkeypatch) -> None:
+    seen: list[int] = []
+    real = runners_mod.parse_response
+    monkeypatch.setattr(runners_mod, "parse_response", lambda raw: seen.append(len(raw)) or real(raw))
+    module = (
+        "import os\n"
+        "def run():\n"
+        "    chunk = b'x' * (1 << 20)\n"
+        "    for _ in range(300):\n"
+        "        os.write(1, chunk)\n"
+        "    return 1\n"
+    )
+    resp = await runner.run(_req(module), timeout_seconds=30)
+    assert seen == []
+    assert resp.ok is False
+    assert resp.error == {
+        "type": "OutputTooLargeError",
+        "message": "the tool wrote more than 16 MiB of output and was killed",
+        "traceback": "",
+    }
+
+
+async def test_a_large_stderr_is_drained_not_fatal() -> None:
+    module = (
+        "import os\n"
+        "def run():\n"
+        "    chunk = b'e' * (1 << 20)\n"
+        "    for _ in range(40):\n"
+        "        os.write(2, chunk)\n"
+        "    return 'done'\n"
+    )
+    resp = await LocalHardenedRunner().run(_req(module), timeout_seconds=30)
+    assert (resp.ok, resp.value) == (True, "done")
+
+
+async def test_a_crashed_runner_still_reports_the_tail_of_stderr() -> None:
+    module = "import os, sys\ndef run():\n    os.write(2, b'a' * 100000 + b'LAST')\n    os._exit(3)\n"
+    resp = await LocalHardenedRunner().run(_req(module), timeout_seconds=30)
+    assert resp.ok is False and resp.error["type"] == "RunnerError"
+    assert resp.error["message"] == "the runner exited with code 3"
+    assert resp.error["traceback"] == ("a" * 100000 + "LAST")[-2000:]
