@@ -1,4 +1,4 @@
-"""The system status tool reports the shared MCP sign-in without exposing credentials."""
+"""The system status tool reports an MCP sign-in (the run's person's own, or the shared one) without exposing credentials."""
 
 from __future__ import annotations
 
@@ -77,6 +77,7 @@ async def test_the_status_of_an_unconnected_oauth_toolset(world) -> None:
         "refreshed_at": None,
         "scope": None,
         "redirect_uri": None,
+        "per_user": True,
     }
 
 
