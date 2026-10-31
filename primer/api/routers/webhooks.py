@@ -45,7 +45,6 @@ import hmac
 import asyncio
 import logging
 import time
-from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -95,18 +94,24 @@ _HEADER_BLOCKLIST = frozenset({
 # In-process per-token rate limiter (sliding window)
 # ---------------------------------------------------------------------------
 
-_rate_windows: dict[str, list[float]] = defaultdict(list)
+#: Least recently used first. The key is the caller-chosen path token, checked before the token is looked up, so
+#: the map is bounded (W45): past the cap the least recently used token's window is dropped.
+_rate_windows: dict[str, list[float]] = {}
+_RATE_LIMIT_MAX_KEYS = 10_000
 
 
 def _check_rate_limit(token: str) -> bool:
     """Return True if the request is within the rate limit, False if exceeded."""
     now = time.monotonic()
     cutoff = now - _RATE_LIMIT_WINDOW_SECS
-    _rate_windows[token] = [t for t in _rate_windows[token] if t > cutoff]
-    if len(_rate_windows[token]) >= _RATE_LIMIT_MAX:
-        return False
-    _rate_windows[token].append(now)
-    return True
+    window = [t for t in _rate_windows.pop(token, ()) if t > cutoff]
+    allowed = len(window) < _RATE_LIMIT_MAX
+    if allowed:
+        window.append(now)
+    _rate_windows[token] = window  # re-inserted: now the most recently used
+    while len(_rate_windows) > _RATE_LIMIT_MAX_KEYS:
+        del _rate_windows[next(iter(_rate_windows))]
+    return allowed
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +132,9 @@ def _verify_hmac(secret: str, body: bytes, sig_header: str | None) -> bool:
         return False
     candidate = sig_header.removeprefix("sha256=")
     expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(candidate, expected)
+    # Bytes, not str: compare_digest raises TypeError on a non-ASCII str, which answered 500 (W46). "replace" turns
+    # anything unencodable (a lone surrogate) into "?", which is never hex, so it can only mismatch.
+    return hmac.compare_digest(candidate.encode("utf-8", "replace"), expected.encode())
 
 
 async def _finalize_delivery(
@@ -172,6 +179,26 @@ async def _finalize_delivery(
             "webhook delivery finalize failed for %s", delivery_id,
             exc_info=True,
         )
+
+
+async def _record_fire(storage_provider: Any, delivery_id: str | None, fire_id: str | None) -> None:
+    """Record on a still-pending delivery row that its trigger has fired (W12).
+
+    The row stays ``pending`` (the poll endpoint reports the run as going) but carries the ``fire_id``, which the
+    recovery sweep reads as "already fired": an interactive hold keeps its row pending for as long as the run lasts,
+    well past the sweep's grace. A field patch guarded on ``pending``, so it never reopens or overwrites a finished
+    row. Best effort, like the finalize.
+    """
+    if delivery_id is None or fire_id is None:
+        return
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    try:
+        await storage_provider.get_storage(WebhookDelivery).patch_if(
+            delivery_id, {"fire_id": fire_id}, where={"status": ["pending"]},
+        )
+    except Exception:  # noqa: BLE001 -- advisory marking, never fatal
+        logger.debug("webhook delivery fire record failed for %s", delivery_id, exc_info=True)
 
 
 async def _finalize_hold(
@@ -250,6 +277,7 @@ async def _dispatch_webhook(
             deps=dispatch_deps,
             extra_context=extra_context,
         )
+        await _record_fire(storage_provider, delivery_id, result.fire_id)
         logger.info(
             "webhook dispatched trigger=%s fire_id=%s dispatched=%d",
             trigger_id,
@@ -438,6 +466,7 @@ async def receive_webhook(
                 ),
                 workspace_registry=workspace_registry,
                 wait_timeout=HOLD_MAX_SECONDS,
+                on_fired=lambda result: _record_fire(sp, row_id, result.fire_id),
             ),
             name=f"webhook-hold-{delivery_id}",
         )

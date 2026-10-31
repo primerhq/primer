@@ -28,7 +28,11 @@ Returns a :class:`ChannelRouteOutcome` naming what it did.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from primer.channel.correlation import CorrelationStore
@@ -78,6 +82,52 @@ class ChannelRouteOutcome:
     kind: str
     session_id: str | None = None
     fire_ids: list[str] = field(default_factory=list)
+
+
+#: Inbound events already routed by this process (W33), oldest first: ``(provider_id, room_external_id, type, event_id)``
+#: -> when first seen (monotonic). A platform redelivers an event it thinks was missed (a Slack ack later than 3 s, an
+#: unconfirmed Telegram update); routing it again would start a second session or steer twice.
+_SEEN_EVENTS: OrderedDict[tuple, float] = OrderedDict()
+_SEEN_EVENTS_MAX = 10_000
+_SEEN_EVENTS_TTL_SECONDS = 600.0
+
+
+def _first_delivery(key: tuple) -> bool:
+    """Record ``key`` and answer whether this is its first delivery inside the TTL. The set stays bounded."""
+    now = time.monotonic()
+    while _SEEN_EVENTS:
+        oldest, seen_at = next(iter(_SEEN_EVENTS.items()))
+        if now - seen_at < _SEEN_EVENTS_TTL_SECONDS and len(_SEEN_EVENTS) < _SEEN_EVENTS_MAX:
+            break
+        del _SEEN_EVENTS[oldest]
+    if key in _SEEN_EVENTS:
+        return False
+    _SEEN_EVENTS[key] = now
+    return True
+
+
+#: Conversations being routed in this process (W6): ``(channel_id, mapping anchor)`` -> ``[lock, users]``. One event of a
+#: conversation routes at a time, in arrival order, so a second quick message finds the session the first one started.
+#: An entry lives only while an event of its conversation is routing, so the map is bounded by the events in flight.
+_CONVERSATION_LOCKS: dict[tuple[str, str], list] = {}
+
+#: Across processes the get-or-create of a conversation's session is a conditional insert (``CorrelationStore.claim_thread``).
+#: A message that loses it waits up to this long for the winner's session, looking this often, then starts one itself.
+_CLAIM_WAIT_SECONDS = 30.0
+_CLAIM_POLL_SECONDS = 0.2
+
+
+@contextlib.asynccontextmanager
+async def _conversation_lock(key: tuple[str, str]):
+    entry = _CONVERSATION_LOCKS.setdefault(key, [asyncio.Lock(), 0])
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if not entry[1]:
+            del _CONVERSATION_LOCKS[key]
 
 
 def _artefacts(result) -> list[tuple[str, str | None]]:
@@ -206,6 +256,7 @@ class ChannelEventRouter:
         event_bus=None,
         fire_trigger=_default_fire_trigger,
         artifact_registry=None,
+        stt_registry=None,
     ) -> None:
         self._sp = storage_provider
         self._correlation = correlation_store
@@ -213,6 +264,7 @@ class ChannelEventRouter:
         self._bus = event_bus
         self._fire_trigger = fire_trigger
         self._artifacts = artifact_registry
+        self._stt_registry = stt_registry
 
     async def route_event(
         self,
@@ -221,7 +273,33 @@ class ChannelEventRouter:
         channel: Channel | None,
         media_parts: list | None = None,
     ) -> ChannelRouteOutcome:
-        """Route one normalized inbound event and report what it did."""
+        """Route one normalized inbound event and report what it did.
+
+        A redelivery of an event this process already routed (same provider, room, type and event id) is ignored.
+        """
+        key = (event.provider_id, event.room_external_id, getattr(event.type, "value", event.type), event.event_id)
+        if event.event_id and not _first_delivery(key):
+            logger.info("channel event %s in %s was delivered again; already routed", event.event_id, event.room_external_id)
+            return ChannelRouteOutcome(kind="ignored")
+        try:
+            channel_id = event.channel_id or (channel.id if channel is not None else None)
+            anchor = mapping_anchor(event)
+            if anchor is None or channel_id is None:
+                return await self._route(event=event, channel=channel, media_parts=media_parts)
+            async with _conversation_lock((channel_id, anchor)):
+                return await self._route(event=event, channel=channel, media_parts=media_parts)
+        except BaseException:
+            _SEEN_EVENTS.pop(key, None)  # routing failed: a redelivery may try again
+            raise
+
+    async def _route(
+        self,
+        *,
+        event: ChannelEvent,
+        channel: Channel | None,
+        media_parts: list | None,
+        claim: bool = True,
+    ) -> ChannelRouteOutcome:
         channel_id = event.channel_id or (channel.id if channel is not None else None)
 
         # The SDK-free normalizers only set ``room_external_id`` (the platform
@@ -234,8 +312,15 @@ class ChannelEventRouter:
 
         # ----- (1) Correlation-first -----------------------------------
         anchor = mapping_anchor(event)
+        record = None
         if anchor and channel_id is not None:
             record = await self._correlation.lookup(channel_id, anchor)
+            if record is not None and record.session_id is None:
+                # A claim: another process is starting this conversation's session (W6). Wait for it, then route again.
+                if claim:
+                    await self._await_claim(channel_id, anchor)
+                    return await self._route(event=event, channel=channel, media_parts=media_parts, claim=False)
+                record = None  # the claimer never finished: start the conversation here
             if record is not None and record.kind == "session" and record.tool_call_id:
                 # The parked turn this gate would resume may no longer
                 # exist: the session can have ended (e.g. its yield timed
@@ -253,13 +338,13 @@ class ChannelEventRouter:
                 sessions = self._sp.get_storage(WorkspaceSession)
                 target = await sessions.get(record.session_id)
                 if target is not None and target.status == SessionStatus.ENDED:
-                    await self._correlation.clear_gate(channel_id, anchor)
+                    await self._correlation.clear_gate(channel_id, anchor, record.tool_call_id)
                     delivery = await deliver_steer(
                         session_id=record.session_id,
                         text=await self._steer_text(
                             event=event,
                             media_parts=media_parts,
-                            workspace_id=target.workspace_id,
+                            workspace_ids=[target.workspace_id],
                             fire_id=event.event_id,
                         ),
                         parallelism="queue",
@@ -309,13 +394,13 @@ class ChannelEventRouter:
                         logger.info(
                             "channel event: reply for %s/%s names a prompt that has been replaced; steering instead", channel_id, anchor,
                         )
-                        await self._correlation.clear_gate(channel_id, anchor)
+                        await self._correlation.clear_gate(channel_id, anchor, record.tool_call_id)
                     else:
                         # One reply answers one gate. Clearing it here is what
                         # lets the NEXT reply in the same thread steer the
                         # session instead of re-publishing onto a dead resume
                         # key.
-                        await self._correlation.clear_gate(channel_id, anchor)
+                        await self._correlation.clear_gate(channel_id, anchor, record.tool_call_id)
                         return ChannelRouteOutcome(
                             kind="gate", session_id=record.session_id,
                         )
@@ -332,7 +417,7 @@ class ChannelEventRouter:
                     text=await self._steer_text(
                         event=event,
                         media_parts=media_parts,
-                        workspace_id=record.workspace_id,
+                        workspace_ids=[record.workspace_id],
                         fire_id=event.event_id,
                     ),
                     parallelism="queue",
@@ -362,21 +447,7 @@ class ChannelEventRouter:
             event.provider_id, channel_id,
         )
         event_payload = event.model_dump(mode="json")
-        if media_parts:
-            # The created session's FIRST instruction must reference the
-            # same landed files the steer path composes, so a fresh thread
-            # with an attachment is not silently text-only. No workspace is
-            # resolvable before _map_thread runs, so the attachments are
-            # referenced by name here.
-            event_payload["text"] = await self._steer_text(
-                event=event,
-                media_parts=media_parts,
-                workspace_id=None,
-                fire_id=event.event_id,
-            )
         extra_context = {"event": event_payload}
-        fire_ids: list[str] = []
-        mapped_session_id: str | None = None
         # Every trigger this event fires shares ONE text_pattern match budget
         # (G6-5): fire_trigger reads it, so N triggers cannot multiply it. It
         # is split equally between the distinct owners of the text_pattern
@@ -387,6 +458,58 @@ class ChannelEventRouter:
         subscriptions = {trigger.id: await enabled_subscriptions(self._sp, trigger.id) for trigger in triggers}
         if not await self._room_starts_sessions(channel_id, channel):
             triggers, subscriptions = _without_session_starts(triggers, subscriptions, event=event, channel_id=channel_id)
+        claimed = False
+        if claim and record is None and anchor is not None and channel_id is not None and triggers:
+            # The get-or-create of the conversation's session is a conditional insert, not this method's lookup (W6):
+            # losing it means another process is starting the session, so wait for it and steer into it.
+            if not await self._correlation.claim_thread(channel_id=channel_id, anchor=anchor):
+                await self._await_claim(channel_id, anchor)
+                return await self._route(event=event, channel=channel, media_parts=media_parts, claim=False)
+            claimed = True
+        if media_parts:
+            # The created session's FIRST instruction references the same landed files the steer path composes (W9): the
+            # attachments land under media/<event id>/ in every workspace a binding about to fire starts a session in.
+            event_payload["text"] = await self._steer_text(
+                event=event,
+                media_parts=media_parts,
+                workspace_ids=[getattr(sub.config, "workspace_id", None) for subs in subscriptions.values() for sub in subs],
+                fire_id=event.event_id,
+            )
+        try:
+            return await self._fire_and_map(
+                event=event, triggers=triggers, subscriptions=subscriptions, extra_context=extra_context,
+                channel_id=channel_id, anchor=anchor,
+            )
+        finally:
+            if claimed:
+                await self._correlation.release_claim(channel_id=channel_id, anchor=anchor)
+
+    async def _await_claim(self, channel_id: str, anchor: str) -> None:
+        """Wait until another process's claim on a conversation names its session or is gone, at most the claim wait."""
+        deadline = time.monotonic() + _CLAIM_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            await asyncio.sleep(_CLAIM_POLL_SECONDS)
+            record = await self._correlation.lookup(channel_id, anchor)
+            if record is None or record.session_id is not None:
+                return
+        logger.warning(
+            "channel event: conversation %s/%s was claimed but no session appeared in %.0fs; starting one here",
+            channel_id, anchor, _CLAIM_WAIT_SECONDS,
+        )
+
+    async def _fire_and_map(
+        self,
+        *,
+        event: ChannelEvent,
+        triggers: list,
+        subscriptions: dict,
+        extra_context: dict,
+        channel_id: str | None,
+        anchor: str | None,
+    ) -> ChannelRouteOutcome:
+        """Fire the matched triggers and map the conversation to the first session they start or feed."""
+        fire_ids: list[str] = []
+        mapped_session_id: str | None = None
         keys = await owner_keys(self._sp, [sub for subs in subscriptions.values() for sub in subs])
         with channel_event_text_budget(owner_keys=keys, subscriptions=subscriptions):
             for trigger in triggers:
@@ -516,10 +639,10 @@ class ChannelEventRouter:
         *,
         event: ChannelEvent,
         media_parts: list | None,
-        workspace_id: str | None,
+        workspace_ids: list[str | None],
         fire_id: str,
     ) -> str:
-        """Land any attachments, then build the text the session receives."""
+        """Land any attachments in each named workspace, then build the text the session receives."""
         from primer.channel.media_in import (
             compose_steer_text,
             land_media_in_workspace,
@@ -530,25 +653,27 @@ class ChannelEventRouter:
         if not media_parts:
             return event.text or ""
         registry = self._fire_deps.workspace_registry
-        workspace = None
-        if registry is not None and workspace_id:
-            try:
-                workspace = await registry.get_workspace(workspace_id)
-            except Exception:  # noqa: BLE001 - land nothing rather than fail
-                logger.warning(
-                    "channel media: workspace %s unreachable", workspace_id,
-                    exc_info=True,
-                )
         store = await self._artifact_store()
         paths: list[str] = []
-        if workspace is not None:
-            paths = await land_media_in_workspace(
-                workspace=workspace,
-                fire_id=fire_id,
-                parts=media_parts,
-                artifact_storage=store,
-            )
-        stt = await resolve_active_stt(self._sp)
+        for workspace_id in dict.fromkeys(w for w in workspace_ids if w):
+            workspace = None
+            if registry is not None:
+                try:
+                    workspace = await registry.get_workspace(workspace_id)
+                except Exception:  # noqa: BLE001 - land nothing rather than fail
+                    logger.warning(
+                        "channel media: workspace %s unreachable", workspace_id,
+                        exc_info=True,
+                    )
+            if workspace is not None:
+                landed = await land_media_in_workspace(
+                    workspace=workspace,
+                    fire_id=fire_id,
+                    parts=media_parts,
+                    artifact_storage=store,
+                )
+                paths = paths or landed  # every workspace gets the same media/<fire_id>/ paths
+        stt = await resolve_active_stt(self._sp, self._stt_registry)
         transcript, note = await transcribe_voice_parts(
             parts=media_parts, artifact_storage=store, stt=stt,
         )
@@ -581,7 +706,9 @@ class ChannelEventRouter:
         """Page ``kind="channel"`` triggers for *provider_id*, keeping those
         whose ``channel_id`` is unset (provider-wide) or equal to *channel_id*."""
         storage = self._sp.get_storage(Trigger)
-        q = Q(Trigger).where_op("config.kind", Op.EQ, "channel")
+        # The provider is filtered in the query: decoding every channel trigger of every provider per inbound message
+        # was the cost (W56i).
+        q = Q(Trigger).where_op("config.kind", Op.EQ, "channel").where_op("config.provider_id", Op.EQ, provider_id)
         matched: list[Trigger] = []
         offset = 0
         while offset < 10_000:
@@ -589,10 +716,7 @@ class ChannelEventRouter:
                 q.build(), OffsetPage(offset=offset, length=200),
             )
             for trigger in page.items:
-                cfg = trigger.config
-                if getattr(cfg, "provider_id", None) != provider_id:
-                    continue
-                cfg_channel = getattr(cfg, "channel_id", None)
+                cfg_channel = getattr(trigger.config, "channel_id", None)
                 if cfg_channel is None or cfg_channel == channel_id:
                     matched.append(trigger)
             if len(page.items) < 200:

@@ -22,12 +22,15 @@ single-row under the GIL within one process.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import weakref
 from datetime import datetime, timezone
 
 from primer.model.channel_correlation import ChannelCorrelation
 from primer.model.common import dump_for_storage
+from primer.model.except_ import ConflictError
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
 
@@ -43,6 +46,10 @@ logger = logging.getLogger(__name__)
 _TABLE = "channelcorrelation"
 _UNIQUE_INDEX = "channelcorrelation_channel_anchor_uniq"
 
+#: Storage providers (one database and schema each) whose unique index this process has ensured. Module-level, not
+#: per store: a store is built per event and per post, and every CREATE INDEX IF NOT EXISTS takes a table lock (W40).
+_INDEX_ENSURED: "weakref.WeakSet[object]" = weakref.WeakSet()
+
 
 class CorrelationStore:
     """CRUD wrapper around :class:`~primer.model.channel_correlation.ChannelCorrelation`.
@@ -56,8 +63,6 @@ class CorrelationStore:
 
     def __init__(self, storage_provider: object) -> None:
         self._sp = storage_provider
-        # One-shot guard so the unique-index DDL runs at most once per store.
-        self._unique_index_ensured = False
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -92,7 +97,7 @@ class CorrelationStore:
     # ------------------------------------------------------------------
 
     async def _ensure_unique_index(self) -> None:
-        """Create the ``(channel_id, anchor)`` unique index once.
+        """Create the ``(channel_id, anchor)`` unique index once per storage provider.
 
         Targets the JSONB ``data`` column's extracted scalars because the
         generic :class:`Storage` lays every model out as ``(id, data)`` with
@@ -100,7 +105,7 @@ class CorrelationStore:
         Idempotent (``IF NOT EXISTS``). Ensures the underlying table exists
         first by touching the handle.
         """
-        if self._unique_index_ensured:
+        if self._sp in _INDEX_ENSURED:
             return
         backend = self._backend()
         # Touch the handle so the base table DDL has run before we index it.
@@ -115,7 +120,7 @@ class CorrelationStore:
             )
             async with self._sp.pool.acquire() as conn:
                 await conn.execute(sql)
-            self._unique_index_ensured = True
+            _INDEX_ENSURED.add(self._sp)
         elif backend == "sqlite":
             sql = (
                 f'CREATE UNIQUE INDEX IF NOT EXISTS "{_UNIQUE_INDEX}" '
@@ -142,7 +147,7 @@ class CorrelationStore:
             # exists ("does not match any... constraint"; live-caught by
             # test_atomic_upsert_inside_a_rolled_back_transaction_is_undone).
             if should_commit:
-                self._unique_index_ensured = True
+                _INDEX_ENSURED.add(self._sp)
 
     def _to_row(self, record: ChannelCorrelation) -> tuple[str, str]:
         """Dump a record to ``(id, data_json)`` -- mirrors the storage
@@ -262,22 +267,58 @@ class CorrelationStore:
             return await self._fallback_upsert(record)
         return await self._atomic_upsert(record)
 
-    async def clear_gate(self, channel_id: str, anchor: str) -> None:
+    async def claim_thread(self, *, channel_id: str, anchor: str) -> bool:
+        """Claim a conversation that has no session yet: insert its row, with no session, only if it has none (W6).
+
+        True when this call inserted it; False when the conversation already has a row (mapped, or claimed by another
+        process that is starting its session). The row id is derived from the key, so two claims conflict on every
+        backend; on the SQL backends the ``(channel_id, anchor)`` unique index also refuses a claim beside a mapping.
+        The claimer's :meth:`upsert_thread_session` turns the row into the mapping; :meth:`release_claim` drops it
+        when no session came of it.
+        """
+        if self._backend() != "other":
+            await self._ensure_unique_index()
+        digest = hashlib.sha256(f"{channel_id}\0{anchor}".encode()).hexdigest()[:32]
+        try:
+            await self._storage().create(ChannelCorrelation(
+                id=f"channel-correlation-claim-{digest}", channel_id=channel_id, anchor=anchor,
+                updated_at=datetime.now(timezone.utc),
+            ))
+        except ConflictError:
+            return False
+        return True
+
+    async def release_claim(self, *, channel_id: str, anchor: str) -> None:
+        """Drop a conversation's claim row if no session was mapped onto it.
+
+        Best effort: a claim left behind only makes the conversation's next message wait out the router's claim wait
+        before starting a session of its own.
+        """
+        try:
+            record = await self.lookup(channel_id, anchor)
+            if record is not None and record.session_id is None:
+                await self._storage().delete(record.id)
+        except Exception:  # noqa: BLE001 - see the docstring
+            logger.warning("channel: releasing the claim on %s/%s failed", channel_id, anchor, exc_info=True)
+
+    async def clear_gate(self, channel_id: str, anchor: str, tool_call_id: str | None = None) -> None:
         """Blank a resolved gate's ``tool_call_id``, keeping the mapping.
 
         Without this the next reply in the thread would re-publish onto a
         resume key nobody is waiting on any more, instead of steering the
         mapped session.
+
+        ``tool_call_id`` is the gate the reply answered (default: the one open now). Only the gate fields are written,
+        and only while that gate is still the open one: a newer question the session asked on the same thread since
+        the reply is left open (W56h).
         """
         existing = await self.lookup(channel_id, anchor)
         if existing is None or existing.tool_call_id is None:
             return
-        await self._storage().update(
-            existing.model_copy(update={
-                "tool_call_id": None,
-                "gate_id": None,
-                "updated_at": datetime.now(timezone.utc),
-            })
+        await self._storage().patch_if(
+            existing.id,
+            {"tool_call_id": None, "gate_id": None, "updated_at": datetime.now(timezone.utc).isoformat()},
+            where={"tool_call_id": [tool_call_id or existing.tool_call_id]},
         )
 
     async def clear_for_session(self, session_id: str) -> int:

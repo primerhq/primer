@@ -188,6 +188,9 @@ class ChannelAdapter(ABC):
     # adapter that predates the wiring still builds.
     _workspace_registry: Any = None
     _scheduler: Any = None
+    #: The app's speech-to-text registry (``app.state.stt_registry``), set by the channel registry when it builds the
+    #: adapter, so a voice message is transcribed through the cached adapter rather than a throwaway one (W56g).
+    stt_registry: Any = None
 
     @abstractmethod
     async def initialize(self) -> None: ...
@@ -342,6 +345,7 @@ class ChannelAdapter(ABC):
             scheduler=getattr(self, "_scheduler", None),
             workspace_registry=getattr(self, "_workspace_registry", None),
             artifact_registry=getattr(self, "_artifacts", None),
+            stt_registry=getattr(self, "stt_registry", None),
         )
 
     # -- shared outbound-media fan-out -------------------------------------
