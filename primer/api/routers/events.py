@@ -22,6 +22,7 @@ from primer.access.workspaces import require_workspace
 from primer.api.deps import (
     get_event_subscription_storage,
     get_storage_provider,
+    require_admin,
     require_user,
 )
 from primer.api.routers._crud import make_crud_router
@@ -128,7 +129,9 @@ class _PausedBody(BaseModel):
 @events_router.post(
     "/event_subscriptions/{subscription_id}/paused",
     summary="Pause or resume an event subscription",
-    responses=common_responses(404, 500),
+    responses=common_responses(403, 404, 500),
+    # Event subscriptions are admin-only (access-control spec decision 3): pausing system-cdc or another user's wait is not a user act.
+    dependencies=[Depends(require_admin)],
 )
 async def set_subscription_paused(
     request: Request,
