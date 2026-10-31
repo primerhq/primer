@@ -695,6 +695,13 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "workspacetemplate": [
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
+    "serviceversion": [
+        # KN-19j: two concurrent publishes compute the same next number
+        # from the same read; the unique (service_id, version) makes the
+        # loser's create a ConflictError, which primer/service/publish.py
+        # retries on the freshly read next number.
+        ("service_version_uniq", True, "((data->>'service_id'), (data->>'version'))"),
+    ],
 }
 
 

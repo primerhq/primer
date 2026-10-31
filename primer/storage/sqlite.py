@@ -143,6 +143,16 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             "(json_extract(data,'$.gate_event_key'))",
         ),
     ],
+    "serviceversion": [
+        # Mirrors the postgres entry (KN-19j): two concurrent publishes
+        # compute the same next number from the same read; the unique
+        # (service_id, version) makes the loser's create a ConflictError.
+        (
+            "service_version_uniq",
+            True,
+            "(json_extract(data,'$.service_id'), json_extract(data,'$.version'))",
+        ),
+    ],
 }
 
 
