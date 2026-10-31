@@ -358,3 +358,36 @@ async def test_the_owner_shares_and_the_grantee_then_reads(env: _Env) -> None:
     assert (await env.client.get("/v1/documents", headers=_as(DAVE))).json()["total"] == 3
     # bob lost his read grant with that write.
     assert (await env.client.get(f"/v1/collections/{CID}/grep", headers=_as(BOB), params={"q": "x"})).status_code == 404
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# The search block is changed only through the owner's search routes
+# --------------------------------------------------------------------------------------------------------------------
+
+_SEARCH = {"embedder": {"provider_id": "emb", "model": "m"}, "vector_store_provider_id": "ssp"}
+
+
+@pytest.mark.parametrize("uid", [CAROL, ALICE, ROOT])
+async def test_a_whole_row_update_cannot_change_search(env: _Env, uid: str) -> None:
+    """Not even the owner: PUT/DELETE /collections/{id}/search are owner-only and validate the providers and backfill."""
+    r = await env.client.put(f"/v1/collections/{CID}", headers=_as(uid), json={"id": CID, "description": "d", "search": _SEARCH})
+    assert r.status_code == 403, r.text
+    assert r.json()["extensions"]["error"] == "collection_search_protected" and "/search" in r.json()["detail"]
+    assert (await env.sp.get_storage(Collection).get(CID)).search is None
+
+
+async def test_a_full_grantee_renames_and_a_stale_search_echo_keeps_the_stored_state(env: _Env) -> None:
+    from primer.model.collection import CollectionSearchConfig
+
+    colls = env.sp.get_storage(Collection)
+    stored = CollectionSearchConfig.model_validate({**_SEARCH, "state": "ready"})
+    await colls.update((await colls.get(CID)).model_copy(update={"search": stored}))
+    # The caller read the row while it was still indexing: same configuration, stale lifecycle.
+    echoed = {**_SEARCH, "state": "indexing"}
+    r = await env.client.put(f"/v1/collections/{CID}", headers=_as(CAROL), json={"id": CID, "description": "renamed", "search": echoed})
+    assert r.status_code == 200, r.text
+    row = await colls.get(CID)
+    assert row.description == "renamed" and row.search == stored
+    # Leaving search out is turning it off: refused like any other change.
+    r = await env.client.put(f"/v1/collections/{CID}", headers=_as(ALICE), json={"id": CID, "description": "x"})
+    assert r.status_code == 403 and r.json()["extensions"]["error"] == "collection_search_protected", r.text
