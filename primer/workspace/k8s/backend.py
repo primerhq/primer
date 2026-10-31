@@ -37,7 +37,7 @@ from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded, 
 from primer.workspace.env_names import RUNTIME_TOKEN_ENV_NAMES
 from primer.workspace.files import FileResolvers
 from primer.workspace.k8s.httproute import build_httproute_manifest
-from primer.workspace.k8s.naming import k8s_object_name
+from primer.workspace.k8s.naming import k8s_object_name, legacy_k8s_object_name
 from primer.workspace.runtime.runtime_client import RuntimeClient
 from primer.workspace.runtime.url import build_runtime_url
 from primer.workspace.runtime.ws_sandbox import WSSandbox
@@ -869,6 +869,26 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                 )
             await asyncio.sleep(1.0)
 
+    async def _object_name_in_cluster(self, workspace_id: str) -> str:
+        """The object name a workspace lives under: the current one, or the one an id of 43 to 53 characters was created under before the
+        StatefulSet name limit was honoured (:func:`~primer.workspace.k8s.naming.legacy_k8s_object_name`) when only that StatefulSet exists."""
+        current = k8s_object_name(workspace_id)
+        legacy = legacy_k8s_object_name(workspace_id)
+        if legacy is None or legacy == current:
+            return current
+        assert self._apps_v1 is not None
+        try:
+            await self._apps_v1.read_namespaced_stateful_set(current, self._config.namespace)
+            return current
+        except Exception as exc:  # noqa: BLE001 - only "absent" lets the old name be tried
+            if "404" not in str(exc):
+                return current
+        try:
+            await self._apps_v1.read_namespaced_stateful_set(legacy, self._config.namespace)
+        except Exception:  # noqa: BLE001
+            return current
+        return legacy
+
     async def _reattach(
         self,
         workspace_id: str,
@@ -892,7 +912,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
         if not self._initialised:
             await self.initialize()
         assert self._core_v1 is not None and self._apps_v1 is not None
-        obj_name = k8s_object_name(workspace_id)
+        obj_name = await self._object_name_in_cluster(workspace_id)
         try:
             await self._apps_v1.read_namespaced_stateful_set(
                 obj_name, self._config.namespace,
@@ -1071,7 +1091,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             await close_shielded(ws, what=f"workspace {workspace_id} during destroy")
             await close_shielded(ws.sandbox, what=f"workspace {workspace_id} runtime client during destroy")
 
-        obj_name = k8s_object_name(workspace_id)
+        obj_name = await self._object_name_in_cluster(workspace_id)
         ns = self._config.namespace
         sts_gone = False
         try:
