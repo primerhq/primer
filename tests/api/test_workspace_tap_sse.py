@@ -759,3 +759,48 @@ async def test_tap_session_transitioning_into_scope_is_streamed(app, workspace_r
     finally:
         await router.aclose()
         await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_tap_ends_at_the_first_batch_after_a_revoke(app, workspace_registry):
+    """Final access review F8: the tap re-checks the person's level on each batch, so a stream opened before a revoke ends with the
+    refusal a fresh connect gets (the missing-workspace answer) instead of streaming the next batch."""
+    from primer.model.access import Access
+    from primer.model.storage import OffsetPage
+    from primer.model.user import User
+    from primer.model.workspace import Workspace
+
+    wid, sid = "w-rev", "s-rev"
+    ws = await _ensure_workspace(app, workspace_registry, wid)
+    await _seed_session(app, workspace_id=wid, session_id=sid, last_seq=0)
+    admin_cookie = await _login_cookie(app)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", cookies={"primer_session": admin_cookie}) as admin:
+        assert (await admin.post("/v1/admin/users", json={"username": "reader", "password": "readerpw123"})).status_code == 201
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        assert (await c.post("/v1/auth/login", json={"username": "reader", "password": "readerpw123"})).status_code == 200
+        cookie = c.cookies.get("primer_session")
+    users = app.state.storage_provider.get_storage(User)
+    reader = next(u for u in (await users.list(OffsetPage(offset=0, length=10))).items if u.username == "reader")
+    workspaces = app.state.storage_provider.get_storage(Workspace)
+    row = await workspaces.get(wid)
+    await workspaces.update(row.model_copy(update={"access": Access(owners=["someone"], grants={reader.id: "read"}, rev=1)}))
+    bus, router = await _wire_tap_router(app)
+    try:
+        async with _SSEConnection(app, f"/v1/workspaces/{wid}/tap", cookie=cookie) as conn:
+            assert conn.status_code == 200
+            await _wait_subscribed(router, wid)
+            ws.append_record(sid, seq=1, kind="user_input")
+            await bus.publish(f"session:{sid}:tick", {"seq": 1})
+            assert [f.data["seq"] for f in await conn.read_frames(count=1)] == [1]
+
+            row = await workspaces.get(wid)
+            await workspaces.update(row.model_copy(update={"access": Access(owners=["someone"], rev=2)}))
+            ws.append_record(sid, seq=2, kind="tool_call", tool="bash")
+            await bus.publish(f"session:{sid}:tick", {"seq": 2})
+
+            [frame] = await conn.read_frames(count=1)
+            assert frame.data == {"type": "/errors/not-found", "detail": f"Workspace {wid!r} does not exist"}
+            await asyncio.wait_for(conn._task, timeout=_FRAME_TIMEOUT)  # the stream ended
+    finally:
+        await router.aclose()
+        await bus.aclose()

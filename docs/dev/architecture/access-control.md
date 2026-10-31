@@ -288,8 +288,12 @@ The cross-workspace lists (`GET /v1/sessions`, `POST /v1/sessions/find`, `GET /v
 `scope_to_readable_workspaces` (`primer/access/workspaces.py`) ANDs `workspace_id IN <readable workspaces>` into the query,
 so pages, totals and the recent window count only what the caller reads; external tool calls and approval records carry
 `workspace_id` (migration 24 backfills it from their session; a row whose session was gone stays `None`, visible to admins
-only). A live tap or terminal connection is checked when it opens,
-not again after a revoke (a Phase 6 ticket). A turn already running when a grant is revoked runs to its end, its
+only). A live tap or terminal connection is checked when it opens and again while it lives (`WorkspaceAccessWatch` in
+`primer/access/workspaces.py`, a primary-key read of the workspace row, the level re-judged only when its `access.rev`
+moved): the tap before every batch and keepalive and at most once a second between deltas, the terminal before every
+input. Once the person no longer holds the level the connect needed, the tap sends the refusal a fresh connect gets as an
+`error` frame (`/errors/not-found`, or `/errors/forbidden`) and ends, and the terminal closes 4404 (or 4403 below full)
+without passing that input on. A turn already running when a grant is revoked runs to its end, its
 in-session file tools included; the next turn or resume is refused (6.3).
 
 Subsections 6.8 to 6.14 describe Phase 3 (collections, triggers, channel triggers and harnesses), numbered after the Phase 2
