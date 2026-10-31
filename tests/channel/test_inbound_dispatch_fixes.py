@@ -542,3 +542,102 @@ async def test_W9_attachments_land_in_every_workspace_a_fire_starts_a_session_in
     assert {w: ws.files for w, ws in registry.workspaces.items()} == {
         "w-a": {"media/m8/x.png": b"X"}, "w-b": {"media/m8/x.png": b"X"},
     }
+
+
+# --------------------------------------------------------------------------- W56g
+
+
+async def test_W56g_a_voice_message_is_transcribed_through_the_apps_stt_registry(steers, monkeypatch):
+    import primer.api.registries.speech_registry as speech_registry
+    from primer.model.providers.speech import SpeechToTextProvider
+    from primer.model.speech import (
+        ACTIVE_SPEECH_CONFIG_ID,
+        ActiveSpeechConfig,
+        Transcription,
+    )
+
+    class _NoThrowaway:
+        def __init__(self, *a, **k):
+            raise AssertionError("a throwaway STT registry was built")
+
+    monkeypatch.setattr(speech_registry, "SpeechRegistry", _NoThrowaway)
+
+    class _Adapter:
+        async def transcribe(self, *, model, audio, filename, mimetype):
+            return Transcription(text=f"heard {filename} with {model}")
+
+    class _AppRegistry:
+        def __init__(self):
+            self.gets: list[str] = []
+
+        async def get(self, provider_id):
+            self.gets.append(provider_id)
+            return _Adapter()
+
+    sp = _FakeStorageProvider()
+    await _seed(sp)
+    await sp.get_storage(ActiveSpeechConfig).create(ActiveSpeechConfig(id=ACTIVE_SPEECH_CONFIG_ID, stt_provider_id="stt-1"))
+    sp.get_storage(SpeechToTextProvider)._data["stt-1"] = SpeechToTextProvider.model_construct(id="stt-1", default_model="whisper-1")
+    await CorrelationStore(sp).upsert_thread_session(channel_id="ch-1", anchor="dm:u1", workspace_id="w1", session_id="s9")
+    app_registry = _AppRegistry()
+    await _router(sp, _Fires(sp), registry=_Registry(), stt_registry=app_registry).route_event(
+        event=_event(3, text=None), channel=None, media_parts=[_Part("audio/ogg", "note.ogg", b"OggS")],
+    )
+    assert app_registry.gets == ["stt-1"]
+    assert steers[0][1].startswith("heard note.ogg with whisper-1")
+
+
+async def test_W56g_the_inbound_router_hands_the_registry_to_the_event_router(monkeypatch):
+    from primer.channel.inbound_router import ChannelInboundRouter
+
+    seen: list = []
+    real_init = ChannelEventRouter.__init__
+
+    def _init(self, **kw):
+        seen.append(kw.get("stt_registry"))
+        real_init(self, **kw)
+
+    async def _route(self, **_kw):
+        return ed.ChannelRouteOutcome(kind="ignored")
+
+    monkeypatch.setattr(ChannelEventRouter, "__init__", _init)
+    monkeypatch.setattr(ChannelEventRouter, "route_event", _route)
+    marker = object()
+    sp = _FakeStorageProvider()
+    await ChannelInboundRouter(sp, CorrelationStore(sp), stt_registry=marker).route_event(event=_event(1), channel=None)
+    assert seen == [marker]
+
+
+async def test_W56g_the_channel_registry_gives_its_adapters_the_stt_registry(monkeypatch):
+    from pydantic import SecretStr
+
+    from primer.api.registries import channel_registry as reg_mod
+    from primer.api.registries.channel_registry import ChannelRegistry
+    from primer.channel.adapter import ChannelAdapter
+    from primer.model.channel import ChannelProvider, TelegramChannelProviderConfig
+
+    class _Adapter:
+        stt_registry = None
+
+        async def initialize(self):
+            pass
+
+    async def _build(*_a, **_k):
+        return _Adapter()
+
+    monkeypatch.setattr(reg_mod, "build_adapter", _build)
+    sp = _FakeStorageProvider()
+    await sp.get_storage(ChannelProvider).create(ChannelProvider(
+        id="cp-1", provider=ChannelProviderType.TELEGRAM,
+        config=TelegramChannelProviderConfig(bot_token=SecretStr("123456:abcdefghijklmnopqrstuvwxyz123456")),
+    ))
+    await _seed(sp, triggers=())
+    registry = ChannelRegistry(
+        channel_storage=sp.get_storage(Channel), channel_provider_storage=sp.get_storage(ChannelProvider),
+        inbox=None, storage_provider=sp,
+    )
+    marker = object()
+    registry.set_session_wiring(workspace_registry=None, scheduler=None, stt_registry=marker)
+    adapter = await registry.get_adapter("ch-1")
+    assert adapter.stt_registry is marker
+    assert ChannelAdapter.stt_registry is None  # the declared default every adapter starts from

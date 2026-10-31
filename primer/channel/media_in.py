@@ -158,9 +158,12 @@ async def resolve_active_stt(storage_provider, registry=None):
     (06-s4-design.md section 3). Every failure to resolve one means "no
     STT", which is the spec's attach-as-is fallback: an install with no
     speech provider is a normal steady state, not a broken bootstrap.
+
+    ``registry`` is the app's STT :class:`SpeechRegistry`
+    (``app.state.stt_registry``), whose adapters are cached and closed at
+    shutdown (W56g). Without one (a router nobody wired) a registry is
+    built for this call, as before.
     """
-    if registry is not None:
-        return registry
     from primer.model.providers.speech import SpeechToTextProvider
     from primer.model.speech import ACTIVE_SPEECH_CONFIG_ID, ActiveSpeechConfig
 
@@ -185,9 +188,9 @@ async def resolve_active_stt(storage_provider, registry=None):
         provider_row = await storage.get(provider_id)
         if provider_row is None:
             return None
-        adapter = await SpeechRegistry(
-            storage=storage, factory=default_stt_factory, label="stt",
-        ).get(provider_id)
+        if registry is None:
+            registry = SpeechRegistry(storage=storage, factory=default_stt_factory, label="stt")
+        adapter = await registry.get(provider_id)
         return _BoundSTT(adapter, provider_row.default_model)
     except Exception:  # noqa: BLE001 - degrade to attach-as-is
         logger.warning("media_in: STT adapter build failed", exc_info=True)

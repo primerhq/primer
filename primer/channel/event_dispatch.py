@@ -256,6 +256,7 @@ class ChannelEventRouter:
         event_bus=None,
         fire_trigger=_default_fire_trigger,
         artifact_registry=None,
+        stt_registry=None,
     ) -> None:
         self._sp = storage_provider
         self._correlation = correlation_store
@@ -263,6 +264,7 @@ class ChannelEventRouter:
         self._bus = event_bus
         self._fire_trigger = fire_trigger
         self._artifacts = artifact_registry
+        self._stt_registry = stt_registry
 
     async def route_event(
         self,
@@ -671,7 +673,7 @@ class ChannelEventRouter:
                     artifact_storage=store,
                 )
                 paths = paths or landed  # every workspace gets the same media/<fire_id>/ paths
-        stt = await resolve_active_stt(self._sp)
+        stt = await resolve_active_stt(self._sp, self._stt_registry)
         transcript, note = await transcribe_voice_parts(
             parts=media_parts, artifact_storage=store, stt=stt,
         )
