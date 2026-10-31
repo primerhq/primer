@@ -3731,7 +3731,8 @@ async def _watch_bus_for_cancel(
     event_bus: EventBus, session_id: str, cancel_event: asyncio.Event,
 ) -> None:
     try:
-        sub = event_bus.subscribe()
+        # Only this session's cancel key, and only the newest of it: a stop request is never lost behind a backlog and the watcher reads nothing else.
+        sub = event_bus.subscribe(key=f"session:{session_id}:cancel", coalesce=True)
         await sub.ready()
     except Exception as exc:  # noqa: BLE001 - the row poll is the fallback
         logger.warning(

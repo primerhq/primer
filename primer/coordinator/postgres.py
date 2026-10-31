@@ -214,7 +214,7 @@ class _PostgresInvalidationSubscription(InvalidationSubscription):
         # subscription: LISTEN/NOTIFY drops events across a reconnect, so
         # this fires when the transport comes back and the subscriber
         # needs to treat its cached invalidation state as stale.
-        self._sub = bus.subscribe(on_reconnect=on_reconnect)
+        self._sub = bus.subscribe(on_reconnect=on_reconnect, prefix=f"invalidate:{topic.value}:")
         self._task: asyncio.Task = asyncio.create_task(
             self._run(),
             name=f"invalidation-sub-{topic.value}",

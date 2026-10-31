@@ -94,8 +94,15 @@ class EventBus(ABC):
         self,
         *,
         on_reconnect: "Callable[[], None] | None" = None,
+        key: str | None = None,
+        prefix: str | None = None,
+        suffix: str | None = None,
+        coalesce: bool = False,
     ) -> "EventSubscription":
-        """Subscribe to ALL events on the bus.
+        """Subscribe to the events on the bus: all of them, or only ``key`` (exact), or only keys starting with ``prefix`` and/or ending with ``suffix``.
+
+        ``coalesce`` keeps only the NEWEST undelivered event (a stop request such as a cancel is never lost behind a backlog). Every subscription's
+        queue is bounded: when a subscriber stops reading, its oldest events are dropped (and counted), never the bus's memory grown.
 
         Returns an :class:`EventSubscription` async-iterator the
         caller iterates with ``async for``. The subscription owns

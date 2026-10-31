@@ -17,6 +17,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from primer.bus._mailbox import DEFAULT_QUEUE_MAXSIZE, Mailbox, matches
 from primer.int.event_bus import Event, EventBus, EventSubscription
 
 
@@ -27,21 +28,24 @@ class _InMemorySubscription(EventSubscription):
     Iteration drains the queue until the subscription is closed.
     """
 
-    def __init__(self, bus: "InMemoryEventBus") -> None:
+    def __init__(
+        self, bus: "InMemoryEventBus", *, key: str | None = None, prefix: str | None = None, suffix: str | None = None, coalesce: bool = False, maxsize: int = DEFAULT_QUEUE_MAXSIZE,
+    ) -> None:
         self._bus = bus
-        self._queue: asyncio.Queue[Event | None] = asyncio.Queue()
+        self._key = key
+        self._prefix = prefix
+        self._suffix = suffix
+        self._mailbox = Mailbox(maxsize, coalesce=coalesce)
         self._closed = False
+
+    def wants(self, event_key: str) -> bool:
+        return matches(self._key, self._prefix, event_key, self._suffix)
 
     def __aiter__(self) -> "_InMemorySubscription":
         return self
 
     async def __anext__(self) -> Event:
-        if self._closed and self._queue.empty():
-            raise StopAsyncIteration
-        item = await self._queue.get()
-        if item is None:  # close sentinel
-            raise StopAsyncIteration
-        return item
+        return await self._mailbox.next()
 
     async def aclose(self) -> None:
         if self._closed:
@@ -50,14 +54,15 @@ class _InMemorySubscription(EventSubscription):
         # Drop ourselves from the bus's subscriber list so we don't
         # receive any further events.
         self._bus._unsubscribe(self)
-        # Push a sentinel so any pending __anext__ unblocks.
-        await self._queue.put(None)
+        # Queue a sentinel so any pending __anext__ unblocks.
+        self._mailbox.close()
 
 
 class InMemoryEventBus(EventBus):
     """Single-process bus backed by per-subscriber asyncio.Queues."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, queue_maxsize: int = DEFAULT_QUEUE_MAXSIZE) -> None:
+        self._queue_maxsize = queue_maxsize
         self._subscribers: list[_InMemorySubscription] = []
         self._closed = False
 
@@ -88,13 +93,18 @@ class InMemoryEventBus(EventBus):
             payload=dict(payload or {}),
             published_at=datetime.now(timezone.utc),
         )
-        for sub in self._subscribers:
-            await sub._queue.put(event)
+        for sub in list(self._subscribers):
+            if sub.wants(event_key):
+                sub._mailbox.offer(event)
 
     def subscribe(
         self,
         *,
         on_reconnect: "Callable[[], None] | None" = None,
+        key: str | None = None,
+        prefix: str | None = None,
+        suffix: str | None = None,
+        coalesce: bool = False,
     ) -> _InMemorySubscription:
         if self._closed:
             raise RuntimeError("subscribe on closed InMemoryEventBus")
@@ -102,7 +112,7 @@ class InMemoryEventBus(EventBus):
         # reconnects and never calls ``on_reconnect``. The parameter
         # exists only to satisfy the EventBus contract.
         del on_reconnect
-        sub = _InMemorySubscription(self)
+        sub = _InMemorySubscription(self, key=key, prefix=prefix, suffix=suffix, coalesce=coalesce, maxsize=self._queue_maxsize)
         self._subscribers.append(sub)
         return sub
 
