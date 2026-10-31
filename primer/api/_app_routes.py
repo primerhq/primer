@@ -243,6 +243,8 @@ def _mount_routers(
     app.include_router(compute.graph_access_router, prefix=prefix, dependencies=user_dep)
     app.include_router(compute.graph_router, prefix=prefix, dependencies=user_dep)
     # Phase 3 — knowledge (Collection + Document) — feature => require_user.
+    # The access sub-resource is mounted before its CRUD router (route-order rule in _crud.py).
+    app.include_router(knowledge.collection_access_router, prefix=prefix, dependencies=user_dep)
     app.include_router(knowledge.collection_router, prefix=prefix, dependencies=user_dep)
     app.include_router(knowledge.document_router, prefix=prefix, dependencies=user_dep)
     # Internal (system) collections config/bootstrap — admin only.
