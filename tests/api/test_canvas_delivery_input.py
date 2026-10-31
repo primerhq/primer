@@ -1,6 +1,6 @@
 """What a user entered on a canvas stays in its session's own input, whichever way the event is delivered (pivot P5 S5, the lead's ruling 1).
 
-Sessions and their rows are a shared read (the user's G7-02 decision): ``GET /v1/sessions/{id}`` serves any signed-in user the row, its
+A session's row is read through the session's workspace's access: ``GET /v1/sessions/{id}`` serves every reader of that workspace the row, its
 ``parked_state`` and its queued steers, and ``GET /v1/events`` serves a non-admin the canvas events without their input (#872). The
 delivery (``primer.canvas.delivery``) adds copies of each event: the queued steer's attribution, the USER_INPUT's ``payload.canvas_event``
 and ``payload.canvas_digest``, the ``canvas_event`` record, what a wake stamps on the row or publishes. None of them may carry a click's
@@ -27,6 +27,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport
 
+from tests.events._users import seed_account_of
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
 from primer.auth.passwords import hash_password
@@ -143,6 +144,7 @@ class _World:
 
     async def seed(self, **row: Any) -> None:
         self.base = await self.sp.get_event_store().max_id()
+        await seed_account_of(self.sp, ADMIN_REF)  # a deleted or disabled person's park takes no wake
         await self.sessions.create(WorkspaceSession(
             id=SESSION, workspace_id=WORKSPACE, binding=AgentSessionBinding(agent_id="operator"), created_at=datetime.now(UTC),
             initiated_by=ADMIN_REF, **({"status": SessionStatus.WAITING, "turn_status": "idle"} | row),

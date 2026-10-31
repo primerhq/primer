@@ -57,6 +57,7 @@ def store(provider) -> McpOAuthStore:
 def token_row(store: McpOAuthStore, toolset_id: str = "kb", **over) -> McpOAuthTokenSet:
     base = {
         "id": toolset_id,
+        "toolset_id": toolset_id,
         "grant": "authorization_code",
         "access_token_enc": store.seal("tok-plain"),
         "refresh_token_enc": store.seal("ref-plain"),

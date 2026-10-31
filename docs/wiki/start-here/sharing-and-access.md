@@ -18,14 +18,24 @@ Agents, graphs, toolsets, workspace templates, channels, collections, triggers, 
 - **Your runs act as you.** An agent never brings access of its own: what a run can read or change is what the person behind it can.
 - **Not found means not yours.** An entity you cannot read answers exactly like one that does not exist.
 - **Some things share with their parent.** A document has the access of its collection, a subscription (or channel binding) the access of its trigger, and what a harness installed the access of the harness. Share the parent, never the child: sharing an installed row directly answers `type=conflict` (`harness_managed`).
+- **Sign in for yourself.** An MCP toolset that signs in through the browser keeps one sign-in per person. If it is shared with you, or one of its tools is public, you connect your own sign-in in the console (Toolsets, the toolset, Connect: "Your sign-in"), and your runs send only your token, never the owner's. A run whose person has not signed in is told to sign in. A toolset that signs in with client credentials has one shared sign-in ("Shared sign-in") that only people with full access can connect. `system__get_toolset_auth_status` reads your own status.
+- **What an MCP client sees.** A client connected to primer's MCP endpoint acts as the person behind its token and is offered only primer's built-in tools, never a tool of a toolset someone registered. Those tools check that person's access like any run does.
+- **The activity log names the person.** Every change records the user behind it (for an API token, its owner), so an admin's activity view shows who did what.
+
 
 ## What each level allows
 
 | Kind | read | full | owner |
 |---|---|---|---|
+| Agent | see it, start and run a session with it | edit it | delete it, share it |
+| Graph | see it, run it | edit it | delete it, share it |
+| Toolset | see it, use its tools in your runs | edit it | delete it, share it, mark single tools public |
+| Workspace template | see it, create a workspace from it | edit it | delete it, share it |
+| Channel | see it (a channel trigger that fires from it needs `read` on it) | edit it | delete it, share it |
 | Collection | list, read, grep and search its documents | write, move, delete and import documents | delete it, share it, turn search on or off |
 | Trigger | see it and its subscriptions, park on it | edit it, fire it now, manage its subscriptions and channel bindings | delete it, share it, rotate its webhook token |
 | Harness | see it and what it installed | (harness writes are admin-only for now) | share it |
+| Workspace | read its files, open its sessions and their transcripts, its canvas, log and events | write files, steer its sessions, click its canvas, rename it, bind its replies | delete it, change its sharing, flip its terminal switch (details below) |
 
 The platform wiki (the `system` collection) is public and read-only for everyone. A trigger on a channel needs `read` on that channel when you save it, and a trigger without a channel is admin-only. A trigger still runs as whoever saved it last.
 
@@ -35,7 +45,7 @@ The platform wiki (the `system` collection) is public and read-only for everyone
 - **What `full` adds.** Write files, start a session, and steer, stop or answer any session in the workspace, whoever started it (an approval's approver rule still applies on top), click its canvas, rename it and bind its replies. The terminal also needs the workspace's terminal switch for anyone but an admin.
 - **What `owner` adds.** Delete the workspace, change its sharing, and flip the terminal switch.
 - **A session has no sharing of its own.** Share the workspace it lives in. A tool that names a workspace or session you cannot read answers `not-found`, exactly as an unknown id, wherever your run lives: a run in prime reaches no more than its person can.
-- **Who a steered turn runs as.** Each turn runs as the person whose message started it. When a peer steers a session you started, that turn runs with the peer's access, not yours: your private toolsets, collections and sign-ins are not lent to it, and the session's `turn_person` names the peer while `initiated_by` still names you. Answering a question or an approval starts no turn: the parked turn keeps its person. A channel reply runs as the session's creator, a trigger fire as its owner.
+- **Who a steered turn runs as.** Each turn runs as the person whose message started it. When a peer steers a session you started, that turn runs with the peer's access, not yours: your private toolsets, collections and sign-ins are not lent to it, and the session's `turn_person` names the peer while `initiated_by` still names you. Answering an approval starts no turn: the parked turn keeps its person. A peer's answer to a parked question - or the result a peer provides for a tool its session waits on - re-attributes the resumed turn to them, as a steer does. A channel reply runs as the session's creator, a trigger fire as its owner.
 - **Revoking.** Remove the grant and the workspace, its sessions and its events answer the peer like missing ones (404, `not-found`), including sessions they started there. Steering, reading and every workspace tool refuse them from then on, a turn of theirs queued or parked there does not run (the session ends failed with `workspace_access_revoked`), and a wait of theirs on its events stops waking.
 - **Where.** `system__set_entity_access` with `kind` `workspace` (no `public_tools`), Share on the workspace in the console, or `GET /v1/workspaces/{id}/access` and `PUT /v1/workspaces/{id}/access` over REST, all with the same body and `rev` rule.
 
@@ -44,6 +54,13 @@ The platform wiki (the `system` collection) is public and read-only for everyone
 - Every full user gets their own private default workspace the first time they sign in as one (first login, or the first one after an admin promotes them from `restricted`). Its id is `ws-<user id>`, you own it, and your operator session (`main`) is waiting in it.
 - `workspaces__list_workspaces` and `workspaces__get_workspace` mark it with `is_default: true` for you; another user sees their own there. The install's original default workspace, prime, is the first admin's.
 - It can never be deleted (`reserved_workspace`), but you can share it or make it public like any workspace.
+
+## When an owner is demoted, disabled or deleted
+
+- **Demoted or disabled keeps everything and loses use.** A demoted or disabled user keeps their entities, grants and sign-ins, but reaches nothing and their runs are refused; re-enabling or promoting them restores their access. Nothing moves.
+- **Deleted hands over what they owned.** Each entity a deleted user solely owned moves to the admin who deleted them; an entity they co-owned keeps its other owners (the heir is not added). Their grants on other people's entities are removed, and the grants other people hold on their entities survive. Their MCP sign-ins are forgotten.
+- **Triggers that ran as them stop.** A trigger or subscription that runs as the deleted user is switched off rather than re-owned: a run as a missing user is refused, and the trigger must not start running with the heir's access. Someone with full access who edits it takes it over as its run-as owner.
+- **Their default workspace is kept.** It is handed over and renamed `<username> (deleted user)`, so the heir can tell it from their own; its sessions stay.
 
 ## Who can use
 
@@ -107,6 +124,7 @@ Make two tools of a toolset public without sharing the rest:
 - A collection's search settings change only through its search routes, by an owner: replacing the whole collection with a different `search` block is refused.
 - Profiles and providers are shared by use grants only: only an admin sets them, with `set_entity_access` kinds `model_profile`, `llm_provider`, `embedding_provider`, `cross_encoder_provider`, `semantic_search_provider`, `workspace_provider` and `channel_provider` (no owners, every grant `read`). You can read the sharing of one you may use, but it lists no one else.
 - Sharing a workspace at `full` lets the peer change its `agents.md`, which every agent in it reads: share at `read` unless they need to act.
+- Removing someone's access to an MCP toolset does not delete their sign-in, but their runs stop using it at once, and a sign-in they started before losing access connects nothing. Changing the toolset's URL or sign-in settings, or deleting it, forgets every person's sign-in.
 
 ## Related
 

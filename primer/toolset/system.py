@@ -86,7 +86,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from primer.access.person import person_for_tool
-from primer.access.policy import level_of
+from primer.access.policy import level_of, readable_ids
+from primer.storage.q import Q
 from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks, check_graph_node_profiles
 from primer.agent.approval import ApprovalResolver
 from primer.agent.approval_checks import check_policy
@@ -720,7 +721,24 @@ def build_system_toolset(
     async def _document_list_filter(ctx: ToolContext | None) -> Any:
         return await readable_documents(_collection_rows, person_for_tool(ctx))
 
-    inherited_by_label: dict[str, Any] = {"document": (_document_row_guard, _document_list_filter)}
+    # A graph run (thread) inherits its graph's access, as the REST graph-run routes ask it: read to see a run, full to change or delete it.
+    _graph_rows = storage_provider.get_storage(Graph)
+
+    async def _graph_thread_row_guard(row: GraphThread, ctx: ToolContext | None, write: bool) -> Any:
+        _, denied = await collection_for(
+            _graph_rows, person_for_tool(ctx), row.graph_id, AccessLevel.FULL if write else AccessLevel.READ,
+            what=f"Graph run {row.id!r}", dangling_ok=True,
+        )
+        return denied
+
+    async def _graph_thread_list_filter(ctx: ToolContext | None) -> Any:
+        ids = await readable_ids(_graph_rows, person_for_tool(ctx))
+        return None if ids is None else Q(GraphThread).where_in("graph_id", ids).build()
+
+    inherited_by_label: dict[str, Any] = {
+        "document": (_document_row_guard, _document_list_filter),
+        "graph_thread": (_graph_thread_row_guard, _graph_thread_list_filter),
+    }
     for label, plural, cls, on_c, on_u, on_d, role, owned in crud_specs:
         pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
         row_guard, list_filter = inherited_by_label.get(label, (None, None))

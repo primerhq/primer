@@ -633,3 +633,57 @@ def test_terminal_ws_refusals_at_connect() -> None:
         ) as ws:
             assert ws.receive_bytes() == b"ADM\n"
             ws.close()
+
+
+class _RecordingPty(_FakePty):
+    """Admits with one frame, then echoes every write (so a test can tell a keystroke that reached the shell)."""
+
+    def __init__(self) -> None:
+        self.written: list[bytes] = []
+        self._echo: asyncio.Queue[bytes] = asyncio.Queue()
+
+    async def output(self) -> Any:
+        yield b"ADM\n"
+        while True:
+            yield await self._echo.get()
+
+    async def write(self, data: bytes) -> None:
+        self.written.append(data)
+        self._echo.put_nowait(data)
+
+
+@pytest.mark.parametrize("after, code", [({}, 4404), ({BOB: "read"}, 4403)])
+def test_terminal_ws_closes_at_the_first_keystroke_after_a_revoke(after: dict, code: int) -> None:
+    """Final access review F8: the terminal re-checks FULL on each input, so a shell opened before a revoke (or a downgrade to read) closes
+    with the code a fresh connect would get, and that keystroke never reaches the PTY."""
+    ws_a = _FakeWorkspace("ws-a")
+    row = Workspace(
+        id="ws-a", template_id=TPL, provider_id="local-1", created_at=NOW, runtime_meta=ws_a.runtime_meta,
+        terminal_user_access=True, access=Access(owners=[ALICE], grants={BOB: "full"}, rev=1),
+    )
+    rows = {"ws-a": row}
+    app = FastAPI(title="terminal ws revoke (test)")
+    register_error_handlers(app)
+    app.state.storage_provider = _MemSP(rows)
+    app.state.provider_registry = object()
+    app.state.workspace_registry = _StubRegistry(ws_a, terminal_user_access=True)
+    app.add_middleware(_ActorMiddleware)
+    pty = _RecordingPty()
+
+    async def _resolve(_workspace: Any, *, cols: int, rows: int) -> _RecordingPty:
+        return pty
+
+    app.state.terminal_pty_resolver = _resolve
+    app.include_router(terminal.terminal_router, prefix="/v1")
+
+    with SyncTestClient(app) as sclient:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with sclient.websocket_connect("/v1/workspaces/ws-a/terminal", headers=_as(BOB)) as ws:
+                assert ws.receive_bytes() == b"ADM\n"
+                ws.send_bytes(b"ls\n")
+                assert ws.receive_bytes() == b"ls\n"
+                rows["ws-a"] = row.model_copy(update={"access": Access(owners=[ALICE], grants=after, rev=2)})
+                ws.send_bytes(b"cat /secret\n")
+                ws.receive_bytes()
+        assert excinfo.value.code == code
+    assert pty.written == [b"ls\n"]

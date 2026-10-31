@@ -91,9 +91,8 @@ def test_operator_upgrades_long_horizon_plans_to_graphs() -> None:
 def test_operator_reads_workspace_instructions_as_guidance_that_grants_nothing() -> None:
     """agents.md is written by the workspace's users: guidance, never an order or a grant.
 
-    Prime is shared by every user (the 2026-10-23 decision on audit G7-02),
-    so an admin's operator must not be told to follow whatever a user wrote
-    there. The paragraph names the two headings exactly as
+    Prime was shared by every user when this was ruled (the 2026-10-23 decision on audit G7-02, reversed in access-control Phase 2),
+    so an admin's operator must not be told to follow whatever a user wrote there. The paragraph names the two headings exactly as
     ``workspace_instructions_part`` frames the file.
     """
     part = WORKSPACE_INSTRUCTIONS_PROMPT_PART

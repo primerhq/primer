@@ -84,7 +84,9 @@ async def test_harnesses_adapter_forwards_conn():
         sentinel, "h1", outcome=ReleaseOutcome(success=True, drop_lease=True)
     )
     assert storage.get_conns == [sentinel]
-    assert storage.update_conns == [sentinel]
+    # One field-scoped patch_if on the caller's transaction (no whole-row update that could put back a share).
+    assert storage.patch_conns == [sentinel]
+    assert storage.update_conns == []
 
 
 @pytest.mark.asyncio

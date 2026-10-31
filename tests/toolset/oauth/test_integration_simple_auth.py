@@ -41,7 +41,10 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import httpx
 import pytest
 
+from primer.access.person import Person
 from primer.common.secret_box import SecretBox
+from primer.mcp.server import current_actor
+from primer.model.principal import Principal
 from primer.model.provider import (
     HttpConfig,
     McpConfig,
@@ -157,8 +160,11 @@ async def test_headless_oauth_flow_against_simple_auth(fake_storage_provider) ->
             config=HttpConfig(url=_MCP_URL, oauth=_config()),
         ),
     )
-    target = OAuthTarget.from_toolset(toolset)
+    # The sign-in belongs to one person, and the provider sends the token of the person it acts for (access-control P5 Task 2).
+    target = OAuthTarget.from_toolset(toolset, Person("integration-user", "user"))
     assert target is not None
+    acting = current_actor.set(Principal(type="user", id="integration-user", display="integration-user", role="user", source="local",
+                                         user_id="integration-user"))
     async with httpx.AsyncClient(timeout=30.0) as http:
         service = ToolsetOAuthService(
             storage_provider=fake_storage_provider,
@@ -207,3 +213,4 @@ async def test_headless_oauth_flow_against_simple_auth(fake_storage_provider) ->
         )
         assert result is not None
         await service.aclose()
+    current_actor.reset(acting)

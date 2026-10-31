@@ -468,7 +468,7 @@ def _make_list_handler(storage_provider: "StorageProvider") -> ToolHandler:
                 pred = Predicate(left=pred, op=Op.AND, right=p)
             result = await storage.find(pred, page)
 
-        items = [_harness_dict(h) for h in result.items]
+        items = [_harness_dict(h.served_to(person_for_tool(ctx))) for h in result.items]
         return _ok({"items": items, "total": result.total, "offset": result.offset, "length": result.length})
 
     return _handler
@@ -482,7 +482,7 @@ def _make_get_handler(storage_provider: "StorageProvider") -> ToolHandler:
         # A harness the caller cannot read answers exactly as a missing one.
         if harness is None or level_of(person_for_tool(ctx), harness.access) is None:
             return _err(f"Harness {harness_id!r} does not exist", error_type="not-found")
-        return _ok(_harness_dict(harness))
+        return _ok(_harness_dict(harness.served_to(person_for_tool(ctx))))
 
     return _handler
 

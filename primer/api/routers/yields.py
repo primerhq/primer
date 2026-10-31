@@ -52,6 +52,7 @@ from primer.model.except_ import (
     NotFoundError,
     ValidationError,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.yield_ import GATE_ID_PATTERN, entry_id_of, gate_id_of, with_wake_entry, with_wake_gate, with_wake_park
 from primer.session.approvers import ADMIN_ONLY_METADATA
@@ -232,8 +233,9 @@ async def _durable_wake(
     engine: ClaimEngine | None,
     event_bus: EventBus,
     storage_provider=None,
+    by=None,
 ) -> bool:
-    """Durably flip the parked row to resumable, then wake the bus.
+    """Durably flip the parked row to resumable, then wake the bus (``by``: the answer's sender, who the resumed turn runs as).
 
     D-C2 fix: the durable flip (stamp ``resume_event_payload`` +
     ``parked_status='resumable'`` + re-arm the claim lease) happens FIRST so a
@@ -259,6 +261,7 @@ async def _durable_wake(
         payload=payload,
         session_storage=session_storage,
         engine=engine,  # type: ignore[arg-type]
+        by=by,
     )
     if not did:
         raise decided_gate_error("ask_user")
@@ -466,6 +469,8 @@ async def post_ask_user_respond(
     # An answer is a person's input into the session's run: full on the workspace the
     # session lives in (P2 Task 3), before the park is read and before anything moves.
     await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.FULL)
+    # The answer is model input, like a steer: the resumed turn runs as its sender, computed as the steer route does (final access review F6).
+    by = PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None
     blob = _parked_blob(sess)
     if blob is None:
         if sess.parked_status not in ("parked", "resumable"):
@@ -506,6 +511,7 @@ async def post_ask_user_respond(
                 engine=engine,
                 event_bus=event_bus,
                 storage_provider=storage_provider,
+                by=by,
             )
             return {"status": "accepted"}
         # A graph tool_call ask_user node: its prompt + schema live in
@@ -548,6 +554,7 @@ async def post_ask_user_respond(
             engine=engine,
             event_bus=event_bus,
             storage_provider=storage_provider,
+            by=by,
         )
         return {"status": "accepted"}
     if not yielded.get("tool_name"):
@@ -585,6 +592,7 @@ async def post_ask_user_respond(
         engine=engine,
         event_bus=event_bus,
         storage_provider=storage_provider,
+        by=by,
     )
     return {"status": "accepted"}
 

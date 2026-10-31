@@ -316,7 +316,8 @@ async def test_t0051_workspace_create_honors_user_id(
     provider_id, template_id = await _setup_provider_template(
         client, suffix=unique_suffix, root=tmp_path,
     )
-    user_supplied_id = f"ws-user-{unique_suffix}"
+    # Not ``ws-user-...``: that id space is the per-user default workspaces' (reserved from clients, access-control final review F2).
+    user_supplied_id = f"ws-explicit-{unique_suffix}"
     try:
         ws = await client.post(
             "/v1/workspaces",

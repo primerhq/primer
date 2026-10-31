@@ -13,8 +13,9 @@ carry no cookie at all, so a file URL is its own credential:
 session that does not exist or is on another workspace than the path names.
 
 * ``GET .../canvas`` READS the canvas: the elements, the ``values`` and the newest events WITH what the users entered (a value, an
-  Html emit's data). That is part of the shared session read (the user's G7-02 decision): any user who may read the session may
-  read its canvas, as the lead ruled on #892 round 2 for the session's own transcript and queue, and on S6 (ruling 2) for this route.
+  Html emit's data). That is part of the session read: a session and its canvas are read through the session's workspace's access,
+  so anyone who may read the session may read its canvas, as the lead ruled on #892 round 2 for the session's own transcript
+  and queue, and on S6 (ruling 2) for this route.
   It never marks an event read: only the agent's reads do. The event FEED (``GET /v1/events``) is another door and still removes
   the input for a non-admin (#872).
 * ``POST .../canvas/ops`` and ``DELETE .../canvas`` write it (an operator's batch, a clear), and ``POST .../canvas/events`` records a

@@ -68,6 +68,7 @@ class User(Identifiable):  # noqa: N801
 
     role: str = "user"
     created_at: datetime | None = None
+    disabled: bool = False
 
 
 def _public() -> dict[str, Any]:
@@ -100,7 +101,7 @@ class M021EntityOwnership:
     description = "give existing agents, graphs, toolsets, workspace templates and channels an owner"
 
     async def apply(self, sp: StorageProvider) -> None:
-        admins = [u for u in await _read_all(sp.get_storage(User)) if u.role == "admin" and u.created_at is not None]
+        admins = [u for u in await _read_all(sp.get_storage(User)) if u.role == "admin" and not u.disabled and u.created_at is not None]
         first_admin = min(admins, key=lambda u: u.created_at).id if admins else None
         stamped: dict[str, int] = {}
         for view in (Agent, Graph, Toolset, WorkspaceTemplate, Channel):

@@ -1688,7 +1688,7 @@ async def _toolset_on_pre_update(
 
     Admin-only when either the stored row or the new body is a stdio MCP or python toolset (the code it runs on the server host is
     what changes hands), when the URL or OAuth endpoints change while a secret is sent back masked (the stored secret would go to the
-    new endpoint), and when an OAuth toolset's URL or OAuth block changes. An accepted OAuth settings change forgets the shared sign-in.
+    new endpoint), and when an OAuth toolset's URL or OAuth block changes. An accepted OAuth settings change forgets every sign-in of it.
     See :func:`primer.toolset.toolset_checks.toolset_admin_reason`. The role check runs before anything else touches the body, in
     particular before the masked secrets are restored.
     """
@@ -1781,12 +1781,14 @@ async def list_toolset_tools(
 ) -> dict:
     """Enumerate the toolset's tools from the live provider.
 
-    An MCP toolset that signs in with OAuth and has no usable shared sign-in
-    (never connected, signed out, its settings changed) answers 409
+    An MCP toolset that signs in with OAuth and has no usable sign-in for the
+    caller (a browser sign-in is each person's own; client credentials are
+    shared: never connected, signed out, its settings changed) answers 409
     ``/errors/mcp-sign-in-required`` with ``extensions.toolset_id`` and
-    ``extensions.reason``: an admin connects it from the console
-    (``POST /v1/toolsets/{toolset_id}/oauth/start``). No consent URL is
-    served here.
+    ``extensions.reason``: the caller connects a browser sign-in for
+    themselves from the console, someone with full access connects client
+    credentials (``POST /v1/toolsets/{toolset_id}/oauth/start``). No consent
+    URL is served here.
     """
     from primer.model.except_ import ProviderError
 
@@ -2079,11 +2081,13 @@ async def list_all_tools(
             from primer.toolset.oauth.service import OAuthTarget
 
             readable = level_of(person, row.access) is not None
-            if readable and OAuthTarget.from_toolset(row) is not None:
-                status = await mcp_oauth.status(row)
+            # The caller's own sign-in (the shared one for client credentials), for whoever may use a tool of it: a public tool needs the
+            # caller's own token too (access-control P5 Task 3).
+            if (readable or row.access.public_tools) and OAuthTarget.from_toolset(row, person) is not None:
+                status = await mcp_oauth.status(row, person)
                 entry["auth"] = status.model_dump(
                     mode="json",
-                    include={"mode", "state", "reason", "expires_at"},
+                    include={"mode", "state", "reason", "expires_at", "per_user"},
                 )
             tools, reason = await _catalogue_tools(
                 registry, row.id, principal,

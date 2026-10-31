@@ -98,6 +98,7 @@ from primer.storage.migrations.m027_harness_ownership import (
 from primer.storage.migrations.m028_infrastructure_public import (
     M028InfrastructurePublic,
 )
+from primer.storage.migrations.m029_mcp_oauth_per_user import M029McpOAuthPerUser
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M026TriggerOwnership(),
     M027HarnessOwnership(),
     M028InfrastructurePublic(),
+    M029McpOAuthPerUser(),
 )
 
 #: Highest version this build knows how to apply.

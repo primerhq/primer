@@ -24,7 +24,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
-from primer.bootstrap.prime import is_user_default_workspace, resolve_default_workspace_id
+from primer.bootstrap.prime import is_reserved_user_default_id, is_user_default_workspace, resolve_default_workspace_id
 from primer.access.person import Person
 from primer.access.policy import level_of
 from primer.model.access import Access
@@ -434,6 +434,9 @@ class WorkspaceRegistry:
         """
         if workspace_id is None:
             return await self._create(template=template, overrides=overrides, workspace_id=None, name=name, reply_binding=reply_binding, access=access, person=person)
+        # Every caller is a client door (REST and the tool); the platform makes a user's default itself (final access review F2).
+        if await is_reserved_user_default_id(self._sp, workspace_id):
+            raise ConflictError(f"Workspace id {workspace_id!r} is reserved: ws-<user id> is that user's default workspace")
         lock, holders = self._creating.setdefault(workspace_id, (asyncio.Lock(), [0]))
         holders[0] += 1
         try:

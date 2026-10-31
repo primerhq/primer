@@ -46,8 +46,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.responses import StreamingResponse
 
 from primer.access.person import person_from_request
-from primer.access.workspaces import require_workspace
+from primer.access.workspaces import WorkspaceAccessWatch, require_workspace
 from primer.model.access import AccessLevel
+from primer.model.except_ import AccessDeniedError, NotFoundError
 from primer.model.storage import FieldRef, Op, OffsetPage, Predicate, Value
 from primer.model.user import User
 from primer.model.workspace_session import WorkspaceSession
@@ -241,8 +242,12 @@ async def _stream_tap(
     selector: TapSelector,
     cursor: TapCursor,
     had_cursor: bool,
+    watch: WorkspaceAccessWatch | None = None,
 ):
     """Async generator yielding SSE frames for a workspace tap.
+
+    ``watch`` re-checks the person's level (final access review F8) before every batch (a tick) and keepalive, and at most once a
+    second between deltas: once it fails, the stream sends the refusal a fresh connect would get as an error frame and ends.
 
     Maintains ``in_scope`` as ``sid -> (session_row, byte_offset)`` — only
     positive (confirmed-in-scope) entries.  On each tick for a ``sid`` NOT in
@@ -284,6 +289,8 @@ async def _stream_tap(
 
     pump_tick = asyncio.create_task(_pump(tick_sub, "tick"))
     pump_delta = asyncio.create_task(_pump(delta_sub, "delta"))
+    loop = asyncio.get_running_loop()
+    checked_at = float("-inf")
     try:
         while True:
             try:
@@ -291,6 +298,18 @@ async def _stream_tap(
                     combined.get(), timeout=_KEEPALIVE_INTERVAL_S
                 )
             except TimeoutError:
+                tag, item = "keepalive", None
+            if watch is not None and (tag != "delta" or loop.time() - checked_at >= 1.0):
+                checked_at = loop.time()
+                try:
+                    await watch.check()
+                except AccessDeniedError as exc:
+                    yield _error_frame("/errors/forbidden", str(exc))
+                    return
+                except NotFoundError as exc:
+                    yield _error_frame("/errors/not-found", str(exc))
+                    return
+            if tag == "keepalive":
                 # Idle: emit a keepalive comment so proxies do not reap us.
                 yield ": keepalive\n\n"
                 continue
@@ -412,9 +431,8 @@ async def workspace_tap(
     # Access (P2 Task 2): the tap streams live workspace activity, so it
     # needs READ on the workspace. A stranger answers the missing-workspace
     # 404 before anything about the stream is confirmed.
-    await require_workspace(
-        app_state.storage_provider, person_from_request(request), workspace_id, AccessLevel.READ,
-    )
+    person = person_from_request(request)
+    await require_workspace(app_state.storage_provider, person, workspace_id, AccessLevel.READ)
     router = getattr(app_state, "workspace_tap_router", None)
     if router is None:
         raise HTTPException(
@@ -459,6 +477,7 @@ async def workspace_tap(
         selector=parsed_selector,
         cursor=tap_cursor,
         had_cursor=had_cursor,
+        watch=WorkspaceAccessWatch(storage_provider, person, workspace_id, AccessLevel.READ),
     )
     return StreamingResponse(
         generator,

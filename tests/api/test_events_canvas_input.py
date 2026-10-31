@@ -1,7 +1,7 @@
 """``GET /v1/events`` gives a non-admin a ``canvas.event`` without what the user ENTERED (audit G8-08, the lead's ruling D).
 
-Sessions and their transcripts are a shared read in this install by design (the user's G7-02 decision): every user may open every
-session. What the event feed carried that nothing else does is the input of a canvas interaction, a Select's ``value`` and an Html
+A session and its transcript are read through the workspace's access, so every reader of the workspace may open the session and
+read the transcript. What the event feed carried that nothing else does is the input of a canvas interaction, a Select's ``value`` and an Html
 element's emit ``data``. So a non-admin reader gets every ``canvas.event`` with those two payload keys REMOVED (absent, not masked), and
 everything else as an admin sees it: the envelope, the element, the kind, the emit ``name``, who did it, the ids, seq, rev and times.
 The rule is one rule: it does not look at whose session the event is from, so a non-admin's own session is stripped too. An admin reads

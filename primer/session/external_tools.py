@@ -125,8 +125,9 @@ async def apply_tool_results(
     engine: Any,
     event_bus: Any,
     storage_provider: Any = None,
+    by: Any = None,
 ) -> int:
-    """Validate ALL ids, then wake each matched park. 409-atomic.
+    """Validate ALL ids, then wake each matched park. 409-atomic. ``by`` (the submitter) becomes the resumed turn's person, as a steer's.
 
     Raises :class:`ConflictError` before any state change if ANY id is
     unknown or already resolved: a call whose pending entry names a row
@@ -182,6 +183,7 @@ async def apply_tool_results(
                 payload=payload,
                 session_storage=session_storage,
                 engine=engine,
+                by=by,
             )
             if storage_provider is not None:
                 from primer.events.wake import emit_session_wake

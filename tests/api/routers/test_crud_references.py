@@ -22,6 +22,7 @@ from primer.api.errors import register_error_handlers
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck, build_reference_block_hook
 from primer.model.except_ import ConflictError
+from primer.model.principal import Principal
 from primer.model.storage import (
     FieldRef,
     OffsetPage,
@@ -84,9 +85,14 @@ class _FakeStorage:
         )
 
 
+_SYSTEM = Principal(type="system", id="system", display="system", source="internal")
+
+
 def _fake_request() -> MagicMock:
-    """Return a minimal fake ``Request`` object."""
-    return MagicMock()
+    """Return a minimal fake ``Request`` object, as the auth-disabled system principal (it reads every row, so the 409 names the child)."""
+    request = MagicMock()
+    request.state.actor = _SYSTEM
+    return request
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +468,11 @@ async def references_client() -> AsyncIterator[httpx.AsyncClient]:
     register_error_handlers(app)
     app.include_router(parent_router, prefix="/v1")
     app.include_router(child_router, prefix="/v1")
+
+    @app.middleware("http")
+    async def _system_actor(request, call_next):  # the auth-disabled system principal: it reads every row, so a 409 names the child
+        request.state.actor = _SYSTEM
+        return await call_next(request)
 
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"

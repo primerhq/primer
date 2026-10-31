@@ -39,7 +39,7 @@ from primer.model.trigger import Subscription
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.pending_gates import enumerate_pending_gates
 from primer.session.yields import RespondToYieldDeps, respond_to_yield
-from primer.trigger.owner import refuse_steer_above_fire
+from primer.trigger.owner import OWNER_UNRESOLVABLE, refuse_steer_above_fire, unresolvable_subscription_owner
 from primer.trigger.reach import TARGET_OUT_OF_REACH, refuse_fire_out_of_reach
 from primer.trigger.subscribers import (
     DispatchDeps,
@@ -143,6 +143,11 @@ class ParkedSessionDispatcher:
         out_of_reach = await refuse_fire_out_of_reach(sub, deps.storage_provider)
         if out_of_reach is not None:
             return SubscriptionDispatchResult(ok=False, error_code=TARGET_OUT_OF_REACH, error_message=out_of_reach)
+
+        # A gone owner (deleted, disabled, revoked or expired token) wakes nothing: fail closed, the row is kept like the other refusals (final review F5).
+        gone = await unresolvable_subscription_owner(sub, deps.storage_provider)
+        if gone is not None:
+            return SubscriptionDispatchResult(ok=False, error_code=OWNER_UNRESOLVABLE, error_message=gone)
 
         # The woken session runs at its own initiator's rank: a fire ranked
         # below it must not drive it (security review A-20). The row is

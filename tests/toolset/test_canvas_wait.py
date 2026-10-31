@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+from tests.events._users import seed_account_of
 from primer.canvas.lang import parse_program
 from primer.canvas.wait import (
     CANVAS_WAIT_PREFIX,
@@ -47,9 +48,9 @@ async def world() -> World:
     # The dispatcher re-checks the park's turn person on the event's workspace at
     # delivery (access-control Phase 2, Task 7); this suite's session is an
     # admin's, which the re-check never blocks.
-    await seed_session(w, initiated_by=PrincipalRef(
-        type="user", id="u-admin", display="admin", role="admin", source="local",
-    ))
+    admin = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
+    await seed_account_of(w.sp, admin)  # a deleted or disabled person's park takes no wake
+    await seed_session(w, initiated_by=admin)
     await w.service.apply(
         session_id="s1", workspace_id="ws-1", statements=parse_program(PROGRAM), unit="line", base_rev=None, source="agent", by="agent",
     )
@@ -553,7 +554,7 @@ async def test_the_resume_returns_the_unredacted_stored_event_and_falls_back_whe
     await _event(world, "viz", "emit", name="submit", data=raw_data)
     await EventDispatcher(storage_provider=world.sp, event_bus=world.bus).drain_once()
     [(_, envelope)] = [(k, p) for k, p in world.bus.published if k == y.event_key]
-    # The wake carries no input at all: the flip stamps it on the waiting row, a shared read (audit G8-08, rulings on #872).
+    # The wake carries no input at all: the flip stamps it on the waiting row, which every reader of the workspace may read (audit G8-08, rulings on #872).
     assert "data" not in envelope["payload"] and "value" not in envelope["payload"], "the dispatcher removed the input from the wake"
     assert "tok-123" not in json.dumps(envelope)
 

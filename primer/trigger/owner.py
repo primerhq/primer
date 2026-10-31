@@ -102,6 +102,16 @@ async def _current_role(owner: PrincipalRef | None, storage_provider: Any) -> st
 OWNER_UNRESOLVABLE = "owner_unresolvable"
 
 
+async def principal_is_gone(ref: PrincipalRef | None, storage_provider: Any) -> bool:
+    """Whether ``ref`` is a ``user`` or ``api_token`` principal that can no longer be resolved (deleted or disabled user, revoked or expired token).
+
+    No principal, a ``system`` one and the unattributed one are not "gone": there is nobody to lose.
+    """
+    if ref is None or ref.type not in ("user", "api_token") or _unattributed(ref):
+        return False
+    return await resolve_current_role(ref, storage_provider) is None
+
+
 async def unresolvable_subscription_owner(sub: Subscription, storage_provider: Any) -> str | None:
     """A reason to refuse a fresh-session fire whose subscription owner can no longer be resolved, else ``None``.
 
@@ -112,9 +122,7 @@ async def unresolvable_subscription_owner(sub: Subscription, storage_provider: A
     subscription with no owner (saved before owners were recorded) and a ``system`` owner are not refused.
     """
     owner = sub.owner
-    if owner is None or owner.type not in ("user", "api_token") or _unattributed(owner):
-        return None
-    if await resolve_current_role(owner, storage_provider) is not None:
+    if not await principal_is_gone(owner, storage_provider):
         return None
     logger.warning(
         "trigger %s subscription %s: its owner %s can no longer be resolved; the fire starts no session",
@@ -268,6 +276,7 @@ async def same_owner(a: PrincipalRef | None, b: PrincipalRef | None, storage_pro
 __all__ = [
     "OWNER_UNRESOLVABLE",
     "WEBHOOK_TOKEN_MASK",
+    "principal_is_gone",
     "unresolvable_subscription_owner",
     "resolve_current_role",
     "may_manage_trigger",

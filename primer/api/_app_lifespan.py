@@ -219,6 +219,7 @@ def _make_lifespan(config: AppConfig):
             storage_provider=storage_provider,
             secret_box=await resolve_secret_box(config, storage_provider),
             public_url=config.public_url,
+            auth_enabled=config.auth.enabled,
         )
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit

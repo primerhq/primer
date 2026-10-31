@@ -162,7 +162,7 @@ async def test_a_lost_sign_in_is_a_tool_error_and_the_session_completes(
         )
         expected = (
             f"toolset {toolset_id} is unavailable this turn: "
-            f"the MCP server {toolset_id} needs an operator to reconnect it"
+            f"the MCP server {toolset_id} needs the person this run acts for to sign in (Toolsets > {toolset_id} > Connect in the console)"
         )
 
         assert final.get("session_state") == "parked", final
@@ -292,7 +292,9 @@ async def test_client_credentials_connect(
         await client.delete(f"/v1/toolsets/{toolset_id}")
 
 
-async def test_a_user_cannot_connect(client, base_url, mock_oauth_mcp, unique_suffix) -> None:
+async def test_a_user_connects_only_a_toolset_they_may_use(client, base_url, mock_oauth_mcp, unique_suffix) -> None:
+    """Access-control P5 Task 3: a browser sign-in is the caller's own. A user the toolset is not shared with is answered as for a missing
+    toolset; once it is shared with them, they start their own sign-in (no admin role needed)."""
     toolset_id = f"oauth-user-{unique_suffix}"
     username = f"oauth-user-{unique_suffix}"
     password = "oauth-user-password-123"
@@ -317,9 +319,17 @@ async def test_a_user_cannot_connect(client, base_url, mock_oauth_mcp, unique_su
                 refused = await user_client.post(
                     f"/v1/toolsets/{toolset_id}/oauth/{action}"
                 )
-                assert refused.status_code == 403, refused.text
-                assert refused.json()["extensions"]["error"] == "forbidden_role"
-                assert "admin role" in refused.text
+                assert refused.status_code == 404, refused.text
+                assert "does not exist" in refused.text
+            shared = (await client.get(f"/v1/toolsets/{toolset_id}/access")).json()
+            put = await client.put(
+                f"/v1/toolsets/{toolset_id}/access",
+                json={"owners": [o["id"] for o in shared["owners"]], "grants": {user_id: "read"}, "rev": shared["rev"]},
+            )
+            assert put.status_code == 200, put.text
+            started = await user_client.post(f"/v1/toolsets/{toolset_id}/oauth/start")
+            assert started.status_code == 200, started.text
+            assert started.json()["authorize_url"]
     finally:
         await client.delete(f"/v1/toolsets/{toolset_id}")
         await client.delete(f"/v1/admin/users/{user_id}")

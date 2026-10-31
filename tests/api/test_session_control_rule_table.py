@@ -1874,6 +1874,8 @@ async def test_the_rest_fire_now_fires_a_trigger_only_when_the_caller_holds_full
     assert r.status_code == 201, r.text
     carol_id, admin_id = await _user_id(app, "carol"), await _user_id(app, "testuser")
     carol_token = await _token_client(app, carol_id)  # creates the token row ``at-<carol>`` (the owner of one row below)
+    for ws_id in ("ws-r", "ws-x"):  # the subscriptions' targets: carol holds full on them (the REST doors check the target's reach)
+        await sp.get_storage(Workspace).create(_ws_row(ws_id, Access(owners=[carol_id])))
     owner = {
         None: None,
         "system": PrincipalRef.system(),
@@ -2200,6 +2202,8 @@ async def test_the_rest_update_and_delete_touch_a_trigger_only_when_the_caller_h
     assert r.status_code == 201, r.text
     carol_id, admin_id = await _user_id(app, "carol"), await _user_id(app, "testuser")
     carol_token = await _token_client(app, carol_id)  # creates the token row ``at-<carol>`` (the owner of one row below)
+    for ws_id in ("ws-r", "ws-x"):  # the subscriptions' targets: carol holds full on them (the REST doors check the target's reach)
+        await sp.get_storage(Workspace).create(_ws_row(ws_id, Access(owners=[carol_id])))
     owner = {
         None: None,
         "system": PrincipalRef.system(),
@@ -2426,9 +2430,9 @@ async def test_a_filtered_list_of_more_than_two_pages_skips_and_repeats_no_subsc
     assert [item["id"] for item in body] == wanted
 
 
-async def test_the_rest_subscription_routes_serve_and_delete_whatever_the_target(app, client, fake_storage_provider):
-    """Ruling 4: a person over REST reaches every workspace, so the REST subscription routes pass no reach and list, get and delete a subscription
-    whatever its target (here a user-role account)."""
+async def test_the_rest_subscription_routes_leave_out_what_the_caller_does_not_reach(app, client, fake_storage_provider):
+    """Final review F1: the REST subscription routes apply the tool doors' reach rule, so a person lists, gets and deletes only the subscriptions
+    whose target workspace they hold full on; the others answer as an unknown id and survive."""
     store = fake_storage_provider.get_storage(Subscription)
     r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
     assert r.status_code == 201, r.text
@@ -2442,12 +2446,15 @@ async def test_the_rest_subscription_routes_serve_and_delete_whatever_the_target
         listed = await carol.get(f"/v1/triggers/{TRIGGER}/subscriptions")
         got = await carol.get(f"/v1/triggers/{TRIGGER}/subscriptions/{_sid(TRIGGER, 'fresh-ws2')}")
         deleted = await carol.delete(f"/v1/triggers/{TRIGGER}/subscriptions/{_sid(TRIGGER, 'fresh-prime')}")
+    admin_listed = await client.get(f"/v1/triggers/{TRIGGER}/subscriptions")
 
     assert listed.status_code == 200, listed.text
-    assert sorted(item["id"] for item in listed.json()["items"]) == sorted(_sid(TRIGGER, n) for n in ("fresh-ws1", "fresh-ws2", "fresh-prime"))
-    assert (got.status_code, got.json()["id"]) == (200, _sid(TRIGGER, "fresh-ws2"))
-    assert deleted.status_code == 204, deleted.text
-    assert await store.get(_sid(TRIGGER, "fresh-prime")) is None
+    assert listed.json()["items"] == []
+    assert got.status_code == 404 and got.json()["extensions"]["code"] == "subscription_not_found", got.text
+    assert deleted.status_code == 404, deleted.text
+    assert await store.get(_sid(TRIGGER, "fresh-prime")) is not None
+    # an admin reaches everything
+    assert sorted(item["id"] for item in admin_listed.json()["items"]) == sorted(_sid(TRIGGER, n) for n in ("fresh-ws1", "fresh-ws2", "fresh-prime"))
 
 
 # -- a delete is fenced against a session started meanwhile (review of #874, D1) ---------------------------------------------------------------

@@ -250,3 +250,23 @@ async def test_a_template_whose_provider_is_gone_is_not_found_from_both_doors(cl
     assert tool["type"] == "not-found", tool
     assert tool["message"] == rest.json()["detail"] == "WorkspaceProvider 'nope' does not exist"
     assert built == [] and await _rows(sp) == []
+
+
+# ---- final access review F2: the per-user default id space is reserved ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_per_user_default_id_is_refused_on_both_doors(client, toolset, sp, built) -> None:  # noqa: F811
+    """``ws-<user id>`` is a user's default workspace id: a client create of one (an existing user's, or any ``ws-user-`` id, since every
+    account id is ``user-<hex>``) is refused 409 / ``type=conflict`` before anything is built, so nobody can pre-create another's default."""
+    from primer.model.user import User
+
+    await _local_template(sp)
+    users = (await sp.get_storage(User).list(OffsetPage(offset=0, length=5))).items
+    for wid in ("ws-user-0123456789ab", f"ws-{users[0].id}"):
+        rest = await client.post("/v1/workspaces", json={"id": wid, "template_id": "tpl-1"})
+        tool = await toolset.call(tool_name="create_workspace", arguments={"id": wid, "template_id": "tpl-1"})
+        assert rest.status_code == 409 and "reserved" in rest.text, rest.text
+        assert tool.is_error and json.loads(tool.output)["type"] == "conflict" and "reserved" in tool.output, tool.output
+    assert built == [] and await _rows(sp) == []
+    assert (await client.post("/v1/workspaces", json={"id": "ws-mine", "template_id": "tpl-1"})).status_code == 201

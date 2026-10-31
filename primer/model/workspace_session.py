@@ -1167,7 +1167,7 @@ class SessionMessageKind(StrEnum):
     # design 8.5). Payload: a ``CanvasEvent`` dump without ``client_event_id``
     # (primer.model.canvas.CanvasEvent.public) and without what the user
     # entered, its ``value`` and ``data`` (primer.canvas.delivery.event_record:
-    # the transcript is a shared read, the lead's ruling 1 on pivot P5 S5).
+    # the transcript is read through the workspace's access, the lead's ruling 1 on pivot P5 S5).
     # Display only, never history.
     CANVAS_EVENT = "canvas_event"
 

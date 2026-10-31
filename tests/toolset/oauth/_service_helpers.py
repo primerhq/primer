@@ -12,8 +12,10 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
+from primer.access.person import Person
 from primer.model.mcp_oauth import McpOAuthTokenSet
 from primer.model.provider import Toolset
+from primer.model.user import User
 from primer.toolset.oauth.service import OAuthTarget, ToolsetAuthStatus, ToolsetOAuthService, config_fingerprint
 from primer.toolset.oauth.store import McpOAuthStore
 
@@ -31,6 +33,9 @@ INITIALIZE = {
     "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}},
 }
 MCP_HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+#: The person a test acts as when it does not care whose sign-in it is: the system person of an auth-disabled install, whose sign-in is the shared row
+#: under the bare toolset id (access-control plan P5 Task 2).
+SYSTEM = Person(None, "system")
 
 
 class Clock:
@@ -53,8 +58,8 @@ def make_toolset(url: str, *, oauth: dict[str, Any] | None, toolset_id: str = "k
     return Toolset(id=toolset_id, provider="mcp", config={"transport": transport, "config": http_config})
 
 
-def target_of(toolset: Toolset) -> OAuthTarget:
-    target = OAuthTarget.from_toolset(toolset)
+def target_of(toolset: Toolset, person: Person = SYSTEM) -> OAuthTarget:
+    target = OAuthTarget.from_toolset(toolset, person)
     assert target is not None, "not an OAuth toolset"
     return target
 
@@ -62,7 +67,9 @@ def target_of(toolset: Toolset) -> OAuthTarget:
 def token_row(store: McpOAuthStore, target: OAuthTarget, **over: Any) -> McpOAuthTokenSet:
     """A stored token set for ``target``, as a connect would have written it, sealed by ``store``."""
     base: dict[str, Any] = {
-        "id": target.toolset_id,
+        "id": target.key,
+        "toolset_id": target.toolset_id,
+        "user_id": target.user_id,
         "grant": target.oauth.grant,
         "access_token_enc": store.seal("at-plain"),
         "refresh_token_enc": store.seal("rt-plain"),
@@ -104,9 +111,17 @@ def authorize(url: str) -> dict[str, str]:
     return {name: values[0] for name, values in parse_qs(urlsplit(response.headers["location"]).query).items()}
 
 
-async def connect(svc: ToolsetOAuthService, toolset: Toolset, *, redirect_uri: str = REDIRECT, started_by: str = "admin") -> ToolsetAuthStatus:
-    """A whole browser sign-in: start, the provider's consent, the callback (from the browser that started it)."""
-    start = await svc.start_sign_in(target_of(toolset), redirect_uri=redirect_uri, started_by=started_by, browser_binding=BINDING)
+async def connect(
+    svc: ToolsetOAuthService, toolset: Toolset, *, redirect_uri: str = REDIRECT, person: Person = SYSTEM, started_by: str | None = None,
+) -> ToolsetAuthStatus:
+    """A whole browser sign-in of ``person``: start, the provider's consent, the callback (from the browser that started it). The callback writes
+    a person's row only for a user who exists, is enabled and full (access-control P5 Decision 5), so ``person``'s user is stored when missing."""
+    if person.user_id is not None:
+        users = svc._sp.get_storage(User)  # noqa: SLF001
+        if await users.get(person.user_id) is None:
+            await users.create(User(id=person.user_id, username=person.user_id, created_at=NOW, role="admin" if person.is_admin else "user"))
+    started_by = started_by or person.user_id or "admin"
+    start = await svc.start_sign_in(target_of(toolset, person), redirect_uri=redirect_uri, started_by=started_by, browser_binding=BINDING)
     back = authorize(start.authorize_url)
     return await svc.complete_sign_in(toolset, toolset_id=toolset.id, state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
 

@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
-from primer.common.url_userinfo import MaskCannotBeRestored, carries_mask, restore_userinfo
+from primer.common.url_userinfo import MASK, MaskCannotBeRestored, carries_mask, restore_userinfo
 from primer.model.access import Owned
 from primer.model.common import Identifiable
 from primer.model.masked_url import MaskedGitUrl
@@ -285,6 +285,13 @@ class Harness(Owned, Identifiable):
     last_pushed_bundle_hash: str | None = None
     last_pushed_at: datetime | None = None
     created_at: datetime
+
+    def served_to(self, person: Any) -> "Harness":
+        """The row as a read serves it to ``person``: ``overrides`` (the install form's values, secrets among them) change through admin-only
+        writes, so anyone else gets the keys with masked values (final access review F9). ``git_token`` is a ``SecretStr`` already."""
+        if person.is_admin or not self.overrides:
+            return self
+        return self.model_copy(update={"overrides": dict.fromkeys(self.overrides, MASK)})
 
     @field_validator("slug")
     @classmethod

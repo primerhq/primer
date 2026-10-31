@@ -103,3 +103,14 @@ async def test_rerunning_changes_nothing(sp):
     await M022WorkspaceOwnership().apply(sp)
     second = {w.id: w.access for w in (await sp.get_storage(Workspace).list(OffsetPage(offset=0, length=50))).items}
     assert first == second
+
+
+async def test_workspaces_go_to_the_oldest_enabled_admin(sp):
+    """Final access review F17: a disabled admin, however old, is skipped (as migrations 25 to 27 skip one)."""
+    await _users(sp, ("u-old-admin", "admin", 0), ("u-admin", "admin", 1))
+    await sp.get_storage(User).update((await sp.get_storage(User).get("u-old-admin")).model_copy(update={"disabled": True}))
+    await _ws(sp, "primer")
+
+    await M022WorkspaceOwnership().apply(sp)
+
+    assert (await sp.get_storage(Workspace).get("primer")).access.owners == ["u-admin"]

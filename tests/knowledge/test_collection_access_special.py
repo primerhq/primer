@@ -224,6 +224,39 @@ async def test_an_agent_made_private_leaves_the_map_and_one_made_public_joins_it
         await _read(sp, "this-install/agents/ag-1")
 
 
+async def test_a_public_row_names_no_private_row_it_references(sp):
+    """Review finding 5: a public profile's provider and pool members, and a public agent's profile, are named in the public map only when that
+    row is public too; a private one is "a private provider" / "a private profile", never its id."""
+    from primer.model.model_profile import ModelProfile
+    from primer.model.provider import LLMProvider
+
+    secret, public = Access(owners=[ALICE]), Access(public=True)
+    for provider_id, access in (("llm-secret", secret), ("llm-open", public)):
+        await sp.get_storage(LLMProvider).create(
+            LLMProvider(id=provider_id, provider="ollama", config={"url": "http://x:1"}, limits={"max_concurrency": 1}, access=access),
+        )
+    profiles = sp.get_storage(ModelProfile)
+    for profile_id, provider_id, access in (("prof-secret", "llm-open", secret), ("prof-on-secret", "llm-secret", public),
+                                            ("prof-open", "llm-open", public)):
+        await profiles.create(ModelProfile(id=profile_id, description="d", provider_id=provider_id, model_name="m", context_length=8, access=access))
+    await profiles.create(ModelProfile(id="pool", description="d", kind="aggregated", members=["prof-open", "prof-secret"], access=public))
+    await sp.get_storage(Agent).create(Agent(id="ag-secret-model", description="d", model=AgentModel(profile_id="prof-secret"),
+                                             access=Access(owners=[ALICE], public=True)))
+    await sp.get_storage(Agent).create(Agent(id="ag-open-model", description="d", model=AgentModel(profile_id="prof-open"),
+                                             access=Access(owners=[ALICE], public=True)))
+    await regenerate_system_collection(sp, toolset_providers={})
+
+    listed = (await _read(sp, "this-install/providers/model-profiles")).body
+    assert "llm-secret" not in listed and "prof-secret" not in listed
+    assert "m on a private provider" in listed and "prof-open, a private profile" in listed and "m on llm-open" in listed
+    secret_model = (await _read(sp, "this-install/agents/ag-secret-model")).body
+    assert "prof-secret" not in secret_model and "a private profile" in secret_model
+    assert "`prof-open`" in (await _read(sp, "this-install/agents/ag-open-model")).body
+
+    await converge_entity(sp, entity_type="agent", entity_id="ag-secret-model")
+    assert "prof-secret" not in (await _read(sp, "this-install/agents/ag-secret-model")).body
+
+
 # --------------------------------------------------------------------------------------------------------------------
 # the platform writers keep a concurrent sharing change
 # --------------------------------------------------------------------------------------------------------------------

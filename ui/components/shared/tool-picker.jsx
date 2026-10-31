@@ -32,6 +32,13 @@
 // Default (no `mode`, or "multi") is byte-identical to before this was
 // added - every existing multi-select consumer is unaffected.
 
+// Why a toolset is left out, in a word: GET /tools answers the caller's own sign-in state (access-control P5), so an MCP toolset that waits
+// for the caller's browser sign-in says so, and one waiting for its shared sign-in says that.
+function TP_unavailableWord(entry) {
+  if (entry.auth && entry.auth.state === "needs_sign_in") return entry.auth.per_user ? "needs your sign-in" : "needs sign-in";
+  return "unavailable";
+}
+
 function TP_toggleSet(set, id) {
   const next = new Set(set);
   if (next.has(id)) next.delete(id);
@@ -245,7 +252,7 @@ function ToolPicker({ selected, onChange, pageSize, mode }) {
             <span key={entry.id} className="muted text-sm"
               style={{ fontSize: 11, padding: "2px 8px", border: "1px dashed var(--border)", borderRadius: 4, color: "var(--amber)", opacity: 0.85 }}
               title={entry.unavailable_reason || "unavailable"}>
-              <span className="mono">{entry.id}</span> · unavailable
+              <span className="mono">{entry.id}</span> · {TP_unavailableWord(entry)}
             </span>
           ))}
         </div>
