@@ -85,6 +85,9 @@ from primer.storage.migrations.m022_workspace_ownership import (
 from primer.storage.migrations.m023_collection_ownership import (
     M023CollectionOwnership,
 )
+from primer.storage.migrations.m024_harness_ownership import (
+    M024HarnessOwnership,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +129,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M021EntityOwnership(),
     M022WorkspaceOwnership(),
     M023CollectionOwnership(),
+    M024HarnessOwnership(),
 )
 
 #: Highest version this build knows how to apply.

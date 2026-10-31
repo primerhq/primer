@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import SecretStr
 
+from primer.model.access import Access
 from primer.model.harness import Harness, HarnessStatus, ResolvedDependency
 from primer.model.storage import OffsetPage
 from tests.api.test_require_user_admin import _login, _seed
@@ -28,6 +29,7 @@ async def _put_harness(app, *, git_url: str = URL, git_token: str | None = None,
     harness = Harness(
         id=hid, slug="url-harness", name="Url", git_url=git_url, git_token=SecretStr(git_token) if git_token else None,
         status=HarnessStatus.READY, overrides_schema={"type": "object", "properties": {}}, available_bundle_hash="bh", created_at=datetime.now(timezone.utc),
+        access=Access(public=True),
     )
     await app.state.storage_provider.get_storage(Harness).create(harness)
     return harness

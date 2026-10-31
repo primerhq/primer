@@ -151,7 +151,7 @@ async def build_outbound(
 
         payload = entity.model_dump(mode="json")
         # Strip system fields that don't belong in a template's spec
-        for sysf in ("id", "harness_id", "created_at", "updated_at"):
+        for sysf in ("id", "harness_id", "created_at", "updated_at", "access"):
             payload.pop(sysf, None)
 
         # Resolve current values for schema inference. Each mapping's

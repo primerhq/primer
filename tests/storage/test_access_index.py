@@ -31,7 +31,7 @@ from primer.storage._predicate import _PredicateTranslator
 from primer.storage.postgres import _HOT_FIELD_INDEXES, _hot_field_index_ddl
 from tests.pg_gate import needs_postgres
 
-_OWNED_TABLES = ["agent", "graph", "toolset", "workspacetemplate", "channel", "collection", "workspace"]
+_OWNED_TABLES = ["agent", "graph", "toolset", "workspacetemplate", "channel", "collection", "workspace", "harness"]
 _GIN_EXPR = "USING GIN ((data->'access'->'members'))"
 
 

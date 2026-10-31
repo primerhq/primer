@@ -327,7 +327,8 @@ def _mount_routers(
     app.include_router(make_channel_router(), prefix=prefix, dependencies=user_dep)
     # Harness REST router — feature => require_user (no prefix; the router
     # carries its own version segment).
-    from primer.api.routers.harness import harness_router
+    from primer.api.routers.harness import harness_access_router, harness_router
+    app.include_router(harness_access_router, prefix="/v1", dependencies=user_dep)  # before the CRUD routes
     app.include_router(harness_router, dependencies=user_dep)
     # Triggers REST router (Spec §10) — feature => require_user (no prefix).
     from primer.api.routers.triggers import triggers_router

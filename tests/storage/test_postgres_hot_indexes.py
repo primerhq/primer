@@ -39,7 +39,7 @@ def test_registry_declares_the_hot_tables():
     assert set(_HOT_FIELD_INDEXES) == {
         "apitoken", "sessions", "channel", "useridentity",
         "webhookdelivery", "toolapprovalrecord", "artifactlocation", "document",
-        "agent", "graph", "toolset", "workspacetemplate", "workspace", "collection",
+        "agent", "graph", "toolset", "workspacetemplate", "workspace", "collection", "harness",
     }
 
 

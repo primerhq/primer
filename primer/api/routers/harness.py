@@ -25,6 +25,12 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
+from primer.access.service import rewrite_keeping_access
+from primer.access.person import person_from_request
+from primer.access.policy import require, visible_predicate
+from primer.api.routers.access import make_access_router
+from primer.harness.access import apply_harness_access
+from primer.model.access import Access, AccessLevel
 from primer.api.deps import get_claim_engine, get_event_bus, get_storage_provider, require_admin
 from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
@@ -55,12 +61,30 @@ from primer.model.harness import (
 from primer.model.principal import PrincipalRef
 from primer.model.storage import (
     OffsetPage,
+    Op,
     PageRequest,
+    Predicate,
 )
 from primer.storage.q import Q
 
 
 harness_router = APIRouter(prefix="/v1/harnesses", tags=["harnesses"])
+
+
+async def _fan_out(request: Request, harness: Harness) -> None:
+    """After a share: copy the harness's new access onto every row it installed (access-control P3 Decision 1)."""
+    await apply_harness_access(get_storage_provider(request), harness)
+
+
+def _harness_storage_dep(sp=Depends(get_storage_provider)):
+    return sp.get_storage(Harness)
+
+
+# ``GET`` / ``PUT /v1/harnesses/{id}/access``; mounted BEFORE the CRUD routes (the include order in ``_app_routes``).
+harness_access_router = make_access_router(
+    model_cls=Harness, plural="harnesses", storage_dep=_harness_storage_dep,
+    tag="harnesses", after_write=_fan_out,
+)
 
 
 def _require_admin_for_harness_write(request: Request) -> None:
@@ -145,6 +169,16 @@ def _get_harness_storage(sp):
     return sp.get_storage(Harness)
 
 
+async def _readable_harness(request: Request, sp, harness_id: str) -> Harness:
+    """The harness, when the caller can read it; out of access answers exactly as a missing one (spec 9)."""
+    what = f"Harness {harness_id!r}"
+    harness = await _get_harness_storage(sp).get(harness_id)
+    if harness is None:
+        raise NotFoundError(f"{what} does not exist")
+    require(person_from_request(request), harness.access, AccessLevel.READ, what=what)
+    return harness
+
+
 def _requested_by(request: Request) -> PrincipalRef | None:
     """Who is enqueueing an INSTALL or SYNC, for the worker's toolset admin rule. ``None`` (no resolved actor) fails closed."""
     actor = getattr(request.state, "actor", None)
@@ -164,6 +198,7 @@ def _requested_by(request: Request) -> PrincipalRef | None:
     dependencies=_admin_write,
 )
 async def create_harness(
+    request: Request,
     body: HarnessCreateBody,
     sp=Depends(get_storage_provider),
 ):
@@ -248,6 +283,10 @@ async def create_harness(
         direction=body.direction,
         tracked_entities=list(body.tracked_entities),
         created_at=datetime.now(timezone.utc),
+        # The creating admin owns it (an id-less admin or the system principal: admin-managed).
+        access=(
+            Access.owned_by(person.user_id) if (person := person_from_request(request)).user_id is not None else Access()
+        ),
     )
     # The token arrives as a plain string: the served mask (GET, change the slug, POST: the copy-a-harness move) would be stored as the git token.
     refuse_served_masks(harness)
@@ -269,6 +308,7 @@ async def create_harness(
     responses=common_responses(400, 422, 500),
 )
 async def list_harnesses(
+    request: Request,
     slug: Annotated[str | None, Query(description="Filter by slug.")] = None,
     status_filter: Annotated[
         HarnessStatus | None,
@@ -282,9 +322,11 @@ async def list_harnesses(
     sp=Depends(get_storage_provider),
 ):
     storage = _get_harness_storage(sp)
+    # A harness is listed to those who can read it: the filter runs in the storage query (admins see all).
+    visible = visible_predicate(person_from_request(request))
 
     if slug is None and status_filter is None and direction is None:
-        return await storage.list(page)
+        return await storage.list(page) if visible is None else await storage.find(visible, page)
 
     q = Q(Harness)
     if slug is not None:
@@ -293,7 +335,10 @@ async def list_harnesses(
         q = q.where("status", status_filter.value)
     if direction is not None:
         q = q.where("direction", direction.value)
-    return await storage.find(q.build(), page)
+    predicate = q.build()
+    if visible is not None:
+        predicate = Predicate(left=visible, op=Op.AND, right=predicate)
+    return await storage.find(predicate, page)
 
 
 # ---------------------------------------------------------------------------
@@ -308,14 +353,11 @@ async def list_harnesses(
     responses=common_responses(404, 500),
 )
 async def get_harness(
+    request: Request,
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
 ) -> Harness:
-    storage = _get_harness_storage(sp)
-    harness = await storage.get(harness_id)
-    if harness is None:
-        raise NotFoundError(f"Harness {harness_id!r} does not exist")
-    return harness
+    return await _readable_harness(request, sp, harness_id)
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +443,7 @@ async def update_harness(
             harness.last_pushed_at = None
 
     harness.overrides_dirty = overrides_dirty
-    return await storage.update(harness)
+    return await rewrite_keeping_access(storage, harness, what="Harness")
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +493,7 @@ async def delete_harness(
         cascade if cascade is not None
         else harness.direction == HarnessDirection.INBOUND
     )
-    updated = await storage.update(harness)
+    updated = await rewrite_keeping_access(storage, harness, what="Harness")
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
@@ -515,7 +557,7 @@ async def put_harness_overrides(
     else:
         harness.overrides_dirty = False
 
-    return await storage.update(harness)
+    return await rewrite_keeping_access(storage, harness, what="Harness")
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +601,7 @@ async def fetch_harness(
         )
 
     harness.pending_operation = HarnessOperation.FETCH
-    updated = await storage.update(harness)
+    updated = await rewrite_keeping_access(storage, harness, what="Harness")
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
@@ -647,7 +689,7 @@ async def install_harness(
     harness.operation_requested_by = _requested_by(request)
     # What this install is asked for: the worker refuses it when the inputs change before it runs (ticket 01a16a29).
     harness.operation_inputs = operation_input_digests(harness)
-    updated = await storage.update(harness)
+    updated = await rewrite_keeping_access(storage, harness, what="Harness")
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
@@ -715,7 +757,7 @@ async def sync_harness(
     harness.pending_operation = HarnessOperation.SYNC
     harness.operation_requested_by = _requested_by(request)
     harness.operation_inputs = operation_input_digests(harness)
-    updated = await storage.update(harness)
+    updated = await rewrite_keeping_access(storage, harness, what="Harness")
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
@@ -777,7 +819,7 @@ async def put_tracked_entities(
     harness.tracked_entities = list(body.tracked_entities)
     harness.bundle_hash = None
     harness.status = HarnessStatus.DRAFT
-    updated = await storage.update(harness)
+    updated = await rewrite_keeping_access(storage, harness, what="Harness")
     return JSONResponse(
         status_code=200,
         content=_harness_to_json(updated),
@@ -840,7 +882,7 @@ async def build_harness(
         )
 
     harness.pending_operation = HarnessOperation.BUILD
-    updated = await storage.update(harness)
+    updated = await rewrite_keeping_access(storage, harness, what="Harness")
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
@@ -859,13 +901,12 @@ async def build_harness(
     responses=common_responses(404, 409, 422, 500),
 )
 async def download_harness_bundle(
+    request: Request,
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
 ):
     storage = _get_harness_storage(sp)
-    harness = await storage.get(harness_id)
-    if harness is None:
-        raise NotFoundError(f"Harness {harness_id!r} does not exist")
+    harness = await _readable_harness(request, sp, harness_id)
 
     if harness.direction != HarnessDirection.OUTBOUND:
         return JSONResponse(
@@ -966,7 +1007,7 @@ async def push_harness(
         )
 
     harness.pending_operation = HarnessOperation.PUSH
-    updated = await storage.update(harness)
+    updated = await rewrite_keeping_access(storage, harness, what="Harness")
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
