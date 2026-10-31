@@ -124,6 +124,15 @@ class EventDrivenWatcher:
             self._run(), name=f"watch-files:{','.join(self._paths[:3])}",
         )
 
+    def is_alive(self) -> bool:
+        """True while the run task exists and has not ended.
+
+        A probe stream that dies (a runtime websocket drop) ends the
+        task quietly; the manager must not let that stale task keep
+        blocking a restart for the key (CORE-6).
+        """
+        return self._task is not None and not self._task.done()
+
     async def stop(self) -> None:
         self._stopping = True
         task = self._task
@@ -242,17 +251,28 @@ class WatcherManager(_BackgroundTask):
         return set(self._watchers.keys())
 
     async def _run(self) -> None:
-        while not self._stopping:
-            try:
-                await self._scan_once()
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "yield-watcher-manager: scan failed: %s", exc,
-                )
-            try:
-                await asyncio.sleep(self._scan)
-            except asyncio.CancelledError:
-                break
+        try:
+            while not self._stopping:
+                try:
+                    await self._scan_once()
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception(
+                        "yield-watcher-manager: scan failed: %s", exc,
+                    )
+                try:
+                    await asyncio.sleep(self._scan)
+                except asyncio.CancelledError:
+                    break
+        finally:
+            # The supervisor cancels _run when the lease is lost (and
+            # stop() takes the same path on shutdown): the live watchers
+            # must not keep running on the old leader (CORE-6).
+            for w in list(self._watchers.values()):
+                try:
+                    await w.stop()
+                except Exception:  # noqa: BLE001
+                    logger.exception("watcher.stop failed during manager teardown")
+            self._watchers.clear()
 
     async def _scan_once(self) -> None:
         active_parks = await _find_active_watch_parks(self._scheduler)
@@ -260,8 +280,14 @@ class WatcherManager(_BackgroundTask):
         seen_keys: set[str] = set()
         for park in active_parks:
             seen_keys.add(park["event_key"])
-            if park["event_key"] in self._watchers:
-                continue
+            watcher = self._watchers.get(park["event_key"])
+            if watcher is not None:
+                if watcher.is_alive():
+                    continue
+                # The task ended on its own (probe error or stream end):
+                # a plain membership check would keep skipping the key
+                # forever, so drop it and start a fresh watcher.
+                await self._stop_watcher(park["event_key"])
             await self._start_watcher(park)
         # Stop watchers for parks that have disappeared / flipped.
         stale = set(self._watchers.keys()) - seen_keys

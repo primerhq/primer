@@ -144,7 +144,28 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             "(json_extract(data,'$.gate_event_key'))",
         ),
     ],
+    "serviceversion": [
+        # Mirrors the postgres entry (KN-19j): two concurrent publishes
+        # compute the same next number from the same read; the unique
+        # (service_id, version) makes the loser's create a ConflictError.
+        (
+            "service_version_uniq",
+            True,
+            "(json_extract(data,'$.service_id'), json_extract(data,'$.version'))",
+        ),
+    ],
 }
+
+
+# The one hot-field index that may be created over pre-existing
+# conflicting rows (KN-19j): a pre-fix database can already hold
+# duplicate (service_id, version) pairs -- the race the index exists to
+# stop -- and CREATE UNIQUE INDEX over them would fail inside
+# _ensure_table and break every later ServiceVersion read and write.
+# Tolerate the violation for this (table, suffix) pair only (log and
+# continue without the index); every other hot-field index keeps
+# raising.
+_DUP_TOLERANT_UNIQUE_INDEX = ("serviceversion", "service_version_uniq")
 
 
 def _table_name_for(model_class: type[BaseModel]) -> str:
@@ -781,10 +802,25 @@ class SqliteStorage(Storage[ModelT]):
                     self._table, [],
                 ):
                     kind = "UNIQUE INDEX" if unique else "INDEX"
-                    await conn.execute(
-                        f'CREATE {kind} IF NOT EXISTS "{self._table}_{suffix}" '
-                        f'ON "{self._table}" {expr}'
-                    )
+                    try:
+                        await conn.execute(
+                            f'CREATE {kind} IF NOT EXISTS "{self._table}_{suffix}" '
+                            f'ON "{self._table}" {expr}'
+                        )
+                    except sqlite3.IntegrityError:
+                        if (self._table, suffix) != _DUP_TOLERANT_UNIQUE_INDEX:
+                            raise
+                        # A pre-fix database already holds duplicate
+                        # (service_id, version) rows (KN-19j): skip this
+                        # index. The failed CREATE does not abort the
+                        # open transaction, so the table DDL still
+                        # commits and reads work without the index.
+                        logger.warning(
+                            "could not create unique index %s_%s: "
+                            "duplicate (service_id, version) rows already "
+                            "exist; continuing without it (KN-19j)",
+                            self._table, suffix,
+                        )
                 if should_commit:
                     await conn.commit()
         except Exception as exc:

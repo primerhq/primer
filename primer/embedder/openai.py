@@ -176,10 +176,12 @@ def _translate_response(resp: Any) -> EmbedResponse:
     """Translate an OpenAI embeddings response into the universal
     :class:`EmbedResponse`.
 
-    Pure function. The SDK returns embeddings in input order with
-    explicit ``index`` fields; we preserve those. OpenAI does not
-    surface per-input metadata, so :attr:`Embedding.extended` is always
-    ``None`` for this adapter. Request-level usage is taken from
+    Pure function. Callers zip ``response.embeddings`` to their inputs by
+    position, so the vectors must come back in input order: sort on the
+    explicit ``index`` field rather than trusting ``data`` order (batched
+    OpenAI-compatible backends may answer out of order, KN-19c). OpenAI
+    does not surface per-input metadata, so :attr:`Embedding.extended` is
+    always ``None`` for this adapter. Request-level usage is taken from
     ``resp.usage.prompt_tokens`` (defensive ``getattr`` so a future SDK
     rename leaves ``input_tokens=None`` rather than crashing).
     """
@@ -189,7 +191,7 @@ def _translate_response(resp: Any) -> EmbedResponse:
             vector=list(item.embedding),
             extended=None,
         )
-        for item in resp.data
+        for item in sorted(resp.data, key=lambda i: i.index)
     ]
     usage: EmbeddingUsage | None = None
     if getattr(resp, "usage", None) is not None:
