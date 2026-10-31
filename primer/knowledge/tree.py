@@ -179,12 +179,24 @@ class DocumentTreeService:
 
     async def move(self, *, collection_id: str, path: str,
                    new_parent: str, new_slug: str | None = None,
-                   strict_slugs: bool = True) -> Document:
+                   strict_slugs: bool = True,
+                   allow_missing_parent: bool = False) -> Document:
+        """Move ``path`` under ``new_parent`` (and rename it to ``new_slug``), carrying its subtree.
+
+        ``allow_missing_parent`` is the path-addressed door's tolerance (``DocumentService.move``: it has always been able to move a document into
+        a directory that has no row of its own, as ``put_document`` can write one): a ``new_parent`` path holding no document is then used as a
+        plain path prefix with no parent row, and none is invented. The tree routes leave it off and refuse such a parent.
+        """
         doc = await self.resolve(collection_id=collection_id, path=path)
         slug = new_slug or doc.slug
         if strict_slugs and not STRICT_SLUG_RE.fullmatch(slug):
             raise BadRequestError(f"slug {slug!r} must match [a-z0-9-]+")
-        parent_id, parent_path = await self._resolve_parent(collection_id, new_parent)
+        try:
+            parent_id, parent_path = await self._resolve_parent(collection_id, new_parent)
+        except NotFoundError:
+            if not allow_missing_parent:
+                raise
+            parent_id, parent_path = None, new_parent
         if parent_path == doc.path or parent_path.startswith(doc.path + "/"):
             raise BadRequestError(
                 f"cannot move {doc.path!r} into its own subtree {parent_path!r}"

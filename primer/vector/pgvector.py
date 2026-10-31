@@ -1,6 +1,6 @@
 """pgvector-backed :class:`VectorStoreProvider` and :class:`VectorStore`.
 
-One vector table per collection (``<schema>.embeddings_<sanitised>``)
+One vector table per collection (``<schema>.embeddings_<slug>_<hash>``)
 with an HNSW index on the vector column (default) and a GIN index on
 the ``meta`` JSONB column for fast metadata-containment queries. The
 collection catalogue (``<schema>.primer_collections``) records the
