@@ -1719,7 +1719,7 @@ def build_workspaces_toolset(
             person = person_for_tool(ctx)
             access = Access.owned_by(person.user_id) if person.user_id else Access()
             row = await workspace_registry.create(
-                template=template, overrides=args.overrides, workspace_id=args.id, access=access,
+                template=template, overrides=args.overrides, workspace_id=args.id, access=access, person=person,
             )
         except PrimerValidationError as exc:
             # A refusal of the request itself (a size the provider cannot honour, master Review Focus 5): the message
