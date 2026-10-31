@@ -257,7 +257,7 @@ async def test_a_subagent_outside_any_call_is_given_no_stop_event(monkeypatch) -
     async def resolve(agent_id, *, storage_provider, provider_registry):
         return AGENT, llm, MODEL
 
-    async def build(context, *, storage_provider=None, provider_registry=None, approval_resolver=None):
+    async def build(context, *, agent_id=None, storage_provider=None, provider_registry=None, approval_resolver=None):
         return manager
 
     monkeypatch.setattr(invoke, "_resolve_agent_runtime", resolve)
@@ -292,7 +292,7 @@ async def test_a_subagent_that_ends_on_the_stop_check_does_not_return_what_it_ha
     async def resolve(agent_id, *, storage_provider, provider_registry):
         return AGENT, llm, MODEL
 
-    async def build(context, *, storage_provider=None, provider_registry=None, approval_resolver=None):
+    async def build(context, *, agent_id=None, storage_provider=None, provider_registry=None, approval_resolver=None):
         return manager
 
     monkeypatch.setattr(invoke, "_resolve_agent_runtime", resolve)
@@ -340,7 +340,7 @@ async def test_a_subagent_cut_off_in_the_stdio_handshake_does_nothing_more_after
     async def resolve(agent_id, *, storage_provider, provider_registry):
         return AGENT, llm, MODEL
 
-    async def build(context, *, storage_provider=None, provider_registry=None, approval_resolver=None):
+    async def build(context, *, agent_id=None, storage_provider=None, provider_registry=None, approval_resolver=None):
         return manager
 
     monkeypatch.setattr(invoke, "_resolve_agent_runtime", resolve)

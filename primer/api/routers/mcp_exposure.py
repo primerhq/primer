@@ -34,6 +34,7 @@ from primer.api.deps import (
     get_storage_provider,
     require_admin,
 )
+from primer.api.routers._crud import read_write_routers
 from primer.mcp.exposure import (
     ExposureDeps,
     ToolNotExposable,
@@ -167,4 +168,12 @@ async def available_tools_endpoint(
     return {"items": items}
 
 
-__all__ = ["mcp_exposure_router"]
+# ACL-P4 Task 9: the exposure singleton is global settings - its reads (the
+# row and the /available catalogue) mount at the user tier; the PUT stays
+# admin (it carries its own route-level require_admin too).
+mcp_exposure_read_router, mcp_exposure_write_router = read_write_routers(
+    mcp_exposure_router,
+)
+
+
+__all__ = ["mcp_exposure_read_router", "mcp_exposure_router", "mcp_exposure_write_router"]

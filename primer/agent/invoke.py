@@ -70,7 +70,7 @@ class _SubagentSession:
     workspace_tools: list = []
 
     def __init__(
-        self, *, session_id: str, workspace_id: str | None, agent_id: str
+        self, *, session_id: str, workspace_id: str | None, agent_id: str | None
     ) -> None:
         self.session_id = session_id
         self.workspace_id = workspace_id
@@ -95,6 +95,7 @@ def _depth_set(depth: int):
 async def build_subagent_toolmanager(
     context: Any,
     *,
+    agent_id: str | None = None,
     storage_provider: Any = None,
     provider_registry: Any,
     approval_resolver: Any | None = None,
@@ -114,7 +115,8 @@ async def build_subagent_toolmanager(
     ``context`` is an :class:`~primer.worker.frames.AgentResumeContext`
     (``session_id``, ``workspace_id``, ``chat_id``, ``principal``, ``tools``).
     The manager runs as ``context.initiated_by``, else as an unattributed user,
-    never as the system principal.
+    never as the system principal. ``agent_id`` is the subagent's own id: the
+    shim's ``agent_id`` and the run's actor (``ToolContext.actor``).
     ``storage_provider`` wires the platform event recorder so nested
     subagent tool calls land ``tool.called`` / ``llm.called`` like
     top-level ones (None keeps the manager recorder-less).
@@ -124,7 +126,7 @@ async def build_subagent_toolmanager(
     approved original_call), so the manager wiring lives in exactly one place.
     """
     from primer.agent.tool_manager import ToolExecutionManager
-    from primer.model.principal import PrincipalRef
+    from primer.model.principal import ActorRef, PrincipalRef
     from primer.worker.pool import _toolset_ids_from_scoped
 
     tools = list(context.tools or [])
@@ -138,7 +140,7 @@ async def build_subagent_toolmanager(
         _SubagentSession(
             session_id=session_id,
             workspace_id=context.workspace_id,
-            agent_id=getattr(context, "agent_id", None) or "subagent",
+            agent_id=agent_id,
         )
         if session_id is not None
         else None
@@ -171,6 +173,8 @@ async def build_subagent_toolmanager(
         initiated_by=initiated_by,
         event_recorder=recorder,
         turn_no=turn_no,
+        # Set even on a chat (no shim to read the agent from): the subagent acts, for its parent run's person.
+        actor=ActorRef(kind="agent", id=agent_id) if agent_id else None,
     )
 
 
@@ -330,6 +334,7 @@ async def run_subagent(
     )
     tool_manager = await build_subagent_toolmanager(
         context,
+        agent_id=agent.id,
         storage_provider=storage_provider,
         provider_registry=provider_registry,
         approval_resolver=approval_resolver,
@@ -516,6 +521,7 @@ async def resume_subagent(
 
     tool_manager = await build_subagent_toolmanager(
         context,
+        agent_id=agent.id,
         storage_provider=storage_provider,
         provider_registry=provider_registry,
         approval_resolver=approval_resolver,

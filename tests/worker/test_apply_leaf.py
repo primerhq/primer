@@ -33,7 +33,7 @@ class _Services:
     session_id = "ses"
     resolve_provider = None
     def __init__(self, tm): self._tm = tm
-    async def build_subagent_toolmanager(self, ctx): return self._tm
+    async def build_subagent_toolmanager(self, ctx, *, agent_id=None): return self._tm
 
 @pytest.mark.asyncio
 async def test_apply_leaf_approval_approved_dispatches():

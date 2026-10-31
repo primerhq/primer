@@ -88,6 +88,26 @@ filter compiles to `data->'access'->'members' ? $n` on Postgres, served by the G
 Migration 21 (`primer/storage/migrations/m021_entity_ownership.py`) stamps the first admin as owner of rows created
 before access control, and makes the seeded agents and template public.
 
+### Run identity
+
+Every run carries a composite identity: the person behind it plus the entity acting. The person is
+`ToolContext.initiated_by` (the turn person of a steered turn, a token's owner for an API-token run); the actor is
+`ToolContext.actor`, an `ActorRef` (`primer/model/principal.py`, `kind` one of `agent`, `graph`, `user`, `system`, plus
+`id`). The actor is the innermost acting entity: the session's agent, a graph agent node's agent, a sub-agent, a ToolCall
+node's graph or a child graph. A direct MCP call acts as the user (`system` on an auth-disabled install). The builders
+set it on the `ToolExecutionManager` (`actor=`; default: the bound session's agent), which stamps it on every context.
+The actor never adds access: every decision is still the person's.
+
+`identity_doc(ref, actor, username=None)` (`primer/access/person.py`) renders it; `gate_identity` reads an API token
+owner's username from the `User` row when a gate fires, and `tool_identity(ctx, storage_provider)` reads it the way
+`person_for_tool` reads the person. Every gate that builds an approval input passes it as `ApprovalContext.identity`
+(the tool manager's gate, `system__call_tool` with and without a context, the MCP endpoint), so the input always has an
+`identity` key:
+
+```json
+{"user": {"id": "u-7", "name": "bob", "role": "user"}, "actor": {"kind": "agent", "id": "agent-builder"}}
+```
+
 ## 7. Testing patterns
 
 - `tests/access/`: `Person` derivations and the policy, including a matrix that pins list visibility to `level_of` for

@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from primer.access.person import Person
-from primer.model.access import Access, AccessLevel, LEVEL_RANK
+from primer.model.access import Access, AccessLevel, LEVEL_RANK, TOOLS_PUBLIC_TOKEN
 from primer.model.except_ import AccessDeniedError, NotFoundError
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 
@@ -122,6 +122,27 @@ async def readable_ids(
         if len(items) < _PAGE_SIZE:
             return ids
         offset += _PAGE_SIZE
+
+
+def may_use_tool(person: Person, access: Access, tool_name: str) -> bool:
+    """Whether ``person`` may use ``tool_name`` of a toolset with ``access``: a level on the row gives every tool; otherwise a full user may use the
+    tools the row marks public (``public_tools``), exactly those and never their siblings."""
+    if level_of(person, access) is not None:
+        return True
+    return person.is_full_user and tool_name in access.public_tools
+
+
+def catalogue_predicate(person: Person) -> Predicate | None:
+    """The predicate a tool catalogue runs against: the rows the person can see, plus the rows that have public tools (``tools:public``).
+
+    ``None`` for admins. The caller shows only the public tools of a row it holds no level on.
+    """
+    if person.is_admin:
+        return None
+    visible = visible_predicate(person)
+    if not person.is_full_user:
+        return visible
+    return Predicate(left=visible, op=Op.OR, right=_contains(TOOLS_PUBLIC_TOKEN))
 
 
 def tool_is_public(access: Access, tool_name: str) -> bool:

@@ -18,7 +18,7 @@ from primer.api.errors import common_responses
 from primer.api.registries.artifact_storage_registry import (
     DEFAULT_ARTIFACT_PROVIDER_ID,
 )
-from primer.api.routers._crud import make_crud_router
+from primer.api.routers._crud import make_crud_router, read_write_routers
 from primer.api.routers._probe_text import draft_error
 from primer.api.routers.providers import _form_field
 from primer.artifact.active import read_active_artifact_store, set_active_artifact_store
@@ -283,4 +283,28 @@ async def put_active_artifact_storage_config(
         _raise_check(exc, kind="artifact_storage_active_config")
 
 
-__all__ = ["artifact_storage_active_config_router", "artifact_storage_helpers_router", "artifact_storage_router"]
+# ACL-P4 Task 9: global settings readable by everyone - the read parts (the
+# _types metadata, the provider list/get, the active-config read) mount at
+# the user tier with secrets masked; the write parts (create / update /
+# delete, the _test probes, POST /find, the active-config PUT) stay admin.
+artifact_storage_read_router, artifact_storage_write_router = read_write_routers(
+    artifact_storage_router,
+)
+artifact_storage_helpers_read_router, artifact_storage_helpers_write_router = read_write_routers(
+    artifact_storage_helpers_router,
+)
+artifact_storage_active_config_read_router, artifact_storage_active_config_write_router = read_write_routers(
+    artifact_storage_active_config_router,
+)
+
+
+__all__ = [
+    "artifact_storage_active_config_read_router",
+    "artifact_storage_active_config_router",
+    "artifact_storage_active_config_write_router",
+    "artifact_storage_helpers_read_router",
+    "artifact_storage_helpers_router",
+    "artifact_storage_helpers_write_router",
+    "artifact_storage_read_router",
+    "artifact_storage_write_router",
+]

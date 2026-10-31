@@ -30,7 +30,11 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
 from primer.api.errors import common_responses
-from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.routers._crud import (
+    make_crud_router,
+    preserve_masked_secrets_on_update,
+    read_write_routers,
+)
 from primer.api.routers._probe_text import draft_error
 from primer.model.provider import (
     SpeechToTextConfig,
@@ -439,11 +443,40 @@ async def put_active_speech_config(
     return new_row
 
 
+# ACL-P4 Task 9: global settings readable by everyone - the read parts (the
+# _types metadata, the provider list/get, the active-config read) mount at
+# the user tier with secrets masked; the write parts (create / update /
+# delete, the _test probes, POST /find, the active-config PUT) stay admin.
+stt_providers_read_router, stt_providers_write_router = read_write_routers(
+    stt_providers_router,
+)
+tts_providers_read_router, tts_providers_write_router = read_write_routers(
+    tts_providers_router,
+)
+stt_providers_helpers_read_router, stt_providers_helpers_write_router = read_write_routers(
+    stt_providers_helpers_router,
+)
+tts_providers_helpers_read_router, tts_providers_helpers_write_router = read_write_routers(
+    tts_providers_helpers_router,
+)
+speech_active_config_read_router, speech_active_config_write_router = read_write_routers(
+    speech_active_config_router,
+)
+
+
 __all__ = [
     "read_active_speech_config",
+    "speech_active_config_read_router",
     "speech_active_config_router",
+    "speech_active_config_write_router",
+    "stt_providers_helpers_read_router",
     "stt_providers_helpers_router",
-    "stt_providers_router",
+    "stt_providers_helpers_write_router",
+    "stt_providers_read_router",
+    "stt_providers_write_router",
+    "tts_providers_helpers_read_router",
     "tts_providers_helpers_router",
-    "tts_providers_router",
+    "tts_providers_helpers_write_router",
+    "tts_providers_read_router",
+    "tts_providers_write_router",
 ]

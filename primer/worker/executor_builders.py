@@ -23,7 +23,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from primer.authz import RunRefused
-from primer.model.principal import PrincipalRef
+from primer.model.principal import ActorRef, PrincipalRef
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.pool import _toolset_ids_from_scoped
 
@@ -260,6 +260,7 @@ def build_graph_invocation_services(
             tools=agent.tools,
             initiated_by=initiated_by,
             event_recorder=_pool_event_recorder(pool),
+            actor=ActorRef(kind="agent", id=agent.id),
         )
 
     async def graph_resolver(graph_id: str):
@@ -292,6 +293,7 @@ def build_graph_invocation_services(
             owns_session_lifecycle=False,
             toolset_resolver=toolset_resolver,
             approval_resolver=pool._approval_resolver,
+            provider_registry=pool._provider_registry,
             max_parallel_nodes=pool.config.max_parallel_nodes,
         )
 
@@ -428,6 +430,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
             else None
         ),
         turn_no=session.turn_no,
+        actor=ActorRef(kind="agent", id=agent.id),
     )
 
     from primer.agent.inform import SessionInformSink
@@ -604,6 +607,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
                 external_call_storage=node_call_storage,
                 event_recorder=_pool_event_recorder(pool),
                 turn_no=session.turn_no,
+                actor=ActorRef(kind="agent", id=agent.id),
             )
         # No holder slot (a graph session created before holder allocation landed): the manager still runs for THIS session, so every
         # context it builds names the row's session and workspace. Without them a node's tools saw no calling session at all, which the reach
@@ -619,6 +623,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
             event_recorder=_pool_event_recorder(pool),
             turn_no=session.turn_no,
             run_scope=(session.id, session.workspace_id),
+            actor=ActorRef(kind="agent", id=agent.id),
         )
 
     # (4) Optional handles wired in later phases.
@@ -674,6 +679,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         owns_session_lifecycle=True,
         toolset_resolver=toolset_resolver,
         approval_resolver=pool._approval_resolver,
+        provider_registry=pool._provider_registry,
         max_parallel_nodes=pool.config.max_parallel_nodes,
         artifact_storage=await _resolve_default_artifact_storage(pool),
         turn_no=session.turn_no,

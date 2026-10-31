@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from primer.access.person import person_for_tool
+from primer.access.tools import toolset_use
 from primer.authz import _role_allows
 from primer.int.toolset import ToolsetProvider
 from primer.model.chat import ToolCallResult
@@ -61,6 +63,23 @@ def inner_role_refusal(
     )
 
 
+async def inner_access_refusal(
+    storage_provider: Any, *, toolset_id: str, tool_name: str, ctx: ToolContext | None,
+) -> ToolCallResult | None:
+    """``None`` when the run's person may use ``tool_name`` of the toolset, else the ``not-found`` refusal (access-control P4 Task 2).
+
+    The person is :func:`primer.access.person.person_for_tool` (the run's initiator, or the MCP request's actor with no context). A toolset row
+    the person holds no level on answers exactly as a missing toolset does, except for the tools the row marks public: those, and only those, run.
+    """
+    allowed = (await toolset_use(storage_provider, person_for_tool(ctx), [toolset_id]))[toolset_id]
+    if allowed is None or tool_name in allowed:
+        return None
+    return ToolCallResult(
+        output=json.dumps({"type": "not-found", "message": f"no tool {tool_name!r} in toolset {toolset_id!r}"}),
+        is_error=True,
+    )
+
+
 async def dispatch_inner_tool(
     *,
     provider: ToolsetProvider,
@@ -68,8 +87,12 @@ async def dispatch_inner_tool(
     tool_name: str,
     arguments: dict[str, Any],
     ctx: ToolContext | None,
+    storage_provider: Any | None = None,
 ) -> ToolCallResult:
     """Run ``tool_name`` of ``provider`` for the run that ``ctx`` belongs to: the role refusal when there is one, else the inner result.
+
+    With a ``storage_provider`` the run's person must also be allowed the tool (:func:`inner_access_refusal`), so an approved re-run after a
+    revoke is refused too. A caller without one (tests) skips the check.
 
     The inner provider gets ``ctx`` itself (so a pausing tool parks under the caller's call id, and an owner-dependent tool sees the run's
     identity) and ``ctx.principal`` as its principal. A :class:`primer.model.yield_.YieldToWorker` (the inner tool paused) and a
@@ -78,6 +101,10 @@ async def dispatch_inner_tool(
     refusal = inner_role_refusal(provider, toolset_id=toolset_id, tool_name=tool_name, ctx=ctx)
     if refusal is not None:
         return refusal
+    if storage_provider is not None:
+        refusal = await inner_access_refusal(storage_provider, toolset_id=toolset_id, tool_name=tool_name, ctx=ctx)
+        if refusal is not None:
+            return refusal
     return await provider.call(
         tool_name=tool_name,
         arguments=arguments,
@@ -86,4 +113,4 @@ async def dispatch_inner_tool(
     )
 
 
-__all__ = ["FORBIDDEN_ERROR_TYPE", "dispatch_inner_tool", "inner_role_refusal", "run_principal"]
+__all__ = ["FORBIDDEN_ERROR_TYPE", "dispatch_inner_tool", "inner_access_refusal", "inner_role_refusal", "run_principal"]
