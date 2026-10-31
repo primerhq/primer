@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from primer.api.deps import get_storage_provider
 from primer.api.routers._api_tokens_shared import (
@@ -49,6 +49,7 @@ from primer.api.routers._api_tokens_shared import (
     revoke_token,
     to_summary,
 )
+from primer.model.trigger import _read_as_utc
 from primer.auth.api_tokens import (
     extract_prefix,
     hash_token,
@@ -81,6 +82,12 @@ class ApiTokenCreateBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     scopes: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def _expires_at_as_utc(cls, value: datetime | None) -> datetime | None:
+        """A time with no zone is read as UTC, as a trigger's times are: comparing a naive value with the aware clock raised ``TypeError`` (500)."""
+        return _read_as_utc(value)
 
 
 class ApiTokenRenameBody(BaseModel):
