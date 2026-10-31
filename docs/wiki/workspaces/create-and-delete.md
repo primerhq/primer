@@ -18,19 +18,18 @@ related: [workspaces/templates, workspaces/prime, sessions/start-a-session]
   - An env name follows the Kubernetes rule (`^[-._a-zA-Z][-._a-zA-Z0-9]*$`, at most 256 characters). `PRIMER_RUNTIME_TOKEN` and `RUNTIME_TOKEN` are reserved. A bad name is a `validation-error` that names it.
   - A file whose source `kind` is `secret` needs an admin, in `overrides.files` as in a template.
 - The answer is the stored row. A new workspace starts `pending`, whoever creates it (this tool, the REST route or the console), and turns `running` at its first good probe: [what a workspace is](workspaces/what-a-workspace-is). A `pending` workspace is already usable: you can start sessions in it at once.
-- Every row that `list_workspaces` and `get_workspace` serve carries `is_default`, which is `true` on the default workspace (prime) only.
-- The reach rule:
-  - From a session outside prime, `create_workspace` is refused with `forbidden` before anything is looked up, so the answer confirms neither the template nor the id.
-  - From a session outside prime, `list_workspaces` lists only your own workspace, and `get_workspace` and `delete_workspace` reach only your own. Any other id, prime included, answers `not-found`, exactly like an id that does not exist.
-  - From a session in prime, and with no calling session (a person or an API client over MCP), you reach every workspace.
+- Every row that `list_workspaces` and `get_workspace` serve carries `is_default`, which is `true` on the caller's own default workspace only: prime for the first admin, a private `ws-<user id>` for anyone else.
+- The access rule (the person behind the run, wherever it runs):
+  - `create_workspace` needs `read` on the template, and you become the new workspace's owner. It is private until you share it.
+  - `list_workspaces` lists the workspaces you may read, and `get_workspace` needs `read`. A workspace you hold no access to, prime included, answers `not-found`, exactly like an id that does not exist.
+  - `delete_workspace` needs `owner`; a lower level answers `forbidden`.
 - A delete is synchronous. While it runs the workspace reads `terminating`. It tears down the live instance (on Docker the container and its volume, on a local provider the workspace folder, on Kubernetes the pod's objects and its volume claim), ends every open session in the workspace with `workspace_lost`, which is permanent, and deletes the row. The files and every session's history go with it.
-- A delete follows the rank rule. It ends every open session in the workspace, so it applies the cancel rule to each: while one of them runs at a higher rank than you, the delete answers `forbidden` and nothing is torn down. An admin is never outranked. With no calling session, a session your own account started never blocks you.
-- The default workspace (prime) is never deleted. The tool answers `forbidden`, and the REST route answers 403 with `reserved_workspace`. Nothing is torn down and no session ends. See [the prime workspace](workspaces/prime).
+- The default workspace (prime) and every user's default workspace are never deleted. The tool answers `forbidden`, and the REST route answers 403 with `reserved_workspace`. Nothing is torn down and no session ends. See [the prime workspace](workspaces/prime).
 - A workspace on a local provider can be refused. When the operator has told a deployment whose API and workers run in separate processes to refuse local workspaces, a create on a local template fails and creates nothing (REST answers 409 `/errors/workspace-refused`). Use a template on a Docker or Kubernetes provider instead.
 
 ## How to
 1. Pick a template: list them with `workspaces__list_workspace_templates` ([workspace templates](workspaces/templates)).
-2. Create the workspace from a session in prime, or with no calling session. Give an `id` when you want a name you can type.
+2. Create the workspace. You own it, and it is private until you share it. Give an `id` when you want a name you can type.
 3. Keep the id from the answer and start your sessions there: [start a session](sessions/start-a-session).
 4. Before you delete, ask the user. A delete destroys the files and every transcript, and it cannot be undone.
 
@@ -54,7 +53,7 @@ Gives a Kubernetes workspace its own CPU, memory and disk; on Docker leave out `
 Reference: [`workspaces__create_workspace`](reference/tools/workspaces/create_workspace)
 
 ### List workspaces
-Pages through the workspaces you reach; the default one carries `is_default: true`.
+Pages through the workspaces you may read; your own default one carries `is_default: true`.
 
 ```json
 {"toolset_id": "workspaces", "tool_name": "list_workspaces", "arguments": {"limit": 50}}
@@ -81,15 +80,14 @@ Destroys the workspace, its files and its sessions' history, and answers `{delet
 Reference: [`workspaces__delete_workspace`](reference/tools/workspaces/delete_workspace)
 
 ## Gotchas
-- `create_workspace` from a session outside prime is always `forbidden`. Ask the user, or prime's operator, to create the workspace.
-- Never find prime by its name: any workspace may be called `prime`. Look for `is_default: true`.
+- Never find a default workspace by its name: any workspace may be called `prime`. Look for `is_default: true`, which names the caller's own default.
 - A template id that does not exist is a `not-found`, and so is a template whose provider is gone; an id already taken is a `conflict`, also when two creates of one id race.
 - A template on a Kubernetes provider whose `variant` is `agent_sandbox` is refused with `not-implemented` (REST answers 501 in the same words), and nothing is created. No backend builds that variant yet: use a provider whose `variant` is `system`.
 - A Docker template's image must contain the primer workspace runtime. If the runtime does not answer within 30 seconds, the create fails with `backend-error`, the message names the image, and nothing is left behind.
 - A delete refused with `forbidden` tore nothing down: the workspace and its sessions are as they were.
 - A delete that fails part way (a `backend-error`) leaves the workspace `failed`, with a `failure_reason` that says the delete did not finish, and its open sessions ended with `workspace_lost`. Delete it again to finish. That includes a backend that is down during the teardown (a Docker daemon or a cluster API). Only when the platform cannot resolve the workspace's backend at all (its provider is gone, or its backend cannot be built) is nothing torn down for certain, and the workspace gets back the phase it had.
 - While a delete runs, a new session in that workspace is refused.
-- From a session outside prime you can delete your own workspace, and that ends your own session with the rest. Ask the user first, every time.
+- An owner can delete the workspace their own session runs in, and that ends their own session with the rest. Ask the user first, every time.
 
 ## Related
 [workspace templates](workspaces/templates), [the prime workspace](workspaces/prime), [start a session](sessions/start-a-session).
