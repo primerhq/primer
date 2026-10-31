@@ -2,8 +2,10 @@
 
 A Trigger whose access block is absent or empty is owned by the user behind its run-as owner (a token resolves to its user),
 or by the first admin (the enabled admin with the oldest created_at) when that owner is ``system``, missing or no longer
-resolves. A subscription with no owner gets its trigger's run-as owner, or the first admin when the trigger has none. Rows
-that already carry access (or an owner) are left alone, so re-running converges.
+resolves. A subscription with no owner gets its trigger's run-as owner, or the first admin when the trigger has none, AND is
+disabled: the row may have been planted by someone else, and the adopted identity would hand it the owner's reach, so the
+trigger's owner reviews it and re-enables it (which makes the re-enabler its owner). Rows that already carry access (or an
+owner) are left alone, so re-running converges.
 """
 
 from __future__ import annotations
@@ -116,10 +118,13 @@ async def test_ownerless_subscriptions_get_the_triggers_owner_or_the_first_admin
     await M024TriggerOwnership().apply(sp)
 
     subs = sp.get_storage(Subscription)
-    assert (await subs.get("s-legacy-on-alice")).owner == _ref("user", "u-alice")
-    adopted = (await subs.get("s-legacy-on-legacy")).owner
-    assert (adopted.type, adopted.id, adopted.user_id) == ("user", "u-admin", "u-admin")
-    assert (await subs.get("s-owned")).owner == _ref("user", "u-other")
+    on_alice = await subs.get("s-legacy-on-alice")
+    assert on_alice.owner == _ref("user", "u-alice") and on_alice.enabled is False
+    on_legacy = await subs.get("s-legacy-on-legacy")
+    assert (on_legacy.owner.type, on_legacy.owner.id, on_legacy.owner.user_id) == ("user", "u-admin", "u-admin")
+    assert on_legacy.enabled is False
+    owned = await subs.get("s-owned")
+    assert owned.owner == _ref("user", "u-other") and owned.enabled is True
 
 
 async def test_without_an_enabled_admin_unresolvable_rows_are_left_for_admins(sp):
@@ -144,3 +149,32 @@ async def test_rerunning_changes_nothing(sp):
     await M024TriggerOwnership().apply(sp)
     second = ({t: (await _access(sp, t)) for t in ("t-1", "t-2")}, (await sp.get_storage(Subscription).get("s-1")).owner)
     assert first == second
+
+
+async def test_an_adopted_subscription_stays_disabled_on_a_rerun_and_a_re_enable_makes_the_enabler_its_owner(sp):
+    from primer.access.person import Person
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+    from primer.trigger.service import ServiceDeps, update_subscription
+
+    await _users(sp, ("u-admin", "admin", 0, False), ("u-alice", "user", 1, False))
+    await sp.get_storage(Workspace).create(Workspace(
+        id="ws", template_id="t", provider_id="p", created_at=_T0, runtime_meta=WorkspaceRuntimeMeta(url="ws://ws", token="t"),
+        access=Access(owners=["u-alice"]),
+    ))
+    await _trigger(sp, "t-alice", _ref("user", "u-alice"))
+    await _sub(sp, "s-legacy", "t-alice")
+
+    await M024TriggerOwnership().apply(sp)
+    await M024TriggerOwnership().apply(sp)
+    subs = sp.get_storage(Subscription)
+    assert (await subs.get("s-legacy")).enabled is False
+
+    # The trigger's owner reviews it and re-enables it through the normal path: the re-enabler is now its owner.
+    alice = _ref("user", "u-alice").model_copy(update={"user_id": "u-alice"})
+    reenabled = await update_subscription(
+        trigger_id="t-alice", subscription_id="s-legacy", enabled=True,
+        owner=alice, person=Person("u-alice", "user"), deps=ServiceDeps(storage_provider=sp),
+    )
+    assert reenabled.enabled is True and reenabled.owner == alice
+    await M024TriggerOwnership().apply(sp)
+    assert (await subs.get("s-legacy")).enabled is True
