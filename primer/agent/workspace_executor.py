@@ -35,13 +35,17 @@ from primer.model.workspace_session import (
     _UserInputWaiting,
 )
 from primer.model.yield_ import ToolWaitPark, YieldToWorker
+from primer.session.persistence import WorkspaceWriteTimeout
 from primer.workspace.instructions import workspace_instructions_parts
 
 
 class _EventLog(Protocol):
-    """The slice of the dispatch layer's event-log writer a compaction marker needs."""
+    """The slice of the dispatch layer's event-log writer the executor writes beside: a compaction marker's seq, and the
+    flush that puts the records the turn has numbered ahead of its Message lines."""
 
     async def reserve_seq(self) -> int: ...
+
+    async def flush(self) -> None: ...
 
 
 if TYPE_CHECKING:
@@ -170,8 +174,21 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         the latter internally), matching every other acquirer, and nothing
         inside this critical section appends to messages.jsonl, so the
         non-reentrant lock cannot be re-taken by this task.
+
+        The turn's event-log writer is flushed first, when one is bound (AG-M2): a Message line carries no seq and is
+        tagged with the last seq before it, so lines written ahead of the records the writer still buffers were tagged
+        with the turn's user_input seq, and a rewind to it left the answer in the model's history. The writer takes the
+        messages lock itself, so the flush runs before ours (as ``reserve_seq`` does for a compaction marker).
         """
         refuse_compaction_summaries(turn_messages, "messages.jsonl")
+        if self._event_log is not None:
+            try:
+                await self._event_log.flush()
+            except WorkspaceWriteTimeout:
+                # The writer gave up on the workspace and logged what it lost; the turn's messages are still written.
+                logger.warning(
+                    "session %s: the turn's records were not made durable before its messages", self._session.session_id,
+                )
         async with self._session.messages_lock:
             new_text = await self._appended_jsonl(turn_messages)
             newest_assistant = next((m for m in reversed(turn_messages) if m.role == "assistant"), None)
