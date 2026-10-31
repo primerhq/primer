@@ -4,7 +4,8 @@ The install-wide settings a user benefits from knowing are readable by any
 full user, with every secret served masked: the web-search and web-fetch
 providers plus their active configs, the speech (STT/TTS) providers plus
 the active speech config, the artifact-storage providers plus the active
-store, canvas settings, and the MCP exposure singleton. Restricted users
+store, canvas settings, and the MCP exposure singleton (not its ``/available`` catalogue, which is exposure administration and
+stays admin-only). Restricted users
 still get nothing, unauthenticated callers get 401, and every write
 (create / update / delete, the ``_test`` probes, ``/find``, and the
 active-config / canvas / exposure PUTs) stays admin-only. Red before the
@@ -70,8 +71,11 @@ READ_ROUTES = [
     "GET /v1/artifact_storage_active_config",
     "GET /v1/canvas_settings",
     "GET /v1/mcp_exposure",
-    "GET /v1/mcp_exposure/available",
 ]
+
+# Exposure administration, not a global setting: the catalogue lists (and contacts) every toolset row, private ones
+# included, so it stays admin-only (security review of P4, finding 4).
+ADMIN_READS = ["GET /v1/mcp_exposure/available"]
 
 # Every global-settings write stays admin: a user (and a restricted user)
 # gets 403 forbidden_role on each, before the body is even read.
@@ -233,6 +237,18 @@ async def test_user_writes_are_refused(gs, client, write) -> None:
     resp = await client.request(method, path, json=body)
     assert resp.status_code == 403, f"{method} {path} as a user: {resp.status_code} {resp.text}"
     assert resp.json()["extensions"]["error"] == "forbidden_role"
+
+
+@pytest.mark.asyncio
+async def test_exposure_administration_reads_are_admin_only(gs, client) -> None:
+    for username, expected in (("gs-user", 403), ("gs-restr", 403), ("gs-admin", 200)):
+        await _login(client, username)
+        for route in ADMIN_READS:
+            method, path = route.split(" ", 1)
+            resp = await client.request(method, path)
+            assert resp.status_code == expected, f"{route} as {username}: {resp.status_code} {resp.text}"
+            if expected == 403:
+                assert resp.json()["extensions"]["error"] == "forbidden_role"
 
 
 @pytest.mark.asyncio

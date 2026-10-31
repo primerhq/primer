@@ -396,9 +396,9 @@ def _mount_routers(
         mcp_exposure_read_router,
         mcp_exposure_write_router,
     )
-    # The exposure singleton is global settings (ACL-P4 Task 9): the reads
-    # (the row, /available) mount at the user tier; the PUT stays admin (it
-    # carries its own route-level require_admin on top). The split routes
+    # The exposure singleton is global settings (ACL-P4 Task 9): its read
+    # (the row) mounts at the user tier; the PUT and the /available catalogue
+    # (exposure administration, it contacts every toolset) stay admin. The split routes
     # already carry the router's own /mcp_exposure prefix, so the mount
     # prefix is the API prefix alone.
     app.include_router(mcp_exposure_read_router, prefix=prefix, dependencies=user_dep)

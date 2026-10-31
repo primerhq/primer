@@ -222,7 +222,9 @@ Install-wide settings every feature already uses are readable by every full user
 admins: the web search and fetch providers and their active configs, the speech providers and active config, the artifact
 storage providers and active store, canvas settings and the MCP exposure singleton. The routers split by verb with
 `read_write_routers` (`primer/api/routers/_crud.py`): GETs mount at the user tier (a restricted user still reaches
-nothing, an unauthenticated caller gets 401), the writes, the `_test` probes and the active-config PUTs stay admin.
+nothing, an unauthenticated caller gets 401), the writes, the `_test` probes and the active-config PUTs stay admin. The
+exposure catalogue `GET /v1/mcp_exposure/available` is exposure administration, not a global setting (it lists and
+contacts every toolset row, private ones included), so it stays admin; `GET /v1/mcp_exposure` (the allowlist) is readable.
 
 ### Console (Phase 4)
 
