@@ -48,6 +48,41 @@ if TYPE_CHECKING:
     from primer.model.workspace_session import WorkspaceSession
 
 
+class _EventWindow:
+    """A contiguous, forward-moving slice of the log shared by the subscriptions of one tick.
+
+    ``after(cursor)`` answers what ``store.read_after(cursor, limit=batch)`` would, from memory when the slice covers ``cursor`` and with one
+    more read at the slice's end when it does not. A cursor below the slice (a subscription far behind) restarts the slice there. The slice is
+    trimmed to a few batches so one lagging subscription cannot make it hold the whole log.
+    """
+
+    _CAP_BATCHES = 5
+
+    def __init__(self, store: Any, batch: int) -> None:
+        self._store = store
+        self._batch = batch
+        self._base: int | None = None
+        self._events: list[Any] = []
+        self._exhausted = False
+
+    async def after(self, cursor: int) -> list[Any]:
+        if self._base is None or cursor < self._base:
+            self._base, self._events, self._exhausted = cursor, [], False
+        while True:
+            ahead = [e for e in self._events if e.id > cursor]
+            if len(ahead) >= self._batch or self._exhausted:
+                return ahead[: self._batch]
+            last = self._events[-1].id if self._events else self._base
+            more = await self._store.read_after(last, limit=self._batch)
+            if len(more) < self._batch:
+                self._exhausted = True
+            self._events.extend(more)
+            if len(self._events) > self._CAP_BATCHES * self._batch:
+                keep = [e for e in self._events if e.id > cursor]
+                self._base = cursor
+                self._events = keep
+
+
 class EventDispatcher(_BackgroundTask):
     role = ROLE_EVENT_DISPATCHER
 
@@ -74,7 +109,10 @@ class EventDispatcher(_BackgroundTask):
         self._max_failures = max_failures
         self._wake = asyncio.Event()
         # (subscription_id, event_id) -> consecutive sink failures.
+        # Per process: the skip-after-N rule counts failures seen by THIS dispatcher (another process failing the same event counts separately).
         self._fail_counts: dict[tuple[str, int], int] = {}
+        # Cursors moved during the current tick, written once at its end (subscription id -> event id).
+        self._pending_cursors: dict[str, int] = {}
 
     # -- loop -------------------------------------------------------------
 
@@ -138,31 +176,54 @@ class EventDispatcher(_BackgroundTask):
         drain without running the background loop.
         """
         subs_storage = self._sp.get_storage(EventSubscription)
-        page = await subs_storage.list(OffsetPage(length=200))
+        live = [sub for sub in await self._all_subscriptions(subs_storage) if not sub.paused]
+        if not live:
+            return 0
+        store = self._sp.get_event_store()
+        # One read for every cursor. A new subscription consumes from now (no replay of history): its row is written even at head 0 so this init
+        # happens exactly once per subscription.
+        cursors = await store.get_cursors([sub.id for sub in live])
+        fresh = [sub.id for sub in live if sub.id not in cursors]
+        if fresh:
+            head = await store.max_id()
+            cursors.update({sub_id: head for sub_id in fresh})
+            await store.set_cursors({sub_id: head for sub_id in fresh})
+        # Subscriptions share one read of the log: the window serves every subscription whose cursor lies inside it. Lowest cursor first, so the
+        # window only ever moves forward.
+        window = _EventWindow(store, self._batch)
+        self._pending_cursors = {}
         delivered = 0
-        for sub in page.items:
-            if sub.paused:
-                continue
-            try:
-                delivered += await self._process(sub)
-            except Exception:  # noqa: BLE001 - isolate per subscription
-                logger.exception(
-                    "event-dispatcher: subscription %s failed", sub.id,
-                )
+        try:
+            for sub in sorted(live, key=lambda s: cursors[s.id]):
+                try:
+                    delivered += await self._process(sub, cursors[sub.id], window)
+                except Exception:  # noqa: BLE001 - isolate per subscription
+                    logger.exception(
+                        "event-dispatcher: subscription %s failed", sub.id,
+                    )
+        finally:
+            # One write for every cursor that moved (or was held) this tick.
+            pending, self._pending_cursors = self._pending_cursors, {}
+            if pending:
+                await store.set_cursors(pending)
         return delivered
 
-    async def _process(self, sub: EventSubscription) -> int:
-        store = self._sp.get_event_store()
-        cursor = await store.get_cursor(sub.id)
-        if cursor is None:
-            # New subscription: consume from now, don't replay history.
-            # The row is written even at head 0 so this init happens
-            # exactly once per subscription.
-            cursor = await store.max_id()
-            await store.set_cursor(sub.id, cursor)
+    @staticmethod
+    async def _all_subscriptions(subs_storage: Any) -> list[EventSubscription]:
+        """Every subscription, paged: reading only the first page left subscription 201 and later without events for good."""
+        out: list[EventSubscription] = []
+        offset = 0
+        while True:
+            page = await subs_storage.list(OffsetPage(offset=offset, length=200))
+            out.extend(page.items)
+            if len(page.items) < 200:
+                return out
+            offset += 200
+
+    async def _process(self, sub: EventSubscription, cursor: int, window: "_EventWindow") -> int:
         delivered = 0
         while True:
-            events = await store.read_after(cursor, limit=self._batch)
+            events = await window.after(cursor)
             if not events:
                 return delivered
             for event in events:
@@ -176,7 +237,7 @@ class EventDispatcher(_BackgroundTask):
                         self._fail_counts[key] = count
                         if count < self._max_failures:
                             # Hold the cursor; the next tick retries.
-                            await store.set_cursor(sub.id, cursor)
+                            self._pending_cursors[sub.id] = cursor
                             return delivered
                         logger.error(
                             "event-dispatcher: skipping event %d for "
@@ -197,7 +258,7 @@ class EventDispatcher(_BackgroundTask):
                             # gone, stop reading for it.
                             return delivered
                 cursor = event.id
-            await store.set_cursor(sub.id, cursor)
+            self._pending_cursors[sub.id] = cursor
 
     def _sub_completed(self, sub: EventSubscription) -> bool:
         sink = sub.sink
@@ -394,6 +455,7 @@ class EventDispatcher(_BackgroundTask):
         return await workspace_level(self._sp, person, event.workspace_id) is None
 
     async def _complete_one_shot(self, sub: EventSubscription) -> None:
+        self._pending_cursors.pop(sub.id, None)  # the tick-end write must not bring a deleted cursor back
         store = self._sp.get_event_store()
         subs_storage = self._sp.get_storage(EventSubscription)
         try:

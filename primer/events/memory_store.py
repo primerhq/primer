@@ -103,6 +103,12 @@ class InMemoryEventStore(EventStore):
     async def set_cursor(self, subscriber_id: str, event_id: int) -> None:
         self._cursors[subscriber_id] = event_id
 
+    async def get_cursors(self, subscriber_ids: list[str]) -> dict[str, int]:
+        return {sid: self._cursors[sid] for sid in subscriber_ids if sid in self._cursors}
+
+    async def set_cursors(self, cursors: dict[str, int]) -> None:
+        self._cursors.update(cursors)
+
     async def delete_cursor(self, subscriber_id: str) -> None:
         self._cursors.pop(subscriber_id, None)
 

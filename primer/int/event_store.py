@@ -93,6 +93,20 @@ class EventStore(ABC):
     async def set_cursor(self, subscriber_id: str, event_id: int) -> None:
         """Persist ``subscriber_id``'s cursor at ``event_id``."""
 
+    async def get_cursors(self, subscriber_ids: list[str]) -> dict[str, int]:
+        """The stored cursors of ``subscriber_ids`` (ids with no cursor row are absent). Backends override this with one query; the default loops."""
+        out: dict[str, int] = {}
+        for subscriber_id in subscriber_ids:
+            cursor = await self.get_cursor(subscriber_id)
+            if cursor is not None:
+                out[subscriber_id] = cursor
+        return out
+
+    async def set_cursors(self, cursors: dict[str, int]) -> None:
+        """Persist several cursors. Backends override this with one statement; the default loops."""
+        for subscriber_id, event_id in cursors.items():
+            await self.set_cursor(subscriber_id, event_id)
+
     @abstractmethod
     async def delete_cursor(self, subscriber_id: str) -> None:
         """Forget ``subscriber_id``'s cursor. Idempotent."""

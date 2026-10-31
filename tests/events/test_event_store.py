@@ -124,3 +124,30 @@ async def test_cursors_default_missing_upsert_and_floor(sp):
     await store.delete_cursor("sub-2")
     assert await store.active_cursor_floor() == 12
     await store.delete_cursor("sub-2")  # idempotent
+
+
+async def test_batched_cursor_read_and_write_match_the_single_ones(sp):
+    store = sp.get_event_store()
+    assert await store.get_cursors([]) == {}
+    assert await store.get_cursors(["a", "b"]) == {}
+    await store.set_cursors({})  # nothing to write
+    await store.set_cursors({"a": 3, "b": 7})
+    await store.set_cursors({"b": 9, "c": 1})  # upsert: b moves, c is new
+    assert await store.get_cursors(["a", "b", "c", "missing"]) == {"a": 3, "b": 9, "c": 1}
+    assert await store.get_cursor("b") == 9
+    assert await store.active_cursor_floor() == 1
+
+
+async def test_batched_cursor_read_chunks_past_the_variable_limit(sp):
+    store = sp.get_event_store()
+    ids = {f"sub-{i}": i for i in range(1200)}
+    await store.set_cursors(ids)
+    assert await store.get_cursors(list(ids)) == ids
+
+
+async def test_the_memory_store_batches_cursors_the_same_way():
+    from primer.events.memory_store import InMemoryEventStore
+
+    store = InMemoryEventStore()
+    await store.set_cursors({"a": 3, "b": 7})
+    assert await store.get_cursors(["a", "b", "x"]) == {"a": 3, "b": 7}

@@ -1824,6 +1824,30 @@ class PostgresEventStore(EventStore):
                 subscriber_id, event_id,
             )
 
+    async def get_cursors(self, subscriber_ids: list[str]) -> dict[str, int]:
+        if not subscriber_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT subscriber_id, cursor FROM {self._qualified_cursors} '
+                'WHERE subscriber_id = ANY($1::text[])',
+                list(subscriber_ids),
+            )
+        return {r["subscriber_id"]: int(r["cursor"]) for r in rows}
+
+    async def set_cursors(self, cursors: dict[str, int]) -> None:
+        if not cursors:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f'INSERT INTO {self._qualified_cursors} '
+                '(subscriber_id, cursor, updated_at) '
+                'SELECT s, c, now() FROM unnest($1::text[], $2::bigint[]) AS t(s, c) '
+                'ON CONFLICT (subscriber_id) DO UPDATE SET '
+                'cursor = excluded.cursor, updated_at = excluded.updated_at',
+                list(cursors), list(cursors.values()),
+            )
+
     async def delete_cursor(self, subscriber_id: str) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(

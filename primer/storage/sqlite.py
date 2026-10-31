@@ -1851,6 +1851,36 @@ class SqliteEventStore(EventStore):
                 exc, model_name="event_cursors", op="set_cursor",
             ) from exc
 
+    async def get_cursors(self, subscriber_ids: list[str]) -> dict[str, int]:
+        out: dict[str, int] = {}
+        try:
+            for i in range(0, len(subscriber_ids), 500):  # stay under the bound-variable limit
+                chunk = subscriber_ids[i:i + 500]
+                cur = await self._conn.execute(
+                    f"SELECT subscriber_id, cursor FROM event_cursors WHERE subscriber_id IN ({','.join('?' * len(chunk))})",
+                    tuple(chunk),
+                )
+                out.update({row[0]: int(row[1]) for row in await cur.fetchall()})
+        except Exception as exc:
+            raise _wrap_sqlite_error(exc, model_name="event_cursors", op="get_cursors") from exc
+        return out
+
+    async def set_cursors(self, cursors: dict[str, int]) -> None:
+        if not cursors:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                await self._conn.executemany(
+                    "INSERT INTO event_cursors (subscriber_id, cursor, updated_at) VALUES (?, ?, ?)"
+                    " ON CONFLICT(subscriber_id) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at",
+                    [(sid, cursor, now) for sid, cursor in cursors.items()],
+                )
+                if should_commit:
+                    await self._conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(exc, model_name="event_cursors", op="set_cursors") from exc
+
     async def delete_cursor(self, subscriber_id: str) -> None:
         try:
             async with self._provider._write_guard() as should_commit:  # noqa: SLF001
