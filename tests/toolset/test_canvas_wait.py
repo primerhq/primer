@@ -553,7 +553,7 @@ async def test_the_resume_returns_the_unredacted_stored_event_and_falls_back_whe
     await _event(world, "viz", "emit", name="submit", data=raw_data)
     await EventDispatcher(storage_provider=world.sp, event_bus=world.bus).drain_once()
     [(_, envelope)] = [(k, p) for k, p in world.bus.published if k == y.event_key]
-    # The wake carries no input at all: the flip stamps it on the waiting row, a shared read (audit G8-08, rulings on #872).
+    # The wake carries no input at all: the flip stamps it on the waiting row, which every reader of the workspace may read (audit G8-08, rulings on #872).
     assert "data" not in envelope["payload"] and "value" not in envelope["payload"], "the dispatcher removed the input from the wake"
     assert "tok-123" not in json.dumps(envelope)
 

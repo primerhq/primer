@@ -1,6 +1,6 @@
 """What a user entered on a canvas stays in its session's own input, whichever way the event is delivered (pivot P5 S5, the lead's ruling 1).
 
-Sessions and their rows are a shared read (the user's G7-02 decision): ``GET /v1/sessions/{id}`` serves any signed-in user the row, its
+A session's row is read through the session's workspace's access: ``GET /v1/sessions/{id}`` serves every reader of that workspace the row, its
 ``parked_state`` and its queued steers, and ``GET /v1/events`` serves a non-admin the canvas events without their input (#872). The
 delivery (``primer.canvas.delivery``) adds copies of each event: the queued steer's attribution, the USER_INPUT's ``payload.canvas_event``
 and ``payload.canvas_digest``, the ``canvas_event`` record, what a wake stamps on the row or publishes. None of them may carry a click's
