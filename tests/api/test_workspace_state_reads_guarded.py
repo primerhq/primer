@@ -74,6 +74,7 @@ class _FakeWorkspace:
     def __init__(self) -> None:
         self._state = _FakeState()
         self.reads: list[str] = []
+        self.list_calls: list[dict] = []
 
     async def read_file(self, path: str) -> bytes:
         self.reads.append(path)
@@ -82,7 +83,8 @@ class _FakeWorkspace:
     async def file_info(self, path: str) -> FileEntry:
         return _entry(path)
 
-    async def list_files(self, path=".", *, recursive=False, max_entries=None):
+    async def list_files(self, path=".", *, recursive=False, max_entries=None, skip_reserved=False):
+        self.list_calls.append({"recursive": recursive, "skip_reserved": skip_reserved})
         if recursive:
             return [
                 _entry("src", "dir"), _entry("src/main.py"),
@@ -287,3 +289,19 @@ async def test_the_commit_diff_serves_files_to_an_admin():
     body = resp.json()
     assert [f["path"] for f in body["files"]] == ["sessions/s1/messages.jsonl"]
     assert "files_hidden" not in body
+
+
+async def test_a_users_recursive_listing_asks_the_backend_to_skip_the_reserved_trees():
+    """W55c: pruned during the capped walk, not only filtered afterwards."""
+    resp, registry = await _get("user", "/v1/workspaces/w/files", recursive="true")
+
+    assert resp.status_code == 200
+    assert registry.ws.list_calls == [{"recursive": True, "skip_reserved": True}]
+
+
+async def test_an_admins_recursive_listing_walks_the_reserved_trees_too():
+    resp, registry = await _get("admin", "/v1/workspaces/w/files", recursive="true")
+
+    assert resp.status_code == 200
+    assert registry.ws.list_calls == [{"recursive": True, "skip_reserved": False}]
+    assert ".state" in [item["path"] for item in resp.json()["items"]]

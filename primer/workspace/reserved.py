@@ -65,4 +65,20 @@ def reserved_tree_for(workspace: Any, path: str) -> str | None:
     return reserved_tree(path, reserved_trees(workspace))
 
 
-__all__ = ["reserved_tree", "reserved_tree_for", "reserved_trees"]
+async def reserved_tree_for_resolved(workspace: Any, path: str) -> str | None:
+    """:func:`reserved_tree_for`, and then, for a backend whose filesystem lives elsewhere (a sandbox), the tree the path reaches AFTER the runtime
+    resolves it: ``ln -s .state x`` makes ``x/...`` the state tree although the string says otherwise (review of workspaces, W55d).
+
+    The backend's own ``reserved_tree_of_resolved`` (async; the local backend needs none: its resolver already follows links) is asked only when the
+    string rule found nothing.
+    """
+    tree = reserved_tree_for(workspace, path)
+    if tree is not None:
+        return tree
+    resolver = getattr(workspace, "reserved_tree_of_resolved", None)
+    if callable(resolver):
+        return await resolver(path)
+    return None
+
+
+__all__ = ["reserved_tree", "reserved_tree_for", "reserved_tree_for_resolved", "reserved_trees"]

@@ -129,7 +129,7 @@ from primer.model.workspace import (
 )
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.state_helpers import has_unsafe_commit_chars
-from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
+from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_tree_for_resolved, reserved_trees
 from primer.workspace.row_writes import WORKSPACE_PHASES, write_workspace_fields
 from primer.workspace.diagnostic import (
     DIAGNOSTIC_COMMANDS,
@@ -147,7 +147,8 @@ from primer.workspace.template_privilege import (
     refusal_message,
 )
 from primer.workspace.template_secrets import restore_template_secrets
-from primer.session.mutation_lock import session_lifecycle_lock
+from primer.bus.watch_notify import wake_watchers_best_effort
+from primer.session.mutation_lock import KeyedLock, session_lifecycle_lock
 from primer.model.yield_ import gate_id_of, with_wake_park
 from primer.session.pending_gates import undecided_pending_gates
 from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
@@ -2823,13 +2824,14 @@ def _is_admin(user: Any) -> bool:
     return user is not None and getattr(user, "role", None) == "admin"
 
 
-def _refuse_reserved_read(ws: Any, path: str, user: Any) -> None:
+async def _refuse_reserved_read(ws: Any, path: str, user: Any) -> None:
     """403 ``forbidden_role`` when a non-admin names a path in the runtime's
     ``.state`` / ``.tmp`` trees (A-22). Admins may read them, for debugging.
     The path is classified the way the backend resolves it."""
     if _is_admin(user):
         return
-    tree = reserved_tree_for(ws, path)
+    # Resolved as the backend does, links included: ``ln -s .state x`` must not make ``x/...`` readable (W55d).
+    tree = await reserved_tree_for_resolved(ws, path)
     if tree is not None:
         raise HTTPException(
             status_code=403,
@@ -2867,7 +2869,7 @@ async def file_tree(
 ) -> dict:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     # No origin decoration: with collection mounting retired, every entry
     # is workspace-native and nothing is collection-backed.
     # hidden=true never reveals the reserved trees to a non-admin.
@@ -2920,7 +2922,7 @@ async def list_files(
 ) -> dict:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     # No origin decoration: with collection mounting retired, every
     # entry is workspace-native and nothing is collection-backed.
     #
@@ -2947,7 +2949,10 @@ async def list_files(
     max_entries = (
         min(offset + limit, _MAX_RECURSIVE_WALK_ENTRIES) + 1 if recursive else None
     )
-    entries = await ws.list_files(path, recursive=recursive, max_entries=max_entries)
+    # A non-admin's recursive walk never enters the reserved trees (W55c): they would fill the capped walk with entries the page drops.
+    entries = await ws.list_files(
+        path, recursive=recursive, max_entries=max_entries, **({} if _is_admin(user) else {"skip_reserved": True}),
+    )
     entries = [e for e in entries if not _is_runtime_marker(e.path)]
     # A recursive walk from the root descends into .state / .tmp: a
     # non-admin's page drops those entries (A-22), so it can come back
@@ -2978,8 +2983,17 @@ async def file_info(
 ) -> FileEntry:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     return await ws.file_info(path)
+
+
+#: Serialises a file write's precondition check and the write itself, per (workspace, path) (W55b).
+_FILE_WRITE_LOCKS = KeyedLock()
+
+
+def _file_etag(entry) -> str:
+    """The etag of a file as ``file_info`` reports it: the read serves it and the write's precondition compares against it (one formula)."""
+    return hashlib.md5(f"{entry.modified_at.isoformat()}:{entry.size_bytes}".encode()).hexdigest()
 
 
 @files_router.get(
@@ -3004,7 +3018,10 @@ async def read_file(
 ) -> FileReadResponse:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
+    # The etag describes the file as it was BEFORE the bytes were read (review of workspaces, W55b): a write landing in between then makes the
+    # client's etag stale (its own write is refused) instead of newer than the content it holds.
+    entry = await ws.file_info(path)
     raw = await ws.read_file(path)
     if encoding == "text":
         try:
@@ -3016,10 +3033,9 @@ async def read_file(
             ) from exc
     else:
         content = base64.b64encode(raw).decode("ascii")
-    entry = await ws.file_info(path)
     mtime_iso = entry.modified_at.isoformat()
     mtime = entry.modified_at.timestamp()
-    etag = hashlib.md5(f"{mtime_iso}:{len(raw)}".encode()).hexdigest()
+    etag = _file_etag(entry)
     return FileReadResponse(
         path=path,
         encoding=encoding,
@@ -3045,7 +3061,7 @@ async def download_file(
 ) -> StreamingResponse:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     raw = await ws.read_file(path)
 
     async def _gen():
@@ -3073,10 +3089,13 @@ async def make_dir(
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    event_bus=Depends(get_event_bus),
 ) -> None:
     await _require_workspace(request, workspace_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     await ws.make_dir(path)
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=path, scheduler=scheduler, event_bus=event_bus, event_type="created")
 
 
 @files_router.delete(
@@ -3094,10 +3113,13 @@ async def delete_file(
         description="Delete a non-empty directory and all its contents",
     ),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    event_bus=Depends(get_event_bus),
 ) -> None:
     await _require_workspace(request, workspace_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     await ws.delete_file(path, recursive=recursive)
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=path, scheduler=scheduler, event_bus=event_bus, event_type="deleted")
 
 
 @files_router.post(
@@ -3112,6 +3134,8 @@ async def move_file(
     src: str = Query(..., description="Source workspace-relative path"),
     dst: str = Query(..., description="Destination workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    event_bus=Depends(get_event_bus),
 ) -> None:
     """Move / rename ``src`` to ``dst`` within one workspace.
 
@@ -3135,6 +3159,9 @@ async def move_file(
                 ),
             },
         ) from exc
+    # The source is gone and the destination is new: a session watching either path is woken.
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=src, scheduler=scheduler, event_bus=event_bus, event_type="deleted")
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=dst, scheduler=scheduler, event_bus=event_bus, event_type="created")
 
 
 @files_router.put(
@@ -3184,68 +3211,53 @@ async def write_file(
     # Writes into the reserved trees are refused for everyone (the backend's
     # _refuse_reserved). Refuse BEFORE the precondition stat below, or
     # 404-vs-412 tells a caller whether a .state / .tmp file exists (A-22).
-    reserved = reserved_tree_for(ws, path)
+    reserved = await reserved_tree_for_resolved(ws, path)
     if reserved is not None:
         raise BadRequestError(
             f"refusing to mutate path inside reserved tree {reserved!r}: "
             f"{path!r}"
         )
-    if etag is not None or if_unmodified_since_hdr is not None:
-        try:
-            entry = await ws.file_info(path)
-        except NotFoundError:
-            entry = None
-        if entry is not None:
-            conflict = False
-            if etag is not None:
-                current_etag = hashlib.md5(
-                    f"{entry.modified_at.isoformat()}:{entry.size_bytes}".encode()
-                ).hexdigest()
-                if etag != current_etag:
-                    conflict = True
-            elif if_unmodified_since_hdr is not None:
-                try:
-                    parsed_date = email.utils.parsedate_to_datetime(
-                        if_unmodified_since_hdr
-                    )
-                    if entry.modified_at > parsed_date:
+    # The precondition check and the write are ONE step per (workspace, path): without the lock two editors holding one etag both passed the
+    # check and both wrote (review of workspaces, W55b). In-process only (one event loop per API worker): another worker is not covered.
+    async with _FILE_WRITE_LOCKS.acquire(f"{workspace_id}\0{path}"):
+        if etag is not None or if_unmodified_since_hdr is not None:
+            try:
+                entry = await ws.file_info(path)
+            except NotFoundError:
+                entry = None
+            if entry is not None:
+                conflict = False
+                if etag is not None:
+                    if etag != _file_etag(entry):
                         conflict = True
-                except Exception:  # noqa: BLE001 - ignore malformed header
-                    pass
-            if conflict:
-                problem = ProblemDetails(
-                    type="/errors/precondition-failed",
-                    title="Precondition Failed",
-                    status=412,
-                    detail="The file has been modified since the precondition was recorded.",
-                    instance=request.url.path,
-                )
-                return JSONResponse(
-                    status_code=412,
-                    content=problem.model_dump(exclude_none=True),
-                    media_type=PROBLEM_JSON_MEDIA_TYPE,
-                )
-    await ws.write_file(path, raw)
-    # Deterministically wake any watch_files-parked session in this
-    # workspace whose watched paths match the just-written file. This
-    # reuses the event-bus -> YieldEventListener resume path; inotify
-    # stays as the backstop. Best-effort: a wake failure must never fail
-    # the write itself.
-    try:
-        from primer.bus.watch_notify import wake_watch_files_on_write
-
-        await wake_watch_files_on_write(
-            workspace_id=workspace_id,
-            path=path,
-            scheduler=scheduler,
-            event_bus=event_bus,
-        )
-    except Exception:  # noqa: BLE001 - wake is best-effort
-        logger.exception(
-            "wake_watch_files_on_write failed for workspace=%r path=%r",
-            workspace_id,
-            path,
-        )
+                elif if_unmodified_since_hdr is not None:
+                    try:
+                        parsed_date = email.utils.parsedate_to_datetime(
+                            if_unmodified_since_hdr
+                        )
+                        if entry.modified_at > parsed_date:
+                            conflict = True
+                    except Exception:  # noqa: BLE001 - ignore malformed header
+                        pass
+                if conflict:
+                    problem = ProblemDetails(
+                        type="/errors/precondition-failed",
+                        title="Precondition Failed",
+                        status=412,
+                        detail="The file has been modified since the precondition was recorded.",
+                        instance=request.url.path,
+                    )
+                    return JSONResponse(
+                        status_code=412,
+                        content=problem.model_dump(exclude_none=True),
+                        media_type=PROBLEM_JSON_MEDIA_TYPE,
+                    )
+        await ws.write_file(path, raw)
+    # Deterministically wake any watch_files-parked session in this workspace whose watched paths match the just-written file (the event-bus ->
+    # YieldEventListener resume path; inotify stays as the backstop). Best-effort: a wake failure never fails the write itself.
+    await wake_watchers_best_effort(
+        workspace_id=workspace_id, path=path, scheduler=scheduler, event_bus=event_bus, event_type="modified",
+    )
     return Response(status_code=204)
 
 

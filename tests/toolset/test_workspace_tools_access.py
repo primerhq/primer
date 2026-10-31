@@ -69,6 +69,7 @@ class _Files(FakeWorkspace):
         self.workspace_id = workspace_id
         self.written: list[tuple[str, bytes]] = []
         self.deleted: list[str] = []
+        self.list_calls: list[dict] = []
 
     async def read_file(self, path: str) -> bytes:
         if path != "notes.txt":
@@ -78,7 +79,8 @@ class _Files(FakeWorkspace):
     async def write_file(self, path: str, raw: bytes) -> None:
         self.written.append((path, raw))
 
-    async def list_files(self, path: str = "", *, recursive: bool = False, max_entries: int | None = None) -> list:
+    async def list_files(self, path: str = "", *, recursive: bool = False, max_entries: int | None = None, skip_reserved: bool = False) -> list:
+        self.list_calls.append({"recursive": recursive, "skip_reserved": skip_reserved})
         return []
 
     async def delete_file(self, path: str) -> None:
@@ -431,3 +433,16 @@ async def test_subscription_visibility_follows_the_callers_full_not_the_default_
     assert await _listed(U3) == 0
     assert await _listed(U2) == 1
     assert await _listed(ADMIN) == 1
+
+
+async def test_a_users_recursive_listing_asks_the_backend_to_skip_the_reserved_trees_and_an_admins_does_not():
+    """W55c through the tool: a non-admin's capped walk is pruned during the walk; an admin's lists the reserved trees."""
+    world = await _world()
+    toolset, registry = _tools(world)
+
+    _ok(await _call(toolset, "list_workspace_files", {"workspace_id": "ws-1", "recursive": True}, _ctx("ses-a", "ws-1", U1)), "user")
+    _ok(await _call(toolset, "list_workspace_files", {"workspace_id": "ws-1", "recursive": True}, _ctx("ses-a", "ws-1", ADMIN)), "admin")
+
+    assert registry.workspaces["ws-1"].list_calls == [
+        {"recursive": True, "skip_reserved": True}, {"recursive": True, "skip_reserved": False},
+    ]

@@ -88,14 +88,14 @@ def path_matches_watch(path: str, watched: str) -> bool:
     return False
 
 
-def _change_payload(path: str) -> dict:
+def _change_payload(path: str, event_type: str = "modified") -> dict:
     """Build the same change-batch payload shape the inotify watcher
-    publishes for a single modified file."""
+    publishes for a single changed file (``modified``, ``created`` or ``deleted``)."""
     return {
         "changes": [
             {
                 "path": _normalise(path),
-                "event_type": "modified",
+                "event_type": event_type,
                 "mtime_after": datetime.now(timezone.utc).isoformat(),
             }
         ]
@@ -108,9 +108,10 @@ async def wake_watch_files_on_write(
     path: str,
     scheduler,
     event_bus: EventBus,
+    event_type: str = "modified",
 ) -> int:
     """Wake every ``watch_files``-parked session in ``workspace_id`` whose
-    watched paths match the just-written ``path``.
+    watched paths match the just-changed ``path`` (``event_type``: what happened to it).
 
     Queries the scheduler for active ``watch:*`` parks (the same query the
     :class:`~primer.bus.watcher.WatcherManager` uses), filters to this
@@ -135,12 +136,34 @@ async def wake_watch_files_on_write(
         watched_paths = park.get("paths") or []
         if not any(path_matches_watch(path, w) for w in watched_paths):
             continue
-        await event_bus.publish(event_key, _change_payload(path))
+        await event_bus.publish(event_key, _change_payload(path, event_type))
         woken += 1
     return woken
+
+
+async def wake_watchers_best_effort(
+    *,
+    workspace_id: str,
+    path: str,
+    scheduler,
+    event_bus,
+    event_type: str = "modified",
+) -> None:
+    """:func:`wake_watch_files_on_write` for a door that has already changed the file: never raises (a wake failure must not fail the write that
+    happened) and does nothing without a scheduler and a bus (a toolset or app built without them). Every door that changes workspace files
+    calls this: the REST write, delete, move and mkdir routes and the MCP write and delete tools (review of workspaces, W55h)."""
+    if scheduler is None or event_bus is None:
+        return
+    try:
+        await wake_watch_files_on_write(
+            workspace_id=workspace_id, path=path, scheduler=scheduler, event_bus=event_bus, event_type=event_type,
+        )
+    except Exception:  # noqa: BLE001 - the wake is best-effort
+        logger.exception("wake_watch_files_on_write failed for workspace=%r path=%r", workspace_id, path)
 
 
 __all__ = [
     "path_matches_watch",
     "wake_watch_files_on_write",
+    "wake_watchers_best_effort",
 ]
