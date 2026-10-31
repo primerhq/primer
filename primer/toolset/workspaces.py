@@ -191,6 +191,20 @@ def _caller_is_admin(ctx: ToolContext | None) -> bool:
     return _role_allows(actor, "admin")
 
 
+
+def _mcp_caller_ref():
+    """The MCP request's actor as a persisted ref (a call with no ToolContext is the MCP endpoint), else ``None``.
+
+    A session started over MCP runs as the account behind the token, so it can use what that account can read; with no
+    known caller it stays unattributed (an ordinary user that reads only public rows)."""
+    from primer.mcp.server import current_actor
+    from primer.model.principal import PrincipalRef
+
+    actor = current_actor.get()
+    if actor is None or actor.type == "system":
+        return None
+    return PrincipalRef.from_principal(actor)
+
 def _caller_principal(ctx: ToolContext | None) -> Any:
     """Who is calling, for a rank rule: the run's initiator when the call has a ToolContext, else (the MCP endpoint) the request's actor; ``None``
     when neither is known, which :func:`primer.authz.principal_rank` ranks as an ordinary user. The two sources of :func:`_caller_is_admin`."""
@@ -1954,6 +1968,7 @@ def build_workspaces_toolset(
                 # system principal that clears every role floor (A-20).
                 initiated_by=(
                     getattr(ctx, "initiated_by", None)
+                    or _mcp_caller_ref()
                     or PrincipalRef.unattributed()
                 ),
                 deps=deps,
