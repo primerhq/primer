@@ -49,6 +49,11 @@ logger = logging.getLogger(__name__)
 #: were running when it was first seen having finished.
 HOLE_GRACE_SECONDS = 1.0
 
+#: The longest a gap may hold delivery back. Transaction ids are cluster-wide, so a long write transaction anywhere (an index build, an idle-in-
+#: transaction connection, another database on the same cluster) keeps the horizon from clearing; delivery must not freeze behind it. A gap seen this
+#: long is passed even though the horizon has not cleared, and logged once.
+HOLE_MAX_WAIT_SECONDS = 60.0
+
 if TYPE_CHECKING:
     from primer.model.workspace_session import WorkspaceSession
 
@@ -115,8 +120,8 @@ class EventDispatcher(_BackgroundTask):
     ) -> None:
         super().__init__(name="event-dispatcher")
         self._clock = clock
-        # Gaps seen in the event ids: (first missing id, last missing id) -> (next transaction id then, when first seen). See _gap_resolved.
-        self._holes: dict[tuple[int, int], tuple[int, float]] = {}
+        # Gaps seen in the event ids: (first missing id, last missing id) -> [next transaction id then, when first seen, whether the give-up was logged].
+        self._holes: dict[tuple[int, int], list] = {}
         self._horizon_supported = True
         self._sp = storage_provider
         self._bus = event_bus
@@ -295,19 +300,33 @@ class EventDispatcher(_BackgroundTask):
         if not self._horizon_supported:
             return True
         store = self._sp.get_event_store()
-        seen = self._holes.get((first, last))
+        gap = (first, last)
+        seen = self._holes.get(gap)
         if seen is None:
             horizon = await store.read_horizon()
             if horizon is None:
                 self._horizon_supported = False
                 return True
-            self._holes[(first, last)] = (horizon[1], self._clock())
+            self._holes[gap] = [horizon[1], self._clock(), False]
             return False
-        next_xid_then, first_seen = seen
-        if self._clock() - first_seen < HOLE_GRACE_SECONDS:
+        next_xid_then, first_seen, warned = seen
+        waited = self._clock() - first_seen
+        if waited < HOLE_GRACE_SECONDS:
             return False
         horizon = await store.read_horizon()
-        return horizon is None or horizon[0] >= next_xid_then
+        if horizon is None or horizon[0] >= next_xid_then:
+            return True
+        if waited < HOLE_MAX_WAIT_SECONDS:
+            return False
+        # Ceiling: something unrelated keeps the horizon back. Pass the gap rather than freeze delivery; say so once per gap, not per subscription.
+        if not warned:
+            seen[2] = True
+            logger.warning(
+                "event-dispatcher: passing event ids %d-%d after waiting %.0fs; a long-running transaction is holding the horizon back, so an event "
+                "inserted by a transaction that commits later may be skipped",
+                first, last, waited,
+            )
+        return True
 
     def _sub_completed(self, sub: EventSubscription) -> bool:
         sink = sub.sink

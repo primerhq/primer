@@ -79,7 +79,7 @@ async def test_an_event_behind_a_hole_waits_and_the_hole_is_delivered_first_when
     store.xmin, store.xmax = 100, 105  # the transaction that owns it (xid 100) is running
     await d.drain_once()
     assert d.ids == [1]  # 3 is held behind the hole
-    clock.now += 60
+    clock.now += 30  # past the grace, under the ceiling (HOLE_MAX_WAIT_SECONDS)
     await d.drain_once()  # the horizon has not moved: the transaction that may own 2 is still running
     assert d.ids == [1]
     store.commit(2)  # it commits at last
@@ -125,3 +125,31 @@ async def test_contiguous_ids_never_consult_the_horizon():
         store.commit(i)
     await d.drain_once()
     assert d.ids == [1, 2, 3] and store.horizon_reads == 0
+
+
+async def test_a_horizon_that_never_clears_cannot_hold_delivery_back_for_ever(caplog):
+    """Transaction ids are cluster-wide: a long transaction anywhere keeps the oldest running id back. The gap is passed at the ceiling, with one warning."""
+    import logging
+
+    from primer.events.dispatcher import HOLE_MAX_WAIT_SECONDS
+
+    store = _HorizonStore()
+    sp, d, clock = await _world(store)
+    await sp.get_storage(EventSubscription).create(EventSubscription(id="s2", description="t", sink=LogSink()))
+    await d.drain_once()  # seeds the second subscription at head too
+    store.commit(1)
+    store.commit(3)
+    store.xmin, store.xmax = 100, 105  # one transaction (xid 100) never finishes
+    await d.drain_once()  # first sight of the gap
+    assert d.ids == [1, 1]  # event 1 reached both subscriptions; 3 waits behind the gap
+    clock.now += HOLE_MAX_WAIT_SECONDS - 1
+    with caplog.at_level(logging.WARNING, logger="primer.events.dispatcher"):
+        await d.drain_once()
+        assert d.ids == [1, 1], "still held at 59s"
+        assert not [r for r in caplog.records if "passing event ids" in r.getMessage()]
+        clock.now += 1
+        await d.drain_once()
+    assert sorted(d.ids) == [1, 1, 3, 3]  # both subscriptions got 1 and 3
+    warnings = [r for r in caplog.records if "passing event ids" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert "2-2" in warnings[0].getMessage() and "60" in warnings[0].getMessage()
