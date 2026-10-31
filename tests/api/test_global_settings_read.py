@@ -47,6 +47,9 @@ SECRETS = {
     "tts-1": "tts-secret-4",
     "as-s3-1": ("as-access-5", "as-secret-6"),
 }
+# URL userinfo a non-admin read must not carry at all (security review of P4, finding 6); admins keep today's view.
+STT_URL = "http://svc:stt-url-pw-7@asr.local:8006/v1"
+S3_ENDPOINT = "http://minio:s3-url-pw-8@minio.local:9000"
 
 # Every global-settings read: user tier (masked secrets), restricted 403.
 READ_ROUTES = [
@@ -152,7 +155,7 @@ async def gs(client, app):
             provider="openai",
             default_model="whisper-1",
             config=SpeechToTextConfig(
-                url="http://asr.local:8006/v1",
+                url=STT_URL,
                 api_key=SecretStr(SECRETS["stt-1"]),
             ),
             limits=Limits(max_concurrency=1),
@@ -177,6 +180,7 @@ async def gs(client, app):
             provider="s3",
             config=S3ArtifactConfig(
                 bucket="gs-bucket",
+                endpoint_url=S3_ENDPOINT,
                 access_key=SecretStr(SECRETS["as-s3-1"][0]),
                 secret_key=SecretStr(SECRETS["as-s3-1"][1]),
             ),
@@ -186,7 +190,7 @@ async def gs(client, app):
 
 
 def _raw_secrets() -> list[str]:
-    flat = []
+    flat = ["stt-url-pw-7", "s3-url-pw-8", "svc:", "minio:"]
     for value in SECRETS.values():
         flat.extend(value if isinstance(value, tuple) else (value,))
     return flat
@@ -214,13 +218,18 @@ async def test_user_reads_every_global_setting_with_secrets_masked(gs, app, clie
     assert ws["config"]["api_key"] == "**********"
     wf = bodies["GET /v1/web_fetch_providers/wf-jina-1"]
     assert wf["config"]["api_key"] == "**********"
+    # A non-admin sees no trailing characters of a key, and no userinfo on a URL (security review of P4, finding 6).
     stt = bodies["GET /v1/stt_providers/stt-1"]
-    assert stt["config"]["api_key"] == _mask_tail(SECRETS["stt-1"])
+    assert stt["config"]["api_key"] == "**********"
+    assert stt["config"]["url"] == "http://asr.local:8006/v1"
     tts = bodies["GET /v1/tts_providers/tts-1"]
-    assert tts["config"]["api_key"] == _mask_tail(SECRETS["tts-1"])
+    assert tts["config"]["api_key"] == "**********"
     asp = bodies["GET /v1/artifact_storage_providers/as-s3-1"]
     assert asp["config"]["access_key"] == "**********"
     assert asp["config"]["secret_key"] == "**********"
+    assert asp["config"]["endpoint_url"] == "http://minio.local:9000"
+    listed = bodies["GET /v1/stt_providers"]
+    assert listed["items"][0]["config"]["api_key"] == "**********"
     # The masked value is not the stored plaintext: a write-context unmask
     # never leaks through a user-tier read.
     stored = await app.state.storage_provider.get_storage(
@@ -282,6 +291,12 @@ async def test_admin_reads_and_writes_are_unchanged(gs, client) -> None:
         resp = await client.request(method, path)
         assert resp.status_code == 200, f"{route} as admin: {resp.status_code} {resp.text}"
 
+    # An admin's view is unchanged: a key's tail, a URL password masked, the S3 endpoint as typed.
+    stt = (await client.get("/v1/stt_providers/stt-1")).json()["config"]
+    assert stt["api_key"] == _mask_tail(SECRETS["stt-1"]) and stt["url"] == "http://svc:**********@asr.local:8006/v1"
+    asp = (await client.get("/v1/artifact_storage_providers/as-s3-1")).json()["config"]
+    assert asp["endpoint_url"] == S3_ENDPOINT
+
     # Create / update / delete a provider row, as an admin.
     created = await client.post(
         "/v1/web_fetch_providers",
@@ -332,3 +347,18 @@ async def test_admin_reads_and_writes_are_unchanged(gs, client) -> None:
     assert resp.status_code == 200, resp.text
     resp = await client.put("/v1/mcp_exposure", json={"enabled": False})
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_the_non_admin_view_ends_with_the_read(gs, app, client) -> None:
+    """The non-admin mode lives for one read only: the next admin read and any later dump keep the admin view."""
+    from primer.model.common import SERVING_NON_ADMIN
+
+    await _login(client, "gs-user")
+    assert (await client.get("/v1/stt_providers/stt-1")).json()["config"]["api_key"] == "**********"
+    assert SERVING_NON_ADMIN.get() is False
+    row = await app.state.storage_provider.get_storage(SpeechToTextProvider).get("stt-1")
+    assert row.model_dump(mode="json")["config"]["api_key"] == _mask_tail(SECRETS["stt-1"])
+
+    await _login(client, "gs-admin")
+    assert (await client.get("/v1/stt_providers/stt-1")).json()["config"]["api_key"] == _mask_tail(SECRETS["stt-1"])

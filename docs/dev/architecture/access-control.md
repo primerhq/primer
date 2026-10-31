@@ -225,6 +225,10 @@ storage providers and active store, canvas settings and the MCP exposure singlet
 nothing, an unauthenticated caller gets 401), the writes, the `_test` probes and the active-config PUTs stay admin. The
 exposure catalogue `GET /v1/mcp_exposure/available` is exposure administration, not a global setting (it lists and
 contacts every toolset row, private ones included), so it stays admin; `GET /v1/mcp_exposure` (the allowlist) is readable.
+A non-admin's read is served stricter than an admin's: the read parts mount with `serve_global_settings`
+(`primer/api/deps.py`), which sets `SERVING_NON_ADMIN` (`primer/model/common.py`) for that request, so the masking
+serializers serve every API key fully masked (`_mask_with_tail` drops the tail) and every URL with no userinfo at all
+(`MaskedUserinfoUrl`, and `NonAdminStrippedUrlStr` for the S3 `endpoint_url`, which an admin still sees as typed).
 
 ### Console (Phase 4)
 

@@ -14,6 +14,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from primer.model.common import Identifiable
+from primer.model.masked_url import NonAdminStrippedUrlStr
 
 #: Reserved id of the auto-seeded default provider (the DB backend), so chat media works with zero operator configuration. It is the store
 #: new artifacts go to until another is selected, and the store that holds every artifact with no location record. It is defined here, in a
@@ -79,7 +80,7 @@ class S3ArtifactConfig(BaseModel):
 
     bucket: str = Field(..., description="Target bucket name.")
     prefix: str = Field(default="", description="Key prefix for stored objects.")
-    endpoint_url: str | None = Field(
+    endpoint_url: NonAdminStrippedUrlStr | None = Field(
         default=None, description="Override endpoint (S3-compatible stores).",
     )
     region: str | None = Field(default=None, description="Bucket region.")
