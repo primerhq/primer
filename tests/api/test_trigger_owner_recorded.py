@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from primer.auth.passwords import hash_password
 from primer.model.trigger import Subscription, Trigger
 from primer.model.user import User
+from tests.api._sub_targets import seed_sub_targets
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 
 
@@ -25,6 +26,8 @@ async def _login(client, username: str, password: str) -> None:
 
 
 async def _seed_plain_user(app) -> None:
+    # The workspace SUB_BODY targets: the plain user holds full on it (a subscription's owner must, access-control P2 T6).
+    await seed_sub_targets(app.state.storage_provider, owners=["user-own"])
     await app.state.storage_provider.get_storage(User).create(User(
         id="user-own", username="ownuser", password_hash=await hash_password("ownuserpass1"),
         created_at=datetime.now(timezone.utc), role="user",

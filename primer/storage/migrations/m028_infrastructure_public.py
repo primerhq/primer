@@ -1,4 +1,4 @@
-"""Migration 26: existing model profiles and providers become public (access-control Phase 4, Task 3, spec 8).
+"""Migration 28: existing model profiles and providers become public (access-control Phase 4, Task 3, spec 8).
 
 Model profiles and the providers a user-owned entity references now carry a use grant (``Grantable``). A new row is private, but every row
 that existed before access control stays usable by everyone: a row whose ``access`` block is absent or empty (no owners, no grants, not
@@ -80,10 +80,10 @@ async def _read_all(store) -> list[Any]:
         offset += _PAGE
 
 
-class M026InfrastructurePublic:
+class M028InfrastructurePublic:
     """Make every existing profile and provider with no sharing public."""
 
-    version = 26
+    version = 28
     description = "existing model profiles and providers become public"
 
     async def apply(self, sp: StorageProvider) -> None:
@@ -99,4 +99,4 @@ class M026InfrastructurePublic:
             logger.info("made existing infrastructure public", extra={"rows": total})
 
 
-__all__ = ["M026InfrastructurePublic"]
+__all__ = ["M028InfrastructurePublic"]

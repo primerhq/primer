@@ -10,10 +10,25 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+import pytest_asyncio
+from pydantic import SecretStr
 
+from primer.model.access import Access
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 from tests.api.test_approver_routing import _login_user, _parked_session, _register_admin
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _ws_access(app):
+    """Every session in this file lives in ``ws``: bob, carol and alice hold full on it, so the access gate
+    (P2 Task 3) clears before the gate's own approver spec judges each cancel."""
+    await app.state.storage_provider.get_storage(Workspace).create(
+        Workspace(id="ws", template_id="tpl-1", provider_id="local-1", created_at=datetime.now(UTC),
+                  runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")),
+                  access=Access(grants={"user-bob": "full", "user-carol": "full", "user-alice": "full"})),
+    )
 
 
 class _Published:

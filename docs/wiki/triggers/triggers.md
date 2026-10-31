@@ -23,7 +23,7 @@ A trigger is a source of fires: a time, a schedule, a webhook call or a channel 
 - **Subscriptions from before owners were recorded.** The upgrade gives each one its trigger's owner and disables it, since nobody knows who saved it. As the trigger's owner, review each one and re-enable it with `trigger__update_subscription` and `enabled: true`: you become its owner. One that still has no owner never fires.
 - **Webhook secrets.** Only the owner or an admin reads a webhook trigger's `token`; everyone else reads a masked value. `hmac_secret` always reads `**********`. Only the owner or an admin may update a webhook trigger (`forbidden` otherwise).
 - **Approval.** `trigger__create`, `trigger__update`, `trigger__delete`, `crud__create_trigger` and `crud__update_trigger` are approval-gated by default. In a session the call parks until a person decides ([roles and approvals](start-here/roles-and-approvals)). The subscription tools are not gated.
-- **Reach.** `trigger__list` and `trigger__get` show every trigger: a trigger is in no workspace. From a session outside the default workspace (prime), `trigger__update`, `trigger__delete` and `trigger__fire_now` answer `trigger_not_found`, as an unknown id does, when any subscription of the trigger starts or feeds a session outside your own workspace.
+- **Reach.** `trigger__list` and `trigger__get` show every trigger: a trigger is in no workspace. For anyone but an admin, `trigger__update`, `trigger__delete` and `trigger__fire_now` answer `trigger_not_found`, as an unknown id does, when any subscription of the trigger starts or feeds a session in a workspace you do not hold `full` access to.
 - Every tool here needs the `user` role. None needs an admin.
 
 ## How to

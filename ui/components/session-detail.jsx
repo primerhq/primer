@@ -815,10 +815,10 @@ window.SD_NodeTurnLog = SD_NodeTurnLog;
 // render; 404 = render nothing). Submit/Skip post to the real
 // endpoints; 422/500 are surfaced INLINE via data-testid="ask-user-error"
 // (U0051/U0060), success surfaces as a toast (U0049/U0050).
-function AskUserPanel({ sid, sessionStatus, session, viewer, pushToast }) {
+function AskUserPanel({ sid, sessionStatus, session, viewer, level, pushToast }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = SESSION_TERMINAL.has(sessionStatus);
-  const mayDecide = !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session);
+  const mayDecide = !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session, level);
 
   const pending = useResource(
     `ask-user:${sid}`,
@@ -929,7 +929,7 @@ function AskUserPanel({ sid, sessionStatus, session, viewer, pushToast }) {
         <div style={{ whiteSpace: "pre-wrap", color: "var(--text)" }}>{prompt}</div>
         {!mayDecide ? (
           <div className="muted text-sm" data-testid="ask-user-rank-note">
-            {window.SH_rankDecisionWords(session)}
+            {window.SH_accessDecisionWords()}
           </div>
         ) : isShortPrompt && !expectsJson ? (
           <input
@@ -991,7 +991,7 @@ function AskUserPanel({ sid, sessionStatus, session, viewer, pushToast }) {
 // WatchFilesPanel — polls /yields/active for this session and renders
 // the watch_files-yield panel when one is parked. Cancel posts the
 // tool-agnostic yield-cancel endpoint.
-function WatchFilesPanel({ sid, wid, session, viewer, pushToast }) {
+function WatchFilesPanel({ sid, wid, session, viewer, level, pushToast }) {
   // The session row's parked_state (when present) is the authoritative
   // signal — the server keeps it in sync with the yield row. We rely on
   // it directly rather than polling a separate endpoint.
@@ -1014,7 +1014,7 @@ function WatchFilesPanel({ sid, wid, session, viewer, pushToast }) {
         <span style={{ color: "var(--amber)" }}>Watching</span>
         <span className="mono sub">· watch_files · {tcid}</span>
         <div className="right">
-          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} toolName="watch_files" session={session} viewer={viewer} pushToast={pushToast} />
+          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} toolName="watch_files" session={session} viewer={viewer} level={level} pushToast={pushToast} />
         </div>
       </div>
       <div className="panel-body">
@@ -1043,7 +1043,7 @@ function WatchFilesPanel({ sid, wid, session, viewer, pushToast }) {
 }
 
 // SleepPanel — same parked_state-driven approach as WatchFilesPanel.
-function SleepPanel({ sid, wid, session, viewer, pushToast }) {
+function SleepPanel({ sid, wid, session, viewer, level, pushToast }) {
   const yld = session?.parked_state?.yielded;
   const toolName = yld?.tool_name || (session?.parked_state ? session.parked_state.tool_name : null);
   const isParked = session?.parked_status === "parked" || session?.parked_status === "waiting";
@@ -1065,7 +1065,7 @@ function SleepPanel({ sid, wid, session, viewer, pushToast }) {
         <span style={{ color: "var(--amber)" }}>Sleeping</span>
         <span className="mono sub">· sleep · {tcid}</span>
         <div className="right">
-          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} toolName="sleep" session={session} viewer={viewer} pushToast={pushToast} />
+          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} toolName="sleep" session={session} viewer={viewer} level={level} pushToast={pushToast} />
         </div>
       </div>
       <div className="panel-body">
@@ -1086,9 +1086,9 @@ function SleepPanel({ sid, wid, session, viewer, pushToast }) {
 }
 
 // Shared cancel-yield button (WatchFiles + Sleep panels).
-function CancelYieldBtn({ sid, wid, tcid, toolName, session, viewer, pushToast }) {
+function CancelYieldBtn({ sid, wid, tcid, toolName, session, viewer, level, pushToast }) {
   const { useMutation, apiFetch } = window.primerApi;
-  const mayDecide = !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session);
+  const mayDecide = !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session, level);
   const cancel = useMutation(
     () => apiFetch(
       "POST",
@@ -1108,7 +1108,7 @@ function CancelYieldBtn({ sid, wid, tcid, toolName, session, viewer, pushToast }
     }
   );
   if (!mayDecide) {
-    return <span className="muted text-sm" data-testid="yield-rank-note">{window.SH_rankDecisionWords(session)}</span>;
+    return <span className="muted text-sm" data-testid="yield-rank-note">{window.SH_accessDecisionWords()}</span>;
   }
   return (
     <Btn size="sm" kind="ghost" icon="x" disabled={cancel.loading || !tcid} onClick={() => cancel.mutate()}>
@@ -1121,7 +1121,7 @@ function CancelYieldBtn({ sid, wid, tcid, toolName, session, viewer, pushToast }
 // (200 = render banner; 404 = render nothing) and renders ApprovalBanner
 // from approvals.jsx. The banner owns the respond mutation; this wrapper
 // owns the poll so session-detail can keep wiring concerns local.
-function ApprovalBannerPanel({ sid, sessionStatus, session, viewer, pushToast }) {
+function ApprovalBannerPanel({ sid, sessionStatus, session, viewer, level, pushToast }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = SESSION_TERMINAL.has(sessionStatus);
   const pending = useResource(
@@ -1138,7 +1138,7 @@ function ApprovalBannerPanel({ sid, sessionStatus, session, viewer, pushToast })
     <div>
       <ApprovalBanner
         key={window.SH_pendingId ? window.SH_pendingId(sid, pending.data.gate_id, pending.data.tool_call_id) : pending.data.tool_call_id}
-        data={pending.data} scope="sessions" id={sid} viewer={viewer} session={session} pushToast={pushToast}
+        data={pending.data} scope="sessions" id={sid} viewer={viewer} session={session} level={level} pushToast={pushToast}
       />
       <window.SessionCountdown to={pending.data?.parked_until || pending.data?.timeout_at || session?.parked_until} prefix="expires in " />
     </div>

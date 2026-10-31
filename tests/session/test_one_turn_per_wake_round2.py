@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+from primer.model.principal import PrincipalRef
 from primer.api.routers.sessions import pause_session, resume_session
 from primer.bus.scheduler_tasks import SessionMessagingSweeper
 from primer.int.claim import ClaimKind
@@ -41,7 +42,8 @@ from tests.session.test_dispatch import _make_lease
 from tests.session.test_one_turn_per_wake import _AnsweringExecutor, _dispatch_deps, _each_wake_in_its_own_process
 
 BOUND_S = 20.0
-REQ = SimpleNamespace(state=SimpleNamespace(actor=None))
+#: The auth-disabled system actor is an admin: it clears the routes' access gate (P2 Task 3).
+REQ = SimpleNamespace(state=SimpleNamespace(actor=PrincipalRef.system()))
 
 
 class _Engine(FakeEngine):
@@ -133,7 +135,7 @@ async def test_a_reopen_that_a_pause_overtakes_gives_the_turn_back_and_a_person_
                            last_seq=4, next_unprocessed_seq=5)
 
         async def pause_on_another_process() -> None:
-            await pause_session(REQ, workspace_id="ws-1", session_id="ses-b", sessions=world.sessions)   # CREATED -> PAUSED
+            await pause_session(REQ, workspace_id="ws-1", session_id="ses-b", sessions=world.sessions, storage_provider=world.sp)   # CREATED -> PAUSED
 
         # the reopen publishes its divider tick between its closing write and the wake's arm
         world.bus.hooks["session:ses-b:tick"] = pause_on_another_process
@@ -163,7 +165,7 @@ async def test_a_dead_arm_that_a_lease_holds_is_handed_back_by_the_claim_and_hea
         async def resume_then_the_wake_process_dies() -> None:
             # /resume on another process arms a claim, then this wake's process is gone (no except runs): the wake never comes back
             await resume_session(REQ, workspace_id="ws-1", session_id="ses-b", sessions=world.sessions, scheduler=world.scheduler,
-                                 engine=world.engine)
+                                 engine=world.engine, storage_provider=world.sp)
             world.engine.leased.add("ses-b")
             at_write.set()
             await asyncio.Event().wait()
@@ -355,7 +357,7 @@ async def test_a_pause_that_wins_over_a_machine_wake_on_a_running_row_pauses_it_
         await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="idle", turn_no=1, last_seq=4, next_unprocessed_seq=5)
 
         async def pause_on_another_process() -> None:
-            await pause_session(REQ, workspace_id="ws-1", session_id="ses-b", sessions=world.sessions)   # RUNNING: pause_requested = True
+            await pause_session(REQ, workspace_id="ws-1", session_id="ses-b", sessions=world.sessions, storage_provider=world.sp)   # RUNNING: pause_requested = True
 
         _at_user_input_write(world, pause_on_another_process)
         await deliver_steer(session_id="ses-b", text="from a trigger", parallelism="queue", human_intent=False, **world.deliver_kwargs())
@@ -366,7 +368,7 @@ async def test_a_pause_that_wins_over_a_machine_wake_on_a_running_row_pauses_it_
         )
 
         await resume_session(REQ, workspace_id="ws-1", session_id="ses-b", sessions=world.sessions, scheduler=world.scheduler,
-                             engine=world.engine)
+                             engine=world.engine, storage_provider=world.sp)
 
         row = await _row(world)
         assert (row.status, row.pause_requested) == (SessionStatus.RUNNING, False)

@@ -35,6 +35,7 @@ from primer.model.trigger import (
     Subscription,
     Trigger,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset.trigger import _make_subscribe_channel_handler
 
@@ -49,6 +50,8 @@ def _ctx() -> ToolContext:
         tool_call_id="call-1",
         session_id="sess-1",
         workspace_id="ws-1",
+        # The seeded channel trigger is provider-wide, which only an admin may park on (access-control P3 Decision 5).
+        initiated_by=PrincipalRef(type="user", id="admin-1", display="admin", role="admin", source="local", user_id="admin-1"),
     )
 
 

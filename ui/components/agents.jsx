@@ -1256,7 +1256,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
 // Agent detail page
 // ============================================================================
 
-// The default workspace: the ONE row GET /workspaces flags is_default (a response-only flag; the server refuses to delete that row). The list is paged, and an
+// The caller's default workspace: the ONE row GET /workspaces flags is_default (a response-only flag, set per person; the server refuses to delete that row). The list is paged, and an
 // install with more workspaces than one page may hold the flagged row beyond the first, so the pages are read (limit and offset, as the pager does) until the
 // flagged row is found or the list ends: a page shorter than the limit, or the offset reaching `total` (a server that cannot count sends none, and then only a
 // short page ends it). The first request is `?limit=200` with no offset. Resolves to the row, or null when no row on any page is flagged: there is no fallback.

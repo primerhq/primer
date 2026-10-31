@@ -26,8 +26,9 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
 
-from primer.access.person import person_from_request
+from primer.access.person import Person, person_from_request
 from primer.access.policy import require
+from primer.access.workspaces import require_session
 from primer.agent.agent_checks import (
     AGENT_FIELD_CODES,
     check_agent_on_create,
@@ -388,6 +389,7 @@ async def get_graph_run_turn_log(
         sessions=sessions,
         workspace_registry=workspace_registry,
         storage_provider=storage_provider,
+        person=person_from_request(request),
     )
 
 
@@ -429,6 +431,7 @@ async def get_graph_node_turn_log(
         sessions=sessions,
         workspace_registry=workspace_registry,
         storage_provider=storage_provider,
+        person=person_from_request(request),
     )
 
 
@@ -522,6 +525,7 @@ async def get_graph_run_node_states(
         sessions=sessions,
         workspace_registry=workspace_registry,
         storage_provider=storage_provider,
+        person=person_from_request(request),
     )
 
     by_base_id: dict[str, list[str]] = defaultdict(list)
@@ -555,6 +559,7 @@ async def _load_run_node_states(
     sessions,
     workspace_registry,
     storage_provider,
+    person: Person,
 ) -> dict[str, dict]:
     """Return ``{node_id: {status, last_run_iteration, last_run_at, error}}``
     for ``run_id``, dispatching WorkspaceSession vs GraphThread exactly
@@ -573,6 +578,10 @@ async def _load_run_node_states(
     sess: WorkspaceSession | None = await sessions.get(run_id)
     # Only a run of THIS graph: the route's READ check is on graph_id, so a run of another graph must answer like a missing one.
     if sess is not None and isinstance(sess.binding, GraphSessionBinding) and sess.binding.graph_id == graph_id:
+        # Access (P2 Task 3): the run id is a session id here, and the node
+        # states are that session's workspace state: read on the workspace it
+        # lives in; a stranger answers the session's missing-row text.
+        await require_session(storage_provider, person, run_id, AccessLevel.READ)
         workspace = await workspace_registry.get_workspace(sess.workspace_id)
         if workspace is None:
             raise NotFoundError(
@@ -643,11 +652,16 @@ async def _serve_graph_turn_log(
     sessions,
     workspace_registry,
     storage_provider,
+    person: Person,
 ) -> dict:
     # 1. WorkspaceSession (workspace-backed graph)
     sess: WorkspaceSession | None = await sessions.get(run_id)
     # Only a run of THIS graph: the route's READ check is on graph_id, so a run of another graph must answer like a missing one.
     if sess is not None and isinstance(sess.binding, GraphSessionBinding) and sess.binding.graph_id == graph_id:
+        # Access (P2 Task 3): the run id is a session id here, and the log
+        # is that session's workspace state: read on the workspace it lives in;
+        # a stranger answers the session's missing-row text.
+        await require_session(storage_provider, person, run_id, AccessLevel.READ)
         # Lazy import to defer the sessions-router dependency.
         from primer.api.routers.sessions import _read_workspace_turn_log
         workspace = await workspace_registry.get_workspace(sess.workspace_id)

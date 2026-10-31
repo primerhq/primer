@@ -77,8 +77,13 @@ def person_for_tool(ctx: "ToolContext | None") -> Person:
     """
     if ctx is not None:
         return person_from_ref(ctx.initiated_by)
+    from primer.agent.invoke import _RUN_ID  # lazy: the agent package imports this one
     from primer.mcp.server import current_actor  # lazy: the MCP server module is heavy and optional on this path
 
+    # A subagent started over MCP carries no context either, but its run is not the MCP person's act: it holds nothing the person's rank or levels
+    # would give it (the unattributed run of ``PrincipalRef.unattributed``), so only public rows read.
+    if _RUN_ID.get() is not None:
+        return Person(None, "user")
     actor = current_actor.get()
     if actor is None:
         return Person(None, "user")

@@ -229,7 +229,7 @@ async def test_the_resume_time_audit_record_is_written_for_the_gate_that_was_dec
     """The reviewer's record-fallback probe: B was decided, and the record must be written under B's gate key (it was written under A's)."""
     sp = _FakeStorageProvider()
     pool = SimpleNamespace(_storage=sp)
-    session = SimpleNamespace(id="gs-1", binding=SimpleNamespace(agent_id="agt"), parked_at=None)
+    session = SimpleNamespace(id="gs-1", workspace_id="ws-1", binding=SimpleNamespace(agent_id="agt"), parked_at=None)
 
     await write_approval_record_for_graph(
         pool, session=session, checkpoint=_checkpoint(), tcid=RAW,

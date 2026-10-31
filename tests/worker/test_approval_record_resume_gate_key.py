@@ -121,7 +121,7 @@ def _sibling(node: str, gate_id: str) -> dict:
 
 
 def _graph_session() -> SimpleNamespace:
-    return SimpleNamespace(id=SID, binding=SimpleNamespace(agent_id="agt"), parked_at=None)
+    return SimpleNamespace(id=SID, workspace_id="ws-1", binding=SimpleNamespace(agent_id="agt"), parked_at=None)
 
 
 async def _decide(storage_provider, node: str, decision: str) -> None:

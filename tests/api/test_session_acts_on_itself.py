@@ -2,7 +2,7 @@
 
 A session runs at most at the rank recorded on its row, capped by its creator's current role. When that creator is demoted the row still
 records admin while the run's person is the demoted one; the tools ask that person's level on the workspace (the access rule replaces the
-rank rule the tools used to carry; the REST routes keep it in ``refuse_outranked``). A person who holds the workspace acts on every session
+rank rule the tools used to carry; the REST routes ask the workspace access the session inherits, P2 Task 3). A person who holds the workspace acts on every session
 in it, whatever the sessions' recorded creators, and a person who holds below full is refused (forbidden), asked before the session is read.
 The third test pins where the REST guard runs: on the row the helper read inside ``session_lifecycle_lock``, not on a read made before it.
 (All three were the reviewer's probes on #904, the first two re-asked against the access rule.)
