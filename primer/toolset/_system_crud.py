@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field, ValidationError, create_model
 
 from primer.access.person import Person, person_for_tool
+from primer.toolset._collection_access import collection_for
 from primer.access.policy import require, visible_predicate
 from primer.access.service import update_keeping_access
 from primer.agent.approval import (
@@ -367,6 +368,8 @@ def _crud_tools_for(
     delete_note: str | None = None,
     write_note: str | None = None,
     pre_delete: _PreDelete = None,
+    row_guard: Callable[[Any, ToolContext | None, bool], Awaitable[ToolCallResult | None]] | None = None,
+    list_filter: Callable[[ToolContext | None], Awaitable[Predicate | None]] | None = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
 
@@ -404,6 +407,11 @@ def _crud_tools_for(
     it writes, for an entity whose pre-write check can refuse a field rule: ``type=forbidden`` (a collection's ``system`` flag) or
     ``type=validation-error`` (an agent's id and description, ticket 01a11c1c).
 
+    ``row_guard(row, ctx, write)`` / ``list_filter(ctx)`` serve a kind that inherits its access from a parent row (a document
+    from its collection), as the REST router's hooks of the same names do: the guard runs right after the row loads on get
+    (``write=False``), update and delete (``write=True``) and answers a ready refusal or ``None``; the filter is ANDed into
+    list and find (``None``: no filter).
+
     ``delete_note`` is appended to the delete descriptor only: what the agent should read before it acts, a consequence of removing the
     row or a refusal the delete answers (an artifact store that is active or still holds files, an agent or graph still in use).
 
@@ -417,6 +425,12 @@ def _crud_tools_for(
     tools: dict[str, tuple[Tool, ToolHandler]] = {}
     hint = _hint(entity_label)
     guards = guards or CrudGuards(kind=entity_label)
+
+    async def _visibility(ctx: ToolContext | None) -> Predicate | None:
+        """The caller's list filter: owned rows by ``visible_predicate``, inherited rows by ``list_filter``."""
+        if owned:
+            return visible_predicate(_owned_person(ctx))
+        return await list_filter(ctx) if list_filter is not None else None
 
     # ---- list ---------------------------------------------------------
     async def _list_handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
@@ -433,7 +447,7 @@ def _crud_tools_for(
         except PrimerValidationError as exc:
             return _err(exc.message, error_type="validation-error")
         try:
-            visibility = visible_predicate(_owned_person(ctx)) if owned else None
+            visibility = await _visibility(ctx)
             if visibility is None:
                 response = await storage.list(page, order_by=order_by)
             else:
@@ -485,6 +499,10 @@ def _crud_tools_for(
             )
         if owned:
             denied = _access_refusal(_owned_person(ctx), row.access, AccessLevel.READ, f"{cls_name} {args.id!r}")  # type: ignore[attr-defined]
+            if denied is not None:
+                return denied
+        if row_guard is not None:
+            denied = await row_guard(row, ctx, False)
             if denied is not None:
                 return denied
         return _ok(row)
@@ -623,6 +641,10 @@ def _crud_tools_for(
                 return denied
             # The stored access is kept, whatever the body sent.
             entity.access = existing.access  # type: ignore[attr-defined]
+        if row_guard is not None:
+            denied = await row_guard(existing, ctx, True)
+            if denied is not None:
+                return denied
         try:
             reason = admin_when(entity, existing) if admin_when is not None else None
         except PrimerValidationError as exc:          # a check that restores a served mask to decide who may write (update_toolset) answers a refusal too
@@ -730,6 +752,10 @@ def _crud_tools_for(
             denied = _access_refusal(_owned_person(ctx), existing.access, AccessLevel.OWNER, f"{cls_name} {args.id!r}")  # type: ignore[attr-defined]
             if denied is not None:
                 return denied
+        if row_guard is not None:
+            denied = await row_guard(existing, ctx, True)
+            if denied is not None:
+                return denied
         refusal = refuse_delete(guards, existing)
         if refusal is None:
             refusal = await refuse_delete_if_referenced(guards, existing, storage_provider)
@@ -802,13 +828,12 @@ def _crud_tools_for(
             refuse_secret_fields(model_cls, predicate=predicate, order_by=order_by)
         except PrimerValidationError as exc:
             return _err(exc.message, error_type="validation-error")
-        if owned:
-            visibility = visible_predicate(_owned_person(ctx))
-            if visibility is not None:
-                predicate = (
-                    Predicate(left=predicate, op=Op.AND, right=visibility)
-                    if predicate is not None else visibility
-                )
+        visibility = await _visibility(ctx)
+        if visibility is not None:
+            predicate = (
+                Predicate(left=predicate, op=Op.AND, right=visibility)
+                if predicate is not None else visibility
+            )
         try:
             response = await storage.find(predicate, page, order_by=order_by)
         except BadRequestError as exc:
@@ -1608,7 +1633,7 @@ def _collection_extras(
     out: dict[str, tuple[Tool, ToolHandler]] = {}
 
     # ---- list_collection_documents -----------------------------------
-    async def _list_docs(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _list_docs(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _CollectionDocumentsListArgs.model_validate(arguments)
             page = _parse_page(args)
@@ -1618,15 +1643,12 @@ def _collection_extras(
                 return _err_from_validation(exc)
             return _err(str(exc), error_type="bad-request")
         try:
-            coll = await collections.get(args.collection_id)
+            _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ)
         except PrimerError as exc:
             # A fault in the lookup is a storage fault, like one in the find below.
             return _err_from_primer(exc, error_type="storage-error")
-        if coll is None:
-            return _err(
-                f"Collection {args.collection_id!r} does not exist",
-                error_type="not-found",
-            )
+        if denied is not None:
+            return denied
         from primer.model.storage import FieldRef, Op, Value
 
         predicate = Predicate(
@@ -1667,7 +1689,7 @@ def _collection_extras(
     )
 
     # ---- find_collection_documents_by_meta ---------------------------
-    async def _find_by_meta(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _find_by_meta(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _CollectionFindByMetaArgs.model_validate(arguments)
             page = _parse_page(args)
@@ -1677,15 +1699,12 @@ def _collection_extras(
                 return _err_from_validation(exc)
             return _err(str(exc), error_type="bad-request")
         try:
-            coll = await collections.get(args.collection_id)
+            _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ)
         except PrimerError as exc:
             # A fault in the lookup is a storage fault, like one in the find below.
             return _err_from_primer(exc, error_type="storage-error")
-        if coll is None:
-            return _err(
-                f"Collection {args.collection_id!r} does not exist",
-                error_type="not-found",
-            )
+        if denied is not None:
+            return denied
         from primer.model.storage import FieldRef, Op, Value
 
         node: Predicate = Predicate(
@@ -1735,11 +1754,15 @@ def _collection_extras(
     )
 
     # ---- search_collection --------------------------------------------
-    async def _search(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _search(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _CollectionSearchArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # Access first: a collection the caller cannot read answers not-found whatever this process can search.
+        coll, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ)
+        if denied is not None:
+            return denied
         if semantic_search_registry is None:
             return _err(
                 "semantic search is unavailable: no SemanticSearchRegistry "
@@ -1747,12 +1770,6 @@ def _collection_extras(
                 "``find_collection_documents_by_meta`` for metadata "
                 "filtering instead.",
                 error_type="unavailable",
-            )
-        coll = await collections.get(args.collection_id)
-        if coll is None:
-            return _err(
-                f"Collection {args.collection_id!r} does not exist",
-                error_type="not-found",
             )
         # Mirror POST /v1/collections/{id}/search (the console / SSP path):
         # vectorise the query with the collection's OWN embedder so query
@@ -1853,16 +1870,15 @@ def _collection_extras(
     )
 
     # ---- refresh_collection (deferred — stubbed) ----------------------
-    async def _refresh(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _refresh(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _CollectionIdArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if await collections.get(args.collection_id) is None:
-            return _err(
-                f"Collection {args.collection_id!r} does not exist",
-                error_type="not-found",
-            )
+        # Re-indexing is search management: owner, like enabling or disabling search (P3 Decision 6).
+        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.OWNER)
+        if denied is not None:
+            return denied
         return _err(
             "refresh re-vectorises every document in the collection "
             "and requires the SearchService ingestion pipeline; not "
@@ -2132,12 +2148,15 @@ def _document_write_tools(
     collections = storage_provider.get_storage(Collection)
     out: dict[str, tuple[Tool, ToolHandler]] = {}
 
-    async def _refuse_unwritable(collection_id: str, *, harness_id: str | None) -> ToolCallResult | None:
-        coll = await collections.get(collection_id)
-        if coll is not None and coll.system:
-            return _err(
-                f"collection {collection_id!r} is system-owned and read-only", error_type="forbidden",
-            )
+    async def _refuse_unwritable(
+        ctx: ToolContext | None, collection_id: str, *, harness_id: str | None, what: str, dangling_ok: bool = True,
+    ) -> ToolCallResult | None:
+        """Full access on the collection (the document inherits it; P3 Decision 6), no system collection, no harness row."""
+        _, denied = await collection_for(
+            collections, person_for_tool(ctx), collection_id, AccessLevel.FULL, what=what, dangling_ok=dangling_ok,
+        )
+        if denied is not None:
+            return denied
         if harness_id is not None:
             return _err(
                 f"this document is managed by harness {harness_id!r}; change it through the harness",
@@ -2146,7 +2165,7 @@ def _document_write_tools(
         return None
 
     # ---- create -------------------------------------------------------
-    async def _create(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _create(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         body = arguments.get("entity")
         if body is None:
             return _err("missing required argument 'entity'", error_type="bad-request")
@@ -2154,9 +2173,9 @@ def _document_write_tools(
             entity = Document.model_validate(body)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if await collections.get(entity.collection_id) is None:
-            return _err(f"collection {entity.collection_id!r} does not exist", error_type="not-found")
-        refusal = await _refuse_unwritable(entity.collection_id, harness_id=None)
+        refusal = await _refuse_unwritable(
+            ctx, entity.collection_id, harness_id=None, what=f"collection {entity.collection_id!r}", dangling_ok=False,
+        )
         if refusal is not None:
             return refusal
         if entity.harness_id is not None:
@@ -2219,7 +2238,7 @@ def _document_write_tools(
     )
 
     # ---- update -------------------------------------------------------
-    async def _update(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _update(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         entity_id = arguments.get("id")
         body = arguments.get("entity")
         if not entity_id:
@@ -2239,7 +2258,9 @@ def _document_write_tools(
         existing = await docs.get(entity_id)
         if existing is None:
             return _err(f"Document {entity_id!r} does not exist", error_type="not-found")
-        refusal = await _refuse_unwritable(existing.collection_id, harness_id=existing.harness_id)
+        refusal = await _refuse_unwritable(
+            ctx, existing.collection_id, harness_id=existing.harness_id, what=f"Document {entity_id!r}",
+        )
         if refusal is not None:
             return refusal
         for field in ("path", "slug", "parent_id", "collection_id"):
@@ -2290,7 +2311,7 @@ def _document_write_tools(
     )
 
     # ---- delete -------------------------------------------------------
-    async def _delete(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _delete(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _DeleteByIdArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -2298,7 +2319,7 @@ def _document_write_tools(
         doc = await docs.get(args.id)
         if doc is None:
             return _err(f"Document {args.id!r} does not exist", error_type="not-found")
-        refusal = await _refuse_unwritable(doc.collection_id, harness_id=doc.harness_id)
+        refusal = await _refuse_unwritable(ctx, doc.collection_id, harness_id=doc.harness_id, what=f"Document {args.id!r}")
         if refusal is not None:
             return refusal
         tree = tree_factory()
@@ -2355,11 +2376,16 @@ def _document_extras(
     out: dict[str, tuple[Tool, ToolHandler]] = {}
     out.update(_document_write_tools(storage_provider=storage_provider, tree_factory=tree_factory))
 
-    async def _get_content(arguments: dict[str, Any]) -> ToolCallResult:
+    collections = storage_provider.get_storage(Collection)
+
+    async def _get_content(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _GetDocumentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ)
+        if denied is not None:
+            return denied
         try:
             res = await service_factory().read(
                 collection_id=args.collection_id, path=args.path
@@ -2401,19 +2427,14 @@ def _document_extras(
         _get_content,
     )
 
-    collections = storage_provider.get_storage(Collection)
-
-    async def _put_document(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _put_document(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _PutDocumentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        coll = await collections.get(args.collection_id)
-        if coll is not None and coll.system:
-            return _err(
-                f"collection {args.collection_id!r} is system-owned and read-only",
-                error_type="forbidden",
-            )
+        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.FULL)
+        if denied is not None:
+            return denied
         try:
             doc = await service_factory().upsert(
                 collection_id=args.collection_id,
@@ -2461,11 +2482,14 @@ def _document_extras(
         _put_document,
     )
 
-    async def _list_documents(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _list_documents(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _ListDocumentsArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ)
+        if denied is not None:
+            return denied
         try:
             entries = await service_factory().list(
                 collection_id=args.collection_id, prefix=args.prefix
@@ -2504,17 +2528,14 @@ def _document_extras(
         _list_documents,
     )
 
-    async def _move_document(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _move_document(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _MoveDocumentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        coll = await collections.get(args.collection_id)
-        if coll is not None and coll.system:
-            return _err(
-                f"collection {args.collection_id!r} is system-owned and read-only",
-                error_type="forbidden",
-            )
+        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.FULL)
+        if denied is not None:
+            return denied
         try:
             await service_factory().move(
                 collection_id=args.collection_id, src=args.src, dst=args.dst

@@ -17,6 +17,7 @@ from primer.model.provider import (
 )
 from primer.storage.factory import StorageProviderFactory
 from primer.toolset.collections import build_collections_toolset
+from tests._support.caller import AsCaller
 
 
 @pytest_asyncio.fixture
@@ -39,7 +40,7 @@ async def env(tmp_path):
         provider_registry=None,
         semantic_search_registry=None,
     )
-    yield ts
+    yield AsCaller(ts)  # the seeded collections have no owners: admin-only
     await provider.aclose()
 
 
@@ -203,7 +204,7 @@ async def env_broken(tmp_path):
         provider_registry=None,
         semantic_search_registry=None,
     )
-    yield ts
+    yield AsCaller(ts)  # the seeded collections have no owners: admin-only
     await provider.aclose()
 
 

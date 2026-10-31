@@ -565,7 +565,7 @@ def build_system_toolset(
         ("toolset", "toolsets", Toolset, None, _inv_ts, _inv_ts, "user", True),
         ("agent", "agents", Agent, None, None, None, "user", True),
         ("graph", "graphs", Graph, None, None, None, "user", True),
-        ("collection", "collections", Collection, None, None, None, "user", False),
+        ("collection", "collections", Collection, None, None, None, "user", True),
         ("document", "documents", Document, None, None, None, "user", False),
         ("graph_thread", "graph_threads", GraphThread, None, None, None, "user", False),
         ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin", False),
@@ -680,8 +680,26 @@ def build_system_toolset(
         "collection": _collection_pre_delete,
         "toolset": _toolset_pre_delete,
     }
+    # A document inherits its collection's access (P3 Decision 6): get needs read on its collection, a write full, and the
+    # lists only reach the collections the caller can read. The create/update/delete tools are replaced further down.
+    from primer.toolset._collection_access import collection_for, readable_documents
+
+    _collection_rows = storage_provider.get_storage(Collection)
+
+    async def _document_row_guard(row: Document, ctx: ToolContext | None, write: bool) -> Any:
+        level = AccessLevel.FULL if write else AccessLevel.READ
+        _, denied = await collection_for(
+            _collection_rows, person_for_tool(ctx), row.collection_id, level, what=f"Document {row.id!r}", dangling_ok=True,
+        )
+        return denied
+
+    async def _document_list_filter(ctx: ToolContext | None) -> Any:
+        return await readable_documents(_collection_rows, person_for_tool(ctx))
+
+    inherited_by_label: dict[str, Any] = {"document": (_document_row_guard, _document_list_filter)}
     for label, plural, cls, on_c, on_u, on_d, role, owned in crud_specs:
         pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
+        row_guard, list_filter = inherited_by_label.get(label, (None, None))
         registry.update(
             _crud_tools_for(
                 entity_label=label,
@@ -702,6 +720,8 @@ def build_system_toolset(
                 delete_note=delete_notes_by_label.get(label),
                 write_note=write_notes_by_label.get(label),
                 pre_delete=pre_deletes_by_label.get(label),
+                row_guard=row_guard,
+                list_filter=list_filter,
             )
         )
     # The agent and graph writes here are gated by default like the crud tools they twin (audit G6-1), so their approval cards show what the crud
