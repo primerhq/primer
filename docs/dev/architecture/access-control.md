@@ -51,7 +51,9 @@ flowchart LR
 - `primer/access/service.py`: `get_access_view`, `set_access` (owners only; the whole desired state; refuses an empty
   owner list, unknown, disabled or restricted users, per-tool flags on kinds without tools, and a row a harness
   installed with 409 `harness_managed`; writes the `access` block alone with `patch_if` guarded on `access.rev`, then
-  runs an optional `after_write` hook), `lookup_users` (username prefix, id and username only), and the two writers
+  runs an optional `after_write` hook), `lookup_users` (username prefix, id and username only), `lookup_user_names`
+  (the ids form the console's badges call: one query over at most 200 ids, unknown ids absent, disabled and restricted
+  users still named), and the two writers
   that keep the sharing out of a whole-row write: `update_keeping_access` (every other field, fenced on the rev the
   caller read: a sharing change in between answers 409) and `rewrite_keeping_access` (every other field, fenced on the
   rev read fresh and retried, for long operations such as a harness sync whose snapshot may be stale).
@@ -64,7 +66,8 @@ flowchart LR
   `primer/trigger/channel_access.py` `require_channel_trigger_access` (a channel trigger needs read on its channel).
 - REST: `make_crud_router(..., owned=True)` (`primer/api/routers/_crud.py`), or `row_guard` plus `list_filter` for a
   kind that inherits its parent's access (documents from their collection), and `make_access_router(...)`
-  (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access`, plus `GET /v1/users/lookup`.
+  (`primer/api/routers/access.py`): `GET` and `PUT /v1/{plural}/{id}/access`, plus `GET /v1/users/lookup` (the
+  username-prefix `q`; the ids form `?ids=` names the ids the console's badges show, at most 200).
 - Tools: `system__get_entity_access`, `system__set_entity_access`, `system__lookup_users`
   (`primer/toolset/_system_access.py`); the generated CRUD tools enforce the same levels.
 - Phase 4: `primer/model/access.py` `Grantable` (the mixin of grantable infrastructure) and `TOOLS_PUBLIC_TOKEN`;

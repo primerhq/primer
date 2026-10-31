@@ -11,7 +11,17 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
 
 from primer.access.person import person_from_request
-from primer.access.service import LOOKUP_MAX, AccessUpdate, AccessView, UserRef, get_access_view, lookup_users, set_access
+from primer.access.service import (
+    LOOKUP_MAX,
+    NAMES_MAX,
+    AccessUpdate,
+    AccessView,
+    UserRef,
+    get_access_view,
+    lookup_user_names,
+    lookup_users,
+    set_access,
+)
 from primer.api.deps import get_storage_provider
 from primer.api.errors import common_responses
 from primer.model.user import User
@@ -100,16 +110,20 @@ users_lookup_router = APIRouter(tags=["users"])
 @users_lookup_router.get(
     "/users/lookup",
     response_model=list[UserRef],
-    summary="Find users to share with by username prefix",
-    responses=common_responses(403, 500),
+    summary="Find users to share with by username prefix, or name the ids the console's badges show",
+    responses=common_responses(403, 422, 500),
 )
 async def _lookup_users(
     request: Request,
     q: str = Query(default="", max_length=64, description="Username prefix, case-insensitive."),
     limit: int = Query(default=10, ge=1, le=LOOKUP_MAX),
+    ids: str = Query(default="", description=f"Comma-separated user ids to name (the badges); at most {NAMES_MAX}."),
     users=Depends(_users),
 ) -> list[UserRef]:
-    return await lookup_users(users, person_from_request(request), q, limit)
+    person = person_from_request(request)
+    if ids:
+        return await lookup_user_names(users, person, [part for part in (p.strip() for p in ids.split(",")) if part])
+    return await lookup_users(users, person, q, limit)
 
 
 __all__ = ["make_access_router", "users_lookup_router"]
