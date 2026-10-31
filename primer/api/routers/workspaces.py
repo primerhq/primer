@@ -147,7 +147,7 @@ from primer.workspace.template_privilege import (
     refusal_message,
 )
 from primer.workspace.template_secrets import restore_template_secrets
-from primer.session.mutation_lock import session_lifecycle_lock
+from primer.session.mutation_lock import KeyedLock, session_lifecycle_lock
 from primer.model.yield_ import gate_id_of, with_wake_park
 from primer.session.pending_gates import undecided_pending_gates
 from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
@@ -2982,6 +2982,15 @@ async def file_info(
     return await ws.file_info(path)
 
 
+#: Serialises a file write's precondition check and the write itself, per (workspace, path) (W55b).
+_FILE_WRITE_LOCKS = KeyedLock()
+
+
+def _file_etag(entry) -> str:
+    """The etag of a file as ``file_info`` reports it: the read serves it and the write's precondition compares against it (one formula)."""
+    return hashlib.md5(f"{entry.modified_at.isoformat()}:{entry.size_bytes}".encode()).hexdigest()
+
+
 @files_router.get(
     "/workspaces/{workspace_id}/files/read",
     response_model=FileReadResponse,
@@ -3005,6 +3014,9 @@ async def read_file(
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
     _refuse_reserved_read(ws, path, user)
+    # The etag describes the file as it was BEFORE the bytes were read (review of workspaces, W55b): a write landing in between then makes the
+    # client's etag stale (its own write is refused) instead of newer than the content it holds.
+    entry = await ws.file_info(path)
     raw = await ws.read_file(path)
     if encoding == "text":
         try:
@@ -3016,10 +3028,9 @@ async def read_file(
             ) from exc
     else:
         content = base64.b64encode(raw).decode("ascii")
-    entry = await ws.file_info(path)
     mtime_iso = entry.modified_at.isoformat()
     mtime = entry.modified_at.timestamp()
-    etag = hashlib.md5(f"{mtime_iso}:{len(raw)}".encode()).hexdigest()
+    etag = _file_etag(entry)
     return FileReadResponse(
         path=path,
         encoding=encoding,
@@ -3190,42 +3201,42 @@ async def write_file(
             f"refusing to mutate path inside reserved tree {reserved!r}: "
             f"{path!r}"
         )
-    if etag is not None or if_unmodified_since_hdr is not None:
-        try:
-            entry = await ws.file_info(path)
-        except NotFoundError:
-            entry = None
-        if entry is not None:
-            conflict = False
-            if etag is not None:
-                current_etag = hashlib.md5(
-                    f"{entry.modified_at.isoformat()}:{entry.size_bytes}".encode()
-                ).hexdigest()
-                if etag != current_etag:
-                    conflict = True
-            elif if_unmodified_since_hdr is not None:
-                try:
-                    parsed_date = email.utils.parsedate_to_datetime(
-                        if_unmodified_since_hdr
-                    )
-                    if entry.modified_at > parsed_date:
+    # The precondition check and the write are ONE step per (workspace, path): without the lock two editors holding one etag both passed the
+    # check and both wrote (review of workspaces, W55b). In-process only (one event loop per API worker): another worker is not covered.
+    async with _FILE_WRITE_LOCKS.acquire(f"{workspace_id}\0{path}"):
+        if etag is not None or if_unmodified_since_hdr is not None:
+            try:
+                entry = await ws.file_info(path)
+            except NotFoundError:
+                entry = None
+            if entry is not None:
+                conflict = False
+                if etag is not None:
+                    if etag != _file_etag(entry):
                         conflict = True
-                except Exception:  # noqa: BLE001 - ignore malformed header
-                    pass
-            if conflict:
-                problem = ProblemDetails(
-                    type="/errors/precondition-failed",
-                    title="Precondition Failed",
-                    status=412,
-                    detail="The file has been modified since the precondition was recorded.",
-                    instance=request.url.path,
-                )
-                return JSONResponse(
-                    status_code=412,
-                    content=problem.model_dump(exclude_none=True),
-                    media_type=PROBLEM_JSON_MEDIA_TYPE,
-                )
-    await ws.write_file(path, raw)
+                elif if_unmodified_since_hdr is not None:
+                    try:
+                        parsed_date = email.utils.parsedate_to_datetime(
+                            if_unmodified_since_hdr
+                        )
+                        if entry.modified_at > parsed_date:
+                            conflict = True
+                    except Exception:  # noqa: BLE001 - ignore malformed header
+                        pass
+                if conflict:
+                    problem = ProblemDetails(
+                        type="/errors/precondition-failed",
+                        title="Precondition Failed",
+                        status=412,
+                        detail="The file has been modified since the precondition was recorded.",
+                        instance=request.url.path,
+                    )
+                    return JSONResponse(
+                        status_code=412,
+                        content=problem.model_dump(exclude_none=True),
+                        media_type=PROBLEM_JSON_MEDIA_TYPE,
+                    )
+        await ws.write_file(path, raw)
     # Deterministically wake any watch_files-parked session in this
     # workspace whose watched paths match the just-written file. This
     # reuses the event-bus -> YieldEventListener resume path; inotify
