@@ -264,3 +264,38 @@ async def test_two_fan_outs_of_different_revs_leave_every_row_at_the_newer_one(e
     for model in (Agent, Graph, Collection):
         for row in (await env.sp.get_storage(model).list(OffsetPage(offset=0, length=50))).items:
             assert row.access.rev == 6 and row.access.grants == {}, (model, row.id)
+
+
+async def test_overrides_are_masked_for_everyone_who_may_not_change_them(env):
+    """Final access review F9: ``overrides`` (the install form's values, an MCP header token among them) change through admin-only writes,
+    so every other reader (a read grantee, the non-admin owner) is served the keys with masked values, on REST and the tools alike."""
+    import json
+
+    from primer.common.url_userinfo import MASK
+
+    row = await env.sp.get_storage(Harness).get("hns_1")
+    await env.sp.get_storage(Harness).update(row.model_copy(update={
+        "overrides": {"github_token": "ghp_SECRET123"}, "access": Access(owners=[ALICE], grants={BOB: "read"}, rev=1),
+    }))
+    tools = build_harness_toolset_provider(storage_provider=env.sp)
+
+    def ctx(uid: str) -> ToolContext:
+        return ToolContext(
+            tool_call_id="c", session_id=None, workspace_id=None,
+            initiated_by=PrincipalRef(type="user", id=uid, display=uid, role="admin" if uid == ROOT else "user", source="local", user_id=uid),
+        )
+
+    def served(uid: str) -> list[dict]:
+        return [
+            env_get.json()["overrides"],
+            env_list.json()["items"][0]["overrides"],
+            json.loads(tool_get.output)["overrides"],
+            json.loads(tool_list.output)["items"][0]["overrides"],
+        ]
+
+    for uid, want in ((BOB, {"github_token": MASK}), (ALICE, {"github_token": MASK}), (ROOT, {"github_token": "ghp_SECRET123"})):
+        env_get = await env.client.get("/v1/harnesses/hns_1", headers=_as(uid))
+        env_list = await env.client.get("/v1/harnesses", headers=_as(uid))
+        tool_get = await tools.call(tool_name="get", arguments={"id": "hns_1"}, ctx=ctx(uid))
+        tool_list = await tools.call(tool_name="list", arguments={}, ctx=ctx(uid))
+        assert served(uid) == [want] * 4, uid

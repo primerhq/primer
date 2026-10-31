@@ -580,8 +580,8 @@ async def _load_run_node_states(
     if sess is not None and isinstance(sess.binding, GraphSessionBinding) and sess.binding.graph_id == graph_id:
         # Access (P2 Task 3): the run id is a session id here, and the node
         # states are that session's workspace state: read on the workspace it
-        # lives in; a stranger answers the session's missing-row text.
-        await require_session(storage_provider, person, run_id, AccessLevel.READ)
+        # lives in; a stranger answers the missing run's text (final access review F12).
+        await _require_run_session(storage_provider, person, run_id)
         workspace = await workspace_registry.get_workspace(sess.workspace_id)
         if workspace is None:
             raise NotFoundError(
@@ -641,6 +641,14 @@ async def _load_run_node_states(
     raise NotFoundError(f"Graph run {run_id!r} does not exist")
 
 
+async def _require_run_session(storage_provider, person: Person, run_id: str) -> None:
+    """Read on the run session's workspace; a person with no level gets the unknown run's answer, byte for byte."""
+    try:
+        await require_session(storage_provider, person, run_id, AccessLevel.READ)
+    except NotFoundError:
+        raise NotFoundError(f"Graph run {run_id!r} does not exist") from None
+
+
 async def _serve_graph_turn_log(
     *,
     graph_id: str,
@@ -660,8 +668,8 @@ async def _serve_graph_turn_log(
     if sess is not None and isinstance(sess.binding, GraphSessionBinding) and sess.binding.graph_id == graph_id:
         # Access (P2 Task 3): the run id is a session id here, and the log
         # is that session's workspace state: read on the workspace it lives in;
-        # a stranger answers the session's missing-row text.
-        await require_session(storage_provider, person, run_id, AccessLevel.READ)
+        # a stranger answers the missing run's text (final access review F12).
+        await _require_run_session(storage_provider, person, run_id)
         # Lazy import to defer the sessions-router dependency.
         from primer.api.routers.sessions import _read_workspace_turn_log
         workspace = await workspace_registry.get_workspace(sess.workspace_id)

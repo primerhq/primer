@@ -199,6 +199,38 @@ GRAPH_REFERENCES: tuple[ReferenceSpec, ...] = (
 )
 
 
+async def _readable(storage_provider: Any, person: Any, child: Any) -> bool:
+    """Whether ``person`` may read the referencing row: a session through its workspace, a subscription through its trigger and reach,
+    any other row through its own ``access`` (a row with none is admin-only)."""
+    from primer.access.policy import level_of
+    from primer.access.workspaces import workspace_level
+    from primer.model.trigger import Trigger
+    from primer.trigger.reach import subscription_in_reach
+
+    if person.is_admin:
+        return True
+    if isinstance(child, WorkspaceSession):
+        return await workspace_level(storage_provider, person, child.workspace_id) is not None
+    if isinstance(child, Subscription):
+        trigger = await storage_provider.get_storage(Trigger).get(child.trigger_id)
+        return (
+            trigger is not None and level_of(person, trigger.access) is not None
+            and await subscription_in_reach(storage_provider, person, child)
+        )
+    access = getattr(child, "access", None)
+    return access is not None and level_of(person, access) is not None
+
+
+async def referenced_by_text(
+    storage_provider: Any, person: Any, *, error_code: str, child_kind: str, parent_id: str, child: Any,
+) -> str:
+    """The 409 text of a delete ``child`` blocks, shared by REST and the tools: it names the row and its kind only when ``person`` can
+    read it, so a delete never reveals a row in a workspace (or a private entity) the caller cannot see (final access review F10)."""
+    if await _readable(storage_provider, person, child):
+        return f"{error_code}: 1 {child_kind}(s) reference {parent_id!r} (first: {child.id!r})"
+    return f"{error_code}: 1 other entity references {parent_id!r}"
+
+
 async def default_agent_refusal(storage_provider: Any, agent_id: str, *, exempt: str) -> str | None:
     """The sentence refusing the delete of ``agent_id`` when it is the system default agent, or ``None`` when it may go.
 

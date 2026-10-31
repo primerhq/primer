@@ -252,7 +252,7 @@ async def test_only_a_gate_that_moved_on_carries_the_code_not_a_deleted_session_
     await storage.delete(sid)
     gone = await _approve(client, sid, card["tool_call_id"], card["gate_id"])
     _assert_plain_404(gone)
-    assert gone.json()["detail"] == f"{sid!r} does not exist"
+    assert gone.json()["detail"] == f"Session {sid!r} does not exist"  # the access gate's missing-row text, as a hidden session's (F12)
 
 
 # ---- ask_user/respond -----------------------------------------------------------------------------------------------------------------------------

@@ -37,6 +37,7 @@ from primer.storage.references import (
     ReferenceSpec,
     default_agent_refusal,
     first_referencing_row,
+    referenced_by_text,
 )
 from primer.toolset._helpers import err as _err
 
@@ -135,9 +136,9 @@ def refuse_delete(guards: CrudGuards, existing: Any) -> ToolCallResult | None:
 
 
 async def refuse_delete_if_referenced(
-    guards: CrudGuards, existing: Any, storage_provider: "StorageProvider",
+    guards: CrudGuards, existing: Any, storage_provider: "StorageProvider", person: Any,
 ) -> ToolCallResult | None:
-    """The first child kind that still references ``existing`` blocks the delete, as REST's reference-block hook."""
+    """The first child kind that still references ``existing`` blocks the delete, as REST's reference-block hook, in its words."""
     for reference in guards.references:
         storage = storage_provider.get_storage(reference.child_model)
         if reference.lookup is not None:
@@ -148,7 +149,10 @@ async def refuse_delete_if_referenced(
             )
         if child is not None:
             return _err(
-                f"{reference.error_code}: 1 {reference.child_kind}(s) reference {existing.id!r} (first: {child.id!r})",
+                await referenced_by_text(
+                    storage_provider, person, error_code=reference.error_code, child_kind=reference.child_kind,
+                    parent_id=existing.id, child=child,
+                ),
                 error_type="conflict",
             )
     for blocker in guards.delete_blockers:

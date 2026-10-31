@@ -498,12 +498,11 @@ def make_tool_approval_ops_router() -> APIRouter:
         engine: ClaimEngine | None = Depends(get_claim_engine),
         user=Depends(require_user),
     ) -> dict[str, str]:
-        sess = await session_storage.get(session_id)
-        if sess is not None:
-            # The access gate (P2 Task 3): a decision is a person's input into the session's run, so the decider must hold full on the
-            # workspace the session lives in (it inherits its access), whatever the gate's approver spec admits, before the park is read
-            # and before anything moves. The spec is checked below as well. Admins clear the gate.
-            await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.FULL)
+        # The access gate (P2 Task 3): a decision is a person's input into the session's run, so the decider must hold full on the
+        # workspace the session lives in (it inherits its access), whatever the gate's approver spec admits, before the park is read
+        # and before anything moves. The spec is checked below as well. Admins clear the gate. A missing id answers the gate's
+        # missing-row text too, so a hidden session reads exactly like an unknown one (final access review F12).
+        sess = await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.FULL)
         blob = _approval_blob_or_404(sess, session_id, not_pending=GateNotPendingError)
         # Resolve the SPECIFIC gate body.tool_call_id names -- a graph park
         # can have several pending approval gates open at once, and only

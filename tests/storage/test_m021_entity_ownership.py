@@ -110,3 +110,14 @@ def test_seeded_agents_and_the_default_template_are_public_with_no_owner():
     for spec in RESERVED_WORKSPACE_TEMPLATES.values():
         access = WorkspaceTemplate(**spec).access
         assert access.public is True and access.owners == []
+
+
+async def test_rows_go_to_the_oldest_enabled_admin(sp):
+    """Final access review F17: a disabled admin, however old, is skipped (as migrations 25 to 27 skip one)."""
+    await _users(sp, ("u-old-admin", "admin", 0), ("u-admin", "admin", 1))
+    await sp.get_storage(User).update((await sp.get_storage(User).get("u-old-admin")).model_copy(update={"disabled": True}))
+    await sp.get_storage(Agent).create(_agent("custom"))
+
+    await M021EntityOwnership().apply(sp)
+
+    assert (await sp.get_storage(Agent).get("custom")).access.owners == ["u-admin"]

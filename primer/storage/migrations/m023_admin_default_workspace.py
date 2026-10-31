@@ -34,6 +34,7 @@ class User(Identifiable):  # noqa: N801 - the class name selects the table
 
     role: str = "user"
     created_at: datetime | None = None
+    disabled: bool = False
     default_workspace_id: str | None = None
 
 
@@ -63,7 +64,7 @@ class M023AdminDefaultWorkspace:
     async def apply(self, sp: StorageProvider) -> None:
         users = sp.get_storage(User)
         rows = await _read_all(users)
-        admins = [u for u in rows if u.role == "admin" and u.created_at is not None]
+        admins = [u for u in rows if u.role == "admin" and not u.disabled and u.created_at is not None]
         install_id = await resolve_default_workspace_id(sp)
         if not admins or install_id is None:
             return

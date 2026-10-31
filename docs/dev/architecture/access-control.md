@@ -157,7 +157,7 @@ parent.
 | Agent | `primer/api/routers/compute.py` | system CRUD, `crud` toolset | seeded agents are public with no owner; a run's person needs read, re-checked every turn |
 | Graph | `primer/api/routers/compute.py` | system CRUD, `crud` toolset | as agents |
 | Toolset | `primer/api/routers/providers.py` | system CRUD, `crud` toolset | the only kind with `public_tools` |
-| Workspace template | `primer/api/routers/workspaces.py` | `workspaces` toolset | `local-default` is public with no owner; creating a workspace from it needs read |
+| Workspace template | `primer/api/routers/workspaces.py` | `workspaces` toolset | `local-default` is public with no owner; creating a workspace from it needs read; a save (REST hooks and the create/update tools) refuses a `document` file source in a collection the saver cannot read, like a missing document (`refuse_unreadable_document_mounts`) |
 | Channel | `primer/api/routers/channels.py` | system CRUD | |
 | Workspace | `primer/api/routers/workspaces.py`, `tap.py`, `terminal.py` | `workspaces` toolset, the system reply-binding tools, `reset_prime_instructions`, the sharing tools (`kind` `workspace`) | no `public_tools` |
 | Inherited from a workspace | `sessions.py`, `workspaces.py`, `canvas.py`, `yields.py`, `tool_approval.py`, `external_tools.py`, `compute.py` (graph-run logs), `events.py` | `workspaces` toolset (session, file and log tools), `message_session`, `wait_for_event`, trigger subscription targets (`primer/trigger/reach.py`) | the table in section 6.2 |
@@ -190,7 +190,10 @@ is ignored. Migration 21 (`primer/storage/migrations/m021_entity_ownership.py`) 
 before access control, and makes the seeded agents and template public. Migration 28
 (`primer/storage/migrations/m028_infrastructure_public.py`) makes every existing model profile and provider with no
 sharing public, on the seven grantable tables (a row that already carries grants or `public` is left alone, so a re-run
-never undoes an admin's choice).
+never undoes an admin's choice). A delete refused because another row references the entity (409 `in_use_by`, REST and
+the system delete tools alike) names that row and its kind only when the caller can read it (a session through its
+workspace, a subscription through its trigger and reach, any other row through its own access); otherwise it says
+`in_use_by: 1 other entity references '<id>'` (`referenced_by_text` in `primer/storage/references.py`).
 
 ### 6.2 Workspaces and what inherits from them
 
@@ -241,11 +244,11 @@ grant therefore stops the next turn and every resume, however it was queued or p
 | `message_session`, steer and restart tools from a session | the sending run's person |
 | Trigger `session_append` fire | the fire's owner (`principal_for_fire`); a fire with no person leaves the session's person |
 | Channel-thread reply | the session's creator (`initiated_by`): channel senders are not primer users |
-| An `ask_user` answer, or a `tool_results` body on a parked external tool call | the person who answered or provided it: a peer's input re-attributes the resumed turn to them, like a steer |
-| An approval answer, any other park resume | unchanged: the parked turn keeps its person (`by=None`) |
+| `ask_user` answer (`POST /v1/sessions/{id}/ask_user/respond`), external `tool_results` (on the steer route) | the sender: the park flip writes `turn_person` in its own guarded write (`by` of `durably_mark_session_resumable`), so the resume-time workspace check judges the sender |
+| Approval decision, yield cancel, any other park resume | unchanged: the parked turn keeps its person (`by=None`) |
 
-Why: a full-access peer who steers someone else's session must never borrow the creator's private toolsets, collections
-or OAuth tokens. The trigger fire rank floor (`refuse_steer_above_fire`, `may_drive`) is the one rank rule left on a
+Why: a full-access peer who steers someone else's session, answers its `ask_user` or feeds it tool results must never
+borrow the creator's private toolsets, collections or OAuth tokens: each of those is model input. The trigger fire rank floor (`refuse_steer_above_fire`, `may_drive`) is the one rank rule left on a
 session; the steer, approval and canvas routes no longer rank the caller against the creator.
 
 ### 6.4 Events and waits
@@ -268,9 +271,12 @@ Every full user (role `user` or `admin`, not disabled) has a private default wor
 last sign-in), all through `ensure_default_for_request`, which never fails a sign-in and makes the status probe wait 60 s
 after a failure. The workspace is `ws-<user id>`, materialised from the configured default template (else
 `local-default`), owned by the user and private, with the user's own operator `main` session; the work is idempotent
-under a per-user lock, and a lost create race reads as success. The `ws-<user id>` id space is reserved for the
-per-user defaults: no other workspace may take an id of that shape, so a `ws-<user id>` id always names the default
-workspace of the user whose id it is. The first admin with no default adopts the install-wide
+under a per-user lock, and a lost create race reads as success. The `ws-<user id>` id space is reserved: a client create
+(REST and the `create_workspace` tool, both through `WorkspaceRegistry.create`) of any `ws-user-...` id (every account id
+is `user-<hex>`, so users not created yet are covered) or of `ws-<an existing user's id>` is refused 409 / `type=conflict`
+(`is_reserved_user_default_id`). An existing row with the id is adopted only when it is the user's alone and private
+(sole owner, no grants, not public); any other row (a squat made before the reservation) is left as it is, a warning is
+logged, and the next free `ws-<user id>-<n>` is created and recorded instead. The first admin with no default adopts the install-wide
 default (`prime`, or the legacy `primer`) instead, when it has no owner and is not public (`patch_if` on `access.rev`
 0 to 1). A restricted user gets none until promoted.
 
@@ -303,6 +309,8 @@ heir and renames it (7.1).
   moves to the user who connected it (`connected_by`), else the enabled admin whose username it is, else the first
   enabled admin (never the toolset's owner: the token is an upstream account); a client-credentials sign-in stays the
   shared row under the bare toolset id (6.22).
+- "The first admin" of migrations 21 to 23 is the oldest ENABLED admin, as in migrations 25 to 27: a disabled admin is
+  skipped. An install that ran them before this rule keeps what they wrote (there is no re-run).
 
 ### 6.7 Cross-workspace lists and open connections
 
@@ -311,9 +319,13 @@ The cross-workspace lists (`GET /v1/sessions`, `POST /v1/sessions/find`, `GET /v
 `scope_to_readable_workspaces` (`primer/access/workspaces.py`) ANDs `workspace_id IN <readable workspaces>` into the query,
 so pages, totals and the recent window count only what the caller reads; external tool calls and approval records carry
 `workspace_id` (migration 24 backfills it from their session; a row whose session was gone stays `None`, visible to admins
-only). A live tap or terminal connection is checked when it opens and when its account stops being valid (7.3), not when
-the workspace's sharing changes. A turn already running when a grant is revoked runs to its end, its in-session file tools
-included; the next turn or resume is refused (6.3).
+only). A live tap or terminal connection is checked when it opens and again while it lives (`WorkspaceAccessWatch` in
+`primer/access/workspaces.py`, a primary-key read of the workspace row, the level re-judged only when its `access.rev`
+moved): the tap before every batch and keepalive and at most once a second between deltas, the terminal before every
+input. Once the person no longer holds the level the connect needed, the tap sends the refusal a fresh connect gets as an
+`error` frame (`/errors/not-found`, or `/errors/forbidden`) and ends, and the terminal closes 4404 (or 4403 below full)
+without passing that input on. A turn already running when a grant is revoked runs to its end, its
+in-session file tools included; the next turn or resume is refused (6.3).
 
 Subsections 6.8 to 6.14 describe Phase 3 (collections, triggers, channel triggers and harnesses), numbered after the Phase 2
 subsections (workspaces and what inherits from them, the turn person, events, the per-user default workspace); 6.15 to 6.20
@@ -393,7 +405,9 @@ other fields with `rewrite_keeping_access`, never the access. Sharing the harnes
 installed row, ordered by `access.rev` (a row already at a higher rev is left alone, and each write is fenced on the rev
 it read, so two racing fan-outs cannot resurrect a revoked grant) and only while the row still belongs to the harness.
 Sharing an installed row directly answers 409 `harness_managed`. Harness writes (create, update, install, sync, build,
-push, uninstall) stay admin-only in this phase; list, get and the bundle need read, and list filters in storage. The
+push, uninstall) stay admin-only in this phase; list, get and the bundle need read, and list filters in storage. A
+non-admin reader (REST list and get, the `list` and `get` tools) is served `overrides` with every value masked
+(`Harness.served_to`): they are the install form's values, secrets among them, and only an admin may change them. The
 outbound export strips `access` from the templates it writes.
 
 ### 6.13 Whole-row writers
@@ -738,10 +752,10 @@ workspace's access changes, and a parked turn is re-checked by its own door (6.3
 
 ## 10. Known limits
 
-- **Long-lived connections end on the account check, not on a sharing change.** A tap or terminal connection is
-  re-checked only for the account that opened it (7.3, every `auth.revalidate_interval_s`): a grant lowered or dropped
-  while the connection is open ends it only when the account itself stops being valid, and nothing closes it on a
-  sharing change. A turn already running when a grant is revoked runs to its end (6.7).
+- **A terminal that only shows output is re-checked on its next input.** A tap re-checks the person's level before every
+  batch and keepalive, and a terminal before every input (6.7), so a lowered or dropped grant ends both; a terminal the
+  person is only watching, without typing, keeps printing output until its next input or the account check (7.3, every
+  `auth.revalidate_interval_s`). A turn already running when a grant is revoked runs to its end (6.7).
 - **A taken id or slug answers the conflict code, not the missing-row answer (existence oracle).** Creating a
   workspace, an owned CRUD kind, a document or a channel pair with an id or slug a row already holds, or a trigger with
   a taken slug, answers the conflict (409, or the slug conflict) even when the row is not the caller's, so the caller

@@ -324,10 +324,12 @@ async def list_harnesses(
 ):
     storage = _get_harness_storage(sp)
     # A harness is listed to those who can read it: the filter runs in the storage query (admins see all).
-    visible = visible_predicate(person_from_request(request))
+    person = person_from_request(request)
+    visible = visible_predicate(person)
 
     if slug is None and status_filter is None and direction is None:
-        return await storage.list(page) if visible is None else await storage.find(visible, page)
+        found = await storage.list(page) if visible is None else await storage.find(visible, page)
+        return found.model_copy(update={"items": [h.served_to(person) for h in found.items]})
 
     q = Q(Harness)
     if slug is not None:
@@ -339,7 +341,8 @@ async def list_harnesses(
     predicate = q.build()
     if visible is not None:
         predicate = Predicate(left=visible, op=Op.AND, right=predicate)
-    return await storage.find(predicate, page)
+    found = await storage.find(predicate, page)
+    return found.model_copy(update={"items": [h.served_to(person) for h in found.items]})
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +361,7 @@ async def get_harness(
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
 ) -> Harness:
-    return await _readable_harness(request, sp, harness_id)
+    return (await _readable_harness(request, sp, harness_id)).served_to(person_from_request(request))
 
 
 # ---------------------------------------------------------------------------
