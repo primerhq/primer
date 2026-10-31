@@ -406,10 +406,9 @@ async def test_completed_sibling_is_not_re_executed_on_final_resume(
     B's WHOLE turn a second time: duplicate LLM call, duplicate tool
     side effects, duplicate gate prompts.
 
-    B's own successor ("D") is deliberately NOT asserted here - B's
-    successor edge never getting walked when a sibling parks in the
-    SAME superstep is the separate, PRE-EXISTING 01a08016 bug, not
-    fixed in this arc.
+    B's own successor ("D") runs too: B settled beside A's park, and the
+    park folds a settled sibling's successors into the checkpoint
+    (01a08016, AG-H1).
     """
     call_counts: dict[str, int] = {}
     parked_once: set[str] = set()
@@ -460,6 +459,8 @@ async def test_completed_sibling_is_not_re_executed_on_final_resume(
     # continuation (which now completes normally) - that second call is
     # the resume actually working, not the regression.
     assert call_counts == {"agent-a": 2, "agent-b": 1}
+    assert ex._node_states["C"].status == NodeRuntimeStatus.ENDED
+    assert ex._node_states["D"].status == NodeRuntimeStatus.ENDED
 
 
 @pytest.mark.asyncio

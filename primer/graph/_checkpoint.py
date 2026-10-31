@@ -9,7 +9,7 @@ state to a JSON-able dict), and ``restore_state`` (the inverse).
 It is a mixin, not a standalone class: the methods read and write the
 executor's mid-flight attributes (``_context``, ``_ready_set``,
 ``_node_states``, ``_fanout_instances``, ``_fanout_target_expected_count``,
-``_instance_to_spec``, ``_fanout_drain_state``, ``_pending_toolcalls``,
+``_instance_to_spec``, ``_fanout_drain_state``, ``_max_iter_routed``, ``_pending_toolcalls``,
 ``_pending_agent_yields``, ``_admitted``, ``_graph``), all of which are
 initialised by ``_BaseGraphExecutor.__init__``. Keeping them here keeps
 base.py focused on the superstep control flow.
@@ -209,6 +209,7 @@ class _CheckpointMixin:
           ``{"fanout_node_id": ..., "spec": <FanOutSpec.model_dump>}``.
         * ``fanout_drain_state`` — drain_key → drain_state dict.
         * ``pending_toolcalls`` — list of pending ToolCall dicts.
+        * ``max_iter_routed`` — the ``on_max_iterations`` reroute already fired.
         * ``pending_ended_reason`` / ``pending_ended_detail`` (01a0812c) —
           a sticky, un-suppressed node failure discovered before a park,
           so the eventual terminal outcome doesn't silently downgrade to
@@ -223,6 +224,8 @@ class _CheckpointMixin:
             "ready_set": sorted(self._ready_set),
             "pending_ended_reason": self._pending_ended_reason,
             "pending_ended_detail": self._pending_ended_detail,
+            # The one-shot on_max_iterations reroute already happened: without it a landing node that parks re-trips the cap on resume (AG-H3).
+            "max_iter_routed": self._max_iter_routed,
             "node_states": {
                 nid: ns.model_dump(mode="json")
                 for nid, ns in self._node_states.items()
@@ -396,6 +399,8 @@ class _CheckpointMixin:
         # this field didn't exist yet to record).
         self._pending_ended_reason = payload.get("pending_ended_reason")
         self._pending_ended_detail = payload.get("pending_ended_detail")
+        # Absent in a checkpoint written before it was carried: not rerouted, as such a resume always read it.
+        self._max_iter_routed = bool(payload.get("max_iter_routed", False))
         # Re-seed the admitted-set used by the FanIn callable-router gate.
         # The restored ready-set is the in-flight frontier; completed nodes
         # already have output (so they never block). This keeps a resumed
