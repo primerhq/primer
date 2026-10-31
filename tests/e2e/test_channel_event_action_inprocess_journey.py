@@ -51,7 +51,9 @@ from primer.model.channel_event import (
     NormalizedEventType,
 )
 from primer.model.event_matcher import EventMatcher
+from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
+from primer.model.user import User
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import (
     AgentFreshSubConfig,
@@ -147,6 +149,16 @@ async def _seed_agent(p) -> Agent:
     return agent
 
 
+#: The person who set the rule up. A fire runs as the trigger's and the subscription's owner and is refused when either lost access (access-control P3):
+#: the journey seeds the rows the way a real user's saves leave them, owned by that user.
+OWNER = PrincipalRef(type="user", id="u-evj", display="evj", role="user", source="local", user_id="u-evj")
+OWNED = Access(owners=[OWNER.id])
+
+
+async def _seed_owner(p) -> None:
+    await p.get_storage(User).create(User(id=OWNER.id, username="evj", created_at=datetime.now(timezone.utc), role="user"))
+
+
 async def _seed_workspace(p) -> Workspace:
     ws = Workspace(
         id="ws-evj",
@@ -157,6 +169,7 @@ async def _seed_workspace(p) -> Workspace:
         runtime_meta=WorkspaceRuntimeMeta(
             url="ws://127.0.0.1:5959/", token=SecretStr("t"),
         ),
+        access=OWNED,
     )
     await p.get_storage(Workspace).create(ws)
     return ws
@@ -173,6 +186,7 @@ async def _seed_channel(p) -> Channel:
         config=TelegramChannelConfig(
             chats={"enabled": True},
         ),
+        access=OWNED,
     )
     await p.get_storage(Channel).create(ch)
     return ch
@@ -181,6 +195,7 @@ async def _seed_channel(p) -> Channel:
 @pytest.mark.asyncio
 async def test_channel_event_action_journey(tmp_path: Path, async_closers) -> None:
     p = await _provider(tmp_path, async_closers)
+    await _seed_owner(p)
     agent = await _seed_agent(p)
     ws = await _seed_workspace(p)
     ch = await _seed_channel(p)
@@ -191,6 +206,7 @@ async def test_channel_event_action_journey(tmp_path: Path, async_closers) -> No
     await p.get_storage(Trigger).create(Trigger(
         id="trg-evj", slug="evj", name="journey rule",
         config=ChannelTriggerConfig(provider_id="cp-evj", channel_id=ch.id),
+        owner=OWNER, access=OWNED,
         created_at=datetime.now(timezone.utc)))
     await p.get_storage(Subscription).create(Subscription(
         id="sub-evj", trigger_id="trg-evj",
@@ -201,6 +217,7 @@ async def test_channel_event_action_journey(tmp_path: Path, async_closers) -> No
         ),
         parallelism="queue",
         enabled=True,
+        owner=OWNER,
         created_at=datetime.now(timezone.utc)))
 
     bus = _RecordingBus()
