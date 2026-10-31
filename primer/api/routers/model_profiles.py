@@ -48,6 +48,7 @@ from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
+from primer.storage.references import MODEL_PROFILE_GRAPH_REFERENCE
 from primer.api.routers.providers import _make_invalidator
 from primer.common.entity_checks import EntityCheckError
 from primer.model.agent import Agent
@@ -271,6 +272,7 @@ model_profile_router = make_crud_router(
             op=Op.CONTAINS,
             error_code="in_use_by",
         ),
+        ReferenceCheck.from_spec(MODEL_PROFILE_GRAPH_REFERENCE),
     ],
     enrich_list=_enrich_with_usage,
 )

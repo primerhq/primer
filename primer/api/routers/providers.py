@@ -110,6 +110,7 @@ from primer.model.provider import (
     TransportType,
 )
 from primer.api.routers._references import ReferenceCheck
+from primer.storage.references import LLM_PROVIDER_REFERENCES
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalPolicy
 
@@ -709,6 +710,7 @@ llm_provider_router = make_crud_router(
     on_pre_create=_make_reserved_create_guard(RESERVED_LLM_IDS, "llm_provider"),
     on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_make_reserved_delete_guard(RESERVED_LLM_IDS, "llm_provider"),
+    references=[ReferenceCheck.from_spec(spec) for spec in LLM_PROVIDER_REFERENCES],
 )
 
 
