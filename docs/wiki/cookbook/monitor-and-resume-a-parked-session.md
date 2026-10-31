@@ -12,8 +12,8 @@ Find out why a session that stopped moving is waiting, then choose the move: ste
 ## Prerequisites
 
 - A `workspace_id` and a `session_id` to watch, for example from [cookbook/create-and-run-a-session](cookbook/create-and-run-a-session).
-- Run it over MCP or from a session in the default workspace (prime). From a session in any other workspace, the workspace tools reach only that session's own workspace: another one answers `type=not-found`, as an unknown id does.
-- The rank rule: `workspaces__steer_workspace_session`, `workspaces__resume_workspace_session`, `workspaces__interrupt_workspace_session` and `workspaces__cancel_workspace_session` refuse a session that runs at a higher rank than you (or your run) with `type=forbidden`. An admin is never outranked, a person over MCP may always act on a session they started, and a session may always act on itself.
+- Run it over MCP or from any session. The workspace tools act with the access of the person behind your run: a workspace that person holds no access to answers `type=not-found`, as an unknown id does.
+- Access: `workspaces__steer_workspace_session`, `workspaces__resume_workspace_session`, `workspaces__interrupt_workspace_session` and `workspaces__cancel_workspace_session` need `full` access to the session's workspace; `read` alone answers `type=forbidden`.
 
 ## Steps
 
