@@ -619,6 +619,22 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
                 names.append(raw.lstrip("/"))
         return names
 
+    async def remove_by_name(self, name: str, volume_name: str) -> bool:
+        """Remove the container and the volume by name (the container in any state). True when either existed; a failure
+        other than a 404 raises, so a destroy that could not remove them fails instead of dropping the row over them."""
+        assert self._docker is not None
+        container_existed = True
+        try:
+            await self._docker.containers.container(name).delete(force=True, v=False)
+        except Exception as exc:  # noqa: BLE001 -- a 404 is "not there"; anything else is raised
+            if not _is_not_found(exc):
+                raise
+            container_existed = False
+        volume_existed = await self._volume_exists(volume_name)
+        if volume_existed:
+            await self.remove_volume(volume_name)
+        return container_existed or volume_existed
+
     async def remove_volume(self, name: str) -> None:
         assert self._docker is not None
         try:
