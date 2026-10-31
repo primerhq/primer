@@ -63,6 +63,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from primer.access.person import Person
+from primer.access.tools import may_use_toolset
 from primer.common.error_codes import safe_code
 from primer.common.origin import origin_of
 from primer.common.secret_box import SecretBox, SecretBoxError
@@ -70,6 +71,7 @@ from primer.int.storage_provider import StorageProvider
 from primer.model.except_ import BadRequestError, ConfigError, PrimerError, ProviderError
 from primer.model.mcp_oauth import ClientAuthMethod, ClientSource, McpOAuthClient, McpOAuthPendingSignIn, McpOAuthTokenSet, McpSignInRequiredError
 from primer.model.provider import HttpConfig, McpConfig, OAuthConfig, Toolset, ToolsetProviderType, TransportType
+from primer.model.user import User
 from primer.storage import raw_generation
 from primer.toolset.oauth import egress, protocol
 from primer.toolset.oauth.protocol import ClientAuth, Discovery
@@ -271,16 +273,24 @@ class ToolsetAuthStatus(BaseModel):
     state: AuthState = Field(
         ...,
         description=(
-            "'connected': it has a usable sign-in. 'needs_sign_in': an admin must connect it (again). 'error': the last refresh failed for a reason "
-            "that may pass (the tokens are kept). 'not_applicable': the toolset does not sign in with OAuth."
+            "'connected': it has a usable sign-in. 'needs_sign_in': it must be connected (again): a browser sign-in by the caller themselves, "
+            "client credentials by someone with full access on the toolset. 'error': the last refresh failed for a reason that may pass (the "
+            "tokens are kept). 'not_applicable': the toolset does not sign in with OAuth."
         ),
     )
     reason: str | None = Field(default=None, description="Why the state is not 'connected', in words an operator can act on.")
     expires_at: datetime | None = Field(default=None, description="When the access token expires; None for no known expiry.")
-    connected_at: datetime | None = Field(default=None, description="When an admin connected it; None when it was never connected.")
+    connected_at: datetime | None = Field(default=None, description="When it was connected; None when it was never connected.")
     refreshed_at: datetime | None = Field(default=None, description="When its access token was last refreshed.")
     scope: str | None = Field(default=None, description="The scope the authorization server granted.")
     redirect_uri: str | None = Field(default=None, description="The redirect URI a browser sign-in of this toolset uses, for registering a client by hand.")
+    per_user: bool = Field(
+        default=False,
+        description=(
+            "True for a browser sign-in: this is the caller's own (each person signs in for themselves). False for client credentials (one "
+            "shared sign-in) and for a toolset without OAuth."
+        ),
+    )
 
 
 class SignInStart(BaseModel):
@@ -319,6 +329,7 @@ class ToolsetOAuthService:
         clock: Callable[[], datetime] = _utc_now,
         owner_id: str | None = None,
     ) -> None:
+        self._sp = storage_provider
         self._store = McpOAuthStore(storage_provider, secret_box)
         self._public_url = public_url.rstrip("/") if public_url else None
         self._owns_http = http is None
@@ -423,6 +434,7 @@ class ToolsetOAuthService:
         code: str | None,
         error: str | None,
         browser_binding: str | None,
+        caller: Person | None = None,
     ) -> ToolsetAuthStatus:
         """Finish the browser sign-in that the provider's redirect for ``toolset_id`` carries: exchange the code and store the tokens.
 
@@ -430,6 +442,10 @@ class ToolsetOAuthService:
         (the cookie the start answer set): a missing one, or one the sign-in was not started with, is ``invalid_state`` and leaves the pending sign-in
         to the browser that started it. Raises :class:`SignInError`; every failure leaves the stored tokens as they were, and once the binding matched
         the state is spent whatever the outcome.
+
+        The tokens become the sign-in of the person who started it, and only when that person still exists, is enabled and a full user, and may
+        still use the toolset (access-control P5 Decision 5); ``caller`` is the person signed in on the callback's request, if any, and a callback
+        that arrives with ANOTHER person signed in connects nobody. Each refusal is ``invalid_state``.
         """
         now = self._clock()
         pending = await self._store.take_pending(state, now=now, browser_binding=browser_binding) if state and browser_binding else None
@@ -437,6 +453,12 @@ class ToolsetOAuthService:
             logger.info(
                 "MCP toolset %s: a sign-in callback carried an unknown, used, expired or misdirected state, or came from a browser that did not start "
                 "the sign-in", toolset_id,
+            )
+            raise SignInError("invalid_state", toolset_id)
+        if not await self._may_complete(pending, caller):
+            logger.info(
+                "MCP toolset %s: the sign-in callback was refused: the person who started it may no longer use the toolset, or another person is "
+                "signed in on the browser that brought it back", toolset_id,
             )
             raise SignInError("invalid_state", toolset_id)
         if error:
@@ -493,6 +515,20 @@ class ToolsetOAuthService:
         ))
         logger.info("MCP toolset %s: connected by a browser sign-in", toolset_id)
         return self._status_from(target, stored, now=now)
+
+    async def _may_complete(self, pending: McpOAuthPendingSignIn, caller: Person | None) -> bool:
+        """Whether the callback of ``pending`` may write its person's row (Decision 5): the person still exists, is enabled and full, and may use
+        the toolset; and no other person is signed in on the callback's request. A pending sign-in that names nobody is the system person's (auth
+        disabled)."""
+        user_id = pending.user_id
+        if caller is not None and caller.user_id is not None and caller.user_id != user_id:
+            return False
+        if user_id is None:
+            return True
+        user = await self._sp.get_storage(User).get(user_id)
+        if user is None or user.disabled or user.role not in ("user", "admin"):
+            return False
+        return await may_use_toolset(self._sp, Person(user_id, user.role), pending.toolset_id)
 
     # ---- client credentials ---------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -596,7 +632,9 @@ class ToolsetOAuthService:
 
     def _status_from(self, target: OAuthTarget, row: McpOAuthTokenSet | None, *, now: datetime, redirect_uri: str | None = None) -> ToolsetAuthStatus:
         mode = _mode_of(target)
-        base: dict[str, Any] = {"toolset_id": target.toolset_id, "mode": mode, "redirect_uri": redirect_uri if mode == "oauth_browser" else None}
+        base: dict[str, Any] = {
+            "toolset_id": target.toolset_id, "mode": mode, "redirect_uri": redirect_uri if mode == "oauth_browser" else None, "per_user": target.per_user,
+        }
         if row is None:
             return ToolsetAuthStatus(**base, state="needs_sign_in", reason=NOT_CONNECTED)
         base.update(connected_at=row.connected_at, refreshed_at=row.refreshed_at)

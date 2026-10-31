@@ -13,10 +13,6 @@ from tests.api.test_require_user_admin import _login, _seed
 from tests.toolset.oauth._service_helpers import authorize, connect, make_toolset, target_of
 
 
-CONNECT_ADMIN_REASON = (
-    "Connecting, reconnecting or disconnecting an MCP toolset's OAuth sign-in requires the admin role: every agent that uses the toolset acts as "
-    "whoever connected it."
-)
 #: The cookie the start answer sets to bind the sign-in to the browser that started it (audit G4-01).
 BINDING_COOKIE = "primer_mcp_oauth"
 
@@ -52,12 +48,19 @@ async def _store(app, toolset: Toolset) -> None:
     await app.state.storage_provider.get_storage(Toolset).create(toolset)
 
 
-async def test_start_is_admin_only(raw_client, oauth_app, mock_oauth_mcp) -> None:
+async def test_start_is_for_whoever_may_use_the_toolset_not_admin_only(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    """Access-control P5 Task 3: a browser sign-in is the caller's own, so any full user who may use the toolset starts one; a user who may not
+    use it is answered as for a missing toolset. The admin role is no longer the rule (and an admin still may)."""
     await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
     await _login_as(raw_client, oauth_app, "user")
     refused = await raw_client.post("/v1/toolsets/kb/oauth/start")
-    assert refused.status_code == 403
-    assert CONNECT_ADMIN_REASON in refused.text
+    assert refused.status_code == 404 and refused.json()["detail"] == "Toolset 'kb' does not exist", refused.text
+
+    storage = oauth_app.state.storage_provider.get_storage(Toolset)
+    await storage.update((await storage.get("kb")).model_copy(update={"access": Access(grants={"u-user": "read"})}))
+    started = await raw_client.post("/v1/toolsets/kb/oauth/start")
+    assert started.status_code == 200, started.text
+    assert started.json()["authorize_url"]
 
     raw_client.cookies.clear()
     await _login_as(raw_client, oauth_app, "admin")
@@ -280,12 +283,24 @@ async def test_status_is_user_tier_and_never_serves_a_token(raw_client, oauth_ap
     assert "access_token" not in response.text and "refresh_token" not in response.text
 
 
-async def test_disconnect_is_admin_only(raw_client, oauth_app, mock_oauth_mcp) -> None:
-    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
+async def test_disconnect_is_for_whoever_may_use_the_toolset_not_admin_only(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    """Access-control P5 Task 3: a user who may not use the toolset is answered as for a missing one; a user who may use it ends their own
+    browser sign-in, and nobody else's."""
+    toolset = make_toolset(mock_oauth_mcp.mcp_url, oauth={})
+    await _store(oauth_app, toolset)
     await _login_as(raw_client, oauth_app, "user")
+    await connect(oauth_app.state.mcp_oauth, toolset)
     response = await raw_client.post("/v1/toolsets/kb/oauth/disconnect")
-    assert response.status_code == 403
-    assert CONNECT_ADMIN_REASON in response.text
+    assert response.status_code == 404 and response.json()["detail"] == "Toolset 'kb' does not exist", response.text
+
+    storage = oauth_app.state.storage_provider.get_storage(Toolset)
+    await storage.update((await storage.get("kb")).model_copy(update={"access": Access(grants={"u-user": "read"})}))
+    await connect(oauth_app.state.mcp_oauth, toolset, person=Person("u-user", "user"))
+    response = await raw_client.post("/v1/toolsets/kb/oauth/disconnect")
+    assert response.status_code == 200 and response.json()["state"] == "needs_sign_in", response.text
+    store = oauth_app.state.mcp_oauth.store
+    assert await store.get_tokens(target_of(toolset, Person("u-user", "user")).key, toolset_id="kb", user_id="u-user") is None
+    assert await store.get_tokens("kb") is not None, "the user's disconnect leaves every other sign-in alone"
 
 
 async def test_disconnect_deletes_the_tokens(raw_client, oauth_app, mock_oauth_mcp) -> None:
@@ -293,9 +308,9 @@ async def test_disconnect_deletes_the_tokens(raw_client, oauth_app, mock_oauth_m
     toolset = make_toolset(mock_oauth_mcp.mcp_url, oauth={})
     await _store(oauth_app, toolset)
     admin = Person("u-admin", "admin")
+    await _login_as(raw_client, oauth_app, "admin")
     await connect(oauth_app.state.mcp_oauth, toolset, person=admin)
     await connect(oauth_app.state.mcp_oauth, toolset)
-    await _login_as(raw_client, oauth_app, "admin")
     response = await raw_client.post("/v1/toolsets/kb/oauth/disconnect")
     assert response.status_code == 200, response.text
     assert response.json()["state"] == "needs_sign_in"
@@ -348,11 +363,11 @@ async def test_a_rest_listing_sends_the_signed_in_users_token(raw_client, oauth_
     await _store(oauth_app, ts)
     service = oauth_app.state.mcp_oauth
     user, admin = Person("u-user", "user"), Person("u-admin", "admin")
+    await _login_as(raw_client, oauth_app, "user")
     await connect(service, ts, person=admin)
     await connect(service, ts, person=user)
     row = await service.store.get_tokens(target_of(ts, user).key, toolset_id="kb", user_id="u-user")
     mock_oauth_mcp.state.seen_tokens.clear()
-    await _login_as(raw_client, oauth_app, "user")
 
     listed = await raw_client.get("/v1/toolsets/kb/tools")
     catalogue = await raw_client.get("/v1/tools")

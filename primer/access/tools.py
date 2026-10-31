@@ -50,4 +50,10 @@ async def toolset_use(sp: "StorageProvider", person: Person, toolset_ids: Iterab
     return out
 
 
-__all__ = ["ToolUse", "toolset_use"]
+async def may_use_toolset(sp: "StorageProvider", person: Person, toolset_id: str) -> bool:
+    """Whether ``person`` may use at least one tool of the toolset (every tool, or a public one): who may sign in to it and read its status."""
+    use = (await toolset_use(sp, person, [toolset_id]))[toolset_id]
+    return use is None or bool(use)
+
+
+__all__ = ["ToolUse", "may_use_toolset", "toolset_use"]

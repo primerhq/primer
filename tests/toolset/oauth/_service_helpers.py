@@ -15,6 +15,7 @@ import httpx
 from primer.access.person import Person
 from primer.model.mcp_oauth import McpOAuthTokenSet
 from primer.model.provider import Toolset
+from primer.model.user import User
 from primer.toolset.oauth.service import OAuthTarget, ToolsetAuthStatus, ToolsetOAuthService, config_fingerprint
 from primer.toolset.oauth.store import McpOAuthStore
 
@@ -113,7 +114,12 @@ def authorize(url: str) -> dict[str, str]:
 async def connect(
     svc: ToolsetOAuthService, toolset: Toolset, *, redirect_uri: str = REDIRECT, person: Person = SYSTEM, started_by: str | None = None,
 ) -> ToolsetAuthStatus:
-    """A whole browser sign-in of ``person``: start, the provider's consent, the callback (from the browser that started it)."""
+    """A whole browser sign-in of ``person``: start, the provider's consent, the callback (from the browser that started it). The callback writes
+    a person's row only for a user who exists, is enabled and full (access-control P5 Decision 5), so ``person``'s user is stored when missing."""
+    if person.user_id is not None:
+        users = svc._sp.get_storage(User)  # noqa: SLF001
+        if await users.get(person.user_id) is None:
+            await users.create(User(id=person.user_id, username=person.user_id, created_at=NOW, role="admin" if person.is_admin else "user"))
     started_by = started_by or person.user_id or "admin"
     start = await svc.start_sign_in(target_of(toolset, person), redirect_uri=redirect_uri, started_by=started_by, browser_binding=BINDING)
     back = authorize(start.authorize_url)

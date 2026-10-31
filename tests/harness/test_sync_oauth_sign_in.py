@@ -1,9 +1,10 @@
-"""A harness sync that changes an OAuth toolset's URL or OAuth settings forgets its shared sign-in (ticket 01a16a36, L4 of the #852 review).
+"""A harness sync that changes an OAuth toolset's URL or OAuth settings forgets its sign-ins (ticket 01a16a36, L4 of the #852 review).
 
 The REST update and the system ``update_toolset`` tool forget the sign-in when ``oauth_settings_changed`` says the URL or the OAuth block changed
 (the #852 rule), so the old tokens never follow the toolset to another server or another sign-in setup. A harness sync writes toolset rows straight
 to storage and kept the tokens, the registered client and the pending sign-ins. It applies the same rule through the same predicate now, and
-forgets before the row is written, as the other two do. Run on real SQLite storage.
+forgets before the row is written, as the other two do. A browser sign-in is a person's own (access-control P5), so a toolset holds the shared
+row and a person's row here, and the rule forgets every one of them. Run on real SQLite storage.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from primer.model.mcp_oauth import McpOAuthClient, McpOAuthPendingSignIn, McpOAu
 from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig, Toolset
 from primer.storage.sqlite import SqliteStorageProvider
-from primer.toolset.oauth.store import McpOAuthStore, pending_key
+from primer.toolset.oauth.store import McpOAuthStore, pending_key, token_key
 
 pytestmark = pytest.mark.asyncio
 
@@ -67,12 +68,13 @@ def _harness() -> Harness:
 
 
 async def _sign_in(store: McpOAuthStore, toolset_id: str) -> None:
-    """Store a whole sign-in for ``toolset_id``: its tokens, a registered client and a pending browser sign-in."""
-    await store.replace_tokens(McpOAuthTokenSet(
-        id=toolset_id, toolset_id=toolset_id, grant="authorization_code", access_token_enc=store.seal("tok"), refresh_token_enc=store.seal("ref"),
-        token_endpoint="https://as.example/token", client_id="client-1", client_source="registered", config_fingerprint="f" * 64,
-        connected_at=NOW, connected_by="admin",
-    ))
+    """Store whole sign-ins for ``toolset_id``: the shared tokens and a person's, a registered client and a pending browser sign-in."""
+    for key, user_id in ((toolset_id, None), (token_key(toolset_id, "u-ada"), "u-ada")):
+        await store.replace_tokens(McpOAuthTokenSet(
+            id=key, toolset_id=toolset_id, user_id=user_id, grant="authorization_code", access_token_enc=store.seal("tok"),
+            refresh_token_enc=store.seal("ref"), token_endpoint="https://as.example/token", client_id="client-1", client_source="registered",
+            config_fingerprint="f" * 64, connected_at=NOW, connected_by=user_id or "u-admin",
+        ))
     await store.put_client(McpOAuthClient(
         id=toolset_id, issuer="https://as.example", redirect_uri="https://p.example/cb", client_id="client-1", registered_at=NOW,
     ))
@@ -83,10 +85,11 @@ async def _sign_in(store: McpOAuthStore, toolset_id: str) -> None:
     ))
 
 
-async def _signed_in(sp, store: McpOAuthStore, toolset_id: str) -> tuple[bool, bool, bool]:
-    """Whether the toolset still has (tokens, a registered client, its pending sign-in)."""
+async def _signed_in(sp, store: McpOAuthStore, toolset_id: str) -> tuple[bool, bool, bool, bool]:
+    """Whether the toolset still has (the shared tokens, a person's tokens, a registered client, its pending sign-in)."""
     pending = await sp.get_storage(McpOAuthPendingSignIn).get(pending_key(f"state-{toolset_id}"))
-    return (await store.get_tokens(toolset_id) is not None, await store.get_client(toolset_id) is not None, pending is not None)
+    person = await store.get_tokens(token_key(toolset_id, "u-ada"), toolset_id=toolset_id, user_id="u-ada")
+    return (await store.get_tokens(toolset_id) is not None, person is not None, await store.get_client(toolset_id) is not None, pending is not None)
 
 
 async def _installed(sp, entries: list[RenderedEntry]) -> McpOAuthStore:
@@ -126,8 +129,8 @@ async def test_a_sync_that_changes_the_url_or_the_oauth_settings_forgets_the_sig
 
     stored = await sp.get_storage(Toolset).get("acme__ts")
     assert stored.config.config.url == changed["config"]["config"]["url"], "the sync wrote the change"
-    assert await _signed_in(sp, store, "acme__ts") == (False, False, False), "tokens, registered client and pending sign-ins all go"
-    assert await _signed_in(sp, store, "acme__other") == (True, True, True), "another toolset's sign-in is not touched"
+    assert await _signed_in(sp, store, "acme__ts") == (False, False, False, False), "every sign-in, registered client and pending sign-in goes"
+    assert await _signed_in(sp, store, "acme__other") == (True, True, True, True), "another toolset's sign-in is not touched"
 
 
 @pytest.mark.parametrize(
@@ -147,8 +150,8 @@ async def test_a_sync_that_changes_neither_the_url_nor_the_oauth_settings_keeps_
     assert await _sync(sp, [_entry(changed, "r-new"), other]) is None
 
     assert check(await sp.get_storage(Toolset).get("acme__ts")), "the sync wrote the change"
-    assert await _signed_in(sp, store, "acme__ts") == (True, True, True)
-    assert await _signed_in(sp, store, "acme__other") == (True, True, True)
+    assert await _signed_in(sp, store, "acme__ts") == (True, True, True, True)
+    assert await _signed_in(sp, store, "acme__other") == (True, True, True, True)
 
 
 async def test_a_sync_that_gives_a_toolset_its_first_oauth_block_has_nothing_to_forget_and_keeps_others(sp):
@@ -157,7 +160,7 @@ async def test_a_sync_that_gives_a_toolset_its_first_oauth_block_has_nothing_to_
 
     assert await _sync(sp, [_entry(_payload(), "r-new")]) is None
 
-    assert await _signed_in(sp, store, "acme__ts") == (True, True, True)
+    assert await _signed_in(sp, store, "acme__ts") == (True, True, True, True)
 
 
 async def test_a_forget_that_fails_leaves_the_toolset_unchanged_and_the_sync_failed(sp, monkeypatch):
@@ -175,4 +178,4 @@ async def test_a_forget_that_fails_leaves_the_toolset_unchanged_and_the_sync_fai
     assert error is not None and json.loads(error)["code"] == "partial_apply_failure"
     assert (await sp.get_storage(Toolset).get("acme__ts")).config.config.url == _URL
     assert (await sp.get_storage(HarnessRendering).get("acme-id")).bundle_hash == "old", "the snapshot does not advance"
-    assert await _signed_in(sp, store, "acme__ts") == (True, True, True)
+    assert await _signed_in(sp, store, "acme__ts") == (True, True, True, True)
