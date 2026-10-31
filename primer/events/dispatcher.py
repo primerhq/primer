@@ -25,7 +25,6 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from primer.access.person import person_from_ref
 from primer.access.workspaces import workspace_level
 from primer.bus.scheduler_tasks import _BackgroundTask
 from primer.events.filters import matches_async
@@ -378,9 +377,11 @@ class EventDispatcher(_BackgroundTask):
         workspace names no readable workspace, so it never wakes a non-admin park. A storage
         hiccup raises, and the caller's failure path holds the cursor and retries (fail closed).
         """
+        from primer.trigger.reach import current_person
         from primer.worker.executor_builders import session_run_principal
 
-        person = person_from_ref(session_run_principal(row))
+        # The role held NOW, capped by the recorded one: a demoted admin's park does not keep reading every workspace.
+        person = await current_person(session_run_principal(row), self._sp)
         if person.is_admin:
             return False
         if event.workspace_id is None:
