@@ -16,6 +16,8 @@ from jinja2.exceptions import (
     UndefinedError,
 )
 
+from primer.harness.paths import symlink_reason
+
 
 _KINDS = ("agent", "graph", "collection", "document", "toolset")
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -101,10 +103,20 @@ async def render_bundle(
     harness_ctx: dict[str, Any],
 ) -> list[RenderedFile]:
     """Walk templates/ under (checkout_dir/subpath) and render each YAML."""
-    base = Path(checkout_dir)
+    checkout_root = Path(checkout_dir)
+    base = checkout_root
     if subpath:
         base = base / subpath
+    # Everything read below is the repository author's: none of it may be a symlink or leave the checkout (a link to /proc/self/environ would
+    # otherwise become a document body).
     templates_dir = base / "templates"
+    for entry in (base, templates_dir):
+        reason = symlink_reason(checkout_root, entry)
+        if reason is not None:
+            raise HarnessTemplateError(
+                "template_yaml_invalid",
+                f"{entry.relative_to(checkout_root).as_posix() or '.'}: {reason}",
+            )
     if not templates_dir.is_dir():
         raise HarnessTemplateError(
             "harness_yaml_invalid",
@@ -114,6 +126,9 @@ async def render_bundle(
     out: list[RenderedFile] = []
     for path in sorted(templates_dir.rglob("*.yaml")):
         rel = str(path.relative_to(templates_dir))
+        reason = symlink_reason(checkout_root, path)
+        if reason is not None:
+            raise HarnessTemplateError("template_yaml_invalid", f"templates/{rel}: {reason}", template=rel)
         source_bytes = path.read_bytes()
         try:
             source_text = source_bytes.decode("utf-8")
@@ -207,6 +222,13 @@ async def render_bundle(
                         template=rel,
                     )
                 target = base / norm
+                reason = symlink_reason(checkout_root, target)
+                if reason is not None:
+                    raise HarnessTemplateError(
+                        "template_yaml_invalid",
+                        f"{rel}: content_path {norm!r} {reason}",
+                        template=rel,
+                    )
                 if not target.is_file():
                     raise HarnessTemplateError(
                         "template_yaml_invalid",
