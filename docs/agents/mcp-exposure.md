@@ -55,12 +55,15 @@ Three filters run at every `tools/call`:
 - **Allowlist.** The scoped id must appear in `allowed_tools`. Not in
   list → `tool_not_allowed`, 403.
 - **Exposability.** The tool's provider is checked via
-  `is_exposable(tool, provider)`. Today this rejects two classes:
-  yielding tools (MCP v1 has no pause/resume primitive, so a tool that
-  parks the session forever would deadlock the client), and workspace
-  tools that need a live `AgentSession` (the MCP transport has no
-  session context to bind them to). Future safety classes go through
-  the same gate.
+  `is_exposable(tool, provider)`. It rejects every tool of a toolset
+  that is not one of primer's reserved built-in toolsets
+  (`not_system_toolset`): a toolset someone registered, an MCP one
+  included, is never reachable over `/v1/mcp`, whatever the allowlist
+  says. It also rejects yielding tools (MCP v1 has no pause/resume
+  primitive, so a tool that parks the session forever would deadlock
+  the client) and workspace tools that need a live `AgentSession`
+  (the MCP transport has no session context to bind them to). Future
+  safety classes go through the same gate.
 - **Auth scope.** The middleware that gates `/v1/mcp` requires the
   `mcp` scope. Bearer tokens minted without `mcp` get 401 on the
   handshake; cookie sessions bypass scope checks (operators trusted).
@@ -70,6 +73,19 @@ three. An agent calling `tools/list` and getting an empty array means
 either MCP isn't enabled, the allowlist is empty, or the auth
 principal's scope set excludes `mcp`. None of these are recoverable
 client-side; the operator has to act.
+
+### Who the client acts as
+
+An MCP client acts as the person behind its credentials: the signed-in
+user for a cookie session, the token's owner for a bearer token (never
+the token itself). Because only built-in tools are exposed, an MCP
+client never sees or calls a tool of someone else's private toolset,
+and never makes primer send another person's MCP OAuth token. The
+built-in tools check the person's access themselves, exactly as they
+do for an agent run: a row the person cannot read answers like a
+missing one. Every write a call makes is recorded in the event log as
+that person (`user:<id>`), and so is the `mcp.tool_called` event of
+the call.
 
 Tool approval policies are **incompatible with MCP exposure** by
 design. Approval pauses the call mid-flight waiting for an operator

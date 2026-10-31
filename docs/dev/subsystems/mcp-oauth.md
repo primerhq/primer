@@ -23,16 +23,21 @@ and worker process. Its public status, read for one person (the shared row for
 client credentials), has four values:
 
 - `connected`: a usable token exists for that person (or the shared one).
-- `needs_sign_in`: no usable token exists and that person (an operator, for
-  client credentials) must connect again.
+- `needs_sign_in`: no usable token exists and that person (for client
+  credentials, someone with full access on the toolset) must connect again.
 - `error`: the last OAuth operation failed and the reason is safe to show.
 - `not_applicable`: the toolset does not use OAuth.
 
 The person of a call is `person_for_tool(ctx)`: the run's `initiated_by` when the
-call carries a `ToolContext`, else the acting person of the request or listing. A
-call that acts for nobody (an unattributed run, a graph ToolCall node's
-unattributed fallback, a background listing) gets no browser token: it answers
-sign-in required and never falls back to another row. The `principal` string
+call carries a `ToolContext`, else the acting person
+(`primer.access.acting.acting_person`). The auth middleware sets the acting
+person for every authenticated request (REST, WebSocket, MCP; a bearer token's
+owner); the tool manager sets it to the run's own person around every listing and
+call of a run, whatever its task inherited; `dispatch_inner_tool` sets it from its
+context (an approved re-run); and the MCP task bridge polls a parked task call as
+that session's turn person, else its initiator. A call that acts for nobody (an
+unattributed run, a graph ToolCall node's unattributed fallback) gets no browser
+token: it answers sign-in required and never falls back to another row. The `principal` string
 passed through a toolset provider remains dispatch context only and never selects
 a token.
 
@@ -60,19 +65,24 @@ toolset never wait on or write each other's row.
 - `primer/toolset/oauth/store.py` encrypts and persists OAuth state.
 - `primer/toolset/oauth/egress.py` routes the OAuth client's requests: the MCP
   host directly, every other host through the private-destination guard.
-- `primer/toolset/oauth/service.py` owns the shared sign-in lifecycle and status:
+- `primer/toolset/oauth/service.py` owns the sign-in lifecycle and status:
   `ToolsetOAuthService`, the public `ToolsetAuthStatus` and `SignInStart`
   models, and the refresh lease.
 - `primer/toolset/oauth/bearer.py` attaches bearer tokens and retries once after a
   401.
 - `primer/toolset/mcp.py` opens the upstream MCP transport only after the OAuth
   preflight succeeds.
-- `primer/api/routers/mcp_oauth.py` exposes the sign-in routes.
+- `primer/api/routers/mcp_oauth.py` exposes the sign-in routes; who may act on
+  them is `primer.access.tools.may_use_toolset` (browser) or FULL on the toolset
+  (client credentials).
+- `ui/components/toolsets/mcp-auth.jsx` is the console panel (`TS_McpAuthPanel`)
+  and the catalogue card's sign-in pill (`TS_cardAuthStatus`).
 - `primer/model/mcp_oauth.py` defines the stored rows and the typed
   sign-in-required error.
 - `primer/storage/migrations/m017_orphan_mcp_oauth_rows.py` removes the sign-ins
   that toolsets deleted before #852 left behind.
-- `primer/storage/migrations/m027_mcp_oauth_per_user.py` turns the shared browser
+- The per-user OAuth migration (currently
+  `primer/storage/migrations/m027_mcp_oauth_per_user.py`) turns the shared browser
   token sets of an upgraded install into per-person ones.
 
 ## 5. Data model
@@ -157,8 +167,9 @@ deletes nothing more. The keyless `forget_user_sign_ins(storage_provider, user_i
 removes one person's token rows and pending sign-ins on every toolset (the shared
 rows and registered clients stay), for removing a user.
 
-Migration 27 (`primer/storage/migrations/m027_mcp_oauth_per_user.py`) makes an
-upgraded install's sign-ins per person. A browser token set stored under the bare
+The per-user OAuth migration (`M027McpOAuthPerUser` in
+`primer/storage/migrations/m027_mcp_oauth_per_user.py` at the time of writing) makes
+an upgraded install's sign-ins per person. A browser token set stored under the bare
 toolset id moves, with its sealed tokens as stored, to the user its `connected_by`
 names (by username, else by id), else to the first admin (the oldest admin); with
 no users at all (the auth-disabled shape) it stays under the bare id. Not the
@@ -241,6 +252,21 @@ the run's person's status without credentials, and the missing-toolset answer to
 run whose person may not use the toolset. A direct MCP call that needs a sign-in maps to
 409 `/errors/mcp-sign-in-required`.
 
+`GET /v1/tools` carries, per toolset the caller may use a tool of, an `auth` entry
+with the caller's own status (`mode`, `state`, `reason`, `expires_at`, `per_user`).
+
+The console panel (`TS_McpAuthPanel`, mounted on the toolset overview, its Tools
+tab when a listing needs a sign-in, and the post-save result) reads the status
+route. A browser sign-in is labelled "Your sign-in" and its Connect, Reconnect and
+Disconnect work for whoever the route answered; the Disconnect confirm says "Your
+runs lose access to this toolset until you connect again." A client-credentials
+sign-in is labelled "Shared sign-in"; the panel reads `your_level` from
+`GET /v1/toolsets/{id}/access` and enables its buttons for `full` or `owner`, else
+says "Only people with full access can connect this toolset." The catalogue card
+pill and the shared tool picker read the `auth` entry of `/v1/tools`: a browser
+sign-in the caller has not made reads "Needs your sign-in". The phone shows a
+toolset as a read-only fact sheet and never mounts the panel.
+
 ## 9. Internal contracts
 
 The provider checks for a usable token before opening the upstream transport. If an
@@ -310,8 +336,15 @@ refresh races, bearer retry, provider preflight, and retired-library imports;
 token a call or listing sends, no person no token, the shared rows, per-row lease
 and lock, forget rules), and `tests/storage/test_m027_mcp_oauth_per_user.py` the
 migration.
-`tests/api/test_mcp_oauth_routes.py` covers route tiers, browser and JSON callbacks,
-state failures, status, and disconnect. The mock server in
+`tests/api/test_mcp_oauth_routes.py` covers browser and JSON callbacks, state
+failures, status, and disconnect; `tests/api/test_mcp_oauth_per_user_routes.py` who
+may start, read and end a sign-in (a grantee, a public-tool user, a stranger's 404,
+the restricted tier, full access for client credentials) and the callback re-check
+(access lost, a disabled, demoted or deleted user, another person signed in).
+`tests/toolset/test_toolset_auth_status_per_user.py` pins the status tool to the
+run's person, `tests/access/test_acting_person.py` and
+`tests/bus/test_mcp_task_bridge_person.py` whose token a request, a run's listing
+and the task bridge send, and `tests/ui/test_p5_oauth_ui.py` the console panel. The mock server in
 `tests/_support/mock_oauth_mcp_fixtures.py` drives the real HTTP flow without an
 external identity provider. The edit rules and the status system tool have focused
 tests under `tests/api/` and `tests/toolset/`.
@@ -332,6 +365,14 @@ tests under `tests/api/` and `tests/toolset/`.
   let anyone who obtained an admin's authorize URL attach their own provider
   account as the shared sign-in (audit G4-01). The `primer_mcp_oauth` cookie now
   binds the callback to the browser that started the sign-in.
+- **The callback re-checks the person (Decision 5 of the access-control Phase 5
+  plan).** A sign-in can outlive the access it was started with by up to ten
+  minutes, so the callback writes nothing for a person who lost access, was
+  disabled, demoted or deleted meanwhile, or when someone else is signed in on the
+  browser that brings it back.
+- **No route ends every person's sign-in.** Each person ends their own; changing
+  the toolset's OAuth settings or deleting it already forgets them all, which is
+  the incident-response path (lead answer to the Phase 5 plan's Question 2).
 - **Refresh is leased and fenced.** A process-local lock cannot protect several
   pods, so storage coordinates one refresher and compare-and-set keeps a late writer
   from overwriting a newer row.
