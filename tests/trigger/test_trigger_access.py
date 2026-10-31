@@ -220,6 +220,6 @@ async def test_a_revoke_racing_a_fire_row_write_survives(sp):
 
 
 async def test_an_ownerless_subscription_never_fires(sp):
-    """Migration 24 gives every legacy subscription its trigger's owner; one still without an owner is refused (fail closed)."""
+    """Migration 26 gives every legacy subscription its trigger's owner; one still without an owner is refused (fail closed)."""
     sub = (await sp.get_storage(Subscription).get(SID)).model_copy(update={"owner": None})
     assert await refuse_fire_out_of_reach(sub, sp) is not None

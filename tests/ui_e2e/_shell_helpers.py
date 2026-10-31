@@ -251,7 +251,18 @@ def run_verb(page: Page, label: str, *, row_key: str | None = None) -> None:
     open_palette(page)
     page.get_by_test_id("nv-palette-input").fill(label)
     if row_key is not None:
-        page.locator(f'button.nv-palette-row[data-row-key="{row_key}"]').click()
+        row = page.locator(f'button.nv-palette-row[data-row-key="{row_key}"]')
+        # A verb's availability is read when the palette opens; right after a reload the session context can land a moment
+        # later, so a palette opened first never lists the row. Reopen (bounded) until it does; the verb must still appear.
+        for _ in range(2):
+            try:
+                expect(row).to_be_visible(timeout=8_000)
+                break
+            except AssertionError:
+                page.keyboard.press("Escape")
+                open_palette(page)
+                page.get_by_test_id("nv-palette-input").fill(label)
+        row.click()
     else:
         page.get_by_test_id("nv-palette-row").first.click()
 

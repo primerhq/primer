@@ -190,9 +190,18 @@ class TestSessionInterruptToolJourney:
             scheduler=None, claim_engine=None, event_bus=app.state.event_bus,
         )
 
+        from primer.model.principal import PrincipalRef
+        from primer.model.yield_ import ToolContext
+
+        # A session-less admin call (access control P2: an identity-less tool call reads no workspace); the Stop is the subject.
+        admin = ToolContext(
+            tool_call_id="tc", session_id=None, workspace_id=None,
+            initiated_by=PrincipalRef(type="user", id="admin-1", display="admin", role="admin", source="local", user_id="admin-1"),
+        )
+
         async def stop(sid: str):
             return await toolset.call(
-                tool_name="interrupt_workspace_session", arguments={"workspace_id": WID, "session_id": sid},
+                tool_name="interrupt_workspace_session", arguments={"workspace_id": WID, "session_id": sid}, ctx=admin,
             )
 
         return stop

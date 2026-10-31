@@ -1,4 +1,4 @@
-"""Migration 25: harnesses get an owner; what they installed copies their access (access-control Phase 3, Task 6).
+"""Migration 27: harnesses get an owner; what they installed copies their access (access-control Phase 3, Task 6).
 
 Before access control a harness recorded no owner. A harness whose ``access`` block is absent or empty (no owners, no grants, not
 public) is owned by the first admin (the enabled admin ``User`` with the oldest ``created_at``), private; with no such admin it is left
@@ -82,10 +82,10 @@ async def _read_all(store) -> list[Any]:
         offset += _PAGE
 
 
-class M025HarnessOwnership:
+class M027HarnessOwnership:
     """Own every unset harness by the first admin; copy each harness's access onto the rows it installed."""
 
-    version = 25
+    version = 27
     description = "harnesses get an owner; installed rows copy their harness's access"
 
     async def apply(self, sp: StorageProvider) -> None:
@@ -117,4 +117,4 @@ class M025HarnessOwnership:
             logger.info("harness ownership applied", extra={"harnesses": owned, "installed_rows": copied, "owner": first_admin})
 
 
-__all__ = ["M025HarnessOwnership"]
+__all__ = ["M027HarnessOwnership"]

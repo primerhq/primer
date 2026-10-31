@@ -4,9 +4,9 @@ The TOOL rows (access-control P2 T6, where the reach and rank rules lived for th
 needs on the workspace it names (full for the control tools, read for the reads, owner for the delete): a workspace the person holds no level on
 answers exactly as one that does not exist (``not-found``), a level below what the tool needs answers ``forbidden``, and the session's recorded
 creator is no longer consulted. A call with no calling session (the MCP endpoint) is checked as the token's user; a token with no user behind it
-names no person and answers not-found. The REST rows (cancel, resume, pause, interrupt, DELETE, the binding switch, the canvas routes, the
-workspace delete and its rank scan) keep the rank rule (``primer.authz.may_drive``): they stop or start a run at the creator's rank, a refused call
-answers 403 ``forbidden_rank`` and the drive rows are pinned by ``tests/api/test_session_drive_rule_table.py``; these are the rest of
+names no person and answers not-found. The REST rows of cancel, resume, pause and interrupt (Stop), the DELETE of a session, the binding switch and the canvas routes follow the
+workspace access the session inherits instead (P2 Task 3): the request's actor at or above full on the target's workspace acts, a stranger answers
+the session's missing-row 404 and a holder of a lower level the 403 that names the level. The drive rows are pinned by ``tests/api/test_session_drive_rule_table.py``; these are the rest of
 ``docs/dev/subsystems/sessions.md`` section 9's table.
 
 The tool rows go through :func:`primer.agent.inner_dispatch.dispatch_inner_tool`, as ``system__call_tool`` reaches a tool (with the request's actor
@@ -34,6 +34,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from httpx import ASGITransport
+from pydantic import SecretStr
 
 from primer.agent.inner_dispatch import dispatch_inner_tool
 from primer.agent.tool_manager import ToolExecutionManager, invoke_one
@@ -91,7 +92,7 @@ from primer.worker.engine_handlers import run_engine_trigger
 from primer.worker.pool import WorkerPool
 from primer.workspace.local.state import LocalStateRepo
 from tests.api.test_session_steer_restart_rank import WHO as PERSONS
-from tests.api.test_session_steer_restart_rank import _Spy, _token_client, _user_id
+from tests.api.test_session_steer_restart_rank import _Spy, _access_for, _token_client, _user_id
 from tests.session._peer_fakes import FakeBus, FakeEngine, FakeRegistry, FakeScheduler, FakeSlot, FakeWorkspace, World, seed_session
 from tests.conftest import _FakeStorageProvider
 
@@ -109,34 +110,36 @@ P = "from prime"
 #: path -> (target status, what each scenario answers). ``outranked``: the target was started by an admin (the tools no longer rank the creator;
 #: the REST rows still do); ``same rank``: by a user; ``out of reach``: the target is in another workspace than the calling session's, one the
 #: caller's person holds no level on; ``from prime``: the calling session is in the default workspace, the person holds full on the target. A
-#: tool with no calling session acts as the token's user, which here has no user behind it: not-found everywhere.
+#: tool with no calling session acts as the token's user, which here has no user behind it: not-found everywhere. For the REST rows the scenarios read as
+#: the target's workspace access (P2 Task 3): ``outranked`` a workspace the caller holds no level on (the session's missing-row 404), ``same rank`` one
+#: the caller owns, ``out of reach`` one the caller holds read on only (the 403 that names the level), ``from prime`` one the caller owns.
 TABLE: dict[str, tuple[SessionStatus, dict[str, str]]] = {
     "cancel tool, in a session":        (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
     "cancel tool, no session":          (SessionStatus.WAITING, {"outranked": N, "same rank": N, "out of reach": N, P: N}),
-    "REST cancel":                      (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST cancel":                      (SessionStatus.WAITING, {"outranked": N, "same rank": D, "out of reach": F, P: D}),
     "resume tool, in a session":        (SessionStatus.PAUSED, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
     "resume tool, no session":          (SessionStatus.PAUSED, {"outranked": N, "same rank": N, "out of reach": N, P: N}),
-    "REST resume":                      (SessionStatus.PAUSED, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST resume":                      (SessionStatus.PAUSED, {"outranked": N, "same rank": D, "out of reach": F, P: D}),
     "pause tool, in a session":         (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
     "pause tool, no session":           (SessionStatus.WAITING, {"outranked": N, "same rank": N, "out of reach": N, P: N}),
-    "REST pause":                       (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST pause":                       (SessionStatus.WAITING, {"outranked": N, "same rank": D, "out of reach": F, P: D}),
     # a RUNNING target (not parked), so a delivered Stop is recorded (``interrupt_requested``) and a refused one is seen to record nothing
     "interrupt tool, in a session":     (SessionStatus.RUNNING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
     "interrupt tool, no session":       (SessionStatus.RUNNING, {"outranked": N, "same rank": N, "out of reach": N, P: N}),
-    "REST interrupt":                   (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST interrupt":                   (SessionStatus.RUNNING, {"outranked": N, "same rank": D, "out of reach": F, P: D}),
     # The binding switch (G3-01 / ticket 01a16a35-a788): a switch re-points what the session's next turn runs, so the caller drives the
     # creator's automation like a steer: the REST steer's rank rule. The URL's workspace is the scope this route reads in (a person's door,
     # like the REST steer): a session in another workspace, and one that is not there at all, both answer as an unknown id.
-    "REST binding switch":              (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST binding switch":              (SessionStatus.WAITING, {"outranked": N, "same rank": D, "out of reach": F, P: D}),
     # The session canvas (pivot P5 S6, the lead's ruling 1): a click drives the session like a steer, and an operator's batch or clear puts
     # input its agent reads into it, so all three follow the REST steer's rank rule; people keep their reach over every workspace.
-    "REST canvas click":                (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
-    "REST canvas draw":                 (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
-    "REST canvas clear":                (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST canvas click":                (SessionStatus.WAITING, {"outranked": N, "same rank": D, "out of reach": F, P: D}),
+    "REST canvas draw":                 (SessionStatus.WAITING, {"outranked": N, "same rank": D, "out of reach": F, P: D}),
+    "REST canvas clear":                (SessionStatus.WAITING, {"outranked": N, "same rank": D, "out of reach": F, P: D}),
     # a DELETE ends a waiting session on the spot, and with ``?force=true`` flags a RUNNING one cancelled and publishes the cancel, before the row
     # goes: the cancel's rule (ticket 01a16d9f); a delivered delete is seen as the row gone, a refused one as the row untouched
-    "REST delete":                      (SessionStatus.WAITING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
-    "REST delete, forced":              (SessionStatus.RUNNING, {"outranked": F, "same rank": D, "out of reach": D, P: D}),
+    "REST delete":                      (SessionStatus.WAITING, {"outranked": N, "same rank": D, "out of reach": F, P: D}),
+    "REST delete, forced":              (SessionStatus.RUNNING, {"outranked": N, "same rank": D, "out of reach": F, P: D}),
     "get session tool, in a session":   (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
     "read messages tool, in a session": (SessionStatus.WAITING, {"outranked": D, "same rank": D, "out of reach": N, P: D}),
 }
@@ -145,6 +148,14 @@ TOOLS = {
     "cancel": "cancel_workspace_session", "resume": "resume_workspace_session", "pause": "pause_workspace_session",
     "interrupt": "interrupt_workspace_session", "get session": "get_workspace_session", "read messages": "read_workspace_session_messages",
 }
+
+
+def _ws_row(wid: str, access: Access) -> Workspace:
+    """The workspace row a REST row's target session lives in (the session inherits its access, P2 Task 3)."""
+    return Workspace(
+        id=wid, template_id="tpl-1", provider_id="local-1", created_at=NOW,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("stub-token")), access=access,
+    )
 
 
 class _Slot(FakeSlot):
@@ -191,6 +202,8 @@ async def _seed(world: World, path: str, scenario: str) -> str:
     # holds full on the target, and to u-ada otherwise, where the person holds no level and the target answers as one that does not exist.
     ws2_owner = "u-user" if scenario == P else "u-ada"
     for wid, owner in (("ws-1", "u-user"), ("ws-2", ws2_owner)):
+        if await world.sp.get_storage(Workspace).get(wid) is not None:
+            continue  # a REST row seeded the target's workspace with the access it tests
         await world.sp.get_storage(Workspace).create(Workspace(
             id=wid, name=wid, template_id="tpl", provider_id="local-1", created_at=NOW, phase="running",
             runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
@@ -325,11 +338,19 @@ async def _check(env: Env, path: str, scenario: str) -> None:
     assert env.world.scheduler.enqueued == [], f"{path} armed the target it refused ({scenario})"
     assert await _canvas_of(env) == canvas_before, f"{path} wrote the canvas it refused ({scenario})"
     if outcome == N:
+        if path.startswith("REST"):
+            # The access gate answers the session's missing-row text: an out-of-access target is indistinguishable from a missing id (spec 9).
+            assert body.get("detail") == "Session 'ses-t' does not exist", (body,)
+            return
         # The out-of-access answer is exactly what an unknown workspace answers (asked with no calling session, past the access rule): the same
         # ``Workspace '<id>' does not exist`` words, the id masked.
         _, unknown = await _tool(env, path, workspace="ws-nope", session="ses-nobody", in_session=False)
         seen = json.dumps(body).replace(env.target_workspace, "<ws>").replace("ses-t", "<id>")
         assert seen == json.dumps(unknown).replace("ws-nope", "<ws>").replace("ses-nobody", "<id>"), (body, unknown)
+    if outcome == F:
+        if path.startswith("REST"):
+            # The reader's refusal names the level it needs (the 403 side of spec 9); the tool rows' wording is asserted by their own tests.
+            assert body.get("detail") == "Session 'ses-t' needs full access", (body,)
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS)
@@ -347,6 +368,13 @@ async def test_the_rest_routes_obey_the_rule_table(app, client, fake_storage_pro
     app.state.workspace_registry.get_workspace = world.registry.get_workspace  # type: ignore[method-assign]
     r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
     assert r.status_code == 201, r.text
+    carol_id = await _user_id(app, "carol")
+    # The REST rows are judged by the workspace access the session inherits (P2 Task 3): the target's workspace row carries it.
+    await fake_storage_provider.get_storage(Workspace).create(_ws_row(
+        "ws-2" if scenario in ("out of reach", P) else "ws-1",
+        _access_for({"outranked": "admin", "same rank": "carol", "out of reach": "carol read", P: "carol"}[scenario], carol_id,
+                    await _user_id(app, "testuser")),
+    ))
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
         assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
         env = Env(world=world, rest=carol)
@@ -431,21 +459,19 @@ CONTROLS: dict[str, tuple[SessionStatus, Callable[[WorkspaceSession], bool]]] = 
 
 @pytest.mark.parametrize("who", list(PERSONS))
 @pytest.mark.parametrize("verb", list(CONTROLS))
-async def test_a_persons_pause_or_stop_over_rest_reaches_a_session_only_at_or_below_their_rank(app, client, fake_storage_provider, verb, who):
-    started_by, asker, accepted = PERSONS[who]
+async def test_a_persons_pause_or_stop_over_rest_follows_the_workspace_access(app, client, fake_storage_provider, verb, who):
+    access_spec, asker, accepted = PERSONS[who]
     r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
     assert r.status_code == 201, r.text
     carol_id = await _user_id(app, "carol")
-    creator = {
-        "admin": ADMIN,
-        "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
-        "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
-    }[started_by]
+    await fake_storage_provider.get_storage(Workspace).create(
+        _ws_row("ws-r", _access_for(access_spec, carol_id, await _user_id(app, "testuser"))),
+    )
     status, moved = CONTROLS[verb]
     sessions = fake_storage_provider.get_storage(WorkspaceSession)
     await sessions.create(WorkspaceSession(
         id="ses-p", workspace_id="ws-r", binding=AgentSessionBinding(agent_id="operator"), status=status, turn_no=1, created_at=NOW,
-        initiated_by=creator,
+        initiated_by=USER,
     ))
     before = (await sessions.get("ses-p")).model_dump(mode="json")
     spy = _Spy(app.state.event_bus)
@@ -462,8 +488,12 @@ async def test_a_persons_pause_or_stop_over_rest_reaches_a_session_only_at_or_be
         r = await client.post(route, json={})
 
     if not accepted:
-        assert r.status_code == 403, f"{who} could {verb}: {r.text}"
-        assert (r.json()["detail"], r.json()["extensions"]["error"]) == (OUTRANKED_MESSAGE, "forbidden_rank")
+        if access_spec == "carol read":
+            assert r.status_code == 403, f"{who} could {verb}: {r.text}"
+            assert r.json()["detail"] == "Session 'ses-p' needs full access"
+        else:
+            assert r.status_code == 404, f"{who} could {verb}: {r.text}"
+            assert r.json()["detail"] == "Session 'ses-p' does not exist"
         assert (await sessions.get("ses-p")).model_dump(mode="json") == before, f"a refused {verb} wrote to the session"
         assert spy.keys == [], f"a refused {verb} reached the event bus"
         return
@@ -471,12 +501,12 @@ async def test_a_persons_pause_or_stop_over_rest_reaches_a_session_only_at_or_be
     assert moved(await sessions.get("ses-p")), f"{who}'s {verb} did not land"
 
 
-# ---- DELETE follows the cancel's rank rule, person by person (ticket 01a16d9f) -----------------------------------------------------------------
+# ---- DELETE follows the cancel's access gate, person by person (ticket 01a16d9f) ---------------------------------------------------------------
 #
 # ``DELETE /v1/workspaces/{wid}/sessions/{sid}`` ends a CREATED, WAITING or PAUSED session on the spot and, with ``?force=true``, flags a RUNNING one
-# cancelled and publishes ``session:{sid}:cancel`` before the row goes: a cancel, so it follows the cancel's rule, decided before anything else as
-# the cancel route decides it (an ended session too). A refused delete answers 403 ``forbidden_rank`` and changes nothing: the row, the session's
-# pending external tool call (a delete resolves it as cancelled), the bus.
+# cancelled and publishes ``session:{sid}:cancel`` before the row goes: a cancel, so it follows the cancel's gate, decided before anything else as
+# the cancel route decides it (an ended session too). A refused delete answers the session's missing-row 404 (a stranger) or the 403 that names the
+# level (a reader) and changes nothing: the row, the session's pending external tool call (a delete resolves it as cancelled), the bus.
 
 #: the target -> (its status, the delete's query).
 DELETES: dict[str, tuple[SessionStatus, dict[str, str]]] = {
@@ -488,23 +518,21 @@ DELETES: dict[str, tuple[SessionStatus, dict[str, str]]] = {
 
 @pytest.mark.parametrize("who", list(PERSONS))
 @pytest.mark.parametrize("target", list(DELETES))
-async def test_a_persons_delete_over_rest_reaches_a_session_only_at_or_below_their_rank(app, client, fake_storage_provider, target, who):
+async def test_a_persons_delete_over_rest_follows_the_workspace_access(app, client, fake_storage_provider, target, who):
     from primer.model.external_tool import ExternalToolCall
 
-    started_by, asker, accepted = PERSONS[who]
+    access_spec, asker, accepted = PERSONS[who]
     r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
     assert r.status_code == 201, r.text
     carol_id = await _user_id(app, "carol")
-    creator = {
-        "admin": ADMIN,
-        "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
-        "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
-    }[started_by]
+    await fake_storage_provider.get_storage(Workspace).create(
+        _ws_row("ws-r", _access_for(access_spec, carol_id, await _user_id(app, "testuser"))),
+    )
     status, query = DELETES[target]
     sessions = fake_storage_provider.get_storage(WorkspaceSession)
     await sessions.create(WorkspaceSession(
         id="ses-p", workspace_id="ws-r", binding=AgentSessionBinding(agent_id="operator"), status=status, turn_no=1, created_at=NOW,
-        initiated_by=creator, ended_reason="completed" if status == SessionStatus.ENDED else None,
+        initiated_by=USER, ended_reason="completed" if status == SessionStatus.ENDED else None,
         ended_at=NOW if status == SessionStatus.ENDED else None,
     ))
     calls = fake_storage_provider.get_storage(ExternalToolCall)
@@ -524,8 +552,12 @@ async def test_a_persons_delete_over_rest_reaches_a_session_only_at_or_below_the
         r = await client.delete(route, params=query)
 
     if not accepted:
-        assert r.status_code == 403, f"{who} could delete {target}: {r.text}"
-        assert (r.json()["detail"], r.json()["extensions"]["error"]) == (OUTRANKED_MESSAGE, "forbidden_rank")
+        if access_spec == "carol read":
+            assert r.status_code == 403, f"{who} could delete {target}: {r.text}"
+            assert r.json()["detail"] == "Session 'ses-p' needs full access"
+        else:
+            assert r.status_code == 404, f"{who} could delete {target}: {r.text}"
+            assert r.json()["detail"] == "Session 'ses-p' does not exist"
         assert (await sessions.get("ses-p")).model_dump(mode="json") == before, "a refused delete wrote to the session"
         assert (await calls.get("etool-p")).status == "pending", "a refused delete resolved the session's external tool call"
         assert spy.keys == [], "a refused delete reached the event bus"
@@ -537,33 +569,31 @@ async def test_a_persons_delete_over_rest_reaches_a_session_only_at_or_below_the
         assert "session:ses-p:cancel" in spy.keys, "the forced delete of a running session published no cancel"
 
 
-# ---- The binding switch follows the steer rank rule, person by person (G3-01 / ticket 01a16a35-a788) ------------------------------------------------
+# ---- The binding switch follows the steer's access gate, person by person (G3-01 / ticket 01a16a35-a788) ------------------------------------------
 #
-# ``POST /v1/workspaces/{wid}/sessions/{sid}/binding`` re-points what the session's next turn runs, so the caller drives the creator's
-# automation the way a steer does: the request's actor at or above the session's creator (or the session's own account; an admin is never
-# outranked) acts, a lower rank gets the 403 ``forbidden_rank`` refusal with the fixed message and nothing moves. The route's door is a
-# person's (the auth middleware; it has no tool form), and the workspace the URL names is the scope it reads in: a session in another
-# workspace, and a session that is not there at all, both answer exactly like an unknown id. The in-session door (``system__switch_binding``)
+# ``POST /v1/workspaces/{wid}/sessions/{sid}/binding`` re-points what the session's next turn runs, so the caller drives the session's
+# automation the way a steer does: the request's actor at or above full on the session's workspace (an admin never refused) acts, a stranger
+# gets the session's missing-row 404 and a reader the 403 that names the level, and nothing moves. The route's door is a person's (the auth
+# middleware; it has no tool form), and the workspace the URL names is the scope it reads in once the gate admits the caller: a session in
+# another workspace, and a session that is not there at all, both answer exactly like an unknown id. The in-session door (``system__switch_binding``)
 # acts on the calling session itself only, so it is in reach and in rank by construction.
 
 
 @pytest.mark.parametrize("who", list(PERSONS))
-async def test_a_persons_binding_switch_over_rest_reaches_a_session_only_at_or_below_their_rank(app, client, fake_storage_provider, who):
-    started_by, asker, accepted = PERSONS[who]
+async def test_a_persons_binding_switch_over_rest_follows_the_workspace_access(app, client, fake_storage_provider, who):
+    access_spec, asker, accepted = PERSONS[who]
     r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
     assert r.status_code == 201, r.text
     carol_id = await _user_id(app, "carol")
-    creator = {
-        "admin": ADMIN,
-        "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
-        "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
-    }[started_by]
     world = _world(fake_storage_provider)
     app.state.workspace_registry.get_workspace = world.registry.get_workspace  # type: ignore[method-assign]
+    await fake_storage_provider.get_storage(Workspace).create(
+        _ws_row("ws-b", _access_for(access_spec, carol_id, await _user_id(app, "testuser"))),
+    )
     sessions = fake_storage_provider.get_storage(WorkspaceSession)
     await sessions.create(WorkspaceSession(
         id="ses-b", workspace_id="ws-b", binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.WAITING, turn_no=1,
-        created_at=NOW, initiated_by=creator,
+        created_at=NOW, initiated_by=USER,
     ))
     await fake_storage_provider.get_storage(Agent).create(Agent(access=Access(public=True), 
         id="operator2", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[],
@@ -584,8 +614,12 @@ async def test_a_persons_binding_switch_over_rest_reaches_a_session_only_at_or_b
         r = await client.post(route, json=body)
 
     if not accepted:
-        assert r.status_code == 403, f"{who} could switch the binding: {r.text}"
-        assert (r.json()["detail"], r.json()["extensions"]["error"]) == (OUTRANKED_MESSAGE, "forbidden_rank")
+        if access_spec == "carol read":
+            assert r.status_code == 403, f"{who} could switch the binding: {r.text}"
+            assert r.json()["detail"] == "Session 'ses-b' needs full access"
+        else:
+            assert r.status_code == 404, f"{who} could switch the binding: {r.text}"
+            assert r.json()["detail"] == "Session 'ses-b' does not exist"
         assert (await sessions.get("ses-b")).model_dump(mode="json") == before, "a refused switch wrote to the session"
         assert spy.keys == [], "a refused switch reached the event bus"
         return
@@ -598,11 +632,14 @@ async def test_a_persons_binding_switch_over_rest_reaches_a_session_only_at_or_b
 
 async def test_a_binding_switch_out_of_its_workspaces_url_scope_answers_as_an_unknown_id(app, client, fake_storage_provider):
     """The route's reach is the workspace the URL names (it has no calling session): a session that lives in another workspace is answered
-    exactly like a session id that is not there at all - asked by its own creator, so rank would let her through, and the answer changes
-    nothing either way."""
+    as an unknown id once the access gate admits the caller (carol owns the workspace the session lives in); a stranger to it gets the
+    session's missing-row text - which is what the unknown id gets too (spec 9). Either way the answer changes nothing."""
     r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
     assert r.status_code == 201, r.text
     carol_id = await _user_id(app, "carol")
+    await fake_storage_provider.get_storage(Workspace).create(
+        _ws_row("ws-2", _access_for("carol", carol_id, await _user_id(app, "testuser"))),
+    )
     sessions = fake_storage_provider.get_storage(WorkspaceSession)
     await sessions.create(WorkspaceSession(
         id="ses-b", workspace_id="ws-2", binding=AgentSessionBinding(agent_id="planner"), status=SessionStatus.WAITING,
@@ -614,8 +651,8 @@ async def test_a_binding_switch_out_of_its_workspaces_url_scope_answers_as_an_un
         r_out = await carol.post("/v1/workspaces/ws-1/sessions/ses-b/binding", json=body)
         r_unknown = await carol.post("/v1/workspaces/ws-1/sessions/ses-nobody/binding", json=body)
         assert r_out.status_code == r_unknown.status_code == 404, (r_out.status_code, r_unknown.status_code)
+        assert r_unknown.json()["detail"] == "Session 'ses-nobody' does not exist", r_unknown.json()
         assert r_out.json()["detail"].replace("ses-b", "<id>") == r_unknown.json()["detail"].replace("ses-nobody", "<id>")
-        assert r_out.json()["status"] == 404
         row = await sessions.get("ses-b")
         assert (row.binding.kind, row.binding.agent_id) == ("agent", "planner") and row.binding_epoch == 0, "a refused switch wrote to the session"
 
@@ -866,12 +903,14 @@ PERSONS_FOR_OWN = {"ws-1": USER, "ws-2": ADA_REF, "ws-prime": ADA_REF}
 
 
 async def _call(
-    world: WsWorld, toolset: str, tool: str, arguments: dict, *, own: str | None, door: str, run_as: PrincipalRef = USER,
+    world: WsWorld, toolset: str, tool: str, arguments: dict, *, own: str | None, door: str, run_as: PrincipalRef | None = None,
     actor: Principal = MCP_USER,
 ) -> tuple[str, dict]:
     """``toolset``'s ``tool`` from a session in ``own`` (its run ranked ``run_as``) through ``door``: the tool by its scoped name in the real
     tool manager, or ``system__call_tool``. With ``own`` None it is the MCP endpoint's own call (``invoke_one``, no context, ``actor`` on
     ``current_actor``)."""
+    if own is not None and run_as is None:
+        run_as = PERSONS_FOR_OWN[own]  # the person the calling session's workspace stands for (access-control P2 T6)
     if own is None:
         token = current_actor.set(actor)
         try:
@@ -1073,8 +1112,8 @@ SUB_DOORS: dict[str, tuple[str, str, Callable[[str], dict], tuple[str, str]]] = 
         lambda t: {"trigger_id": CHANNEL_TRIGGER, "config": {"kind": "session_append", "session_id": t}}, _SES_TARGET,
     ),
 }
-#: Who calls -> the reach recorded on what it saves: the calling session's workspace outside prime, ``None`` (every workspace) otherwise.
-RECORDED = {"own workspace": "ws-2", P: None, "no session": None}
+#: Who calls -> the reach recorded on what it saves: none of them records one any more (access-control P2 T6: the owner's level on the target decides).
+RECORDED = {"own workspace": None, P: None, "no session": None}
 
 
 async def _seed_triggers(world: WsWorld) -> None:
@@ -1264,8 +1303,8 @@ async def test_a_fire_never_starts_or_feeds_a_session_the_owner_holds_no_full_on
 
 # -- delete_workspace and the owner rule (F3) --------------------------------------------------------------------------------------------------
 #
-# The tool's delete needs owner on the workspace (access-control P2 T6, where the cancel's rank rule lived for it); the REST delete keeps the rank
-# rule of the REST cancel (a session the caller may not act on holds the delete back, through the scan ``destroy`` runs as ``before_teardown``).
+# The tool's delete and the REST delete need owner on the workspace (access-control P2, where the cancel's rank rule and the scan of the
+# workspace's open sessions lived for them).
 
 
 async def _admin_session_in_ws2(world: WsWorld, *, status: SessionStatus = SessionStatus.WAITING) -> None:
@@ -1319,9 +1358,10 @@ async def test_delete_workspace_goes_on_when_the_person_holds_owner(case, own, d
     assert await world.sp.get_storage(Workspace).get("ws-2") is None
 
 
-async def test_the_rest_delete_follows_the_rank_rule_of_the_rest_cancel(app, client, fake_storage_provider):
-    """F3 over REST: the cancel route refuses a person ranked below the session's creator (403 ``forbidden_rank``), so the delete of the workspace
-    the session is open in does too; an admin deletes it."""
+async def test_the_rest_delete_of_a_workspace_is_decided_by_its_access(app, client, fake_storage_provider):
+    """F3 over REST, access edition (P2 Task 2/3): the gate is the workspace's OWNER access, not a rank scan of its open sessions. The owner
+    deletes even while an admin's session is open in it (the destroy ends that session, as it always has); a stranger to the workspace gets
+    its missing-row 404 and nothing is torn down; an admin bypasses the gate."""
     world = await _ws_world()
     backend = world.backend
     app.state.workspace_registry = WorkspaceRegistry(fake_storage_provider, factory=lambda row: backend)
@@ -1335,21 +1375,40 @@ async def test_the_rest_delete_follows_the_rank_rule_of_the_rest_cancel(app, cli
     ))
     r = await client.post("/v1/admin/users", json={"username": "carol", "password": "carolpw1"})
     assert r.status_code == 201, r.text
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
-        assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
-
-        refused = await asyncio.wait_for(carol.delete("/v1/workspaces/ws-2"), 30)
-
-    assert refused.status_code == 403, refused.text
-    assert (refused.json()["detail"], refused.json()["extensions"]["error"]) == (OUTRANKED_MESSAGE, "forbidden_rank")
+    carol_id = await _user_id(app, "carol")
+    # carol owns ws-2: her delete lands although an admin's session is open in it (the access gate no longer scans sessions).
+    granted = await client.put("/v1/workspaces/ws-2/access", json={"owners": [carol_id], "grants": {}})
+    assert granted.status_code == 200, granted.text
+    r = await client.post("/v1/admin/users", json={"username": "dave", "password": "davepw12"})
+    assert r.status_code == 201, r.text
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as dave:
+        assert (await dave.post("/v1/auth/login", json={"username": "dave", "password": "davepw12"})).status_code == 200
+        refused = await asyncio.wait_for(dave.delete("/v1/workspaces/ws-2"), 30)
+    assert refused.status_code == 404, refused.text
+    assert refused.json()["detail"] == "Workspace 'ws-2' does not exist"
     assert await fake_storage_provider.get_storage(Workspace).get("ws-2") is not None
     assert (await fake_storage_provider.get_storage(WorkspaceSession).get("ses-adm")).status == SessionStatus.WAITING
     assert "ws-2" in backend.live
 
-    deleted = await asyncio.wait_for(client.delete("/v1/workspaces/ws-2"), 30)
+    r = await client.post("/v1/admin/users", json={"username": "erin", "password": "erinpw12"})
+    assert r.status_code == 201, r.text
+    erin_id = await _user_id(app, "erin")
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as erin:
+        assert (await erin.post("/v1/auth/login", json={"username": "erin", "password": "erinpw12"})).status_code == 200
+        await client.put("/v1/workspaces/ws-2/access", json={"owners": [carol_id], "grants": {erin_id: "full"}})
+        refused = await asyncio.wait_for(erin.delete("/v1/workspaces/ws-2"), 30)
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["detail"] == "Workspace 'ws-2' needs owner access"
+    assert await fake_storage_provider.get_storage(Workspace).get("ws-2") is not None
+
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as carol:
+        assert (await carol.post("/v1/auth/login", json={"username": "carol", "password": "carolpw1"})).status_code == 200
+        deleted = await asyncio.wait_for(carol.delete("/v1/workspaces/ws-2"), 30)
 
     assert deleted.status_code == 204, deleted.text
     assert await fake_storage_provider.get_storage(Workspace).get("ws-2") is None
+    ended = await fake_storage_provider.get_storage(WorkspaceSession).get("ses-adm")
+    assert ended is not None and ended.status == SessionStatus.ENDED and ended.ended_reason == "workspace_lost", "the open session was not ended"
 
 
 # -- create_workspace (F4) ------------------------------------------------------------------------------
@@ -1431,6 +1490,12 @@ async def test_the_tools_of_a_graph_session_with_no_holder_slot_act_as_the_run_s
     run's person: a person with no level on ws-2 (u-user) is told it does not exist wherever the graph session sits, and its owner (u-ada)
     deletes it from either."""
     world = await _ws_world()
+    # The run's person holds full on the graph session's own workspace, or the turn would not run at all (access-control P2: the worker
+    # re-checks it at build); what is pinned here is the level the node's tools ask on ws-2.
+    own_row = await world.sp.get_storage(Workspace).get(own)
+    await world.sp.get_storage(Workspace).update(own_row.model_copy(update={
+        "access": own_row.access.model_copy(update={"grants": {**own_row.access.grants, initiator.user_id: "full"}}),
+    }))
     graph = _runnable_graph()
     row = WorkspaceSession(
         id="ses-g", workspace_id=own, binding=GraphSessionBinding(graph_id=graph.id, graph_snapshot=graph), status=SessionStatus.RUNNING,
@@ -1624,7 +1689,7 @@ _FIRE_WORDS_REQUEST = (
 )
 _FIRE_WORDS_RUN = "trigger 'tr-r' runs at a higher rank ({owner}) than this session ({caller}); a session may fire only triggers at or below its own rank"
 _FIRE_WORDS_RUN_OUTSIDE = "trigger 'tr-r' runs at a higher rank ({owner}) than this run ({caller}); a run may fire only triggers at or below its own rank"
-ADA = Principal(type="user", id="u-ada", display="ada", role="user", source="local")
+ADA = Principal(type="user", id="u-ada", display="ada", role="user", source="local", user_id="u-ada")
 
 
 async def _fire_events(sp) -> list:
@@ -1647,12 +1712,13 @@ async def _fired(sp) -> bool:
     return row.last_fired_id is not None and row.last_fired_at is not None and [e.entity_id for e in events] == [FIRE_TRIGGER]
 
 
-async def _rank_world(owner: PrincipalRef | None) -> WsWorld:
+async def _rank_world(owner: PrincipalRef | None, *, user_full_on_ws2: bool = True) -> WsWorld:
     """The rule-table world, a trigger ``tr-r`` owned by ``owner`` with one subscription of it that starts a session in ws-2 (in reach of the calling
     session ``ses-o`` in ws-2), and an API token of ada's (``at-ada``) for the rows where a token acts as its owner. ws-2 grants full to the two
     ordinary accounts, so a fire the rank rule accepts is never held back by the subscription owner's level on the target (P2 T6)."""
     world = await _ws_world()
-    ws2 = (await world.sp.get_storage(Workspace).get("ws-2")).model_copy(update={"access": Access(owners=["u-ada"], grants={"u-user": "full", "u-root": "full"})})
+    grants = {"u-user": "full", "u-root": "full"} if user_full_on_ws2 else {"u-root": "full"}
+    ws2 = (await world.sp.get_storage(Workspace).get("ws-2")).model_copy(update={"access": Access(owners=["u-ada"], grants=grants)})
     await world.sp.get_storage(Workspace).update(ws2)
     await world.sp.get_storage(Trigger).create(Trigger(
         id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
@@ -1671,17 +1737,17 @@ async def _rank_world(owner: PrincipalRef | None) -> WsWorld:
 #: recorded while she was an admin; she is a user now.
 FIRE_CALLERS: dict[str, tuple[PrincipalRef | None, Principal | PrincipalRef, bool]] = {
     "MCP: a user on an admin's trigger": (ADMIN, MCP_USER, False),
-    "MCP: an admin on a user's trigger": (USER, Principal(type="user", id="u-root", display="root", role="admin", source="local"), True),
-    "MCP: a user on their own trigger": (USER, Principal(type="user", id="u-user", display="user", role="user", source="local"), True),
+    "MCP: an admin on a user's trigger": (USER, Principal(type="user", id="u-root", display="root", role="admin", source="local", user_id="u-root"), True),
+    "MCP: a user on their own trigger": (USER, Principal(type="user", id="u-user", display="user", role="user", source="local", user_id="u-user"), True),
     "MCP: a demoted admin on their own trigger": (ADA_THEN, ADA, True),
     "MCP: a user's token on an admin's trigger": (
-        ADMIN, Principal(type="api_token", id="at-user", display="automation", role="user", source="internal"), False,
+        ADMIN, Principal(type="api_token", id="at-user", display="automation", role="user", source="internal", user_id="u-user"), False,
     ),
     "MCP: an admin's token on a user's trigger": (
-        USER, Principal(type="api_token", id="at-root", display="automation", role="admin", source="internal"), True,
+        USER, Principal(type="api_token", id="at-root", display="automation", role="admin", source="internal", user_id="u-root"), True,
     ),
     "MCP: a demoted admin's token on their own trigger": (
-        ADA_THEN, Principal(type="api_token", id="at-ada", display="automation", role="user", source="internal"), True,
+        ADA_THEN, Principal(type="api_token", id="at-ada", display="automation", role="user", source="internal", user_id="u-ada"), True,
     ),
     "MCP: a user on a trigger saved before owners were recorded": (None, MCP_USER, True),
     "MCP: a user on a system trigger": (PrincipalRef.system(), MCP_USER, False),
@@ -1726,19 +1792,29 @@ async def test_fire_now_fires_a_trigger_only_when_the_caller_ranks_with_its_owne
 
 
 @pytest.mark.parametrize("door", DOORS)
-@pytest.mark.parametrize("run_as", [pytest.param(USER, id="a user's run"), pytest.param(ADMIN, id="an admin's run")])
-async def test_fire_now_on_an_out_of_reach_trigger_answers_as_an_unknown_one_before_any_rank(run_as, door):
-    """The reach rule (#874) is asked first: from ws-1, an admin's trigger whose subscription starts a session in ws-2 is unknown, not forbidden, for a
-    user's run too, and nothing fires."""
-    world = await _rank_world(ADMIN)
+async def test_fire_now_on_an_out_of_reach_trigger_answers_as_an_unknown_one_before_any_rank(door):
+    """The access rule is asked first: an admin's trigger whose subscription starts a session in ws-2, where the user holds no full, is unknown, not
+    forbidden, for a user's run, and nothing fires."""
+    world = await _rank_world(ADMIN, user_full_on_ws2=False)
     before = await _fire_rows(world.sp)
 
-    outcome, body = await asyncio.wait_for(_call(world, "trigger", "fire_now", {"id": FIRE_TRIGGER}, own="ws-1", door=door, run_as=run_as), 30)
+    outcome, body = await asyncio.wait_for(_call(world, "trigger", "fire_now", {"id": FIRE_TRIGGER}, own="ws-1", door=door, run_as=USER), 30)
 
     assert (outcome, body) == ("trigger_not_found", {"type": "trigger_not_found", "message": FIRE_TRIGGER}), body
     assert await _fire_rows(world.sp) == before
-    _, unknown = await _call(world, "trigger", "fire_now", {"id": "tr-nope"}, own="ws-1", door=door, run_as=run_as)
+    _, unknown = await _call(world, "trigger", "fire_now", {"id": "tr-nope"}, own="ws-1", door=door, run_as=USER)
     assert json.dumps(body).replace(FIRE_TRIGGER, "<id>") == json.dumps(unknown).replace("tr-nope", "<id>"), (body, unknown)
+
+
+@pytest.mark.parametrize("door", DOORS)
+async def test_an_admins_run_fires_a_trigger_whatever_workspaces_it_targets(door):
+    """An admin clears the access rule (it holds every level), so the same trigger an unprivileged user cannot see fires for an admin's run."""
+    world = await _rank_world(ADMIN, user_full_on_ws2=False)
+
+    outcome, body = await asyncio.wait_for(_call(world, "trigger", "fire_now", {"id": FIRE_TRIGGER}, own="ws-1", door=door, run_as=ADMIN), 30)
+
+    assert outcome == D, body
+    assert await _fired(world.sp), body
 
 
 async def test_the_clock_fires_an_admins_trigger_with_no_caller_to_rank():
@@ -1892,6 +1968,8 @@ async def test_fire_now_over_the_real_mcp_endpoint_fires_a_trigger_only_when_the
         "carol": PrincipalRef(type="user", id=carol_id, display="carol", role="user", source="local"),
         "carol then admin": PrincipalRef(type="user", id=carol_id, display="carol", role="admin", source="local"),
     }[owner_name]
+    # The workspace the subscription starts a session in: carol holds full on it (the access rule asks the caller's person; an admin clears it).
+    await sp.get_storage(Workspace).create(_ws_row("ws-x", Access(owners=[carol_id])))
     await sp.get_storage(Trigger).create(Trigger(
         id=FIRE_TRIGGER, slug=FIRE_TRIGGER, name="r", created_at=NOW, owner=owner, config=DelayedTriggerConfig(fire_at=NOW + timedelta(days=1)),
     ))
@@ -2269,12 +2347,14 @@ TARGETS: dict[str, object] = {
     "fresh-prime": AgentFreshSubConfig(workspace_id="ws-prime", agent_id="planner"),
     "append-gone": SessionAppendSubConfig(session_id="ses-gone"),
 }
-#: the calling session's workspace (None: no calling session) -> the subscriptions it reaches.
+#: the calling session's workspace (None: no calling session) -> the subscriptions its person holds full on the target of (access-control P2 T6):
+#: u-user holds ws-1 only; u-ada (ws-2, ws-prime and the MCP call) holds ws-2 and ws-prime. A target session that is gone is in no workspace: none see it.
+_ADA_SEES = {"fresh-ws2", "graph-ws2", "append-ws2", "parked-ws2", "fresh-prime"}
 VISIBLE: dict[str | None, set[str]] = {
     "ws-1": {"fresh-ws1", "append-ws1"},
-    "ws-2": {"fresh-ws2", "graph-ws2", "append-ws2", "parked-ws2"},
-    "ws-prime": set(TARGETS),
-    None: set(TARGETS),
+    "ws-2": _ADA_SEES,
+    "ws-prime": _ADA_SEES,
+    None: _ADA_SEES,
 }
 
 
@@ -2360,14 +2440,14 @@ async def test_get_and_delete_from_outside_prime_act_on_a_subscription_in_its_ow
 @pytest.mark.parametrize("door_name", list(ONE_DOORS))
 @pytest.mark.parametrize("own", ["ws-1", "ws-2"])
 async def test_a_subscription_whose_target_session_is_gone_is_out_of_reach_from_outside_prime(door_name, own):
-    """The save check's classification: a session that does not exist is in no workspace, so get and delete answer as an unknown id from a
-    session outside prime, and act from prime."""
+    """The save check's classification: a session that does not exist is in no workspace, so get and delete answer as an unknown id for every
+    person who is not an admin (an admin holds every level and acts)."""
     world = await _subscription_world()
     toolset, tool, trigger_id = ONE_DOORS[door_name]
     sid = _sid(trigger_id, "append-gone")
 
     refused = await _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": sid}, own=own, door="tool manager")
-    acted = await _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": sid}, own="ws-prime", door="tool manager")
+    acted = await _call(world, toolset, tool, {"trigger_id": trigger_id, "subscription_id": sid}, own="ws-prime", door="tool manager", run_as=ADMIN)
 
     assert refused == ("subscription_not_found", {"type": "subscription_not_found", "message": sid})
     assert acted[0] == D, acted
@@ -2376,17 +2456,17 @@ async def test_a_subscription_whose_target_session_is_gone_is_out_of_reach_from_
 @pytest.mark.parametrize("door_name", list(LIST_DOORS))
 @pytest.mark.parametrize(("own", "door"), [("ws-1", "tool manager"), ("ws-1", "system__call_tool"), ("ws-prime", "tool manager"), (None, "MCP")])
 async def test_a_filtered_list_of_more_than_two_pages_skips_and_repeats_no_subscription(door_name, own, door):
-    """Ruling 5: the service reads a trigger's subscriptions in pages of ``_LIST_PAGE_SIZE``. With more than two pages of rows in and out of
-    ws-1's reach, interleaved, a session in ws-1 gets every row it reaches, once, in storage order (no page short of in-reach rows ends the read,
-    and none is skipped); prime and MCP get every row."""
+    """Ruling 5: the service reads a trigger's subscriptions in pages of ``_LIST_PAGE_SIZE``. With more than two pages of rows the person holds
+    full on and rows they do not, interleaved, a session in ws-1 (u-user: ws-1 only) gets every row it reaches, once, in storage order (no page
+    short of reachable rows ends the read, and none is skipped); a session in prime and the MCP call (u-ada: ws-2 and prime) get theirs."""
     world = await _seed_world_for_subscriptions()
     toolset, tool, trigger_id = LIST_DOORS[door_name]
     cycle = [
-        ("in", AgentFreshSubConfig(workspace_id="ws-1", agent_id="planner")),
-        ("out", AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner")),
-        ("out", SessionAppendSubConfig(session_id="ses-t")),
-        ("in", SessionAppendSubConfig(session_id="ses-a")),
-        ("out", AgentFreshSubConfig(workspace_id="ws-prime", agent_id="planner")),
+        ("u-user", AgentFreshSubConfig(workspace_id="ws-1", agent_id="planner")),
+        ("u-ada", AgentFreshSubConfig(workspace_id="ws-2", agent_id="planner")),
+        ("u-ada", SessionAppendSubConfig(session_id="ses-t")),
+        ("u-user", SessionAppendSubConfig(session_id="ses-a")),
+        ("u-ada", AgentFreshSubConfig(workspace_id="ws-prime", agent_id="planner")),
     ]
     store = world.sp.get_storage(Subscription)
     seeded: list[tuple[str, str]] = []
@@ -2399,7 +2479,7 @@ async def test_a_filtered_list_of_more_than_two_pages_skips_and_repeats_no_subsc
     outcome, body = await asyncio.wait_for(_call(world, toolset, tool, {"trigger_id": trigger_id}, own=own, door=door), 60)
 
     assert outcome == D, body
-    wanted = [sid for sid, where in seeded if own is None or own == "ws-prime" or where == "in"]
+    wanted = [sid for sid, holder in seeded if holder == ("u-user" if own == "ws-1" else "u-ada")]
     assert [item["id"] for item in body] == wanted
 
 
@@ -2427,27 +2507,24 @@ async def test_the_rest_subscription_routes_serve_and_delete_whatever_the_target
     assert await store.get(_sid(TRIGGER, "fresh-prime")) is None
 
 
-# -- the rank scan of a delete is fenced against a session started meanwhile (review of #874, D1) ---------------------------------------------
+# -- a delete is fenced against a session started meanwhile (review of #874, D1) ---------------------------------------------------------------
 #
-# The rank scan itself runs on the REST delete only (access-control P2 T6: the tool's delete is gated on the person's owner level, not on the
-# sessions' ranks). What every scan shares is the fence: ``destroy`` runs its ``before_teardown`` once the workspace is marked as being destroyed
-# and before anything is torn down, and a session start refuses a marked workspace.
+# Once ``destroy`` marks the workspace as being destroyed, and before anything is torn down, a session start refuses the workspace. (The rank
+# scan that used to run in that window is gone: the delete needs owner on the workspace, access-control P2.)
 
 
-async def test_a_session_started_while_a_delete_runs_its_scan_is_refused():
-    """Probe D of the #874 review, at the fence every scan shares: the scan runs once the workspace is marked as being destroyed, and a session
-    start refuses such a workspace: an admin's start that lands after the scan is refused (as a workspace that does not exist), so the delete
-    ends no session it did not see in the scan."""
+async def test_a_session_started_while_a_delete_runs_is_refused():
+    """Probe D of the #874 review: a session start that lands once the workspace is marked as being destroyed is refused (as a workspace that
+    does not exist), so the delete ends no session started under it."""
     from primer.workspace.session_factory import SessionFactoryDeps, start_workspace_session
-    from primer.workspace.session_reconcile import open_sessions_on
 
     world = await _ws_world()
     await world.sp.get_storage(Agent).create(Agent(access=Access(public=True), id="planner", description="x", model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[]))
     admin_start: dict = {}
 
-    async def _scan_then_an_admin_starts_a_session() -> None:
-        async for _row in open_sessions_on(world.sp, "ws-2"):
-            pass
+    real_mark = world.workspaces._mark_terminating
+
+    async def _an_admin_starts_a_session_then_mark(workspace_id: str):
         try:
             admin_start["session"] = await start_workspace_session(
                 workspace_id="ws-2", binding=AgentSessionBinding(agent_id="planner"), initial_instructions="hi", graph_input=None,
@@ -2456,8 +2533,10 @@ async def test_a_session_started_while_a_delete_runs_its_scan_is_refused():
             )
         except NotFoundError as exc:
             admin_start["refused"] = exc.message
+        return await real_mark(workspace_id)
 
-    await world.workspaces.destroy("ws-2", before_teardown=_scan_then_an_admin_starts_a_session)
+    world.workspaces._mark_terminating = _an_admin_starts_a_session_then_mark  # type: ignore[method-assign]
+    await world.workspaces.destroy("ws-2")
 
     assert admin_start == {"refused": "Workspace 'ws-2' does not exist"}, admin_start
     assert await world.sp.get_storage(Workspace).get("ws-2") is None
@@ -2465,10 +2544,10 @@ async def test_a_session_started_while_a_delete_runs_its_scan_is_refused():
     assert [s.id for s in sessions if s.initiated_by == ADMIN] == [], "the delete ended an admin's session it never scanned"
 
 
-# -- the delete's scan fails loud (review of #874, E1) -----------------------------------------------------------------------------------------
+# -- the open-session scan fails loud (review of #874, E1) -------------------------------------------------------------------------------------
 #
-# The scan runs as ``destroy``'s ``before_teardown`` (the REST delete's rank scan; the tool's delete no longer scans, the person's owner level
-# decides). A scan that cannot see every session fails loud, and a loud scan tears nothing down.
+# ``open_sessions_on`` was the delete's rank scan; the delete no longer scans (owner decides, access-control P2), and the reader keeps its rule: a
+# scan that cannot see every session fails loud.
 
 
 async def test_open_sessions_on_raises_on_a_repeated_cursor():
@@ -2490,37 +2569,6 @@ async def test_open_sessions_on_raises_on_a_repeated_cursor():
         async for row in open_sessions_on(SimpleNamespace(get_storage=lambda cls: _Sessions()), "ws-2"):
             seen.append(row)
     assert seen == ["s1", "s2"] and asked == [None, "c1"]
-
-
-async def test_a_delete_whose_scan_cannot_see_every_session_tears_nothing_down(monkeypatch):
-    """The delete's scan reads the open sessions of ws-2 through the real storage, which here repeats a cursor before the page holding an admin's
-    session: the scan fails loud and the delete refuses (nothing is torn down) instead of ending a session it never saw."""
-    from primer.model.except_ import PrimerError
-    from primer.workspace.session_reconcile import open_sessions_on
-
-    world = await _ws_world()
-    await _admin_session_in_ws2(world)
-    store = world.sp.get_storage(WorkspaceSession)
-    real_find = store.find
-
-    async def _find_repeating_a_cursor(predicate, page, *args, **kwargs):
-        if getattr(page, "cursor", "absent") == "absent":  # an offset page: not the scan
-            return await real_find(predicate, page, *args, **kwargs)
-        rows = {"ses-o": await store.get("ses-o"), "ses-t": await store.get("ses-t")}
-        first = page.cursor is None
-        return SimpleNamespace(items=[rows["ses-o" if first else "ses-t"]], next_cursor="c1", total=None)
-
-    monkeypatch.setattr(store, "find", _find_repeating_a_cursor)
-    before = await world.snapshot()
-
-    async def _scan() -> None:
-        async for _row in open_sessions_on(world.sp, "ws-2"):
-            pass
-
-    with pytest.raises(PrimerError, match="repeated"):
-        await world.workspaces.destroy("ws-2", before_teardown=_scan)
-
-    assert await world.snapshot() == before
 
 
 # -- one scope for every identity a holder-less manager builds (review of #874, G1) ----------------------------------------------------------

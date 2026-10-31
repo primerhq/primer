@@ -12,7 +12,7 @@ The error types, and the next move for each:
 
 - `validation-error` - the arguments do not match the tool's schema (a missing required key, a wrong shape). Read the tool's schema (its reference page, or `system__describe_tool`) and send the arguments it names.
 - `not-found` - the toolset, the tool, or the named entity does not exist. List the toolset's tools with `system__list_toolset_tools`, or search the wiki for the right name; do not retry the same id.
-- `forbidden` - the run's principal ranks below the tool's role. It is a role refusal, not an approval: run the call from a higher-role run, or pick a tool whose floor the run clears.
+- `forbidden` - the run's principal ranks below the tool's role, or the person behind the run holds too low an access level on what the tool touches (for example `read` on a workspace where the tool needs `full`). It is a refusal, not an approval: run the call from a higher-role run, pick a tool whose floor the run clears, or ask an owner for more access.
 - `approval-required` - the tool is gated and the call has nowhere to park for an approval (no session or chat). Invoke it through an agent session or chat, where the operator can decide the gate.
 - `provider-error` - the toolset's provider failed to answer (an MCP server down, an OAuth token stale). The arguments were fine; check the toolset's connection and retry.
 - `sign-in-required` - the MCP toolset signs in with OAuth and has no usable shared sign-in (never connected, signed out, its settings changed). Only an admin can connect it, from the console: read its state with `system__get_toolset_auth_status`, tell the user, and do not retry until it says `connected`.

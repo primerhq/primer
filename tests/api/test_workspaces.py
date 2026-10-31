@@ -51,6 +51,16 @@ from primer.model.workspace import (
 # ===========================================================================
 
 
+
+async def _set_user_default(sp, workspace_id: str) -> None:
+    """Make ``workspace_id`` the default workspace of the ``client`` fixture's user (``is_default`` is per person, access-control P2 T8)."""
+    from primer.model.user import User
+
+    users = sp.get_storage(User)
+    row = next(u for u in (await users.list(OffsetPage(offset=0, length=50))).items if u.username == "testuser")
+    await users.update(row.model_copy(update={"default_workspace_id": workspace_id}))
+
+
 class _Storage:
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
@@ -1042,6 +1052,7 @@ class TestWorkspaceRouter:
     async def test_workspace_rows_carry_is_default(self, client, sp) -> None:
         await self._make_workspaces(client, "ws-prime", "ws-other")
         await sp.set_default_workspace_id("ws-prime")
+        await _set_user_default(sp, "ws-prime")
 
         rows = (await client.get("/v1/workspaces")).json()["items"]
         assert {r["id"]: r["is_default"] for r in rows} == {
@@ -1054,15 +1065,14 @@ class TestWorkspaceRouter:
         assert (await client.get("/v1/workspaces/ws-other")).json()["is_default"] is False
 
     @pytest.mark.asyncio
-    async def test_is_default_follows_the_legacy_row_while_the_id_is_unrecorded(
-        self, client
-    ) -> None:
+    async def test_is_default_is_the_callers_own_not_the_install_wide_one(self, client, sp) -> None:
         await self._make_workspaces(client, "primer", "ws-other")
+        await _set_user_default(sp, "ws-other")
 
         rows = (await client.get("/v1/workspaces")).json()["items"]
         assert {r["id"]: r["is_default"] for r in rows} == {
-            "primer": True,
-            "ws-other": False,
+            "primer": False,
+            "ws-other": True,
         }
 
     @pytest.mark.asyncio
@@ -1095,6 +1105,7 @@ class TestWorkspaceRouter:
 
         await self._make_workspaces(client, "ws-prime")
         await sp.set_default_workspace_id("ws-prime")
+        await _set_user_default(sp, "ws-prime")
         stored = await sp.get_storage(Workspace).get("ws-prime")
 
         body = (await client.get("/v1/workspaces/ws-prime")).json()
@@ -1115,6 +1126,7 @@ class TestWorkspaceRouter:
 
         await self._make_workspaces(client, "ws-prime")
         await sp.set_default_workspace_id("ws-prime")
+        await _set_user_default(sp, "ws-prime")
         store = sp.get_storage(Workspace)
         stored = await store.get("ws-prime")
         await store.update(

@@ -1,4 +1,4 @@
-"""Migration 25: harnesses get an owner; what they installed copies their access (access-control Phase 3, Task 6)."""
+"""Migration 27: harnesses get an owner; what they installed copies their access (access-control Phase 3, Task 6)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from primer.model.harness import Harness
 from primer.model.provider import SqliteConfig
 from primer.model.user import User
 from primer.storage.migrations import MIGRATIONS
-from primer.storage.migrations.m025_harness_ownership import M025HarnessOwnership
+from primer.storage.migrations.m027_harness_ownership import M027HarnessOwnership
 from primer.storage.sqlite import SqliteStorageProvider
 
 _T0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -37,8 +37,8 @@ def _harness(hid: str, access: Access | None = None) -> Harness:
     return h if access is None else h.model_copy(update={"access": access})
 
 
-def test_registered_as_version_25():
-    assert MIGRATIONS[-1].version == 25 and isinstance(MIGRATIONS[-1], M025HarnessOwnership)
+def test_registered_as_version_27():
+    assert MIGRATIONS[-1].version == 27 and isinstance(MIGRATIONS[-1], M027HarnessOwnership)
 
 
 async def test_harnesses_get_the_first_admin_and_installed_rows_copy_it(sp):
@@ -55,8 +55,8 @@ async def test_harnesses_get_the_first_admin_and_installed_rows_copy_it(sp):
     await sp.get_storage(Collection).create(Collection(id="kb-1", description="k", harness_id="hns_gone", access=Access(owners=["zed"])))
     await sp.get_storage(Agent).create(agent.model_copy(update={"id": "ag-own", "harness_id": None}))
 
-    await M025HarnessOwnership().apply(sp)
-    await M025HarnessOwnership().apply(sp)  # converges
+    await M027HarnessOwnership().apply(sp)
+    await M027HarnessOwnership().apply(sp)  # converges
 
     assert (await sp.get_storage(Harness).get("hns_unset")).access.owners == ["root"]
     assert (await sp.get_storage(Harness).get("hns_shared")).access == shared

@@ -17,6 +17,7 @@ import pytest
 from primer.auth.passwords import hash_password
 from primer.model.api_token import ApiToken
 from primer.model.user import User
+from tests.api._sub_targets import seed_sub_targets
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,7 +42,8 @@ async def test_delete_trigger_answers_an_empty_204(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_subscription_answers_an_empty_204(client) -> None:
+async def test_delete_subscription_answers_an_empty_204(client, app) -> None:
+    await seed_sub_targets(app.state.storage_provider)  # the session the subscription feeds (access-control P2 T6)
     created = await client.post("/v1/triggers", json=_delayed_trigger("empty-204-subscription"))
     assert created.status_code == 201, created.text
     trigger_id = created.json()["id"]

@@ -50,7 +50,7 @@ Reference: [`trigger__fire_now`](reference/tools/trigger/fire_now)
 - A fire now skips the clock, not `parallelism`: a `skip` subscription whose last session is still at work starts nothing (`skipped_subscription_busy`).
 - On a webhook trigger, `trigger__fire_now` has no request: `webhook_body`, `webhook_headers` and `webhook_query` are missing, and a template that names them fails with `payload_template_failed`.
 - On a channel trigger there is no event: every binding with an `event_matcher` skips (`skipped_no_match`).
-- From a session outside the default workspace (prime), a trigger with a subscription outside your own workspace answers `trigger_not_found`, as an unknown id does. That check comes first: such a trigger answers `trigger_not_found` even when its owner outranks you.
+- A trigger with a subscription whose target workspace you do not hold `full` access to answers `trigger_not_found`, as an unknown id does (admins are never refused). That check comes first: such a trigger answers `trigger_not_found` even when its owner outranks you.
 - Owning a trigger does not let a run fire it above the run's rank: from a session only your run's rank counts, so a run capped below its creator's role cannot fire that creator's higher-ranked triggers.
 - A webhook fire is at least once. If the sender may retry, make the run safe to repeat.
 

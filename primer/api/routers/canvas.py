@@ -18,10 +18,9 @@ session that does not exist or is on another workspace than the path names.
   It never marks an event read: only the agent's reads do. The event FEED (``GET /v1/events``) is another door and still removes
   the input for a non-admin (#872).
 * ``POST .../canvas/ops`` and ``DELETE .../canvas`` write it (an operator's batch, a clear), and ``POST .../canvas/events`` records a
-  person's click or choice and hands it to the agent (``primer.canvas.delivery``). Each puts input into the session, which runs at
-  its creator's rank, so each follows the rank rule of a steer (``refuse_outranked``: 403 ``forbidden_rank`` unless the caller ranks
-  at least as high as the session's creator or the session is the caller's own; an admin is never outranked; a token acts as its
-  owner), before anything is read or written. People keep their reach over every workspace.
+  person's click or choice and hands it to the agent (``primer.canvas.delivery``). Each puts input into the session, which inherits the
+  access of the workspace it lives in (P2 Task 3): each needs full on that workspace before anything is read or written (a stranger
+  answers the session's missing-row text, a lower level a 403; an admin clears the gate).
 
 ``canvas_settings_router`` is the admin's ``GET`` and ``PUT /v1/canvas_settings``.
 """
@@ -38,7 +37,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic import ValidationError as PydanticValidationError
 
-from primer.api.routers._session_rank import refuse_outranked
+from primer.access.person import person_from_request
+from primer.access.workspaces import require_session
+from primer.model.access import AccessLevel
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
@@ -367,8 +368,12 @@ async def get_canvas(
     """The canvas of a session; a session without one has the empty canvas (reading never creates it, nor marks an event read).
 
     The JSON view carries the values and the newest events WITH what the users entered: the canvas is part of the shared session read
-    (see the module docstring).
+    (see the module docstring). Access (P2 Task 3): reading it needs read on the session's workspace; a stranger answers the
+    session's missing-row text.
     """
+    # Access (P2 Task 3): the gate decides first, so a stranger answers the
+    # session's missing-row text before the workspace-scope 404.
+    await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.READ)
     session = await _session_on(storage_provider, workspace_id, session_id)
     service = CanvasService(storage_provider)
     row = await service.snapshot(session_id, workspace_id=session.workspace_id)
@@ -410,10 +415,12 @@ async def apply_canvas_ops(
     event_bus: Any = Depends(get_event_bus),
 ) -> CanvasApplyResponse:
     """Apply ``source`` or ``ops`` as one atomic batch (source ``operator``, by the caller). 422 ``canvas_invalid`` names every bad line
-    or op and applies nothing; 409 ``canvas_rev_conflict`` when ``base_rev`` is stale, with the users' changes since; 403
-    ``forbidden_rank`` when the session's creator outranks the caller."""
+    or op and applies nothing; 409 ``canvas_rev_conflict`` when ``base_rev`` is stale, with the users' changes since; full on the
+    session's workspace (P2 Task 3) before anything is read or written."""
+    # Access (P2 Task 3): the gate decides first, so a stranger answers the
+    # session's missing-row text before the workspace-scope 404.
+    await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.FULL)
     session = await _session_on(storage_provider, workspace_id, session_id)
-    refuse_outranked(request, session)
     service = _service(storage_provider, event_bus, registry)
     if (body.source is None) == (body.ops is None):
         raise HTTPException(
@@ -463,9 +470,11 @@ async def clear_canvas(
     registry: Any = Depends(get_workspace_registry),
     event_bus: Any = Depends(get_event_bus),
 ) -> CanvasApplyResponse:
-    """Empty the canvas (an operator's ``clear`` batch). 403 ``forbidden_rank`` when the session's creator outranks the caller."""
+    """Empty the canvas (an operator's ``clear`` batch). Full on the session's workspace (P2 Task 3) before anything is written."""
+    # Access (P2 Task 3): the gate decides first, so a stranger answers the
+    # session's missing-row text before the workspace-scope 404.
+    await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.FULL)
     session = await _session_on(storage_provider, workspace_id, session_id)
-    refuse_outranked(request, session)
     outcome = await _service(storage_provider, event_bus, registry).clear(
         session_id=session_id, workspace_id=session.workspace_id, by=_by(request),
     )
@@ -492,7 +501,7 @@ async def post_canvas_event(
 ) -> CanvasEventAccepted:
     """Record what a person did and deliver it to the agent by the session's state (``wait``, ``woken``, ``queued`` or ``recorded``).
 
-    A click drives the session like a steer, so the rank rule comes first (403 ``forbidden_rank``), then an ENDED session is refused
+    A click drives the session like a steer, so the access gate comes first (full on the session's workspace, P2 Task 3), then an ENDED session is refused
     (409 ``session_ended``) before anything is recorded. A refused event is 422 with its ``code`` (``unknown_element``,
     ``kind_not_allowed``, ``invalid_value``, ``element_disabled``) or 429 (``rate_limited``: the waking events of a minute;
     ``silent_rate_limited``: the others), and nothing is recorded. The body is bounded before it is read (413).
@@ -506,8 +515,10 @@ async def post_canvas_event(
     from primer.canvas.wait import queued_steer_carries
     from primer.model.principal import PrincipalRef
 
+    # Access (P2 Task 3): the gate decides first, so a stranger answers the
+    # session's missing-row text before the workspace-scope 404.
+    await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.FULL)
     session = await _session_on(storage_provider, workspace_id, session_id)
-    refuse_outranked(request, session)
     if session.status == SessionStatus.ENDED:
         raise HTTPException(status_code=409, detail={"code": "session_ended", "message": SESSION_ENDED})
     service = _service(storage_provider, event_bus, registry)

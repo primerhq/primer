@@ -1,4 +1,4 @@
-"""Migration 23: give existing collections an owner; the system wiki becomes public (access-control Phase 3, Task 3).
+"""Migration 25: give existing collections an owner; the system wiki becomes public (access-control Phase 3, Task 3).
 
 Before access control a collection recorded no owner. A row whose ``access`` block is absent or empty (no owners, no
 grants, not public) gets one, by the rules of plan P3 Decision 7:
@@ -78,10 +78,10 @@ async def _read_all(store) -> list[Any]:
         offset += _PAGE
 
 
-class M023CollectionOwnership:
+class M025CollectionOwnership:
     """Stamp the first admin as owner of every unset collection; make ``system`` public; leave ``_internal_*`` admin-only."""
 
-    version = 23
+    version = 25
     description = "give existing collections an owner; the system wiki becomes public"
 
     async def apply(self, sp: StorageProvider) -> None:
@@ -106,4 +106,4 @@ class M023CollectionOwnership:
             logger.info("gave existing collections an owner", extra={"rows": owned, "owner": first_admin})
 
 
-__all__ = ["M023CollectionOwnership"]
+__all__ = ["M025CollectionOwnership"]
