@@ -141,12 +141,15 @@ async def set_access(
         raise ValidationError("an entity needs at least one owner")
     if update.public_tools and not allow_public_tools:
         raise ValidationError(f"{what} has no tools to make public")
+    # Only the people this update ADDS are validated: the remaining owners can still re-share a row that names a user since demoted, disabled or deleted
+    # (dropping them is their call). A new owner or grantee who is restricted, disabled or missing is refused.
+    already = {*current.owners, *current.grants}
     refs: dict[str, UserRef] = {}
     for uid in dict.fromkeys([*owners, *update.grants]):
         user = await users.get(uid)
-        if user is None or user.disabled or user.role == "restricted":
+        if uid not in already and (user is None or user.disabled or user.role == "restricted"):
             raise ValidationError(f"{uid!r} is not a user this can be shared with")
-        refs[uid] = UserRef(id=uid, username=user.username)
+        refs[uid] = UserRef(id=uid, username=user.username if user is not None else None)
     new = Access(
         owners=owners,
         grants=update.grants,
