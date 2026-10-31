@@ -24,7 +24,7 @@ import logging
 from primer.harness.diff import diff_renderings
 from primer.harness.hashes import hash_rendered_payload, hash_template_source
 from primer.harness.template import RenderedFile
-from primer.model.except_ import ConflictError
+from primer.model.except_ import ConflictError, NotFoundError
 from primer.access.service import rewrite_keeping_access
 from primer.model.access import Access
 from primer.model.harness import Harness, HarnessRendering, RenderedEntry
@@ -635,6 +635,23 @@ async def _index_installed_document(
         )
 
 
+async def _delete_installed(storage_provider: Any, entry: RenderedEntry, semantic_search_registry: Any | None) -> None:
+    """Delete one installed row, for a sync that drops it.
+
+    A row already gone is done (KN-3: a retried sync meets the rows an earlier attempt removed). A document's content row
+    goes with it. Any other error raises.
+    """
+    storage = _storage_for_kind(storage_provider, entry.kind)
+    try:
+        await storage.delete(entry.resolved_id)
+    except NotFoundError:
+        pass
+    if entry.kind == "document":
+        # A removed document's body must be deleted too, else the content row is orphaned (it would later trip the
+        # content store's UNIQUE(collection_id, path) constraint on a re-add at the same path). No-op if absent.
+        await _delete_document_content(storage_provider=storage_provider, document_id=entry.resolved_id)
+
+
 # ---------------------------------------------------------------------------
 # apply_install
 # ---------------------------------------------------------------------------
@@ -857,17 +874,8 @@ async def apply_sync(
 
     # Process deletes first (reverse uninstall order: graph → ... → toolset)
     for entry in _sorted_by_kind(diff.deletes, _UNINSTALL_ORDER):
-        storage = _storage_for_kind(storage_provider, entry.kind)
         try:
-            await storage.delete(entry.resolved_id)
-            # A removed document's body must be deleted too, else the content
-            # row is orphaned (it would later trip the content store's UNIQUE
-            # (collection_id, path) constraint on a re-add at the same path).
-            if entry.kind == "document":
-                await _delete_document_content(
-                    storage_provider=storage_provider,
-                    document_id=entry.resolved_id,
-                )
+            await _delete_installed(storage_provider, entry, semantic_search_registry)
             if entry.kind == "toolset":
                 await _forget_toolset_sign_in(storage_provider, entry.resolved_id)
         except Exception as exc:
@@ -897,13 +905,29 @@ async def apply_sync(
         try:
             # Entity row + (document) content row in ONE transaction so a
             # failure in either rolls both back - no torn write.
-            await _write_entity_with_body(
-                storage_provider=storage_provider,
-                storage=storage,
-                entity=entity,
-                content=doc_content if entry.kind == "document" else None,
-                is_update=False,
-            )
+            try:
+                await _write_entity_with_body(
+                    storage_provider=storage_provider,
+                    storage=storage,
+                    entity=entity,
+                    content=doc_content if entry.kind == "document" else None,
+                    is_update=False,
+                )
+            except ConflictError:
+                # A row of THIS harness holds the id: an earlier sync created it and then failed, so the snapshot it kept
+                # does not list it (KN-3). Apply it as the update it is; a row anyone else holds still fails.
+                existing = await storage.get(entry.resolved_id)
+                if existing is None or getattr(existing, "harness_id", None) != harness.id:
+                    raise
+                if entry.kind == "toolset":
+                    await _forget_sign_in_on_oauth_change(storage_provider, storage, entity)
+                await _write_entity_with_body(
+                    storage_provider=storage_provider,
+                    storage=storage,
+                    entity=entity,
+                    content=doc_content if entry.kind == "document" else None,
+                    is_update=True,
+                )
         except Exception as exc:
             apply_errors.append(
                 {"kind": entry.kind, "id": entry.resolved_id, "error": str(exc)}

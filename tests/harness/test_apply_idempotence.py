@@ -170,6 +170,48 @@ async def test_a_cascade_uninstall_without_a_snapshot_removes_only_the_harness(s
     await apply_uninstall(storage_provider=sp, harness=h, cascade=True)
     assert await sp.get_storage(Harness).get(h.id) is None
 
+
+# ---------------------------------------------------------------------------
+# KN-3: a failed sync no longer wedges every later sync
+# ---------------------------------------------------------------------------
+
+
+async def test_a_sync_after_a_partial_failure_applies_and_uninstall_removes_what_it_created(sp):
+    h = _h()
+    await _install(sp, h, [])
+    await sp.get_storage(Agent).create(Agent(id="acme__b", description="mine", model={"profile_id": "p--m"}))
+    err = await _sync(sp, h, [_agent("a"), _agent("b")])
+    assert json.loads(err)["code"] == "partial_apply_failure"
+    assert (await sp.get_storage(Agent).get("acme__a")).harness_id == h.id
+    await sp.get_storage(Agent).delete("acme__b")          # the operator removes the cause
+    assert await _sync(sp, h, [_agent("a"), _agent("b")]) is None
+    assert await _snapshot_ids(sp, h) == ("b1", ["acme__a", "acme__b"])
+    await apply_uninstall(storage_provider=sp, harness=h, cascade=True)
+    assert await sp.get_storage(Agent).get("acme__a") is None
+    assert await sp.get_storage(Agent).get("acme__b") is None
+
+
+async def test_a_retried_create_of_its_own_row_writes_the_new_payload(sp):
+    h = _h()
+    await _install(sp, h, [])
+    await sp.get_storage(Agent).create(
+        Agent(id="acme__a", description="stale", model={"profile_id": "p--m"}, harness_id=h.id))
+    assert await _sync(sp, h, [_agent("a", "fresh")]) is None
+    assert (await sp.get_storage(Agent).get("acme__a")).description == "fresh"
+
+
+async def test_a_sync_delete_of_a_row_already_gone_is_done(sp):
+    h = _h()
+    await _install(sp, h, [_agent("a"), _agent("b")])
+    await sp.get_storage(Agent).delete("acme__a")           # gone already (an earlier failed sync deleted it)
+    assert await _sync(sp, h, [_agent("b")]) is None
+    assert await _snapshot_ids(sp, h) == ("b1", ["acme__b"])
+
+# ---------------------------------------------------------------------------
+# KN-5: a real delete error stops the uninstall; cascade=False releases the kept rows
+# ---------------------------------------------------------------------------
+
+
 class _Bus:
     def __init__(self) -> None:
         self.events: list[str] = []
