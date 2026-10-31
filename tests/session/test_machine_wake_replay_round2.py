@@ -19,6 +19,7 @@ import pytest
 
 import primer.observability.metrics as metrics
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import ToolContext, timer_event_key, with_wake_park
 from primer.session.yields import flip_sessions_parked_on
 from primer.toolset.trigger import _make_subscribe_channel_handler, _make_subscribe_handler
@@ -176,7 +177,11 @@ async def test_two_sessions_subscribing_to_one_channel_trigger_wait_on_different
     for sid in ("s1", "s2"):
         out = await handler(
             {"trigger_id": "T", "event_matcher": {"event_type": "command.invoked", "command_name": "approve"}},
-            ctx=ToolContext(tool_call_id="call_0", session_id=sid, workspace_id="ws"),
+            # A provider-wide channel trigger is admin-only to park on (access-control P3 Decision 5): the sessions run as an admin.
+            ctx=ToolContext(
+                tool_call_id="call_0", session_id=sid, workspace_id="ws",
+                initiated_by=PrincipalRef(type="user", id="admin-1", display="admin", role="admin", source="local", user_id="admin-1"),
+            ),
         )
         keys.append(out.event_key)
 

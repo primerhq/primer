@@ -27,6 +27,7 @@ from pydantic import SecretStr
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
 from primer.auth.passwords import hash_password
+from primer.model.access import Access
 from primer.model.harness import Harness, HarnessStatus
 from primer.model.provider import SqliteConfig
 from primer.model.user import User
@@ -92,6 +93,8 @@ async def ctx(tmp_path: Path) -> AsyncIterator[dict]:
                 git_token=SecretStr(_TOKEN),
                 status=HarnessStatus.READY,
                 created_at=datetime.now(timezone.utc),
+                # The user reads it (a harness is owned since access-control P3 Task 6): the oracles below apply to readers.
+                access=Access(grants={"user-u": "read"}),
             )
         )
         await admin.post(

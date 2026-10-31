@@ -80,22 +80,20 @@ def test_the_trigger_router_puts_the_code_in_extensions_code_with_its_message(en
     assert envelopes["slug"]["extensions"]["code"] == "trigger_slug_conflict" and envelopes["slug"]["detail"] == "slug 'nightly' already in use"
 
 
-def test_a_fire_the_rank_rule_refuses_is_a_403_forbidden_rank_with_the_rules_sentence(envelopes) -> None:
-    """The real route over the real service (ticket 01a16e65-12d1): a user-role account firing an admin's trigger."""
-    refused = envelopes["fire_outranked"]
+def test_a_fire_by_a_read_grantee_is_a_403_access_denied_with_the_servers_sentence(envelopes) -> None:
+    """The real route over the real service (access-control P3 Task 4): a user who may only read an admin's trigger fires it."""
+    refused = envelopes["fire_refused"]
 
-    assert refused["status"] == 403 and refused["extensions"]["code"] == "forbidden_rank"
-    assert refused["detail"] == (
-        "trigger 'tr-admin' runs at a higher rank (admin) than you (user); you may fire only your own triggers and triggers at or below your rank"
-    )
+    assert refused["status"] == 403 and refused["extensions"]["code"] == "access_denied"
+    assert refused["detail"] == "Trigger 'tr-admin' needs full access"
 
 
 @pytest.mark.parametrize("fallback", FALLBACKS)
-def test_a_fire_the_rank_rule_refuses_shows_the_servers_sentence_and_its_remedy_in_every_dialog(envelopes, fallback: str) -> None:
-    text = _text(envelopes["fire_outranked"], fallback)
+def test_a_fire_by_a_read_grantee_shows_the_servers_sentence_in_every_dialog(envelopes, fallback: str) -> None:
+    text = _text(envelopes["fire_refused"], fallback)
 
-    assert text == envelopes["fire_outranked"]["detail"] + ". Ask the trigger's owner or an administrator to fire it."
-    assert "forbidden_rank" not in text
+    assert text == envelopes["fire_refused"]["detail"]
+    assert "access_denied" not in text
 
 
 # ---- the auth gate: a sentence, never the code --------------------------------------------------------------------------------------------------------------
@@ -149,6 +147,5 @@ def test_a_not_found_with_no_message_is_the_http_title_not_a_sentence_about_noth
 def test_the_trigger_routers_own_refusals_still_get_their_remedy(envelopes) -> None:
     assert _text(envelopes["slug"], "Request failed") == "slug 'nightly' already in use. Choose a different slug."
     assert _text(envelopes["not_found"], "Fire failed") == "Trigger tr-1 was not found: it may have been deleted. Go back to the triggers list."
-    assert _text(envelopes["router_forbidden"], "Rotate failed") == (
-        "only the trigger's owner or an admin may rotate its webhook token. Ask the trigger's owner or an administrator."
-    )
+    # An access refusal (access-control P3 Task 4) carries the server's whole sentence and no remedy of the router's own.
+    assert _text(envelopes["router_forbidden"], "Rotate failed") == "Trigger 'tr-admin' needs owner access"

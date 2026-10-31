@@ -137,6 +137,13 @@ _OnPreDeleteHook = Callable[[Any, Request], Awaitable[None]] | None
 # that must return 403 regardless of storage state.
 _OnPreDeleteIdHook = Callable[[str, Request], Awaitable[None]] | None
 
+# Inherited-access hooks (a kind whose rows take their access from a parent row, e.g. a document from its collection).
+# Row guard: ``(row, request, write) -> None``, called right after the row loads on GET (write=False), PUT and DELETE
+# (write=True), before any pre-hook; raises NotFoundError / AccessDeniedError. List filter: ``(request) -> Predicate |
+# None``, ANDed into LIST and FIND (``None``: no filter).
+_RowGuardHook = Callable[[Any, Request, bool], Awaitable[None]] | None
+_ListFilterHook = Callable[[Request], Awaitable[Predicate | None]] | None
+
 
 async def preserve_masked_secrets_on_update(entity: Any, existing: Any, request: Request) -> None:
     """Ready-made ``on_pre_update`` hook for any provider-shaped entity
@@ -165,6 +172,23 @@ async def preserve_masked_secrets_on_update(entity: Any, existing: Any, request:
 _OnListEnrichHook = Callable[[Any, Request], Awaitable[Any]] | None
 
 
+def _refuse_harness_id(entity: Any, existing: Any | None) -> None:
+    """``harness_id`` is never writable through a body: only the harness service sets it (create) or changes it (update).
+
+    A body that sets it on create, or differs from the stored value on update, answers 422 and the stored value is kept. Without this a full grantee
+    could point someone's row at a harness of their own (the fan-out would then hand it to them) or at one that does not exist (nothing could share
+    the row again). A model with no ``harness_id`` is not affected.
+    """
+    if not hasattr(entity, "harness_id"):
+        return
+    stored = getattr(existing, "harness_id", None) if existing is not None else None
+    if entity.harness_id != stored:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "harness_id_forbidden", "message": "harness_id may only be set by the harness dispatch."},
+        )
+
+
 def make_crud_router(
     *,
     model_cls: type[_ModelT],
@@ -190,6 +214,8 @@ def make_crud_router(
     search_fields: list[str] | None = None,
     enrich_list: _OnListEnrichHook = None,
     owned: bool = False,
+    row_guard: _RowGuardHook = None,
+    list_filter: _ListFilterHook = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
 
@@ -299,6 +325,13 @@ def make_crud_router(
         :func:`primer.access.policy.visible_predicate` into the storage query.
         Response rows keep ``access``: callers need it to show sharing, and
         it is not secret.
+    row_guard / list_filter
+        For a kind that inherits its access from a parent row (unscoped
+        routes only): ``row_guard(row, request, write)`` runs right after the
+        row loads on GET (``write=False``), PUT and DELETE (``write=True``),
+        where ``owned`` runs its check; ``list_filter(request)`` returns a
+        predicate ANDed into LIST and FIND (``None``: no filter). Creates are
+        checked by the kind's own ``on_pre_create``.
     """
 
     # Validate scope params: both must be set together or not at all.
@@ -312,7 +345,7 @@ def make_crud_router(
             raise ValueError(
                 "parent_path_segment must be provided when scope_field is set"
             )
-    if owned and scope_field is not None:
+    if (owned or row_guard is not None or list_filter is not None) and scope_field is not None:
         raise ValueError(
             "owned and scope_field are mutually exclusive: a scoped router is "
             "nested under a parent whose own access gates the subtree"
@@ -380,6 +413,14 @@ def make_crud_router(
 
     router = APIRouter(tags=[tag])
 
+    async def _access_predicate(request: Request) -> Predicate | None:
+        """The caller's list filter: owned rows by ``visible_predicate``, inherited rows by ``list_filter``."""
+        if owned:
+            return visible_predicate(person_from_request(request))
+        if list_filter is not None:
+            return await list_filter(request)
+        return None
+
     if scope_field is not None and parent_path_segment is not None:
         # ------------------------------------------------------------------
         # SCOPED routes: /v1/{parent_path_segment}/{parent_id}/{plural}/...
@@ -417,6 +458,7 @@ def make_crud_router(
             refuse_served_masks(entity)
             if on_pre_create is not None:
                 await on_pre_create(entity, request)
+            _refuse_harness_id(entity, None)  # after the kind's own hook, so its more specific answer stays
             created = await storage.create(entity)
             if on_create is not None:
                 await on_create(created.id, request)
@@ -637,6 +679,8 @@ def make_crud_router(
                     AccessLevel.READ,
                     what=f"{model_cls.__name__} {entity_id!r}",
                 )
+            if row_guard is not None:
+                await row_guard(row, request, False)
             return row
 
         # ---- PUT /<plural>/{id}  (replace) -------------------------------
@@ -677,8 +721,11 @@ def make_crud_router(
                 # The body's access is ignored (spec anti-goal 1): the row
                 # keeps its stored access.
                 entity.access = existing.access
+            if row_guard is not None:
+                await row_guard(existing, request, True)
             if on_pre_update is not None:
-                await on_pre_update(entity, existing, request)
+                await on_pre_update(entity, existing, request)  # a managed row answers its own 409 first
+            _refuse_harness_id(entity, existing)
             if owned:
                 # Guarded on the stored sharing's rev: a share changed meanwhile answers 409, never a resurrected grant.
                 updated = await update_keeping_access(
@@ -718,6 +765,8 @@ def make_crud_router(
                     AccessLevel.OWNER,
                     what=f"{model_cls.__name__} {entity_id!r}",
                 )
+            if row_guard is not None:
+                await row_guard(existing, request, True)
             if on_pre_delete is not None:
                 await on_pre_delete(existing, request)
             if on_delete is not None:
@@ -748,9 +797,7 @@ def make_crud_router(
             # Owned rows: AND the caller's visibility predicate into the list
             # query (spec anti-goal 4: filter in storage, never a fetched page
             # in Python). Admins get None and keep the unfiltered path.
-            access_pred = (
-                visible_predicate(person_from_request(request)) if owned else None
-            )
+            access_pred = await _access_predicate(request)
             # q present AND this entity is searchable -> ILIKE substring find,
             # preserving the same page/order_by handling and the identical
             # OffsetPageResponse {items, total} shape as the plain list.
@@ -779,18 +826,15 @@ def make_crud_router(
             storage=Depends(storage_dep),
         ) -> _PageResp:
             refuse_secret_fields(model_cls, predicate=body.predicate, order_by=body.order_by)
-            if owned:
-                # AND the caller's visibility predicate: a body predicate can
-                # only narrow the caller's visible set, never widen it (a
-                # predicate on access itself included).
-                access_pred = visible_predicate(person_from_request(request))
-                predicate = (
-                    Predicate(left=body.predicate, op=Op.AND, right=access_pred)
-                    if access_pred is not None and body.predicate is not None
-                    else (access_pred or body.predicate)
-                )
-            else:
-                predicate = body.predicate
+            # AND the caller's visibility predicate: a body predicate can only
+            # narrow the caller's visible set, never widen it (a predicate on
+            # access itself included).
+            access_pred = await _access_predicate(request)
+            predicate = (
+                Predicate(left=body.predicate, op=Op.AND, right=access_pred)
+                if access_pred is not None and body.predicate is not None
+                else (access_pred or body.predicate)
+            )
             return await storage.find(predicate, body.page, order_by=body.order_by)
 
     return router

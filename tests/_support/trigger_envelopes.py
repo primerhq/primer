@@ -37,6 +37,7 @@ def real_envelopes() -> dict[str, dict]:
     from primer.api.deps import get_claim_engine, get_event_bus, get_storage_provider, require_user
     from primer.api.errors import register_error_handlers
     from primer.api.routers.triggers import _raise_code, triggers_router
+    from primer.model.access import Access
     from primer.model.principal import Principal, PrincipalRef
     from primer.model.trigger import DelayedTriggerConfig, Trigger
     from primer.model.user import User
@@ -45,13 +46,15 @@ def real_envelopes() -> dict[str, dict]:
     app = FastAPI()
     register_error_handlers(app)
 
-    # The REAL fire_now route over the REAL service: an admin's trigger fired by a user-role account is refused by the rank rule (ticket
-    # 01a16e65-12d1), so the console reads the 403 ``forbidden_rank`` body the route really answers.
+    # The REAL fire_now and rotate_token routes over the REAL service: an admin's trigger shared read with the signed-in user, who fires it
+    # (full needed) and rotates its token (owner needed), so the console reads the 403 ``access_denied`` bodies the routes really answer
+    # (access-control P3 Task 4).
     sp = _FakeStorageProvider()
     admin = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
     _run(sp.get_storage(Trigger).create(Trigger(
         id="tr-admin", slug="tr-admin", name="nightly", created_at=datetime.now(timezone.utc), owner=admin,
         config=DelayedTriggerConfig(fire_at=datetime.now(timezone.utc) + timedelta(days=1)),
+        access=Access(owners=["u-admin"], grants={"u-1": "read"}),
     )))
     app.include_router(triggers_router)
     app.dependency_overrides[get_storage_provider] = lambda: sp
@@ -65,7 +68,7 @@ def real_envelopes() -> dict[str, dict]:
             request.state.user = User(id="u-1", username="someone", role=role, created_at=datetime.now(timezone.utc))
         actor_role = request.headers.get("x-test-actor-role")
         if actor_role:
-            request.state.actor = Principal(type="user", id="u-1", display="someone", role=actor_role, source="local")
+            request.state.actor = Principal(type="user", id="u-1", display="someone", role=actor_role, source="local", user_id="u-1")
         return await call_next(request)
 
     @app.post("/v1/gated", dependencies=[Depends(require_user)])
@@ -88,10 +91,6 @@ def real_envelopes() -> dict[str, dict]:
     def slug():
         _raise_code(409, "trigger_slug_conflict", "slug 'nightly' already in use")
 
-    @app.post("/v1/router_forbidden")
-    def router_forbidden():
-        _raise_code(403, "forbidden_role", "only the trigger's owner or an admin may rotate its webhook token")
-
     client = TestClient(app, raise_server_exceptions=False)
     return {
         "session_ended": client.post("/v1/gated").json(),
@@ -100,8 +99,8 @@ def real_envelopes() -> dict[str, dict]:
         "not_found_underscored_id": client.post("/v1/not_found_underscored_id").json(),
         "not_found_empty": client.post("/v1/not_found_empty").json(),
         "slug": client.post("/v1/slug").json(),
-        "router_forbidden": client.post("/v1/router_forbidden").json(),
-        "fire_outranked": client.post("/v1/triggers/tr-admin/fire_now", headers={"x-test-actor-role": "user"}).json(),
+        "router_forbidden": client.post("/v1/triggers/tr-admin/rotate_token", headers={"x-test-actor-role": "user"}).json(),
+        "fire_refused": client.post("/v1/triggers/tr-admin/fire_now", headers={"x-test-actor-role": "user"}).json(),
     }
 
 
@@ -134,8 +133,8 @@ def real_fire_bodies() -> dict[str, dict]:
     bodies: dict[str, dict] = {}
     try:
         for name, result in results.items():
-            # The service call's real keywords (since ticket 01a16e65-12d1 the route passes who fires): a stale signature is a TypeError here.
-            async def answer(*, trigger_id, caller, from_run, deps, _result=result):
+            # The service call's real keywords (the route passes who fires, access-control P3 Task 4): a stale signature is a TypeError here.
+            async def answer(*, trigger_id, person, deps, _result=result):
                 return _result
 
             router.fire_now = answer

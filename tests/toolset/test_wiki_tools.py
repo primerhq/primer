@@ -263,10 +263,12 @@ async def test_wiki_search_semantic_honours_path_prefix(sp, wiki):
 
 
 async def test_this_install_quotes_user_text_and_is_excluded_from_search_by_default(sp, wiki):
+    from primer.model.access import Access
     from primer.model.agent import Agent, AgentModel
 
     await sp.get_storage(Agent).create(
         Agent(
+            access=Access(public=True),  # the live map lists only public entities (access-control P3 Decision 7)
             id="agent-inj",
             description="narwhal secret instruction",
             model=AgentModel(profile_id="prov--m"),

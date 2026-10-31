@@ -99,6 +99,29 @@ def _kind_models() -> dict[str, type]:
     return _KIND_MODELS
 
 
+async def refuse_unreadable_tracked(harness: Any, person: Any, *, storage_provider: Any) -> None:
+    """Raise ``AccessDeniedError`` unless ``person`` holds READ on every row ``harness`` tracks (admins always do).
+
+    The bundle ships each tracked row's full spec, so READ on the harness alone must not hand a reader a private row's content. A document follows
+    its collection. A row that is missing is left to :func:`build_outbound`'s own error.
+    """
+    from primer.access.policy import level_of
+    from primer.model.except_ import AccessDeniedError
+
+    if person.is_admin:
+        return
+    for te in harness.tracked_entities:
+        row = await storage_provider.get_storage(_kind_models()[te.kind]).get(te.source_id)
+        if row is None:
+            continue
+        if te.kind == "document":
+            row = await storage_provider.get_storage(_kind_models()["collection"]).get(row.collection_id)
+            if row is None:
+                continue
+        if level_of(person, row.access) is None:
+            raise AccessDeniedError(f"the bundle tracks {te.kind} {te.source_id!r}, which you cannot read")
+
+
 async def build_outbound(
     harness: Harness,
     *,
@@ -151,7 +174,7 @@ async def build_outbound(
 
         payload = entity.model_dump(mode="json")
         # Strip system fields that don't belong in a template's spec
-        for sysf in ("id", "harness_id", "created_at", "updated_at"):
+        for sysf in ("id", "harness_id", "created_at", "updated_at", "access"):
             payload.pop(sysf, None)
 
         # Resolve current values for schema inference. Each mapping's
@@ -262,5 +285,6 @@ __all__ = [
     "OutboundBuildError",
     "OutboundFile",
     "build_bundle_targz",
+    "refuse_unreadable_tracked",
     "build_outbound",
 ]

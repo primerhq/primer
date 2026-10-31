@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from primer.common.url_userinfo import MaskCannotBeRestored, carries_mask, restore_userinfo
+from primer.model.access import Owned
 from primer.model.common import Identifiable
 from primer.model.masked_url import MaskedGitUrl
 from primer.model.principal import PrincipalRef
@@ -223,7 +224,7 @@ class ResolvedDependency(BaseModel):
     parent_name: str | None = None
 
 
-class Harness(Identifiable):
+class Harness(Owned, Identifiable):
     slug: str = Field(..., min_length=2, max_length=64)
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)

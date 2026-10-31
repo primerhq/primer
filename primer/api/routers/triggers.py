@@ -26,12 +26,11 @@ mapping covers the cases the service layer reports:
   ``parked_session_only_from_yield``
 * :class:`~primer.trigger.service.TriggerSlugConflict` → 409
   ``trigger_slug_conflict``
-* :class:`~primer.trigger.service.TriggerForbidden` → 403 ``forbidden_role``
-  (a webhook trigger's PUT / rotate_token by someone other than its owner or
-  an admin; list / get show such callers the token masked)
-* :class:`~primer.trigger.service.TriggerOutranked` → 403 ``forbidden_rank``
-  (a ``fire_now``, ``PUT`` or ``DELETE`` by a caller ranked below the
-  trigger's owner who does not own it; tickets 01a16e65-12d1 and 01a16ee4)
+* access (access-control P3 Task 4, Decision 3): a trigger the caller holds
+  no level on → 404 ``trigger_not_found`` (exactly as an unknown id); too low
+  a level → 403 ``access_denied`` (read: get/list, subscriptions read; full:
+  ``PUT``, ``fire_now``, subscription writes; owner: ``DELETE``,
+  ``rotate_token``, ``/access``). Non-managers see a webhook token masked.
 * :class:`~primer.trigger.cron.CronInvalid` → 422 ``cron_invalid``
 * :class:`~primer.trigger.cron.TimezoneInvalid` → 422 ``timezone_invalid``
 * :class:`~primer.model.event_matcher.EventMatcherPatternError` → 422
@@ -46,11 +45,13 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from primer.access.person import person_from_request
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
     get_storage_provider,
 )
+from primer.api.routers.access import make_access_router
 from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
@@ -62,6 +63,7 @@ from primer.model.trigger import (
     Trigger,
     TriggerConfig,
 )
+from primer.trigger.channel_access import require_channel_trigger_access
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.owner import view_for
 from primer.trigger.service import (
@@ -70,10 +72,8 @@ from primer.trigger.service import (
     ReplyTargetChannelNotFound,
     ServiceDeps,
     SubscriptionNotFound,
-    TriggerForbidden,
     TriggerKindImmutable,
     TriggerNotFound,
-    TriggerOutranked,
     TriggerSlugConflict,
     create_subscription,
     create_trigger,
@@ -91,6 +91,16 @@ from primer.trigger.service import (
 
 
 triggers_router = APIRouter(prefix="/v1/triggers", tags=["triggers"])
+
+
+def _trigger_storage(request: Request):
+    return get_storage_provider(request).get_storage(Trigger)
+
+
+# GET/PUT /triggers/{id}/access; mounted under /v1 before ``triggers_router`` (the route-order rule of _crud.py).
+trigger_access_router = make_access_router(
+    model_cls=Trigger, plural="triggers", storage_dep=_trigger_storage, tag="triggers",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +200,8 @@ async def create_trigger_endpoint(
 ) -> JSONResponse:
     deps = _deps(sp, claim_engine, event_bus)
     try:
+        # The channel the trigger fires from must be readable by its saver (access P3, decision 5).
+        await require_channel_trigger_access(sp, person_from_request(request), body.config)
         trigger = await create_trigger(
             slug=body.slug,
             name=body.name,
@@ -197,6 +209,7 @@ async def create_trigger_endpoint(
             config=body.config,
             enabled=body.enabled,
             owner=_owner(request),
+            person=person_from_request(request),
             deps=deps,
         )
     except TriggerSlugConflict as exc:
@@ -226,7 +239,7 @@ async def list_triggers_endpoint(
     event_bus=Depends(get_event_bus),
 ) -> dict[str, Any]:
     deps = _deps(sp, claim_engine, event_bus)
-    items = await list_triggers(kind=kind, enabled=enabled, deps=deps)
+    items = await list_triggers(kind=kind, enabled=enabled, person=person_from_request(request), deps=deps)
     # A webhook token is served only to the trigger's owner or an admin:
     # it is the credential that drives the trigger's runs (A-20 round 2).
     caller = _owner(request)
@@ -246,7 +259,7 @@ async def get_trigger_endpoint(
 ) -> JSONResponse:
     deps = _deps(sp, claim_engine, event_bus)
     try:
-        trigger = await get_trigger(trigger_id=trigger_id, deps=deps)
+        trigger = await get_trigger(trigger_id=trigger_id, person=person_from_request(request), deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
     return JSONResponse(
@@ -265,9 +278,10 @@ async def update_trigger_endpoint(
     event_bus=Depends(get_event_bus),
 ) -> JSONResponse:
     deps = _deps(sp, claim_engine, event_bus)
-    # A save re-arms the trigger's claim and hands it to the saver, so it follows the rank rule of a manual fire (ticket 01a16ee4):
-    # 403 ``forbidden_rank`` otherwise, and nothing changes (the trigger keeps its stored owner).
+    # Full on the trigger (P3 Decision 3); the saver becomes its run-as owner.
     try:
+        # The channel a re-pointed config fires from must be readable by the saver (access P3, decision 5); a None config re-checks nothing.
+        await require_channel_trigger_access(sp, person_from_request(request), body.config)
         trigger = await update_trigger(
             trigger_id=trigger_id,
             name=body.name,
@@ -275,17 +289,13 @@ async def update_trigger_endpoint(
             enabled=body.enabled,
             config=body.config,
             owner=_owner(request),
-            caller=getattr(request.state, "actor", None),
+            person=person_from_request(request),
             deps=deps,
         )
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
-    except TriggerOutranked as exc:
-        _raise_code(403, "forbidden_rank", str(exc))
     except TriggerKindImmutable as exc:
         _raise_code(409, "trigger_kind_immutable", str(exc))
-    except TriggerForbidden as exc:
-        _raise_code(403, "forbidden_role", str(exc))
     except CronInvalid as exc:
         _raise_code(422, "cron_invalid", str(exc))
     except TimezoneInvalid as exc:
@@ -305,16 +315,11 @@ async def delete_trigger_endpoint(
     event_bus=Depends(get_event_bus),
 ) -> Response:
     deps = _deps(sp, claim_engine, event_bus)
-    # A delete ends the trigger's subscriptions' automation, so it follows the rank rule of a manual fire (ticket 01a16ee4):
-    # 403 ``forbidden_rank`` otherwise, and nothing is deleted.
+    # Owner on the trigger (P3 Decision 3); a refusal deletes nothing.
     try:
-        await delete_trigger(
-            trigger_id=trigger_id, caller=getattr(request.state, "actor", None), deps=deps,
-        )
+        await delete_trigger(trigger_id=trigger_id, person=person_from_request(request), deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
-    except TriggerOutranked as exc:
-        _raise_code(403, "forbidden_rank", str(exc))
     return Response(status_code=204)
 
 
@@ -332,12 +337,10 @@ async def rotate_token_endpoint(
     deps = _deps(sp, claim_engine, event_bus)
     try:
         trigger = await rotate_webhook_token(
-            trigger_id=trigger_id, owner=_owner(request), deps=deps,
+            trigger_id=trigger_id, owner=_owner(request), person=person_from_request(request), deps=deps,
         )
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
-    except TriggerForbidden as exc:
-        _raise_code(403, "forbidden_role", str(exc))
     except ValueError as exc:
         _raise_code(422, "not_a_webhook_trigger", str(exc))
     return JSONResponse(
@@ -373,14 +376,11 @@ async def fire_now_endpoint(
             request.app.state, "workspace_registry", None
         ),
     )
-    # A fire runs as the trigger's owners, so the caller must rank at least as high as the owner or own it (ticket 01a16e65-12d1): 403
-    # ``forbidden_rank`` otherwise, and nothing fires. A person keeps their reach over every trigger: this is a rank rule, not a scope.
+    # Full on the trigger (P3 Decision 3); a refusal fires nothing. The fire runs as the trigger's and its subscriptions' owners.
     try:
-        result = await fire_now(trigger_id=trigger_id, caller=getattr(request.state, "actor", None), from_run=False, deps=deps)
+        result = await fire_now(trigger_id=trigger_id, person=person_from_request(request), deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
-    except TriggerOutranked as exc:
-        _raise_code(403, "forbidden_rank", str(exc))
     return JSONResponse(
         status_code=200,
         content={
@@ -421,6 +421,7 @@ async def create_subscription_endpoint(
             event_matcher=body.event_matcher,
             reply_target=body.reply_target,
             owner=_owner(request),
+            person=person_from_request(request),
             deps=deps,
         )
     except TriggerNotFound as exc:
@@ -454,7 +455,7 @@ async def list_subscriptions_endpoint(
     # Confirm the parent trigger exists so we surface 404 instead of
     # an empty list when the caller used a stale id.
     try:
-        await get_trigger(trigger_id=trigger_id, deps=deps)
+        await get_trigger(trigger_id=trigger_id, person=person_from_request(request), deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
     items = await list_subscriptions(trigger_id=trigger_id, deps=deps)
@@ -483,8 +484,11 @@ async def get_subscription_endpoint(
         sub = await get_subscription(
             trigger_id=trigger_id,
             subscription_id=subscription_id,
+            person=person_from_request(request),
             deps=deps,
         )
+    except TriggerNotFound as exc:
+        _raise_code(404, "trigger_not_found", str(exc))
     except SubscriptionNotFound as exc:
         _raise_code(404, "subscription_not_found", str(exc))
     return JSONResponse(
@@ -528,9 +532,12 @@ async def update_subscription_endpoint(
             trigger_id=trigger_id,
             subscription_id=subscription_id,
             owner=_owner(request),
+            person=person_from_request(request),
             deps=deps,
             **kwargs,
         )
+    except TriggerNotFound as exc:
+        _raise_code(404, "trigger_not_found", str(exc))
     except SubscriptionNotFound as exc:
         _raise_code(404, "subscription_not_found", str(exc))
     except EventMatcherPatternError as exc:
@@ -550,6 +557,7 @@ async def update_subscription_endpoint(
     summary="Delete a subscription",
 )
 async def delete_subscription_endpoint(
+    request: Request,
     trigger_id: str = Path(...),
     subscription_id: str = Path(...),
     sp=Depends(get_storage_provider),
@@ -561,11 +569,14 @@ async def delete_subscription_endpoint(
         await delete_subscription(
             trigger_id=trigger_id,
             subscription_id=subscription_id,
+            person=person_from_request(request),
             deps=deps,
         )
+    except TriggerNotFound as exc:
+        _raise_code(404, "trigger_not_found", str(exc))
     except SubscriptionNotFound as exc:
         _raise_code(404, "subscription_not_found", str(exc))
     return Response(status_code=204)
 
 
-__all__ = ["triggers_router"]
+__all__ = ["trigger_access_router", "triggers_router"]

@@ -14,19 +14,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from primer.access.person import Person
-from primer.access.policy import level_of, require, visible_predicate
-from primer.model.access import LEVEL_RANK, AccessLevel
+from primer.access.policy import level_of, readable_ids, require
+from primer.model.access import AccessLevel
 from primer.model.except_ import NotFoundError
-from primer.model.storage import OffsetPage, Op, Predicate
+from primer.model.storage import Op, Predicate
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import WorkspaceSession
 
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
-
-#: ``OffsetPage.length`` is bounded to 200; the page size the id-set
-#: collection walks with.
-_PAGE_SIZE = 200
 
 
 async def _workspace(sp: "StorageProvider", workspace_id: str) -> Workspace | None:
@@ -109,24 +105,7 @@ async def readable_workspace_ids(
     ids from a ``visible_predicate`` find over ``Workspace``, kept only
     while the held level reaches ``need`` (public rows count as read).
     """
-    if person.is_admin:
-        return None
-    storage = sp.get_storage(Workspace)
-    predicate = visible_predicate(person)
-    ids: list[str] = []
-    offset = 0
-    while True:
-        response = await storage.find(
-            predicate, OffsetPage(offset=offset, length=_PAGE_SIZE)
-        )
-        items = response.items
-        for row in items:
-            held = level_of(person, row.access)
-            if held is not None and LEVEL_RANK[held] >= LEVEL_RANK[need]:
-                ids.append(row.id)
-        if len(items) < _PAGE_SIZE:
-            return ids
-        offset += _PAGE_SIZE
+    return await readable_ids(sp.get_storage(Workspace), person, need)
 
 
 async def scope_to_readable_workspaces(

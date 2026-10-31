@@ -43,7 +43,7 @@ from primer.model.storage import (
 )
 from primer.toolset.system import SYSTEM_TOOLSET_ID, build_system_toolset
 from tests._support.agent_check_rows import profile_row
-from tests._support.caller import ADMIN_CALLER
+from tests._support.caller import ADMIN_CALLER, AsCaller
 
 
 # ===========================================================================
@@ -1052,6 +1052,11 @@ class TestToolsetExtras:
 
 
 class TestCollectionExtras:
+    @pytest.fixture
+    def system_toolset(self, system_toolset):
+        # Acts as an admin: the collection these tests create carries no owners otherwise (access-control P3 Task 2).
+        return AsCaller(system_toolset)
+
     @pytest.mark.asyncio
     async def test_list_collection_documents(self, system_toolset) -> None:
         await system_toolset.call(
@@ -1090,6 +1095,11 @@ class TestCollectionExtras:
         # The default fixture wires no SemanticSearchRegistry, so search
         # degrades to ``unavailable`` (no longer the old not-implemented
         # stub). The wired path is covered in TestSearchCollectionWired.
+        # The collection exists: the access check answers first, and a collection that is not there is not-found.
+        await system_toolset.call(
+            tool_name="create_collection",
+            arguments={"entity": _collection().model_dump(mode="json")},
+        )
         result = await system_toolset.call(
             tool_name="search_collection",
             arguments={"collection_id": "kb-1", "query": "anything", "top_k": 5},
@@ -1119,6 +1129,11 @@ class TestCollectionExtras:
 
 
 class TestDocumentExtras:
+    @pytest.fixture
+    def system_toolset(self, system_toolset):
+        # Acts as an admin: the collection these tests create carries no owners otherwise (access-control P3 Task 2).
+        return AsCaller(system_toolset)
+
     @pytest.mark.asyncio
     async def test_put_then_get_content(self, system_toolset) -> None:
         await system_toolset.call(
@@ -1405,6 +1420,11 @@ class TestFindPredicate:
 
 
 class TestExtras:
+    @pytest.fixture
+    def system_toolset(self, system_toolset):
+        # Acts as an admin: the collection these tests create carries no owners otherwise (access-control P3 Task 2).
+        return AsCaller(system_toolset)
+
     @pytest.mark.asyncio
     async def test_find_collection_documents_by_meta(self, system_toolset) -> None:
         await system_toolset.call(
@@ -1681,7 +1701,7 @@ class TestSearchCollectionWired:
             semantic_search_registry=_FakeSSR(store),  # type: ignore[arg-type]
         )
         registry._system_toolset_provider = provider  # type: ignore[attr-defined]
-        return provider
+        return AsCaller(provider)  # acts as an admin: the collection the test creates carries no owners otherwise
 
     @pytest.mark.asyncio
     async def test_returns_ranked_hits(self, wired_toolset, store) -> None:

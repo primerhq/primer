@@ -152,9 +152,8 @@ it acts on every subscription of it. For anyone but an admin,
 `trigger::update`, `trigger::fire_now` and `trigger::delete` answer
 `type=trigger_not_found`, exactly as an unknown trigger, when any of
 the trigger's subscriptions starts or feeds a session in a workspace
-you do not hold `full` access to. For `trigger::fire_now` this is asked before the rank rule
-(see Gotchas), so such a trigger answers `trigger_not_found`, never
-`forbidden`.
+you do not hold `full` access to. This is asked after the trigger's own access (see
+Gotchas), so such a trigger answers `trigger_not_found`, never `forbidden`.
 
 Reading and deleting subscriptions follow the same rule. For anyone
 but an admin, `trigger::list_subscriptions` and
@@ -497,50 +496,41 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   `session_append` fire never reopens a session an operator cancelled,
   even one queued on the session before the Cancel: only a person
   reopens it. The fire is skipped with `skipped_session_ended`.
-- **You may fire a trigger by hand only at or above its owner's
-  rank.** A fire runs as the trigger's owners, so `trigger::fire_now`
-  (and the console's Fire now, `POST /v1/triggers/{id}/fire_now`)
-  drives the owner's automation: a `session_append` subscription of an
-  admin's trigger steers at the admin's rank. The caller is your run's
-  principal from a session, or the request's account (an API token
-  counts as its user) over MCP and REST. You may fire when you rank at
-  least as high as the trigger's `owner`: an admin fires any trigger, a
-  user fires a user's trigger, and a trigger saved before owners were
-  recorded (no `owner`) ranks as an ordinary user. Over MCP or REST you
-  may also always fire a trigger your own account owns, even after a
-  demotion; from inside a run you may not, and a subagent you start over
-  MCP with `system::invoke_agent` is such a run (it runs as an ordinary
-  user, not as you). Otherwise the tool answers
-  `type=forbidden` (REST: 403 `forbidden_rank`) naming the trigger and
-  both ranks, and nothing fires: no `trigger.fired` event, no
-  subscription dispatched, `last_fired_at` unchanged. Scheduled and
-  delayed fires, webhook calls and channel events are not ranked.
-- **You may change or delete a trigger only at or above its owner's
-  rank.** A save re-arms the trigger's claim and hands it to the saver,
-  and a delete ends its subscriptions' automation, so `trigger__update`
-  / `trigger__delete` (and `PUT` / `DELETE /v1/triggers/{id}`) follow
-  the rank rule of a manual fire, after the access rule above. You may act
-  when you rank at least as high as the trigger's `owner`: an admin may
-  change or delete any trigger, a user may change or delete a user's
-  trigger, and a trigger saved before owners were recorded (no `owner`)
-  ranks as an ordinary user. Over MCP or REST you may also always
-  change or delete a trigger your own account owns, even after a
-  demotion; from inside a run you may not. Otherwise the tool answers
-  `type=forbidden` (REST: 403 `forbidden_rank`) naming the trigger and
-  both ranks, and nothing changes: the row keeps its stored owner (a
-  refused change adopts none), its subscriptions and its timing.
+- **A trigger is owned and shared, and its subscriptions share its
+  access.** `read` sees the trigger and its subscriptions (and lets you
+  park on it with `subscribe_to_trigger` or
+  `subscribe_to_channel_event`); `full` lets you change it
+  (`trigger__update`), fire it by hand (`trigger::fire_now`) and add,
+  change or remove its subscriptions and channel bindings; `owner` lets
+  you delete it, rotate its webhook token and change its sharing
+  (`system::set_entity_access` with `kind: "trigger"`). A trigger you
+  cannot read answers `type=trigger_not_found`, exactly as an unknown
+  id (the park tools: `trigger_not_found_or_disabled`); too low a level answers `type=forbidden` (REST: 403
+  `access_denied`) and nothing is fired, changed or deleted. Scheduled
+  and delayed fires, webhook calls and channel events have no caller
+  and are not checked. A fire still runs as the trigger's last saver
+  and each subscription's owner, whoever fires it, and a save makes you
+  the owner its runs act as.
+- **Subscriptions saved before owners were recorded are disabled on
+  upgrade.** The upgrade gives each one its trigger's owner and sets
+  `enabled: false`, because nobody knows who saved it. The trigger's
+  owner reviews it and turns it back on with `trigger__update_subscription`
+  and `enabled: true`; that needs `full` on the trigger and makes
+  whoever re-enables it the subscription's owner. A fire of a
+  subscription that still has no owner fails with `target_out_of_reach`
+  and starts or feeds no session.
 - **A fresh-session subscription whose owner is gone does not fire.**
   When the account that saved the subscription is deleted or disabled,
   or the API token it was saved with is revoked or has expired, an
   `agent_fresh_session` or `graph_fresh_session` fire fails with
   `owner_unresolvable` and starts no session: the run would have been
   that owner's. Re-save the subscription as a current account.
-- **A webhook trigger's token is visible only to its owner or an
-  admin.** Everyone else (and any call over MCP) sees `•••redacted•••`
-  in `config.token`. `trigger__update` on someone else's webhook
-  trigger fails with `type=forbidden`. When an admin re-saves a
-  webhook trigger someone else owns, the token is rotated: hand the
-  new URL to whoever calls it.
+- **A webhook trigger's token is visible only to the owner its runs
+  act as, or an admin.** Everyone else (and any call over MCP) sees
+  `•••redacted•••` in `config.token`. When someone with `full` access
+  re-saves a webhook trigger another user's runs act as, the token is
+  rotated and they become that owner: hand the new URL to whoever
+  calls it.
 - **Per-subscription parallelism is independent of trigger
   fires.** A trigger always fires when its conditions are met. But
   each subscription decides whether to act on that fire. `skip`

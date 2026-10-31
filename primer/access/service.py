@@ -6,6 +6,7 @@ never enforce different rules (spec anti-goal 2).
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -103,10 +104,21 @@ async def set_access(
     *,
     what: str,
     allow_public_tools: bool = False,
+    after_write: Callable[[Any], Awaitable[None]] | None = None,
+    harness_exists: Callable[[str], Awaitable[bool]] | None = None,
 ) -> AccessView:
-    """Replace the sharing of ``entity_id``; owners only. Writes the ``access`` block alone, guarded on its ``rev``."""
+    """Replace the sharing of ``entity_id``; owners only. Writes the ``access`` block alone, guarded on its ``rev``.
+
+    A row a harness installed (it has a ``harness_id``) is shared through its harness, never directly: 409 ``harness_managed``. That holds only while the
+    harness row EXISTS (``harness_exists``; none given: it does): a dangling ``harness_id`` (the harness was deleted, as ``apply_uninstall(cascade=False)``
+    leaves it) names nothing that could share the row, so the row is shared directly again.
+    ``after_write`` runs with the written row once the write has landed (a harness fans its access out to what it installed).
+    """
     row = await _load(storage, entity_id, what)
     require(person, row.access, AccessLevel.OWNER, what=what)
+    harness_id = getattr(row, "harness_id", None)
+    if harness_id and (harness_exists is None or await harness_exists(harness_id)):
+        raise ConflictError(f"{what} is managed by a harness (harness_managed); share the harness instead", code="harness_managed")
     current: Access = row.access
     if update.rev is not None and update.rev != current.rev:
         raise ConflictError(f"the sharing of {what} changed since rev {update.rev}; reload it")
@@ -133,6 +145,8 @@ async def set_access(
     written = await storage.patch_if(entity_id, {"access": new.model_dump(mode="json")}, where={("access", "rev"): guard})
     if written is None:
         raise ConflictError(f"the sharing of {what} changed meanwhile; reload it")
+    if after_write is not None:
+        await after_write(written)
     return _view(written.access, refs, level_of(person, written.access))
 
 
@@ -171,9 +185,31 @@ __all__ = [
     "UserRef",
     "get_access_view",
     "lookup_users",
+    "rewrite_keeping_access",
     "set_access",
     "update_keeping_access",
 ]
+
+
+async def rewrite_keeping_access(storage: Storage[Any], entity: Any, *, what: str, conn: Any | None = None) -> Any:
+    """Write every field of ``entity`` except ``access``, against the sharing the row holds NOW (a long operation's snapshot may be stale).
+
+    The row's stored ``access.rev`` is read fresh and the patch is fenced on it; a sharing change in between retries on the new rev, so an
+    owner's grant or revoke is never put back and a long-running writer (a harness sync) never fails because somebody shared the row.
+    """
+    dumped = dump_for_storage(entity)
+    patch = {key: value for key, value in dumped.items() if key not in ("id", "access")}
+    extra = {} if conn is None else {"conn": conn}
+    for _ in range(5):
+        current = await storage.get(entity.id, **extra)
+        if current is None:
+            raise NotFoundError(f"{what} does not exist")
+        rev = current.access.rev
+        guard = [rev, None] if rev == 0 else [rev]
+        written = await storage.patch_if(entity.id, patch, where={("access", "rev"): guard}, **extra)
+        if written is not None:
+            return written
+    raise ConflictError(f"the sharing of {what} kept changing while it was being edited; retry")
 
 
 async def update_keeping_access(storage: Storage[Any], entity: Any, existing: Any, *, what: str) -> Any:

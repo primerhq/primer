@@ -1641,14 +1641,14 @@ async def test_a_harness_install_still_stores_agents_whose_ids_the_create_rule_r
 
 
 @pytest.mark.asyncio
-async def test_a_harness_install_ignores_template_access_and_the_installer_owns_the_rows(fake_storage_provider):
+async def test_a_harness_install_ignores_template_access_and_the_rows_copy_the_harness(fake_storage_provider):
+    from primer.harness.access import apply_harness_access
     from primer.model.access import Access
     from primer.model.agent import Agent
-    from primer.model.principal import PrincipalRef
 
-    harness = _make_harness("acme").model_copy(update={"operation_requested_by": PrincipalRef(
-        type="user", id="u-installer", display="i", role="user", source="local", user_id="u-installer",
-    )})
+    shared = Access(owners=["u-owner"], grants={"u-peer": "read"}, rev=1)
+    harness = _make_harness("acme").model_copy(update={"access": shared})
+    await fake_storage_provider.get_storage(Harness).create(harness)
     entry = RenderedEntry(
         kind="agent", template_name="asst", resolved_id=resolved_id("acme", "asst"),
         template_source_hash="h", rendered_hash="h1",
@@ -1660,12 +1660,15 @@ async def test_a_harness_install_ignores_template_access_and_the_installer_owns_
         bundle_hash="bh1", overrides_hash="oh1", schema_hash=None,
     )
     assert error is None
-    stored = await fake_storage_provider.get_storage(Agent).get("acme__asst")
-    assert stored.access == Access.owned_by("u-installer")
-
-    # The owner shares it; a sync of a changed template keeps that sharing.
     agents = fake_storage_provider.get_storage(Agent)
-    await agents.update(stored.model_copy(update={"access": Access(owners=["u-installer"], grants={"u-peer": "read"})}))
+    stored = await agents.get("acme__asst")
+    assert stored.access == shared
+
+    # The harness is re-shared (the fan-out copies it); a sync of a changed template keeps that access.
+    reshared = Access(owners=["u-owner"], grants={"u-peer": "full"}, rev=2)
+    harness = harness.model_copy(update={"access": reshared})
+    await fake_storage_provider.get_storage(Harness).update(harness)
+    await apply_harness_access(fake_storage_provider, harness)
     changed = entry.model_copy(update={"rendered_hash": "h2", "rendered_payload": {**entry.rendered_payload, "description": "assistant v2"}})
     err = await apply_sync(
         storage_provider=fake_storage_provider, harness=harness, new_entries=[changed], rendered_files_by_name={},
@@ -1674,4 +1677,4 @@ async def test_a_harness_install_ignores_template_access_and_the_installer_owns_
     assert err is None
     synced = await agents.get("acme__asst")
     assert synced.description == "assistant v2"
-    assert synced.access.grants == {"u-peer": "read"} and synced.access.public is False
+    assert synced.access == reshared

@@ -596,6 +596,18 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # jsonb ? operator. Same shape as the other owned tables.
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
+    "collection": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
+    "trigger": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
+    "document": [
+        # Every collection read filters documents by collection_id, and the
+        # flat /v1/documents lists push `collection_id IN <readable>` into the
+        # query (access-control P3); index-backed.
+        ("collection_id", False, "((data->>'collection_id'))"),
+    ],
     "channel": [
         (
             "provider_external",
@@ -608,6 +620,9 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         ("provider_id", False, "((data->>'provider_id'))"),
     ],
     "graph": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
+    "harness": [
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
     "useridentity": [

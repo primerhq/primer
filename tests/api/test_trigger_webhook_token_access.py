@@ -4,10 +4,9 @@ The token is the webhook's only credential, and a webhook POST renders its body 
 trigger's subscriptions start, at the owners' rank. Before this, any ``role=user`` account could read an admin's token from
 ``GET /v1/triggers`` (or mint a fresh one with ``rotate_token``) and inject a payload into an admin-ranked run. Now:
 
-* list / get show everyone else the mask;
-* ``rotate_token`` answers 403 ``forbidden_role`` unless the caller owns it or is an admin, and ``PUT`` answers 403
-  ``forbidden_rank`` for a caller the owner outranks (the rank rule of a manual fire, ticket 01a16ee4, asked first) and
-  ``forbidden_role`` for a same-rank caller who is not the owner; an accepted ``PUT`` makes the caller the owner;
+* list / get show everyone else the mask (a user the trigger is shared with to read);
+* since access-control P3 Task 4 the levels decide: a reader's ``rotate_token`` (owner needed) and ``PUT`` (full needed)
+  answer 403 ``access_denied``; an accepted ``PUT`` makes the caller the run-as owner;
 * a ``PUT`` that hands a webhook trigger to a different owner mints a new token, so nobody who knew the old one rides along;
 * the mask sent back in a ``PUT`` body keeps the stored token.
 """
@@ -52,6 +51,13 @@ async def _setup(client, app) -> None:
     ))
 
 
+async def _share_read(client, app, tid: str) -> None:
+    """The admin shares the trigger with the user to read (access-control P3 Task 4): a trigger nobody shared answers 404."""
+    owners = (await _stored(app, tid)).access.owners
+    resp = await client.put(f"/v1/triggers/{tid}/access", json={"owners": owners, "grants": {"user-tok": "read"}})
+    assert resp.status_code == 200, resp.text
+
+
 async def _create_webhook(client, slug: str) -> tuple[str, str]:
     created = await client.post("/v1/triggers", json={"slug": slug, "name": slug, "config": {"kind": "webhook"}})
     assert created.status_code == 201, created.text
@@ -78,6 +84,7 @@ async def test_a_user_sees_the_mask_on_an_admin_webhook_trigger_and_the_owner_an
     await _setup(client, app)
     await _as_admin(client)
     tid, token = await _create_webhook(client, "admin-hook")
+    await _share_read(client, app, tid)
 
     assert (await client.get(f"/v1/triggers/{tid}")).json()["config"]["token"] == token
     listed = (await client.get("/v1/triggers")).json()["items"]
@@ -103,13 +110,14 @@ async def test_a_user_cannot_rotate_an_admin_webhook_token(client, app):
     await _setup(client, app)
     await _as_admin(client)
     tid, token = await _create_webhook(client, "admin-hook")
+    await _share_read(client, app, tid)
     before = await _stored(app, tid)
 
     await _as_user(client)
     resp = await client.post(f"/v1/triggers/{tid}/rotate_token")
 
     assert resp.status_code == 403, resp.text
-    assert _code(resp) == "forbidden_role"
+    assert _code(resp) == "access_denied"
     after = await _stored(app, tid)
     assert after.config.token == token
     assert after.owner == before.owner
@@ -119,6 +127,7 @@ async def test_a_user_cannot_put_an_admin_webhook_trigger(client, app):
     await _setup(client, app)
     await _as_admin(client)
     tid, token = await _create_webhook(client, "admin-hook")
+    await _share_read(client, app, tid)
     before = await _stored(app, tid)
 
     await _as_user(client)
@@ -127,9 +136,8 @@ async def test_a_user_cannot_put_an_admin_webhook_trigger(client, app):
 
     for resp in (renamed, chosen):
         assert resp.status_code == 403, resp.text
-        # The rank rule of a manual fire is asked before the webhook manage rule (ticket 01a16ee4): a caller the owner
-        # outranks is refused as outranked, as a fire of the same trigger would be.
-        assert _code(resp) == "forbidden_rank"
+        # A reader may not save (full needed, access-control P3 Task 4).
+        assert _code(resp) == "access_denied"
         assert token not in resp.text
     after = await _stored(app, tid)
     assert (after.name, after.config.token, after.owner) == (before.name, token, before.owner)
@@ -232,6 +240,7 @@ async def test_a_caller_who_cannot_manage_a_trigger_sees_only_the_owner_display_
     await _setup(client, app)
     await _as_admin(client)
     tid, _ = await _create_webhook(client, "admin-hook")
+    await _share_read(client, app, tid)
     sub = await client.post(
         f"/v1/triggers/{tid}/subscriptions",
         json={"config": {"kind": "agent_fresh_session", "workspace_id": "ws-1", "agent_id": "ag-1"}},

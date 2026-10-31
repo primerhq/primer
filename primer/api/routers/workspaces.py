@@ -699,14 +699,23 @@ async def _workspace_template_pre_delete(existing, request: Request) -> None:
         )
 
 
+async def _refuse_unreadable_document_mounts(entity, request: Request) -> None:
+    """The saver must read the collection of every ``document`` file source of a template (access-control P3 SEC, finding 4); refused like a missing document."""
+    from primer.workspace.resolvers import refuse_unreadable_document_mounts
+
+    await refuse_unreadable_document_mounts(get_storage_provider(request), person_from_request(request), entity.files)
+
+
 async def _workspace_template_pre_create(entity, request: Request) -> None:
     await _reject_reserved_workspace_template_create(entity, request)
     _check_template_privilege(entity, None, request)
+    await _refuse_unreadable_document_mounts(entity, request)
 
 
 async def _workspace_template_pre_update(entity, existing, request: Request) -> None:
     await _reject_reserved_workspace_template_update(entity, existing, request)
     _check_template_privilege(entity, existing, request)
+    await _refuse_unreadable_document_mounts(entity, request)
     # 01a11d32: the password of a url file source and the env values are served masked, and PUT is a full replace, so a client that sends the served body back keeps the stored ones: an
     # admin's password for the same scheme, host, port and user, a user's only for the whole unchanged URL (any other change that carries the mask is a 422 and nothing is stored). After the
     # 403s: a caller who may not write the template never learns what a mask could be restored to.
@@ -1076,6 +1085,7 @@ async def create_workspace(
             name=body.name,
             reply_binding=body.reply_binding,
             access=access,
+            person=person,
         )
     except WorkspaceNotImplementedError as exc:
         raise HTTPException(

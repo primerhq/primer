@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SecretStr, ValidationInfo, field_validator
 
+from primer.model.access import Owned
 from primer.model.common import Identifiable, reading_a_stored_row
 from primer.model.event_matcher import EventMatcher
 from primer.model.principal import PrincipalRef
@@ -134,7 +135,12 @@ SLUG_PATTERN = r"^[a-z][a-z0-9-]{1,63}$"
 _SLUG_RE = re.compile(SLUG_PATTERN)
 
 
-class Trigger(Identifiable):
+class Trigger(Owned, Identifiable):
+    """A trigger: owned and shareable (access-control P3 Decision 3); its subscriptions inherit its access.
+
+    ``access`` decides who may see, edit, fire, share or delete it; ``owner`` is who its fires run as (the last saver).
+    """
+
     slug: str  # human-friendly id (unique)
     name: str
     description: str | None = None

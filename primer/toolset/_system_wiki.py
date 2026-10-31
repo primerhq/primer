@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import NotFoundError, PrimerError
+from primer.model.yield_ import ToolContext
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import ok as _ok
 from primer.toolset._system_common import (
@@ -83,13 +84,23 @@ def _wiki_read_tool(
             cached["svc"] = DocumentTreeService(storage_provider)
         return cached["svc"]
 
-    docs = storage_provider.get_storage(Document)
+    from primer.access.person import person_for_tool
+    from primer.model.access import AccessLevel
+    from primer.model.collection import Collection
+    from primer.toolset._collection_access import collection_for
 
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    docs = storage_provider.get_storage(Document)
+    collections = storage_provider.get_storage(Collection)
+
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _WikiReadArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # The caller reads the wiki with their own access; it works for everyone because ``system`` is public (P3 Decision 7).
+        _, denied = await collection_for(collections, person_for_tool(ctx), SYSTEM_COLLECTION_ID, AccessLevel.READ)
+        if denied is not None:
+            return denied
         tree = _tree()
         try:
             res = await tree.read(
@@ -166,7 +177,7 @@ def _wiki_search_tool(
 
     from primer.knowledge.system_collection import LIVE_ROOT, SYSTEM_COLLECTION_ID
 
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _WikiSearchArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -184,6 +195,7 @@ def _wiki_search_tool(
         fetch_limit = (
             args.limit if include_live else min(100, max(args.limit * 5, 50))
         )
+        # The caller's context travels on: the collections search acts with their access (P3 Decision 7).
         res = await collections.call(
             tool_name="search",
             arguments={
@@ -193,6 +205,7 @@ def _wiki_search_tool(
                 "path_prefix": args.path_prefix,
                 "limit": fetch_limit,
             },
+            ctx=ctx,
         )
         if res.is_error:
             return res.model_copy(

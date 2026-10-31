@@ -17,6 +17,7 @@ pytest.importorskip("slack_bolt")
 
 from pydantic import SecretStr
 
+from primer.model.principal import PrincipalRef
 from primer.channel.slack import factory as slack_factory
 from primer.model.channel import (
     Channel,
@@ -29,6 +30,11 @@ from primer.model.channel import (
 # --------------------------------------------------------------------------- #
 # Fakes / helpers
 # --------------------------------------------------------------------------- #
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing what they test rather than ownership.
+_PLATFORM = PrincipalRef.system()
+
 def _provider(pid: str = "cp-slack") -> ChannelProvider:
     return ChannelProvider(
         id=pid,
@@ -706,7 +712,7 @@ async def test_a_slack_binding_on_mentions_bot_fires_only_for_the_mentioning_mes
         config=ChannelTriggerConfig(provider_id=pid, channel_id=ch.id),
         created_at=now,
     ))
-    await sp.get_storage(Subscription).create(Subscription(
+    await sp.get_storage(Subscription).create(Subscription(owner=_PLATFORM, 
         id="sb-mentions", trigger_id="trg-s1",
         config=SessionAppendSubConfig(session_id="cn-1"),
         payload_template="hi",

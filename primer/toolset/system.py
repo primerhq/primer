@@ -110,6 +110,7 @@ from primer.toolset._system_canvas import canvas_settings_tools
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.model.collection import Collection, Document
 from primer.model.except_ import (
+    AccessDeniedError,
     BadRequestError,
     ConflictError,
     NotFoundError,
@@ -132,6 +133,7 @@ from primer.model.channel import (
 from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import Parallelism, ReplyTargetInput, SubscriptionConfig
+from primer.trigger.channel_access import require_channel_trigger_access
 from primer.trigger.owner import view_for
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE, caller_scope
 from primer.trigger.service import (
@@ -169,6 +171,7 @@ from primer.model_profile.checks import check_profile_on_create, check_profile_o
 from primer.knowledge.checks import (
     RESERVED_COLLECTION_ID_PREFIX,
     check_collection_id,
+    check_collection_search_unchanged,
     check_collection_system_flag,
     check_graph_id,
 )
@@ -514,6 +517,7 @@ def build_system_toolset(
 
     async def _collection_pre_update(entity: Collection, existing: Collection) -> None:
         check_collection_system_flag(entity, existing)
+        check_collection_search_unchanged(entity, existing)
 
     async def _graph_pre_create(entity: Graph) -> None:
         check_graph_id(entity)
@@ -565,7 +569,7 @@ def build_system_toolset(
         ("toolset", "toolsets", Toolset, None, _inv_ts, _inv_ts, "user", True),
         ("agent", "agents", Agent, None, None, None, "user", True),
         ("graph", "graphs", Graph, None, None, None, "user", True),
-        ("collection", "collections", Collection, None, None, None, "user", False),
+        ("collection", "collections", Collection, None, None, None, "user", True),
         ("document", "documents", Document, None, None, None, "user", False),
         ("graph_thread", "graph_threads", GraphThread, None, None, None, "user", False),
         ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin", False),
@@ -680,8 +684,26 @@ def build_system_toolset(
         "collection": _collection_pre_delete,
         "toolset": _toolset_pre_delete,
     }
+    # A document inherits its collection's access (P3 Decision 6): get needs read on its collection, a write full, and the
+    # lists only reach the collections the caller can read. The create/update/delete tools are replaced further down.
+    from primer.toolset._collection_access import collection_for, readable_documents
+
+    _collection_rows = storage_provider.get_storage(Collection)
+
+    async def _document_row_guard(row: Document, ctx: ToolContext | None, write: bool) -> Any:
+        level = AccessLevel.FULL if write else AccessLevel.READ
+        _, denied = await collection_for(
+            _collection_rows, person_for_tool(ctx), row.collection_id, level, what=f"Document {row.id!r}", dangling_ok=True,
+        )
+        return denied
+
+    async def _document_list_filter(ctx: ToolContext | None) -> Any:
+        return await readable_documents(_collection_rows, person_for_tool(ctx))
+
+    inherited_by_label: dict[str, Any] = {"document": (_document_row_guard, _document_list_filter)}
     for label, plural, cls, on_c, on_u, on_d, role, owned in crud_specs:
         pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
+        row_guard, list_filter = inherited_by_label.get(label, (None, None))
         registry.update(
             _crud_tools_for(
                 entity_label=label,
@@ -702,6 +724,8 @@ def build_system_toolset(
                 delete_note=delete_notes_by_label.get(label),
                 write_note=write_notes_by_label.get(label),
                 pre_delete=pre_deletes_by_label.get(label),
+                row_guard=row_guard,
+                list_filter=list_filter,
             )
         )
     # The agent and graph writes here are gated by default like the crud tools they twin (audit G6-1), so their approval cards show what the crud
@@ -985,8 +1009,9 @@ def build_system_toolset(
             # The service create path is kind-agnostic, so the wrapper enforces the
             # documented precondition: a binding only makes sense on a channel
             # trigger, checked before anything is stored.
+            # A binding is a subscription: read on the trigger to see it, full to add one (access P3, decision 3).
             trigger = await get_trigger(
-                trigger_id=args.trigger_id, deps=_binding_deps()
+                trigger_id=args.trigger_id, person=person_for_tool(ctx), deps=_binding_deps()
             )
             if trigger.config.kind != "channel":
                 return _err(
@@ -994,6 +1019,8 @@ def build_system_toolset(
                     f"not a {trigger.config.kind} trigger",
                     error_type="validation-error",
                 )
+            # The channel the trigger fires from must be readable by the binder (access P3, decision 5).
+            await require_channel_trigger_access(storage_provider, person_for_tool(ctx), trigger.config)
             sub = await create_subscription(
                 trigger_id=args.trigger_id,
                 config=args.config,
@@ -1010,6 +1037,7 @@ def build_system_toolset(
                 # A session outside prime binds only to its own workspace or a session in it, and the row records that reach for every
                 # fire (review of #870, F1).
                 reach=caller_scope(ctx),
+                person=person_for_tool(ctx),
                 deps=_binding_deps(),
             )
         except TriggerNotFound as exc:
@@ -1028,6 +1056,10 @@ def build_system_toolset(
             return _err(str(exc), error_type="not-found")
         except ReplyTargetAnchorInvalid as exc:
             return _err(str(exc), error_type="validation-error")
+        except NotFoundError as exc:
+            return _err(str(exc), error_type="not-found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         return _ok(sub)
 
     registry["create_channel_binding"] = (
@@ -1089,12 +1121,15 @@ def build_system_toolset(
         except ValidationError as exc:
             return _err_from_validation(exc)
         deps = _binding_deps()
+        # Read on the trigger (access P3, decision 3): a trigger the caller cannot read answers as an unknown one.
         try:
-            await get_trigger(trigger_id=args.trigger_id, deps=deps)
+            await get_trigger(trigger_id=args.trigger_id, person=person_for_tool(ctx), deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         # From a session outside prime, a binding whose action targets another workspace is left out (ticket 01a16c22).
-        items = await list_subscriptions(trigger_id=args.trigger_id, reach=caller_scope(ctx), deps=deps)
+        items = await list_subscriptions(
+            trigger_id=args.trigger_id, person=person_for_tool(ctx), reach=caller_scope(ctx), deps=deps,
+        )
         # A non-manager sees only the owner's display and role (A-20), as trigger__list_subscriptions does.
         caller = _caller(ctx)
         return _ok([await view_for(s, caller, storage_provider) for s in items])
@@ -1143,8 +1178,14 @@ def build_system_toolset(
                 subscription_id=args.subscription_id,
                 # Out of the caller's reach answers as an unknown binding and deletes nothing (ticket 01a16c22).
                 reach=caller_scope(ctx),
+                # Full on the trigger (access P3, decision 3).
+                person=person_for_tool(ctx),
                 deps=_binding_deps(),
             )
+        except TriggerNotFound as exc:
+            return _err(str(exc), error_type="trigger_not_found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         except SubscriptionNotFound as exc:
             return _err(str(exc), error_type="subscription_not_found")
         return _ok({"ok": True})

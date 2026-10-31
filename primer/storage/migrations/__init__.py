@@ -88,6 +88,13 @@ from primer.storage.migrations.m023_admin_default_workspace import (
 from primer.storage.migrations.m024_cross_workspace_list_field import (
     M024CrossWorkspaceListField,
 )
+from primer.storage.migrations.m025_collection_ownership import (
+    M025CollectionOwnership,
+)
+from primer.storage.migrations.m026_trigger_ownership import M026TriggerOwnership
+from primer.storage.migrations.m027_harness_ownership import (
+    M027HarnessOwnership,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +137,9 @@ MIGRATIONS: tuple[Migration, ...] = (
     M022WorkspaceOwnership(),
     M023AdminDefaultWorkspace(),
     M024CrossWorkspaceListField(),
+    M025CollectionOwnership(),
+    M026TriggerOwnership(),
+    M027HarnessOwnership(),
 )
 
 #: Highest version this build knows how to apply.

@@ -40,8 +40,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.access.person import person_for_tool
 from primer.common.validation_errors import without_input
 from primer.model.chat import Tool, ToolCallResult, ToolExample
+from primer.model.except_ import AccessDeniedError, NotFoundError
 from primer.model.event_matcher import (
     EventMatcher,
     EventMatcherPatternError,
@@ -61,18 +63,19 @@ from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
+from primer.trigger.channel_access import require_channel_trigger_access
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.owner import view_for
 from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE, caller_scope, refuse_target_out_of_access
+from primer.access.policy import level_of
+from primer.model.except_ import AccessDeniedError, ConflictError
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ServiceDeps,
     SubscriptionNotFound,
     SubscriptionTargetNotFound,
-    TriggerForbidden,
     TriggerKindImmutable,
     TriggerNotFound,
-    TriggerOutranked,
     TriggerSlugConflict,
     create_subscription,
     create_trigger,
@@ -296,12 +299,10 @@ TOOL_UPDATE = make_tool(
         "config. Only supplied fields change. Changing ``config.kind`` is "
         "rejected with ``type=trigger_kind_immutable`` (delete + recreate "
         "to switch kinds). For subscription fields use "
-        "``update_subscription`` instead. A save re-arms the trigger's claim, "
-        "so it follows the rank rule of a manual fire: you may change a "
-        "trigger only when you rank at least as high as its owner (an admin "
-        "may change any; with no calling session you may also change your "
-        "own); otherwise ``type=forbidden`` and nothing changes (the trigger "
-        "keeps its stored owner)." + _TRIGGER_REACH_NOTE
+        "``update_subscription`` instead. Needs full access to the trigger "
+        "(read access answers ``type=forbidden`` and nothing changes; a "
+        "trigger you cannot read answers ``type=trigger_not_found``). Whoever "
+        "saves a trigger becomes the owner its fires run as." + _TRIGGER_REACH_NOTE
     ),
     args_schema=_UpdateArgs.model_json_schema(),
     examples=[
@@ -323,11 +324,9 @@ TOOL_DELETE = make_tool(
         "Use when permanently removing a trigger; this cascade-deletes all "
         "its subscriptions. To remove a single subscription only, use "
         "``delete_subscription``. Returns ``{ok: true}`` or "
-        "``type=trigger_not_found``. It follows the rank rule of a manual "
-        "fire: you may delete a trigger only when you rank at least as high "
-        "as its owner (an admin may delete any; with no calling session you "
-        "may also delete your own); otherwise ``type=forbidden`` and nothing "
-        "is deleted." + _TRIGGER_REACH_NOTE
+        "``type=trigger_not_found``. Only the trigger's owners (or an admin) "
+        "may delete it; anyone else with access gets ``type=forbidden`` and "
+        "nothing is deleted." + _TRIGGER_REACH_NOTE
     ),
     args_schema=_IdArgs.model_json_schema(),
     examples=[
@@ -349,13 +348,10 @@ TOOL_FIRE_NOW = make_tool(
         "subscription (``subscription_id``, ``ok``, ``skipped``, "
         "``error_code``, ``error_message``, ``artefact_id``: the session it "
         "started or fed). A disabled trigger answers ``{skipped: true, "
-        "fire_id: null, results: []}`` and fires nothing. A fire runs as the "
-        "trigger's owner, so you may fire a trigger only when you rank at "
-        "least as high as its owner (an admin fires any; with no calling "
-        "session you may also fire your own); otherwise ``type=forbidden`` "
-        "and nothing fires." + _TRIGGER_REACH_NOTE + " The reach check comes "
-        "first, so such a trigger answers ``trigger_not_found``, not "
-        "``forbidden``."
+        "fire_id: null, results: []}`` and fires nothing. Needs full access to "
+        "the trigger (read access answers ``type=forbidden`` and nothing "
+        "fires; a trigger you cannot read answers ``type=trigger_not_found``)."
+        " The fire runs as the trigger's and its subscriptions' owners." + _TRIGGER_REACH_NOTE
     ),
     args_schema=_IdArgs.model_json_schema(),
     examples=[
@@ -587,7 +583,7 @@ def _make_list_handler(
             return _err_validation(exc)
         deps = _make_deps(storage_provider, claim_engine, event_bus)
         items = await list_triggers(
-            kind=args.kind, enabled=args.enabled, deps=deps,
+            kind=args.kind, enabled=args.enabled, person=person_for_tool(ctx), deps=deps,
         )
         # The webhook token only for its owner or an admin (A-20 round 2).
         caller = _caller(ctx)
@@ -600,8 +596,7 @@ def _caller(ctx: ToolContext | None) -> "PrincipalRef | None":
     """The caller's identity, recorded as the owner of the trigger or subscription it saves (security review A-20, ticket 01a16ee4).
 
     A call with a ``ToolContext`` records the run's principal. A call with no context and no delegated run is the MCP endpoint's own: it records
-    the MCP person's actor (``current_actor``), so what it saves fires at most at the person's rank, and a later save by a lower rank is refused
-    by the rank rule. A call inside a delegated run (``primer.agent.invoke._RUN_ID`` is set, a subagent started over MCP) records no owner: the
+    the MCP person's actor (``current_actor``), so what it saves fires at most at the person's rank. A call inside a delegated run (``primer.agent.invoke._RUN_ID`` is set, a subagent started over MCP) records no owner: the
     run is unattributed, and what it saves fires as an ordinary user (fail closed).
     """
     if ctx is not None:
@@ -618,26 +613,6 @@ def _caller(ctx: ToolContext | None) -> "PrincipalRef | None":
     return PrincipalRef.from_principal(actor) if actor is not None else None
 
 
-def _fire_caller(ctx: ToolContext | None) -> tuple[Any, bool, bool]:
-    """Who fires a trigger by hand, for the rank rule (ticket 01a16e65-12d1): ``(caller, from_run, in_session)``.
-
-    A run is ranked by its principal (:func:`primer.agent.inner_dispatch.run_principal`, an ordinary user when the run names nobody) and never gets
-    the owner rule: a call with a ``ToolContext``, and a call made inside a delegated run (``primer.agent.invoke._RUN_ID`` is set). The second is a
-    subagent ``system__invoke_agent`` started over MCP: its manager has no session or chat, so its tool calls carry no context, and it runs as an
-    unattributed user while the MCP person's actor is still on ``current_actor`` (lead ruling on the review of #927). Only a call with neither, the
-    MCP endpoint's own, is the request's actor on ``current_actor``, a person, with the owner rule; ``None`` (no actor at all) ranks as an ordinary
-    user (:func:`primer.authz.principal_rank`)."""
-    from primer.agent.invoke import _RUN_ID
-
-    if ctx is not None or _RUN_ID.get() is not None:
-        from primer.agent.inner_dispatch import run_principal
-
-        return run_principal(ctx), True, bool(ctx is not None and getattr(ctx, "session_id", None))
-    from primer.mcp.server import current_actor
-
-    return current_actor.get(), False, False
-
-
 def _make_get_handler(
     storage_provider: "StorageProvider",
     claim_engine: Any,
@@ -652,7 +627,7 @@ def _make_get_handler(
             return _err_validation(exc)
         deps = _make_deps(storage_provider, claim_engine, event_bus)
         try:
-            trigger = await get_trigger(trigger_id=args.id, deps=deps)
+            trigger = await get_trigger(trigger_id=args.id, person=person_for_tool(ctx), deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         # The webhook token only for its owner or an admin (A-20 round 2).
@@ -675,6 +650,8 @@ def _make_create_handler(
             return _err_validation(exc)
         deps = _make_deps(storage_provider, claim_engine, event_bus)
         try:
+            # The channel the trigger fires from must be readable by its saver (access P3, decision 5).
+            await require_channel_trigger_access(storage_provider, person_for_tool(ctx), args.config)
             trigger = await create_trigger(
                 slug=args.slug,
                 name=args.name,
@@ -682,6 +659,7 @@ def _make_create_handler(
                 config=args.config,
                 enabled=args.enabled,
                 owner=_caller(ctx),
+                person=person_for_tool(ctx),
                 deps=deps,
             )
         except TriggerSlugConflict as exc:
@@ -690,6 +668,10 @@ def _make_create_handler(
             return _err(str(exc), error_type="cron_invalid")
         except TimezoneInvalid as exc:
             return _err(str(exc), error_type="timezone_invalid")
+        except NotFoundError as exc:
+            return _err(str(exc), error_type="not-found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         return _ok(trigger)
 
     return _handler
@@ -708,10 +690,10 @@ def _make_update_handler(
         except ValidationError as exc:
             return _err_validation(exc)
         deps = _make_deps(storage_provider, claim_engine, event_bus)
-        # The rank rule of a manual fire (ticket 01a16ee4): the same rule as ``fire_now`` below, asked in the service after the reach check, so a
-        # trigger whose owner outranks the caller answers ``type=forbidden`` and changes nothing (it keeps its stored owner).
-        caller, from_run, in_session = _fire_caller(ctx)
+        # Full on the trigger (P3 Decision 3), asked in the service; the saver becomes its run-as owner.
         try:
+            # The channel a re-pointed config fires from must be readable by the saver (access P3, decision 5); a None config re-checks nothing.
+            await require_channel_trigger_access(storage_provider, person_for_tool(ctx), args.config)
             trigger = await update_trigger(
                 trigger_id=args.id,
                 name=args.name,
@@ -719,25 +701,27 @@ def _make_update_handler(
                 enabled=args.enabled,
                 config=args.config,
                 owner=_caller(ctx),
-                caller=caller,
-                from_run=from_run,
-                in_session=in_session,
+                person=person_for_tool(ctx),
                 # From a session outside prime: refused as an unknown trigger when a subscription of it reaches outside (review of #874, B1).
                 reach=caller_scope(ctx),
                 deps=deps,
             )
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
-        except TriggerOutranked as exc:
+        except AccessDeniedError as exc:
             return _err(str(exc), error_type="forbidden")
+        except ConflictError as exc:
+            return _err(str(exc), error_type="conflict")
         except TriggerKindImmutable as exc:
             return _err(str(exc), error_type="trigger_kind_immutable")
-        except TriggerForbidden as exc:
-            return _err(str(exc), error_type="forbidden")
         except CronInvalid as exc:
             return _err(str(exc), error_type="cron_invalid")
         except TimezoneInvalid as exc:
             return _err(str(exc), error_type="timezone_invalid")
+        except NotFoundError as exc:
+            return _err(str(exc), error_type="not-found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         return _ok(trigger)
 
     return _handler
@@ -754,17 +738,12 @@ def _make_delete_handler(
         except ValidationError as exc:
             return _err_validation(exc)
         deps = _make_deps(storage_provider, claim_engine, event_bus)
-        # The rank rule of a manual fire (ticket 01a16ee4): the same rule as ``fire_now`` below, asked in the service after the reach check, so a
-        # trigger whose owner outranks the caller answers ``type=forbidden`` and is not deleted (its subscriptions stay).
-        caller, from_run, in_session = _fire_caller(ctx)
+        # Owner on the trigger (P3 Decision 3), asked in the service; a refusal deletes nothing.
         try:
-            await delete_trigger(
-                trigger_id=args.id, caller=caller, from_run=from_run, in_session=in_session,
-                reach=caller_scope(ctx), deps=deps,
-            )
+            await delete_trigger(trigger_id=args.id, person=person_for_tool(ctx), reach=caller_scope(ctx), deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
-        except TriggerOutranked as exc:
+        except AccessDeniedError as exc:
             return _err(str(exc), error_type="forbidden")
         return _ok({"ok": True})
 
@@ -793,17 +772,12 @@ def _make_fire_now_handler(
             scheduler=scheduler,
             workspace_registry=workspace_registry,
         )
-        # Reach first (an out-of-reach trigger is unknown), then the rank rule against the trigger's owner (ticket 01a16e65-12d1): from a session or
-        # a delegated run the run's principal, which never gets the owner rule; the MCP endpoint's own call the request's actor, which does.
-        caller, from_run, in_session = _fire_caller(ctx)
+        # Full on the trigger (P3 Decision 3), then reach (an out-of-reach trigger is unknown); a refusal fires nothing.
         try:
-            result = await fire_now(
-                trigger_id=args.id, caller=caller, from_run=from_run, in_session=in_session, reach=caller_scope(ctx),
-                deps=deps,
-            )
+            result = await fire_now(trigger_id=args.id, person=person_for_tool(ctx), reach=caller_scope(ctx), deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
-        except TriggerOutranked as exc:
+        except AccessDeniedError as exc:
             return _err(str(exc), error_type="forbidden")
         return _ok({
             "skipped": result.skipped,
@@ -830,7 +804,7 @@ def _make_list_subs_handler(
         # Mirror the router: surface 404 when the parent trigger doesn't
         # exist instead of returning an empty list silently.
         try:
-            await get_trigger(trigger_id=args.trigger_id, deps=deps)
+            await get_trigger(trigger_id=args.trigger_id, person=person_for_tool(ctx), deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         # From a session outside prime, a subscription whose target is out of reach is left out (ticket 01a16c22).
@@ -863,13 +837,27 @@ def _make_get_sub_handler(
                 subscription_id=args.subscription_id,
                 # Out of the caller's reach answers as an unknown subscription (ticket 01a16c22).
                 reach=caller_scope(ctx),
+                person=person_for_tool(ctx),
                 deps=deps,
             )
+        except TriggerNotFound as exc:
+            return _err(str(exc), error_type="trigger_not_found")
         except SubscriptionNotFound as exc:
             return _err(str(exc), error_type="subscription_not_found")
         return _ok(await view_for(sub, _caller(ctx), storage_provider))
 
     return _handler
+
+
+async def _may_read_trigger_channel(storage_provider: Any, person: Any, trigger: Any) -> bool:
+    """Whether ``person`` holds READ on the channel of a channel ``trigger`` (a provider-wide one is admin-only): parking on it reads that channel's events."""
+    from primer.model.except_ import AccessDeniedError, NotFoundError
+
+    try:
+        await require_channel_trigger_access(storage_provider, person, trigger.config)
+    except (AccessDeniedError, NotFoundError):
+        return False
+    return True
 
 
 def _make_create_sub_handler(
@@ -896,10 +884,13 @@ def _make_create_sub_handler(
                 owner=_caller(ctx),
                 # A session outside prime may name only its own workspace or a session in it; the row records that reach for every fire.
                 reach=caller_scope(ctx),
+                person=person_for_tool(ctx),
                 deps=deps,
             )
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         except ParkedSessionOnlyFromYield as exc:
             return _err(str(exc), error_type="parked_session_only_from_yield")
         except SubscriptionTargetNotFound as exc:
@@ -942,9 +933,14 @@ def _make_update_sub_handler(
                 owner=_caller(ctx),
                 # A subscription whose target is out of the caller's reach answers as an unknown one (review of #874, C1).
                 reach=caller_scope(ctx),
+                person=person_for_tool(ctx),
                 deps=deps,
                 **kwargs,
             )
+        except TriggerNotFound as exc:
+            return _err(str(exc), error_type="trigger_not_found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         except SubscriptionNotFound as exc:
             return _err(str(exc), error_type="subscription_not_found")
         return _ok(sub)
@@ -969,8 +965,13 @@ def _make_delete_sub_handler(
                 subscription_id=args.subscription_id,
                 # Out of the caller's reach answers as an unknown subscription and deletes nothing (ticket 01a16c22).
                 reach=caller_scope(ctx),
+                person=person_for_tool(ctx),
                 deps=deps,
             )
+        except TriggerNotFound as exc:
+            return _err(str(exc), error_type="trigger_not_found")
+        except AccessDeniedError as exc:
+            return _err(str(exc), error_type="forbidden")
         except SubscriptionNotFound as exc:
             return _err(str(exc), error_type="subscription_not_found")
         return _ok({"ok": True})
@@ -991,6 +992,8 @@ def _trigger_wake_key(session_id: str, trigger_id: str) -> str:
 
 async def _park_refusal(storage_provider: Any, ctx: ToolContext) -> ToolCallResult | None:
     """``forbidden`` when the calling person holds no full on the session they would park (access-control P2 T6), as a saved subscription's owner must."""
+    if person_for_tool(ctx).is_admin:
+        return None  # an admin holds every level, the calling session's workspace row included (as at fire time)
     config = ParkedSessionSubConfig(session_id=ctx.session_id, tool_call_id=ctx.tool_call_id, parked_at=datetime.now(timezone.utc))
     refusal = await refuse_target_out_of_access(storage_provider, _caller(ctx), config)
     return None if refusal is None else _err(refusal, error_type="forbidden")
@@ -1043,7 +1046,8 @@ def _make_subscribe_handler(
 
         trigger_storage = storage_provider.get_storage(Trigger)
         trigger = await trigger_storage.get(args.trigger_id)
-        if trigger is None or not trigger.enabled:
+        # Parking needs read on the trigger (P3 Decision 4): one the caller cannot read answers as one that does not exist.
+        if trigger is None or not trigger.enabled or level_of(person_for_tool(ctx), trigger.access) is None:
             return _err(
                 f"trigger {args.trigger_id!r} does not exist or is disabled",
                 error_type="trigger_not_found_or_disabled",
@@ -1125,6 +1129,8 @@ def _make_subscribe_channel_handler(
             trigger is None
             or not trigger.enabled
             or trigger.config.kind != TriggerKind.CHANNEL.value
+            or level_of(person_for_tool(ctx), trigger.access) is None  # parking needs read on the trigger (P3 Decision 4)
+            or not await _may_read_trigger_channel(storage_provider, person_for_tool(ctx), trigger)  # and on its channel (P3 SEC, finding 6)
         ):
             return _err(
                 f"channel trigger {args.trigger_id!r} does not exist, is "

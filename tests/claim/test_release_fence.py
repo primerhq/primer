@@ -422,7 +422,8 @@ async def test_triggers_adapter_forwards_conn():
         sentinel, "t1", outcome=ReleaseOutcome(success=True, drop_lease=True)
     )
     assert storage.get_conns == [sentinel]
-    assert storage.update_conns == [sentinel]
+    # A field-scoped write of the release's own fields (access-control P3 Decision 8), on the same connection.
+    assert storage.patch_conns == [sentinel] and storage.update_conns == []
 
 
 @pytest.mark.asyncio

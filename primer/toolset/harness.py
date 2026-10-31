@@ -30,6 +30,10 @@ from uuid import uuid4
 
 from pydantic import SecretStr
 
+from primer.access.service import rewrite_keeping_access
+from primer.access.person import person_for_tool
+from primer.access.policy import level_of, visible_predicate
+from primer.model.access import Access
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
 from primer.model.common import refuse_served_masks
@@ -429,7 +433,7 @@ def _refuse_while_pending(harness: Harness, what: str) -> ToolCallResult | None:
 
 
 def _make_list_handler(storage_provider: "StorageProvider") -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         storage = storage_provider.get_storage(Harness)
         slug: str | None = arguments.get("slug")
         status_raw: str | None = arguments.get("status")
@@ -451,6 +455,11 @@ def _make_list_handler(storage_provider: "StorageProvider") -> ToolHandler:
                 )
             )
 
+        # Listed to those who can read it, in the storage query (access-control P3 Decision 2); an admin sees every harness.
+        visible = visible_predicate(person_for_tool(ctx))
+        if visible is not None:
+            predicates.insert(0, visible)
+
         if not predicates:
             result = await storage.list(page)
         else:
@@ -466,11 +475,12 @@ def _make_list_handler(storage_provider: "StorageProvider") -> ToolHandler:
 
 
 def _make_get_handler(storage_provider: "StorageProvider") -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         harness_id: str = arguments["id"]
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
-        if harness is None:
+        # A harness the caller cannot read answers exactly as a missing one.
+        if harness is None or level_of(person_for_tool(ctx), harness.access) is None:
             return _err(f"Harness {harness_id!r} does not exist", error_type="not-found")
         return _ok(_harness_dict(harness))
 
@@ -478,7 +488,7 @@ def _make_get_handler(storage_provider: "StorageProvider") -> ToolHandler:
 
 
 def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         storage = storage_provider.get_storage(Harness)
 
         name: str = arguments["name"]
@@ -524,6 +534,8 @@ def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
             subpath=subpath,
             status=HarnessStatus.DRAFT,
             created_at=datetime.now(timezone.utc),
+            # The registering admin owns it (an id-less admin or the system principal: admin-managed).
+            access=Access.owned_by(owner_id) if (owner_id := person_for_tool(ctx).user_id) is not None else Access(),
         )
         # A create has nothing stored to restore a mask from: the copy-a-harness move (harness__get, a new slug, harness__register) would store the served git_token mask as the token, as
         # POST /v1/harnesses refuses to (01a1212a, round 3 of #711).
@@ -576,7 +588,7 @@ def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
             overrides_dirty = True
 
         harness.overrides_dirty = overrides_dirty
-        updated = await storage.update(harness)
+        updated = await rewrite_keeping_access(storage, harness, what="Harness")
         return _ok(_harness_dict(updated))
 
     return _handler
@@ -628,7 +640,7 @@ def _make_update_overrides_handler(storage_provider: "StorageProvider") -> ToolH
         else:
             harness.overrides_dirty = False
 
-        updated = await storage.update(harness)
+        updated = await rewrite_keeping_access(storage, harness, what="Harness")
         return _ok(_harness_dict(updated))
 
     return _handler
@@ -668,7 +680,7 @@ def _make_enqueue_handler(
             # the objects it merely tracks. The model default (False) would leave everything an agent's uninstall
             # was meant to remove.
             harness.uninstall_cascade = harness.direction == HarnessDirection.INBOUND
-        updated = await storage.update(harness)
+        updated = await rewrite_keeping_access(storage, harness, what="Harness")
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 
@@ -738,7 +750,7 @@ def _make_install_handler(
         harness.pending_operation = HarnessOperation.INSTALL
         harness.operation_requested_by = _requester(ctx)
         harness.operation_inputs = operation_input_digests(harness)
-        updated = await storage.update(harness)
+        updated = await rewrite_keeping_access(storage, harness, what="Harness")
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 
@@ -788,7 +800,7 @@ def _make_sync_handler(
         harness.pending_operation = HarnessOperation.SYNC
         harness.operation_requested_by = _requester(ctx)
         harness.operation_inputs = operation_input_digests(harness)
-        updated = await storage.update(harness)
+        updated = await rewrite_keeping_access(storage, harness, what="Harness")
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 
