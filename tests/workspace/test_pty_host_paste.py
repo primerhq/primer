@@ -125,3 +125,76 @@ async def test_a_paste_the_command_reads_arrives_whole_and_in_order(tmp_path: Pa
         assert out_file.read_bytes() == lines
     finally:
         await session.close()
+
+
+# ---------------------------------------------------------------------------
+# P3-N1: a paste into a local terminal whose command does not read stdin never blocks the API loop
+# ---------------------------------------------------------------------------
+
+# Run in a child interpreter: on the blocking code the loop freezes, which must not freeze this test's worker.
+_PASTE_SCRIPT = r"""
+import asyncio, logging, sys
+from pathlib import Path
+from primer.workspace.local.pty_host import LocalPtySession
+
+warnings = []
+class _Keep(logging.Handler):
+    def emit(self, record):
+        warnings.append(record.getMessage())
+logging.getLogger("primer.workspace.local.pty_host").addHandler(_Keep(logging.WARNING))
+
+async def main(root):
+    pidfile = root / "busy.pid"
+    session = LocalPtySession(root=root, cmd=["sh", "-c", f"echo $$ > {pidfile}; exec sleep 60"])
+    await session.start()
+    async def drain():
+        async for _ in session.output():
+            pass
+    drainer = asyncio.ensure_future(drain())
+    while not (pidfile.exists() and pidfile.read_text().strip()):
+        await asyncio.sleep(0.05)
+    print("PID", pidfile.read_text().strip(), flush=True)
+    ticks = 0
+    async def tick():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+    ticker = asyncio.ensure_future(tick())
+    await session.write(b"echo pasted line\n" * 4096)   # 64 KiB, far past the pty's input buffer
+    await session.write(b"x" * (2 * 1024 * 1024))      # past the 1 MiB pending cap: dropped
+    start = ticks
+    await asyncio.sleep(0.5)
+    print("TICKS", ticks - start, flush=True)
+    print("WARNINGS", len(warnings), flush=True)
+    await session.close()
+    print("CLOSED", session.exit_code is not None, flush=True)
+    ticker.cancel()
+    drainer.cancel()
+
+asyncio.run(main(Path(sys.argv[1])))
+"""
+
+
+def test_a_paste_into_a_busy_local_terminal_never_freezes_the_loop(tmp_path: Path) -> None:
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _PASTE_SCRIPT, str(tmp_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        out = proc.stdout
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        pytest.fail(f"the event loop froze on the paste; output so far: {out!r}")
+    finally:
+        pidfile = tmp_path / "busy.pid"
+        if pidfile.exists() and pidfile.read_text().strip():
+            _kill(int(pidfile.read_text()))
+    assert proc.returncode == 0, proc.stderr
+    lines = dict(line.split(" ", 1) for line in out.splitlines())
+    assert int(lines["TICKS"]) >= 5  # the 10 ms callback kept running (about 50 expected)
+    assert int(lines["WARNINGS"]) >= 1  # the over-cap paste was dropped with a warning
+    assert lines["CLOSED"] == "True"
+    assert not _alive(int(lines["PID"]))
