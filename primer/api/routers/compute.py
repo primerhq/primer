@@ -28,7 +28,13 @@ from pydantic import BaseModel, field_validator
 
 from primer.access.person import person_from_request
 from primer.access.policy import require
-from primer.agent.agent_checks import AGENT_FIELD_CODES, check_agent_on_create, check_agent_on_update, missing_toolset_ids
+from primer.agent.agent_checks import (
+    AGENT_FIELD_CODES,
+    check_agent_on_create,
+    check_agent_on_update,
+    check_graph_node_profiles,
+    missing_toolset_ids,
+)
 from primer.api.deps import (
     get_agent_storage,
     get_graph_storage,
@@ -77,14 +83,16 @@ def _agent_check_as_rest_error(exc: EntityCheckError) -> HTTPException | Request
 
 async def _agent_pre_create(entity: Agent, request: Request) -> None:
     try:
-        await check_agent_on_create(entity, storage_provider=get_storage_provider(request))
+        await check_agent_on_create(entity, storage_provider=get_storage_provider(request), person=person_from_request(request))
     except EntityCheckError as exc:
         raise _agent_check_as_rest_error(exc) from exc
 
 
 async def _agent_pre_update(entity: Agent, existing: Agent, request: Request) -> None:
     try:
-        await check_agent_on_update(entity, existing, storage_provider=get_storage_provider(request))
+        await check_agent_on_update(
+            entity, existing, storage_provider=get_storage_provider(request), person=person_from_request(request),
+        )
     except EntityCheckError as exc:
         raise _agent_check_as_rest_error(exc) from exc
 
@@ -169,8 +177,21 @@ async def agent_status(
     profile_id = agent.model.profile_id
     profile = await model_profiles.get(profile_id)
     window: int | None = None
+    member_windows: list[int] = []
+    unusable = False
+    if profile is not None:
+        from primer.authz import ProfileUnusable
+        from primer.model_profile.resolver import require_profile_use
+
+        try:
+            await require_profile_use(storage_provider, person_from_request(request), profile)
+        except ProfileUnusable:
+            unusable = True
     if profile is None:
         issues.append(f"ModelProfile {profile_id!r} does not exist")
+    elif unusable:
+        # ONE issue, and the provider and member walk is skipped: a reader who may not use the profile learns nothing of what it points at.
+        issues.append(f"ModelProfile {profile_id!r} is not available to you")
     elif profile.kind == "single":
         window = profile.context_length
         if await llm_providers.get(profile.provider_id) is None:
@@ -179,7 +200,6 @@ async def agent_status(
                 f"{profile_id!r} does not exist"
             )
     else:  # kind == "aggregated": no provider_id of its own -- walk members.
-        member_windows: list[int] = []
         for member_id in profile.members or []:
             member = await model_profiles.get(member_id)
             if member is not None and member.kind == "single" and member.context_length:
@@ -237,13 +257,22 @@ async def agent_status(
 async def _graph_pre_create(entity: Graph, request: Request) -> None:
     from primer.knowledge.checks import check_graph_id
 
-    del request
     try:
         check_graph_id(entity)
+        await check_graph_node_profiles(
+            entity, storage_provider=get_storage_provider(request), person=person_from_request(request),
+        )
     except EntityCheckError as exc:
-        raise RequestValidationError(
-            [{"type": exc.code, "loc": ("body", exc.field), "msg": exc.message}]
-        ) from exc
+        raise _agent_check_as_rest_error(exc) from exc
+
+
+async def _graph_pre_update(entity: Graph, existing: Graph, request: Request) -> None:
+    try:
+        await check_graph_node_profiles(
+            entity, storage_provider=get_storage_provider(request), person=person_from_request(request), existing=existing,
+        )
+    except EntityCheckError as exc:
+        raise _agent_check_as_rest_error(exc) from exc
 
 
 # The access sub-resource (GET/PUT /graphs/{id}/access) is mounted
@@ -265,6 +294,7 @@ graph_router = make_crud_router(
     managed_by_field="harness_id",
     search_fields=["id", "description"],
     on_pre_create=_graph_pre_create,
+    on_pre_update=_graph_pre_update,
     # Another graph's sub-graph node, a session that is not ended and a trigger subscription still name the graph (shared with the
     # system delete_graph tool).
     references=[ReferenceCheck.from_spec(spec) for spec in GRAPH_REFERENCES],

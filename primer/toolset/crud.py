@@ -36,7 +36,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks
+from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks, check_graph_node_profiles
 from primer.common.preview_paths import missing_paths
 from primer.model.agent import Agent
 from primer.model.chat import Tool
@@ -209,16 +209,23 @@ def build_crud_toolset(
     passes it; ``None`` for standalone builds).
     """
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
-    async def _graph_pre_create(entity: Graph) -> None:
+    async def _graph_pre_create(entity: Graph, *, person: Any = None) -> None:
         from primer.knowledge.checks import check_graph_id
 
         check_graph_id(entity)
+        await check_graph_node_profiles(entity, storage_provider=storage_provider, person=person)
+
+    async def _graph_pre_update(entity: Graph, existing: Graph, *, person: Any = None) -> None:
+        await check_graph_node_profiles(entity, storage_provider=storage_provider, person=person, existing=existing)
+
+    _graph_pre_create.takes_person = True  # type: ignore[attr-defined]
+    _graph_pre_update.takes_person = True  # type: ignore[attr-defined]
 
     # The builder is the principal most likely to name a profile or toolset that does not exist, so its create / update run the
     # same reference check as the route and the system toolset (A-09).
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "agent": agent_pre_checks(storage_provider),
-        "graph": (_graph_pre_create, None),
+        "graph": (_graph_pre_create, _graph_pre_update),
     }
 
     for label, plural, model_cls, guards in (

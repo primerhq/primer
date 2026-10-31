@@ -3,6 +3,7 @@ builder-toolset suites so all three seed and submit exactly the same things."""
 
 from __future__ import annotations
 
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import McpConfig, StdioConfig, Toolset, ToolsetProviderType, TransportType
@@ -12,6 +13,7 @@ def profile_row(profile_id: str) -> ModelProfile:
     """A stored single ModelProfile. The agent check looks the profile up by id; it does not look at the provider behind it."""
     return ModelProfile(
         id=profile_id, description="a profile", kind="single", provider_id="llm-ref", model_name="m", context_length=1000,
+        access=Access(public=True),  # usable by whoever saves the agent (access-control P4)
     )
 
 
@@ -21,6 +23,7 @@ def toolset_row(toolset_id: str) -> Toolset:
         id=toolset_id,
         provider=ToolsetProviderType.MCP,
         config=McpConfig(transport=TransportType.STDIO, config=StdioConfig(command=["echo"])),
+        access=Access(public=True),  # readable by whoever saves the agent (access-control P4)
     )
 
 

@@ -25,9 +25,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from primer.access.person import Person
+from primer.access.policy import level_of
 from primer.int.storage_provider import StorageProvider
 from primer.model.except_ import ConfigError, NotFoundError
 from primer.model.model_profile import ModelProfile, ModelProfileConfig
+from primer.model.providers.llm import LLMProvider
 
 if TYPE_CHECKING:
     from primer.api.registries.provider_registry import ProviderRegistry
@@ -132,14 +135,48 @@ async def resolve_model(
     return await _flatten(storage, row)
 
 
+async def require_profile_use(storage_provider: StorageProvider, person: Person, row: ModelProfile) -> None:
+    """Raise :class:`~primer.authz.ProfileUnusable` unless ``person`` may use ``row`` AND every LLM provider it resolves to.
+
+    The use grant is on the profile the run names (a grant on an aggregate covers its members; a grant on a member never covers the aggregate,
+    plan Decision 6) and, separately, on each LLM provider behind it: the provider of a single profile, the providers of every member of an
+    aggregated one (access-control P4 Task 4, lead answer 1). A member or provider that does not exist is left to the resolver's own
+    not-found. Admins and the system principal use everything.
+    """
+    from primer.authz import ProfileUnusable
+
+    if level_of(person, row.access) is None:
+        raise ProfileUnusable(row.id)
+    storage = storage_provider.get_storage(ModelProfile)
+    provider_ids: list[str] = []
+    if row.kind == "single":
+        provider_ids.append(row.provider_id)
+    else:
+        for member_id in row.members or []:
+            member = await storage.get(member_id)
+            if member is not None and member.provider_id:
+                provider_ids.append(member.provider_id)
+    for provider_id in dict.fromkeys(provider_ids):
+        provider = await storage_provider.get_storage(LLMProvider).get(provider_id)
+        # (A row with no access block, a test double, is unrestricted.)
+        access = getattr(provider, "access", None)
+        if access is not None and level_of(person, access) is None:
+            raise ProfileUnusable(row.id)
+
+
 async def resolve_llm(
     storage_provider: StorageProvider,
     provider_registry: "ProviderRegistry",
     *,
     default_profile_id: str,
     override_profile_id: str | None = None,
+    person: Person | None = None,
 ) -> tuple["LLM", ResolvedModel]:
     """Resolve both the adapter and the model facts for one turn.
+
+    ``person`` (the person the turn runs as) makes the call a USE: the profile it names and the LLM providers behind it must be usable by
+    them (:func:`require_profile_use`), else ``ProfileUnusable``. The member recursion below carries no person: the aggregate's grant covers
+    its members, and their providers were checked here. ``None`` checks nothing (internal callers, tests).
 
     ``kind == "single"`` delegates to ``provider_registry.get_llm(
     profile.provider_id)``. ``kind == "aggregated"`` delegates to
@@ -164,6 +201,8 @@ async def resolve_llm(
     row = await storage.get(profile_id)
     if row is None:
         raise NotFoundError(f"ModelProfile {profile_id!r} does not exist")
+    if person is not None:
+        await require_profile_use(storage_provider, person, row)
     resolved = await _flatten(storage, row)
     if row.kind == "single":
         llm = await provider_registry.get_llm(row.provider_id)
@@ -180,4 +219,4 @@ async def resolve_llm(
     return llm, resolved
 
 
-__all__ = ["ResolvedModel", "resolve_llm", "resolve_model"]
+__all__ = ["ResolvedModel", "require_profile_use", "resolve_llm", "resolve_model"]

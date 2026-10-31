@@ -41,8 +41,10 @@ import re
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING
 
+from primer.access.person import Person
 from primer.common.entity_checks import EntityCheckError
 from primer.model.agent import Agent
+from primer.model.graph import Graph
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import Toolset
 
@@ -145,10 +147,30 @@ def check_agent_fields(entity: Agent, *, existing: Agent | None = None) -> None:
         )
 
 
-async def check_profile_exists(entity: Agent, *, storage_provider: "StorageProvider") -> None:
-    """``model.profile_id`` must name a stored ModelProfile."""
+async def _profile_missing_for(storage_provider: "StorageProvider", person: Person | None, profile_id: str) -> bool:
+    """True when ``profile_id`` names no profile, or one the ``person`` saving may not use (the profile and the LLM providers behind it).
+
+    An unusable profile reads exactly like a missing one (spec 9). ``person`` ``None`` checks existence only (internal callers, tests).
+    """
+    from primer.authz import ProfileUnusable
+    from primer.model_profile.resolver import require_profile_use
+
+    row = await storage_provider.get_storage(ModelProfile).get(profile_id)
+    if row is None:
+        return True
+    if person is None:
+        return False
+    try:
+        await require_profile_use(storage_provider, person, row)
+    except ProfileUnusable:
+        return True
+    return False
+
+
+async def check_profile_exists(entity: Agent, *, storage_provider: "StorageProvider", person: Person | None = None) -> None:
+    """``model.profile_id`` must name a stored ModelProfile the saving ``person`` may use (access-control P4 Task 4)."""
     profile_id = entity.model.profile_id
-    if await storage_provider.get_storage(ModelProfile).get(profile_id) is None:
+    if await _profile_missing_for(storage_provider, person, profile_id):
         raise _refuse(
             "model_profile_not_found",
             "model.profile_id",
@@ -156,10 +178,52 @@ async def check_profile_exists(entity: Agent, *, storage_provider: "StorageProvi
         )
 
 
-async def check_toolsets_exist(
-    entity: Agent, *, storage_provider: "StorageProvider", existing: Agent | None = None,
+async def check_graph_node_profiles(
+    entity: Graph, *, storage_provider: "StorageProvider", person: Person | None, existing: Graph | None = None,
 ) -> None:
-    """Every toolset the agent's tools name must resolve. With ``existing`` (an update) only the toolsets the update ADDS are checked."""
+    """Every ``profile_id`` an agent node of the graph names must be a profile the saving ``person`` may use; only the ones a save ADDS are checked.
+
+    An unchanged node profile is not re-checked (the run-time check protects every runner), as for an agent's profile.
+    """
+    already = {getattr(n, "profile_id", None) for n in (existing.nodes if existing is not None else [])}
+    for node in entity.nodes:
+        profile_id = getattr(node, "profile_id", None)
+        if not profile_id or profile_id in already:
+            continue
+        if await _profile_missing_for(storage_provider, person, profile_id):
+            raise _refuse(
+                "model_profile_not_found",
+                f"nodes.{getattr(node, 'id', '')}.profile_id",
+                f"ModelProfile {profile_id!r} does not exist; create the profile first or name an existing one",
+            )
+
+
+async def _unreadable_toolset_ids(tool_ids: Iterable[str], *, storage_provider: "StorageProvider", person: Person) -> list[str]:
+    """The toolsets named by ``tool_ids`` whose stored row ``person`` holds no level on, and none of whose named tools is public."""
+    from primer.access.policy import level_of, tool_is_public
+
+    named: dict[str, list[str]] = {}
+    for tool_id in tool_ids:
+        toolset_id = _resolved_toolset_id(tool_id)
+        raw = toolset_id_of(tool_id)
+        named.setdefault(toolset_id, []).append(tool_id[len(raw) + 2:] if tool_id.startswith(raw + "__") else tool_id)
+    hidden: list[str] = []
+    for toolset_id, names in named.items():
+        row = await storage_provider.get_storage(Toolset).get(toolset_id)
+        if row is None or level_of(person, row.access) is not None:
+            continue  # built-in (no row), or readable
+        if not any(tool_is_public(row.access, name) for name in names):
+            hidden.append(toolset_id)
+    return hidden
+
+
+async def check_toolsets_exist(
+    entity: Agent, *, storage_provider: "StorageProvider", existing: Agent | None = None, person: Person | None = None,
+) -> None:
+    """Every toolset the agent's tools name must resolve. With ``existing`` (an update) only the toolsets the update ADDS are checked.
+
+    With a ``person``, a toolset row they hold no level on and none of whose named tools is public counts as missing (spec 9).
+    """
     tool_ids = list(entity.tools)
     if existing is not None:
         # A tool id of a toolset the stored agent already names is not new, whether or not that toolset still exists.
@@ -168,6 +232,8 @@ async def check_toolsets_exist(
     missing = await missing_toolset_ids(
         tool_ids, toolsets=storage_provider.get_storage(Toolset), storage_provider=storage_provider,
     )
+    if person is not None and not person.is_admin:
+        missing = [*missing, *await _unreadable_toolset_ids(tool_ids, storage_provider=storage_provider, person=person)]
     if missing:
         names = ", ".join(repr(toolset_id) for toolset_id in missing)
         raise _refuse(
@@ -177,19 +243,21 @@ async def check_toolsets_exist(
         )
 
 
-async def check_agent_on_create(entity: Agent, *, storage_provider: "StorageProvider") -> None:
-    """Every pre-write check for a new agent: the id and the description, then the profile, then the toolsets."""
+async def check_agent_on_create(entity: Agent, *, storage_provider: "StorageProvider", person: Person | None = None) -> None:
+    """Every pre-write check for a new agent: the id and the description, then the profile, then the toolsets (both as the saving ``person``)."""
     check_agent_fields(entity)
-    await check_profile_exists(entity, storage_provider=storage_provider)
-    await check_toolsets_exist(entity, storage_provider=storage_provider)
+    await check_profile_exists(entity, storage_provider=storage_provider, person=person)
+    await check_toolsets_exist(entity, storage_provider=storage_provider, person=person)
 
 
-async def check_agent_on_update(entity: Agent, existing: Agent, *, storage_provider: "StorageProvider") -> None:
+async def check_agent_on_update(
+    entity: Agent, existing: Agent, *, storage_provider: "StorageProvider", person: Person | None = None,
+) -> None:
     """Every pre-write check for an edit: a profile the agent already had, and toolsets it already named, are not re-checked."""
     check_agent_fields(entity, existing=existing)
     if entity.model.profile_id != existing.model.profile_id:
-        await check_profile_exists(entity, storage_provider=storage_provider)
-    await check_toolsets_exist(entity, storage_provider=storage_provider, existing=existing)
+        await check_profile_exists(entity, storage_provider=storage_provider, person=person)
+    await check_toolsets_exist(entity, storage_provider=storage_provider, existing=existing, person=person)
 
 
 def agent_pre_checks(
@@ -197,12 +265,15 @@ def agent_pre_checks(
 ) -> tuple[Callable[[Agent], Awaitable[None]], Callable[[Agent, Agent], Awaitable[None]]]:
     """The ``(pre_create, pre_update)`` pair a tool factory takes, bound to ``storage_provider``."""
 
-    async def pre_create(entity: Agent) -> None:
-        await check_agent_on_create(entity, storage_provider=storage_provider)
+    async def pre_create(entity: Agent, *, person: Person | None = None) -> None:
+        await check_agent_on_create(entity, storage_provider=storage_provider, person=person)
 
-    async def pre_update(entity: Agent, existing: Agent) -> None:
-        await check_agent_on_update(entity, existing, storage_provider=storage_provider)
+    async def pre_update(entity: Agent, existing: Agent, *, person: Person | None = None) -> None:
+        await check_agent_on_update(entity, existing, storage_provider=storage_provider, person=person)
 
+    # The tool factory passes the calling person to hooks that say they take one (the saver is checked, access-control P4 Task 4).
+    pre_create.takes_person = True  # type: ignore[attr-defined]
+    pre_update.takes_person = True  # type: ignore[attr-defined]
     return pre_create, pre_update
 
 
@@ -214,6 +285,7 @@ __all__ = [
     "check_agent_fields",
     "check_agent_on_create",
     "check_agent_on_update",
+    "check_graph_node_profiles",
     "check_profile_exists",
     "check_toolsets_exist",
     "missing_toolset_ids",

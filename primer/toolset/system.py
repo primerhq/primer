@@ -87,9 +87,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from primer.access.person import person_for_tool
 from primer.access.policy import level_of
-from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks
+from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks, check_graph_node_profiles
 from primer.agent.approval import ApprovalResolver
 from primer.agent.approval_checks import check_policy
+from primer.authz import ProfileUnusable
 from primer.agent.tool_schemas import find_tool_schema
 from primer.agent.invoke import (
     InvocationDepthExceeded,
@@ -519,8 +520,15 @@ def build_system_toolset(
         check_collection_system_flag(entity, existing)
         check_collection_search_unchanged(entity, existing)
 
-    async def _graph_pre_create(entity: Graph) -> None:
+    async def _graph_pre_create(entity: Graph, *, person: Any = None) -> None:
         check_graph_id(entity)
+        await check_graph_node_profiles(entity, storage_provider=storage_provider, person=person)
+
+    async def _graph_pre_update(entity: Graph, existing: Graph, *, person: Any = None) -> None:
+        await check_graph_node_profiles(entity, storage_provider=storage_provider, person=person, existing=existing)
+
+    _graph_pre_create.takes_person = True  # type: ignore[attr-defined]
+    _graph_pre_update.takes_person = True  # type: ignore[attr-defined]
 
     async def _artifact_provider_pre_create(entity: ArtifactStorageProvider) -> None:
         # The reserved default must name a kind the factory can build, on a create (its row went missing) as on an update; the REST route
@@ -536,7 +544,7 @@ def build_system_toolset(
 
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "collection": (_collection_pre_create, _collection_pre_update),
-        "graph": (_graph_pre_create, None),
+        "graph": (_graph_pre_create, _graph_pre_update),
         # The agent's profile and toolset references are looked up before the write, as the REST route does (A-09); the builder's
         # ``crud`` toolset takes the same pair from the same function.
         "agent": agent_pre_checks(storage_provider),
@@ -1394,6 +1402,9 @@ def build_system_toolset(
             )
         except ValueError as exc:
             return _err(str(exc), error_type="bad-request")
+        except ProfileUnusable as exc:
+            # The model profile of the sub-agent is not usable by the person this run acts as: the call fails, not the parent session.
+            return _err(exc.message, error_type="forbidden")
         except ToolTurnCapReached as exc:
             # 01a1095e: the subagent stopped at its own max_tool_turns. Its last text is not a result: the call is an
             # error, and the text it had so far travels in the body for the parent model to use or discard.

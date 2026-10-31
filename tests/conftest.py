@@ -434,6 +434,7 @@ async def seed_model_profile(
     pre-seeding does not apply), or needing a profile with non-default
     config. Idempotent: returns the existing row if one is already there.
     """
+    from primer.model.access import Access
     from primer.model.model_profile import ModelProfile, ModelProfileConfig
 
     store = storage_provider.get_storage(ModelProfile)
@@ -449,6 +450,7 @@ async def seed_model_profile(
             model_name=model_name,
             context_length=context_length,
             config=config or ModelProfileConfig(),
+            access=Access(public=True),  # a test fixture stands in for a platform-written row (access-control P4)
         )
     )
 
