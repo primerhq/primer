@@ -608,6 +608,9 @@ class TestTheMarkerTakesItsSeqFromTheEventLog:
                 self.reserved += 1
                 return 5_000
 
+            async def flush(self) -> None:  # the persist flushes the bound writer before its Message lines
+                pass
+
         log = Log()
         backend, workspace, session = await open_session(tmp_path)
         try:

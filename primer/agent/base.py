@@ -420,6 +420,7 @@ class _BaseAgentExecutor(ABC):
         fixed_overhead = await self.fixed_overhead_tokens(tools)
         snapshot = await self._open_compaction_window()
         notes: list[ExtendedEvent] = []
+        drained: list[Message] = []
         try:
             history = (
                 snapshot if snapshot is not None else await self._load_history()
@@ -462,7 +463,10 @@ class _BaseAgentExecutor(ABC):
                     },
                 )
         finally:
-            await self._close_compaction_window()
+            drained = await self._close_compaction_window() or []
+        # the steers deferred while the window was open are on disk now, after the marker: this turn answers them too
+        # (AG-M6), as the overflow replay does
+        history = [*history, *drained]
         for note in notes:
             await self._emit(note)
             yield note
