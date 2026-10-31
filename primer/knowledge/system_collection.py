@@ -325,7 +325,8 @@ async def _providers_map(storage_provider, *, root: str = "") -> dict[str, str]:
 
     prefix = f"{root}/" if root else ""
     out: dict[str, str] = {}
-    llms = await _all_rows(storage_provider, LLMProvider)
+    # The live map is public: a grantable row (a provider, a profile) that is not public stays out of it (access-control P5 Task 5).
+    llms = [r for r in await _all_rows(storage_provider, LLMProvider) if _listed(r)]
     for row in llms:
         keys = sorted(row.config.model_dump(mode="json").keys())
         slug = _live_slug(row.id)
@@ -349,7 +350,7 @@ async def _providers_map(storage_provider, *, root: str = "") -> dict[str, str]:
             )
         return f"{p.model_name} on {p.provider_id}, context {p.context_length}"
 
-    profiles = await _all_rows(storage_provider, ModelProfile)
+    profiles = [r for r in await _all_rows(storage_provider, ModelProfile) if _listed(r)]
     out[f"{prefix}providers/model-profiles"] = _index(
         "Model profiles",
         [(p.id, None, _profile_label(p)) for p in profiles],
@@ -363,7 +364,7 @@ async def _providers_map(storage_provider, *, root: str = "") -> dict[str, str]:
         (EmbeddingProvider, "embedding", "Embedding providers"),
         (SemanticSearchProvider, "semantic-search", "Semantic-search providers"),
     ):
-        rows = await _all_rows(storage_provider, cls)
+        rows = [r for r in await _all_rows(storage_provider, cls) if _listed(r)]
         for row in rows:
             slug = _live_slug(row.id)
             out[f"{prefix}providers/{sub}/{slug}"] = (
