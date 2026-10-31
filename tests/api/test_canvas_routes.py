@@ -419,12 +419,12 @@ async def test_file_urls_are_minted_for_referenced_files(client, fake_storage_pr
     assert referenced_files(body["elements"]) == {"assets/c.png"}
 
 
-# ---- the shared read (ruling 2) ------------------------------------------------------------------------------------------------------
+# ---- the session read (ruling 2) -----------------------------------------------------------------------------------------------------
 
 
 async def test_any_user_reads_the_values_and_events_with_their_input_while_the_feed_hides_it(client, carol, fake_storage_provider, ws, app):
-    """The lead's ruling 2 on S6: GET .../canvas is the shared session read, values and the newest events WITH what was entered; the
-    REST event feed keeps removing the input for a non-admin (#872)."""
+    """The lead's ruling 2 on S6: GET .../canvas is a door of the session's read - values and the newest events WITH what was entered,
+    served to every reader of the session's workspace; the REST event feed keeps removing the input for a non-admin (#872)."""
     await _seed(fake_storage_provider, status=SessionStatus.RUNNING, turn_status="running", by=ADMIN)
     # The workspace as a row the access layer can judge (Phase 2, Task 7):
     # carol reads its event feed through a read grant.

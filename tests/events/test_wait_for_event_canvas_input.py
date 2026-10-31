@@ -2,11 +2,11 @@
 
 A ``canvas.event``'s ``value`` and ``data`` never leave the session they belong to through the event log. A wake is such a door twice:
 the flip stamps the published envelope on the waiting row (``parked_state.resume_event_payload``, which ``GET /v1/sessions/{id}``
-serves to any signed-in user: sessions are a shared read by the user's G7-02 decision), and the resume makes it the run's tool result,
+serves to every reader of the session's workspace), and the resume makes it the run's tool result,
 its transcript. So the dispatcher removes the two keys from EVERY wake before it publishes, whoever waits:
 
-* a non-admin ``wait_for_event`` (scoped to its own workspace by #856, and the default workspace is shared, so it can wake on another
-  user's click), on another session's canvas or its own;
+* a non-admin ``wait_for_event`` (scoped to its readable workspaces since #856, and this workspace is shared with it at read, so it can wake on
+  another user's click), on another session's canvas or its own;
 * an admin's ``wait_for_event``: an admin who needs another session's input reads ``GET /v1/events``, where an admin gets the full event;
 * ``canvas_wait`` on the calling session's own canvas: its resume restores the input from the stored event on that canvas, so the
   agent still gets what its user entered. An event the canvas ring evicted before the resume comes back without it, beside the canvas's
@@ -284,7 +284,7 @@ async def test_a_wake_of_any_other_kind_is_delivered_whole(sp) -> None:
         assert envelope["payload"] == payload
 
 
-# ---- the waiting row, a shared read --------------------------------------------------------------------------------------------------
+# ---- the waiting row, read by the workspace's readers ------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("interaction", list(INTERACTIONS), ids=list(INTERACTIONS))

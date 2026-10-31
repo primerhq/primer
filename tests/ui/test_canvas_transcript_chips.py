@@ -9,7 +9,7 @@ What the user ENTERED never reaches the label. The S5 strip (the privacy ruling
 of #872) removes a ``canvas.event``'s ``value`` and ``data`` from every
 structured copy the transcript reads - the ``canvas_event`` record, the
 ``user_input``'s ``canvas_event`` attribution and the digest's ``events`` - and
-the transcript is a shared read, so a user's input must not appear in it. A
+the transcript is read through the workspace's access, so a user's input must not appear in it. A
 change therefore names only the control: ``alice changed Genre``, never
 ``to "Lo-fi"`` (the lead's ruling after S9 dispatch).
 """
@@ -115,7 +115,7 @@ def test_a_click_record_and_a_woken_click_render_as_chips(ctx) -> None:
 def test_a_change_names_only_the_control(ctx) -> None:
     """The privacy ruling: a change chip names the control (the element's
     label), never the value the user entered - it is stripped from the record
-    and the transcript is a shared read."""
+    and the transcript is read through the workspace's access."""
     rec = canvas_event_rec(1, element="genre", etype="Select", kind="change",
                            label="Genre", by="alice")
     assert js(ctx, "SA_canvasChipLabel(" + json.dumps(rec) + ")") == "alice changed Genre"
@@ -223,7 +223,7 @@ def test_an_empty_digest_says_so(ctx) -> None:
 def test_a_queued_click_shows_its_label() -> None:
     """A queued steer whose attribution carries a canvas click shows the chip
     label, not its raw block text: the block (the session's own input) holds
-    what the user entered and must not be drawn for the shared reader."""
+    what the user entered and must not be drawn for a reader of the workspace."""
     src = NV_SESSION_DOC.read_text(encoding="utf-8")
     # the queued-row map (nv-queued) reads attribution.canvas_event and renders
     # the chip label through SA_canvasChipLabel when it is set

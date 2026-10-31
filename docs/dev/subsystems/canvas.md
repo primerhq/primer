@@ -271,6 +271,8 @@ posts its ready handshake and the state it reads, the console posts the snapshot
 window) and the message shape before acting on it, and accepts nothing from the canvas tree on
 `window` after the handshake (only on its MessagePort).
 
+**Access.** The canvas is read through the session's workspace: `GET /v1/workspaces/{id}/sessions/{sid}/canvas` answers 404 for a session that does not exist or is on another workspace than the path names - for a stranger that is the missing-row answer, for a reader of the workspace it serves the panel, its `values` and the newest events WITH what was entered, because the console renders them for whoever opens the session (the lead's ruling 2 on #892 round 2). The writes (ops, clear) need full, as the workspace's other session doors do. The event feed still removes the input for a non-admin, and a session's own canvas input lands only in its own transcript and queue. See [access control](../architecture/access-control.md).
+
 ## Internal contracts
 
 **What the user entered never leaves the session.** A click's `value` and an Html emit's `data`

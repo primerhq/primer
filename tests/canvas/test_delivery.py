@@ -504,7 +504,7 @@ def _dropped(w: World) -> list[dict[str, Any]]:
 
 async def test_a_queued_click_dropped_by_the_cap_is_recorded_as_a_summary() -> None:
     """The queue keeps 50 messages; the 51st drops the oldest, a queued click. Its record names the event, never the block, whose text
-    holds what the user entered (the transcript is a shared read). The dropped click stays unread: the agent reads it with canvas_get."""
+    holds what the user entered (the transcript is read through the workspace's access). The dropped click stays unread: the agent reads it with canvas_get."""
     from primer.session.pending_messages import store_pending_steer
 
     w = await _world("running")

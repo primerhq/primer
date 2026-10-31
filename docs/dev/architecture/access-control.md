@@ -21,6 +21,16 @@ harness installed carries a COPY of the harness's access, rewritten whenever the
 a session runs as the person whose input started it, and every full user has a private default workspace. Model profiles and the
 providers a user-owned entity references are not owned but grantable: an admin-set use grant says who may USE them (6.17).
 
+The caller behind every door is a PERSON: a `Person` pairs a user id with a role, derived per request from the cookie user, the
+bearer token's owner or the system principal of an auth-disabled install; a run's door asks for the turn's person, and an MCP
+door asks for the caller (6.3, 6.15, 6.21). The entity acting is an ACTOR: the innermost entity the run works through (the
+session's agent, a graph node's agent, a sub-agent, a ToolCall node's graph, or the user themselves over MCP; `ActorRef`, 6.15).
+The actor never adds access: every decision is the person's, and the role decides only the role floors, not the rows.
+
+A row the person holds no level on answers like a missing one (REST 404 with the missing-row text, a tool `not-found`), and a
+level below the need answers 403 `access_denied` (REST) or `forbidden` (a tool): the two doors at every gate, and admins pass all
+of them. One deliberate leak: a taken id or slug is revealed by a create that would collide with it (9).
+
 ## 2. Visual overview
 
 ```mermaid
@@ -108,6 +118,9 @@ flowchart LR
   `primer/api/routers/infra_access.py`; `primer/authz.py` `ProfileUnusable`; `primer/model_profile/resolver.py`
   `require_profile_use` and `resolve_llm(person=)`; `primer/workspace/provider_use.py`; `primer/channel/checks.py`
   `channel_for_binding`; `primer/knowledge/search_use.py`.
+- Phase 6: `primer/access/lifecycle.py` `heir_for(sp, person)` (the admin who deleted the user, else the oldest enabled admin,
+  else `None`) and `hand_over(sp, user_id, heir_id)` (the deletion hand-over, 7.1), plus `member_predicate` in
+  `primer/access/policy.py` (the `members CONTAINS u:<id>` predicate the hand-over and every lookup of what names a user walk on).
 
 ## 4. How to add a new implementation
 
@@ -221,13 +234,15 @@ grant therefore stops the next turn and every resume, however it was queued or p
 
 | Input | The turn runs as |
 |---|---|
-| REST steer, restart, resume | the request's actor |
+| REST steer, restart | the request's actor |
+| REST resume | the request's actor only when the session has never run a turn; a session that already ran or parked keeps the person it parked with |
 | Canvas click that wakes the agent | the clicker |
 | A message queued behind an open turn (a REST steer, `deliver_steer`, a canvas click, a wake that defers) | its sender, kept as `attribution["by"]` and passed on when the drain realizes it |
 | `message_session`, steer and restart tools from a session | the sending run's person |
 | Trigger `session_append` fire | the fire's owner (`principal_for_fire`); a fire with no person leaves the session's person |
 | Channel-thread reply | the session's creator (`initiated_by`): channel senders are not primer users |
-| Approval or `ask_user` answer, any park resume | unchanged: the parked turn keeps its person (`by=None`) |
+| An `ask_user` answer, or a `tool_results` body on a parked external tool call | the person who answered or provided it: a peer's input re-attributes the resumed turn to them, like a steer |
+| An approval answer, any other park resume | unchanged: the parked turn keeps its person (`by=None`) |
 
 Why: a full-access peer who steers someone else's session must never borrow the creator's private toolsets, collections
 or OAuth tokens. The trigger fire rank floor (`refuse_steer_above_fire`, `may_drive`) is the one rank rule left on a
@@ -253,15 +268,17 @@ Every full user (role `user` or `admin`, not disabled) has a private default wor
 last sign-in), all through `ensure_default_for_request`, which never fails a sign-in and makes the status probe wait 60 s
 after a failure. The workspace is `ws-<user id>`, materialised from the configured default template (else
 `local-default`), owned by the user and private, with the user's own operator `main` session; the work is idempotent
-under a per-user lock, and a lost create race reads as success. The first admin with no default adopts the install-wide
+under a per-user lock, and a lost create race reads as success. The `ws-<user id>` id space is reserved for the
+per-user defaults: no other workspace may take an id of that shape, so a `ws-<user id>` id always names the default
+workspace of the user whose id it is. The first admin with no default adopts the install-wide
 default (`prime`, or the legacy `primer`) instead, when it has no owner and is not public (`patch_if` on `access.rev`
 0 to 1). A restricted user gets none until promoted.
 
 `resolve_default_workspace_id(sp, person)` answers the person's own default (an id-less person gets the install-wide
 one), so `is_default` on REST rows and tool rows is per caller; the console picks its default workspace by that flag
 (`NV_defaultWid`), and `GET /v1/auth/status` also carries `default_workspace_id`. `WorkspaceRegistry.delete` refuses the install default and every workspace a user records as their
-default (`ReservedWorkspaceError`). A default workspace can be shared or made public like any other. Deleting a user
-leaves their default workspace in place, reachable only by admins.
+default (`ReservedWorkspaceError`). A default workspace can be shared or made public like any other. Deleting a user hands their default workspace to the
+heir and renames it (7.1).
 
 ### 6.6 Migrations
 
@@ -273,18 +290,30 @@ leaves their default workspace in place, reachable only by admins.
   `default_workspace_id`, unless that admin already has one or another user owns or records it.
 - Migration 24 (`m024_cross_workspace_list_field.py`) stamps `workspace_id` on external tool calls and tool approval
   records from their session, so the cross-workspace lists can filter in storage (6.7).
-- Phase 3 adds migrations 25 to 27 (6.14), and Phase 4 adds migration 28 (6.17).
+- Migration 25 (`m025_collection_ownership.py`) gives an ownerless collection to the first enabled admin, makes `system`
+  public and leaves `_internal_*` unset (6.14).
+- Migration 26 (`m026_trigger_ownership.py`) gives an ownerless trigger to the user behind its run-as owner (else the
+  first enabled admin), and an ownerless subscription its trigger's run-as owner, disabled (6.14).
+- Migration 27 (`m027_harness_ownership.py`) gives an ownerless harness to the first enabled admin, and every installed
+  row a copy of its harness's access (6.14).
+- Migration 28 (`m028_infrastructure_public.py`) makes every existing model profile and provider with no sharing public,
+  on the seven grantable tables; a row that already carries grants or `public` is left alone, so a re-run never undoes an
+  admin's choice (6.17).
+- Migration 29 (`m029_mcp_oauth_per_user.py`) makes a browser MCP sign-in per person: each token row that names no user
+  moves to the user who connected it (`connected_by`), else the enabled admin whose username it is, else the first
+  enabled admin (never the toolset's owner: the token is an upstream account); a client-credentials sign-in stays the
+  shared row under the bare toolset id (6.22).
 
-### 6.7 Not yet scoped
+### 6.7 Cross-workspace lists and open connections
 
 The cross-workspace lists (`GET /v1/sessions`, `POST /v1/sessions/find`, `GET /v1/sessions/recent`, `GET
 /v1/yields/pending`, `GET /v1/external_tool_calls`, `GET /v1/tool_approval/records`) are scoped: for a non-admin,
 `scope_to_readable_workspaces` (`primer/access/workspaces.py`) ANDs `workspace_id IN <readable workspaces>` into the query,
 so pages, totals and the recent window count only what the caller reads; external tool calls and approval records carry
 `workspace_id` (migration 24 backfills it from their session; a row whose session was gone stays `None`, visible to admins
-only). A live tap or terminal connection is checked when it opens,
-not again after a revoke (a Phase 6 ticket). A turn already running when a grant is revoked runs to its end, its
-in-session file tools included; the next turn or resume is refused (6.3).
+only). A live tap or terminal connection is checked when it opens and when its account stops being valid (7.3), not when
+the workspace's sharing changes. A turn already running when a grant is revoked runs to its end, its in-session file tools
+included; the next turn or resume is refused (6.3).
 
 Subsections 6.8 to 6.14 describe Phase 3 (collections, triggers, channel triggers and harnesses), numbered after the Phase 2
 subsections (workspaces and what inherits from them, the turn person, events, the per-user default workspace); 6.15 to 6.20
@@ -577,7 +606,67 @@ its token's owner), `system` for the system person or when nobody acts. An expli
 acting agent is not part of the label (approvals carry the full identity). The console's Activity view shows a
 `user:<id>` actor as the username.
 
-## 7. Testing patterns
+## 7. Lifecycle
+
+What an account change does to the rows that name it. The doors above decide what a person may do now; this section says
+what the rows say after the person is demoted, disabled or gone.
+
+### 7.1 Deleting a user (the hand-over)
+
+`DELETE /v1/admin/users/{user_id}` (`delete_admin_user` in `primer/api/routers/admin_users.py`) is admin-only and
+idempotent. The sequence: the anti-lockout guard (403 `last_admin_protected`), then the account is disabled
+(`write_user_fields(disabled=True, bump_epoch=True)` in `primer/auth/user_writes.py`: new requests are refused and its
+open connections end within one revalidate interval, 7.3), then the sharing is handed over, then the account's MCP
+sign-ins are forgotten (`forget_user_sign_ins`), and the user row is deleted. A failure part way leaves a disabled account
+that still names its leftovers; repeating the DELETE finishes the job, and the route answers 204 either way.
+
+The hand-over is `hand_over(sp, user_id, heir_id)` (`primer/access/lifecycle.py`); the heir is `heir_for(sp, person)`:
+the admin who deleted the user, else the oldest enabled admin, else `None`, and with no heir the rows are left as they
+are (admins reach everything). Every row whose `access` names the user is found with `member_predicate` (`members
+CONTAINS u:<id>`, the GIN index), all ids read before any write, and each is changed with ONE field-scoped `patch_if` of
+`access` guarded on its `rev`, re-read and re-applied on a lost race (a few times at most), so a sharing edit made
+meanwhile is never lost:
+
+- an owned row the user solely owned goes to the heir; a co-owned row keeps its other owners, and the heir is not added;
+- the user's grants are dropped everywhere; the grants other people hold on the user's rows are kept; `public` and
+  `public_tools` are unchanged;
+- a grantable row (a model profile, a provider) loses only its use grant;
+- a row a harness installed is not touched directly: its harness is handed over and the new access is fanned out to it
+  with `apply_harness_access`, so the direct `harness_managed` refusal is not bypassed;
+- the triggers that run as the user are DISABLED (`enabled` false, `next_fire_at` cleared, counted in the deletion
+  summary): their run-as owner is not transferred, because moving it to the heir would let a trigger the deleted user
+  configured (a webhook anyone can call) run with the heir's access; their next fire would be refused anyway (a run as a
+  missing user is refused, 6.3), and disabling stops it failing on every fire. Someone with full access who edits one
+  becomes its run-as owner (6.10) and re-enables it;
+- the user's default workspace is handed over like any workspace and renamed `<username> (deleted user)` so the heir can
+  tell it from their own; it is no longer reserved, and its sessions stay.
+
+Not touched: the user's API tokens and SSO links (both already resolve to no account, and deleting the SSO link would let
+the same identity be re-provisioned, which the SSO path refuses on purpose), the run-as fields of subscriptions and the
+session identities (`initiated_by`, `turn_person`), and the event log (the audit trail stays as written). Re-running
+converges: a row that no longer names the user is not read again. Tests: `tests/access/test_user_deletion.py`.
+
+### 7.2 Demotion and disable
+
+A demotion or a disable takes nothing away: the rows, grants, sign-ins and tokens the account holds stay, `level_of` gives
+a restricted or disabled person nothing, and a promotion or a re-enable restores it. `set_access` validates only the users
+an update adds, so the remaining owners of a row that names a restricted or disabled user can still re-share it; dropping
+that user from it is the owners' call. Their open connections end within one revalidate interval (7.3), and a turn that
+already runs keeps its person (6.3). Tests: `tests/access/test_owner_lifecycle.py`.
+
+### 7.3 Open connections
+
+A connection that outlives the request that opened it (a terminal WebSocket, a tap stream, an MCP stream) is re-checked
+every `auth.revalidate_interval_s` (default 5 s; 0 turns the check off) by `run_with_revalidation`
+(`primer/api/middleware/revalidate.py`): the user row and, for a bearer connection, the API token are re-read from
+storage, and the connection is ended (a WebSocket close 4401 `auth_revoked`; a 401 for a stream that has not started)
+when the user is gone or disabled, the cookie's `session_epoch` moved, the role was weakened, the cookie expired, or the
+token is gone, revoked or expired. A storage error is tolerated for a few consecutive checks and then fails closed for an
+open-ended connection (a WebSocket, a GET/HEAD/OPTIONS stream); a write in flight is left to finish. What the check does
+not cover is the workspace's sharing: a tap or terminal connection is checked when it opens and not again when the
+workspace's access changes, and a parked turn is re-checked by its own door (6.3, 6.4).
+
+## 8. Testing patterns
 
 - `tests/access/`: `Person` derivations and the policy, including a matrix that pins list visibility to `level_of` for
   every row and person (`test_list_and_get_agree_on_every_row_and_person`); `test_workspace_access.py` for the workspace
@@ -621,15 +710,20 @@ acting agent is not part of the label (approvals carry the full identity). The c
 - `tests/toolset/oauth/test_per_user_tokens.py`, `tests/api/test_mcp_oauth_per_user_routes.py` and
   `tests/storage/test_m029_mcp_oauth_per_user.py`: MCP OAuth per person, its routes and its migration;
   `tests/e2e/test_access_p5_journey.py` drives the whole flow against the mock OAuth MCP server.
+- Phase 6: `tests/access/test_user_deletion.py` (the hand-over, every kind, the race and the idempotent re-run) and
+  `tests/access/test_owner_lifecycle.py` (demoted and disabled owners); `tests/ui/test_p6_ownership_markers.py` for the
+  console markers and the lifecycle copy; the cross-kind matrix and the lifecycle over the live API in
+  `tests/e2e/test_access_matrix_journey.py` (CI only).
 
-## 8. Historical decisions
+## 9. Historical decisions
 
 - Access lives on the row rather than in a side table: one write changes it atomically, the CRUD event carries it, and
   the list filter is a single indexed predicate with no join.
 - `public_tools` alone does not make a toolset listable: listing and reading must agree, and single public tools are
   reached through the tool catalogue, not the toolset row.
-- The sessions-are-a-shared-read decision (G7-02) is reversed: a session, its transcript, canvas and pending gates are
-  read through the workspace's access, and an out-of-access session answers like a missing one.
+- The sessions-are-a-shared-read decision (G7-02) was reversed in access-control Phase 2: a session, its transcript,
+  canvas and pending gates are read through the workspace's access, and an out-of-access session answers like a missing
+  one.
 - The session rank rule (`may_drive` with the `own_session` admission, `refuse_outranked`, 403 `forbidden_rank` on the
   session routes) is replaced by full access on the workspace; rank still decides role floors and trigger fires.
 - Prime's reach over every workspace (and a session's reach of only its own workspace) is replaced by the person's
@@ -641,3 +735,15 @@ acting agent is not part of the label (approvals carry the full identity). The c
   single indexed predicate. Either way a child is never wider than its parent.
 - The trigger rank rules were replaced by the access levels: a rank says who may drive whose automation, a level says
   who was given what, and the owner of a trigger now decides who may fire or edit it.
+
+## 10. Known limits
+
+- **Long-lived connections end on the account check, not on a sharing change.** A tap or terminal connection is
+  re-checked only for the account that opened it (7.3, every `auth.revalidate_interval_s`): a grant lowered or dropped
+  while the connection is open ends it only when the account itself stops being valid, and nothing closes it on a
+  sharing change. A turn already running when a grant is revoked runs to its end (6.7).
+- **A taken id or slug answers the conflict code, not the missing-row answer (existence oracle).** Creating a
+  workspace, an owned CRUD kind, a document or a channel pair with an id or slug a row already holds, or a trigger with
+  a taken slug, answers the conflict (409, or the slug conflict) even when the row is not the caller's, so the caller
+  learns the id or slug exists. Accepted: ids and slugs are shared routinely and are not secrets (Phase 2 review,
+  finding 9).

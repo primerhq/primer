@@ -193,7 +193,7 @@ The compaction contract has two convergent paths: `_BaseAgentExecutor` calls `Co
 
 ### Access, tool availability and run identity (Phase 4)
 
-A run acts as its person. Its tool list is filtered by that person (`toolset_use`): a toolset the person may not read is left
+An agent is an owned row: read to see it and to start and run a session on it (the bound agent is re-read from storage every turn and needs read for the turn's person, `primer/worker/executor_builders.py`), full to edit it, owner to delete it or change its sharing; the seeded agents are public with no owner, so every user may run them. A run acts as its person. Its tool list is filtered by that person (`toolset_use`): a toolset the person may not read is left
 out and noticed to the model as `not available to you`, a toolset with only some public tools as `some tools not available
 to you`, and `call_tool`, `describe_tool`, `list_toolset_tools` and an approved re-run refuse the same tools. Tool approval
 policies see the composite identity: `ApprovalContext.identity` (`{user: {id, name, role}, actor: {kind, id}}`) is part of
