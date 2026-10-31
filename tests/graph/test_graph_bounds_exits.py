@@ -23,12 +23,13 @@ from primer.graph import _node_refs
 from primer.graph.base import _GraphErrorEvent
 from primer.graph.executor import GraphExecutor
 from primer.graph.workspace_executor import WorkspaceGraphExecutor
-from primer.model.chat import ToolResultPart
+from primer.model.chat import TextDelta, ToolResultPart
 from primer.model.graph import (
     FanOutSpec,
     Graph,
     GraphNodeMessage,
     GraphThread,
+    _AgentNodeRef,
     _BeginNode,
     _EndNode,
     _FanOutNode,
@@ -253,3 +254,92 @@ async def test_a_resumed_node_that_fails_gets_its_failed_record():
     assert [type(e).__name__ for e in events] == ["TurnLogStarted", "TurnLogFailed"]
     assert "tool broke" in (events[1].error.detail or "")
     assert events[1].error.extensions == {"ended_detail": "tool_execution_failed"}
+
+
+# ---- AG-L11b / AG-L11c: closing and cancelling a run -----------------------------------------------------------------
+
+
+class _BlockingLLM:
+    """Streams one delta, then waits until cancelled; records the cancellation."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    async def list_models(self):
+        return ["m"]
+
+    def stream(self, **kwargs):
+        return self._impl()
+
+    async def _impl(self):
+        yield TextDelta(text="working", index=0)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+
+def _agent_graph() -> Graph:
+    return Graph(
+        id="g-block", description="begin -> a (blocks) -> end",
+        nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="a", agent_id="x"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="a"), _StaticEdge(from_node="a", to_node="end")],
+    )
+
+
+async def _close_mid_run(tmp_path: Path):
+    """Start a workspace run whose agent node blocks, take events up to the node's first delta, then close the stream."""
+    llm = _BlockingLLM()
+
+    async def agent_resolver(agent_id):
+        return _agent(agent_id)
+
+    async def llm_resolver(agent):
+        return (llm, _model())
+
+    repo = await _make_state_repo(tmp_path)
+    ex = WorkspaceGraphExecutor(
+        graph=_agent_graph(), agent_resolver=agent_resolver, llm_resolver=llm_resolver,  # type: ignore[arg-type]
+        state_repo=repo, graph_session_id="gsid-close",
+    )
+    gen = ex.invoke([])
+
+    async def first_delta():
+        async for ev in gen:
+            if getattr(getattr(ev, "extended", None), "inner_type", None) == "text_delta":
+                return
+
+    await asyncio.wait_for(first_delta(), timeout=10)
+    await gen.aclose()
+    return ex, llm
+
+
+async def _close_mid_run(tmp_path: Path):
+    """Run begin -> a (blocks after one delta) on a WorkspaceGraphExecutor and close its invoke at that delta."""
+    llm = _BlockingLLM()
+
+    async def agent_resolver(agent_id):
+        return _agent(agent_id)
+
+    async def llm_resolver(agent):
+        return (llm, _model())
+
+    repo = await _make_state_repo(tmp_path)
+    ex = WorkspaceGraphExecutor(
+        graph=_agent_graph(), agent_resolver=agent_resolver, llm_resolver=llm_resolver,  # type: ignore[arg-type]
+        state_repo=repo, graph_session_id="gsid-close",
+    )
+    gen = ex.invoke([])
+    async for ev in gen:
+        if getattr(getattr(ev, "extended", None), "inner_type", None) == "text_delta":
+            break
+    await gen.aclose()
+    return ex, llm
+
+
+@pytest.mark.asyncio
+async def test_closing_the_workspace_invoke_closes_the_run_at_once(tmp_path: Path):
+    _, llm = await _close_mid_run(tmp_path)
+
+    assert llm.cancelled, "the node task was not cancelled by aclose"
