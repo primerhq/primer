@@ -117,7 +117,7 @@ def test_chips_are_removable():
 def test_send_is_blocked_while_any_upload_is_still_in_flight():
     composer = _composer()
     assert "attachmentsPending" in composer
-    assert "disabled={sending || attachmentsPending}" in composer
+    assert "disabled={wsRo || sending || attachmentsPending}" in composer
 
 
 def test_attachments_clear_only_on_successful_send():

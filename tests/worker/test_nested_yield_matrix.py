@@ -34,6 +34,7 @@ a graph checkpoint's nested entry). See the note at the bottom of this file.
 
 from __future__ import annotations
 
+from primer.model.access import Access
 from primer.model_profile import ResolvedModel
 from primer.model.model_profile import ModelProfile, ModelProfileConfig
 
@@ -333,6 +334,8 @@ class _MappedRegistry:
     def __init__(self, *, llm: Any, toolsets: dict[str, Any]) -> None:
         self._llm = llm
         self.toolsets = dict(toolsets)
+        # Holds no Toolset rows: these toolsets are built in, so call_tool's READ check on a stored row finds none to check.
+        self.storage_provider = _FakeStorageProvider()
 
     async def get_llm(self, _provider_id: str) -> Any:
         return self._llm
@@ -388,7 +391,7 @@ def _provider_row() -> _ProviderRow:
 
 
 def _agent(*, tools: list[str]) -> Agent:
-    return Agent(
+    return Agent(access=Access(public=True), 
         id="agent-sub",
         description="subagent",
         model=AgentModel(profile_id="prov-1--m1"),

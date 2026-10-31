@@ -13,6 +13,7 @@ since A-20 refuses ``trigger``-typed actors unless their role is high enough; on
 from __future__ import annotations
 
 import dataclasses
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ from primer.mcp.server import current_actor
 from primer.model.access import Access, AccessLevel
 from primer.model.principal import Principal
 from primer.model.provider import SqliteConfig
-from primer.model.workspace import WorkspaceTemplate
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta, WorkspaceTemplate
 from primer.model.yield_ import ToolContext
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.toolset.workspaces import build_workspaces_toolset
@@ -37,6 +38,13 @@ STATE_FILE = ".state/sessions/s-1/session.json"
 async def world(tmp_path: Path):
     sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
     await sp.initialize()
+    # The workspace row the tools name (access-control P2 T6): public, so a user and the initiator-less person
+    # hold read on it and the reserved-path admin check under test is the question that answers.
+    await sp.get_storage(Workspace).create(Workspace(
+        id=WS_ID, template_id="tpl", provider_id="local-1", created_at=datetime.now(UTC),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://ws-1", token="t"),
+        access=Access(public=True),
+    ))
     registry = WorkspaceRegistry(sp, factory=_StubBackend)
     live = _LiveWorkspace(WS_ID)
     live._files[STATE_FILE] = b'{"id": "s-1"}'
@@ -111,15 +119,21 @@ async def test_an_mcp_admin_lists_the_reserved_state_tree(world) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("role", ["user", "restricted"])
-async def test_a_non_admin_mcp_caller_is_refused_the_reserved_state_tree(world, role) -> None:
+@pytest.mark.parametrize(
+    ("role", "expected"),
+    [("user", "forbidden"), ("restricted", "not-found")],
+)
+async def test_a_non_admin_mcp_caller_is_refused_the_reserved_state_tree(world, role, expected) -> None:
+    """A full user holds read on the public workspace (access-control P2 T6), so the reserved-path admin check is the
+    question that answers (forbidden). A ``restricted`` person holds no level on anything, so the access gate answers
+    not-found before the reserved check is ever asked."""
     _, toolset = world
     with as_mcp(role):
         read_error, read_answer = await _read_state(toolset)
         list_error, list_answer = await _list_state(toolset)
 
-    assert read_error and read_answer["type"] == "forbidden", read_answer
-    assert list_error and list_answer["type"] == "forbidden", list_answer
+    assert read_error and read_answer["type"] == expected, read_answer
+    assert list_error and list_answer["type"] == expected, list_answer
 
 
 @pytest.mark.asyncio

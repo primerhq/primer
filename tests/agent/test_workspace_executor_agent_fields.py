@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from primer.agent.workspace_executor import WorkspaceAgentExecutor
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 
 FRAGMENT = "WORKSPACE-FRAGMENT"
@@ -36,6 +37,7 @@ def _non_default_agent() -> Agent:
         response_format={"type": "object", "properties": {"x": {"type": "string"}}},
         tts_voice="alloy",
         harness_id="harness-1",
+        access=Access(owners=["u-1"], grants={"u-2": "read"}),
     )
 
 

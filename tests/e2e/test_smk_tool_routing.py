@@ -114,6 +114,13 @@ async def test_call_tool_refuses_an_admin_tool_for_a_user_run(authed_client, bas
     account = {"username": f"ct-user-{unique_suffix}", "password": "ct-user-password-123"}
     made = await authed_client.post("/v1/admin/users", json={**account, "role": "user"})
     assert made.status_code == 201, made.text
+    # The agent is the admin's: share it with the user so the user may run it (access control: read = run it).
+    shared = (await authed_client.get(f"/v1/agents/{agent['agent_id']}/access")).json()
+    put = await authed_client.put(
+        f"/v1/agents/{agent['agent_id']}/access",
+        json={"owners": [o["id"] for o in shared["owners"]], "grants": {made.json()["id"]: "read"}, "rev": shared["rev"]},
+    )
+    assert put.status_code == 200, put.text
     async with httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(30.0, connect=10.0)) as user_client:
         login = await user_client.post("/v1/auth/login", json=account)
         assert login.status_code in (200, 204), login.text

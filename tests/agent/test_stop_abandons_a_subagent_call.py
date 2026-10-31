@@ -221,8 +221,8 @@ class _ParentLLM:
 class _ParentManager:
     """The parent's tool manager: its one tool runs the REAL ``run_subagent`` for ``agent_id``, stamped with the call's id."""
 
-    def __init__(self, agent_id: str, storage: _Storage, registry: _Registry) -> None:
-        self._agent_id, self._storage, self._registry = agent_id, storage, registry
+    def __init__(self, agent_id: str, storage: _Storage, registry: _Registry, *, identity: Any = None) -> None:
+        self._agent_id, self._storage, self._registry, self._identity = agent_id, storage, registry, identity
 
     def is_notifying(self, tool_name: str) -> bool:
         return False
@@ -241,6 +241,7 @@ class _ParentManager:
             agent_id=self._agent_id, prompt="do it", storage_provider=self._storage, provider_registry=self._registry,
             principal="user-1", session_id="sess-parent", workspace_id="ws-parent", chat_id=None,
             invoke_tool_call_id=call.id, turn_no=1,
+            identity=self._identity,
         )
         return ToolResultPart(id=call.id, output=text, error=False)
 

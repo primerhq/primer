@@ -174,14 +174,19 @@ def test_may_drive_is_the_rank_rule_of_every_path_that_drives_a_session():
 
 
 def test_the_own_session_rule_is_offered_only_where_asked_and_never_to_nobody():
-    """Review of #853, N1: a live request may act on a session its own account or token started; a run (a peer message) is never offered it."""
+    """Review of #853, N1: a live request may act on a session its own account or token started; a run (a peer message) no longer ranks the
+    sender against the target's creator, it asks the sender's person's level on the target's workspace (access-control P2 T6)."""
+    from primer.access.person import person_from_ref
+    from primer.access.policy import level_of
     from primer.authz import may_drive, same_principal
-    from primer.session.peer_messages import sender_may_message
+    from primer.model.access import Access
 
     ada_then = PrincipalRef(type="user", id="u-ada", display="ada", role="admin", source="local")
     ada_now = ada_then.model_copy(update={"role": "user"})
     assert may_drive(ada_now, ada_then, own_session=True) and not may_drive(ada_now, ada_then)
-    assert not sender_may_message(ada_now, ada_then), "a run with an admin's identity at user rank (a trigger-capped one) must not drive it"
+    # The peer guard asks the sender's PERSON - the run's principal with the demotion, not the recorded role - on the target's workspace:
+    # the demoted admin's run names a person who holds no level on a workspace it does not hold, and drives nothing there.
+    assert level_of(person_from_ref(ada_now), Access()) is None, "a person who holds no level drives no session, whatever its recorded rank"
     bob = PrincipalRef(type="user", id="u-bob", display="bob", role="user", source="local")
     assert not may_drive(bob, ada_then, own_session=True)
     token = PrincipalRef(type="api_token", id="u-ada", display="ci", role="user", source="internal")

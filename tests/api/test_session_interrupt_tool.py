@@ -7,7 +7,9 @@ row, and whether the bus key went out. The six route tests in ``test_session_int
 move kept the route's behaviour.
 
 The tool is built the way the app builds it, over the same storage and bus as the route, with NO scheduler and NO claim engine: a Stop
-needs neither, so the tool must not answer "unavailable" the way the session-creating tools do.
+needs neither, so the tool must not answer "unavailable" the way the session-creating tools do. The tool's caller acts as the workspace's
+owner (access-control P2 T6: the run's person needs full on the workspace, asked before the row lookup), and the self-stop's ToolContext
+names that owner as its initiator.
 """
 
 from __future__ import annotations
@@ -20,11 +22,18 @@ from datetime import datetime, timezone
 import pytest
 
 import primer.observability.metrics as metrics
+from primer.mcp.server import current_actor
+from primer.model.access import Access
+from primer.model.principal import Principal, PrincipalRef
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.toolset.workspaces import build_workspaces_toolset
 
 WID = "ws-stop-parity"
 TOOL = "interrupt_workspace_session"
+#: The person the tool acts as: the owner of the workspace (a Stop needs full, access-control P2 T6).
+OWNER = PrincipalRef(type="user", id="u-user", display="user", role="user", source="local", user_id="u-user")
+OWNER_TOKEN = Principal(type="user", id="u-user", display="user", role="user", source="local", user_id="u-user")
 
 
 def _now() -> datetime:
@@ -32,6 +41,13 @@ def _now() -> datetime:
 
 
 async def _seed(storage_provider, *, sid: str, status: SessionStatus, **fields) -> None:
+    # The workspace row the tool's access guard (P2 T6) asks the caller's person's full on: the tool's caller is its owner.
+    if (await storage_provider.get_storage(Workspace).get(WID)) is None:
+        await storage_provider.get_storage(Workspace).create(Workspace(
+            id=WID, name=WID, template_id="tpl", provider_id="local-1", created_at=_now(), phase="running",
+            runtime_meta=WorkspaceRuntimeMeta(url=f"ws://{WID}", token="t"),
+            access=Access(owners=[OWNER.user_id]),
+        ))
     values = dict(
         id=sid,
         workspace_id=WID,
@@ -86,7 +102,12 @@ async def _stop(surface: str, client, toolset, sid: str, *, workspace_id: str = 
             return _Outcome("ok", "", resp.json()["interrupt_requested"])
         kind = {409: "conflict", 404: "not-found"}[resp.status_code]
         return _Outcome(kind, resp.json().get("detail", ""), None)
-    result = await toolset.call(tool_name=TOOL, arguments={"workspace_id": workspace_id, "session_id": sid})
+    # No calling session (the MCP endpoint): the tool acts as the token's user, the workspace's owner (access-control P2 T6).
+    token = current_actor.set(OWNER_TOKEN)
+    try:
+        result = await toolset.call(tool_name=TOOL, arguments={"workspace_id": workspace_id, "session_id": sid})
+    finally:
+        current_actor.reset(token)
     body = json.loads(result.output)
     if result.is_error:
         return _Outcome(body["type"], body["message"], None)
@@ -145,7 +166,12 @@ async def test_an_unknown_session_or_the_wrong_workspace_is_not_found(
     outcome = await _stop(surface, client, toolset, sid, workspace_id=wid)
 
     assert outcome.kind == "not-found"
-    assert sid in outcome.detail
+    if surface == "tool" and case == "other-workspace":
+        # The tool asks the level before the row lookup (access-control P2 T6): a workspace the caller holds no level on answers in the
+        # workspace's own words, which confirm no session id.
+        assert wid in outcome.detail
+    else:
+        assert sid in outcome.detail
     assert (await fake_storage_provider.get_storage(WorkspaceSession).get("s-here")).interrupt_requested is False
     assert published == []
 
@@ -179,7 +205,12 @@ async def test_the_tool_works_with_no_bus_at_all_the_flag_is_the_durable_record(
         scheduler=None, claim_engine=None, event_bus=None,
     )
 
-    result = await bare.call(tool_name=TOOL, arguments={"workspace_id": WID, "session_id": "s-nobus"})
+    result = None
+    token = current_actor.set(OWNER_TOKEN)
+    try:
+        result = await bare.call(tool_name=TOOL, arguments={"workspace_id": WID, "session_id": "s-nobus"})
+    finally:
+        current_actor.reset(token)
 
     assert not result.is_error, result.output
     assert (await fake_storage_provider.get_storage(WorkspaceSession).get("s-nobus")).interrupt_requested is True
@@ -191,7 +222,8 @@ async def test_a_session_can_stop_itself_the_tool_does_not_special_case_the_call
     from primer.model.yield_ import ToolContext
 
     await _seed(fake_storage_provider, sid="s-self", status=SessionStatus.RUNNING)
-    ctx = ToolContext(tool_call_id="call-1", session_id="s-self", workspace_id=WID)
+    # The self-stop's run names the workspace's owner as its initiator: its person holds the full the tool asks on.
+    ctx = ToolContext(tool_call_id="call-1", session_id="s-self", workspace_id=WID, initiated_by=OWNER)
 
     result = await toolset.call(
         tool_name=TOOL, arguments={"workspace_id": WID, "session_id": "s-self"}, ctx=ctx,
@@ -203,9 +235,9 @@ async def test_a_session_can_stop_itself_the_tool_does_not_special_case_the_call
 
 
 async def test_the_route_and_the_tool_call_the_one_shared_helper(client, toolset, fake_storage_provider, monkeypatch):
-    """One implementation, not two: both surfaces reach ``session_factory.interrupt_session`` (imported at call time, as Cancel's). The route's guard is the
-    workspace access gate (P2 Task 3) and the tool keeps its rank guard until P2 Task 6 migrates it, so the two calls differ only in the guard
-    (ticket 01a16d3c-a8bc)."""
+    """One implementation, not two: both surfaces reach ``session_factory.interrupt_session`` (imported at call time, as Cancel's). The route's
+    refusal is the workspace access gate (P2 Task 3) and the tool's is its own access check (the caller's person's full on the workspace, asked
+    before the row, access-control P2 T6), so neither passes a guard to the helper (ticket 01a16d3c-a8bc)."""
     import primer.workspace.session_factory as session_factory
 
     await _seed(fake_storage_provider, sid="s-one", status=SessionStatus.RUNNING)
@@ -221,4 +253,4 @@ async def test_the_route_and_the_tool_call_the_one_shared_helper(client, toolset
     await _stop("route", client, toolset, "s-one")
     await _stop("tool", client, toolset, "s-one")
 
-    assert calls == [(WID, "s-one", False), (WID, "s-one", True)]
+    assert calls == [(WID, "s-one", False), (WID, "s-one", False)]

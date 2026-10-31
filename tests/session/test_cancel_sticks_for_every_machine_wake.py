@@ -22,7 +22,7 @@ from primer.model.storage import OffsetPage
 from primer.model.workspace_session import MACHINE_ATTRIBUTION_KEY, PendingSessionMessage, SessionStatus
 from primer.session.reset import OnlyAPersonReopens, SessionResetDeps, reset_session, restart_session
 from primer.trigger.subscribers import DispatchDeps
-from tests.session._peer_fakes import make_world, records, seed_session, slot
+from tests.session._peer_fakes import make_world, records, seed_session, seed_workspace, slot
 
 NOW = datetime(2026, 10, 23, 9, 0, tzinfo=UTC)
 OWNER = PrincipalRef(type="user", id="u-admin", display="u-admin", role="admin", source="local")
@@ -30,6 +30,8 @@ OWNER = PrincipalRef(type="user", id="u-admin", display="u-admin", role="admin",
 
 async def _subscription(world) -> Subscription:
     """An admin's trigger and ``session_append`` subscription aimed at ``ses-b``: the fire out-ranks the session, so only the cancel can stop it."""
+    # The fire gate (P2 T6) asks the subscription owner's full on the target's workspace row, so the row must exist.
+    await seed_workspace(world, "ws-1", owners=["u-admin"])
     await world.sp.get_storage(User).create(User(id="u-admin", username="u-admin", created_at=NOW, role="admin"))
     await world.sp.get_storage(Trigger).create(Trigger.model_validate({
         "id": "tr-1", "slug": "nightly", "name": "nightly", "created_at": NOW.isoformat(),

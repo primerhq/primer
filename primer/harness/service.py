@@ -395,9 +395,11 @@ def _entity_from_entry(
     # harness_id MUST be last so a template accidentally (or maliciously)
     # carrying a harness_id field in the rendered payload can never override
     # the dispatch's own value.
+    # ``access`` is never taken from a template: a harness repo must not grant itself sharing (access control, Phase 1).
+    payload = {key: value for key, value in entry.rendered_payload.items() if key != "access"}
     data = {
         "id": entry.resolved_id,
-        **entry.rendered_payload,
+        **payload,
         "harness_id": harness_id,
     }
     # Document gained a required ``path`` (Phase 1) and a required
@@ -493,6 +495,7 @@ async def _write_entity_with_body(
     entity: Any,
     content: str | None,
     is_update: bool,
+    owner: Any = None,
 ) -> None:
     """Write an entity row and (for documents) its content-store body row
     inside ONE backend transaction, so the two never diverge.
@@ -507,6 +510,19 @@ async def _write_entity_with_body(
     ``storage.update`` over ``storage.create``.
     """
     async with storage_provider.transaction() as conn:
+        if hasattr(entity, "access"):
+            if is_update:
+                # A sync keeps the sharing the row has (its owners may have shared it); the template never sets it.
+                stored = await storage.get(entity.id, conn=conn)
+                if stored is not None:
+                    entity.access = stored.access
+            else:
+                # The person who asked for the install owns what it creates (an id-less admin/system: admin-managed).
+                from primer.access.person import person_from_ref
+                from primer.model.access import Access
+
+                user_id = person_from_ref(owner).user_id if owner is not None else None
+                entity.access = Access.owned_by(user_id) if user_id is not None else Access()
         if is_update:
             await storage.update(entity, conn=conn)
         else:
@@ -684,6 +700,7 @@ async def apply_install(
                     # either rolls both back - no committed entity orphaned
                     # without its content row.
                     await _write_entity_with_body(
+                        owner=harness.operation_requested_by,
                         storage_provider=storage_provider,
                         storage=storage,
                         entity=entity,
@@ -867,6 +884,7 @@ async def apply_sync(
             # Entity row + (document) content row in ONE transaction so a
             # failure in either rolls both back - no torn write.
             await _write_entity_with_body(
+                owner=harness.operation_requested_by,
                 storage_provider=storage_provider,
                 storage=storage,
                 entity=entity,
@@ -906,6 +924,7 @@ async def apply_sync(
             # Entity row + (document) content row in ONE transaction so a
             # failure in either rolls both back - no torn write.
             await _write_entity_with_body(
+                owner=harness.operation_requested_by,
                 storage_provider=storage_provider,
                 storage=storage,
                 entity=entity,

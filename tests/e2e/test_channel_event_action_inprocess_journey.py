@@ -35,6 +35,7 @@ from pydantic import SecretStr
 # Importing the subscriber module registers its dispatcher under
 # "agent_fresh_session"; fire_trigger also imports it, but be explicit.
 import primer.trigger.subscribers.agent_fresh_session  # noqa: F401
+from primer.model.access import Access
 from primer.channel.correlation import CorrelationStore
 from primer.channel.event_dispatch import ChannelEventRouter
 from primer.int.claim import ClaimKind
@@ -137,6 +138,7 @@ async def _provider(tmp_path: Path, async_closers) -> SqliteStorageProvider:
 
 async def _seed_agent(p) -> Agent:
     agent = Agent(
+        access=Access(public=True),  # the fire runs as the subscription's owner (none here): public agents only
         id="ag-evj",
         description="journey agent",
         model=AgentModel(profile_id="prov--model"),

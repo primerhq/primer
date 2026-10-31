@@ -1,7 +1,7 @@
 """Messages from one session to another: the guards, the rate ledger and the send (pivot P3, design section 6.1).
 
-``workspaces__message_session`` lets the agent in a workspace session hand a message to another session of its workspace (or, from the default
-workspace, of any workspace). This module is the service behind it: the tool handlers are thin wrappers over :func:`send_peer_message`. A message
+``workspaces__message_session`` lets the agent in a workspace session hand a message to another session in a workspace its person may write. This
+module is the service behind it: the tool handlers are thin wrappers over :func:`send_peer_message`. A message
 travels the delivery path every machine entrypoint shares (:func:`primer.session.steer_delivery.deliver_steer`): an idle or ended session starts a
 turn with it, a session with a turn open reads it at its next turn boundary, and a gate the session waits on is never answered by it.
 ``workspaces__list_my_sessions`` is the other half: the sessions of the caller's own workspace, in the shape :func:`session_summary` gives
@@ -16,15 +16,14 @@ them all, a text that is empty or longer than ``PEER_MESSAGE_MAX_CHARS`` and a `
 
 1. the target is not the sender (``bad-request``);
 2. the sender is a session (``unsupported-surface``);
-3. the target is within reach: it is in the sender's workspace, or the sender is in the default workspace. Out of reach is ``not-found`` in the same
-   words as a session that does not exist, so a session id seen in a shared file or a log does not confirm that the session exists;
-4. the sender ranks at least as high as the target's creator (``forbidden``): the target runs at its creator's rank, so a message drives a run at
-   that rank. The rule is :func:`primer.authz.principal_rank`, the one a trigger's steer uses. A sender with no principal cannot be ranked and is
-   refused in its own words;
-5. the chain of peer messages is shorter than ``MAX_PEER_HOPS`` (``hop-limit``);
-6. the sender has sent fewer than ``PEER_RATE_LIMIT`` messages in the last ``PEER_RATE_WINDOW`` (``rate-limited``);
-7. with ``mode="if_idle"``, the target would start a turn now (``conflict``);
-8. the target can take a message at all (``conflict``), which the delivery decides itself: an ended session that cannot be reopened refuses, and so
+3. the sender's person holds full on the target's workspace (access-control P2 T6, where it replaces both the reach of the sender's workspace and
+   the rank of the sender's run): the person is the sender's run principal (:func:`primer.access.person.person_from_ref`); a person who holds no
+   level at all is ``not-found`` in the same words as a session that does not exist (a session id seen in a shared file or a log does not confirm
+   that the session exists), and a level below full is ``forbidden``;
+4. the chain of peer messages is shorter than ``MAX_PEER_HOPS`` (``hop-limit``);
+5. the sender has sent fewer than ``PEER_RATE_LIMIT`` messages in the last ``PEER_RATE_WINDOW`` (``rate-limited``);
+6. with ``mode="if_idle"``, the target would start a turn now (``conflict``);
+7. the target can take a message at all (``conflict``), which the delivery decides itself: an ended session that cannot be reopened refuses, and so
    does one an operator cancelled (only a person reopens it: lead ruling R4), and so does a target whose queue already holds the cap's worth of
    waiting messages (a peer message never takes a person's place in it: lead ruling R1).
 """
@@ -40,10 +39,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from primer.access.person import person_from_ref
+from primer.access.workspaces import workspace_level
 from primer.agent.invoke import MAX_INVOCATION_DEPTH
-from primer.authz import may_drive, principal_rank, rank_label
-from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.events.recorder import actor_of, recorder_for
+from primer.model.access import AccessLevel, LEVEL_RANK
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.principal import PrincipalRef, person_ref
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
@@ -110,12 +110,9 @@ REFUSE_RATE = "this session sent {limit} messages in the last 10 minutes; retry 
 REFUSE_SELF = "a session cannot message itself"  # bad-request
 REFUSE_NO_CALLER = "message_session works only inside a workspace session"  # unsupported-surface
 REFUSE_NOT_FOUND = "Session {session_id!r} does not exist in this workspace"  # not-found
-REFUSE_RANK = (
-    "session {session_id!r} runs at a higher rank ({target_rank}) than this session ({sender_rank}); "
-    "a session may message only sessions at or below its own rank"
+REFUSE_NO_FULL = (
+    "you hold less than full access to workspace {workspace_id!r}, so you cannot message its sessions"
 )  # forbidden
-# Not in the plan: a sender with no principal cannot be ranked at all, and REFUSE_RANK would call it "lower" than a target it was never compared with.
-REFUSE_NO_PRINCIPAL = "this session's run has no recorded principal, so it cannot message another session"  # forbidden
 REFUSE_BUSY = "session {session_id!r} is {reason}; nothing was sent (mode if_idle)"  # conflict
 REFUSE_ENDED = "session {session_id!r} has ended ({ended_reason}) and cannot take a message"  # conflict
 # Not in the plan (lead ruling R1 on #788): the target's queue of waiting messages is at its cap, and a peer message never takes a person's place in it.
@@ -163,18 +160,6 @@ class PeerMessageRefused(Exception):
         super().__init__(message)
         self.error_type = error_type
         self.message = message
-
-
-def sender_may_message(sender: PrincipalRef | None, target_creator: PrincipalRef | None) -> bool:
-    """Whether a run started by ``sender`` may put a message into a session its creator ``target_creator`` started.
-
-    The target session runs at its creator's rank, so the message drives a run at that rank: the sender must rank at least as high
-    (:func:`primer.authz.principal_rank`; a target with no recorded creator runs as an unattributed user and ranks as one). A sender with no
-    principal at all is refused: an unknown run does not get to drive anyone's (fail closed).
-    """
-    if sender is None:
-        return False
-    return may_drive(sender, target_creator)
 
 
 def next_peer_hops(sender: WorkspaceSession) -> int:
@@ -379,52 +364,11 @@ async def list_workspace_session_summaries(
     return {"workspace_id": workspace_id, "items": items, "total": page.total if page.total is not None else len(items)}
 
 
-async def reach_of(storage_provider: Any, workspace_id: str) -> str | None:
-    """The workspace a session of ``workspace_id`` may reach, or ``None`` when it may reach every workspace.
-
-    The scope of every path by which a session acts on another session (design 6.1; lead ruling 3 of the G7 fixes): a session reaches its own
-    workspace, and a session in the default workspace (prime, the management plane) reaches every workspace. Which workspace is the default is the one
-    every module asks for (``primer.bootstrap.prime.resolve_default_workspace_id``); with none named, no session is in it. A person (REST) or an API
-    client (MCP), who calls with no session, is not scoped by this.
-    """
-    default_workspace_id = await resolve_default_workspace_id(storage_provider)
-    return None if workspace_id == default_workspace_id else workspace_id
-
-
-def in_reach(reach: str | None, workspace_id: str) -> bool:
-    """Whether a session in ``workspace_id`` is within ``reach`` (:func:`reach_of`). Out of reach is answered exactly as a session that does not
-    exist, by every caller, so a session id seen in a shared file or a log is never confirmed."""
-    return reach is None or workspace_id == reach
-
-
-#: The sentence every tool that names a workspace adds to its description: what a session outside prime reaches (:func:`caller_reach`).
-REACH_NOTE = (
-    "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an "
-    "unknown id does."
+#: The sentence every tool that names a workspace adds to its description: what a caller's access decides.
+ACCESS_NOTE = (
+    "A workspace you hold no access to answers type=not-found, as an unknown id does; a level below the one the tool needs answers "
+    "type=forbidden."
 )
-
-#: The workspace a calling session is confined to when its workspace cannot be told: an id no workspace has (an id is never empty), so it reaches
-#: nothing (fail closed).
-NO_WORKSPACE = ""
-
-
-async def caller_reach(storage_provider: Any, ctx: Any) -> str | None:
-    """The one workspace the caller of a tool may reach, or ``None`` for every workspace (lead ruling 3 of the G7 fixes, audit G7-05).
-
-    The reach of every tool that names a workspace or a session, in every toolset that has one (the workspaces tools, the reply-binding and
-    channel-binding tools, the trigger subscription tools): a call from a workspace session reaches its own workspace, and every workspace when that
-    is the default one (prime, the management plane), as :func:`reach_of` says. A call with no calling session (``ctx`` None or with no
-    ``session_id``: a person over MCP, an API client) keeps its reach over every workspace. A context that names a session but no workspace is
-    resolved through the session's row; a session that cannot be found reaches nothing.
-    """
-    if ctx is None or not getattr(ctx, "session_id", None):
-        return None
-    workspace_id = getattr(ctx, "workspace_id", None)
-    if not workspace_id:
-        row = await storage_provider.get_storage(WorkspaceSession).get(ctx.session_id)
-        workspace_id = row.workspace_id if row is not None else NO_WORKSPACE
-    return await reach_of(storage_provider, workspace_id)
-
 
 class PeerSendResult(BaseModel):
     """What ``message_session`` answers when the message was delivered or queued."""
@@ -606,21 +550,19 @@ async def send_peer_message(
     if sender is None:
         raise PeerMessageRefused("unsupported-surface", REFUSE_NO_CALLER)
     target = await sessions.get(target_session_id)
-    # A session reaches its own workspace; the default workspace (prime) is the management plane, and its sessions reach ANY workspace (design 6.1,
-    # :func:`reach_of`). For every caller of this service, the steer and restart tools included.
-    if target is None or not in_reach(await reach_of(storage_provider, sender.workspace_id), target.workspace_id):
-        # A session of another workspace is answered exactly as a session that does not exist: an id seen in a shared file or a log must not confirm
-        # that the session is there. This comes before the rank check for the same reason.
+    # The sender's person needs full on the target's workspace (access-control P2 T6): the level replaces both the reach of the sender's
+    # workspace and the rank of the sender's run, for every caller of this service, the steer and restart tools included. The person is the
+    # sender's run principal; a run with no principal behind it (unattributed, or none recorded) names no person, and so holds no level.
+    if target is None:
+        # A session of a workspace the sender's person holds no level on is answered exactly as a session that does not exist: an id seen in a
+        # shared file or a log must not confirm that the session is there. The level is asked after the row read because the target's workspace
+        # is only known from the row; the answer is the same either way.
         raise PeerMessageRefused("not-found", REFUSE_NOT_FOUND.format(session_id=target_session_id))
-    if sender_principal is None:
-        raise PeerMessageRefused("forbidden", REFUSE_NO_PRINCIPAL)
-    if not sender_may_message(sender_principal, target.initiated_by):
-        raise PeerMessageRefused(
-            "forbidden",
-            REFUSE_RANK.format(
-                session_id=target.id, target_rank=rank_label(target.initiated_by), sender_rank=rank_label(sender_principal),
-            ),
-        )
+    level = await workspace_level(storage_provider, person_from_ref(sender_principal), target.workspace_id)
+    if level is None:
+        raise PeerMessageRefused("not-found", REFUSE_NOT_FOUND.format(session_id=target_session_id))
+    if LEVEL_RANK[level] < LEVEL_RANK[AccessLevel.FULL]:
+        raise PeerMessageRefused("forbidden", REFUSE_NO_FULL.format(workspace_id=target.workspace_id))
     hops = next_peer_hops(sender)
 
     async with _sender_lock(sender.id):
@@ -791,8 +733,7 @@ async def send_peer_message(
 
 __all__ = [
     "MAX_PEER_HOPS",
-    "NO_WORKSPACE",
-    "REACH_NOTE",
+    "ACCESS_NOTE",
     "PARKED_ON_LABELS",
     "PEER_MESSAGE_MAX_CHARS",
     "PEER_PREFIX_AGENT",
@@ -815,29 +756,22 @@ __all__ = [
     "REFUSE_NOT_FOUND",
     "REFUSE_NO_CALLER",
     "REFUSE_NOT_ENDED",
-    "REFUSE_NO_PRINCIPAL",
+    "REFUSE_NO_FULL",
     "REFUSE_QUEUE_FULL",
-    "REFUSE_RANK",
     "REFUSE_RATE",
     "REFUSE_RESTART_NEEDS_INPUT",
     "REFUSE_SELF",
     "REFUSE_TEXT",
     "PeerMessageRefused",
     "PeerSendResult",
-    "caller_reach",
     "check_peer_rate",
     "delete_peer_ledger_of",
-    "in_reach",
     "list_workspace_session_summaries",
     "next_peer_hops",
     "parked_on",
     "peer_prefix",
-    "reach_of",
-    "rank_label",
     "record_peer_message",
     "trim_stale_peer_ledger",
-    "resolve_default_workspace_id",
     "send_peer_message",
-    "sender_may_message",
     "session_summary",
 ]

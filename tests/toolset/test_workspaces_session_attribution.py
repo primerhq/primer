@@ -18,9 +18,12 @@ from typing import Any
 
 import pytest
 
+from primer.model.access import Access
 from primer.api.registries import WorkspaceRegistry
+from primer.mcp.server import current_actor
+from primer.model.access import Access
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.principal import PrincipalRef
+from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import OffsetPage, OffsetPageResponse
 from primer.model.workspace import (
     LocalWorkspaceConfig,
@@ -70,6 +73,18 @@ class _Storage:
             return None
         self._data[e.id] = e
         return e
+
+    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
+        # The storage contract's guarded field write (a wake arms its turn with one: audit G7-03), with the reference semantics.
+        from tests.storage._patch_reference import patch_model
+
+        current = self._data.get(id)
+        if current is None:
+            raise NotFoundError(f"no entity with id {id!r}")
+        updated = patch_model(current, patch, where=where, set_paths=set_paths)
+        if updated is not None:
+            self._data[id] = updated
+        return updated
 
     async def delete(self, id):
         if id not in self._data:
@@ -172,7 +187,7 @@ class _FakeClaimEngine:
 def _seed_agent(sp, agent_id="code-reviewer") -> None:
     from primer.model.agent import Agent, AgentModel
 
-    sp.get_storage(Agent)._data[agent_id] = Agent(
+    sp.get_storage(Agent)._data[agent_id] = Agent(access=Access(public=True), 
         id=agent_id,
         description="x",
         model=AgentModel(profile_id="p--m"),
@@ -190,6 +205,17 @@ def _provider() -> WorkspaceProvider:
 # ===========================================================================
 # Fixtures
 # ===========================================================================
+
+
+@pytest.fixture(autouse=True)
+def _actor():
+    """No calling session in this file: the calls act as u-1's MCP token user, whom ``create_workspace`` stamps owner
+    of ``ws-stub`` (access-control P2 T6)."""
+    token = current_actor.set(Principal(type="user", id="tok-u1", display="u1", role="user", source="local", user_id="u-1"))
+    try:
+        yield
+    finally:
+        current_actor.reset(token)
 
 
 @pytest.fixture
@@ -226,9 +252,18 @@ async def seeded(session_toolset, sp):
             "entity": {"id": "tpl-1", "description": "dev", "provider_id": "local-1"},
         },
     )
+    from primer.model.principal import PrincipalRef
+    from primer.model.yield_ import ToolContext
+
+    # The template was created with no identity (admin-managed): the seed creates the workspace as a session-less admin.
+    admin = ToolContext(
+        tool_call_id="seed", session_id=None, workspace_id=None,
+        initiated_by=PrincipalRef(type="user", id="admin-1", display="admin", role="admin", source="local", user_id="admin-1"),
+    )
     create = await session_toolset.call(
         tool_name="create_workspace",
         arguments={"id": "ws-stub", "template_id": "tpl-1"},
+        ctx=admin,
     )
     assert not create.is_error, create.output
     _seed_agent(sp)
@@ -256,6 +291,7 @@ async def test_create_session_stamps_ctx_initiated_by(
             display="ci",
             role="user",
             source="internal",
+            user_id="u-1",
         ),
     )
     result = await session_toolset.call(
@@ -290,3 +326,26 @@ async def test_create_session_with_no_manager_identity_fails_closed_to_an_ordina
     body = json.loads(result.output)
     assert body["initiated_by"]["type"] != "system"
     assert body["initiated_by"]["role"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_a_session_started_over_mcp_runs_as_the_token_account(
+    session_toolset,
+    seeded,
+) -> None:
+    """No ctx and a known MCP caller: the session runs as the account behind the token (so it can use what that account can
+    read), never unattributed and never system."""
+    from primer.mcp.server import current_actor
+    from primer.model.principal import Principal
+
+    token = current_actor.set(Principal(type="api_token", id="tok-9", display="t", role="user", source="local", user_id="u-9"))
+    try:
+        result = await session_toolset.call(
+            tool_name="create_workspace_session",
+            arguments={"workspace_id": seeded, "binding": {"kind": "agent", "agent_id": "code-reviewer"}},
+        )
+    finally:
+        current_actor.reset(token)
+    assert not result.is_error, result.output
+    body = json.loads(result.output)
+    assert body["initiated_by"]["id"] == "tok-9" and body["initiated_by"]["user_id"] == "u-9"

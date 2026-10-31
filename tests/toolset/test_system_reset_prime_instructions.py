@@ -6,11 +6,11 @@ default workspace, and the bytes are always the platform's (``shipped_prime_agen
 Who may call it:
 
 * the run's role must be admin (``required_role="admin"``; the tool manager, ``system__call_tool`` and the MCP endpoint all enforce it);
-* a session must be IN the default workspace: the reach rule of #870/#874 (``primer.session.peer_messages.reach_of``) lets a session
-  outside prime reach only its own workspace, and this tool writes into prime, so from any other workspace it is refused and writes
-  nothing. A call with no calling session (a person over MCP) reaches every workspace, as with every workspace tool.
+* the caller's person must hold full on the default workspace (prime) (access-control P2 T6: a session's reach no longer decides this,
+  and a call with no calling session is checked as the MCP token's user). Which workspace the calling session runs in is no part of
+  the rule; a run with no recorded initiator names no person and holds no level.
 
-It ships ungated (no default approval policy): it can write nothing but the platform's own text, which any run in prime, at any role,
+It ships ungated (no default approval policy): it can write nothing but the platform's own text, which any run with full on prime
 can already write over with ``workspaces::write_workspace_file``.
 """
 
@@ -25,16 +25,21 @@ import pytest
 
 from primer.api.registries import ProviderRegistry
 from primer.bootstrap.prime import shipped_prime_agents_md
+from primer.model.access import Access
 from primer.model.except_ import BadRequestError, NotFoundError
-from primer.model.principal import Principal
+from primer.model.principal import Principal, PrincipalRef
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext
+from primer.mcp.server import current_actor
 from primer.toolset.system import build_system_toolset
 
 from tests.bootstrap.test_prime_agents_md import _Registry, _Ws, _row, local_prime  # noqa: F401 - local_prime is a fixture
 
 TOOL = "reset_prime_instructions"
+#: The token's user of this suite's MCP calls: the person the prime row below grants full to.
+U1 = "u1"
+PRIME_USER = PrincipalRef(type="user", id=U1, display=U1, role="user", source="local")
 
 
 def _provider_registry(sp) -> ProviderRegistry:
@@ -49,10 +54,24 @@ def _provider_registry(sp) -> ProviderRegistry:
 
 @pytest.fixture
 async def ws(fake_storage_provider) -> _Ws:
-    """Prime, recorded, with agents.md edited by a person."""
-    await fake_storage_provider.get_storage(Workspace).create(_row("prime"))
+    """Prime, recorded, with agents.md edited by a person, owned by the suite's token user (access-control P2 T6)."""
+    row = _row("prime")
+    row.access = Access(owners=[U1])
+    await fake_storage_provider.get_storage(Workspace).create(row)
     await fake_storage_provider.set_default_workspace_id("prime")
     return _Ws({"agents.md": b"mine", "notes.md": b"keep"})
+
+
+@pytest.fixture(autouse=True)
+def _mcp_actor():
+    """The MCP endpoint's live actor for every no-calling-session call of this suite (as ``primer.api._app_mcp`` publishes it)."""
+    token = current_actor.set(
+        Principal(type="user", id=f"tok-{U1}", display=U1, role="user", source="local", user_id=U1)
+    )
+    try:
+        yield
+    finally:
+        current_actor.reset(token)
 
 
 @pytest.fixture
@@ -76,8 +95,9 @@ async def _tool(provider):
     raise AssertionError(f"{TOOL} is not listed")
 
 
-def _ctx(*, session_id: str | None = "sess-1", workspace_id: str | None = "prime") -> ToolContext:
-    return ToolContext(tool_call_id="tc-1", session_id=session_id, workspace_id=workspace_id)
+def _ctx(*, session_id: str | None = "sess-1", workspace_id: str | None = "prime",
+         initiated_by: PrincipalRef | None = None) -> ToolContext:
+    return ToolContext(tool_call_id="tc-1", session_id=session_id, workspace_id=workspace_id, initiated_by=initiated_by)
 
 
 async def _call(provider, ctx=None, arguments=None):
@@ -137,20 +157,22 @@ async def test_the_tool_rewrites_the_file(provider, ws):
 
 
 async def test_from_a_session_in_prime_it_rewrites_the_file(provider, ws):
-    result = await _call(provider, _ctx(workspace_id="prime"))
+    result = await _call(provider, _ctx(workspace_id="prime", initiated_by=PRIME_USER))
     assert not result.is_error, result.output
     assert ws.files["agents.md"] == shipped_prime_agents_md()
 
 
 async def test_the_legacy_default_workspace_is_reset_under_its_own_id(fake_storage_provider):
-    await fake_storage_provider.get_storage(Workspace).create(_row("primer"))
+    row = _row("primer")
+    row.access = Access(owners=[U1])
+    await fake_storage_provider.get_storage(Workspace).create(row)
     await fake_storage_provider.set_default_workspace_id("primer")
     ws = _Ws({"agents.md": b"mine"})
     registry = _Registry(ws)
     provider = build_system_toolset(
         storage_provider=fake_storage_provider, provider_registry=_provider_registry(fake_storage_provider), workspace_registry=registry,
     )
-    result = await _call(provider, _ctx(workspace_id="primer"))
+    result = await _call(provider, _ctx(workspace_id="primer", initiated_by=PRIME_USER))
     assert not result.is_error, result.output
     assert json.loads(result.output)["workspace_id"] == "primer" and registry.asked == ["primer"]
     assert ws.files["agents.md"] == shipped_prime_agents_md()
@@ -181,10 +203,12 @@ async def test_an_AGENTS_md_the_backend_refuses_to_describe_still_counts_as_besi
     assert json.loads(result.output)["shadows"] == "AGENTS.md"
 
 
-# ---- reach ------------------------------------------------------------------------------------------------------------------------
+# ---- access ---------------------------------------------------------------------------------------
 
 
-async def test_from_a_session_outside_prime_it_is_refused_and_writes_nothing(provider, ws, registry):
+async def test_a_run_without_full_on_prime_is_refused_and_writes_nothing(provider, ws, registry):
+    """The session's workspace is no longer part of the rule (access-control P2 T6): a run with no recorded initiator names no person,
+    and a person with no user id holds no level, so it is refused from any session and writes nothing."""
     result = await _call(provider, _ctx(workspace_id="ws-other"))
     assert result.is_error
     body = json.loads(result.output)
@@ -193,22 +217,16 @@ async def test_from_a_session_outside_prime_it_is_refused_and_writes_nothing(pro
     assert ws.files["agents.md"] == b"mine" and ws.writes == [] and registry.asked == []
 
 
-async def test_a_session_found_by_its_row_is_judged_by_the_row_s_workspace(provider, ws, fake_storage_provider):
-    """A context that names the session but not its workspace: the session row says where it runs, as the workspace tools read it."""
-    sessions = fake_storage_provider.get_storage(WorkspaceSession)
-    for session_id, workspace_id in (("sess-in", "prime"), ("sess-out", "ws-other")):
-        await sessions.create(WorkspaceSession(
-            id=session_id, workspace_id=workspace_id, binding=AgentSessionBinding(agent_id="operator"),
-            status=SessionStatus.RUNNING, created_at=datetime.now(timezone.utc),
-        ))
-
-    refused = await _call(provider, _ctx(session_id="sess-out", workspace_id=None))
+async def test_the_calling_persons_level_on_prime_decides_from_any_session(provider, ws):
+    """A person who holds full on prime may call it from whatever workspace their session runs in; the same run without a recorded
+    initiator is refused."""
+    in_prime = await _call(provider, _ctx(session_id="sess-in", workspace_id="prime", initiated_by=PRIME_USER))
+    assert not in_prime.is_error, in_prime.output
+    ws.writes.clear()
+    outside = await _call(provider, _ctx(session_id="sess-out", workspace_id="ws-other", initiated_by=PRIME_USER))
+    assert not outside.is_error, outside.output
+    refused = await _call(provider, _ctx(session_id="sess-out", workspace_id="ws-other"))
     assert refused.is_error and json.loads(refused.output)["type"] == "forbidden"
-    assert ws.writes == []
-
-    allowed = await _call(provider, _ctx(session_id="sess-in", workspace_id=None))
-    assert not allowed.is_error, allowed.output
-    assert ws.files["agents.md"] == shipped_prime_agents_md()
 
 
 async def test_a_session_with_no_known_workspace_is_refused(provider, ws):
@@ -295,6 +313,10 @@ async def test_any_other_failure_of_the_write_is_unavailable_in_its_own_words(pr
 
 async def test_a_symlink_loop_on_a_real_workspace_is_unavailable(local_prime):
     sp, real_registry = local_prime
+    # The ensure step stamps no access; grant the suite's token user full on the row it creates.
+    row = await sp.get_storage(Workspace).get("prime")
+    row.access = Access(owners=[U1])
+    await sp.get_storage(Workspace).update(row)
     provider = build_system_toolset(storage_provider=sp, provider_registry=_provider_registry(sp), workspace_registry=real_registry)
     live = await real_registry.get_workspace("prime")
     os.symlink("agents.md", f"{live._root.resolve()}/agents.md")  # noqa: SLF001 - a link the platform has no API for
@@ -330,7 +352,12 @@ async def test_over_mcp_only_an_admin_resets(fake_storage_provider, provider, ws
     await update_exposure(enabled=True, allowed_tools=[f"system__{TOOL}"], updated_by="admin", deps=deps)
     actor = Principal(type="user", id=f"u-{role}", display=role, role=role, source="local")
 
-    result = await invoke_exposed(scoped_id=f"system__{TOOL}", arguments={}, principal=actor.id, actor=actor, deps=deps)
+    # The real MCP endpoint publishes its live actor (``primer.api._app_mcp``); invoke_exposed does not, so the suite does.
+    token = current_actor.set(actor)
+    try:
+        result = await invoke_exposed(scoped_id=f"system__{TOOL}", arguments={}, principal=actor.id, actor=actor, deps=deps)
+    finally:
+        current_actor.reset(token)
 
     if allowed:
         assert not result.is_error, result.output

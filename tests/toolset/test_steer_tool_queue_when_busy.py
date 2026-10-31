@@ -19,14 +19,18 @@ from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import OffsetPage
 from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, PendingSessionMessage, SessionStatus
 from primer.model.yield_ import ToolContext
+from primer.mcp.server import current_actor
 from primer.toolset.workspaces import build_workspaces_toolset
-from tests.session._peer_fakes import make_world, records, seed_session, slot
+from tests.session._peer_fakes import make_world, records, seed_session, seed_workspace, slot
 from primer.workspace.local.state import _GitCommandError
 from tests.toolset._desc_conformance import assert_tool_conforms
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 INSTRUCTION = "Focus on the failing test first."
 USER = PrincipalRef(type="user", id="u1", display="u1", role="user", source="local")
+#: The MCP endpoint always publishes the request's actor; a call of this file with no calling session calls as u1's token user.
+MCP_U1 = Principal(type="user", id="tok-u1", display="u1", role="user", source="local", user_id="u1")
+_UNSET = object()
 
 
 def _toolset(world):
@@ -39,7 +43,24 @@ def _toolset(world):
     )
 
 
-async def _steer(world, session_id: str, *, workspace_id: str = "ws-1", instruction: str = INSTRUCTION, ctx: ToolContext | None = None):
+async def _world(**kwargs):
+    """The peer-fakes world, plus the ``ws-1`` row the steer names, owned by u1 (access-control P2 T6: the steer needs full there)."""
+    world = make_world(**kwargs)
+    await seed_workspace(world, owners=["u1"])
+    return world
+
+
+async def _steer(world, session_id: str, *, workspace_id: str = "ws-1", instruction: str = INSTRUCTION, ctx: ToolContext | None = None, actor=MCP_U1):
+    if ctx is not None or actor is _UNSET:
+        return await _steer_call(world, session_id, workspace_id=workspace_id, instruction=instruction, ctx=ctx)
+    token = current_actor.set(actor)
+    try:
+        return await _steer_call(world, session_id, workspace_id=workspace_id, instruction=instruction, ctx=ctx)
+    finally:
+        current_actor.reset(token)
+
+
+async def _steer_call(world, session_id: str, *, workspace_id: str, instruction: str, ctx: ToolContext | None):
     result = await _toolset(world).call(
         tool_name="steer_workspace_session",
         arguments={"workspace_id": workspace_id, "session_id": session_id, "instruction": instruction},
@@ -70,7 +91,7 @@ def _woken_keys(world) -> list[str]:
 
 
 async def test_steering_a_running_session_queues_it_instead_of_a_second_turn():
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="running", turn_no=1)
     result, body = await _steer(world, "ses-b")
     assert not result.is_error, result.output
@@ -88,7 +109,7 @@ async def test_steering_a_running_session_queues_it_instead_of_a_second_turn():
     [("ask_user:ses-b:call_q", "ask_user"), ("tool_approval:ses-b:call_t", "approval")],
 )
 async def test_steering_a_session_parked_on_a_gate_never_answers_it(key, gate):
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", turn_no=1, parked_status="parked", parked_event_key=key, parked_at=NOW)
     result, body = await _steer(world, "ses-b")
     assert not result.is_error, result.output
@@ -102,7 +123,7 @@ async def test_steering_a_session_parked_on_a_gate_never_answers_it(key, gate):
 
 
 async def test_steering_an_idle_session_wakes_it_and_emits_session_steered():
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", turn_no=1)
     result, body = await _steer(world, "ses-b")
     assert not result.is_error, result.output
@@ -115,7 +136,7 @@ async def test_steering_an_idle_session_wakes_it_and_emits_session_steered():
 
 
 async def test_steering_a_session_of_another_workspace_is_not_found():
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-x", workspace_id="ws-2", turn_no=1)
     result, body = await _steer(world, "ses-x", workspace_id="ws-1")
     assert result.is_error
@@ -126,7 +147,7 @@ async def test_steering_a_session_of_another_workspace_is_not_found():
 
 
 async def test_steering_a_session_that_does_not_exist_is_not_found():
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     result, body = await _steer(world, "nope")
     assert result.is_error
     assert body == {"type": "not-found", "message": "Session 'nope' does not exist on workspace 'ws-1'"}
@@ -151,7 +172,7 @@ async def test_steering_a_session_that_does_not_exist_is_not_found():
     ],
 )
 async def test_every_other_state_with_a_turn_open_queues_and_changes_nothing_else(seed):
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", turn_no=1, **seed)
     before = (await world.sessions.get("ses-b")).model_dump(mode="json")
     result, body = await _steer(world, "ses-b")
@@ -175,7 +196,7 @@ async def test_every_other_state_with_a_turn_open_queues_and_changes_nothing_els
     ],
 )
 async def test_steering_a_paused_session_queues_the_instruction_and_leaves_it_paused(seed):
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", status=SessionStatus.PAUSED, turn_no=1, **seed)
     result, body = await _steer(world, "ses-b")
     assert not result.is_error, result.output
@@ -196,7 +217,7 @@ async def test_steering_a_paused_session_queues_the_instruction_and_leaves_it_pa
 
 
 async def test_steering_an_ended_restartable_session_reopens_it():
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="completed", turn_no=2, metadata={"invocation": 1})
     result, body = await _steer(world, "ses-b")
     assert not result.is_error, result.output
@@ -211,7 +232,7 @@ async def test_steering_an_ended_restartable_session_reopens_it():
     [("force_deleted", "running", False), ("workspace_lost", "ready", False), ("workspace_lost", "running", True)],
 )
 async def test_steering_an_ended_session_that_cannot_reopen_is_a_conflict_and_stores_nothing(ended_reason, phase, ok):
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     world.registry.phase = phase
     await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason=ended_reason, turn_no=2)
     result, body = await _steer(world, "ses-b")
@@ -248,7 +269,7 @@ _STALE_PARKS = {
     ],
 )
 async def test_steering_an_ended_session_with_its_park_still_set_reopens_it_or_refuses_it_and_never_queues(park, ended_reason, phase, reopens):
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     world.registry.phase = phase
     await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason=ended_reason, turn_no=2, **_STALE_PARKS[park])
     result, body = await _steer(world, "ses-b")
@@ -278,7 +299,7 @@ async def test_the_real_cancel_of_a_paused_parked_session_then_a_tool_steer_is_r
         async def delete_lease(self, kind, session_id):
             return None
 
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", status=SessionStatus.PAUSED, pause_requested=True, turn_no=2, **_STALE_PARKS["resumable"])
     await cancel_session(
         workspace_id="ws-1", session_id="ses-b",
@@ -303,7 +324,7 @@ async def test_the_real_cancel_of_a_paused_parked_session_then_a_tool_steer_is_r
 async def test_the_real_workspace_lost_reconcile_of_a_parked_session_then_a_steer_follows_the_workspace(phase, reopens):
     from primer.workspace.session_reconcile import reconcile_sessions_to_workspace_lost
 
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_no=2, **_STALE_PARKS["parked"])
     assert await reconcile_sessions_to_workspace_lost(world.sp, "ws-1") == 1
     assert (await world.sessions.get("ses-b")).parked_status == "parked", "the premise: the reconcile keeps the park"
@@ -331,7 +352,7 @@ async def test_the_real_workspace_lost_reconcile_of_a_parked_session_then_a_stee
 )
 async def test_steering_while_the_workspace_is_removed_answers_not_found_with_the_removal_message(failure):
     """The row exists and the workspace goes away under the write: the answer says so, not that the session does not exist."""
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", turn_no=1)
 
     async def vanish(content, *, extra_parts=None):
@@ -348,7 +369,7 @@ async def test_steering_while_the_workspace_is_removed_answers_not_found_with_th
 
 async def test_a_conflict_from_the_slot_of_a_live_session_is_answered_as_a_conflict_in_the_slots_words():
     """The slot says ENDED while the row does not (the workspace ended its sessions): the refusal is a conflict, and it is not dressed up as the row ending."""
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", turn_no=1)
 
     async def refuse(content, *, extra_parts=None):
@@ -365,7 +386,7 @@ async def test_a_conflict_from_the_slot_of_a_live_session_is_answered_as_a_confl
 
 
 async def test_steering_a_created_session_starts_it():
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", status=SessionStatus.CREATED)
     result, body = await _steer(world, "ses-b")
     assert not result.is_error, result.output
@@ -373,7 +394,7 @@ async def test_steering_a_created_session_starts_it():
 
 
 async def test_a_graph_session_gets_the_instruction_as_it_is():
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-g", turn_no=1, binding=GraphSessionBinding(graph_id="triage"))
     result, body = await _steer(world, "ses-g")
     assert not result.is_error, result.output
@@ -383,7 +404,7 @@ async def test_a_graph_session_gets_the_instruction_as_it_is():
 
 
 async def test_the_answer_keeps_every_key_of_the_session_row_and_adds_delivery():
-    world = make_world()
+    world = await _world()
     await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="running", turn_no=1)
     row_keys = set((await world.sessions.get("ses-b")).model_dump(mode="json"))
     _, body = await _steer(world, "ses-b")
@@ -397,7 +418,7 @@ async def test_the_answer_keeps_every_key_of_the_session_row_and_adds_delivery()
 async def test_session_steered_names_the_target_and_the_caller_and_carries_the_delivery():
     """A steer from inside a session is a message from it (lead ruling 3, ``tests/toolset/test_steer_tool_peer_guards.py``), so the calling session
     must exist and the event names it. This used to steer from a session id that was never seeded, as an unattributed instruction."""
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER)
     await seed_session(world, sid="ses-b", turn_no=1)
     ctx = ToolContext(tool_call_id="call_1", session_id="ses-a", workspace_id="ws-1", initiated_by=USER)
@@ -411,25 +432,27 @@ async def test_session_steered_names_the_target_and_the_caller_and_carries_the_d
     }
 
 
-async def test_session_steered_is_attributed_to_system_when_no_caller_is_known():
-    world = make_world(with_bus=True)
+async def test_a_steer_with_no_known_caller_is_refused_and_sends_nothing():
+    """No user caller is known (the MCP actor is unset, or the context carries no initiator): the person holds no level on any
+    workspace (access-control P2 T6), so the steer answers as a workspace that does not exist and sends nothing. The unattributed
+    steer that used to deliver as ``system`` is the hole the level closes."""
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", turn_no=1)
-    await _steer(world, "ses-b")
-    await _steer(world, "ses-b", ctx=ToolContext(tool_call_id="call_1", session_id=None, workspace_id=None))
-    assert [e.actor for e in await _steered_events(world)] == ["system", "system"]
+    nobody_ctx = ToolContext(tool_call_id="call_1", session_id=None, workspace_id=None)
+    result, body = await _steer(world, "ses-b", actor=_UNSET)
+    assert result.is_error and body["type"] == "not-found", body
+    result, body = await _steer(world, "ses-b", ctx=nobody_ctx)
+    assert result.is_error and body["type"] == "not-found", body
+    assert records(world, "ses-b") == [] and await _steered_events(world) == []
 
 
 async def test_session_steered_on_the_mcp_endpoint_is_attributed_to_the_requests_actor():
-    """No ToolContext is the MCP endpoint, whose caller is the request's actor (the rule ``_caller_is_admin`` applies)."""
-    from primer.mcp.server import current_actor
-
-    world = make_world(with_bus=True)
+    """No ToolContext is the MCP endpoint: the access check asks the token's user (access-control P2 T6), and the event still
+    names the request's actor."""
+    actor = Principal(type="api_token", id="tok-1", display="ci", role="user", source="internal", user_id="u1")
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", turn_no=1)
-    token = current_actor.set(Principal(type="api_token", id="tok-1", display="ci", role="user", source="internal"))
-    try:
-        await _steer(world, "ses-b")
-    finally:
-        current_actor.reset(token)
+    await _steer(world, "ses-b", actor=actor)
     assert [e.actor for e in await _steered_events(world)] == ["api_token:tok-1"]
 
 
@@ -437,7 +460,7 @@ async def test_session_steered_on_the_mcp_endpoint_is_attributed_to_the_requests
 
 
 async def test_a_blank_instruction_is_a_validation_error_and_stores_nothing():
-    world = make_world(with_bus=True)
+    world = await _world(with_bus=True)
     await seed_session(world, sid="ses-b", turn_no=1)
     result, body = await _steer(world, "ses-b", instruction="")
     assert result.is_error and body["type"] == "validation-error"
@@ -445,7 +468,7 @@ async def test_a_blank_instruction_is_a_validation_error_and_stores_nothing():
 
 
 async def test_without_a_scheduler_the_tool_is_unavailable():
-    world = make_world()
+    world = await _world()
     toolset = build_workspaces_toolset(
         storage_provider=world.sp, workspace_registry=world.registry, scheduler=None, claim_engine=None, event_bus=None,
     )
@@ -458,7 +481,7 @@ async def test_without_a_scheduler_the_tool_is_unavailable():
 async def test_the_tool_says_what_a_steer_does_for_each_state_and_what_it_returns():
     from primer.mcp.safety import is_exposable
 
-    world = make_world()
+    world = await _world()
     toolset = _toolset(world)
     tools = {t.id: t async for t in toolset.list_tools()}
     tool = tools["steer_workspace_session"]

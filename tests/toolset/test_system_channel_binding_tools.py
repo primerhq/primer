@@ -15,10 +15,13 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
+from primer.model.access import Access
 from primer.api.registries import ProviderRegistry
+from primer.mcp.server import current_actor
+from primer.model.access import Access
 from primer.model.channel import Channel
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.principal import PrincipalRef
+from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import CursorPageResponse, OffsetPageResponse
 from primer.model.trigger import (
     ChannelTriggerConfig,
@@ -30,6 +33,11 @@ from primer.model.workspace import (
     Workspace,
     WorkspaceChannelLink,
     WorkspaceRuntimeMeta,
+)
+from primer.model.workspace_session import (
+    AgentSessionBinding,
+    SessionStatus,
+    WorkspaceSession,
 )
 from primer.model.yield_ import ToolContext
 from primer.toolset.system import build_system_toolset
@@ -165,7 +173,8 @@ def system_toolset(sp: _SP, pr: ProviderRegistry):
     return provider
 
 
-def _make_workspace(ws_id: str = "ws-1") -> Workspace:
+def _make_workspace(ws_id: str = "ws-1", *, owner: str | None = None) -> Workspace:
+    """A workspace row the tool names (access-control P2 T6): its access row names ``owner`` when given, else holds no level."""
     return Workspace(
         id=ws_id,
         template_id="tpl-1",
@@ -176,11 +185,32 @@ def _make_workspace(ws_id: str = "ws-1") -> Workspace:
             url="ws://localhost:5959",
             token=SecretStr("tok"),
         ),
+        access=Access(owners=[owner]) if owner is not None else Access(),
     )
 
 
+#: The MCP actor the no-ctx reply-binding calls act as (access-control P2 T6): its user owns the workspace row under test.
+
+
+@pytest.fixture(autouse=True)
+def _mcp_admin():
+    """These tools run with no calling session: the MCP endpoint, whose live actor is the person they act as (access-control P2 T6)."""
+    from primer.mcp.server import current_actor
+    from primer.model.principal import Principal
+
+    token = current_actor.set(Principal(type="user", id="admin-mcp", display="admin-mcp", role="admin", source="local", user_id="admin-mcp"))
+    yield
+    current_actor.reset(token)
+
+
+REPLY_TOKEN = Principal(
+    type="user", id="tok-reply", display="tok-reply", role="user", source="local",
+    user_id="u-reply",
+)
+
+
 def _make_channel(ch_id: str = "chan-1") -> Channel:
-    return Channel(
+    return Channel(access=Access(public=True), 
         id=ch_id,
         provider_id="cp-1",
         provider="slack",
@@ -265,7 +295,7 @@ async def test_create_channel_binding_explicit_target_validates_the_channel(sp: 
 
     await _seed_channel_trigger(sp)
     await sp.get_storage(Channel).create(_make_channel("chan-x"))
-    discord = Channel(
+    discord = Channel(access=Access(public=True), 
         id="chan-dc",
         provider_id="cp-dc",
         provider=ChannelProviderType.DISCORD,
@@ -497,8 +527,14 @@ def _ctx(initiated_by: PrincipalRef) -> ToolContext:
     )
 
 
-def _create_binding(system_toolset, owner: PrincipalRef):
-    return system_toolset.call(
+async def _create_binding(sp: _SP, system_toolset, owner: PrincipalRef):
+    # The save asks the owner's full on the target session's workspace (access-control P2 T6): seed the rows that hold it.
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="sess-1", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING, created_at=datetime.now(timezone.utc),
+    ))
+    await sp.get_storage(Workspace).create(_make_workspace("ws-1", owner=owner.id))
+    return await system_toolset.call(
         tool_name="create_channel_binding",
         arguments={
             "trigger_id": "trg-ch-1",
@@ -515,7 +551,12 @@ async def test_list_channel_bindings_hides_owner_details_from_a_non_manager(
     """A-20: a caller who does not manage the binding sees only the
     owner's display name and role, like trigger__list_subscriptions."""
     await _seed_channel_trigger(sp)
-    await _create_binding(system_toolset, _principal("u-owner"))
+    await _create_binding(sp, system_toolset, _principal("u-owner"))
+    # The viewer holds full on the target workspace (access-control P2 T6: a subscription is listed only to who may write its target) but did
+    # not save the binding, so it is not its manager.
+    ws = await sp.get_storage(Workspace).get("ws-1")
+    ws.access = Access(owners=["u-owner"], grants={"u-other": "full"})
+    await sp.get_storage(Workspace).update(ws)
 
     result = await system_toolset.call(
         tool_name="list_channel_bindings",
@@ -536,7 +577,7 @@ async def test_list_channel_bindings_owner_sees_the_full_owner(
 ):
     await _seed_channel_trigger(sp)
     owner = _principal("u-owner")
-    await _create_binding(system_toolset, owner)
+    await _create_binding(sp, system_toolset, owner)
 
     result = await system_toolset.call(
         tool_name="list_channel_bindings",
@@ -554,7 +595,7 @@ async def test_list_channel_bindings_admin_sees_the_full_owner(
     sp: _SP, system_toolset
 ):
     await _seed_channel_trigger(sp)
-    await _create_binding(system_toolset, _principal("u-owner"))
+    await _create_binding(sp, system_toolset, _principal("u-owner"))
 
     result = await system_toolset.call(
         tool_name="list_channel_bindings",
@@ -621,17 +662,21 @@ async def test_reply_binding_tools_are_exposed(system_toolset):
 
 @pytest.mark.asyncio
 async def test_set_reply_binding_writes_reply_binding_field(sp: _SP, system_toolset):
-    await sp.get_storage(Workspace).create(_make_workspace())
+    await sp.get_storage(Workspace).create(_make_workspace(owner=REPLY_TOKEN.user_id))
     await sp.get_storage(Channel).create(_make_channel())
 
-    result = await system_toolset.call(
-        tool_name="set_reply_binding",
-        arguments={
-            "workspace_id": "ws-1",
-            "channel_id": "chan-1",
-            "anchor": "thread-99",
-        },
-    )
+    token = current_actor.set(REPLY_TOKEN)
+    try:
+        result = await system_toolset.call(
+            tool_name="set_reply_binding",
+            arguments={
+                "workspace_id": "ws-1",
+                "channel_id": "chan-1",
+                "anchor": "thread-99",
+            },
+        )
+    finally:
+        current_actor.reset(token)
     assert not result.is_error, result.output
 
     stored = await sp.get_storage(Workspace).get("ws-1")
@@ -642,16 +687,20 @@ async def test_set_reply_binding_writes_reply_binding_field(sp: _SP, system_tool
 
 @pytest.mark.asyncio
 async def test_clear_reply_binding_nulls_it(sp: _SP, system_toolset):
-    ws = _make_workspace("ws-3")
+    ws = _make_workspace("ws-3", owner=REPLY_TOKEN.user_id)
     ws = ws.model_copy(
         update={"reply_binding": WorkspaceChannelLink(channel_id="chan-x")}
     )
     await sp.get_storage(Workspace).create(ws)
 
-    result = await system_toolset.call(
-        tool_name="clear_reply_binding",
-        arguments={"workspace_id": "ws-3"},
-    )
+    token = current_actor.set(REPLY_TOKEN)
+    try:
+        result = await system_toolset.call(
+            tool_name="clear_reply_binding",
+            arguments={"workspace_id": "ws-3"},
+        )
+    finally:
+        current_actor.reset(token)
     assert not result.is_error, result.output
 
     stored = await sp.get_storage(Workspace).get("ws-3")

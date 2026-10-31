@@ -22,7 +22,7 @@ from primer.model.workspace_session import AgentSessionBinding, GraphSessionBind
 from primer.model.yield_ import ToolContext
 from primer.session.peer_messages import NOTE_GRAPH, NOTE_WOKEN, PEER_MESSAGE_MAX_CHARS, PEER_RATE_LIMIT
 from primer.toolset.workspaces import WORKSPACES_TOOLSET_ID, build_workspaces_toolset
-from tests.session._peer_fakes import make_world, records, seed_session, slot
+from tests.session._peer_fakes import make_world, records, seed_session, seed_workspace, slot
 from tests.toolset._desc_conformance import assert_tool_conforms
 
 T0 = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
@@ -59,8 +59,10 @@ async def _call(world, tool: str, arguments: dict, *, ctx: ToolContext | None = 
 
 
 async def _world(*, with_bus: bool = True):
-    """A world with the caller ``ses-a``: an agent session of ``ws-1`` that rests (so it is not ``running`` for the state filter), started by a user."""
+    """A world with the caller ``ses-a``: an agent session of ``ws-1`` that rests (so it is not ``running`` for the state filter), started by a
+    user who owns the workspace (access-control P2 T6: the sender's person's level on the target's workspace is the rule)."""
     world = make_world(with_bus=with_bus)
+    await seed_workspace(world, "ws-1", owners=["u1"])
     await seed_session(world, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER, created_at=T0)
     return world
 
@@ -105,7 +107,8 @@ async def test_list_my_sessions_takes_the_workspace_from_the_context_not_from_an
     result, body = await _call(world, "list_my_sessions", {"workspace_id": "ws-2"}, ctx=_ctx())
     assert not result.is_error, result.output
     assert body["workspace_id"] == "ws-1" and [item["id"] for item in body["items"]] == ["ses-a"]
-    # and the other workspace's caller sees its own sessions
+    # and the other workspace's caller sees its own sessions (u1 holds full on it there)
+    await seed_workspace(world, "ws-2", owners=["u1"])
     await seed_session(world, sid="ses-y", workspace_id="ws-2", created_at=T0)
     _, other = await _call(world, "list_my_sessions", {}, ctx=_ctx("ses-y", "ws-2"))
     assert other["workspace_id"] == "ws-2" and [item["id"] for item in other["items"]] == ["ses-x", "ses-y"]
@@ -259,29 +262,30 @@ async def test_message_session_maps_a_refusal_to_its_error_type(target, error_ty
     assert await _ledger(world) == [] and await _pending(world) == [] and await _events(world, "session.") == []
 
 
-async def test_message_session_refuses_a_higher_ranked_target_as_forbidden():
+async def test_message_session_refuses_a_target_workspace_the_senders_person_lacks_full_on():
+    """The creator's rank no longer decides (access-control P2 T6): the sender's person's level on the target's workspace does."""
     world = await _world()
     await seed_session(world, sid="ses-b", turn_no=1, initiated_by=ADMIN, created_at=T0 + timedelta(minutes=5))
     result, body = await _call(world, "message_session", {"session_id": "ses-b", "text": "ping"}, ctx=_ctx())
-    assert result.is_error and body["type"] == "forbidden"
-    assert "(admin)" in body["message"] and "(user)" in body["message"]
-    assert await _ledger(world) == [] and records(world, "ses-b") == []
-    # the same message from an admin run is delivered
-    admin_run = _ctx(initiated_by=ADMIN)
-    result, body = await _call(world, "message_session", {"session_id": "ses-b", "text": "ping"}, ctx=admin_run)
     assert not result.is_error, result.output
+    # the same person without full on the target's workspace: forbidden, whatever the target's creator
+    read_only = make_world()
+    await seed_workspace(read_only, "ws-1", owners=["u2"], grants={"u1": "read"})
+    await seed_session(read_only, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER, created_at=T0)
+    await seed_session(read_only, sid="ses-b", turn_no=1, initiated_by=USER, created_at=T0 + timedelta(minutes=5))
+    result, body = await _call(read_only, "message_session", {"session_id": "ses-b", "text": "ping"}, ctx=_ctx())
+    assert result.is_error and body["type"] == "forbidden" and "less than full access" in body["message"]
+    assert await _ledger(read_only) == [] and records(read_only, "ses-b") == []
 
 
-async def test_message_session_ranks_a_run_with_no_recorded_initiator_as_an_ordinary_user():
-    """The sender's principal is ``run_principal(ctx)``: a context that names no initiator is an ordinary user, not a refused unknown."""
+async def test_message_session_from_a_run_with_no_recorded_initiator_is_not_found():
+    """The sender's principal is ``run_principal(ctx)``: a context that names no initiator names no person, and a person with no user id holds
+    no level on any workspace, so it is refused exactly as a session that does not exist."""
     world = await _world()
     await seed_session(world, sid="ses-b", turn_no=1, created_at=T0 + timedelta(minutes=5))
-    await seed_session(world, sid="ses-c", turn_no=1, initiated_by=ADMIN, created_at=T0 + timedelta(minutes=6))
     result, body = await _call(world, "message_session", {"session_id": "ses-b", "text": "ping"}, ctx=_ctx(initiated_by=None))
-    assert not result.is_error and body["delivery"] == "woken", result.output
-    result, body = await _call(world, "message_session", {"session_id": "ses-c", "text": "ping"}, ctx=_ctx(initiated_by=None))
-    assert result.is_error and body["type"] == "forbidden"
-    assert "(admin)" in body["message"] and "(user)" in body["message"], "it was ranked, not refused as an unknown sender"
+    assert result.is_error and body == {"type": "not-found", "message": "Session 'ses-b' does not exist in this workspace"}
+    assert await _ledger(world) == [] and records(world, "ses-b") == []
 
 
 async def test_message_session_stops_a_chain_at_the_hop_limit_and_a_flood_at_the_rate_limit():
@@ -423,9 +427,8 @@ async def test_the_messaging_tools_say_what_the_plan_says():
         "The target sees a user message that starts with [from session <your session id> (agent <your agent id>)]. "
         "A graph session gets the raw text and restarts its graph: the message is recorded in its transcript, but the graph never reads it "
         "(a run takes its input only from the session's stored graph_input). "
-        "Refusals: bad-request (yourself), not-found (no such session in your reach: your own workspace, or any workspace from a "
-        "session in the default workspace (prime); a session out of reach answers exactly as an unknown id), forbidden (it runs at a "
-        "higher rank than you), hop-limit (a chain of 8 messages), rate-limited (20 messages per 10 minutes), "
+        "Refusals: bad-request (yourself), not-found (a session in a workspace you hold no access to answers exactly as an unknown id), "
+        "forbidden (you hold less than full access to the session's workspace), hop-limit (a chain of 8 messages), rate-limited (20 messages per 10 minutes), "
         "conflict (mode if_idle and the session is busy, or an ended session that cannot reopen)."
     ) in flat(sending.description)
     assert sending.examples[0].args == {"session_id": "ses-2", "text": "The API spec is in docs/api.md; build the client against it."}

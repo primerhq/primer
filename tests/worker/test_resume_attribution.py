@@ -21,6 +21,7 @@ stubs).
 
 from __future__ import annotations
 
+from primer.model.access import Access
 from primer.model_profile import ResolvedModel
 from primer.model.model_profile import ModelProfileConfig
 
@@ -116,7 +117,7 @@ async def _persist_and_refetch(
     (``pool._load_session``) instead of reusing the in-memory row the
     factory call returned."""
     await fake_storage_provider.get_storage(Agent).create(
-        Agent(
+        Agent(access=Access(public=True), 
             id="ag-1",
             description="test agent",
             model=AgentModel(profile_id="prov-1--m-1"),
@@ -207,7 +208,7 @@ async def test_graph_build_of_an_unattributed_row_fails_closed_to_an_ordinary_us
     from primer.model.workspace_session import GraphSessionBinding, SessionStatus
     from primer.workspace.local.state import LocalStateRepo
 
-    graph = Graph(
+    graph = Graph(access=Access(public=True), 
         id="g-unattr", description="unattributed graph",
         nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="start", agent_id="ag-1"), _EndNode(id="end")],
         edges=[_StaticEdge(from_node="begin", to_node="start"), _StaticEdge(from_node="start", to_node="end")],

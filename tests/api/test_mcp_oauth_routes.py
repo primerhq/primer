@@ -268,7 +268,10 @@ async def test_a_callback_for_a_toolset_deleted_after_start_is_invalid_state(raw
 
 
 async def test_status_is_user_tier_and_never_serves_a_token(raw_client, oauth_app, mock_oauth_mcp) -> None:
-    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
+    # Public: the status route needs read on the toolset (access control); this test is about the token never being served.
+    from primer.model.access import Access
+
+    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}).model_copy(update={"access": Access(public=True)}))
     await _login_as(raw_client, oauth_app, "user")
     response = await raw_client.get("/v1/toolsets/kb/oauth/status")
     assert response.status_code == 200

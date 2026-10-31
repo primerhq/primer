@@ -42,7 +42,7 @@ from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import to_jsonable_python
 
 from primer.access.person import person_from_request
-from primer.access.policy import require
+from primer.access.policy import level_of, require
 from primer.access.workspaces import readable_workspace_ids, require_session, require_workspace
 from primer.api.routers.access import make_access_router
 from primer.api.deps import (
@@ -1236,7 +1236,9 @@ async def set_workspace_reply_binding(
         )
     channel_storage = sp.get_storage(Channel)
     channel = await channel_storage.get(body.channel_id)
-    if channel is None:
+    # The binding reads the channel it names: a channel the caller holds no level on answers exactly like a missing one,
+    # in this route's own channel_not_found words (access spec 9).
+    if channel is None or level_of(person_from_request(request), channel.access) is None:
         raise HTTPException(
             status_code=422,
             detail={
@@ -1904,13 +1906,15 @@ async def switch_session_binding(
 
     # Verified before anything is written: a switch to a target that
     # does not exist would strand the session on an unbuildable binding.
+    # The switcher must be able to read the target (read = see it, run it): an unreadable one answers like a missing one.
+    switcher = person_from_request(request)
     if body.kind == "graph":
         target = await storage_provider.get_storage(Graph).get(body.graph_id)
-        if target is None:
+        if target is None or level_of(switcher, target.access) is None:
             raise NotFoundError(f"Graph {body.graph_id!r} does not exist")
     else:
         target = await storage_provider.get_storage(Agent).get(body.agent_id)
-        if target is None:
+        if target is None or level_of(switcher, target.access) is None:
             raise NotFoundError(f"Agent {body.agent_id!r} does not exist")
 
     request = {

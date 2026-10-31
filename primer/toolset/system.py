@@ -85,6 +85,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from primer.access.person import person_for_tool
+from primer.access.policy import level_of
 from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks
 from primer.agent.approval import ApprovalResolver
 from primer.agent.approval_checks import check_policy
@@ -94,6 +96,9 @@ from primer.agent.invoke import (
     invocation_depth_guard,
     run_subagent,
 )
+from primer.access.person import person_for_tool
+from primer.access.workspaces import workspace_level
+from primer.model.access import AccessLevel, LEVEL_RANK
 from primer.model.agent import Agent
 from primer.model.model_profile import ModelProfile
 from primer.common.log import redact_credentials
@@ -128,7 +133,7 @@ from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import Parallelism, ReplyTargetInput, SubscriptionConfig
 from primer.trigger.owner import view_for
-from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE
+from primer.trigger.reach import SUBSCRIPTION_LIST_REACH_NOTE, SUBSCRIPTION_REACH_NOTE, caller_scope
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ReplyTargetAnchorInvalid,
@@ -149,7 +154,7 @@ from primer.model.workspace import (
     WorkspaceChannelLink,
 )
 from primer.model.yield_ import ToolContext, Yielded
-from primer.session.peer_messages import REACH_NOTE, caller_reach, in_reach
+from primer.session.peer_messages import ACCESS_NOTE
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
 from primer.artifact.checks import (
     ARTIFACT_DEFAULT_WRITE_NOTE,
@@ -289,15 +294,19 @@ def _make_reset_prime_instructions_handler(
             _ResetPrimeInstructionsArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        # The tool writes into prime, so a session outside prime may not call it, whatever its role: such a session reaches only its own
-        # workspace with every workspace tool (#870/#874). ``caller_reach`` is None exactly when the caller reaches every workspace: no
-        # calling session (MCP, a person), or a session in prime. Refused before anything is resolved or written.
-        if await caller_reach(storage_provider, ctx) is not None:
-            return _err(
-                "reset_prime_instructions runs only from a session in the default workspace (prime), or with no calling "
-                "session (MCP); this session's workspace is outside it, and nothing was written",
-                error_type="forbidden",
-            )
+        # The tool writes into prime, so the caller's person must hold full on the default workspace (prime) (access-control P2 T6: a
+        # session's reach no longer decides this, and a no-calling-session call is checked as the token's user). Refused before
+        # anything is resolved or written.
+        from primer.bootstrap.prime import resolve_default_workspace_id
+
+        prime_id = await resolve_default_workspace_id(storage_provider)
+        if prime_id is not None:
+            level = await workspace_level(storage_provider, person_for_tool(ctx), prime_id)
+            if level is None or LEVEL_RANK[level] < LEVEL_RANK[AccessLevel.FULL]:
+                return _err(
+                    "reset_prime_instructions needs full access to the default workspace (prime); nothing was written",
+                    error_type="forbidden",
+                )
         try:
             result = await reset_prime_agents_md(storage_provider, workspace_registry=workspace_registry)
         except NotFoundError as exc:
@@ -777,17 +786,19 @@ def build_system_toolset(
     _workspace_storage = storage_provider.get_storage(Workspace)
     _channel_storage = storage_provider.get_storage(Channel)
 
-    async def _workspace_out_of_reach(ctx: ToolContext | None, workspace_id: str) -> ToolCallResult | None:
-        """The answer to a reply-binding call on ``workspace_id`` from a session that may not reach it, else ``None`` (review of #870, F2).
+    async def _workspace_out_of_access(ctx: ToolContext | None, workspace_id: str) -> ToolCallResult | None:
+        """The answer to a reply-binding call on a workspace the caller's person does not hold full on, else ``None`` (access-control P2 T6).
 
-        The reach of the workspaces tools (:func:`primer.session.peer_messages.caller_reach`): a session outside the default workspace (prime)
-        reaches its own workspace, a session in prime and a call with no session reach every one. Out of reach is the not-found of a workspace
-        that does not exist, asked BEFORE the workspace and the channel are looked up, so an existing workspace and an unknown one answer alike,
-        whatever the channel id.
+        Reply binding is a full-level act (access-control plan T6): a person with no level on the workspace gets the not-found of a workspace
+        that does not exist, and a level below full gets forbidden, asked BEFORE the workspace and the channel are looked up, so an existing
+        workspace and an unknown one answer alike, whatever the channel id.
         """
-        if in_reach(await caller_reach(storage_provider, ctx), workspace_id):
-            return None
-        return _err(f"Workspace {workspace_id!r} does not exist", error_type="not-found")
+        level = await workspace_level(storage_provider, person_for_tool(ctx), workspace_id)
+        if level is None:
+            return _err(f"Workspace {workspace_id!r} does not exist", error_type="not-found")
+        if LEVEL_RANK[level] < LEVEL_RANK[AccessLevel.FULL]:
+            return _err(f"Workspace {workspace_id!r} needs full access", error_type="forbidden")
+        return None
 
     async def _set_reply_binding_handler(
         arguments: dict[str, Any], *, ctx: ToolContext | None = None,
@@ -796,7 +807,7 @@ def build_system_toolset(
             args = _SetReplyBindingArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        refusal = await _workspace_out_of_reach(ctx, args.workspace_id)
+        refusal = await _workspace_out_of_access(ctx, args.workspace_id)
         if refusal is not None:
             return refusal
         ws = await _workspace_storage.get(args.workspace_id)
@@ -806,7 +817,9 @@ def build_system_toolset(
                 error_type="not-found",
             )
         channel = await _channel_storage.get(args.channel_id)
-        if channel is None:
+        # The binding reads the channel it names: a channel the caller holds no level on answers exactly like a missing one,
+        # in the missing-channel words (access spec 9).
+        if channel is None or level_of(person_for_tool(ctx), channel.access) is None:
             return _err(
                 f"Channel {args.channel_id!r} does not exist",
                 error_type="not-found",
@@ -844,7 +857,7 @@ def build_system_toolset(
                 "a Slack / Telegram / Discord channel; pass both ids (and an "
                 "optional ``anchor``) and the reply binding is stored on the "
                 "Workspace row. Returns ``type=not-found`` for unknown "
-                "workspace or channel. " + REACH_NOTE
+                "workspace or channel. " + ACCESS_NOTE
             ),
             args_schema=_SetReplyBindingArgs.model_json_schema(),
             examples=[
@@ -870,7 +883,7 @@ def build_system_toolset(
             args = _ClearReplyBindingArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        refusal = await _workspace_out_of_reach(ctx, args.workspace_id)
+        refusal = await _workspace_out_of_access(ctx, args.workspace_id)
         if refusal is not None:
             return refusal
         ws = await _workspace_storage.get(args.workspace_id)
@@ -899,7 +912,7 @@ def build_system_toolset(
             when=(
                 "Use when you want to detach the channel from a workspace; "
                 "safe to call even if no reply binding is set (no-op). "
-                "Returns ``type=not-found`` for an unknown workspace. " + REACH_NOTE
+                "Returns ``type=not-found`` for an unknown workspace. " + ACCESS_NOTE
             ),
             args_schema=_ClearReplyBindingArgs.model_json_schema(),
             examples=[
@@ -996,7 +1009,7 @@ def build_system_toolset(
                 owner=ctx.initiated_by if ctx is not None else None,
                 # A session outside prime binds only to its own workspace or a session in it, and the row records that reach for every
                 # fire (review of #870, F1).
-                reach=await caller_reach(storage_provider, ctx),
+                reach=caller_scope(ctx),
                 deps=_binding_deps(),
             )
         except TriggerNotFound as exc:
@@ -1081,7 +1094,7 @@ def build_system_toolset(
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         # From a session outside prime, a binding whose action targets another workspace is left out (ticket 01a16c22).
-        items = await list_subscriptions(trigger_id=args.trigger_id, reach=await caller_reach(storage_provider, ctx), deps=deps)
+        items = await list_subscriptions(trigger_id=args.trigger_id, reach=caller_scope(ctx), deps=deps)
         # A non-manager sees only the owner's display and role (A-20), as trigger__list_subscriptions does.
         caller = _caller(ctx)
         return _ok([await view_for(s, caller, storage_provider) for s in items])
@@ -1129,7 +1142,7 @@ def build_system_toolset(
                 trigger_id=args.trigger_id,
                 subscription_id=args.subscription_id,
                 # Out of the caller's reach answers as an unknown binding and deletes nothing (ticket 01a16c22).
-                reach=await caller_reach(storage_provider, ctx),
+                reach=caller_scope(ctx),
                 deps=_binding_deps(),
             )
         except SubscriptionNotFound as exc:
@@ -1299,6 +1312,10 @@ def build_system_toolset(
             args = _InvokeAgentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # The calling run's person must be able to read the agent (read = see it, run it): unreadable answers like missing.
+        sub_agent = await storage_provider.get_storage(Agent).get(args.agent_id)
+        if sub_agent is None or level_of(person_for_tool(ctx), sub_agent.access) is None:
+            return _err(f"agent {args.agent_id!r} does not exist", error_type="not-found")
         try:
             with invocation_depth_guard():
                 workspace_instructions = await _workspace_instructions_of(ctx)
@@ -1485,17 +1502,18 @@ def build_system_toolset(
         # Verified before the request is stored: a queued switch to a
         # target that does not exist would fail at the checkpoint, long
         # after the agent that asked for it could react.
+        # The calling run's person must be able to read the target (read = see it, run it): unreadable answers like missing.
+        switcher = person_for_tool(ctx)
         if args.kind == "graph":
-            if await storage_provider.get_storage(Graph).get(
-                args.graph_id
-            ) is None:
+            target = await storage_provider.get_storage(Graph).get(args.graph_id)
+            if target is None or level_of(switcher, target.access) is None:
                 return _err(f"graph {args.graph_id!r} does not exist",
                             error_type="not-found")
-        elif await storage_provider.get_storage(Agent).get(
-            args.agent_id
-        ) is None:
-            return _err(f"agent {args.agent_id!r} does not exist",
-                        error_type="not-found")
+        else:
+            target = await storage_provider.get_storage(Agent).get(args.agent_id)
+            if target is None or level_of(switcher, target.access) is None:
+                return _err(f"agent {args.agent_id!r} does not exist",
+                            error_type="not-found")
 
         sessions = storage_provider.get_storage(WorkspaceSession)
         row = await sessions.get(ctx.session_id)
@@ -1702,7 +1720,7 @@ def build_system_toolset(
                     "Use when prime's instructions were edited into a broken state and the user asked to restore them; "
                     "not for editing them (write the file instead). Overwrites ``agents.md`` in the default workspace, "
                     "whatever it holds, and nothing else (an ``AGENTS.md`` stays, and is not read while ``agents.md`` "
-                    "exists: ``shadows`` is ``\"AGENTS.md\"`` then, else null); a symlinked ``agents.md`` is written where it points. From a session outside the default workspace (prime) it returns ``type=forbidden`` and "
+                    "exists: ``shadows`` is ``\"AGENTS.md\"`` then, else null); a symlinked ``agents.md`` is written where it points. It needs full access to the default workspace (prime), and a person without it gets ``type=forbidden`` and "
                     "writes nothing; with no default workspace yet, ``type=not-found``; when the deployment refuses the "
                     "default workspace (a local workspace where the topology forbids one), ``type=conflict``; when a "
                     "directory called ``agents.md`` is in the way, ``type=bad-request``; when the workspace does not "

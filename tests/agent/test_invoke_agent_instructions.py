@@ -18,6 +18,7 @@ import pytest
 import primer.agent.invoke as invoke_module
 import primer.toolset.system as system_module
 from primer.api.registries import ProviderRegistry
+from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
 from primer.model.except_ import NotFoundError
 from primer.model.principal import PrincipalRef
@@ -186,9 +187,13 @@ class _Seen(dict):
 
 
 @pytest.fixture
-def tool(monkeypatch, fake_storage_provider):
+async def tool(monkeypatch, fake_storage_provider):
     """``(build, seen)``: ``build(registry)`` assembles the system toolset; ``seen`` holds run_subagent's kwargs."""
     seen = _Seen()
+    # The handler reads the agent before running it: a public row every caller (even one with no ctx) can read.
+    await fake_storage_provider.get_storage(Agent).create(Agent(
+        access=Access(public=True), id="ag-1", description="a subagent", model=AgentModel(profile_id="p--m"),
+    ))
 
     async def _fake_run_subagent(**kwargs):
         seen.update(kwargs)
