@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, ClassVar
 
@@ -21,6 +21,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from primer.access.person import person_for_tool
 from primer.common.log import redact_url_secrets
+from primer.common.netguard import EgressRefused
 from primer.common.mcp_errors import classify_mcp_exception
 from primer.int.toolset import ToolsetProvider
 from primer.llm._failure import mask_values
@@ -65,6 +66,30 @@ def is_mcp_task_tool(tool: mcp_types.Tool) -> bool:
 logger = logging.getLogger(__name__)
 
 
+class McpEgressRefused(ConfigError):
+    """The toolset's MCP server is at an internal address and the toolset was not authored by an admin (SSRF guard, review of workspaces W25)."""
+
+
+def _egress_refusal(exc: BaseException, _seen: set[int] | None = None) -> EgressRefused | None:
+    """The :class:`EgressRefused` inside ``exc`` (through exception groups and the cause / context chain), else ``None``."""
+    seen = _seen if _seen is not None else set()
+    if id(exc) in seen:
+        return None
+    seen.add(id(exc))
+    if isinstance(exc, EgressRefused):
+        return exc
+    for inner in getattr(exc, "exceptions", ()):
+        found = _egress_refusal(inner, seen)
+        if found is not None:
+            return found
+    for inner in (exc.__cause__, exc.__context__):
+        if inner is not None:
+            found = _egress_refusal(inner, seen)
+            if found is not None:
+                return found
+    return None
+
+
 class McpToolsetProvider(ToolsetProvider):
     """MCP-protocol tool source.
 
@@ -105,8 +130,14 @@ class McpToolsetProvider(ToolsetProvider):
         client_name: str = "primer",
         client_version: str = "0.0.1",
         allowed_stdio_commands: frozenset[str] | None = None,
+        egress_guard: bool | Callable[[], Awaitable[bool]] = False,
     ) -> None:
-        """``allowed_stdio_commands``: when set, ``stdio_cfg.command[0]``
+        """``egress_guard``: whether an http / sse connection goes through the egress guard (:mod:`primer.toolset.mcp_egress`: internal
+        addresses refused at connect time, ``PRIMER_EGRESS_ALLOW`` opts them in). A callable is awaited per dispatch, so a role change of the
+        toolset's author takes effect without rebuilding the provider. The registry guards every toolset an admin did not author; ``False``
+        (the default) leaves a transient or test provider as it was.
+
+        ``allowed_stdio_commands``: when set, ``stdio_cfg.command[0]``
         must match one of these strings exactly or :meth:`_open_session`
         raises :class:`ConfigError`. ``None`` (the default) means no
         allowlist is enforced -- the caller has decided either that all
@@ -120,6 +151,7 @@ class McpToolsetProvider(ToolsetProvider):
         self._client_name = client_name
         self._client_version = client_version
         self._allowed_stdio_commands = allowed_stdio_commands
+        self._egress_guard = egress_guard
 
         # Cache of MCP tool names that advertise task-style execution.
         # Populated as a side-effect of ``list_tools`` so subsequent
@@ -446,6 +478,8 @@ class McpToolsetProvider(ToolsetProvider):
                 k: v.get_secret_value() for k, v in http_cfg.headers.items()
             }
             headers = base_headers if base_headers else None
+            guard = self._egress_guard
+            guarded = await guard() if callable(guard) else bool(guard)
             auth: McpBearerAuth | None = None
             if http_cfg.oauth is not None and self._oauth is not None:
                 target = OAuthTarget.from_toolset(
@@ -487,8 +521,13 @@ class McpToolsetProvider(ToolsetProvider):
                 if self._config.transport == TransportType.SSE:
                     from mcp.client.sse import sse_client
 
+                    sse_kwargs: dict[str, Any] = {}
+                    if guarded:
+                        from primer.toolset.mcp_egress import guarded_mcp_http_client
+
+                        sse_kwargs["httpx_client_factory"] = guarded_mcp_http_client
                     async with sse_client(
-                        url=http_cfg.url, headers=headers, auth=auth,
+                        url=http_cfg.url, headers=headers, auth=auth, **sse_kwargs,
                     ) as (read, write):
                         async with ClientSession(read, write) as session:
                             await session.initialize()
@@ -496,6 +535,9 @@ class McpToolsetProvider(ToolsetProvider):
                 else:
                     from mcp.client.streamable_http import streamable_http_client
                     from mcp.shared._httpx_utils import create_mcp_http_client
+
+                    if guarded:
+                        from primer.toolset.mcp_egress import guarded_mcp_http_client as create_mcp_http_client  # noqa: PLC0415
 
                     async with create_mcp_http_client(headers=headers, auth=auth) as http_client:
                         async with streamable_http_client(
@@ -507,6 +549,9 @@ class McpToolsetProvider(ToolsetProvider):
             except (ConfigError, GeneratorExit):
                 raise
             except Exception as exc:
+                refusal = _egress_refusal(exc) if guarded else None
+                if refusal is not None:
+                    raise McpEgressRefused(f"toolset {self._toolset_id!r}: {refusal}") from exc
                 if auth is not None and auth.sign_in_required is not None:
                     from primer.model.mcp_oauth import McpSignInRequiredError
 

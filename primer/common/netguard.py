@@ -36,6 +36,7 @@ Public surface:
   workspace url file mounts, which still use aiohttp; not wired yet).
 * :func:`vet_ip_literal` - the literal-address check aiohttp needs (it
   bypasses its resolver for IP literals).
+* :func:`url_targets_internal_literal` - the save-time form: a URL that writes an internal address (or localhost) out, no DNS involved.
 """
 
 from __future__ import annotations
@@ -182,6 +183,26 @@ def vet_ip_literal(host: str) -> None:
     ip = _parse_ip(host)
     if ip is not None and not _is_allowed(ip):
         raise _refusal(host, str(ip))
+
+
+def url_targets_internal_literal(url: str) -> bool:
+    """Whether ``url``'s host is an internal address written out in the URL: an IP literal that is not public (and not on the operator allowlist),
+    or ``localhost`` / ``*.localhost`` (not on it). The check a save can make without a DNS lookup; a NAME that resolves to an internal address is
+    refused at connect time by :func:`vet_host`, which is the enforcement (a name can be re-bound after any save-time check).
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    ip = _parse_ip(host)
+    if ip is not None:
+        return not _is_allowed(ip)
+    name = _norm_host(host)
+    return (name == "localhost" or name.endswith(".localhost")) and name not in _allow_hosts
 
 
 async def vet_host(host: str, port: int) -> list[str]:
@@ -387,6 +408,7 @@ __all__ = [
     "configure_egress_allow",
     "guarded_async_client",
     "guarded_transport",
+    "url_targets_internal_literal",
     "parse_egress_allow",
     "transport_over",
     "vet_host",

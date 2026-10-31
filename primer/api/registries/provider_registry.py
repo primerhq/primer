@@ -272,6 +272,7 @@ def _build_default_toolset_factory(
     *,
     allowed_stdio_commands: frozenset[str] | None = None,
     oauth: "ToolsetOAuthService | None" = None,
+    storage_provider: Any = None,
 ) -> Callable[[Toolset], ToolsetProvider]:
     """Build the default ``toolset_factory`` closure.
 
@@ -279,17 +280,29 @@ def _build_default_toolset_factory(
     :class:`McpToolsetProvider` so stdio launches are restricted to the
     operator-supplied safelist. ``None`` disables the check (acceptable
     only when Toolset creation is operator-restricted upstream).
+
+    With a ``storage_provider``, an http / sse MCP provider connects through the egress guard unless an admin authored the toolset
+    (:func:`primer.toolset.mcp_egress.author_is_trusted`, read per dispatch): a user-authored toolset cannot reach internal addresses. Without one
+    (test fallbacks) nothing is guarded.
     """
     def _factory(toolset: Toolset) -> ToolsetProvider:  # pragma: no cover
         from primer.model.provider import ToolsetProviderType
 
         if toolset.provider == ToolsetProviderType.MCP:
             from primer.toolset.mcp import McpToolsetProvider
+            guard: Any = False
+            if storage_provider is not None:
+                from primer.toolset.mcp_egress import author_is_trusted
+
+                async def guard() -> bool:  # noqa: F811 - the per-dispatch decision: guard unless an admin authored it
+                    return not await author_is_trusted(storage_provider, toolset)
+
             return McpToolsetProvider(
                 toolset_id=toolset.id,
                 config=toolset.config,
                 oauth=oauth,
                 allowed_stdio_commands=allowed_stdio_commands,
+                egress_guard=guard,
             )
         if toolset.provider == ToolsetProviderType.PYTHON:
             from primer.toolset.python_runner.provider import PythonToolsetProvider
