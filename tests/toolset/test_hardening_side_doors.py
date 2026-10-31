@@ -308,7 +308,8 @@ def _make_workspace(ws_id: str) -> Workspace:
 
 
 async def _seed_reply_world(sp) -> None:
-    await sp.get_storage(Workspace).create(_make_workspace("w"))
+    # B owns the workspace (a full write on it, which binding needs): the channel is the only level these tests vary.
+    await sp.get_storage(Workspace).create(_make_workspace("w").model_copy(update={"access": Access(owners=[B])}))
     await sp.get_storage(Channel).create(
         Channel(id="ch-1", provider_id="cp-1", provider="slack", external_id="C1", access=Access(owners=[OWNER])),
     )

@@ -17,7 +17,9 @@ import pytest
 from primer.model.access import Access
 from primer.model.channel import Channel
 from primer.model.except_ import ProviderError
+from primer.model.principal import PrincipalRef
 from primer.model.workspace import Workspace, WorkspaceProvider, WorkspaceTemplate
+from primer.model.yield_ import ToolContext
 from primer.toolset.system import build_system_toolset
 from tests.api.test_workspaces import _provider, _template, app, client, pr, sp, wsr  # noqa: F401  (fixtures)
 
@@ -69,6 +71,13 @@ def _system(sp, pr):  # noqa: F811
     return build_system_toolset(storage_provider=sp, provider_registry=pr)
 
 
+# The tool writers act as a session-less admin, as the REST writers' client does: the race is the subject, not the level.
+_ADMIN = ToolContext(
+    tool_call_id="tc", session_id=None, workspace_id=None,
+    initiated_by=PrincipalRef(type="user", id="admin-1", display="admin", role="admin", source="local", user_id="admin-1"),
+)
+
+
 Writer = Callable[..., Awaitable[None]]
 
 
@@ -95,12 +104,12 @@ async def _unbind(client, sp, pr) -> None:  # noqa: F811
 
 
 async def _bind_tool(client, sp, pr) -> None:  # noqa: F811
-    result = await _system(sp, pr).call(tool_name="set_reply_binding", arguments={"workspace_id": WID, "channel_id": "ch-1"})
+    result = await _system(sp, pr).call(tool_name="set_reply_binding", arguments={"workspace_id": WID, "channel_id": "ch-1"}, ctx=_ADMIN)
     assert not result.is_error, result.output
 
 
 async def _unbind_tool(client, sp, pr) -> None:  # noqa: F811
-    result = await _system(sp, pr).call(tool_name="clear_reply_binding", arguments={"workspace_id": WID})
+    result = await _system(sp, pr).call(tool_name="clear_reply_binding", arguments={"workspace_id": WID}, ctx=_ADMIN)
     assert not result.is_error, result.output
 
 

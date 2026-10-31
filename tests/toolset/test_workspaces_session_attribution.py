@@ -18,7 +18,6 @@ from typing import Any
 
 import pytest
 
-from primer.model.access import Access
 from primer.api.registries import WorkspaceRegistry
 from primer.mcp.server import current_actor
 from primer.model.access import Access
@@ -27,6 +26,7 @@ from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import OffsetPage, OffsetPageResponse
 from primer.model.workspace import (
     LocalWorkspaceConfig,
+    Workspace,
     WorkspaceProvider,
     WorkspaceProviderType,
 )
@@ -266,6 +266,11 @@ async def seeded(session_toolset, sp):
         ctx=admin,
     )
     assert not create.is_error, create.output
+    # The admin owns what it created: the users these tests act as (u-1, and u-9's token) are shared it at full, the level
+    # a session start needs.
+    row = await sp.get_storage(Workspace).get("ws-stub")
+    row.access = Access(owners=["admin-1"], grants={"u-1": "full", "u-9": "full"})
+    await sp.get_storage(Workspace).update(row)
     _seed_agent(sp)
     return "ws-stub"
 
