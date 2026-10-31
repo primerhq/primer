@@ -218,8 +218,23 @@ def _collection_body(c) -> str:
 # agents/, graphs/ and collections/ need those root paths). Tools are absent
 # on purpose: they are enumerated from toolset providers rather than stored
 # as rows, so nothing mutates one and there is no hook to hang this on.
+def _workspace_body(w) -> str:
+    quoted_label = json.dumps(w.name or w.id, ensure_ascii=False)
+    return (
+        f"# Workspace {w.id}\n\n"
+        f"- name (user-supplied): {quoted_label}\n"
+        f"- template: {w.template_id}\n"
+        f"- provider: {w.provider_id}\n"
+        f"- phase: {w.phase}\n"
+    )
+
+
 def _entity_kinds() -> dict:
+    from primer.model.workspace import Workspace
+
     return {
+        # A workspace made private (or deleted) leaves the public live map at once, not at the next boot (access-control P3 SEC, finding 10).
+        "workspace": (f"{LIVE_ROOT}/workspaces", Workspace, _workspace_body, "Workspaces"),
         "agent": (f"{LIVE_ROOT}/agents", Agent, _agent_body, "Agents"),
         "graph": (f"{LIVE_ROOT}/graphs", Graph, _graph_body, "Graphs"),
         "collection": (
