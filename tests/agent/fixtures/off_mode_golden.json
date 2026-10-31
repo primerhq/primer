@@ -1169,6 +1169,26 @@
       ]
      ],
      "role": "assistant"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       53,
+       "d0264f008d55883d"
+      ]
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      [
+       "text",
+       53,
+       "4b73b2db2f76d4d2"
+      ]
+     ],
+     "role": "user"
     }
    ],
    "model": "golden-model",
@@ -1517,8 +1537,8 @@
    ]
   }
  ],
- "captured_from": "b0fa229739f0f32abddd1b05f13049ae003ffa61",
- "captured_from_subject": "docs: the line scanner's final rule, owner keys and the two executors",
+ "captured_from": "be8f5271d10075d8bbb61698fe893f0594d57a5b",
+ "captured_from_subject": "fix(harness): uninstall and sync deletes purge collections and indexes, and an uninstall that fails keeps what a retry needs (KN-4, KN-5)",
  "recaptures": [
   {
    "changed_turns": [
@@ -1574,6 +1594,14 @@
    "previous_captured_from": "13540abe4d68ec065c9160996c2ef659280a8220",
    "previous_fixture_sha256": "80cc251e965097e8341222c910f7c3b17ded891b78f27d9a38b82734fc31865d",
    "reason": "PR #859 (audit G6-C): the workspace grep tool's description now states the bounded-regex rules (+26 chars), so every call's tool dump moved, the fixed overhead grew by 6 tokens (the markers' figures moved with it) and the boundary turns' padding shrank by 24 chars; the scenario is untouched"
+  },
+  {
+   "changed_turns": [
+    4
+   ],
+   "previous_captured_from": "b0fa229739f0f32abddd1b05f13049ae003ffa61",
+   "previous_fixture_sha256": "a17ecf14cd06ccccceedbf567d9abf9e853639e8d6484a23c91ebb4828b469d6",
+   "reason": "AG-M6 (task 44): the steers the pre-turn compaction window deferred and its close drained are now in that turn's prompt (they were written after the marker but left out of the answer call); only turn 4's answer call moves, by the two steers"
   }
  ],
  "turns": [
