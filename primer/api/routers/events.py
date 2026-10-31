@@ -108,9 +108,10 @@ async def list_events(
     if event_type:
         items = [e for e in items if fnmatchcase(e.event_type, event_type)]
     if not is_admin:
-        # Sessions are a shared read (any user may open any session), so the
-        # feed does not scope events to sessions; it drops the INPUT of a
-        # canvas interaction, which never leaves its session (audit G8-08).
+        # The feed is scoped to a workspace the caller can read (above), whose
+        # sessions they may all open, so it does not scope events to sessions;
+        # it drops the INPUT of a canvas interaction, which never leaves its
+        # session (audit G8-08).
         # An admin reads the full event: the one door to another session's
         # input.
         items = [without_input(e) for e in items if user_safe(e.event_type)]

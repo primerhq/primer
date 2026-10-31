@@ -61,8 +61,8 @@ NOW = datetime(2026, 10, 24, 9, 0, tzinfo=timezone.utc)
 #: ask the run's person's full on the workspace, so the world's workspace row names this user as its owner.
 OWNER_USER = "u-owner"
 OWNER_TOKEN = Principal(type="user", id=OWNER_USER, display=OWNER_USER, role="user", source="local", user_id=OWNER_USER)
-#: The request the REST handlers are called with: no actor, and the sessions here name no creator, so the rank rule admits it.
-REQ = SimpleNamespace(state=SimpleNamespace(actor=None))
+#: The request the REST handlers are called with: the workspace's owner, who holds the full the routes ask on it (P2 Task 3).
+REQ = SimpleNamespace(state=SimpleNamespace(actor=OWNER_TOKEN))
 
 
 class _Registry:
@@ -189,10 +189,10 @@ async def _rest(process: _Process, verb: str, row: WorkspaceSession) -> tuple[st
         if verb == "resume":
             out = await routes.resume_session(
                 REQ, workspace_id=row.workspace_id, session_id=row.id, sessions=process.sessions, scheduler=process.scheduler,
-                engine=process.engine,
+                engine=process.engine, storage_provider=process.sp,
             )
         else:
-            out = await routes.pause_session(REQ, workspace_id=row.workspace_id, session_id=row.id, sessions=process.sessions)
+            out = await routes.pause_session(REQ, workspace_id=row.workspace_id, session_id=row.id, sessions=process.sessions, storage_provider=process.sp)
     except ConflictError as exc:  # the app answers 409
         return "conflict", exc.message
     except NotFoundError as exc:  # the app answers 404
@@ -384,12 +384,14 @@ async def test_the_tool_answers_and_writes_exactly_as_the_rest_route_in_every_st
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("verb", ["resume", "pause"])
-async def test_an_unknown_session_is_answered_in_the_rest_route_s_words(verb, tmp_path):
+async def test_an_unknown_session_is_not_found_on_both_surfaces(verb, tmp_path):
     api, _, row, closers = await _world(tmp_path)
     try:
         ghost = row.model_copy(update={"id": "ses-ghost"})
-        assert await _tool(api, f"{verb}_workspace_session", ghost) == await _rest(api, verb, ghost) == (
+        # The tool names the workspace; the route answers the access gate's missing-row text first (P2 Task 3, spec 9).
+        assert await _tool(api, f"{verb}_workspace_session", ghost) == (
             "not-found", f"Session 'ses-ghost' does not exist on workspace {row.workspace_id!r}",
         )
+        assert await _rest(api, verb, ghost) == ("not-found", "Session 'ses-ghost' does not exist")
     finally:
         await _close(closers)

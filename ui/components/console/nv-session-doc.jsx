@@ -1199,7 +1199,8 @@ function NV_LifecycleRow(props) {
 function NV_DecisionCard(props) {
   var con = NV_useConsole();
   var item = props.item;
-  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session);
+  // ACL-P2: deciding needs full on the session's workspace, the open one (con.wsLevel; null until read reads as unknown and fails open).
+  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session, con.wsLevel || undefined);
   var rejState = React.useState(false);
   var rejOpen = rejState[0];
   var setRej = rejState[1];
@@ -1240,7 +1241,7 @@ function NV_DecisionCard(props) {
         ) : null}
         {!mayDecide ? (
           <div className="nv-card-note" data-testid="nv-decision-rank-note">
-            {SH_rankDecisionWords(props.session)}
+            {SH_accessDecisionWords()}
           </div>
         ) : null}
         {mayDecide ? (
@@ -1540,7 +1541,8 @@ function NV_toolCallWithRows(row, resultFor, running) {
 function NV_AskCard(props) {
   var con = NV_useConsole();
   var item = props.item;
-  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session);
+  // ACL-P2: deciding needs full on the session's workspace, the open one (con.wsLevel; null until read reads as unknown and fails open).
+  var mayDecide = typeof SH_mayDecideFor !== "function" || SH_mayDecideFor(con.viewer, props.session, con.wsLevel || undefined);
   // Wave 6 (audit A item 15 render half): SH_askOptionsOf (shell-
   // attention.js, wave 3) normalizes _AskUserArgs.response_schema's
   // {enum: [...]} into a radio-friendly list, or null for the SAME
@@ -1591,7 +1593,7 @@ function NV_AskCard(props) {
         <div className="nv-ask-prompt">{item.preview || item.title}</div>
         {!mayDecide ? (
           <div className="nv-card-note" data-testid="nv-ask-rank-note">
-            {SH_rankDecisionWords(props.session)}
+            {SH_accessDecisionWords()}
           </div>
         ) : options ? (
           <div className="nv-ask-options" data-testid="nv-ask-options">
@@ -3642,7 +3644,7 @@ function NV_SessionDoc(props) {
         : null}
       {typeof window.ExternalPendingBanner === "function" ? (
         <window.ExternalPendingBanner sessionId={sid}
-          session={session} viewer={con.viewer}
+          session={session} viewer={con.viewer} level={con.wsLevel || undefined}
           pollMs={calm ? NV_CALM_POLL_MS : 5000}
           pushToast={window.primerApi.toastPush} />
       ) : null}

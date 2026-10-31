@@ -104,7 +104,8 @@ async def sp(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
         id=WORKSPACE, template_id="t", provider_id="p",
         created_at=datetime.now(UTC),
         runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
-        access=Access(owners=["u-admin"], grants={"u-1": "read"}),
+        # u-other is the signed-in reader of the served session rows: a session inherits its workspace's access (Phase 2, Task 3).
+        access=Access(owners=["u-admin"], grants={"u-1": "read", "u-other": "read"}),
     ))
     try:
         yield provider

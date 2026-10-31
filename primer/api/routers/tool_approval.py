@@ -34,14 +34,16 @@ from primer.agent.tool_schemas import find_tool_schema
 from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.access.person import person_from_request
+from primer.access.workspaces import require_session, scope_to_readable_workspaces
+from primer.model.access import AccessLevel
 from primer.api.approver_guard import enforce_approvers
-from primer.api.routers._session_rank import refuse_outranked
 from primer.api.gate_fence import GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate, undecided_pending_gates
 from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
 from primer.session.yields import durably_wake_session
 from primer.model.workspace_session import WorkspaceSession
-from primer.model.storage import OffsetPage, OffsetPageResponse, OrderBy
+from primer.model.storage import OffsetPage, OffsetPageResponse, Op, OrderBy, Predicate
 from primer.storage.q import Q
 from primer.model.tool_approval import (
     LlmApprovalConfig,
@@ -374,6 +376,7 @@ async def _publish_decision(
             reason=reason,
             agent_id=getattr(sess.binding, "agent_id", None),
             session_id=id_str,
+            workspace_id=sess.workspace_id,
             requested_at=sess.parked_at,
             decided_by=decided_by,
             gate_event_key=event_key,
@@ -447,9 +450,9 @@ def make_tool_approval_ops_router() -> APIRouter:
     mounts at the user tier; who may decide a SPECIFIC call is the
     approver spec's business, enforced per park by
     :func:`~primer.api.approver_guard.enforce_approvers`, over a floor: the
-    decider may not be outranked by the session's creator (the rank rule,
-    :func:`~primer.api.routers._session_rank.refuse_outranked`), whatever the
-    spec admits. Policy CRUD (the factory above) stays
+    decider must hold full on the workspace the session lives in (the
+    access gate of P2 Task 3, :func:`primer.access.workspaces.require_session`),
+    whatever the spec admits. Policy CRUD (the factory above) stays
     admin - configuring the gates is system policy.
     """
     router = APIRouter(tags=[_TAG])
@@ -465,8 +468,12 @@ def make_tool_approval_ops_router() -> APIRouter:
     )
     async def get_session_tool_approval_pending(
         session_id: Annotated[str, Path()],
+        request: Request,
         session_storage=Depends(get_session_storage),
     ) -> ToolApprovalPendingResponse:
+        # Access (P2 Task 3): reading a session's gate needs read on the
+        # workspace it lives in; a stranger answers the session's missing-row text.
+        await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.READ)
         sess = await session_storage.get(session_id)
         blob = _approval_blob_or_404(sess, session_id)
         # A gate whose decision is already stamped on the row (a respond landed, no worker has claimed the row yet) is not pending: it can only
@@ -493,10 +500,10 @@ def make_tool_approval_ops_router() -> APIRouter:
     ) -> dict[str, str]:
         sess = await session_storage.get(session_id)
         if sess is not None:
-            # The rank floor (ticket 01a16a35, lead ruling 2): a decision is a person's input into a run at the session's creator's rank, so the
-            # decider must rank at least as high or the session must be their own (403 ``forbidden_rank``), whatever the gate's approver spec
-            # admits, before the park is read and before anything moves. The spec is checked below as well. Admins are never outranked.
-            refuse_outranked(request, sess)
+            # The access gate (P2 Task 3): a decision is a person's input into the session's run, so the decider must hold full on the
+            # workspace the session lives in (it inherits its access), whatever the gate's approver spec admits, before the park is read
+            # and before anything moves. The spec is checked below as well. Admins clear the gate.
+            await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.FULL)
         blob = _approval_blob_or_404(sess, session_id, not_pending=GateNotPendingError)
         # Resolve the SPECIFIC gate body.tool_call_id names -- a graph park
         # can have several pending approval gates open at once, and only
@@ -614,7 +621,13 @@ def make_tool_approval_ops_router() -> APIRouter:
         storage = sp.get_storage(ToolApprovalRecord)
         page = OffsetPage(offset=offset, length=length)
         order = [OrderBy(field="decided_at", direction="desc")]
+        # Access (P2 Task 5): a non-admin lists only the records of workspaces they read, in the query (a chat gate, which has no workspace, is an admin's).
+        nothing, scoped = await scope_to_readable_workspaces(sp, person_from_request(request))
+        if nothing:
+            return OffsetPageResponse(offset=offset, length=0, total=0, items=[])
         if status == "all" and session_id is None and gate_event_key is None:
+            if scoped is not None:
+                return await storage.find(scoped, page, order_by=order)
             return await storage.list(page, order_by=order)
         query = Q(ToolApprovalRecord)
         if session_id is not None:
@@ -623,7 +636,10 @@ def make_tool_approval_ops_router() -> APIRouter:
             query = query.where("gate_event_key", gate_event_key)
         if status != "all":
             query = query.where("decision", status)
-        return await storage.find(query.build(), page, order_by=order)
+        predicate = query.build()
+        if scoped is not None:
+            predicate = Predicate(left=scoped, op=Op.AND, right=predicate)
+        return await storage.find(predicate, page, order_by=order)
 
     return router
 

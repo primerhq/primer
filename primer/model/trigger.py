@@ -321,13 +321,12 @@ class Subscription(Identifiable):
     reach: str | None = Field(
         default=None,
         description=(
-            "The one workspace this subscription may start or feed a session "
-            "in (server-set on create and update; a request body cannot "
-            "choose it): the workspace of the session that last saved it, "
-            "when that session was outside the default workspace (prime). "
-            "None is every workspace: saved from prime, by a person or an "
-            "API client, or before reach was recorded. A fire whose target is "
-            "outside it is refused (target_out_of_reach) and starts no session."
+            "Legacy, no longer written or read (access-control Phase 2): rows "
+            "saved before then may carry the workspace of the session that "
+            "saved them. Which sessions a subscription starts or feeds is "
+            "decided by its owner's access instead: the owner must hold full on the "
+            "target workspace when it is saved and at every fire "
+            "(target_out_of_reach otherwise)."
         ),
     )
 

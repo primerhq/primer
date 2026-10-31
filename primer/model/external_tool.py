@@ -122,6 +122,13 @@ class ExternalToolCall(Identifiable):
     _id_prefix: ClassVar[str] = "etool"
 
     session_id: str | None = Field(default=None)
+    workspace_id: str | None = Field(
+        default=None,
+        description=(
+            "The workspace of the session that raised the call (stamped at creation): the field the cross-workspace list filters on "
+            "(access-control P2 T5). None for a chat call and for a row from before it was recorded."
+        ),
+    )
     chat_id: str | None = Field(default=None)
     node_id: str | None = Field(
         default=None, description="Graph node that raised the call, if any."

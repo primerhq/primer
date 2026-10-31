@@ -4,7 +4,7 @@
 const GB_api = (() => {
   const api = () => window.primerApi;
 
-  // The default workspace: the ONE row GET /workspaces flags is_default (a response-only flag, PR #770).
+  // The caller's default workspace: the ONE row GET /workspaces flags is_default (a response-only flag, set per person, PR #770).
   // The list is paged until the flagged row is found or the list ends, because an install with more
   // workspaces than one page may hold the flagged row beyond the first. The first request is
   // /workspaces?limit=200 with no offset. Resolves to the row, or null when no row on any page is

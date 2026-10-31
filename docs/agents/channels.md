@@ -313,11 +313,12 @@ system toolset for completeness but agents rarely need to touch them.
 - `system::clear_reply_binding` - sets `workspace.reply_binding` to
   null. Body: `workspace_id`.
 
-From a session outside the default workspace (prime) both tools reach
-only your own workspace: another one answers `type=not-found` exactly
-as a workspace that does not exist, whatever `channel_id` you pass
-(the workspace is checked first). A session in prime, and a call with
-no calling session (MCP), reach every workspace.
+Both tools need `full` access to the workspace for your run's person
+(over MCP, the token's user), wherever your session runs: a workspace
+that person holds no access to answers `type=not-found` exactly as a
+workspace that does not exist, whatever `channel_id` you pass (the
+workspace is checked first), and `read` alone answers
+`type=forbidden`.
 
 After setting a reply binding, all `ask_user`, `tool_approval`, and
 `inform` gates plus the final result of each turn from sessions in
@@ -336,23 +337,22 @@ forwarding gates).
   unknown trigger returns `type=trigger_not_found`; a trigger of
   another kind, and a `parked_session` config (those rows are only
   created by the `subscribe_to_trigger` yielding tool), answer
-  `type=validation-error`. From a session
-  outside the default workspace (prime) the action may name only your
-  own workspace or a session in it: another target answers
-  `type=not-found` as one that does not exist, and the binding records
-  that reach, which every fire checks again (see "reach" in
+  `type=validation-error`. The action may name only a workspace you
+  hold `full` access to, or a session in one: another target answers
+  `type=not-found` as one that does not exist, and every fire checks
+  the owner's access again (see
   [triggers-and-subscriptions](triggers-and-subscriptions.md)).
 - `system::list_channel_bindings` - list the bindings on a channel
-  trigger. Body: `trigger_id`. From a session outside prime only the
-  bindings whose action targets your own workspace or a session in it
+  trigger. Body: `trigger_id`. For anyone but an admin, only the
+  bindings whose action targets a workspace you hold `full` access to
   are listed. A caller who does not manage a binding sees only the
   owner's display name and role; the owner and admins see the full
   owner, the same rule as `trigger::list_subscriptions`.
 - `system::delete_channel_binding` - remove one binding while keeping
-  the trigger. Body: `trigger_id`, `subscription_id`. From a session
-  outside prime a binding whose action targets another workspace (or a
-  session in one) answers `type=subscription_not_found`, as an unknown
-  id does, and is not deleted.
+  the trigger. Body: `trigger_id`, `subscription_id`. A binding whose
+  action targets a workspace you do not hold `full` access to answers
+  `type=subscription_not_found`, as an unknown id does, and is not
+  deleted.
 
 The `channel` trigger itself is created with the regular trigger tools
 (`trigger::create` with `config.kind="channel"` and a `provider_id`,

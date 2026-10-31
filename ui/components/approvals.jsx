@@ -534,7 +534,7 @@ function AP_PolicyDetail({ policyId, pushToast, onClose }) {
 // ApprovalBanner - embedded in session-detail.jsx
 // =============================================================
 
-function ApprovalBanner({ data, scope, id, session, viewer, pushToast }) {
+function ApprovalBanner({ data, scope, id, session, viewer, level, pushToast }) {
   const { useMutation, apiFetch } = window.primerApi;
   const [rejecting, setRejecting] = React.useState(false);
   const [reason, setReason] = React.useState("");
@@ -566,7 +566,7 @@ function ApprovalBanner({ data, scope, id, session, viewer, pushToast }) {
   );
 
   if (!data) return null;
-  const mayDecide = !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session);
+  const mayDecide = !window.SH_mayDecideFor || window.SH_mayDecideFor(viewer, session, level);
   // The decision names the gate the banner was drawn from (C-033); a banner from before gates had ids sends none.
   const gateBody = data.gate_id ? { gate_id: data.gate_id } : {};
   const onApprove = () => respond.mutate({ tool_call_id: data.tool_call_id, decision: "approved", ...gateBody });
@@ -607,7 +607,7 @@ function ApprovalBanner({ data, scope, id, session, viewer, pushToast }) {
         )}
         {!mayDecide ? (
           <div className="muted text-sm" data-testid="approval-banner-rank-note">
-            {window.SH_rankDecisionWords(session)}
+            {window.SH_accessDecisionWords()}
           </div>
         ) : (
         <div style={{ display: "flex", gap: 8, marginTop: 10 }}>

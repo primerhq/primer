@@ -25,18 +25,23 @@ from primer.toolset._system_access import access_tools
 
 
 @pytest.fixture
-async def tools(tmp_path: Path) -> AsyncIterator[dict]:
+async def provider(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
     provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "data.sqlite"))
     await provider.initialize()
     try:
-        users = provider.get_storage(User)
-        for uid, name in (("u1", "alice"), ("u2", "bob"), ("u3", "carol")):
-            await users.create(User(id=uid, username=name, password_hash=None, created_at=datetime.now(UTC), role="user"))
-        agent = Agent.model_validate({"id": "a1", "description": "d", "model": {"profile_id": "p"}, "access": Access(owners=["u1"]).model_dump()})
-        await provider.get_storage(Agent).create(agent)
-        yield access_tools(storage_provider=provider)
+        yield provider
     finally:
         await provider.aclose()
+
+
+@pytest.fixture
+async def tools(provider: SqliteStorageProvider) -> dict:
+    users = provider.get_storage(User)
+    for uid, name in (("u1", "alice"), ("u2", "bob"), ("u3", "carol")):
+        await users.create(User(id=uid, username=name, password_hash=None, created_at=datetime.now(UTC), role="user"))
+    agent = Agent.model_validate({"id": "a1", "description": "d", "model": {"profile_id": "p"}, "access": Access(owners=["u1"]).model_dump()})
+    await provider.get_storage(Agent).create(agent)
+    return access_tools(storage_provider=provider)
 
 
 def _ctx(uid: str, role: str = "user") -> ToolContext:
@@ -100,3 +105,31 @@ async def test_no_known_caller_sees_only_public_rows(tools):
 async def test_lookup_users_through_the_tool(tools):
     is_err, found = await _call(tools, "lookup_users", {"q": "b"}, _ctx("u1"))
     assert not is_err and found == [{"id": "u2", "username": "bob"}]
+
+
+async def test_a_workspace_is_shared_through_the_tools(tools, provider):
+    """Workspaces are an owned kind for the tools too (P2 gap 3): the same rules as ``PUT /v1/workspaces/{id}/access``."""
+    from pydantic import SecretStr
+
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+
+    await provider.get_storage(Workspace).create(Workspace(
+        id="ws-a", template_id="tpl", provider_id="local", created_at=datetime.now(UTC),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://x", token=SecretStr("t")), access=Access(owners=["u1"]),
+    ))
+    is_err, view = await _call(tools, "get_entity_access", {"kind": "workspace", "id": "ws-a"}, _ctx("u1"))
+    assert not is_err and view["your_level"] == "owner", view
+    is_err, view = await _call(
+        tools, "set_entity_access", {"kind": "workspace", "id": "ws-a", "owners": ["u1"], "grants": {"u2": "full"}, "rev": 0}, _ctx("u1")
+    )
+    assert not is_err and [(g["user"]["username"], g["level"]) for g in view["grants"]] == [("bob", "full")], view
+    is_err, view = await _call(tools, "get_entity_access", {"kind": "workspace", "id": "ws-a"}, _ctx("u2"))
+    assert not is_err and view["your_level"] == "full"
+    full_cannot_share = await _call(tools, "set_entity_access", {"kind": "workspace", "id": "ws-a", "owners": ["u2"]}, _ctx("u2"))
+    assert full_cannot_share[0] and full_cannot_share[1]["type"] == "forbidden"
+    no_public_tools = await _call(
+        tools, "set_entity_access", {"kind": "workspace", "id": "ws-a", "owners": ["u1"], "public_tools": ["x"]}, _ctx("u1")
+    )
+    assert no_public_tools[0] and no_public_tools[1]["type"] == "validation-error"
+    stranger = await _call(tools, "get_entity_access", {"kind": "workspace", "id": "ws-a"}, _ctx("u3"))
+    assert stranger[0] and stranger[1]["type"] == "not-found"

@@ -20,7 +20,7 @@ from primer.model.except_ import NotFoundError
 from primer.model.graph import Graph, _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge
 from primer.model.model_profile import ModelProfileConfig
 from primer.model.scheduler import WorkerConfig
-from primer.model.workspace import FileEntry
+from primer.model.workspace import FileEntry, Workspace
 from primer.model.workspace_session import (
     AgentSessionBinding,
     GraphSessionBinding,
@@ -104,8 +104,9 @@ class _Storage:
         self._store = _AgentStore(agent)
 
     def get_storage(self, model):
-        if model is Graph:
-            # The per-turn access check asks for the live graph; none is stored here, so the snapshot's access decides.
+        if model is Graph or model is Workspace:
+            # The per-turn access checks ask for the live graph and the session's workspace; none is stored here, so the snapshot's access
+            # decides and the workspace check has no row to protect.
             return _NoRows()
         assert model is Agent
         return self._store
