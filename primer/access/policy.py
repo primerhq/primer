@@ -36,6 +36,11 @@ def _contains(value: str) -> Predicate:
     )
 
 
+def member_predicate(user_id: str) -> Predicate:
+    """``access.members`` CONTAINS ``u:<user_id>``: the rows that name a user as an owner or a grantee (GIN-backed)."""
+    return _contains(f"u:{user_id}")
+
+
 def level_of(person: Person, access: Access) -> AccessLevel | None:
     """The level ``person`` holds on ``access``, or ``None`` for no access.
 
