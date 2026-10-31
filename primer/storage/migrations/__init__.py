@@ -247,4 +247,16 @@ async def _run_locked(sp: StorageProvider, *, is_fresh_install: bool) -> int:
     return current
 
 
-__all__ = ["LATEST_VERSION", "MIGRATIONS", "Migration", "is_fresh_install", "run_migrations"]
+async def prepare_storage(sp: StorageProvider) -> int:
+    """The storage preamble of every boot, ``primer api`` and ``primer init`` alike (GR-8).
+
+    Ensures the content and event stores' schemas, then applies the pending
+    migrations, or baselines a fresh install to :data:`LATEST_VERSION`.
+    Returns the resulting schema version.
+    """
+    await sp.get_content_store().ensure_schema()
+    await sp.get_event_store().ensure_schema()
+    return await run_migrations(sp, is_fresh_install=await is_fresh_install(sp))
+
+
+__all__ = ["LATEST_VERSION", "MIGRATIONS", "Migration", "is_fresh_install", "prepare_storage", "run_migrations"]

@@ -228,9 +228,13 @@ def run_init(
         )
         from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
 
+        from primer.storage.migrations import prepare_storage
+
         storage_provider = _build_storage_provider(cfg)
         await storage_provider.initialize()
         try:
+            # Baseline (or migrate) exactly as the API's first boot does, so that boot has nothing to replay (GR-8).
+            await prepare_storage(storage_provider)
             root_dir = Path("~/.primer").expanduser()
             runner = BootstrapRunner(
                 storage=storage_provider,

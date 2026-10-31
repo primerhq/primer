@@ -102,19 +102,15 @@ def _make_lifespan(config: AppConfig):
         from primer.api import app as _app_facade
         storage_provider = _app_facade._build_storage_provider(config)
         await storage_provider.initialize()
-        await storage_provider.get_content_store().ensure_schema()
-        await storage_provider.get_event_store().ensure_schema()
-        # Ordered data migrations. Runs BEFORE auto-bootstrap so a migration
-        # never has to reason about whether a reserved row exists yet: it
-        # only ever transforms rows that were already there. A fresh install
-        # baselines straight to LATEST_VERSION instead of running the chain
-        # against an empty database.
-        from primer.storage.migrations import is_fresh_install, run_migrations
+        # Content and event schemas, then the ordered data migrations
+        # (``primer init`` runs the same preamble). Runs BEFORE auto-bootstrap
+        # so a migration never has to reason about whether a reserved row
+        # exists yet: it only ever transforms rows that were already there. A
+        # fresh install baselines straight to LATEST_VERSION instead of
+        # running the chain against an empty database.
+        from primer.storage.migrations import prepare_storage
 
-        await run_migrations(
-            storage_provider,
-            is_fresh_install=await is_fresh_install(storage_provider),
-        )
+        await prepare_storage(storage_provider)
 
         from primer.model.provider import SecretProviderConfig
         from primer.secret.factory import SecretProviderFactory
