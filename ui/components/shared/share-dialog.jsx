@@ -176,8 +176,8 @@ function SHR_useUserNames(ids) {
     { pollMs: null }
   );
   React.useEffect(function () {
-    if (!res || !res.data) return;
-    (res.data || []).forEach(function (r) {
+    if (!res || !Array.isArray(res.data)) return;
+    res.data.forEach(function (r) {
       if (r && r.id) SHR_NAME_CACHE[r.id] = r.username || r.id;
     });
   }, [res && res.data]);
@@ -185,8 +185,8 @@ function SHR_useUserNames(ids) {
   uniq.forEach(function (id) { names[id] = SHR_NAME_CACHE[id] || id; });
   // The window between the data landing and the effect filling the cache: the
   // fresh data answers its own ids too.
-  if (res && res.data) {
-    (res.data).forEach(function (r) {
+  if (res && Array.isArray(res.data)) {
+    res.data.forEach(function (r) {
       if (r && r.id && r.username) names[r.id] = r.username;
     });
   }

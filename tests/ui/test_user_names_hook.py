@@ -170,3 +170,27 @@ def test_the_hook_never_sends_more_than_the_route_caps() -> None:
         assert len(json.loads(ctx.eval("JSON.stringify(__namesCalls[0])"))) == 200
     finally:
         ctx.close()
+
+
+def test_a_non_list_answer_names_nobody_and_does_not_crash() -> None:
+    """A stub (the docs embed answers an unknown path with an empty offset page) or a degraded read can hand the hook an object instead of the
+    list of ``{id, username}``: it must read as 'nobody named', the ids stand in, and the render survives (the docs-embed Agents page crashed on it)."""
+    ctx = _ctx()
+    try:
+        ctx.eval("__resData['shr-user-names:u1'] = " + json.dumps({"kind": "offset", "items": [], "total": 0}))
+        ctx.eval("MR.mount(T, { ids: ['u1'] })")
+        assert _texts(ctx) == "u1:u1"
+        ctx.eval("MR.rerender()")
+        assert _texts(ctx) == "u1:u1"
+    finally:
+        ctx.close()
+
+
+def test_the_docs_embed_stub_fetches_nothing_for_a_null_key_and_survives_a_throwing_fetcher() -> None:
+    """The stub's ``useResource`` is the hook the embedded console pages run on: a null key is 'fetch nothing' (as in the real hook), and a fetcher
+    that throws is a failed fetch, never an exception inside the effect (the embedded Agents page rendered nothing when it was)."""
+    src = (UI / "components" / "docs" / "embed-preview.jsx").read_text(encoding="utf-8")
+    body = src[src.index("function useResource(cacheKey, fetcher"):src.index("function useMutation")]
+    assert "if (cacheKey === null) return undefined;" in body
+    assert "loading: cacheKey !== null" in body
+    assert ".then(() => fetcher(undefined))" in body
