@@ -176,19 +176,12 @@ def _caller_is_admin(ctx: ToolContext | None) -> bool:
     """Whether the caller of this tool call is an admin: the ONE rule for every admin check in this toolset (the reserved ``.state`` /
     ``.tmp`` reads of A-22 and the admin-only template fields).
 
-    A call dispatched with a ToolContext (an agent run, a task) is judged by that run's ``initiated_by`` and by nothing else: a context
-    that carries no initiator is an unknown caller, NOT the request's, so a task spawned from an MCP request does not inherit that
-    request's actor. A call dispatched with NO ToolContext (the MCP endpoint) is judged by the request's actor
-    (``mcp.server.current_actor``). With neither the caller is unknown and the answer is no (fail closed). The floor is ``_role_allows``,
-    the tool role floor's own predicate: an admin passes, the internal ``system`` actor always passes, and since A-20 a ``trigger``-typed
-    actor is ranked by its role like any other (it used to be waved through).
+    The caller is :func:`~primer.access.person.person_for_tool`'s person, the one every access check of this toolset asks (final access
+    review F14): a ToolContext's ``initiated_by`` (a context with no initiator is an unknown caller, NOT the request's); with no context a
+    delegated (sub)agent run, which is unattributed even when an admin started it over MCP; then the acting person; then the MCP request's
+    actor. An unknown caller is no admin (fail closed); the internal ``system`` actor is.
     """
-    if ctx is not None:
-        actor: Any = ctx.initiated_by
-    else:
-        from primer.mcp.server import current_actor
-        actor = current_actor.get()
-    return _role_allows(actor, "admin")
+    return person_for_tool(ctx).is_admin
 
 
 def _mcp_caller_ref():
@@ -207,7 +200,7 @@ def _mcp_caller_ref():
 
 def _caller_actor(ctx: ToolContext | None) -> str:
     """The actor an event raised by this tool call is attributed to: the run's initiator, or, on the MCP endpoint (no ToolContext), the
-    request's actor; ``system`` when neither is known. The same two sources, with the same split, as :func:`_caller_is_admin`."""
+    request's actor; ``system`` when neither is known."""
     from primer.events.recorder import actor_of
 
     if ctx is not None:

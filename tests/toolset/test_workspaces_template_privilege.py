@@ -211,6 +211,25 @@ async def test_an_mcp_admin_can_create_a_template_with_an_admin_only_field(world
 
 
 @pytest.mark.asyncio
+async def test_a_delegated_run_over_mcp_does_not_keep_the_admins_rank(world) -> None:
+    """Final access review F14: a subagent an admin started over MCP is unattributed for every access check (``person_for_tool``, the
+    ``_RUN_ID`` rung), so the admin-only template fields are refused to it too: the admin check asks the same person."""
+    from primer.agent.invoke import _RUN_ID
+
+    sp, toolset = world
+    token = current_actor.set(Principal(type="user", id="a", display="a", role="admin", source="local", user_id="a"))
+    run = _RUN_ID.set("run-sub-1")
+    try:
+        is_error, answer = await _call(toolset, "create_workspace_template", entity=_PRIVILEGED["extra_mounts"])
+    finally:
+        _RUN_ID.reset(run)
+        current_actor.reset(token)
+
+    assert is_error and answer["type"] == "forbidden", answer
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-c") is None
+
+
+@pytest.mark.asyncio
 async def test_a_call_with_no_known_caller_fails_closed(world) -> None:
     sp, toolset = world
 
