@@ -127,7 +127,9 @@ def _verify_hmac(secret: str, body: bytes, sig_header: str | None) -> bool:
         return False
     candidate = sig_header.removeprefix("sha256=")
     expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(candidate, expected)
+    # Bytes, not str: compare_digest raises TypeError on a non-ASCII str, which answered 500 (W46). "replace" turns
+    # anything unencodable (a lone surrogate) into "?", which is never hex, so it can only mismatch.
+    return hmac.compare_digest(candidate.encode("utf-8", "replace"), expected.encode())
 
 
 async def _finalize_delivery(
