@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest_asyncio
 
+from tests.events._users import seed_account_of
 from primer.events.dispatcher import EventDispatcher
 from primer.model.event import (
     EventFilter,
@@ -38,6 +39,7 @@ async def _park_session(sp, session_id: str, event_key: str) -> None:
     that are not visibly parked on the key)."""
     from datetime import datetime, timezone
 
+    await seed_account_of(sp, ADMIN_REF)
     row = WorkspaceSession(
         id=session_id, workspace_id="w",
         binding=AgentSessionBinding(agent_id="agent-a"),
@@ -47,6 +49,7 @@ async def _park_session(sp, session_id: str, event_key: str) -> None:
         parked_status="parked",
         parked_event_key=event_key,
     )
+    await seed_account_of(sp, ADMIN_REF)
     await sp.get_storage(WorkspaceSession).create(row)
 
 # asyncio_mode = "auto" in pyproject.toml: async tests need no marker.
@@ -193,6 +196,7 @@ async def test_a_session_wake_names_the_park_the_sink_read(sp):
         initiated_by=ADMIN_REF,
         parked_status="parked", parked_event_key="evwait:s1:c1", parked_at=parked_at,
     )
+    await seed_account_of(sp, ADMIN_REF)
     await sp.get_storage(WorkspaceSession).create(row)
     d = _dispatcher(sp, bus=bus)
     await d.drain_once()
@@ -211,6 +215,7 @@ async def _park_evwait(sp, session_id: str, event_key: str, subscription_id: str
 
     parked_at = datetime.now(timezone.utc) - timedelta(minutes=1)
     meta = {"event_types": ["collection.document_pushed"], **({"subscription_id": subscription_id} if subscription_id else {})}
+    await seed_account_of(sp, ADMIN_REF)
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id=session_id, workspace_id="w", binding=AgentSessionBinding(agent_id="agent-a"), status=SessionStatus.WAITING, created_at=parked_at,
         initiated_by=ADMIN_REF,
@@ -296,6 +301,7 @@ async def test_the_sink_judges_only_the_entries_that_wait_on_its_own_key(sp):
         {"node_id": "n2", "tool_call_id": "c2", "event_key": other, "tool_name": "wait_for_event",
          "resume_metadata": {"event_types": ["agent.*"], "subscription_id": "evsub-n2"}},
     ]
+    await seed_account_of(sp, ADMIN_REF)
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id="gs", workspace_id="w", binding=GraphSessionBinding(graph_id="g"), status=SessionStatus.WAITING, created_at=parked_at,
         initiated_by=ADMIN_REF,

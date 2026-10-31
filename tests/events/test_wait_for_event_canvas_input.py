@@ -35,6 +35,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport
 
+from tests.events._users import seed_account_of
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
 from primer.auth.passwords import hash_password
@@ -154,6 +155,7 @@ async def _canvas(sp, session_id: str) -> CanvasService:
 async def _park(sp, yielded: Yielded, *, session_id: str = WAITER, who: PrincipalRef = USER, tool_name: str = "wait_for_event") -> None:
     """The park row the worker writes after the tool returns (``parked_state.yielded`` is the stamped Yielded)."""
     now = datetime.now(UTC)
+    await seed_account_of(sp, who)
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id=session_id, workspace_id=WORKSPACE, binding=AgentSessionBinding(agent_id="agent-a"), status=SessionStatus.WAITING,
         created_at=now, initiated_by=who, parked_status="parked", parked_event_key=yielded.event_key, parked_at=now,

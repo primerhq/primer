@@ -377,11 +377,16 @@ class EventDispatcher(_BackgroundTask):
         workspace names no readable workspace, so it never wakes a non-admin park. A storage
         hiccup raises, and the caller's failure path holds the cursor and retries (fail closed).
         """
+        from primer.trigger.owner import principal_is_gone
         from primer.trigger.reach import current_person
         from primer.worker.executor_builders import session_run_principal
 
+        principal = session_run_principal(row)
+        # A deleted or disabled person's park takes nothing: its resumed turn would be refused, ending the session failed.
+        if await principal_is_gone(principal, self._sp):
+            return True
         # The role held NOW, capped by the recorded one: a demoted admin's park does not keep reading every workspace.
-        person = await current_person(session_run_principal(row), self._sp)
+        person = await current_person(principal, self._sp)
         if person.is_admin:
             return False
         if event.workspace_id is None:
