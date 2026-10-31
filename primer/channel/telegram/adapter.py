@@ -11,6 +11,7 @@ from primer.channel.adapter import (
 )
 from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
 from primer.channel.telegram.render import (
+    _esc,
     build_ask_user_message,
     build_tool_approval_message,
     compute_tag,
@@ -143,7 +144,7 @@ class TelegramChannelAdapter(ChannelAdapter):
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
         if header:
-            body["text"] = header + body["text"]
+            body["text"] = _esc(header) + body["text"]   # these bodies are Telegram HTML
         tag = compute_tag(
             workspace_id=envelope.workspace_id,
             session_id=envelope.session_id,
