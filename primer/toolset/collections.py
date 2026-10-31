@@ -47,6 +47,7 @@ from primer.model.yield_ import ToolContext
 from primer.toolset._collection_access import collection_for
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok_json as _ok
+from primer.toolset._system_common import _err_from_validation
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,7 @@ def _parse(model: type[BaseModel], arguments: dict[str, Any]):
     try:
         return model.model_validate(arguments or {}), None
     except ValidationError as exc:
-        return None, _err(str(exc), error_type="validation-error")
+        return None, _err_from_validation(exc)
 
 
 def _map_error(exc: PrimerError) -> ToolCallResult:
