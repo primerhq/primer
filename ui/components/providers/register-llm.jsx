@@ -316,6 +316,20 @@ function PC_LlmSettings({ s }) {
         <window.PC_LimitsSection fields={s.limitFields} value={s.eff.limits} problems={s.limitProblems} testid="pc-limits" classKey={s.classKey}
           onChange={(next) => s.setField("row", "limits", next)} />
       ) : null}
+      {/* ACL-P4-T7: the provider's use grant. Edit mode offers the "Who can use"
+      button (the Share dialog's useOnly mode); create mode offers the Public
+      switch (off by default) that makes the new row public through the access
+      PUT that follows the register (the POST cannot set the access). */}
+      {s.editing ? (
+        <window.SHR_UseShare plural={s.plural} id={s.providerId} title={s.providerId} />
+      ) : (
+        <PK_Field label="Public" help="Off by default: a new provider is the admin's alone until they grant its use or make it public.">
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input type="checkbox" data-testid="pc-llm-public" checked={s.pub} onChange={(e) => s.setPub(e.target.checked)} />
+            <span>Everyone can use this provider</span>
+          </label>
+        </PK_Field>
+      )}
       {s.editing && s.dirty ? (
         <div className="field-help" id={s.helpId} data-testid="pc-register-import-more-help">{PC_LLM_UNSAVED_HELP}</div>
       ) : null}
@@ -394,6 +408,9 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
   const [out, setOut] = React.useState(null);
   const [error, setError] = React.useState(null);
   const [failedOnce, setFailedOnce] = React.useState(false);
+  // ACL-P4-T7: the create form's Public switch (off by default); the POST
+  // cannot set the access, so a register follows it with the access PUT.
+  const [pub, setPub] = React.useState(false);
   const [handoff, setHandoff] = React.useState({ n: 0, to: "first" });
   const outRef = React.useRef(null);
   const live = React.useRef(true);
@@ -563,7 +580,20 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
       say(failure);
       return;
     }
-    onSaved(window.PC_savedRow(row, body));
+    const saved = window.PC_savedRow(row, body);
+    // ACL-P4-T7: the POST cannot set the access (the server stamps a private
+    // one and ignores the body), so the Public switch follows the register
+    // with the access PUT; a refusal keeps the row private and says so.
+    if (what === "register" && pub) {
+      window.SHR_makePublic(klass.plural, saved.id).catch(function (err) {
+        if (api.toastPush) api.toastPush({
+          kind: "error",
+          title: "Provider registered, but it stayed private",
+          detail: (err && (err.detail || err.message)) || "",
+        });
+      });
+    }
+    onSaved(saved);
   };
   const registerWithout = () => (editing ? undefined : post("register", "POST", "/llm_providers"));
   const save = () => (editing ? post("save", "PUT", "/llm_providers/" + encodeURIComponent(editRow.id)) : undefined);
@@ -602,6 +632,17 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
       }
       parent = window.PC_savedRow(made, body);
       if (live.current) setProviderRow(parent);
+      // ACL-P4-T7: the Public switch's follow-up (the access PUT the POST
+      // cannot carry); a refusal keeps the row private and says so.
+      if (pub) {
+        window.SHR_makePublic(klass.plural, parent.id).catch(function (err) {
+          if (api.toastPush) api.toastPush({
+            kind: "error",
+            title: "Provider registered, but it stayed private",
+            detail: (err && (err.detail || err.message)) || "",
+          });
+        });
+      }
     }
     const id = editing ? editRow.id : parent.id || body.id;
     let done = null;
@@ -687,6 +728,7 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
     editing, classKey: klass.key, eff, kind, kinds, typeMap, shape, configFields, hasUrl, types: ty, typesFailed, loadingShape, kindNotServed,
     idProblem, idTyped, limitFields, limitProblems, dirty, helpId, setField, setKind, retryTypes, handoff, rootRef,
     providerId, listed, already, rows, uid, summary, frozen, toggle, toggleAll, setContext,
+    plural: klass.plural, pub: pub, setPub: setPub,
   };
   // The footer's buttons carry keys of their own. React keeps the DOM node of an element with the same type and key at the same place, so without them the Back button of the
   // models page and the Cancel of the connection page (both the first thing in the left of the footer) would be ONE node: a focus left on Back would stay on a button now called

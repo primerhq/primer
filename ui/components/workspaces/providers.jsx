@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, WS_FieldRow, WS_Section, PR_fetchAllPages, PR_PagedNote */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, WS_FieldRow, WS_Section, PR_fetchAllPages, PR_PagedNote, SHR_useBadge, SHR_UseShare */
 
 const WP_LIST_KEY = "ws:providers";
 
@@ -113,7 +113,14 @@ function WorkspaceProvidersPage({ pushToast, onOpen }) {
               <Card
                 title={p.id}
                 subtitle={p.provider}
-                pill={<window.WorkspaceBackendBadge kind={p.provider} />}
+                pill={<>
+                  <window.WorkspaceBackendBadge kind={p.provider} />
+                  {window.SHR_useBadge(p.access) ? (
+                    <span className="pill" data-testid={"wp-access-badge-" + window.SHR_useBadge(p.access)} style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}>
+                      {window.SHR_useBadge(p.access)}
+                    </span>
+                  ) : null}
+                </>}
                 meta={_wpSummary(p)}
                 onClick={() => open(p.id)}
               />
@@ -133,7 +140,18 @@ function WorkspaceProvidersPage({ pushToast, onOpen }) {
               <tbody>
                 {items.map((p) => (
                   <tr key={p.id} onClick={() => open(p.id)} style={{ cursor: "pointer" }}>
-                    <td className="mono">{p.id}</td>
+                    <td className="mono">
+                      {p.id}
+                      {window.SHR_useBadge(p.access) ? (
+                        <span
+                          className="pill pill-ended"
+                          data-testid={"wp-access-badge-" + window.SHR_useBadge(p.access)}
+                          style={{ marginLeft: 6, background: "var(--bg-2)", borderColor: "var(--border)" }}
+                        >
+                          <span className="dot"></span>{window.SHR_useBadge(p.access)}
+                        </span>
+                      ) : null}
+                    </td>
                     <td><window.WorkspaceBackendBadge kind={p.provider} /></td>
                     <td className="mono muted text-sm">{_wpSummary(p)}</td>
                     <td style={{ textAlign: "right", paddingRight: 12 }}><Icon name="chevron-right" size={12} className="muted" /></td>
@@ -265,6 +283,10 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
   const [form, setForm] = React.useState(() => _wpFromProvider(existing));
   const [fieldErrors, setFieldErrors] = React.useState({});
   const [mutationError, setMutationError] = React.useState(null);
+  // ACL-P4-T7: the create form's Public switch (off by default); the
+  // register's POST cannot set the access, so save follows it with the
+  // access PUT.
+  const [pub, setPub] = React.useState(false);
   // Container and Kubernetes backends need optional extras; local does
   // not. Say so at pick time rather than at first workspace create.
   const caps = window.primerApi.useCapabilities();
@@ -279,20 +301,37 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
         ? [WP_LIST_KEY, `ws:provider:${existing.id}`]
         : [WP_LIST_KEY],
       onSuccess: (row) => {
-        if (typeof onSaved === "function") {
-          onSaved(row);
-        } else {
-          onClose();
-          if (pushToast) pushToast({
-            kind: "success",
-            title: isEdit ? "Provider updated" : "Provider created",
-            detail: row.id,
-          });
-          if (!isEdit) {
-            if (typeof onCreated === "function") onCreated(row.id);
-            else navigate(`/workspaces/providers/${encodeURIComponent(row.id)}`);
+        const after = () => {
+          if (typeof onSaved === "function") {
+            onSaved(row);
+          } else {
+            onClose();
+            if (pushToast) pushToast({
+              kind: "success",
+              title: isEdit ? "Provider updated" : "Provider created",
+              detail: row.id,
+            });
+            if (!isEdit) {
+              if (typeof onCreated === "function") onCreated(row.id);
+              else navigate(`/workspaces/providers/${encodeURIComponent(row.id)}`);
+            }
           }
+        };
+        // ACL-P4-T7: the POST cannot set the access (the server stamps a
+        // private one and ignores the body), so the switch follows it with
+        // the access PUT, and the close waits for it (the list badge says so).
+        if (!isEdit && pub) {
+          window.SHR_makePublic("workspace_providers", row.id).then(after, function (err) {
+            if (pushToast) pushToast({
+              kind: "error",
+              title: "Provider created, but it stayed private",
+              detail: (err && (err.detail || err.message)) || "",
+            });
+            after();
+          });
+          return;
         }
+        after();
       },
       onError: (err) => {
         setMutationError(err);
@@ -675,6 +714,17 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
           <window.WorkspaceStringListEditor value={form.k_image_pull_secrets} onChange={(v) => update("k_image_pull_secrets", v)} placeholder="my-registry-secret" />
         </WS_FieldRow>
       </>)}
+      {/* ACL-P4-T7: a new provider defaults private (who can use it is the
+      admin's call); the switch makes the new row public through the access
+      PUT that follows the register. */}
+      {!isEdit && (
+        <WS_FieldRow label="Public" hint="off by default · who can use this provider is set after it exists">
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input type="checkbox" data-testid="wp-create-public" checked={pub} onChange={(e) => setPub(e.target.checked)} />
+            <span>Everyone can use this provider</span>
+          </label>
+        </WS_FieldRow>
+      )}
     </div>
   );
 
@@ -806,6 +856,7 @@ function WorkspaceProviderDetail({ providerId, pushToast, onBack = null, onDelet
               {_wpSummary(p)}
             </div>
           </div>
+          <window.SHR_UseShare plural="workspace_providers" id={p.id} title={p.id} />
           {!isReadonly && (
             <Btn
               size="sm"

@@ -204,6 +204,20 @@ function PC_ModelsSettings({ s }) {
         <window.PC_LimitsSection fields={s.limitFields} value={s.eff.limits} problems={s.limitProblems} testid="pc-limits" classKey={s.classKey}
           onChange={(next) => s.setField("row", "limits", next)} />
       ) : null}
+      {/* ACL-P4-T7: the provider's use grant. Edit mode offers the "Who can use"
+      button (the Share dialog's useOnly mode); create mode offers the Public
+      switch (off by default) that makes the new row public through the access
+      PUT that follows the register (the POST cannot set the access). */}
+      {s.editing ? (
+        <window.SHR_UseShare plural={s.plural} id={s.providerId} title={s.providerId} />
+      ) : (
+        <PK_Field label="Public" help="Off by default: a new provider is the admin's alone until they grant its use or make it public.">
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input type="checkbox" data-testid="pc-models-public" checked={s.pub} onChange={(e) => s.setPub(e.target.checked)} />
+            <span>Everyone can use this provider</span>
+          </label>
+        </PK_Field>
+      )}
     </div>
   );
 }
@@ -250,6 +264,9 @@ function PC_ModelsRegister({ klass, editRow, excludeKinds, frame, blocked, onSav
 
   const [draft, setDraft] = React.useState(() => (editRow ? window.PC_draftFromRow(klass.plural, editRow) : {}));
   const [table, setTable] = React.useState(() => PC_modelsStartRows(isCE, editRow));
+  // ACL-P4-T7: the create form's Public switch (off by default); the POST
+  // cannot set the access, so register follows it with the access PUT.
+  const [pub, setPub] = React.useState(false);
   const [rows, setRows] = React.useState([]);
   const [source, setSource] = React.useState("discovered");
   const found = React.useRef(null);
@@ -402,7 +419,20 @@ function PC_ModelsRegister({ klass, editRow, excludeKinds, frame, blocked, onSav
       w.say(failure);
       return;
     }
-    onSaved(window.PC_savedRow(answer, body), { detail: providerId + ": " + window.PC_countOf(body.models.length, "model", "models") });
+    const saved = window.PC_savedRow(answer, body);
+    // ACL-P4-T7: the POST cannot set the access (the server stamps a private
+    // one and ignores the body), so the Public switch follows it with the
+    // access PUT; a refusal keeps the row private and says so.
+    if (pub) {
+      window.SHR_makePublic(klass.plural, saved.id).catch(function (err) {
+        if (window.primerApi && window.primerApi.toastPush) window.primerApi.toastPush({
+          kind: "error",
+          title: "Provider registered, but it stayed private",
+          detail: (err && (err.detail || err.message)) || "",
+        });
+      });
+    }
+    onSaved(saved, { detail: providerId + ": " + window.PC_countOf(body.models.length, "model", "models") });
   };
 
   const save = async () => {
@@ -431,6 +461,7 @@ function PC_ModelsRegister({ klass, editRow, excludeKinds, frame, blocked, onSav
     editing, isCE, classKey: klass.key, eff, kind, kinds, showType: kinds.length > 1, typeMap, shape, configFields, hasUrl, types: w.types, typesFailed, loadingShape,
     kindNotServed, idProblem, idTyped, limitFields, limitProblems, setField, setKind, retryTypes: w.retryTypes, handoff: w.handoff, rootRef: w.rootRef,
     hubChecks, showTable, table, setTable, typed, rows, source, providerId, toggle, toggleAll, out: w.out,
+    plural: klass.plural, pub: pub, setPub: setPub,
   };
   // The footer's buttons carry keys of their own. React keeps the DOM node of an element with the same type and key at the same place, so without them the Back button of the models
   // page and the Cancel of the connection page (both the first thing in the left of the footer) would be ONE node: a focus left on Back would stay on a button now called Cancel, and
