@@ -778,6 +778,9 @@ class McpToolsetProvider(ToolsetProvider):
             text_chunks.append(
                 "```json\n" + json.dumps(non_text, indent=2) + "\n```"
             )
+        if not text_chunks and r.structured_content is not None:
+            # A result with only structuredContent reached the model as "" (AG-L3).
+            text_chunks.append(json.dumps(r.structured_content))
 
         extended: dict[str, Any] | None = None
         if non_text:

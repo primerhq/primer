@@ -12,6 +12,7 @@ The first two are the review probe (``/tmp/review-agent/toolset/test_mcp_call_pa
 
 from __future__ import annotations
 
+import json
 import sys
 
 import mcp.types as mcp_types
@@ -32,6 +33,27 @@ sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": req["id"], "error": {"code"
 sys.stdout.flush()
 sys.stdin.readline()
 """
+
+# A server with one tool. ``tools/call`` answers MODE: "structured" (structuredContent only), "text" (a text block beside it).
+SERVER = """
+import json, sys
+MODE = sys.argv[1]
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\\n"); sys.stdout.flush()
+for line in sys.stdin:
+    req = json.loads(line)
+    m, i = req.get("method"), req.get("id")
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": i, "result": {"protocolVersion": req["params"]["protocolVersion"], "capabilities": {"tools": {}}, "serverInfo": {"name": "s", "version": "1"}}})
+    elif m == "tools/list":
+        send({"jsonrpc": "2.0", "id": i, "result": {"tools": [{"name": "weather", "inputSchema": {"type": "object"}, "outputSchema": {"type": "object", "properties": {"temp": {"type": "number"}}}}]}})
+    elif m == "tools/call":
+        content = [{"type": "text", "text": "21.5 C"}] if MODE == "text" else []
+        send({"jsonrpc": "2.0", "id": i, "result": {"content": content, "structuredContent": {"temp": 21.5}, "isError": False}})
+    elif i is not None:
+        send({"jsonrpc": "2.0", "id": i, "result": {}})
+"""
+
 
 def _stdio(script: str, *argv: str, **config) -> McpToolsetProvider:
     cfg = McpConfig(transport=TransportType.STDIO, config=StdioConfig(command=[sys.executable, "-c", script, *argv]), **config)
@@ -85,3 +107,28 @@ async def test_a_failed_stdio_handshake_is_a_tool_error_and_not_a_failed_turn() 
     result = await manager.execute(ToolCallPart(id="c", name="ext__anything", arguments={}))
 
     assert (result.error, result.output) == (True, "[-32603] init boom")
+
+
+# ---- AG-L3 -----------------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.timeout(60)
+async def test_a_structured_content_only_result_reaches_the_model_as_json() -> None:
+    result = await _stdio(SERVER, "structured").call(tool_name="weather", arguments={})
+
+    assert (result.output, result.is_error, result.extended) == (json.dumps({"temp": 21.5}), False, None)
+
+
+@pytest.mark.timeout(60)
+async def test_characterization_a_text_block_beside_structured_content_is_the_output() -> None:
+    result = await _stdio(SERVER, "text").call(tool_name="weather", arguments={})
+
+    assert (result.output, result.is_error, result.extended) == ("21.5 C", False, None)
+
+
+async def test_characterization_an_empty_result_with_no_structured_content_is_still_empty() -> None:
+    provider = _stdio(SERVER, "structured")
+
+    result = provider._mcp_call_result_to_primer(mcp_types.CallToolResult(content=[], is_error=True))
+
+    assert (result.output, result.is_error, result.extended) == ("", True, None)
