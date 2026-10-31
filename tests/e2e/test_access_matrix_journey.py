@@ -81,6 +81,8 @@ class Kind:
     writable: bool = True  # False: writes are admin-only (a harness): only the read levels are checked
     mcp_update: Callable[[str], dict] = lambda rid: {"id": rid, "entity": {"id": rid, "description": "edited"}}  # noqa: E731
     rest_update: Callable[[dict], dict] = lambda row: {**row, "description": "edited"}  # noqa: E731
+    rest_method: str = "put"  # the REST verb that edits the row (a workspace is only renamed: PATCH)
+    mcp_update_tool: bool = True  # False: no MCP tool edits this row (a workspace row is edited over REST only)
 
 
 async def _profile(client: httpx.AsyncClient) -> str:
@@ -167,17 +169,17 @@ async def _make_harness(c, suffix, ctx):
 
 
 KINDS = [
-    Kind("agent", "agents", _make_agent, ("crud__get_agent", "crud__update_agent", "crud__delete_agent")),
-    Kind("graph", "graphs", _make_graph, ("crud__get_graph", "crud__update_graph", "crud__delete_graph")),
-    Kind("toolset", "toolsets", _make_toolset, ("crud__get_toolset", "crud__update_toolset", "crud__delete_toolset")),
-    Kind("collection", "collections", _make_collection, ("crud__get_collection", "crud__update_collection", "crud__delete_collection")),
+    Kind("agent", "agents", _make_agent, ("system__get_agent", "system__update_agent", "system__delete_agent")),
+    Kind("graph", "graphs", _make_graph, ("system__get_graph", "system__update_graph", "system__delete_graph")),
+    Kind("toolset", "toolsets", _make_toolset, ("system__get_toolset", "system__update_toolset", "system__delete_toolset")),
+    Kind("collection", "collections", _make_collection, ("system__get_collection", "system__update_collection", "system__delete_collection")),
     Kind("workspace_template", "workspace_templates", _make_template,
          ("workspaces__get_workspace_template", "workspaces__update_workspace_template", "workspaces__delete_workspace_template")),
     Kind("workspace", "workspaces", _make_workspace, ("workspaces__get_workspace", "workspaces__get_workspace", "workspaces__delete_workspace"),
-         mcp_update=lambda rid: {"id": rid}, rest_update=lambda row: {**row, "name": "renamed"}),
+         mcp_update=lambda rid: {"id": rid}, rest_update=lambda row: {"name": "renamed"}, rest_method="patch", mcp_update_tool=False),
     Kind("trigger", "triggers", _make_trigger, ("trigger__get", "trigger__update", "trigger__delete"),
          mcp_update=lambda rid: {"id": rid, "name": "edited"}, rest_update=lambda row: {"name": "edited"}),
-    Kind("channel", "channels", _make_channel, ("crud__get_channel", "crud__update_channel", "crud__delete_channel"),
+    Kind("channel", "channels", _make_channel, ("system__get_channel", "system__update_channel", "system__delete_channel"),
          rest_update=lambda row: row),
     Kind("harness", "harnesses", _make_harness, ("harness__get", "harness__get", "harness__get"), writable=False),
 ]
@@ -201,7 +203,8 @@ class RestDoor:
         current = await self.client.get(f"/v1/{kind.plural}/{rid}")
         if current.status_code != 200:
             return _outcome(current.status_code)
-        return _outcome((await self.client.put(f"/v1/{kind.plural}/{rid}", json=kind.rest_update(current.json()))).status_code)
+        send = getattr(self.client, kind.rest_method)
+        return _outcome((await send(f"/v1/{kind.plural}/{rid}", json=kind.rest_update(current.json()))).status_code)
 
     async def delete(self, kind: Kind, rid: str) -> str:
         return _outcome((await self.client.delete(f"/v1/{kind.plural}/{rid}")).status_code)
@@ -223,7 +226,7 @@ class McpDoor:
         except Exception as exc:  # noqa: BLE001 - the SDK raises the JSON-RPC error for a tool that is not exposed
             return (MISSING if "not exposed" in str(exc).lower() or "method" in str(exc).lower() else f"error-{exc!r}"), ""
         text = " ".join(getattr(part, "text", "") for part in result.content)
-        if not result.isError:
+        if not result.is_error:
             return OK, text
         try:
             error = str(json.loads(text).get("type", "")).lower()
@@ -299,12 +302,14 @@ async def test_every_level_of_every_owned_kind_through_rest_and_mcp(client, base
                     # read: get ok, update refused
                     await _share(owner_client, kind.plural, rid, owner_id, {b_id: "read"})
                     assert await door.get(kind, rid) == OK, where
-                    if kind.writable:
+                    has_update = kind.writable and (door_name == "rest" or kind.mcp_update_tool)
+                    if has_update:
                         assert await door.update(kind, rid) == DENIED, where
                     # full: update ok, delete refused
                     if kind.writable:
                         await _share(owner_client, kind.plural, rid, owner_id, {b_id: "full"})
-                        assert await door.update(kind, rid) == OK, where
+                        if has_update:
+                            assert await door.update(kind, rid) == OK, where
                         assert await door.delete(kind, rid) == DENIED, where
 
                 # public: restricted C reads nothing; promoted, C reads it
@@ -351,7 +356,9 @@ async def test_a_use_grant_is_set_by_the_admin_alone_and_read_by_its_grantee(cli
         _user(client, base_url, f"mx-r-{unique_suffix}", role="restricted") as (_r_id, restricted),
     ):
         try:
-            # none: neither a plain user nor a restricted one sees the access view; admin and non-admin writes are 404/403
+            # none: the first row of a bootstrapped server may be public (the seeded ones are), which every full user reads; make it private first.
+            # Neither a plain user nor a restricted one then sees the access view; admin and non-admin writes are 404/403
+            await _share(client, plural, rid, "", {}, owners=[], public=False)
             for who in (nobody, restricted):
                 assert (await who.get(f"/v1/{plural}/{rid}/access")).status_code in (403, 404), kind
             await _share(client, plural, rid, "", {g_id: "read"}, owners=[], public=False)

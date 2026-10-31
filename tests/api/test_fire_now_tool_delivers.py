@@ -18,6 +18,7 @@ from primer.mcp.server import current_actor
 from primer.model.access import Access
 from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import OffsetPage
+from primer.model.user import User
 from primer.model.trigger import DelayedTriggerConfig, SessionAppendSubConfig, Subscription, Trigger
 from tests.api._sub_targets import seed_sub_targets
 from primer.model.workspace_session import AgentSessionBinding, PendingSessionMessage, SessionStatus, WorkspaceSession
@@ -36,6 +37,8 @@ async def _seed(sp) -> None:
         status=SessionStatus.RUNNING, turn_status="running", created_at=_now(),
     ))
     owner = PrincipalRef(type="user", id="u-adm", display="adm", role="admin", source="local")  # access-control P3: a fire runs as an owner
+    # ... who must be a real, enabled account when the fire runs (the owner of a trigger or subscription that no longer resolves fires nothing).
+    await sp.get_storage(User).create(User(id="u-adm", username="adm", role="admin", created_at=_now()))
     await sp.get_storage(Trigger).create(Trigger(
         id="tr-tool", slug="tool-fire", name="t", owner=owner, access=Access(owners=["u-adm"]), config=DelayedTriggerConfig(fire_at=_now() + timedelta(hours=1)),
         enabled=True, next_fire_at=_now() + timedelta(hours=1), created_at=_now(),
