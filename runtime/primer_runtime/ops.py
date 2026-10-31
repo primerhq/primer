@@ -333,7 +333,7 @@ def _refuse_unless_regular(mode: int, raw_path: str) -> None:
 async def read_file(
     args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
 ) -> dict:
-    """``read_file`` op → ``{content_b64}``; read-only, takes no lock.
+    """``read_file`` op → ``{content_b64}``; read-only, takes no lock. ``offset`` (protocol 1.5, optional) starts the read at that byte.
 
     Only a regular file is read. The ``stat`` of the path is checked first, and then the file is opened with ``O_NONBLOCK`` and the
     DESCRIPTOR is checked with ``fstat``, so the check and the read are about the same file: a process in the workspace that swaps a
@@ -343,6 +343,10 @@ async def read_file(
     """
     raw_path: str = args.get("path", "")
     resolved = _resolve_safe(raw_path, workspace_root)
+    # Protocol 1.5: read from this byte offset (a tap reads only what a log gained). Absent or null: from the start, as before.
+    offset = args.get("offset")
+    if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int) or offset < 0):
+        raise OpError(ErrorCode.EPROTOCOL, f"offset must be a non-negative integer, got {offset!r}")
 
     def _read() -> bytes:
         try:
@@ -360,6 +364,8 @@ async def read_file(
             raise _os_err_to_op_error(exc, raw_path)
         try:
             _refuse_unless_regular(os.fstat(fd).st_mode, raw_path)
+            if offset:
+                os.lseek(fd, offset, os.SEEK_SET)  # past the end reads nothing
             chunks: list[bytes] = []
             while chunk := os.read(fd, 1 << 20):
                 chunks.append(chunk)

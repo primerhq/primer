@@ -30,6 +30,7 @@ and :func:`~primer.tap.event.record_to_tap_event` — no parallel models.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
@@ -103,7 +104,7 @@ def _messages_path(workspace_io: Any, session_id: str) -> str:
 
 
 async def _read_raw(
-    workspace_io: _WorkspaceReadIO, path: str, session_id: str,
+    workspace_io: _WorkspaceReadIO, path: str, session_id: str, *, reader: Any = None,
 ) -> bytes | None:
     """Read *path*; return ``None`` when the file is missing (or unreadable).
 
@@ -114,7 +115,7 @@ async def _read_raw(
     from primer.model.except_ import NotFoundError
 
     try:
-        return await workspace_io.read_file(path)
+        return await (reader(path) if reader is not None else workspace_io.read_file(path))
     except NotFoundError:
         return None
     except Exception as exc:  # noqa: BLE001 — any read failure → treat as empty
@@ -123,6 +124,37 @@ async def _read_raw(
             path, session_id, exc,
         )
         return None
+
+
+_IN_FLIGHT: dict[tuple, "asyncio.Future[bytes | None]"] = {}
+
+
+async def _single_flight(key: tuple, fetch: Any) -> bytes | None:
+    """Run ``fetch()`` once for every concurrent caller with the same ``key``; each gets the same result. Only calls that overlap in time share."""
+    pending = _IN_FLIGHT.get(key)
+    if pending is not None:
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            if not pending.cancelled():
+                raise  # this caller was cancelled, not the read it was waiting on
+            return await fetch()  # the caller that was reading went away: read for ourselves
+    future: asyncio.Future[bytes | None] = asyncio.get_running_loop().create_future()
+    _IN_FLIGHT[key] = future
+    try:
+        result = await fetch()
+    except asyncio.CancelledError:
+        future.cancel()
+        raise
+    except BaseException as exc:
+        future.set_exception(exc)
+        future.exception()  # retrieved here, so a read nobody else waited on does not log "never retrieved"
+        raise
+    else:
+        future.set_result(result)
+        return result
+    finally:
+        _IN_FLIGHT.pop(key, None)
 
 
 def _complete_lines(raw: bytes) -> tuple[list[bytes], int]:
@@ -238,14 +270,22 @@ async def read_session_since(
         missing log file yields ``([], from_offset)``.
     """
     path = _messages_path(workspace_io, session.id)
-    raw = await _read_raw(workspace_io, path, session.id)
-    if raw is None:
-        return [], from_offset
+    # Only the bytes the log gained since the last tick: a workspace that can read from an offset is asked for the tail; one that cannot is read
+    # whole and sliced, as before.
+    ranged = getattr(workspace_io, "read_file_from", None) if from_offset else None
+    # Subscribers of one workspace at the same offset ask for the same bytes in the same tick: one read serves them (single flight; nothing is kept
+    # once it lands, so the next tick reads afresh).
+    async def _fetch() -> bytes | None:
+        if ranged is not None:
+            return await _read_raw(workspace_io, path, session.id, reader=lambda p: ranged(p, from_offset))
+        raw = await _read_raw(workspace_io, path, session.id)
+        return None if raw is None else raw[from_offset:]
 
-    # Slice off everything before the caller's offset so we never re-scan.
-    if from_offset >= len(raw):
+    window = await _single_flight((id(workspace_io), session.id, from_offset), _fetch)
+    if window is None:
         return [], from_offset
-    window = raw[from_offset:]
+    if not window:
+        return [], from_offset
 
     lines, consumed = _complete_lines(window)
     next_offset = from_offset + consumed

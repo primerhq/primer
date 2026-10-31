@@ -36,6 +36,7 @@ read-only — controls (interrupt/approve/cancel) stay on their REST endpoints.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import base64
 import binascii
 import json
@@ -233,6 +234,68 @@ def _delta_frame(frame: dict) -> str:
     return f"data: {json.dumps(frame)}\n\n"
 
 
+#: How many undelivered delta frames one SSE stream may hold. Deltas are ephemeral (the durable log is the record), so a slow client loses the OLDEST
+#: first; ticks are never dropped (they are pointers into that log).
+MAX_PENDING_DELTAS = 1000
+
+
+class _TapInbox:
+    """What the SSE loop waits on: arrival-ordered ticks and deltas, ticks coalesced per session, deltas bounded.
+
+    A tick only says "read this session's log up to the end", so a tick already waiting for a session is replaced IN PLACE by its newer tick (one read
+    covers both). Past :data:`MAX_PENDING_DELTAS` waiting deltas the oldest delta is dropped. Memory is therefore bounded by the sessions of the
+    workspace plus the delta bound, whatever the client does.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[int, tuple[str, Any]] = {}  # insertion-ordered: arrival order
+        self._tick_slot: dict[str, int] = {}  # session id -> key of its waiting tick
+        self._delta_keys: deque[int] = deque()
+        self._next = 0
+        self._wake = asyncio.Event()
+
+    def pending(self) -> int:
+        return len(self._entries)
+
+    def put_tick(self, tick: Any) -> None:
+        slot = self._tick_slot.get(tick.session_id)
+        if slot is not None and slot in self._entries:
+            self._entries[slot] = ("tick", tick)
+        else:
+            self._tick_slot[tick.session_id] = self._add(("tick", tick))
+        self._wake.set()
+
+    def put_delta(self, frame: dict) -> None:
+        self._delta_keys.append(self._add(("delta", frame)))
+        while len(self._delta_keys) > MAX_PENDING_DELTAS:
+            self._entries.pop(self._delta_keys.popleft(), None)
+        self._wake.set()
+
+    def _add(self, entry: tuple[str, Any]) -> int:
+        key = self._next
+        self._next += 1
+        self._entries[key] = entry
+        return key
+
+    async def get(self) -> tuple[str, Any]:
+        while not self._entries:
+            self._wake.clear()
+            await self._wake.wait()
+        key = next(iter(self._entries))
+        tag, item = self._entries.pop(key)
+        if tag == "tick":
+            if self._tick_slot.get(item.session_id) == key:
+                del self._tick_slot[item.session_id]
+        elif self._delta_keys and self._delta_keys[0] == key:
+            self._delta_keys.popleft()
+        else:
+            try:
+                self._delta_keys.remove(key)
+            except ValueError:
+                pass
+        return tag, item
+
+
 async def _stream_tap(
     *,
     router: "WorkspaceTapRouter",
@@ -274,28 +337,28 @@ async def _stream_tap(
 
     tick_sub = router.subscribe(workspace_id)
     delta_sub = router.subscribe_delta(workspace_id)
-    combined: asyncio.Queue = asyncio.Queue()
+    inbox = _TapInbox()
 
-    async def _pump(sub, tag):
+    async def _pump(sub, put):
         try:
             async for item in sub:
-                await combined.put((tag, item))
+                put(item)
         except asyncio.CancelledError:
             pass
         except StopAsyncIteration:
             pass
         except Exception:
-            logger.exception("workspace tap: %s pump failed", tag)
+            logger.exception("workspace tap: pump failed")
 
-    pump_tick = asyncio.create_task(_pump(tick_sub, "tick"))
-    pump_delta = asyncio.create_task(_pump(delta_sub, "delta"))
+    pump_tick = asyncio.create_task(_pump(tick_sub, inbox.put_tick))
+    pump_delta = asyncio.create_task(_pump(delta_sub, inbox.put_delta))
     loop = asyncio.get_running_loop()
     checked_at = float("-inf")
     try:
         while True:
             try:
                 tag, item = await asyncio.wait_for(
-                    combined.get(), timeout=_KEEPALIVE_INTERVAL_S
+                    inbox.get(), timeout=_KEEPALIVE_INTERVAL_S
                 )
             except TimeoutError:
                 tag, item = "keepalive", None

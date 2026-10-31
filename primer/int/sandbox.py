@@ -91,6 +91,10 @@ class Sandbox(ABC):
     @abstractmethod
     async def read_file(self, path: str) -> bytes: ...
 
+    async def read_file_from(self, path: str, offset: int) -> bytes:
+        """The file's bytes from byte ``offset`` (empty at or past the end). The default reads the whole file; a sandbox that can seek overrides it."""
+        return (await self.read_file(path))[offset:]
+
     @abstractmethod
     async def write_file(
         self, path: str, content: bytes, *, mode: int | None = None,

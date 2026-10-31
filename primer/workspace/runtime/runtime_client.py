@@ -260,9 +260,15 @@ class RuntimeClient:
         """
         await self._send_request(OpName.HEALTH, {}, timeout=self._HEALTH_TIMEOUT_S)
 
-    async def read_file(self, path: str) -> bytes:
+    async def read_file(self, path: str, *, offset: int | None = None) -> bytes:
+        """The file's bytes, or from byte ``offset`` when given. The offset goes on the wire only to a runtime that reported protocol 1.5; an older
+        runtime would ignore it and return the whole file, so for it the whole file is read and sliced here: the same bytes either way."""
+        if offset and self._runtime_has((1, 5)):
+            result = await self._send_request(OpName.READ_FILE, {"path": path, "offset": offset})
+            return base64.b64decode(result["content_b64"])
         result = await self._send_request(OpName.READ_FILE, {"path": path})
-        return base64.b64decode(result["content_b64"])
+        data = base64.b64decode(result["content_b64"])
+        return data[offset:] if offset else data
 
     async def write_file(
         self, path: str, content: bytes, *, mode: int | None = None
