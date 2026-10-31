@@ -80,7 +80,7 @@ class _WorkspaceReadIO(Protocol):
 # ---------------------------------------------------------------------------
 
 
-def _agent_graph_ids(session: WorkspaceSession) -> tuple[str | None, str | None]:
+def agent_graph_ids(session: WorkspaceSession) -> tuple[str | None, str | None]:
     """Derive ``(agent_id, graph_id)`` from a session's binding.
 
     ``session.binding`` is a discriminated union — an
@@ -290,7 +290,7 @@ async def read_session_since(
     lines, consumed = _complete_lines(window)
     next_offset = from_offset + consumed
 
-    agent_id, graph_id = _agent_graph_ids(session)
+    agent_id, graph_id = agent_graph_ids(session)
     candidates: list[TapEvent] = []
     for line in lines:
         record = _parse_record(line)
@@ -422,7 +422,7 @@ async def read_batch(
 
         lines, _ = _complete_lines(window)
 
-        agent_id, graph_id = _agent_graph_ids(session)
+        agent_id, graph_id = agent_graph_ids(session)
 
         # Parse, map and match in chunks of at most the events still wanted,
         # so a long backlog costs no more than the limit asks for and events
