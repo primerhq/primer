@@ -108,3 +108,15 @@ async def test_a_destroy_in_a_fresh_backend_removes_the_directory_and_a_same_id_
 
     ws2 = await b.create(_template(), workspace_id="proj")      # bob creates "proj"
     assert not (ws2.root / "secret.txt").exists()
+
+
+# ---- W53: a failed create keeps a directory it adopted ---------------------------------------------------------------------------
+
+
+async def test_a_failed_create_over_an_existing_directory_leaves_its_files(tmp_path) -> None:
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / "precious.txt").write_text("from an earlier install")
+    backend = LocalWorkspaceBackend(tmp_path)
+    with pytest.raises(BadRequestError):
+        await backend.create(_template(init_commands=["exit 3"]), workspace_id="proj")
+    assert (tmp_path / "proj" / "precious.txt").read_text() == "from an earlier install"
