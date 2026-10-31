@@ -33,6 +33,7 @@ def refusal_envelopes() -> dict[str, dict]:
     from primer.model.channel import Channel
     from primer.model.except_ import ConflictError, NotFoundError, ProviderError
     from primer.model.model_profile import ModelProfile
+    from primer.model.principal import Principal
     from primer.model.user import User
     from primer.storage.references import default_agent_refusal
 
@@ -111,12 +112,18 @@ def refusal_envelopes() -> dict[str, dict]:
     check = ReferenceCheck(child_kind="agent", child_storage=lambda request: _FindsOne("builder"), child_field="model.profile_id")
     reference_hook = build_reference_block_hook([check])
 
+    def _as_admin(request: Request) -> None:
+        # The conflict names the referencing row only to a caller who can read it (final access review): an admin reads every row.
+        request.state.actor = Principal(type="user", id="u-1", display="someone", role="admin", source="local", user_id="u-1")
+
     @app.delete("/v1/in_use_by")
     async def in_use_by(request: Request):
+        _as_admin(request)
         await reference_hook(SimpleNamespace(id="llm-openchat--scripted:default"), request)
 
     @app.delete("/v1/in_use_by_session")
     async def in_use_by_session(request: Request):
+        _as_admin(request)
         session_check = ReferenceCheck(
             child_kind="session", child_storage=lambda r: _FindsOne("sess-0001"), child_field="binding.agent_id",
         )
@@ -124,6 +131,7 @@ def refusal_envelopes() -> dict[str, dict]:
 
     @app.delete("/v1/in_use_by_aggregate")
     async def in_use_by_aggregate(request: Request):
+        _as_admin(request)
         member_check = ReferenceCheck(
             child_kind="model_profile (aggregate member)", child_storage=lambda r: _FindsOne("agg-1"), child_field="members",
         )

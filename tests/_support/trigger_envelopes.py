@@ -133,8 +133,8 @@ def real_fire_bodies() -> dict[str, dict]:
     bodies: dict[str, dict] = {}
     try:
         for name, result in results.items():
-            # The service call's real keywords (the route passes who fires, access-control P3 Task 4): a stale signature is a TypeError here.
-            async def answer(*, trigger_id, person, deps, _result=result):
+            # The service call's real keywords (the route passes who fires and, from a session, its reach: access-control P3 Task 4): a stale signature is a TypeError here.
+            async def answer(*, trigger_id, person, deps, reach=None, _result=result):
                 return _result
 
             router.fire_now = answer
