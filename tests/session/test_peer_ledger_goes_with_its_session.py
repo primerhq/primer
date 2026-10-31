@@ -32,7 +32,7 @@ from tests.session._peer_fakes import World, make_world, seed_session
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 #: The request the route is called with: no actor, and the sessions here name no creator, so the delete's rank rule (ticket 01a16d9f) admits it.
-_REQ = SimpleNamespace(state=SimpleNamespace(actor=None))
+_REQ = SimpleNamespace(state=SimpleNamespace(actor=SimpleNamespace(type="system")))
 BOUND_S = 15.0
 
 

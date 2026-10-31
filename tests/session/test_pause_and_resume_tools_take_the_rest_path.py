@@ -61,8 +61,8 @@ NOW = datetime(2026, 10, 24, 9, 0, tzinfo=timezone.utc)
 #: ask the run's person's full on the workspace, so the world's workspace row names this user as its owner.
 OWNER_USER = "u-owner"
 OWNER_TOKEN = Principal(type="user", id=OWNER_USER, display=OWNER_USER, role="user", source="local", user_id=OWNER_USER)
-#: The request the REST handlers are called with: no actor, and the sessions here name no creator, so the rank rule admits it.
-REQ = SimpleNamespace(state=SimpleNamespace(actor=None))
+#: The request the REST handlers are called with: the workspace's owner, who holds the full the routes ask on it (P2 Task 3).
+REQ = SimpleNamespace(state=SimpleNamespace(actor=OWNER_TOKEN))
 
 
 class _Registry:
@@ -189,10 +189,10 @@ async def _rest(process: _Process, verb: str, row: WorkspaceSession) -> tuple[st
         if verb == "resume":
             out = await routes.resume_session(
                 REQ, workspace_id=row.workspace_id, session_id=row.id, sessions=process.sessions, scheduler=process.scheduler,
-                engine=process.engine,
+                engine=process.engine, storage_provider=process.sp,
             )
         else:
-            out = await routes.pause_session(REQ, workspace_id=row.workspace_id, session_id=row.id, sessions=process.sessions)
+            out = await routes.pause_session(REQ, workspace_id=row.workspace_id, session_id=row.id, sessions=process.sessions, storage_provider=process.sp)
     except ConflictError as exc:  # the app answers 409
         return "conflict", exc.message
     except NotFoundError as exc:  # the app answers 404
