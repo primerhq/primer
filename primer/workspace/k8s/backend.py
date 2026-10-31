@@ -1045,9 +1045,10 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
         """Tear down a workspace's Pod, Service, Secret, STS and PVC.
 
         Best-effort: missing objects are silently skipped so partial
-        creates roll back cleanly. Raises :class:`NotFoundError` only
-        when the StatefulSet itself doesn't exist (the canonical
-        existence signal).
+        creates roll back cleanly, and a Service or Secret delete that
+        fails is logged; a PVC delete that fails raises. Raises
+        :class:`NotFoundError` only when the StatefulSet itself doesn't
+        exist (the canonical existence signal), after deleting the rest.
         """
         if not self._initialised:
             await self.initialize()
@@ -1072,32 +1073,37 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
 
         obj_name = k8s_object_name(workspace_id)
         ns = self._config.namespace
+        sts_gone = False
         try:
             await self._apps_v1.delete_namespaced_stateful_set(
                 name=obj_name, namespace=ns,
             )
         except Exception as exc:  # noqa: BLE001
-            if "404" in str(exc):
-                if ws is None:
-                    raise NotFoundError(
-                        f"workspace {workspace_id!r} not found"
-                    )
-            else:
+            if "404" not in str(exc):
                 raise
-        # Best-effort cleanup of the Headless Service, Secret, and PVC.
+            sts_gone = ws is None
+        # The rest is deleted even when the StatefulSet was already gone (review W51): a Secret left behind fails a same-id
+        # create with a 409. The Service and the Secret are best effort; a PVC that could not be deleted fails the destroy,
+        # because the workspace's data would outlive its row.
         for delete_call, name, kind in (
             (self._core_v1.delete_namespaced_service, obj_name, "service"),
             (self._core_v1.delete_namespaced_secret, obj_name, "secret"),
-            (
-                self._core_v1.delete_namespaced_persistent_volume_claim,
-                _pvc_name_for(obj_name), "pvc",
-            ),
         ):
             await self._delete_best_effort(delete_call, name, kind, during="destroy")
+        pvc_error: Exception | None = None
+        try:
+            await self._core_v1.delete_namespaced_persistent_volume_claim(name=_pvc_name_for(obj_name), namespace=ns)
+        except Exception as exc:  # noqa: BLE001 -- raised below, after the HTTPRoute
+            if "404" not in str(exc):
+                pvc_error = exc
 
         # Best-effort cleanup of the per-workspace HTTPRoute (gateway mode).
         if isinstance(self._config.reachability, K8sReachabilityGateway):
             await self._destroy_httproute(obj_name)
+        if pvc_error is not None:
+            raise pvc_error
+        if sts_gone:
+            raise NotFoundError(f"workspace {workspace_id!r} not found")
 
 
 __all__ = ["KubernetesWorkspaceBackend"]

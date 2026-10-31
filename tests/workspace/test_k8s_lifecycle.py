@@ -78,6 +78,26 @@ async def test_a_statefulset_delete_that_fails_otherwise_raises() -> None:
         await backend.destroy("ws-1")
 
 
+# ---- W51 -------------------------------------------------------------------------------------------------------------------------
+
+
+async def test_a_statefulset_that_is_gone_still_deletes_the_rest_then_is_not_found() -> None:
+    backend = _destroying_backend(sts_error=Exception("(404) Not Found"))
+    with pytest.raises(NotFoundError):
+        await backend.destroy("ws-1")
+    deleted = _deleted(backend)
+    assert (deleted["service"], deleted["secret"], deleted["pvc"]) == (
+        ["primer-ws-ws-1"], ["primer-ws-ws-1"], ["ws-primer-ws-ws-1-0"],
+    )
+
+
+async def test_a_pvc_that_cannot_be_deleted_fails_the_destroy() -> None:
+    backend = _destroying_backend(pvc_error=Exception("(403) Forbidden"))
+    with pytest.raises(Exception, match="403"):
+        await backend.destroy("ws-1")
+    assert _deleted(backend)["secret"] == ["primer-ws-ws-1"]
+
+
 # ---- W20 -------------------------------------------------------------------------------------------------------------------------
 
 
