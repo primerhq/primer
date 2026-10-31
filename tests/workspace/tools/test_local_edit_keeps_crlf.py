@@ -22,3 +22,9 @@ async def test_multiline_old_string_matches_a_crlf_file(tmp_path: Path) -> None:
     (tmp_path / "a.bat").write_bytes(b"one\r\ntwo\r\n")
     await Edit(tmp_path).execute(EditArgs(path="a.bat", old_string="one\ntwo", new_string="one\n2\nthree"), _CTX)
     assert (tmp_path / "a.bat").read_bytes() == b"one\r\n2\r\nthree\r\n"
+
+
+async def test_a_crlf_new_string_is_not_doubled(tmp_path: Path) -> None:
+    (tmp_path / "a.bat").write_bytes(b"one\r\ntwo\r\n")
+    await Edit(tmp_path).execute(EditArgs(path="a.bat", old_string="two", new_string="2\r\nthree"), _CTX)
+    assert (tmp_path / "a.bat").read_bytes() == b"one\r\n2\r\nthree\r\n"

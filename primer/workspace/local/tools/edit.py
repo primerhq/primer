@@ -140,7 +140,8 @@ class Edit(WorkspaceTool):
             else:
                 updated = original.replace(args.old_string, args.new_string, 1)
 
-            written = updated.replace("\n", "\r\n") if b"\r\n" in raw else updated   # a CRLF file stays CRLF
+            # A CRLF file stays CRLF (a new_string already holding "\r\n" is not doubled).
+            written = updated.replace("\r\n", "\n").replace("\n", "\r\n") if b"\r\n" in raw else updated
             await asyncio.to_thread(
                 _atomic_write_bytes, target, written.encode("utf-8")
             )
