@@ -148,6 +148,19 @@ async def test_graph_row_hidden_from_b_until_shared(actors):
     await _hidden_then_shared(a, a_uid, b, b_uid, "graphs", "gr-a")
 
 
+async def test_collection_row_and_its_documents_hidden_from_b_until_shared(actors):
+    a, a_uid, b, b_uid = actors
+    r = await a.post("/v1/collections", json={"id": "kb-a", "description": "owned wiring probe"})
+    assert r.status_code == 201, r.text
+    r = await a.post("/v1/collections/kb-a/docs", json={"parent": "", "slug": "note", "body": "hello"})
+    assert r.status_code == 201, r.text
+    r = await b.get("/v1/collections/kb-a/docs", params={"path": "note"})
+    assert r.status_code == 404, r.text
+    await _hidden_then_shared(a, a_uid, b, b_uid, "collections", "kb-a")
+    r = await b.get("/v1/collections/kb-a/docs", params={"path": "note"})
+    assert r.status_code == 200 and r.json()["body"] == "hello", r.text
+
+
 def _py_toolset_body(row_id: str) -> dict:
     return {
         "id": row_id,
