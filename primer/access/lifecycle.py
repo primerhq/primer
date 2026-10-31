@@ -143,15 +143,17 @@ async def _disable_triggers_run_as(sp: Any, user_id: str) -> int:
     from primer.storage.q import Q
 
     count = 0
-    offset = 0
     ids: list[str] = []
-    predicate = Q(Trigger).where("owner.id", user_id).where("enabled", True).build()
-    while True:
-        page = await storage.find(predicate, OffsetPage(offset=offset, length=_PAGE))
-        ids.extend(r.id for r in page.items)
-        if len(page.items) < _PAGE:
-            break
-        offset += _PAGE
+    # Run-as the user themself (``owner.id``) or over one of their API tokens (``owner.user_id``: the token's user).
+    for field in ("owner.id", "owner.user_id"):
+        offset = 0
+        predicate = Q(Trigger).where(field, user_id).where("enabled", True).build()
+        while True:
+            page = await storage.find(predicate, OffsetPage(offset=offset, length=_PAGE))
+            ids.extend(r.id for r in page.items if r.id not in ids)
+            if len(page.items) < _PAGE:
+                break
+            offset += _PAGE
     for trigger_id in ids:
         if await storage.patch_if(trigger_id, {"enabled": False, "next_fire_at": None}, where={"enabled": [True]}) is not None:
             count += 1
