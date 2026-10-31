@@ -77,6 +77,7 @@ from primer.session.graph_end import graph_end_for
 from primer.session.mutation_lock import IN_LOCK_IO_TIMEOUT_S, session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
 from primer.session.seq_reservation import reserve_next_seq
+from primer.session.slot_view import rows_for_session_ids
 from primer.storage import raw_generation
 from primer.storage.cas import patch_if_checked
 from primer.session.turns import has_open_turn
@@ -3764,7 +3765,10 @@ async def _poll_row_for_interrupt(
     first_read = True
     while True:
         try:
-            row = await session_storage.get(session_id)
+            # The shared batched read (one ``id IN`` query, a single id here):
+            # the cancel reconciler and this poll read the row the same way.
+            rows = await rows_for_session_ids(session_storage, (session_id,))
+            row = rows.get(session_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - retried next interval

@@ -716,16 +716,27 @@ async def list_my_sso_identities(
             break
         offset += _PAGE_SIZE
 
+    # The provider names in one ``id IN`` find per 200 ids, not one read per
+    # identity row: a deleted provider still answers, its raw id as the
+    # display name (the human-readable name is gone).
+    provider_ids = list({row.provider_id for row in rows})
+    names: dict[str, str] = {}
+    for start in range(0, len(provider_ids), _PAGE_SIZE):
+        chunk = provider_ids[start : start + _PAGE_SIZE]
+        page = await provider_storage.find(
+            Q(OidcProvider).where_in("id", chunk).build(),
+            OffsetPage(offset=0, length=len(chunk)),
+        )
+        names.update({provider.id: provider.name for provider in page.items})
+
     out: list[SsoIdentityOut] = []
     for row in rows:
-        # Tolerate a deleted provider -- must not 500; fall back to the
-        # raw id as a display name since the human-readable name is gone.
-        provider = await provider_storage.get(row.provider_id)
+        name = names.get(row.provider_id)
         out.append(
             SsoIdentityOut(
                 id=row.id,
                 provider_id=row.provider_id,
-                provider_name=provider.name if provider is not None else row.provider_id,
+                provider_name=name if name is not None else row.provider_id,
                 subject=row.subject,
                 email=row.email,
                 created_at=row.created_at,

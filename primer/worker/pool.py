@@ -52,6 +52,7 @@ from primer.session.dispatch import (
     pause_session_for_refused_workspace,
     run_one_session_turn,
 )
+from primer.session.slot_view import rows_for_session_ids
 
 if TYPE_CHECKING:
     from primer.agent.approval import ApprovalResolver
@@ -1657,24 +1658,41 @@ class WorkerPool:
         Only ``cancel_requested`` is checked: that is the one flag
         ``cancel_session`` signals through the NOTIFY. Interrupt (Stop) never had
         this path. Returns how many scopes it cancelled. A storage error for one
-        session is logged and skipped; it never propagates.
+        session is logged and skipped; it never propagates. The rows of every
+        pending scope come from ONE ``id IN`` read per interval (never one read
+        per scope); a batch that fails falls back to the per-scope reads, so one
+        bad session still costs only itself.
         """
+        pending = [
+            (sid, scope)
+            for (kind, sid), scope in list(self._active_scopes.items())
+            if kind is ClaimKind.SESSION and not scope.cancelled
+        ]
+        if not pending:
+            return 0
+        try:
+            rows = await rows_for_session_ids(
+                self._storage.get_storage(WorkspaceSession), (sid for sid, _ in pending),
+            )
+        except Exception:  # noqa: BLE001 - a failed batch falls back to the per-scope reads
+            rows = None
         reconciled = 0
-        for (kind, sid), scope in list(self._active_scopes.items()):
-            if kind is not ClaimKind.SESSION or scope.cancelled:
-                continue
-            try:
-                row = await self._load_session(sid)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "cancel reconcile: could not read session %s, will retry: %s", sid, exc,
-                )
-                continue
+        for sid, scope in pending:
+            if rows is None:
+                try:
+                    row = await self._load_session(sid)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "cancel reconcile: could not read session %s, will retry: %s", sid, exc,
+                    )
+                    continue
+            else:
+                row = rows.get(sid)
             if row is None or not row.cancel_requested or row.status == SessionStatus.ENDED:
                 continue
             # The turn may have finished (or been cancelled by a NOTIFY) while
             # the row was being read.
-            if self._active_scopes.get((kind, sid)) is not scope:
+            if self._active_scopes.get((ClaimKind.SESSION, sid)) is not scope:
                 continue
             if scope.cancel_once("user_signal"):
                 self._cancels_reconciled_total += 1

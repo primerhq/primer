@@ -27,6 +27,7 @@ Models" button. They build a transient adapter, call its
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -1376,6 +1377,13 @@ def _toolset_unreachable(
 # handshake + tools/list, which is well under a second on a LAN.
 _CATALOGUE_PROBE_TIMEOUT_S = 5.0
 
+# The catalogue's per-row work (the probe, and the OAuth status of a row that
+# signs in with OAuth) is independent per row, so it overlaps instead of
+# serializing one toolset behind the next. The bound caps how many rows' worth
+# of work run at once: the page still waits for every row, but a page of 200
+# rows costs roughly page_size / bound probes, not page_size.
+_CATALOGUE_CONCURRENCY = 8
+
 
 async def _catalogue_tools(
     registry: Any, tid: str, principal: Any,
@@ -2042,13 +2050,15 @@ async def list_all_tools(
 
     out: list[dict] = []
 
-    # 1. Built-in toolsets (every id in _BUILTIN_TOOLSETS).
+    # 1. Built-in toolsets (every id in _BUILTIN_TOOLSETS). The per-row probe
+    # is independent per row, so the rows overlap under the bound; the output
+    # keeps the list's order.
     ic = await _internal_search_on(storage_provider)
     canvas_on = await _canvas_tools_on(storage_provider)
-    for spec in _BUILTIN_TOOLSETS:
+    sem = asyncio.Semaphore(_CATALOGUE_CONCURRENCY)
+
+    async def _builtin_entry(spec: dict) -> dict:
         tid = spec["id"]
-        if tid == "canvas" and not canvas_on:
-            continue
         entry: dict = {
             "id": tid,
             "builtin": True,
@@ -2059,13 +2069,20 @@ async def list_all_tools(
         }
         if tid == "collections":
             entry["internal_search"] = ic
-        tools, reason = await _catalogue_tools(registry, tid, principal)
+        async with sem:
+            tools, reason = await _catalogue_tools(registry, tid, principal)
         if reason is None:
             entry["tools"] = tools
         else:
             entry["available"] = False
             entry["unavailable_reason"] = reason
-        out.append(entry)
+        return entry
+
+    specs = [
+        spec for spec in _BUILTIN_TOOLSETS
+        if not (spec["id"] == "canvas" and not canvas_on)
+    ]
+    out.extend(await asyncio.gather(*(_builtin_entry(spec) for spec in specs)))
 
     # 2. User-defined Toolset rows. Page through storage so the
     # catalogue scales beyond the default 200-row cap. Rows the caller
@@ -2080,29 +2097,29 @@ async def list_all_tools(
     seen_user_ids: set[str] = set()
     offset = 0
     page_size = 200
-    while True:
-        page = await ts_storage.find(
-            access_pred,
-            OffsetPage(offset=offset, length=page_size),
-        )
-        for row in page.items:
-            if row.id in seen_user_ids:
-                continue
-            seen_user_ids.add(row.id)
-            entry = {
-                "id": row.id,
-                "builtin": False,
-                "label": row.id,
-                # Toolset rows inherit Identifiable (no `description`
-                # field); use a getattr-guard so we don't 500 when the
-                # row is built-in-style (id only).
-                "tagline": getattr(row, "description", "") or "",
-                "available": True,
-                "tools": [],
-            }
-            from primer.toolset.oauth.service import OAuthTarget
+    # The per-row work (the OAuth status, then the probe) is independent per
+    # row, so the page's rows overlap under the bound; the output keeps the
+    # storage order. A row's OAuth status and probe run inside the bound, so
+    # a page of rows costs roughly page_size / bound probes, not page_size.
+    from primer.toolset.oauth.service import OAuthTarget
 
-            readable = level_of(person, row.access) is not None
+    async def _user_entry(row: Toolset) -> dict | None:
+        if row.id in seen_user_ids:
+            return None
+        seen_user_ids.add(row.id)
+        entry = {
+            "id": row.id,
+            "builtin": False,
+            "label": row.id,
+            # Toolset rows inherit Identifiable (no `description`
+            # field); use a getattr-guard so we don't 500 when the
+            # row is built-in-style (id only).
+            "tagline": getattr(row, "description", "") or "",
+            "available": True,
+            "tools": [],
+        }
+        readable = level_of(person, row.access) is not None
+        async with sem:
             # The caller's own sign-in (the shared one for client credentials), for whoever may use a tool of it: a public tool needs the
             # caller's own token too (access-control P5 Task 3).
             if (readable or row.access.public_tools) and OAuthTarget.from_toolset(row, person) is not None:
@@ -2114,12 +2131,25 @@ async def list_all_tools(
             tools, reason = await _catalogue_tools(
                 registry, row.id, principal,
             )
-            if reason is None:
-                entry["tools"] = tools if readable else [t for t in tools if t["id"] in row.access.public_tools]
-            else:
-                entry["available"] = False
-                entry["unavailable_reason"] = reason
-            out.append(entry)
+        if reason is None:
+            entry["tools"] = tools if readable else [t for t in tools if t["id"] in row.access.public_tools]
+        else:
+            entry["available"] = False
+            entry["unavailable_reason"] = reason
+        return entry
+
+    while True:
+        page = await ts_storage.find(
+            access_pred,
+            OffsetPage(offset=offset, length=page_size),
+        )
+        out.extend(
+            entry
+            for entry in await asyncio.gather(
+                *(_user_entry(row) for row in page.items)
+            )
+            if entry is not None
+        )
         if len(page.items) < page_size:
             break
         offset += page_size
