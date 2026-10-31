@@ -69,7 +69,12 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.common.entity_checks import EntityCheckError
-from primer.knowledge.checks import check_collection_id, check_collection_search_unchanged, check_collection_system_flag
+from primer.knowledge.checks import (
+    check_collection_id,
+    check_collection_search_unchanged,
+    check_collection_search_use,
+    check_collection_system_flag,
+)
 from primer.model.payload_too_large import PayloadTooLargeError
 from primer.knowledge.grep import grep_collection
 from primer.knowledge import importer
@@ -141,16 +146,20 @@ def _system_flag_refusal(exc: EntityCheckError) -> HTTPException:
 
 
 async def _collection_on_pre_create(entity: Collection, request: Request) -> None:
-    """Validate the collection id (422 ``collection_id_invalid`` / ``collection_id_reserved`` at ``body.id``) and refuse a create that sets
-    the ``system`` flag (403)."""
+    """Validate the collection id (422 ``collection_id_invalid`` / ``collection_id_reserved`` at ``body.id``), refuse a create that sets
+    the ``system`` flag (403), and one whose ``search`` names a provider the saver may not use (409, the not-registered answer of the
+    enable route)."""
     try:
         check_collection_id(entity)
         check_collection_system_flag(entity)
+        await check_collection_search_use(entity, storage_provider=request.app.state.storage_provider, person=person_from_request(request))
     except EntityCheckError as exc:
         if exc.kind == "validation":
             raise RequestValidationError(
                 [{"type": exc.code, "loc": ("body", exc.field), "msg": exc.message}]
             ) from exc
+        if exc.kind == "conflict":
+            raise ConflictError(exc.message) from exc
         raise _system_flag_refusal(exc) from exc
 
 
@@ -210,9 +219,9 @@ collection_router = make_crud_router(
     on_pre_create=_collection_on_pre_create,
     on_pre_update=_collection_on_pre_update,
     on_pre_delete=_collection_on_pre_delete,
-    # What the hooks can answer beyond the standard set: 403 (the system flag; a system collection's delete), 409 (a writer that keeps
-    # adding documents), 502 (a vector store that cannot be reached).
-    extra_create_responses=common_responses(403),
+    # What the hooks can answer beyond the standard set: 403 (the system flag; a system collection's delete), 409 (a search provider the
+    # saver may not use; a writer that keeps adding documents), 502 (a vector store that cannot be reached).
+    extra_create_responses=common_responses(403, 409),
     extra_update_responses=common_responses(403),
     extra_delete_responses=common_responses(403, 409, 502),
 )
@@ -1023,6 +1032,7 @@ def build_document_indexer(request: Request):
                 provider_registry=provider_registry,
                 semantic_search_registry=ssr,
                 content_store=storage_provider.get_content_store(),
+                storage_provider=storage_provider,
             )
         except DimensionMismatchError:
             # Operator-configuration error: surface as 422, do not swallow.
@@ -1069,6 +1079,7 @@ async def _index_document_hook(document_id: str, request: Request) -> None:
             provider_registry=provider_registry,
             semantic_search_registry=ssr,
             content_store=storage_provider.get_content_store(),
+            storage_provider=storage_provider,
         )
     except DimensionMismatchError:
         # Dimension mismatches are operator-configuration errors that must

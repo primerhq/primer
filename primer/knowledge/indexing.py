@@ -78,6 +78,18 @@ async def probe_dimensions(*, collection: Collection, provider_registry) -> int:
     return len(response.embeddings[0].vector)
 
 
+async def _refuse_unless_an_owner_may_use(storage_provider, collection: Collection) -> None:
+    """Fail closed when no owner of ``collection`` may use the providers its search names (security review of P4, finding 2): the enable
+    check covers the owner who turned search on, and this keeps a row that bypassed it from spending them. No storage: no check (tests)."""
+    from primer.knowledge.search_use import owners_may_use
+
+    if storage_provider is not None and not await owners_may_use(storage_provider, collection):
+        raise PrimerError(
+            f"indexing refused: no owner of collection {collection.id!r} may use the search providers it names; "
+            "an admin can grant their use, then re-enable search"
+        )
+
+
 async def index_document(
     *,
     document: Document,
@@ -86,6 +98,7 @@ async def index_document(
     semantic_search_registry,
     content_store: DocumentContentStore,
     dimensions: int | None = None,
+    storage_provider=None,
 ) -> int:
     """Chunk, embed, and upsert ``document`` into its collection's vector
     store. Returns the number of chunks indexed. Re-indexing embeds the new
@@ -114,6 +127,7 @@ async def index_document(
     """
     if collection.search is None:
         return 0
+    await _refuse_unless_an_owner_may_use(storage_provider, collection)
     cfg = collection.search
 
     text = await content_store.get(document.id)
@@ -256,6 +270,7 @@ async def index_documents(
     provider_registry,
     semantic_search_registry,
     content_store: DocumentContentStore,
+    storage_provider=None,
 ) -> int:
     """Index many documents in one pass.
 
@@ -283,6 +298,7 @@ async def index_documents(
     """
     if collection.search is None:
         return 0
+    await _refuse_unless_an_owner_may_use(storage_provider, collection)
     cfg = collection.search
     from primer.knowledge.splitter import split_text
 
@@ -447,6 +463,7 @@ def make_document_indexer(
                 provider_registry=provider_registry,
                 semantic_search_registry=semantic_search_registry,
                 content_store=storage_provider.get_content_store(),
+                storage_provider=storage_provider,
             )
         except DimensionMismatchError:
             raise
