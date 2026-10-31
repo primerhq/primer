@@ -222,34 +222,36 @@ async def workspace_terminal_ws(
     resolver = getattr(
         websocket.app.state, "terminal_pty_resolver", _default_resolve_pty,
     )
-    try:
-        session = await resolver(workspace, cols=cols, rows=rows)
-    except Exception:  # noqa: BLE001 — resolve failure must not 500 the socket
-        logger.exception("terminal: failed to open PTY for %s", workspace_id)
-        await websocket.accept()
-        await websocket.close(code=1011, reason="terminal_open_failed")
-        return
-
-    if session is None:
-        # Workspace kind supports neither a local nor a runtime PTY.
-        await websocket.accept()
-        await websocket.close(code=1011, reason="terminal_unsupported")
-        return
-
+    # Accept FIRST, then open the PTY inside the block that always closes it (review W55k): opened before the accept, a client
+    # that went away in between left a shell running (for a container workspace, a ``pty_open`` and its stream on the runtime).
     await websocket.accept()
+    session: _TerminalPty | None = None
+    recv_task: asyncio.Future[None] | None = None
+    send_task: asyncio.Future[None] | None = None
     try:
-        await session.start()
-    except Exception:  # noqa: BLE001
-        logger.exception("terminal: PTY start failed for %s", workspace_id)
-        await websocket.close(code=1011, reason="terminal_start_failed")
-        await session.close()
-        return
+        try:
+            session = await resolver(workspace, cols=cols, rows=rows)
+        except Exception:  # noqa: BLE001 — resolve failure must not 500 the socket
+            logger.exception("terminal: failed to open PTY for %s", workspace_id)
+            await websocket.close(code=1011, reason="terminal_open_failed")
+            return
 
-    # Re-checked on every input (final access review F8): a revoke or a downgrade below full closes the shell as a fresh connect would be.
-    watch = WorkspaceAccessWatch(websocket.app.state.storage_provider, person, workspace_id, AccessLevel.FULL)
-    recv_task = asyncio.ensure_future(_recv_loop(websocket, session, watch))
-    send_task = asyncio.ensure_future(_send_loop(websocket, session))
-    try:
+        if session is None:
+            # Workspace kind supports neither a local nor a runtime PTY.
+            await websocket.close(code=1011, reason="terminal_unsupported")
+            return
+
+        try:
+            await session.start()
+        except Exception:  # noqa: BLE001
+            logger.exception("terminal: PTY start failed for %s", workspace_id)
+            await websocket.close(code=1011, reason="terminal_start_failed")
+            return
+
+        # Re-checked on every input (final access review F8): a revoke or a downgrade below full closes the shell as a fresh connect would be.
+        watch = WorkspaceAccessWatch(websocket.app.state.storage_provider, person, workspace_id, AccessLevel.FULL)
+        recv_task = asyncio.ensure_future(_recv_loop(websocket, session, watch))
+        send_task = asyncio.ensure_future(_send_loop(websocket, session))
         done, pending = await asyncio.wait(
             [recv_task, send_task], return_when=asyncio.FIRST_COMPLETED,
         )
@@ -268,10 +270,11 @@ async def workspace_terminal_ws(
         # The handler can be cancelled while it waits (the auth middleware ends a connection whose account was disabled): the two loops
         # must not be left running behind it.
         for task in (recv_task, send_task):
-            if not task.done():
+            if task is not None and not task.done():
                 task.cancel()
         # Always tear the PTY down on disconnect (child terminated, fd freed).
-        await session.close()
+        if session is not None:
+            await session.close()
 
 
 async def _recv_loop(websocket: WebSocket, session: _TerminalPty, watch: WorkspaceAccessWatch | None = None) -> None:

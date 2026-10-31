@@ -264,6 +264,7 @@ class WSSandbox(Sandbox):
                     fromlist=["OpName"],
                 ).OpName.HEALTH,
                 {},
+                timeout=RuntimeClient._HEALTH_TIMEOUT_S,  # a runtime that cannot be reached must not hold the caller (review W1)
             )
             return SandboxInspectInfo(
                 state="running",

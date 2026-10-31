@@ -24,6 +24,8 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
+from pydantic_core import to_jsonable_python
+
 from primer.bootstrap.prime import is_reserved_user_default_id, is_user_default_workspace, resolve_default_workspace_id
 from primer.access.person import Person
 from primer.access.policy import level_of
@@ -42,6 +44,7 @@ from primer.storage import raw_generation
 from primer.workspace.env_names import refuse_bad_env_names
 from primer.workspace.files import FileResolvers
 from primer.workspace.local_policy import LocalWorkspacePolicy
+from primer.workspace.probe import unfinished_delete_reason
 from primer.workspace.resolvers import (
     make_document_resolver,
     make_secret_resolver,
@@ -266,6 +269,10 @@ class WorkspaceRegistry:
         template = row.template_snapshot
         if template is None:
             template = await self._backfill_template_snapshot(row)
+        if template is not None and row.overrides is not None and row.overrides.env:
+            # A local re-attach rebuilds the env from the template it is given: carry the workspace's own env overrides, merged as create
+            # merged them (review W54), or they are gone after a restart and in every worker. A container or a pod keeps its env itself.
+            template = template.model_copy(update={"env": {**template.env, **row.overrides.env}})
         ws = await backend.get(workspace_id, template=template)
         if ws is None:
             raise NotFoundError(
@@ -582,16 +589,18 @@ class WorkspaceRegistry:
         write is read again; one that keeps moving (only the probe moves it, every ~30 s) is marked whatever it is after a few tries.
         """
         storage = self._sp.get_storage(WorkspaceRow)
+        # Timed, so the probe can fail a mark whose destroy died with its process (review W52).
+        mark = {"phase": "terminating", "terminating_since": to_jsonable_python(datetime.now(timezone.utc))}
         for _ in range(_MARK_TRIES):
             current = await self.get_workspace_row(workspace_id)
             if current.phase == "terminating":
                 return None
             written = await storage.patch_if(
-                workspace_id, {"phase": "terminating"}, where={"phase": [raw_generation(current, "phase")]},
+                workspace_id, mark, where={"phase": [raw_generation(current, "phase")]},
             )
             if written is not None:
                 return current.phase
-        written = await storage.patch_if(workspace_id, {"phase": "terminating"}, where={"phase": ["pending", "running", "failed"]})
+        written = await storage.patch_if(workspace_id, mark, where={"phase": ["pending", "running", "failed"]})
         return current.phase if written is not None else None
 
     async def _after_a_failed_destroy(
@@ -619,7 +628,7 @@ class WorkspaceRegistry:
                     await storage.patch_if(workspace_id, {"phase": marked_from}, where={"phase": ["terminating"]})
                 return
             cause = " ".join(str(exc).split()) or type(exc).__name__
-            reason = f"the delete did not finish ({type(exc).__name__}: {cause[:300]}); the runtime may be partly torn down: delete it again"
+            reason = unfinished_delete_reason(f"{type(exc).__name__}: {cause[:300]}")
             written = await storage.patch_if(
                 workspace_id, {"phase": "failed", "failure_reason": reason}, where={"phase": ["terminating"]},
             )

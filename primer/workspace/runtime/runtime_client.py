@@ -128,6 +128,9 @@ class RuntimeClient:
 
     _HEARTBEAT_INTERVAL_S: float = 15.0
     _HEARTBEAT_MAX_MISSED: int = 3
+    # How long a HEALTH request (``ping``, ``inspect``, the heartbeat) waits for its answer, connection included: a client
+    # whose reconnects keep failing, or a runtime that went silent, must not hold the caller for ever (review W1, W22).
+    _HEALTH_TIMEOUT_S: float = 10.0
     _RECONNECT_DELAYS: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
 
     def __init__(
@@ -252,9 +255,10 @@ class RuntimeClient:
         the connection is down or the runtime responds with ``ok=false``.
         Used by :meth:`primer.workspace.runtime.ws_sandbox.WSSandbox.ping`
         and the Phase-7 workspace probe task; callers wrap the
-        :class:`Exception` into a ``False`` return value.
+        :class:`Exception` into a ``False`` return value. Bounded by
+        ``_HEALTH_TIMEOUT_S`` (``TimeoutError`` past it).
         """
-        await self._send_request(OpName.HEALTH, {})
+        await self._send_request(OpName.HEALTH, {}, timeout=self._HEALTH_TIMEOUT_S)
 
     async def read_file(self, path: str) -> bytes:
         result = await self._send_request(OpName.READ_FILE, {"path": path})
@@ -597,7 +601,11 @@ class RuntimeClient:
         if env is not None:
             args["env"] = env
 
-        await self._send_raw(Request(req_id=req_id, op=OpName.PTY_OPEN, args=args))
+        try:
+            await self._send_raw(Request(req_id=req_id, op=OpName.PTY_OPEN, args=args))
+        except BaseException:
+            self._streams.pop(req_id, None)     # nobody will read this stream: the open never went out (review W55k)
+            raise
         return RuntimePtyHandle(self, req_id, q)
 
     # ------------------------------------------------------------------
@@ -609,20 +617,23 @@ class RuntimeClient:
         self._next_req_id += 1
         return rid
 
-    async def _send_request(self, op: OpName, args: dict[str, Any]) -> dict[str, Any]:
+    async def _send_request(self, op: OpName, args: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
         """Send a single-shot request and wait for the response.
 
         Raises :class:`RuntimeError` if the server responds with ok=false.
         Raises :class:`RuntimeError` with code EPROTOCOL if the connection
-        drops while the request is in-flight.
+        drops while the request is in-flight. With *timeout*, raises
+        ``TimeoutError`` when the answer (the wait for a connection
+        included) takes longer.
         """
         req_id = self._alloc_req_id()
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[Any] = loop.create_future()
         self._pending[req_id] = fut
         try:
-            await self._send_raw(Request(req_id=req_id, op=op, args=args))
-            return await fut
+            async with asyncio.timeout(timeout):
+                await self._send_raw(Request(req_id=req_id, op=op, args=args))
+                return await fut
         finally:
             self._pending.pop(req_id, None)
             if fut.done() and not fut.cancelled():
@@ -818,14 +829,15 @@ class RuntimeClient:
         self._pong_received = True
 
     async def _heartbeat_loop(self) -> None:
-        """Ping the server every ``_HEARTBEAT_INTERVAL_S`` seconds.
+        """Check the runtime answers, every ``_HEARTBEAT_INTERVAL_S`` seconds.
 
-        Sends a WS PING and waits one full interval for a PONG.  Because
-        aiohttp's client async-for does not surface PONG frames, we instead
-        send an ``health`` RPC (which does travel through the normal response
-        path) as a lightweight liveness probe.  After
-        ``_HEARTBEAT_MAX_MISSED`` consecutive failures the connection is
-        force-closed and the reconnect loop takes over.
+        Sends a ``health`` request (it travels the normal response path, so
+        an answer proves the runtime is there; a WS PING only proves the
+        frame was written, which a half-open connection accepts, review W22)
+        and waits ``_HEALTH_TIMEOUT_S`` for the answer. Any answer, an error
+        one included, counts as alive. After ``_HEARTBEAT_MAX_MISSED``
+        consecutive unanswered ones the connection is force-closed and the
+        reconnect loop takes over.
         """
         missed = 0
         try:
@@ -834,13 +846,11 @@ class RuntimeClient:
                 ws = self._ws
                 if ws is None or ws.closed:
                     break
-                # Use a raw WS ping; aiohttp handles the pong internally and
-                # keeps the connection alive.  We additionally send a health
-                # RPC once every _HEARTBEAT_MAX_MISSED intervals so we can
-                # detect silent server death.
                 try:
-                    await asyncio.wait_for(ws.ping(), timeout=self._HEARTBEAT_INTERVAL_S)
+                    await self._send_request(OpName.HEALTH, {}, timeout=self._HEALTH_TIMEOUT_S)
                     missed = 0
+                except RuntimeError:
+                    missed = 0      # answered (an error), or the connection dropped: the receive loop handles a drop
                 except (TimeoutError, ConnectionError, aiohttp.ClientError):
                     missed += 1
                     logger.warning(
@@ -1031,14 +1041,27 @@ class RuntimeClient:
         *,
         abort: asyncio.Event | None = None,
     ) -> AsyncIterator[Any]:
-        """Yield items from *q* until _STREAM_CLOSED or *abort* fires."""
+        """Yield items from *q* until _STREAM_CLOSED or *abort* fires.
+
+        Waits on the queue and the abort together, so an idle stream sleeps until one of them moves (review W55j).
+        """
         while True:
             if abort is not None and abort.is_set():
                 break
-            try:
-                item = await asyncio.wait_for(q.get(), timeout=0.1)
-            except TimeoutError:
-                continue
+            if abort is None:
+                item = await q.get()
+            else:
+                get = asyncio.ensure_future(q.get())
+                aborted = asyncio.ensure_future(abort.wait())
+                try:
+                    await asyncio.wait({get, aborted}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    aborted.cancel()
+                    if not get.done():
+                        get.cancel()    # a get cancelled before it took an item leaves the item in the queue
+                if not get.done():
+                    break               # the abort fired first
+                item = get.result()
             if item is _STREAM_CLOSED:
                 break
             yield item
