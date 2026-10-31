@@ -46,6 +46,7 @@ from primer.access.workspaces import WorkspaceAccessWatch, require_workspace
 from primer.api.deps import require_auth_ws, require_role_ws, require_user_ws
 from primer.model.access import AccessLevel
 from primer.model.except_ import AccessDeniedError, NotFoundError
+from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeOpError
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,12 @@ class _RuntimePtyAdapter:
                 return
 
     async def write(self, data: bytes) -> None:
-        await self._handle.stdin(data)
+        try:
+            await self._handle.stdin(data)
+        except RuntimeOpError as exc:
+            # The runtime refused the input (stdin queue full while the program is not reading, GI-3) or the pty is
+            # gone: drop it, as the local terminal does. The output stream decides when the terminal ends.
+            logger.warning("terminal: the runtime refused stdin: %s", exc)
 
     async def resize(self, cols: int, rows: int) -> None:
         await self._handle.resize(cols, rows)

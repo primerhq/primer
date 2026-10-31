@@ -676,9 +676,17 @@ class RuntimeClient:
             raise RuntimeError(ErrorCode.EPROTOCOL, "Not connected")
         from primer.workspace.runtime.protocol import serialize
 
+        frame = serialize(msg)
+        # The runtime drops the whole connection on a frame past its limit, the same as ours (GI-4): fail this request
+        # alone. The frame is ASCII JSON, so its length is its size in bytes.
+        if len(frame) > _MAX_WS_MSG_SIZE:
+            raise RuntimeError(
+                ErrorCode.EPROTOCOL,
+                f"{msg.op} request is {len(frame)} bytes; the runtime accepts at most {_MAX_WS_MSG_SIZE}",
+            )
         if before_send is not None:
             before_send(ws)
-        await ws.send_str(serialize(msg))
+        await ws.send_str(frame)
 
     def _runtime_has(self, minimum: tuple[int, int]) -> bool:
         """Whether the runtime reported a protocol of at least *minimum* (major, minor) in its hello.
