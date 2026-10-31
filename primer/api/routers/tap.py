@@ -49,7 +49,7 @@ from starlette.responses import StreamingResponse
 from primer.access.person import person_from_request
 from primer.access.workspaces import WorkspaceAccessWatch, require_workspace
 from primer.model.access import AccessLevel
-from primer.model.except_ import AccessDeniedError, NotFoundError
+from primer.model.except_ import AccessDeniedError, BadRequestError, NotFoundError
 from primer.model.storage import FieldRef, Op, OffsetPage, Predicate, Value
 from primer.model.user import User
 from primer.model.workspace_session import WorkspaceSession
@@ -306,6 +306,7 @@ async def _stream_tap(
     cursor: TapCursor,
     had_cursor: bool,
     watch: WorkspaceAccessWatch | None = None,
+    initial_rows: list[WorkspaceSession] | None = None,
 ):
     """Async generator yielding SSE frames for a workspace tap.
 
@@ -325,7 +326,7 @@ async def _stream_tap(
     # sid -> (row, byte_offset); only positive entries — no negative cache.
     in_scope: dict[str, tuple[WorkspaceSession, int]] = {}
 
-    initial = await _resolve_in_scope(
+    initial = initial_rows if initial_rows is not None else await _resolve_in_scope(
         sessions_storage, workspace_id=workspace_id, selector=selector
     )
     for row in initial:
@@ -532,7 +533,18 @@ async def workspace_tap(
     # history.
     had_cursor = bool(tap_cursor.seqs)
 
+    # The sessions predicate is resolved BEFORE the response starts: a predicate the store refuses is a 400 the client can read, not a stream that
+    # dies after its 200 and is reopened every few seconds (W26).
+    try:
+        initial = await _resolve_in_scope(sessions_storage, workspace_id=workspace_id, selector=parsed_selector)
+    except BadRequestError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"type": "/errors/invalid-selector", "title": "Unusable tap selector", "detail": str(exc)},
+        ) from None
+
     generator = _stream_tap(
+        initial_rows=initial,
         router=router,
         sessions_storage=sessions_storage,
         workspace_io=workspace_io,
