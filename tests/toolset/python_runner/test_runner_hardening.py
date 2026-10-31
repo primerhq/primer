@@ -132,3 +132,12 @@ async def test_a_crashed_runner_still_reports_the_tail_of_stderr() -> None:
     assert resp.ok is False and resp.error["type"] == "RunnerError"
     assert resp.error["message"] == "the runner exited with code 3"
     assert resp.error["traceback"] == ("a" * 100000 + "LAST")[-2000:]
+
+
+# --------------------------------------------------------------------------- GS-36: print
+
+
+async def test_a_print_in_a_tool_leaves_its_result_intact() -> None:
+    module = "import sys\ndef run():\n    print('debug')\n    sys.stdout.write('more')\n    return 42\n"
+    resp = await LocalHardenedRunner().run(_req(module), timeout_seconds=10)
+    assert (resp.ok, resp.value) == (True, 42)

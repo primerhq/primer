@@ -252,11 +252,14 @@ def _main():
     return {"ok": True, "value": result}
 
 
+# stdout carries the one response object: a print() in the tool goes to stderr instead of corrupting it.
+_stdout, sys.stdout = sys.stdout, sys.stderr
 try:
     _out = _main()
 except Exception as _exc:
     _out = {"ok": False, "error": {"type": type(_exc).__name__,
                                    "message": str(_exc),
                                    "traceback": traceback.format_exc()[-4000:]}}
+sys.stdout = _stdout
 sys.stdout.write(json.dumps(_out))
 '''
