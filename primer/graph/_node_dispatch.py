@@ -243,6 +243,12 @@ class _NodeDispatchMixin:
                     self._fanout_target_expected_count[tgt] = max(
                         self._fanout_target_expected_count.get(tgt, 0), n
                     )
+                for spec in node.specs:
+                    if spec.kind == "map" and spec.target_node_id not in counts:
+                        # D15 (AG-L11e): a map over an empty list gives its target an empty aggregator and an expected count of 0;
+                        # _compute_next_ready then walks the target's out-edges, so a fan-in after it runs on the empty list.
+                        context.nodes[spec.target_node_id] = []
+                        self._fanout_target_expected_count[spec.target_node_id] = 0
                 # Spec B §2.5 — populate per-instance spec lookup + per-(FanOut,
                 # target) drain state so the outer loop's result-application
                 # path can branch on ``on_failure``.

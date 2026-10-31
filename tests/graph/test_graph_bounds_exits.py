@@ -21,7 +21,7 @@ import pytest
 
 from primer.agent.invoke import MAX_INVOCATION_DEPTH
 from primer.graph import _node_refs
-from primer.graph.base import _GraphErrorEvent
+from primer.graph.base import _GraphEndOutputEvent, _GraphErrorEvent
 from primer.graph.executor import GraphExecutor
 from primer.graph.workspace_executor import WorkspaceGraphExecutor
 from primer.model.chat import Done, TextDelta, ToolResultPart
@@ -33,6 +33,7 @@ from primer.model.graph import (
     _AgentNodeRef,
     _BeginNode,
     _EndNode,
+    _FanInNode,
     _FanOutNode,
     _GraphNodeRef,
     _StaticEdge,
@@ -402,3 +403,39 @@ async def test_a_subgraph_input_template_error_carries_template_error():
     _, _, thread = await _run(graph, graph_resolver=graph_resolver)
 
     assert (thread.ended_reason, thread.ended_detail) == ("failed", "template_error")
+
+
+# ---- AG-L11e (D15): a map over an empty list --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_map_over_an_empty_list_walks_on_with_an_empty_aggregator():
+    graph = Graph(
+        id="g-empty-map", description="plan -> map -> t -> fan-in -> end",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="plan", tool_id="x__plan", arguments={}, output_schema=OBJ),
+            _FanOutNode(id="fo", specs=[FanOutSpec(kind="map", target_node_id="t", source_node_id="plan", source_path="items")]),
+            _ToolCallNode(id="t", tool_id="x__t", arguments={}),
+            _FanInNode(id="fi", aggregate_template="{{ nodes.t | length }} items"),
+            _EndNode(id="end", output_template="{{ nodes.fi.text }}"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="plan"),
+            _StaticEdge(from_node="plan", to_node="fo"),
+            _StaticEdge(from_node="t", to_node="fi"),
+            _StaticEdge(from_node="fi", to_node="end"),
+        ],
+    )
+    calls = []
+
+    async def dispatcher(node, arguments):
+        calls.append(node.id)
+        return ToolResultPart(id="p", output=json.dumps({"items": []}))
+
+    ex, events, thread = await _run(graph, dispatcher=dispatcher)
+
+    assert [e.text for e in events if isinstance(e, _GraphEndOutputEvent)] == ["0 items"]
+    assert thread.ended_reason == "completed"
+    assert calls == ["plan"], "the target itself never runs"
+    assert ex._context.nodes["t"] == []

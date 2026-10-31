@@ -32,6 +32,7 @@ from primer.model.graph import (
     _CallableRouter,
     _ConditionalEdge,
     _FanInNode,
+    _FanOutNode,
     _JsonPathRouter,
     _StaticEdge,
 )
@@ -65,6 +66,13 @@ class _RoutingMixin:
             inst = self._fanout_instances.get(nid)
             if inst is not None:
                 edge_sources.add(inst.target_node_id)
+            node = self._nodes_by_id.get(nid)
+            if isinstance(node, _FanOutNode):
+                # D15: a map that found an empty list this run (``_stream_node`` set its target's expected count to 0) walks on from the target.
+                edge_sources.update(
+                    s.target_node_id for s in node.specs
+                    if s.kind == "map" and self._fanout_target_expected_count.get(s.target_node_id or "") == 0
+                )
         # Phase 1: resolve every outgoing edge to its concrete target. We must
         # know the FULL set of nodes scheduled this pass BEFORE gating any
         # FanIn, because a callable router resolved here may schedule a node
