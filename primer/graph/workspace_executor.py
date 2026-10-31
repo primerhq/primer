@@ -122,6 +122,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         owns_session_lifecycle: bool = False,
         toolset_resolver: Callable[[str], Awaitable[Any]] | None = None,
         approval_resolver: Any | None = None,
+provider_registry: Any | None = None,
         max_parallel_nodes: int = DEFAULT_MAX_PARALLEL_NODES,
         artifact_storage: "ArtifactStorage | None" = None,
         turn_no: int | None = None,
@@ -183,6 +184,9 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         # Approval resolver so a gated tool_call node fires the approval gate
         # (parks for human approval). None -> tool_call nodes run ungated.
         self._approval_resolver = approval_resolver
+        # The provider registry a tool_call node's manager and its inner dispatch read toolset access through (access-control P4 Task 2). None:
+        # no access check (tests only).
+        self._provider_registry = provider_registry
 
         # Per-superstep commit batching: node-turn message writes accumulate
         # here (rel_path -> cumulative file content) and are flushed in the
@@ -494,9 +498,11 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
                 session=self._workspace_session,
                 approval_resolver=self._approval_resolver,
                 # Authorise the RBAC tool floor as this graph run's invoker
-                # (system fallback when unknown); the worker-built path
-                # threads a real identity via ``self._identity``.
-                initiated_by=self._identity or PrincipalRef.system(),
+                # (an unattributed user when unknown: never ``system``, which
+                # clears every filter); the worker-built path threads a real
+                # identity via ``self._identity``.
+                initiated_by=self._identity or PrincipalRef.unattributed(),
+                provider_registry=self._provider_registry,
                 # A ToolCall node acts as its graph (a child graph's node as the child graph: its own executor builds this).
                 actor=ActorRef(kind="graph", id=self._graph.id),
             )
@@ -579,6 +585,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
                 tool_name=call.name,
                 arguments=call.arguments,
                 ctx=(await self._manager_for(node)).context_for(call.id, principal=self._principal),
+                storage_provider=getattr(self._provider_registry, "storage_provider", None),
             )
         except YieldToWorker:
             raise
@@ -772,6 +779,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             identity=self._identity,
             toolset_resolver=self._toolset_resolver,
             approval_resolver=self._approval_resolver,
+            provider_registry=self._provider_registry,
             # Inherit the parent's per-superstep fan-out cap (BE5).
             max_parallel_nodes=self._max_parallel_nodes,
             artifact_storage=self._artifact_storage,

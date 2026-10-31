@@ -64,6 +64,11 @@ class _NoRows:
     async def get(self, _id):
         return None  # no user toolset row: the access check has nothing to read
 
+    async def find(self, _predicate, _page):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(items=[])  # the batched toolset-use read finds no row: every built-in tool is usable
+
 
 class _Registry:
     _sp = None

@@ -32,6 +32,10 @@ class AccessLevel(StrEnum):
 LEVEL_RANK = {AccessLevel.READ: 1, AccessLevel.FULL: 2, AccessLevel.OWNER: 3}
 
 
+#: The derived member token of a row that has public tools (``catalogue_predicate``).
+TOOLS_PUBLIC_TOKEN = "tools:public"
+
+
 class Access(BaseModel):
     """Ownership and sharing for one entity row (spec 6.1).
 
@@ -67,6 +71,10 @@ class Access(BaseModel):
             # public_tools opens individual tools (Phase 4's tool_is_public) and
             # must NOT leak the row itself into everyone's list.
             tokens.add("public")
+        if self.public_tools:
+            # A separate token: ``visible_predicate`` never matches it (the row stays unlisted and unreadable),
+            # only the tool catalogues add it to their predicate (``catalogue_predicate``).
+            tokens.add(TOOLS_PUBLIC_TOKEN)
         self.members = sorted(tokens)
         return self
 

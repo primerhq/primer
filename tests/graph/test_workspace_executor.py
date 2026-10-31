@@ -1440,7 +1440,7 @@ class TestToolCallInternalToolset:
             state_repo=repo,
             graph_session_id="gsid-order",
             workspace_session=_WorkspaceSessionWithTools(),  # type: ignore[arg-type]
-            toolset_resolver=toolset_resolver,
+            toolset_resolver=toolset_resolver, identity=PrincipalRef.system(),
         )
 
         # 1) WORKSPACE tool_call FIRST -> builds + caches a workspace-only
@@ -1493,7 +1493,7 @@ class TestToolCallInternalToolset:
             state_repo=repo,
             graph_session_id="gsid-tc",
             workspace_session=_FakeWorkspaceSession(),  # type: ignore[arg-type]
-            toolset_resolver=toolset_resolver,
+            toolset_resolver=toolset_resolver, identity=PrincipalRef.system(),
         )
         node = _ToolCallNode(id="t", tool_id="fake__echo", arguments={})
         result = await executor._dispatch_toolcall(node, {"x": 1})
@@ -1577,7 +1577,7 @@ class TestToolCallApprovalWiring:
             agent_resolver=_ar, llm_resolver=_lr,  # type: ignore[arg-type]
             state_repo=await _make_state_repo(tmp_path), graph_session_id="gsid-alias",
             workspace_session=_FakeWorkspaceSession(),  # type: ignore[arg-type]
-            toolset_resolver=toolset_resolver, approval_resolver=ApprovalResolver(storage=store),
+            toolset_resolver=toolset_resolver, identity=PrincipalRef.system(), approval_resolver=ApprovalResolver(storage=store),
         )
 
         with pytest.raises(YieldToWorker) as parked:

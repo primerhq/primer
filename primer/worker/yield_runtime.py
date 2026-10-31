@@ -932,6 +932,8 @@ async def resume_call_tool_dispatch(
             toolset_id=toolset_id,
             tool_name=original_call.name,
             arguments=original_call.arguments,
+            # An approved re-run is a use like the first: a toolset or tool the person lost since is refused (access-control P4 Task 2).
+            storage_provider=getattr(registry, "storage_provider", None),
             ctx=(
                 None if context_for is None
                 else context_for(original_call.id, principal=principal) if principal is not None

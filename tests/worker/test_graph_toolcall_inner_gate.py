@@ -95,7 +95,9 @@ async def _executor(
         state_repo=await _make_state_repo(tmp_path), graph_session_id="gsid", tool_manager=manager,  # type: ignore[arg-type]
         router_registry=RouterRegistry(),
         workspace_session=None if manager is not None else _workspace_session(), toolset_resolver=toolset_resolver,  # type: ignore[arg-type]
-        identity=identity, principal=principal,
+        # An executor with no identity is an unattributed user now (access-control P4 Task 2), never the system principal it used to fall back to: these
+        # cases need the run to clear the admin floor, so they name the system principal themselves.
+        identity=identity if identity is not None else PrincipalRef.system(), principal=principal,
     )
 
 

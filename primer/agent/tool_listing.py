@@ -53,7 +53,10 @@ NEEDS_SIGN_IN = "needs sign-in"
 UNREACHABLE = "unreachable"
 TIMED_OUT = "timed out"
 FAILED = "failed"
-NOTICE_STATES = frozenset({NEEDS_SIGN_IN, UNREACHABLE, TIMED_OUT, FAILED})
+#: A toolset the person may use no tool of / only some tools of (access-control P4 Task 2): it is never listed, so no connection and no sign-in prompt.
+NO_ACCESS = "not available to you"
+SOME_TOOLS = "some tools not available to you"
+NOTICE_STATES = frozenset({NEEDS_SIGN_IN, UNREACHABLE, TIMED_OUT, FAILED, NO_ACCESS, SOME_TOOLS})
 
 #: How long a listing that has been cancelled gets to close its connection (a stdio server is given 2 s to exit before it
 #: is killed) before the turn stops waiting for it. It finishes on its own after that; nothing waits on it.
