@@ -295,9 +295,12 @@ class AuthMiddleware:
         from primer.model.api_token import ApiToken
 
         try:
-            updated = api_token.model_copy(update={"last_used_at": _utcnow()})
+            # last_used_at ONLY, and only while the token is not revoked: a whole-row write of the row read at authentication would put back a revoke
+            # that landed since (core review finding 4). A deleted token is not recreated (patch_if on a missing row writes nothing).
             storage = storage_provider.get_storage(ApiToken)
-            await storage.update(updated)
+            await storage.patch_if(
+                api_token.id, {"last_used_at": _utcnow().isoformat()}, where={"revoked_at": [None]},
+            )
         except Exception:  # noqa: BLE001
             logger.debug(
                 "touch_last_used failed for %s",

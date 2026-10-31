@@ -65,6 +65,40 @@ class TestRegistry:
 # ---------------------------------------------------------------------------
 
 
+class TestIsFreshInstall:
+    """Core review finding 5: "fresh" is decided from the data, never from the bootstrap marker alone (real SQLite)."""
+
+    async def test_an_empty_database_is_fresh(self, sp: StorageProvider) -> None:
+        from primer.storage.migrations import is_fresh_install
+
+        assert await is_fresh_install(sp) is True
+
+    async def test_a_migration_stamp_makes_it_an_existing_install(self, sp: StorageProvider) -> None:
+        from datetime import UTC, datetime
+
+        from primer.storage.migrations import is_fresh_install
+
+        await sp.set_schema_version(20, migrated_at=datetime.now(UTC))
+        assert await is_fresh_install(sp) is False
+
+    async def test_a_row_in_a_user_table_makes_it_an_existing_install(self, sp: StorageProvider) -> None:
+        from datetime import UTC, datetime
+
+        from primer.model.user import User
+        from primer.storage.migrations import is_fresh_install
+
+        await sp.get_storage(User).create(User(id="u1", username="ada", created_at=datetime.now(UTC), role="admin"))
+        assert await is_fresh_install(sp) is False
+
+    async def test_a_completed_bootstrap_makes_it_an_existing_install(self, sp: StorageProvider) -> None:
+        from datetime import UTC, datetime
+
+        from primer.storage.migrations import is_fresh_install
+
+        await sp.set_bootstrap_completed(datetime.now(UTC))
+        assert await is_fresh_install(sp) is False
+
+
 class TestRunMigrations:
     async def test_fresh_install_baselines_without_applying(
         self, sp: StorageProvider, monkeypatch: pytest.MonkeyPatch

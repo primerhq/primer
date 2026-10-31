@@ -98,7 +98,9 @@ async def revoke_token(storage, row: ApiToken) -> bool:
     to decide whether to emit an audit log line, so repeat revokes of an
     already-revoked token don't produce false audit signals.
     """
-    if row.revoked_at is None:
-        await storage.update(row.model_copy(update={"revoked_at": utcnow()}))
-        return True
-    return False
+    if row.revoked_at is not None:
+        return False
+    # ``revoked_at`` only, and only while it is still empty: a whole-row write of a stale snapshot would undo a rename that landed since, and the
+    # guard makes a second revoker report "no transition" (core review finding 4).
+    written = await storage.patch_if(row.id, {"revoked_at": utcnow().isoformat()}, where={"revoked_at": [None]})
+    return written is not None
