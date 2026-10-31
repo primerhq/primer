@@ -48,7 +48,7 @@ from __future__ import annotations
 import asyncio
 import importlib.resources
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from primer.bootstrap.defaults import (
     LEGACY_DEFAULT_WORKSPACE_ID,
@@ -56,10 +56,16 @@ from primer.bootstrap.defaults import (
     RESERVED_OPERATOR_AGENT,
 )
 from primer.model.except_ import NotFoundError, PrimerError, WorkspaceUnreachableError
+from primer.model.user import User
 from primer.model.workspace import Workspace
 from primer.storage import raw_generation
 
+if TYPE_CHECKING:
+    from primer.access.person import Person
+
 logger = logging.getLogger(__name__)
+
+_USER_DEFAULT_LOCKS: dict[str, asyncio.Lock] = {}
 
 #: The name prime's shipped instructions are written under: the name the loader reads first (``AGENTS_MD_NAMES[0]``).
 PRIME_AGENTS_MD: str = "agents.md"
@@ -80,8 +86,12 @@ MAIN_SESSION_NAME: str = "main"
 _MAIN_SESSION_PAGE: int = 200
 
 
-async def resolve_default_workspace_id(storage_provider: Any) -> str | None:
+async def resolve_default_workspace_id(storage_provider: Any, person: "Person | None" = None) -> str | None:
     """The id of the default workspace, or ``None`` when there is none yet.
+
+    With a ``person`` that names a user (``user_id`` set), the answer is that user's own default workspace
+    (``User.default_workspace_id``), or ``None`` while they have none. Without one, or for a person with no id (an
+    auth-disabled system principal, an id-less admin), it is the install-wide default below.
 
     The recorded ``SystemState.default_workspace_id`` wins. While it is unset (an install that predates the field,
     before the ensure pass or migration m010 records it) the default is the legacy ``primer`` workspace, but only
@@ -91,6 +101,9 @@ async def resolve_default_workspace_id(storage_provider: Any) -> str | None:
     The recorded id is returned even when its row is gone: naming the default is this function's job; re-creating a
     missing row is the ensure pass's.
     """
+    if person is not None and person.user_id is not None:
+        user = await storage_provider.get_storage(User).get(person.user_id)
+        return getattr(user, "default_workspace_id", None)
     state = await storage_provider.get_system_state()
     recorded = getattr(state, "default_workspace_id", None)
     if recorded:
@@ -98,6 +111,17 @@ async def resolve_default_workspace_id(storage_provider: Any) -> str | None:
     if await storage_provider.get_storage(Workspace).get(LEGACY_DEFAULT_WORKSPACE_ID) is not None:
         return LEGACY_DEFAULT_WORKSPACE_ID
     return None
+
+
+async def is_user_default_workspace(storage_provider: Any, workspace_id: str) -> bool:
+    """Whether ``workspace_id`` is some user's default workspace (access-control spec 6.7): such a workspace is never deleted."""
+    from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+
+    page = await storage_provider.get_storage(User).find(
+        Predicate(left=FieldRef(name="default_workspace_id"), op=Op.EQ, right=Value(value=workspace_id)),
+        OffsetPage(offset=0, length=1),
+    )
+    return bool(page.items)
 
 
 async def record_default_workspace_id(storage_provider: Any, workspace_id: str) -> None:
@@ -162,6 +186,109 @@ async def adopt_legacy_default_workspace(storage_provider: Any) -> str | None:
         extra={"workspace_id": LEGACY_DEFAULT_WORKSPACE_ID, "display_name": PRIME_WORKSPACE_NAME},
     )
     return LEGACY_DEFAULT_WORKSPACE_ID
+
+
+def user_default_workspace_id(user_id: str) -> str:
+    """The id of a user's private default workspace: ``ws-<user id>``."""
+    return f"ws-{user_id}"
+
+
+async def ensure_user_default_workspace(
+    storage_provider: Any,
+    workspace_registry: Any,
+    user: User,
+    *,
+    template_id: str | None = None,
+    session_deps: "SessionFactoryDeps | None" = None,
+) -> str:
+    """The user's private default workspace id, created (with the operator session on it) when they have none (access-control spec 6.7).
+
+    Only a full user (role ``user`` or ``admin``, not disabled) has one: any other raises ``ValueError``, so a restricted user
+    gets none until promoted, and the first full sign-in after the promotion creates it. The workspace is ``ws-<user id>`` from the
+    deployment's default template (``template_id``, else ``local-default``), owned by the user and private. The first admin with no default
+    adopts the install-wide default (``prime``, or the legacy ``primer``) when it still has no owner, so a fresh install's admin lands in
+    prime as an upgraded one does (migration 23).
+
+    Idempotent, and one workspace under concurrent sign-ins: the id is fixed, the work runs under a per-user lock, and a lost create race
+    (another process) reads as success. Returns the id; the operator session is ensured on every call.
+    """
+    from primer.access.person import Person
+    from primer.auth.user_writes import write_user_fields
+    from primer.model.principal import PrincipalRef
+
+    if user.role not in ("user", "admin") or user.disabled:
+        raise ValueError(f"user {user.id!r} is not a full user and has no default workspace")
+    users = storage_provider.get_storage(User)
+    async with _USER_DEFAULT_LOCKS.setdefault(user.id, asyncio.Lock()):
+        stored = await users.get(user.id)
+        workspace_id = (stored.default_workspace_id if stored is not None else None) or user.default_workspace_id
+        if workspace_id is None or await storage_provider.get_storage(Workspace).get(workspace_id) is None:
+            workspace_id = workspace_id or await _adopt_install_default(storage_provider, user)
+            workspace_id = workspace_id or user_default_workspace_id(user.id)
+            await _create_user_default(storage_provider, workspace_registry, user, workspace_id, template_id)
+        if stored is not None and stored.default_workspace_id != workspace_id:
+            await write_user_fields(users, user.id, {"default_workspace_id": workspace_id}, bump_epoch=False)
+        await ensure_main_operator_session(
+            storage_provider,
+            workspace_id=workspace_id,
+            initiated_by=PrincipalRef(
+                type="user", id=user.id, display=user.username, role=user.role, source="local", user_id=user.id,
+            ),
+            session_deps=session_deps,
+        )
+    return workspace_id
+
+
+async def _adopt_install_default(storage_provider: Any, user: User) -> str | None:
+    """The install-wide default workspace's id when this admin takes it over (it has no owner and no user's default), else ``None``."""
+    if user.role != "admin":
+        return None
+    install_id = await resolve_default_workspace_id(storage_provider)
+    if install_id is None or await is_user_default_workspace(storage_provider, install_id):
+        return None
+    from primer.model.access import Access
+
+    workspaces = storage_provider.get_storage(Workspace)
+    row = await workspaces.get(install_id)
+    if row is None or row.access.owners:
+        return None
+    # rev 0 -> 1 is the claim: a concurrent adopter's guard fails, and it falls through to its own workspace.
+    adopted = await workspaces.patch_if(
+        install_id,
+        patch={"access": Access(owners=[user.id], rev=1).model_dump(mode="json")},
+        where={("access", "rev"): [0], ("access", "public"): [False]},
+    )
+    return install_id if adopted is not None else None
+
+
+async def _create_user_default(
+    storage_provider: Any, workspace_registry: Any, user: User, workspace_id: str, template_id: str | None,
+) -> None:
+    """Materialise ``workspace_id`` and write its row owned by ``user``; a row that already exists (adopted, or a concurrent creator's) is left."""
+    from primer.api.registries.workspace_registry import new_workspace_row
+    from primer.bootstrap.defaults import RESERVED_LOCAL_WORKSPACE_TEMPLATE
+    from primer.model.access import Access
+    from primer.model.except_ import ConflictError
+    from primer.model.workspace import WorkspaceTemplate
+
+    workspaces = storage_provider.get_storage(Workspace)
+    if await workspaces.get(workspace_id) is not None:
+        return
+    wanted = template_id or RESERVED_LOCAL_WORKSPACE_TEMPLATE
+    template = await storage_provider.get_storage(WorkspaceTemplate).get(wanted)
+    if template is None:
+        raise NotFoundError(f"WorkspaceTemplate {wanted!r} does not exist")
+    live = await workspace_registry.materialise(template=template, workspace_id=workspace_id)
+    try:
+        await workspaces.create(
+            new_workspace_row(
+                workspace_id=workspace_id, template=template, overrides=None, live=live, access=Access.owned_by(user.id),
+            )
+        )
+    except ConflictError:
+        logger.debug("prime: user default workspace row created concurrently", extra={"workspace_id": workspace_id})
+        return
+    logger.info("prime: created a user's default workspace", extra={"workspace_id": workspace_id, "user_id": user.id})
 
 
 def main_session_id(workspace_id: str, n: int) -> str:

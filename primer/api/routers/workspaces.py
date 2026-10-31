@@ -824,7 +824,7 @@ async def _enrich_with_session_counts(
                 break
             offset += _SESSION_COUNT_PAGE_SIZE
 
-    default_id = await resolve_default_workspace_id(get_storage_provider(request))
+    default_id = await resolve_default_workspace_id(get_storage_provider(request), person_from_request(request))
     # ``dict(item)``, not ``item.model_dump()``: the field values as the storage read them, so nothing is validated again. A dump
     # re-validates the stored template snapshot with no stored-row context, and a snapshot written before a newer rule (a pvc_size
     # that is not a quantity, a CPU of zero) would answer 500 for the whole list (the review of #869, F1).
@@ -951,7 +951,7 @@ async def get_workspace(
     storage_provider=Depends(get_storage_provider),
 ) -> WorkspaceRowOut:
     row = await _require_workspace(request, workspace_id, AccessLevel.READ)
-    default_id = await resolve_default_workspace_id(storage_provider)
+    default_id = await resolve_default_workspace_id(storage_provider, person_from_request(request))
     # The stored field values, not a dump: a dump would re-validate the stored snapshot (see _enrich_with_session_counts).
     return WorkspaceRowOut(**dict(row), is_default=row.id == default_id)
 
