@@ -93,12 +93,24 @@ function PC_cardFor(klass, row, ctx) {
     },
   ];
 
+  // ACL-P4-T7: who can use a grantable provider (Public / N people /
+  // Admins only), from the row's access. The catalog's grantable classes are
+  // the six a user-owned entity references; the global-settings classes
+  // (web search / fetch, TTS / ASR, artifact store) carry no grant. Rides the
+  // badge slot (the reachability status chip stays llm's own).
+  const GRANTABLE = { llm: 1, embedding: 1, cross_encoder: 1, ssp: 1, workspace: 1, channel: 1 };
+  let badge = isBuiltin ? "built in" : null;
+  if (GRANTABLE[klass.key]) {
+    const useBadge = typeof window.SHR_useBadge === "function" ? window.SHR_useBadge(row.access) : null;
+    if (useBadge) badge = isBuiltin ? "built in · " + useBadge : useBadge;
+  }
+
   return {
     id: `${klass.key}:${row.id}`,
     icon: { path: klass.iconPath },
     title: row.id,
     subtitle: subParts.join(" · "),
-    badge: isBuiltin ? "built in" : null,
+    badge: badge,
     status: status,
     facts: rawFacts,
     menu: menu,
