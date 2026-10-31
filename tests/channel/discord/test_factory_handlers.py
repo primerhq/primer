@@ -13,11 +13,17 @@ discord = pytest.importorskip("discord")
 
 from pydantic import SecretStr
 
+from primer.model.principal import PrincipalRef
 from primer.channel.discord.factory import _install_handlers, _route_channel_event
 from primer.model.channel import (
     Channel, ChannelProviderType, DiscordChannelProviderConfig,  # noqa: F401
 )
 
+
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing what they test rather than ownership.
+_PLATFORM = PrincipalRef.system()
 
 class _FakeClient:
     """Bare object that accepts attribute assignment, like discord.Client."""
@@ -263,7 +269,7 @@ async def test_a_binding_on_mentions_bot_fires_only_for_the_mentioning_message(
         config=ChannelTriggerConfig(provider_id="cp-discord", channel_id=ch.id),
         created_at=now,
     ))
-    await sp.get_storage(Subscription).create(Subscription(
+    await sp.get_storage(Subscription).create(Subscription(owner=_PLATFORM, 
         id="sb-mentions", trigger_id="trg-d1",
         config=SessionAppendSubConfig(session_id="cn-1"),
         payload_template="hi",

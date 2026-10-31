@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import primer.session.steer_delivery as sd
+from primer.model.principal import PrincipalRef
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.trigger import DelayedTriggerConfig, SessionAppendSubConfig
 from primer.model.workspace_session import (
     AgentSessionBinding,
@@ -28,6 +30,11 @@ from tests.conftest import _FakeStorageProvider
 
 async def test_fire_steers_the_target_session(monkeypatch):
     sp = _FakeStorageProvider()
+    # The target session's workspace: the subscription's owner must hold full on it when it is saved (access-control P2 T6).
+    await sp.get_storage(Workspace).create(Workspace(
+        id="w1", template_id="t", provider_id="p", created_at=datetime.now(UTC),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://w1", token="t"),
+    ))
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id="s-target",
         workspace_id="w1",
@@ -59,6 +66,7 @@ async def test_fire_steers_the_target_session(monkeypatch):
         config=SessionAppendSubConfig(session_id="s-target"),
         payload_template="status check",
         parallelism="queue",
+        owner=PrincipalRef.system(),  # a fire of an ownerless subscription is refused (access-control P3 Task 4)
         deps=deps,
     )
 

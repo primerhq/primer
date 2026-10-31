@@ -13,6 +13,9 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from primer.api.registries import ProviderRegistry
+from primer.model.access import Access
+from primer.model.principal import PrincipalRef
+from primer.model.yield_ import ToolContext
 from primer.model.trigger import ChannelTriggerConfig, Subscription, Trigger
 from primer.toolset.system import build_system_toolset
 from primer.toolset.trigger import build_trigger_toolset_provider
@@ -81,11 +84,12 @@ async def test_a_call_without_an_identity_records_no_owner(fake_storage_provider
     created = await tools.call(tool_name="create", arguments=_create_args(), ctx=None)
     assert not created.is_error, created.output
     tid = json.loads(created.output)["id"]
+    stored = await fake_storage_provider.get_storage(Trigger).get(tid)
+    assert stored.owner is None
+    # Nobody known owns nothing (access-control P3 Task 4): the row is admin-only, so the same caller cannot subscribe to it.
+    assert stored.access == Access()
     sub = await tools.call(tool_name="create_subscription", arguments={"trigger_id": tid, "config": SUB_CONFIG}, ctx=None)
-    assert not sub.is_error, sub.output
-
-    assert (await fake_storage_provider.get_storage(Trigger).get(tid)).owner is None
-    assert (await fake_storage_provider.get_storage(Subscription).get(json.loads(sub.output)["id"])).owner is None
+    assert sub.is_error and json.loads(sub.output)["type"] == "trigger_not_found", sub.output
 
 
 async def test_the_mcp_door_records_the_mcp_principal_as_owner(fake_storage_provider) -> None:
@@ -97,22 +101,23 @@ async def test_the_mcp_door_records_the_mcp_principal_as_owner(fake_storage_prov
     from primer.model.principal import Principal
 
     tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
-    actor = Principal(type="user", id="u-mcp", display="mcp", role="user", source="local")
+    actor = Principal(type="user", id="u-mcp", display="mcp", role="user", source="local", user_id="u-mcp")
     token = current_actor.set(actor)
     try:
         created = await tools.call(tool_name="create", arguments=_create_args(), ctx=None)
         assert not created.is_error, created.output
         tid = json.loads(created.output)["id"]
+
+        assert _owner(await fake_storage_provider.get_storage(Trigger).get(tid)) == ("user", "u-mcp", "user")
+
+        # The delegated run acts with the MCP person's access (it owns the trigger) but records no run-as owner.
+        _RUN_ID.set("run-1")
+        try:
+            upd = await tools.call(tool_name="update", arguments={"id": tid, "name": "by a delegated run"}, ctx=None)
+        finally:
+            _RUN_ID.set(None)
     finally:
         current_actor.reset(token)
-
-    assert _owner(await fake_storage_provider.get_storage(Trigger).get(tid)) == ("user", "u-mcp", "user")
-
-    _RUN_ID.set("run-1")
-    try:
-        upd = await tools.call(tool_name="update", arguments={"id": tid, "name": "by a delegated run"}, ctx=None)
-    finally:
-        _RUN_ID.set(None)
     assert not upd.is_error, upd.output
     assert (await fake_storage_provider.get_storage(Trigger).get(tid)).owner is None, "a delegated run is not the MCP person"
 
@@ -157,18 +162,22 @@ async def test_create_channel_binding_records_the_owner(fake_storage_provider) -
 MASK = "•••redacted•••"
 
 
-async def _admin_webhook(tools) -> tuple[str, str]:
+async def _admin_webhook(tools, sp) -> tuple[str, str]:
     created = await tools.call(
         tool_name="create", arguments={"slug": "tool-hook", "name": "hook", "config": {"kind": "webhook"}}, ctx=caller("admin"),
     )
     assert not created.is_error, created.output
     body = json.loads(created.output)
+    # Shared publicly: these tests are about who sees the token and the owner's details, not who may read the row (P3 Task 4).
+    triggers = sp.get_storage(Trigger)
+    row = await triggers.get(body["id"])
+    await triggers.update(row.model_copy(update={"access": Access(owners=row.access.owners, grants=row.access.grants, public=True)}))
     return body["id"], body["config"]["token"]
 
 
 async def test_the_get_and_list_tools_mask_the_token_for_anyone_but_its_owner_or_an_admin(fake_storage_provider) -> None:
     tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
-    tid, token = await _admin_webhook(tools)
+    tid, token = await _admin_webhook(tools, fake_storage_provider)
 
     def _token_of(result) -> str:
         body = json.loads(result.output)
@@ -188,10 +197,15 @@ async def test_the_get_and_list_tools_mask_the_token_for_anyone_but_its_owner_or
 
 async def test_a_user_run_cannot_update_an_admin_webhook_trigger(fake_storage_provider) -> None:
     tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
-    tid, token = await _admin_webhook(tools)
+    tid, token = await _admin_webhook(tools, fake_storage_provider)
     before = await fake_storage_provider.get_storage(Trigger).get(tid)
 
-    result = await tools.call(tool_name="update", arguments={"id": tid, "name": "mine"}, ctx=caller("user"))
+    # Another user (it only reads the publicly shared trigger): an update needs full on it.
+    other_user = ToolContext(
+        tool_call_id="tc", session_id="s", workspace_id="w",
+        initiated_by=PrincipalRef(type="user", id="user-2", display="user-2", role="user", source="local"),
+    )
+    result = await tools.call(tool_name="update", arguments={"id": tid, "name": "mine"}, ctx=other_user)
 
     assert result.is_error and json.loads(result.output).get("type") == "forbidden", result.output
     assert token not in result.output
@@ -242,7 +256,10 @@ async def test_two_unattributed_callers_are_not_the_same_owner(fake_storage_prov
     )
     assert not created.is_error, created.output
     tid = json.loads(created.output)["id"]
-    stored = await fake_storage_provider.get_storage(Trigger).get(tid)
+    # Shared publicly: nobody known owns nothing, so the row is readable only once it is public (access-control P3 Task 4).
+    triggers = fake_storage_provider.get_storage(Trigger)
+    await triggers.update((await triggers.get(tid)).model_copy(update={"access": Access(public=True)}))
+    stored = await triggers.get(tid)
 
     assert not await same_owner(PrincipalRef.unattributed(), PrincipalRef.unattributed(), fake_storage_provider)
     assert not await may_manage_trigger(stored, PrincipalRef.unattributed(), fake_storage_provider)
@@ -254,7 +271,7 @@ async def test_two_unattributed_callers_are_not_the_same_owner(fake_storage_prov
 
 async def test_the_get_tool_shows_a_non_manager_only_the_owner_display_and_role(fake_storage_provider) -> None:
     tools = build_trigger_toolset_provider(storage_provider=fake_storage_provider)
-    tid, _ = await _admin_webhook(tools)
+    tid, _ = await _admin_webhook(tools, fake_storage_provider)
 
     got = json.loads((await tools.call(tool_name="get", arguments={"id": tid}, ctx=caller("user", kind="api_token"))).output)
     listed = json.loads((await tools.call(tool_name="list", arguments={}, ctx=None)).output)

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     AgentFreshSubConfig,
     ScheduledTriggerConfig,
@@ -25,6 +26,11 @@ from primer.trigger.dispatch import fire_trigger
 from primer.trigger.fire_id import make_fire_id
 from primer.trigger.subscribers import DispatchDeps, SubscriptionDispatchResult
 
+
+
+# A platform-owned subscription: it fires as an ownerless legacy row used to (a fire of one with no owner is refused since
+# access-control P3 Task 4), so these tests keep testing dispatch rather than ownership.
+_PLATFORM = PrincipalRef.system()
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -52,7 +58,7 @@ async def test_redelivered_fire_does_not_double_create_session(
     await triggers.create(t)
     # parallelism="queue" so the busy-check never masks the double-fire;
     # any dedup MUST come from fire_id, not the skip branch.
-    sub = Subscription(
+    sub = Subscription(owner=_PLATFORM, 
         id="sb-1", trigger_id="tr-1",
         config=AgentFreshSubConfig(
             workspace_id=seeded_workspace.id, agent_id=seeded_agent.id,
@@ -126,7 +132,7 @@ async def test_skip_parallelism_serialized_busy_check(
         AgentFreshSessionDispatcher,
     )
 
-    sub = Subscription(
+    sub = Subscription(owner=_PLATFORM, 
         id="sb-1", trigger_id="tr-1",
         config=AgentFreshSubConfig(
             workspace_id=seeded_workspace.id, agent_id=seeded_agent.id,
@@ -183,7 +189,7 @@ async def test_the_dedup_marker_is_recorded_after_the_fan_out_so_a_crash_inside_
         enabled=True, next_fire_at=_now(), created_at=_now(),
     ))
     for sub_id in ("sb-1", "sb-2"):
-        await subs.create(Subscription(
+        await subs.create(Subscription(owner=_PLATFORM, 
             id=sub_id, trigger_id="tr-1",
             config=AgentFreshSubConfig(workspace_id="ws-x", agent_id="ag-x"),
             parallelism="queue", enabled=True, created_at=_now(),

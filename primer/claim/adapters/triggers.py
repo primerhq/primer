@@ -91,10 +91,7 @@ class TriggerClaimAdapter(ClaimAdapter):
         if kind == "delayed":
             # One-off: disable + null the next-fire pointer so the engine
             # doesn't re-claim it. The trigger row stays for audit.
-            updated = trigger.model_copy(update={
-                "enabled": False,
-                "next_fire_at": None,
-            })
+            changes: dict = {"enabled": False, "next_fire_at": None}
         elif kind == "scheduled":
             # Advance the cron to the next future occurrence. We use
             # the source-of-truth helper so timezone + DST handling
@@ -110,11 +107,14 @@ class TriggerClaimAdapter(ClaimAdapter):
                 # so the engine stops trying. The next config update
                 # will reseed it.
                 nxt = None
-            updated = trigger.model_copy(update={"next_fire_at": nxt})
+            changes = {"next_fire_at": nxt}
         else:
             # Unknown / future kind: null the pointer defensively.
-            updated = trigger.model_copy(update={"next_fire_at": None})
-        await self._storage.update(updated, conn=conn)
+            changes = {"next_fire_at": None}
+        # Its own fields only (access-control P3 Decision 8): an edit or a sharing change saved meanwhile survives the release.
+        from primer.trigger.row_writes import write_trigger_fields
+
+        await write_trigger_fields(self._storage, trigger, changes, conn=conn)
 
 
 __all__ = ["TriggerClaimAdapter"]

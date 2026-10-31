@@ -54,10 +54,17 @@ async def _seed_user(sp, uid: str, role: str, *, disabled: bool = False) -> Prin
 async def _seed(sp, *, kind: str, target_id: str, trigger_owner, sub_owner) -> Subscription:
     """Write the trigger and subscription rows as stored documents; ``None`` owner = a row saved before owners were recorded."""
     now = datetime.now(timezone.utc).isoformat()
+    # Access as migration 24 leaves it: the trigger's owner owns it, and shared it full with the subscription's owner (subscribing needs
+    # full on the trigger, access-control P3 Task 4), so the rank question these tests ask is the one that decides.
+    access = (
+        Access(owners=[trigger_owner.id], grants={sub_owner.id: "full"} if sub_owner is not None else {})
+        if trigger_owner is not None else Access()
+    )
     trigger = Trigger.model_validate({
         "id": "tr-own-1", "slug": "own-trigger", "name": "own", "created_at": now,
         "config": {"kind": "delayed", "fire_at": now},
         "owner": trigger_owner.model_dump(mode="json") if trigger_owner else None,
+        "access": access.model_dump(mode="json"),
     })
     await sp.get_storage(Trigger).create(trigger)
     config = (
@@ -182,14 +189,18 @@ async def test_an_admin_owned_trigger_run_still_creates_a_stdio_toolset(fake_sto
 
 @both_kinds
 async def test_a_legacy_ownerless_trigger_run_is_refused(fake_storage_provider, deps, seeded_workspace, target):
+    """Since access-control P3 Task 4 an ownerless subscription (migration 24 gives every legacy one its trigger's owner) never fires:
+    no session is made, so its run cannot reach an admin-only tool."""
     kind, target_id = target
     sub = await _seed(fake_storage_provider, kind=kind, target_id=target_id, trigger_owner=None, sub_owner=None)
 
-    session = await _fire(fake_storage_provider, sub, deps, kind=kind)
-    result = await _run_creates_stdio_toolset(fake_storage_provider, session)
+    dispatcher = AgentFreshSessionDispatcher() if kind == "agent" else GraphFreshSessionDispatcher()
+    res = await dispatcher.dispatch(
+        sub, rendered_payload="go" if kind == "agent" else json.dumps({"x": 1}),
+        fire_context={"trigger_id": sub.trigger_id}, fire_id="fire-own-1", deps=deps,
+    )
 
-    assert session.initiated_by is not None and session.initiated_by.role == "user", session.initiated_by
-    assert _refused(result), result.output
+    assert not res.ok and res.error_code == "target_out_of_reach" and res.artefact_id is None, res
     assert await fake_storage_provider.get_storage(Toolset).get("ts-pwn") is None
 
 

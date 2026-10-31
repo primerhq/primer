@@ -330,7 +330,9 @@ def _mount_routers(
     from primer.api.routers.harness import harness_router
     app.include_router(harness_router, dependencies=user_dep)
     # Triggers REST router (Spec §10) — feature => require_user (no prefix).
-    from primer.api.routers.triggers import triggers_router
+    from primer.api.routers.triggers import trigger_access_router, triggers_router
+    # The access sub-resource is mounted before the trigger routes (route-order rule in _crud.py).
+    app.include_router(trigger_access_router, prefix=prefix, dependencies=user_dep)
     app.include_router(triggers_router, dependencies=user_dep)
     # Webhook inbound endpoint -- mounted WITHOUT auth so external callers
     # can POST to it. The token in the URL path is the capability credential.

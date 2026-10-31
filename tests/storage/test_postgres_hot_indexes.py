@@ -34,12 +34,12 @@ from primer.storage.sqlite import _SQLITE_HOT_FIELD_INDEXES
 def test_registry_declares_the_hot_tables():
     """token_hash / session status / channel routing / useridentity
     uniqueness / webhook recovery / tool-approval-record gate key /
-    artifact-location routing / document collection reads / the seven
+    artifact-location routing / document collection reads / the eight
     access-members GIN indexes are all registered."""
     assert set(_HOT_FIELD_INDEXES) == {
         "apitoken", "sessions", "channel", "useridentity",
         "webhookdelivery", "toolapprovalrecord", "artifactlocation", "document",
-        "agent", "graph", "toolset", "workspacetemplate", "workspace", "collection",
+        "agent", "graph", "toolset", "workspacetemplate", "workspace", "collection", "trigger",
     }
 
 

@@ -169,8 +169,6 @@ var TR_REMEDIES = {
   trigger_not_found: "Trigger {message} was not found: it may have been deleted. Go back to the triggers list.",
   subscription_not_found: "Subscription {message} was not found: it may have been deleted. Reload the trigger to see its current subscriptions.",
   trigger_kind_immutable: "{message}. To change the kind, create a new trigger.",
-  forbidden_role: "{message}. Ask the trigger's owner or an administrator.",
-  forbidden_rank: "{message}. Ask the trigger's owner or an administrator to fire it.",
   not_a_webhook_trigger: "{message}. Only a webhook trigger has a token.",
   parked_session_only_from_yield: "{message}. A session creates one itself when it waits on the trigger; it is not made from here.",
   cron_invalid: "{message}. Check each field's range (minute 0-59, hour 0-23, day of month 1-31, month 1-12, weekday 0-6).",

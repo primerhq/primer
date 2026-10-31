@@ -599,6 +599,9 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "collection": [
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
+    "trigger": [
+        ("access_members", False, "USING GIN ((data->'access'->'members'))"),
+    ],
     "document": [
         # Every collection read filters documents by collection_id, and the
         # flat /v1/documents lists push `collection_id IN <readable>` into the

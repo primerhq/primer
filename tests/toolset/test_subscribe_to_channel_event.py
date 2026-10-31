@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.model.storage import OffsetPage
+from primer.model.access import Access
 from primer.model.trigger import (
     ChannelTriggerConfig,
     ScheduledTriggerConfig,
@@ -60,6 +61,8 @@ async def _seed_channel_trigger(
         config=ChannelTriggerConfig(provider_id="prov-1"),
         enabled=enabled,
         created_at=datetime.now(timezone.utc),
+        # Readable by the parking caller (parking needs read on the trigger, access-control P3 Task 4).
+        access=Access(public=True),
     )
     await fake_storage_provider.get_storage(Trigger).create(trigger)
     return trigger
@@ -75,6 +78,8 @@ async def _seed_scheduled_trigger(
         config=ScheduledTriggerConfig(cron="0 2 * * *"),
         enabled=True,
         created_at=datetime.now(timezone.utc),
+        # Readable by the parking caller (parking needs read on the trigger, access-control P3 Task 4).
+        access=Access(public=True),
     )
     await fake_storage_provider.get_storage(Trigger).create(trigger)
     return trigger

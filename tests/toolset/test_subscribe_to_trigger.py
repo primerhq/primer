@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from primer.model.access import Access
 from primer.model.storage import OffsetPage
 from primer.model.trigger import Subscription, Trigger
 from primer.model.yield_ import ToolContext, YieldToWorker
@@ -145,6 +146,9 @@ class TestSubscribeYields:
             arguments=_delayed_create_args("sub-yld", "Yield Host"),
         )
         trigger_id = json.loads(created.output)["id"]
+        # Readable by the parking caller (parking needs read on the trigger, access-control P3 Task 4).
+        triggers = fake_storage_provider.get_storage(Trigger)
+        await triggers.update((await triggers.get(trigger_id)).model_copy(update={"access": Access(public=True)}))
 
         with pytest.raises(YieldToWorker) as info:
             await we_toolset.call(
