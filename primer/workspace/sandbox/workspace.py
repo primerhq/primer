@@ -371,6 +371,48 @@ class SandboxWorkspace(Workspace):
                 return r
         return None
 
+    async def reserved_tree_of_resolved(self, path: str) -> str | None:
+        """The reserved tree ``path`` reaches once the RUNTIME resolves it (symlinks followed), else ``None``.
+
+        :meth:`reserved_tree_of` reads the string; the runtime follows links, so after ``ln -s .state x`` the string ``x/...`` is the state tree.
+        The runtime's ``stat`` answers the resolved path; for a path that does not exist yet (a write creating a file) the nearest existing
+        ancestor is resolved and the rest appended (review of workspaces, W55d). A path that resolves outside the workspace is not a reserved tree
+        (the runtime refuses it itself).
+        """
+        probe = self._resolve_path(path)
+        rest: list[str] = []
+        while True:
+            info = await self._sandbox.stat(probe)
+            if info is not None:
+                break
+            if probe == self._workspace_root or "/" not in probe:
+                return None
+            probe, _, leaf = probe.rpartition("/")
+            rest.insert(0, leaf)
+        resolved = info.path
+        root = self._workspace_root.rstrip("/")
+        if resolved == root or resolved in ("", "."):
+            rel = ""
+        elif resolved.startswith(root + "/"):
+            rel = resolved[len(root) + 1:]
+        elif not resolved.startswith("/"):
+            rel = resolved.strip("/")
+        else:
+            return None
+        rel = "/".join(part for part in [rel, *rest] if part)
+        for r in (self._template.state_path, self._template.tmp_path):
+            tree = r.replace("\\", "/").strip("/")
+            if rel == tree or rel.startswith(f"{tree}/"):
+                return r
+        return None
+
+    async def _refuse_reserved_resolved(self, path: str) -> None:
+        """:meth:`_refuse_reserved` for the path as the runtime resolves it (a symlink into a reserved tree is refused too)."""
+        self._refuse_reserved(path)
+        r = await self.reserved_tree_of_resolved(path)
+        if r is not None:
+            raise BadRequestError(f"refusing to mutate path inside reserved tree {r!r}: {path!r}")
+
     def _refuse_reserved(self, path: str) -> None:
         # Classify the RESOLVED path: comparing the raw string let
         # './.state/x', 'a/../.state/x' and '.state\\x' through, and the
@@ -467,7 +509,7 @@ class SandboxWorkspace(Workspace):
         return await self._sandbox.read_file(target)
 
     async def write_file(self, path: str, content: bytes) -> None:
-        self._refuse_reserved(path)
+        await self._refuse_reserved_resolved(path)
         target = self._resolve_path(path)
         info = await self._sandbox.stat(target)
         if info is not None and stat.S_ISFIFO(info.mode):
@@ -481,7 +523,7 @@ class SandboxWorkspace(Workspace):
         await self._sandbox.write_file(target, content)
 
     async def make_dir(self, path: str) -> None:
-        self._refuse_reserved(path)
+        await self._refuse_reserved_resolved(path)
         target = self._resolve_path(path)
         if await self._sandbox.stat(target) is not None:
             raise BadRequestError(f"{path!r} already exists")
@@ -493,7 +535,7 @@ class SandboxWorkspace(Workspace):
             ) from exc
 
     async def delete_file(self, path: str, *, recursive: bool = False) -> None:
-        self._refuse_reserved(path)
+        await self._refuse_reserved_resolved(path)
         target = self._resolve_path(path)
         if target == self._workspace_root:
             # '.', '/', 'x/..' all normalise here; a recursive delete would take .state and .tmp

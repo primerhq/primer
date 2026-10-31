@@ -129,7 +129,7 @@ from primer.model.workspace import (
 )
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.state_helpers import has_unsafe_commit_chars
-from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
+from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_tree_for_resolved, reserved_trees
 from primer.workspace.row_writes import WORKSPACE_PHASES, write_workspace_fields
 from primer.workspace.diagnostic import (
     DIAGNOSTIC_COMMANDS,
@@ -2824,13 +2824,14 @@ def _is_admin(user: Any) -> bool:
     return user is not None and getattr(user, "role", None) == "admin"
 
 
-def _refuse_reserved_read(ws: Any, path: str, user: Any) -> None:
+async def _refuse_reserved_read(ws: Any, path: str, user: Any) -> None:
     """403 ``forbidden_role`` when a non-admin names a path in the runtime's
     ``.state`` / ``.tmp`` trees (A-22). Admins may read them, for debugging.
     The path is classified the way the backend resolves it."""
     if _is_admin(user):
         return
-    tree = reserved_tree_for(ws, path)
+    # Resolved as the backend does, links included: ``ln -s .state x`` must not make ``x/...`` readable (W55d).
+    tree = await reserved_tree_for_resolved(ws, path)
     if tree is not None:
         raise HTTPException(
             status_code=403,
@@ -2868,7 +2869,7 @@ async def file_tree(
 ) -> dict:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     # No origin decoration: with collection mounting retired, every entry
     # is workspace-native and nothing is collection-backed.
     # hidden=true never reveals the reserved trees to a non-admin.
@@ -2921,7 +2922,7 @@ async def list_files(
 ) -> dict:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     # No origin decoration: with collection mounting retired, every
     # entry is workspace-native and nothing is collection-backed.
     #
@@ -2982,7 +2983,7 @@ async def file_info(
 ) -> FileEntry:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     return await ws.file_info(path)
 
 
@@ -3017,7 +3018,7 @@ async def read_file(
 ) -> FileReadResponse:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     # The etag describes the file as it was BEFORE the bytes were read (review of workspaces, W55b): a write landing in between then makes the
     # client's etag stale (its own write is refused) instead of newer than the content it holds.
     entry = await ws.file_info(path)
@@ -3060,7 +3061,7 @@ async def download_file(
 ) -> StreamingResponse:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     raw = await ws.read_file(path)
 
     async def _gen():
@@ -3210,7 +3211,7 @@ async def write_file(
     # Writes into the reserved trees are refused for everyone (the backend's
     # _refuse_reserved). Refuse BEFORE the precondition stat below, or
     # 404-vs-412 tells a caller whether a .state / .tmp file exists (A-22).
-    reserved = reserved_tree_for(ws, path)
+    reserved = await reserved_tree_for_resolved(ws, path)
     if reserved is not None:
         raise BadRequestError(
             f"refusing to mutate path inside reserved tree {reserved!r}: "

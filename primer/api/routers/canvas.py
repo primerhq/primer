@@ -65,7 +65,7 @@ from primer.canvas.settings import read_canvas_settings, write_canvas_settings
 from primer.model.canvas import CANVAS_EVENT_KINDS, CANVAS_SETTINGS_ID, CanvasSettings, MediaPolicy, SessionCanvas
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
-from primer.workspace.reserved import reserved_tree_for
+from primer.workspace.reserved import reserved_tree_for_resolved
 
 logger = logging.getLogger(__name__)
 _FRAME_MISSING_LOGGED: list[bool] = []
@@ -163,7 +163,7 @@ async def canvas_file(
         raise _file_refused()
     try:
         workspace = await registry.get_workspace(session.workspace_id)
-        if reserved_tree_for(workspace, path) is not None:
+        if await reserved_tree_for_resolved(workspace, path) is not None:
             raise _file_refused()
         entry = await workspace.file_info(path)
         if entry.kind != "file":
