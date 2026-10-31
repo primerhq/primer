@@ -52,7 +52,8 @@ async def sp(tmp_path):
 
 
 def _session(sid: str, **fields) -> WorkspaceSession:
-    base = {"status": SessionStatus.RUNNING, "turn_no": 3, "created_at": NOW}
+    # created_at is taken now, not at import: a long parallel run can reach this test past the 10 min start grace
+    base = {"status": SessionStatus.RUNNING, "turn_no": 3, "created_at": datetime.now(UTC)}
     return WorkspaceSession(
         id=sid, workspace_id="w1", binding=AgentSessionBinding(agent_id="ag1"), metadata={"subscription_id": "sb-1"}, **{**base, **fields},
     )
