@@ -171,6 +171,7 @@ from primer.model_profile.checks import check_profile_on_create, check_profile_o
 from primer.knowledge.checks import (
     RESERVED_COLLECTION_ID_PREFIX,
     check_collection_id,
+    check_collection_search_unchanged,
     check_collection_system_flag,
     check_graph_id,
 )
@@ -516,6 +517,7 @@ def build_system_toolset(
 
     async def _collection_pre_update(entity: Collection, existing: Collection) -> None:
         check_collection_system_flag(entity, existing)
+        check_collection_search_unchanged(entity, existing)
 
     async def _graph_pre_create(entity: Graph) -> None:
         check_graph_id(entity)
