@@ -8,7 +8,8 @@ Until now ``SystemState.default_workspace_id`` named one default workspace for t
 * an admin who already has a default;
 * a default workspace some other user owns or already records as their default.
 
-The user row is rewritten through a migration-local view with ``extra="allow"``, read in full first, as m021 and m022 do.
+The user row is rewritten through a migration-local view with ``extra="allow"``. The users are paged by id (keyset, PERF-T16)
+and only the admins and whether someone already records the default are kept; the one write comes after the last page.
 """
 
 from __future__ import annotations
@@ -21,13 +22,10 @@ from pydantic import ConfigDict
 
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.int.storage_provider import StorageProvider
-from primer.storage.migrations._rows import iter_rows, read_all
+from primer.storage.migrations._rows import iter_rows
 from primer.model.common import Identifiable
-from primer.model.storage import OffsetPage
 
 logger = logging.getLogger(__name__)
-
-_PAGE = 200
 
 
 class User(Identifiable):  # noqa: N801 - the class name selects the table
@@ -45,10 +43,6 @@ class Workspace(Identifiable):  # noqa: N801
     access: dict[str, Any] | None = None
 
 
-async def _read_all(store) -> list[Any]:
-    return await read_all(store)
-
-
 class M023AdminDefaultWorkspace:
     """Record the install-wide default workspace as the first admin's default."""
 
@@ -57,16 +51,20 @@ class M023AdminDefaultWorkspace:
 
     async def apply(self, sp: StorageProvider) -> None:
         users = sp.get_storage(User)
-        rows = await _read_all(users)
-        admins = [u for u in rows if u.role == "admin" and not u.disabled and u.created_at is not None]
-        install_id = await resolve_default_workspace_id(sp)
+        install_id = await resolve_default_workspace_id(sp)  # a read only, so it may come before the users
+        admins: list[User] = []
+        taken = False
+        async for u in iter_rows(users):
+            if u.role == "admin" and not u.disabled and u.created_at is not None:
+                admins.append(u)
+            taken = taken or (install_id is not None and u.default_workspace_id == install_id)
         if not admins or install_id is None:
             return
         first = min(admins, key=lambda u: u.created_at)
         workspace = await sp.get_storage(Workspace).get(install_id)
         if workspace is None or first.default_workspace_id is not None:
             return
-        if any(u.default_workspace_id == install_id for u in rows):
+        if taken:
             return
         owners = (workspace.access or {}).get("owners") or []
         if owners and first.id not in owners:
