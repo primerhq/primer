@@ -45,6 +45,17 @@ class LogView:
 
 
 _verify_configured = False
+_append_only_configured = False
+
+
+def set_append_only_default(on: bool) -> None:
+    """``WorkerConfig.session_log_append_only``: write a session's log by appending the new lines (Task 14 stage 2); default OFF."""
+    global _append_only_configured
+    _append_only_configured = bool(on)
+
+
+def append_only_default() -> bool:
+    return _append_only_configured
 
 
 def set_verify_default(on: bool) -> None:
@@ -131,4 +142,4 @@ class MessageLogCache:
             raise MessageLogMismatch("the cached highest event-log seq differs from a full parse of messages.jsonl")
 
 
-__all__ = ["LogView", "MessageLogCache", "MessageLogMismatch", "set_verify_default", "verify_default"]
+__all__ = ["LogView", "MessageLogCache", "MessageLogMismatch", "append_only_default", "set_append_only_default", "set_verify_default", "verify_default"]

@@ -71,10 +71,11 @@ async def _lines(env: Env) -> list[dict]:
     return [json.loads(line) for line in env.messages_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-async def test_steers_event_rows_and_persists_racing_all_land_and_none_is_truncated(tmp_path):
+@pytest.mark.parametrize("append_only", [False, True])
+async def test_steers_event_rows_and_persists_racing_all_land_and_none_is_truncated(append_only, tmp_path):
     backend, workspace, session = await open_session(tmp_path)
     try:
-        env = Env(workspace, session, ScriptedLLM(), append_only=False)
+        env = Env(workspace, session, ScriptedLLM(), append_only=append_only)
         spy = LockOrderSpy(session._state)
         writer = env.writer(start_seq=100)
         env.ex.bind_event_log(writer)

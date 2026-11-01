@@ -26,11 +26,11 @@ def _path(name: str) -> Path:
     return FIXTURES / f"{name}.json"
 
 
-@pytest.mark.parametrize("append_only", [False])
+@pytest.mark.parametrize("append_only", [False, True])
 @pytest.mark.parametrize("name", sorted(SCENARIOS))
 async def test_the_transcript_matches_its_golden(name, append_only, tmp_path):
     got = await capture(name, tmp_path, append_only=append_only)
-    if os.environ.get("PRIMER_CAPTURE_LOG_GOLDEN") and not append_only:
+    if os.environ.get("PRIMER_CAPTURE_LOG_GOLDEN") and not append_only:   # the flag-off run is the golden; flag-on is compared with it
         FIXTURES.mkdir(parents=True, exist_ok=True)
         _path(name).write_text(json.dumps(got, indent=1, sort_keys=True) + "\n")
         return

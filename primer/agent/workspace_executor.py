@@ -190,7 +190,6 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                     "session %s: the turn's records were not made durable before its messages", self._session.session_id,
                 )
         async with self._session.messages_lock:
-            new_text = await self._appended_jsonl(turn_messages)
             newest_assistant = next((m for m in reversed(turn_messages) if m.role == "assistant"), None)
             excerpt = _summary_excerpt_from_messages(turn_messages)
             sid_short = self._session.session_id[-12:]
@@ -198,11 +197,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 subject = f"turn[{sid_short}]: {excerpt}"
             else:
                 subject = f"turn[{sid_short}]: assistant turn"
-            await self._session.commit_state(
-                summary=subject,
-                op="message",
-                files={"messages.jsonl": new_text},
-            )
+            await self._commit_messages(summary=subject, op="message", new_messages=turn_messages)
             if newest_assistant is not None:
                 self._persisted_assistant = newest_assistant
 
@@ -297,7 +292,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # messages lock itself, so it runs before ours.
         reserved = await self._event_log.reserve_seq() if self._event_log is not None else None
         async with self._session.messages_lock:
-            existing = await self._read_messages_jsonl_text()
+            existing = "" if self._append_only() else await self._read_messages_jsonl_text()
             view = await self._log_view()
             boundary_seq = view.max_seq
             carried = self._lines_after_snapshot(view.history, snapshot)
@@ -340,14 +335,14 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 },
                 created_at=now,
             )
-            if existing and not existing.endswith("\n"):
-                existing += "\n"
-            new_jsonl = existing + marker.model_dump_json() + "\n"
-            await self._session.commit_state(
-                summary=f"{self._session.session_id}: compaction marker",
-                op="message",
-                files={"messages.jsonl": new_jsonl},
-            )
+            summary = f"{self._session.session_id}: compaction marker"
+            if self._append_only():
+                await self._session.commit_state(summary=summary, op="message", appends={"messages.jsonl": (marker.model_dump_json() + "\n").encode()})
+            else:
+                if existing and not existing.endswith("\n"):
+                    existing += "\n"
+                new_jsonl = existing + marker.model_dump_json() + "\n"
+                await self._session.commit_state(summary=summary, op="message", files={"messages.jsonl": new_jsonl})
         return carried
 
     def _lines_after_snapshot(
@@ -434,14 +429,10 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             if not pending:
                 return []
             try:
-                new_jsonl = await self._appended_jsonl(pending)
-                await self._session.commit_state(
-                    summary=(
-                        f"{self._session.session_id}: apply "
-                        f"{len(pending)} deferred steer(s)"
-                    ),
+                await self._commit_messages(
+                    summary=f"{self._session.session_id}: apply {len(pending)} deferred steer(s)",
                     op="user_instruction",
-                    files={"messages.jsonl": new_jsonl},
+                    new_messages=pending,
                 )
             except Exception:
                 logger.exception(
@@ -584,6 +575,20 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # continue the conversation.
 
     # ---- Internals -------------------------------------------------------
+
+    def _append_only(self) -> bool:
+        """Whether this session's log is written by appending (``WorkerConfig.session_log_append_only``, stage 2). A duck-typed session says no."""
+        append_only = getattr(self._session, "append_only", None)
+        return bool(append_only()) if callable(append_only) else False
+
+    async def _commit_messages(self, *, summary: str, op: str, new_messages: list[Message]) -> None:
+        """Add ``new_messages`` to ``messages.jsonl`` and commit: the new lines alone when the log is append-only, else the whole file
+        rewritten from what was read. The caller holds the session's messages lock across this, either way."""
+        if self._append_only():
+            payload = ("\n".join(m.model_dump_json() for m in new_messages) + "\n").encode()
+            await self._session.commit_state(summary=summary, op=op, appends={"messages.jsonl": payload})  # type: ignore[arg-type]
+        else:
+            await self._session.commit_state(summary=summary, op=op, files={"messages.jsonl": await self._appended_jsonl(new_messages)})  # type: ignore[arg-type]
 
     async def _log_view(self):
         """The session's cached view of ``messages.jsonl`` (see :meth:`AgentSession.log_view`); a duck-typed session with no such method
