@@ -5,8 +5,9 @@ that existed before access control stays usable by everyone: a row whose ``acces
 public) becomes public (``members`` carries the ``public`` token, frozen with this step). A row that already carries grants or ``public``
 is left alone, so re-running converges and an admin's later choice is never undone.
 
-Seven tables, through migration-local views with ``extra="allow"``, read in full before any write, as ``m021`` does: model profiles, LLM,
-embedding, cross-encoder, semantic-search (vector store), workspace and channel providers.
+Seven tables, through migration-local views with ``extra="allow"``: model profiles, LLM, embedding, cross-encoder, semantic-search (vector
+store), workspace and channel providers. Rows are paged by id (keyset, PERF-T16) and each is written as it is paged: an update never changes
+a row's id, so the next page seeks past it.
 """
 
 from __future__ import annotations
@@ -17,13 +18,10 @@ from typing import Any
 from pydantic import ConfigDict
 
 from primer.int.storage_provider import StorageProvider
-from primer.storage.migrations._rows import iter_rows, read_all
+from primer.storage.migrations._rows import iter_rows
 from primer.model.common import Identifiable
-from primer.model.storage import OffsetPage
 
 logger = logging.getLogger(__name__)
-
-_PAGE = 200
 
 
 class _View(Identifiable):
@@ -70,10 +68,6 @@ def _unset(access: dict[str, Any] | None) -> bool:
     return not access or not (access.get("owners") or access.get("grants") or access.get("public"))
 
 
-async def _read_all(store) -> list[Any]:
-    return await read_all(store)
-
-
 class M028InfrastructurePublic:
     """Make every existing profile and provider with no sharing public."""
 
@@ -84,7 +78,7 @@ class M028InfrastructurePublic:
         total = 0
         for view in _VIEWS:
             store = sp.get_storage(view)
-            for row in await _read_all(store):
+            async for row in iter_rows(store):
                 if not _unset(row.access):
                     continue
                 await store.update(row.model_copy(update={"access": dict(_PUBLIC)}))

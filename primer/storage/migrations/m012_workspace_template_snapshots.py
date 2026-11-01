@@ -22,12 +22,10 @@ from pydantic import ConfigDict, Field
 
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable, dump_for_storage
-from primer.model.storage import OffsetPage
 from primer.storage import raw_generation
+from primer.storage.migrations._rows import iter_rows
 
 logger = logging.getLogger(__name__)
-
-_PAGE = 200
 
 
 class WorkspaceTemplate(Identifiable):  # noqa: N801 - class name selects the table
@@ -54,30 +52,25 @@ class M012WorkspaceTemplateSnapshots:
     async def apply(self, sp: StorageProvider) -> None:
         workspaces = sp.get_storage(Workspace)
         templates = sp.get_storage(WorkspaceTemplate)
-        offset = 0
-        while True:
-            page = await workspaces.list(OffsetPage(offset=offset, length=_PAGE, want_total=False))
-            for row in page.items:
-                if row.template_snapshot is not None:
-                    continue
-                template = await templates.get(row.template_id)
-                if template is None:
-                    logger.warning(
-                        "workspace template snapshot migration skipped a missing template",
-                        extra={"workspace_id": row.id, "template_id": row.template_id},
-                    )
-                    continue
-                await workspaces.patch_if(
-                    row.id,
-                    {"template_snapshot": dump_for_storage(template)},
-                    where={
-                        "template_id": [raw_generation(row, "template_id")],
-                        "template_snapshot": [None],
-                    },
+        # Keyset by id (PERF-T16): the patch never changes a row's id, so the next page seeks past the row just written.
+        async for row in iter_rows(workspaces):
+            if row.template_snapshot is not None:
+                continue
+            template = await templates.get(row.template_id)
+            if template is None:
+                logger.warning(
+                    "workspace template snapshot migration skipped a missing template",
+                    extra={"workspace_id": row.id, "template_id": row.template_id},
                 )
-            if len(page.items) < _PAGE:
-                break
-            offset += _PAGE
+                continue
+            await workspaces.patch_if(
+                row.id,
+                {"template_snapshot": dump_for_storage(template)},
+                where={
+                    "template_id": [raw_generation(row, "template_id")],
+                    "template_snapshot": [None],
+                },
+            )
 
 
 __all__ = ["M012WorkspaceTemplateSnapshots"]

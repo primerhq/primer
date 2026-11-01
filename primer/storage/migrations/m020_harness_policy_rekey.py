@@ -19,8 +19,9 @@ beside it). A policy key that already holds a row is left alone, and so is its o
 and a second row would be a duplicate the gate reads as unconditional and decided by an admin only. A row left behind
 under the old key is inert: nothing dispatches there anymore.
 
-Create-and-update-only: a concurrent writer wins (``ConflictError`` is skipped). Every store is read fully before any
-write: an update can move a row within the list order, and paging while writing could skip one. The views redefine
+Create-and-update-only: a concurrent writer wins (``ConflictError`` is skipped). Rows are paged by id (keyset, PERF-T16);
+an update never changes a row's id, so the agents are rewritten as they are paged. The harness policies are read in full
+first (a few rows, selected by toolset): the twin rule needs all of them. The views redefine
 the live models, so a stored row the live model may reject is still read (see m002/m003/m019).
 """
 
@@ -35,6 +36,7 @@ from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable
 from primer.model.except_ import ConflictError
 from primer.model.storage import OffsetPage
+from primer.storage.migrations._rows import iter_rows
 from primer.storage.q import Q
 
 logger = logging.getLogger(__name__)
@@ -105,17 +107,7 @@ class M020HarnessPolicyRekey:
         Read fully before writing: the harness rows number in the single digits, and the move must see a consistent
         snapshot to decide which old keys already have a twin at the live key.
         """
-        rows: list[ToolApprovalPolicy] = []
-        offset = 0
-        while True:
-            page = await store.find(
-                Q(ToolApprovalPolicy).where("toolset_id", _TOOLSET_ID).build(),
-                OffsetPage(offset=offset, length=_PAGE, want_total=False),
-            )
-            rows.extend(page.items)
-            if len(page.items) < _PAGE:
-                break
-            offset += _PAGE
+        rows = [row async for row in iter_rows(store, predicate=Q(ToolApprovalPolicy).where("toolset_id", _TOOLSET_ID).build())]
         moved: list[str] = []
         for row in rows:
             if not row.tool_name.startswith(_PREFIX) or not row.tool_name.removeprefix(_PREFIX):
@@ -143,20 +135,9 @@ class M020HarnessPolicyRekey:
         return True
 
     async def _rekey_agent_tools(self, store) -> list[str]:
-        """Every agent row whose tool list holds a doubled scoped id, rewritten with one prefix stripped.
-
-        Read fully before writing, the way m019 reads the channels: an update can move a row within the list order.
-        """
-        rows: list[Agent] = []
-        offset = 0
-        while True:
-            page = await store.list(OffsetPage(offset=offset, length=_PAGE, want_total=False))
-            rows.extend(page.items)
-            if len(page.items) < _PAGE:
-                break
-            offset += _PAGE
+        """Every agent row whose tool list holds a doubled scoped id, rewritten with one prefix stripped, as it is paged."""
         moved: list[str] = []
-        for row in rows:
+        async for row in iter_rows(store):
             rewritten = _rekeyed(row.tools)
             if rewritten == row.tools:
                 continue

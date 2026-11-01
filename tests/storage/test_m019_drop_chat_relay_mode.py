@@ -103,3 +103,48 @@ def test_it_is_registered_as_version_19() -> None:
     assert isinstance(MIGRATIONS[18], M019DropChatRelayMode)
     assert MIGRATIONS[18].version == 19
     assert ChannelView.__name__ == Channel.__name__, "the view's class name selects the live channel table"
+
+
+# -- golden characterization (PERF-T16) ---------------------------------------------------------------------------------------------------
+
+from primer.model.storage import OffsetPage  # noqa: E402
+from tests.storage._migration_golden import assert_golden, bulk, insert_raw  # noqa: E402
+
+
+async def _old_apply(sp) -> None:
+    """Migration 19 as it was before PERF-T16, frozen: OFFSET pages into a full list, then ``update`` each row carrying the key."""
+    channels = sp.get_storage(ChannelView)
+    offset = 0
+    rows = []
+    while True:
+        page = await channels.list(OffsetPage(offset=offset, length=200, want_total=False))
+        rows.extend(page.items)
+        if len(page.items) < 200:
+            break
+        offset += 200
+    for row in rows:
+        chats = (row.config or {}).get("chats")
+        if not isinstance(chats, dict) or "relay_mode" not in chats:
+            continue
+        cleaned = {key: value for key, value in chats.items() if key != "relay_mode"}
+        await channels.update(row.model_copy(update={"config": {**row.config, "chats": cleaned}}))
+
+
+async def _golden_seed(sp) -> None:
+    await insert_raw(sp, ChannelView, {
+        "c-all": {"label": "ops", "config": {"chats": {"enabled": True, "relay_mode": "all"}, "x": 1.5}},
+        "c-null": {"config": {"chats": {"relay_mode": None}}},
+        "c-odd": {"config": {"chats": {"relay_mode": {"nested": [1]}, "enabled": False}}},
+        "c-none": {"config": {"chats": {"enabled": True}}},
+        "c-chats-null": {"config": {"chats": None}},
+        "c-chats-list": {"config": {"chats": ["relay_mode"]}},
+        "c-chats-str": {"config": {"chats": "relay_mode"}},
+        "c-config-null": {"config": None},
+        "c-config-absent": {"label": "x"},
+        "c-config-empty": {"config": {}},
+        **bulk("cb", 450, lambda i: {"config": {"chats": {"relay_mode": "final"} if i % 2 else {"enabled": True}}}),
+    })
+
+
+async def test_golden_rows_match_the_old_implementation_and_a_second_run_changes_nothing(tmp_path: Path) -> None:
+    await assert_golden(tmp_path, _golden_seed, (ChannelView,), _old_apply, M019DropChatRelayMode().apply)

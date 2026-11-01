@@ -25,11 +25,10 @@ from pydantic import ConfigDict, Field
 
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable
-from primer.model.storage import OffsetPage
+from primer.storage.migrations._rows import iter_rows
 
 logger = logging.getLogger(__name__)
 
-_PAGE = 200
 _LEGACY_EF_SEARCH = 40
 _DEFAULT_EF_SEARCH = 100
 
@@ -51,24 +50,19 @@ class M013HnswEfSearchDefault:
 
     async def apply(self, sp: StorageProvider) -> None:
         providers = sp.get_storage(SemanticSearchProvider)
-        offset = 0
-        while True:
-            page = await providers.list(OffsetPage(offset=offset, length=_PAGE, want_total=False))
-            for row in page.items:
-                if not isinstance(row.config, dict):
-                    continue
-                ef = row.config.get("hnsw_ef_search")
-                if isinstance(ef, bool) or ef != _LEGACY_EF_SEARCH:
-                    continue
-                assert row.id is not None
-                await providers.patch_if(
-                    row.id,
-                    set_paths={("config", "hnsw_ef_search"): _DEFAULT_EF_SEARCH},
-                    where={("config", "hnsw_ef_search"): [_LEGACY_EF_SEARCH]},
-                )
-            if len(page.items) < _PAGE:
-                break
-            offset += _PAGE
+        # Keyset by id (PERF-T16): the patch never changes a row's id, so the next page seeks past the row just written.
+        async for row in iter_rows(providers):
+            if not isinstance(row.config, dict):
+                continue
+            ef = row.config.get("hnsw_ef_search")
+            if isinstance(ef, bool) or ef != _LEGACY_EF_SEARCH:
+                continue
+            assert row.id is not None
+            await providers.patch_if(
+                row.id,
+                set_paths={("config", "hnsw_ef_search"): _DEFAULT_EF_SEARCH},
+                where={("config", "hnsw_ef_search"): [_LEGACY_EF_SEARCH]},
+            )
 
 
 __all__ = ["M013HnswEfSearchDefault"]
