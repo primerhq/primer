@@ -44,7 +44,7 @@ from pydantic_core import to_jsonable_python
 from primer.model.storage import MAX_OFFSET
 from primer.access.person import person_from_request
 from primer.access.policy import level_of, require
-from primer.access.workspaces import readable_workspace_ids, require_session, require_workspace, scope_to_readable_workspaces
+from primer.access.workspaces import require_session, require_workspace, scope_to_readable_workspaces
 from primer.api.routers.access import make_access_router
 from primer.channel.checks import channel_for_binding
 from primer.api.deps import (
@@ -111,11 +111,8 @@ from primer.model.storage import (
     OffsetPage,
     OffsetPageResponse,
     OrderBy,
-    Op,
     PageRequest,
-    Predicate,
 )
-from primer.storage.q import Q
 from primer.model.workspace import (
     WORKSPACE_ID_PATTERN,
     WorkspaceEventsConfig,
@@ -913,19 +910,14 @@ async def list_workspaces(
     storage=Depends(get_workspace_storage),
 ) -> _PageResp:
     refuse_secret_fields(WorkspaceRow, order_by=order_by)
-    # The readable set (P2 Task 2): admins get no filter (``None``);
-    # everyone else gets ``id IN <their readable ids>``.
-    ids = await readable_workspace_ids(
-        get_storage_provider(request), person_from_request(request)
-    )
-    if ids is not None and not ids:
+    # The readable set (P2 Task 2): admins get no filter (``None``); everyone else only the workspaces they read, in the query.
+    nothing, scoped = await scope_to_readable_workspaces(get_storage_provider(request), person_from_request(request), field="id")
+    if nothing:
         resp: _PageResp = _empty_page(page)
-    elif ids is None:
+    elif scoped is None:
         resp = await storage.list(page, order_by=order_by)
     else:
-        resp = await storage.find(
-            Q(WorkspaceRow).where_in("id", ids).build(), page, order_by=order_by
-        )
+        resp = await storage.find(scoped, page, order_by=order_by)
     return await _enrich_with_session_counts(resp, request)
 
 
@@ -940,17 +932,11 @@ async def find_workspaces(
     storage=Depends(get_workspace_storage),
 ) -> _PageResp:
     refuse_secret_fields(WorkspaceRow, predicate=body.predicate, order_by=body.order_by)
-    ids = await readable_workspace_ids(
-        get_storage_provider(request), person_from_request(request)
+    nothing, predicate = await scope_to_readable_workspaces(
+        get_storage_provider(request), person_from_request(request), body.predicate, field="id",
     )
-    if ids is not None and not ids:
+    if nothing:
         return _empty_page(body.page)
-    predicate = body.predicate
-    if ids is not None:
-        scoped = Q(WorkspaceRow).where_in("id", ids).build()
-        predicate = scoped if predicate is None else Predicate(
-            left=scoped, op=Op.AND, right=predicate
-        )
     return await storage.find(predicate, body.page, order_by=body.order_by)
 
 

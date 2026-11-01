@@ -86,8 +86,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from primer.access.person import person_for_tool
-from primer.access.policy import level_of, readable_ids
-from primer.storage.q import Q
+from primer.access.policy import level_of, readable_parent_filter
 from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks, check_graph_node_profiles
 from primer.agent.approval import ApprovalResolver
 from primer.agent.approval_checks import check_policy
@@ -749,8 +748,7 @@ def build_system_toolset(
         return denied
 
     async def _graph_thread_list_filter(ctx: ToolContext | None) -> Any:
-        ids = await readable_ids(_graph_rows, person_for_tool(ctx))
-        return None if ids is None else Q(GraphThread).where_in("graph_id", ids).build()
+        return await readable_parent_filter(_graph_rows, Graph, person_for_tool(ctx), "graph_id")
 
     inherited_by_label: dict[str, Any] = {
         "document": (_document_row_guard, _document_list_filter),

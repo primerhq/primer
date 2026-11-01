@@ -11,6 +11,7 @@ Module-private; consumed only by :mod:`primer.storage.sqlite`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 from primer.model.except_ import BadRequestError
 from primer.model.storage import (
     FieldRef,
+    IdsOf,
     Op,
     OrderBy,
     Predicate,
@@ -100,9 +102,12 @@ _TYPED_COMPARISON_OPS = {Op.GT, Op.LT, Op.GE, Op.LE}
 class _SqlitePredicateTranslator:
     """Walks a :class:`Predicate` and emits SQLite SQL + bind params."""
 
-    def __init__(self, model_class: type[BaseModel]) -> None:
+    def __init__(self, model_class: type[BaseModel], tables: Callable[[type[BaseModel]], str] | None = None) -> None:
         self._model = model_class
         self._params: list[Any] = []
+        # ``tables(model)``: the quoted table of a model an IN subquery reads; ``joined``: those models, for the caller to create first.
+        self._tables = tables
+        self.joined: list[type[BaseModel]] = []
 
     def translate(self, predicate: Predicate) -> tuple[str, list[Any]]:
         sql = self._render_predicate(predicate)
@@ -174,6 +179,8 @@ class _SqlitePredicateTranslator:
     def _render_in(self, p: Predicate) -> str:
         if not isinstance(p.left, FieldRef):
             raise BadRequestError("IN requires a FieldRef on the left")
+        if isinstance(p.right, IdsOf):
+            return self._render_in_subquery(p.left.name, p.right)
         if not isinstance(p.right, Value) or not isinstance(p.right.value, list):
             raise BadRequestError("IN requires a Value with a list on the right")
         values = p.right.value
@@ -187,6 +194,20 @@ class _SqlitePredicateTranslator:
             left_sql = f"CAST({_render_field_expr(self._model, p.left.name)} AS {cast})"
         placeholders = ", ".join(self.append_param(v) for v in values)
         return f"({left_sql} IN ({placeholders}))"
+
+    def _render_in_subquery(self, field: str, ids: IdsOf) -> str:
+        """``field IN (SELECT id FROM <ids.model's table> WHERE <ids.where>)``: a semi-join, so no id is bound (no bound-variable limit).
+
+        The subquery's own ``id`` and ``data`` resolve to its table (the innermost scope); its ``?`` binds land in text order in this
+        translator's list.
+        """
+        if self._tables is None:
+            raise BadRequestError("an IN subquery needs the storage's table names")
+        inner = _SqlitePredicateTranslator(ids.model, self._tables)
+        inner._params = self._params
+        where_sql = inner._render_predicate(ids.where) if ids.where is not None else "1=1"
+        self.joined += [ids.model, *inner.joined]
+        return f"({_render_field_expr(self._model, field)} IN (SELECT id FROM {self._tables(ids.model)} WHERE {where_sql}))"
 
     def _render_contains(self, p: Predicate) -> str:
         """Render JSON-array membership via ``json_each``.

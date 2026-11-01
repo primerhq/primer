@@ -61,3 +61,64 @@ async def test_a_row_without_an_access_block_grants_a_non_admin_nothing():
     await store.update(legacy.model_copy(update={"access": Access()}))  # no owners, nothing shared
     got = await readable_workspace_ids(sp, Person(ME, "user"))
     assert "ws-v0000" not in got and len(got) == 2
+
+
+# ---- stage B: the list doors filter by a semi-join, the readable ids never leave the database ---------------------------------------------
+
+
+async def _lists_world(tmp_path):
+    """450 parents of each kind ME can see (and 20 ME cannot); 30 of them hold a session and a document, so a page of 50 is short (a full page
+    would add the COUNT its ``total`` needs, which is the page contract, not the access filter)."""
+    from datetime import timedelta
+
+    from primer.model.collection import Collection, Document
+    from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+    from tests.access.test_readable_ids_matrix import NOW, _access_for, _ws
+
+    sp = await _provider("sqlite", tmp_path)
+    await _seed(sp, 450)
+    async with sp.transaction() as conn:
+        for i in range(450):
+            await sp.get_storage(Collection).create(Collection(id=f"kb-{i:04d}", description="d", access=_access_for(i)), conn=conn)
+        for i in range(30):
+            wid = f"ws-v{i * 15:04d}"
+            await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+                id=f"s-{i:03d}", workspace_id=wid, binding=AgentSessionBinding(agent_id="a"), status=SessionStatus.WAITING,
+                created_at=NOW + timedelta(seconds=i),
+            ), conn=conn)
+            await sp.get_storage(Document).create(
+                Document(id=f"d-{i:03d}", collection_id=f"kb-{i * 15:04d}", slug=f"s{i}", path=f"p{i}", title="t"), conn=conn,
+            )
+    return sp
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "rows_cap"), [("/v1/sessions?limit=50", 50), ("/v1/sessions/recent?limit=50", 200), ("/v1/documents?limit=50", 50)])
+async def test_a_list_door_for_450_visible_parents_costs_at_most_three_queries_no_count_and_no_id_list(tmp_path, path, rows_cap):
+    """Today (stage A) a list reads the 450 ids and access blocks first, then binds the 450 ids back into the list query. Stage B: one LIMIT 1
+    probe (the session doors' "reads nothing" answer) and the list query, which carries the parents' visibility as a subquery."""
+    import httpx
+    from httpx import ASGITransport
+
+    from tests.access.test_readable_lists_matrix import _app
+    from tests.api.test_workspace_access_routes import _as
+
+    inner = await _lists_world(tmp_path)
+    sp = CountingStorageProvider(inner)
+    statements: list[str] = []
+    async with httpx.AsyncClient(transport=ASGITransport(app=_app(sp)), base_url="http://test") as client:
+        await client.get(path, headers=_as(ME))  # first use creates the tables; the counted request below is a warm one
+        await inner.connection.set_trace_callback(statements.append)
+        with sp.counted() as c:
+            resp = await client.get(path, headers=_as(ME))
+        await inner.connection.set_trace_callback(None)
+    assert resp.status_code == 200 and len(resp.json()["items"]) == 30
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    assert c.total <= 3 and len(selects) <= 3, (c.log, selects)
+    assert c.calls("find_ids") == 0, "no readable-id walk"
+    assert c.rows <= rows_cap, "rows decoded: the page (and one probe row), never the parents"
+    assert not [s for s in selects if "count(" in s.lower()], "no COUNT"
+    # The readable parents are a subquery, never a bound list; only the recent door binds ids, the <= 30 workspaces of its page (for their names).
+    assert max(s.count("'ws-v") + s.count("'kb-") for s in selects) <= 30, "the 450 readable ids are not bound into a query"
+    assert any(" IN (SELECT id FROM " in s for s in selects)
+    await inner.aclose()
