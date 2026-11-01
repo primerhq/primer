@@ -733,7 +733,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
       const body = {
         slug,
         name: name || slug,
-        description: description || null,
+        description: description,
         config: buildConfig(),
         enabled: true,
       };
@@ -1075,7 +1075,7 @@ function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
       const updated = await apiFetch(
         "PUT",
         "/triggers/" + encodeURIComponent(trigger.id),
-        { name: name || trigger.slug, description: description || null, enabled, config },
+        { name: name || trigger.slug, description: description, enabled, config },
       );
       if (!mountedRef.current) return;
       onSaved(updated);
@@ -1897,10 +1897,20 @@ function TR_TriggerDetail({ id }) {
                           }))) return;
                           setHmacError(null);
                           try {
+                            // The service replaces the config whole: carry the current mode and
+                            // wait, or clearing the secret would also switch interactive off.
                             await apiFetch(
                               "PUT",
                               "/triggers/" + encodeURIComponent(id),
-                              { config: { kind: "webhook", hmac_secret: null } },
+                              {
+                                config: {
+                                  kind: "webhook",
+                                  token: t.config.token || "",
+                                  hmac_secret: null,
+                                  interactive: !!t.config.interactive,
+                                  wait_timeout_seconds: t.config.wait_timeout_seconds || 60,
+                                },
+                              },
                             );
                             refetchAll();
                           } catch (err) {
@@ -1969,6 +1979,7 @@ function TR_TriggerDetail({ id }) {
       {hmacDialogOpen && kind === "webhook" && (
         <TR_HmacSecretDialog
           triggerId={id}
+          config={t ? t.config : null}
           onClose={() => setHmacDialogOpen(false)}
           onSaved={() => { setHmacDialogOpen(false); setHmacError(null); refetchAll(); }}
         />
@@ -2641,7 +2652,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
 // trigger update route.
 // ============================================================================
 
-function TR_HmacSecretDialog({ triggerId, onClose, onSaved }) {
+function TR_HmacSecretDialog({ triggerId, config, onClose, onSaved }) {
   const { apiFetch } = window.primerApi;
   const [secret, setSecret] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -2658,10 +2669,22 @@ function TR_HmacSecretDialog({ triggerId, onClose, onSaved }) {
     setBusy(true);
     setError(null);
     try {
+      // The service replaces the config whole and the model defaults the fields a PUT omits
+      // (interactive off, 60 s wait): send the webhook config as it stands, or setting the
+      // secret would silently turn an interactive webhook non-interactive.
+      const cfg = config || {};
       await apiFetch(
         "PUT",
         "/triggers/" + encodeURIComponent(triggerId),
-        { config: { kind: "webhook", hmac_secret: secret } },
+        {
+          config: {
+            kind: "webhook",
+            token: cfg.token || "",
+            hmac_secret: secret,
+            interactive: !!cfg.interactive,
+            wait_timeout_seconds: cfg.wait_timeout_seconds || 60,
+          },
+        },
       );
       if (!mountedRef.current) return;
       onSaved();

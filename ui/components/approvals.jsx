@@ -177,8 +177,12 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
     return [...seen.values()];
   }, [profiles.data, providerId]);
 
-  // Reset model when provider changes.
+  // Reset model when provider changes. Skip until both lists have loaded: on an edit mounted
+  // before the fetches answer, selectedProvider is undefined while the providers load, so the
+  // effect would wipe the stored model and then land on the first offered model once the
+  // profiles arrive. With the guard, a still-offered stored model survives the slow fetches.
   React.useEffect(() => {
+    if (!providers.data || !profiles.data) return;
     if (selectedProvider && modelOptions.length > 0 && !modelOptions.some((m) => m.name === model)) {
       setModel(modelOptions[0].name);
     }
@@ -186,7 +190,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
       setModel("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providerId, modelOptions]);
+  }, [providerId, modelOptions, providers.data, profiles.data]);
 
   const create = useMutation(
     (body) => isEdit
