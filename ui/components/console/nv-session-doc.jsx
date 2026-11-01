@@ -2215,6 +2215,9 @@ function NV_Composer(props) {
   // the MediaRecorder to stop and hoping rec.onstop runs before the
   // component is gone.
   var streamRef = React.useRef(null);
+  // Whether the button is still held (or latched) when getUserMedia answers (UI-M6): a release before the microphone
+  // opened, or a second press while the first was still opening, must not leave a recorder running.
+  var wantMicRef = React.useRef(false);
   // US-008 R3 item 5: double-tap latches recording on (hands-free);
   // click again stops it. Hold-to-talk is unchanged - a normal
   // press-and-release still stops on release, same as before.
@@ -2365,6 +2368,10 @@ function NV_Composer(props) {
   function micStart() {
     if (recording || !props.micEnabled) return;
     navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      if (!wantMicRef.current || (recRef.current && recRef.current.state !== "inactive")) {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        return;
+      }
       var rec = new MediaRecorder(stream);
       streamRef.current = stream;
       var chunks = [];
@@ -2399,7 +2406,9 @@ function NV_Composer(props) {
     }, function () { con.toast("Microphone unavailable"); });
   }
   function micStop() {
-    if (recRef.current && recording) recRef.current.stop();
+    wantMicRef.current = false;
+    // The recorder's own state, not `recording`: this render's value is stale for a stop scheduled by an earlier one.
+    if (recRef.current && recRef.current.state !== "inactive") recRef.current.stop();
   }
   function micClearPendingStop() {
     if (micPendingStopRef.current) {
@@ -2415,6 +2424,7 @@ function NV_Composer(props) {
   // rather than stopping and restarting mid-gesture.
   function micDown() {
     if (latched) return;
+    wantMicRef.current = true;
     micClearPendingStop();
     micStart();
   }
@@ -2715,10 +2725,19 @@ function NV_LoadOlderSeam(props) {
   );
 }
 
+// One assistant row's markdown, parsed again only when its text changed: the document re-renders on every transcript commit
+// and on the live tool tick, and re-parsed every row of a long transcript each time (UI-M1).
+var NV_Markdown = React.memo(function NV_Markdown(p) {
+  return window.renderMarkdown(p.text);
+});
+
 function NV_SessionDoc(props) {
   var con = NV_useConsole();
   var sid = props.sid;
-  var tap = window.useWorkspaceTap(con.wid);
+  // UI-M1: the tap is read through the listener below, which renders this document only when THIS session's live status
+  // changed; the render hook re-rendered it (and re-parsed every row) on every frame of every session in the workspace.
+  var setLiveTick = React.useState(0)[1];
+  var liveRef = React.useRef(null);
   // Phase 2: the per-session store is the single source for transcript,
   // status, and connection state. The tap hub routes live frames here;
   // the REST history seed below fills the durable records. We bind to
@@ -2754,7 +2773,8 @@ function NV_SessionDoc(props) {
   // running before the (stale, still "ended") detail row does, so the
   // poll gate must consult it - gating on the stale row alone froze
   // the doc the moment the live signal cleared the optimistic flag.
-  var live = SH_statusFromTap(tap.events, sid, Date.now());
+  var live = SH_statusFromTap(window.WTAP_events(con.wid), sid, Date.now());
+  liveRef.current = live;
   var pollStopped = (terminalRef.current && !optimistic && !live) || goneRef.current;
   // Calm (C-038): slow polling, only once the session has been at rest for NV_CALM_AFTER_MS (see below the resources); until then and
   // whenever anything stirs, the fast cadence.
@@ -2828,6 +2848,16 @@ function NV_SessionDoc(props) {
       // clears - refetch here too, or the resolved card wouldn't
       // appear until the operator reloads the page.
       resolvedRecords.refetch();
+    }
+  });
+  // UI-M1: render again only when a frame changed this session's live status (verb, object or start).
+  window.useWorkspaceTapListener(con.wid, function () {
+    var next = SH_statusFromTap(window.WTAP_events(con.wid), sid, Date.now());
+    var prev = liveRef.current;
+    if (!next !== !prev || (next && (next.verb !== prev.verb || next.object !== prev.object
+        || next.startedMs !== prev.startedMs))) {
+      liveRef.current = next;
+      setLiveTick(function (n) { return n + 1; });
     }
   });
   // Seed the store from the REST history resource so the first paint is
@@ -3353,9 +3383,11 @@ function NV_SessionDoc(props) {
     distanceFromBottom: distanceRef.current,
     newTurns: newTurns,
   });
+  // transcriptSnap too (UI-M5): a streaming answer is one row whose text grows, so the row count alone never moved. The
+  // store commits it at most every 80 ms, so following costs one scrollTop write per commit, and only while following.
   React.useEffect(function () {
     if (follow) jumpLatest();
-  }, [rows.length, follow, !!endedLine, !!restedLine]);
+  }, [rows.length, transcriptSnap, follow, !!endedLine, !!restedLine]);
 
   function refetchAll() {
     detail.refetch();
@@ -3633,8 +3665,7 @@ function NV_SessionDoc(props) {
               ? "true" : "false"}>
             {row.kind === "assistant_message"
               && typeof window.renderMarkdown === "function"
-              ? window.renderMarkdown(
-                String(row.label || "").replace(/^\s+/, ""))
+              ? <NV_Markdown text={String(row.label || "").replace(/^\s+/, "")} />
               : row.label}
           </div>
           {NV_subagentRows(row, resultFor, shownActive)}

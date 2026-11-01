@@ -80,6 +80,7 @@ function WTAP_open(hub) {
   hub.connState = "connecting";
   WTAP_notifyStoresConnState(hub);
   es.onopen = function () {
+    hub.retryMs = 0;
     hub.connState = "live";
     WTAP_notifyRender(hub);
     WTAP_notifyStoresConnState(hub);
@@ -109,6 +110,17 @@ function WTAP_open(hub) {
     hub.connState = "error";
     WTAP_notifyRender(hub);
     WTAP_notifyStoresConnState(hub);
+    // A non-200 answer (a proxy's 502 while the API restarts, the server's 503) closes it for good (readyState 2):
+    // reopen it while anyone still listens, backing off 1 s to 60 s (UI-L1).
+    if (es.readyState === 2 && hub.es === es && hub.refs > 0) {
+      WTAP_close(hub);
+      var delay = hub.retryMs || 1000;
+      hub.retryMs = Math.min(delay * 2, 60000);
+      hub.retryTimer = setTimeout(function () {
+        hub.retryTimer = null;
+        if (hub.refs > 0) WTAP_open(hub);
+      }, delay);
+    }
   };
 }
 
@@ -155,15 +167,18 @@ function WTAP_notifyStoresConnState(hub) {
   }
 }
 
-// Trigger a REST catch-up for every store for this wid (spec section 4.1).
+// Trigger a REST catch-up for every store for this wid (spec section 4.1). Only a store an open session
+// document reads (a transcript subscriber) needs its gap in full; a store a pulse dot reads gets its status
+// from one tail read (UI-H1: every listed session used to be read from seq 0 and kept).
 function WTAP_catchUpStores(hub) {
-  if (!window.SS_STORES || !window.SS_catchUp) return;
+  if (!window.SS_STORES || !window.SS_catchUp || !window.SS_catchUpStatus) return;
   var prefix = WTAP_obsPrefix(hub.wid);
   for (var key in window.SS_STORES) {
     if (Object.prototype.hasOwnProperty.call(window.SS_STORES, key)
         && key.indexOf(prefix) === 0) {
       var store = window.SS_STORES[key];
-      try { window.SS_catchUp(store); } catch (_e) { /* no-op */ }
+      var shown = store._sub && store._sub.transcript && store._sub.transcript.length > 0;
+      try { (shown ? window.SS_catchUp : window.SS_catchUpStatus)(store); } catch (_e) { /* no-op */ }
     }
   }
 }
@@ -209,6 +224,7 @@ function WTAP_release(wid) {
   if (!hub) return;
   hub.refs -= 1;
   if (hub.refs <= 0) {
+    if (hub.retryTimer) clearTimeout(hub.retryTimer);
     WTAP_close(hub);
     delete WTAP_HUBS[wid];
   }
@@ -283,6 +299,12 @@ function useWorkspaceTapListener(wid, onEvent) {
 // ---------------------------------------------------------------------------
 window.useWorkspaceTap = useWorkspaceTap;
 window.useWorkspaceTapListener = useWorkspaceTapListener;
+// The hub's rolling buffer ([] when no hub is open), for a consumer that listens per frame and renders only on its own
+// change, reading the buffer at render (nv-session-doc.jsx, UI-M1: the render hook re-rendered it on every frame).
+window.WTAP_events = function (wid) {
+  var hub = wid ? WTAP_HUBS[wid] : null;
+  return hub ? hub.events : [];
+};
 // Test/introspection surface — how many live hubs (== EventSources) exist.
 window.__wtapHubCount = function () { return Object.keys(WTAP_HUBS).length; };
 // Current hub connState for a workspace, or null when no hub exists. Lets a
