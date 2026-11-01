@@ -174,5 +174,5 @@ class CollectionSearcher:
             SearchResult(record=hit.record, score=float(score))
             for hit, score in zip(pool, scores, strict=True)
         ]
-        rescored.sort(key=lambda h: h.score or float("-inf"), reverse=True)
+        rescored.sort(key=lambda h: h.score if h.score is not None else float("-inf"), reverse=True)
         return rescored

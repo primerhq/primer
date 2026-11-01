@@ -305,3 +305,43 @@ class TestCrossEncoderRerank:
 # ===========================================================================
 
 
+
+
+# ===========================================================================
+# Rerank edge cases (KN-19a, KN-19g)
+# ===========================================================================
+
+
+def _ranked(n: int) -> list[SearchResult]:
+    return [_hit(f"c{i}", text=f"t{i}", vector=[1.0], score=1.0 - i / 100) for i in range(n)]
+
+
+def _cer_searcher(store, ce, *, top_n: int) -> CollectionSearcher:
+    return CollectionSearcher(
+        collection=_collection(cross_encoder=CollectionCrossEncoder(provider_id="p", model="m", top_n=top_n)),
+        embedder=_FakeEmbedder([1.0]),
+        vector_store=store,
+        cross_encoder=ce,
+    )
+
+
+class TestRerankEdges:
+    @pytest.mark.asyncio
+    async def test_k_at_most_top_n_returns_the_reranked_top_k(self) -> None:
+        """Characterization: k <= top_n is unchanged by D6."""
+        out = await _cer_searcher(_FakeVectorStore(_ranked(6)), _FakeCrossEncoder([1, 6, 2, 5, 3, 4]), top_n=6).search("q", k=3)
+        assert [h.record.chunk_id for h in out] == ["c1", "c3", "c5"]
+        assert [h.score for h in out] == [6.0, 5.0, 4.0]
+
+    @pytest.mark.asyncio
+    async def test_k_over_top_n_keeps_the_reranked_pool_order_first(self) -> None:
+        """Characterization: the reranked top_n lead the answer whatever k is."""
+        out = await _cer_searcher(_FakeVectorStore(_ranked(8)), _FakeCrossEncoder([1, 3, 2]), top_n=3).search("q", k=6)
+        assert [h.record.chunk_id for h in out[:3]] == ["c1", "c2", "c0"]
+        assert [h.score for h in out[:3]] == [3.0, 2.0, 1.0]
+
+    @pytest.mark.asyncio
+    async def test_a_zero_score_ranks_above_a_negative_one(self) -> None:
+        cands = [_hit("zero", text="z", vector=[1.0]), _hit("neg", text="n", vector=[1.0])]
+        out = await _cer_searcher(_FakeVectorStore(cands), _FakeCrossEncoder([0.0, -3.0]), top_n=10).search("q", k=2)
+        assert [h.record.chunk_id for h in out] == ["zero", "neg"]
