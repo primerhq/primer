@@ -82,6 +82,12 @@ _OUTAGE_ERRORS: tuple[type[BaseException], ...] = (
     asyncpg.CrashShutdownError,        # 57P02: a crash shutdown terminated the connection
 )
 
+# The fixed words of a resume that could not run (an unclassified error out of a
+# resume handler; GR-2). Transcript and row carry these words only, like
+# RUN_REFUSED_MESSAGE; the exception detail goes to the log.
+RESUME_FAILED_CODE = "resume_failed"
+RESUME_FAILED_MESSAGE = "this session's pending resume could not be run"
+
 
 class WorkerPool:
     """Per-process worker pool: claims sessions and runs one turn each."""
@@ -1077,7 +1083,21 @@ class WorkerPool:
                     # human action wins over an earlier Stop.
                     await clear_interrupt_for_resume(session_storage, sid)
                     handler = self._select_resume_handler(session_row)
-                    outcome = await handler(engine_lease, session_row)
+                    try:
+                        outcome = await handler(engine_lease, session_row)
+                    except (WorkspaceRefusedError, ProfileUnusable, executor_builders.RunRefused):
+                        # the typed arms below decide these
+                        raise
+                    except Exception:
+                        # GR-2: a resume handler that raised an unclassified error ends the session
+                        # failed and keeps the park (the person's answer) instead of the default
+                        # release, which clears the park and leaves the row RUNNING with no lease,
+                        # forever. Mirrors the turn's build-failure exit (dispatch.py) and the
+                        # RunRefused arm.
+                        logger.exception(
+                            "session %s: its resume raised unexpectedly; ending it failed", sid,
+                        )
+                        outcome = await self._end_resume_failed(session_row)
             else:
                 outcome = await run_one_session_turn(engine_lease, deps)
         except asyncio.CancelledError:
@@ -1368,6 +1388,30 @@ class WorkerPool:
                 "_maybe_rearm_session: claim_engine.upsert failed for %s",
                 session_id,
             )
+
+    async def _end_resume_failed(self, session_row: WorkspaceSession):
+        """End the session of a resume whose handler raised an unclassified error, keeping its park.
+
+        Mirrors the turn's build-failure exit (dispatch.py) and the RunRefused arm above: a fixed ERROR
+        record + ``last_turn_error`` (no exception text), then the terminal ENDED/failed write. The
+        release keeps the park (``preserve_park``) instead of clearing it, so an operator sees what
+        the person answered and why the resume died, and the dropped lease stops the row churning.
+        """
+        from primer.session.dispatch import record_turn_refusal
+
+        storage = self._storage.get_storage(WorkspaceSession)
+        fresh = await storage.get(session_row.id)
+        row = fresh if fresh is not None else session_row
+        if row.status is not SessionStatus.ENDED:
+            io_shim = _WorkspaceIOShim(workspace_registry=self._workspace_registry)
+            io_shim.register_session(row.id, row.workspace_id)
+            await record_turn_refusal(
+                storage, io_shim, row,
+                message=RESUME_FAILED_MESSAGE, code=RESUME_FAILED_CODE,
+                event_bus=self._event_bus,
+            )
+            await self._end_session(row, reason="failed")
+        return ReleaseOutcome(success=False, drop_lease=True, preserve_park=True)
 
     async def _end_session(self, session, *, reason: str):
         """Write a terminal ENDED status to the session row and return a

@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, NamedTuple
 
+from primer.common.log import redact_credentials
 from primer.common.preview_allowlist import (
     _HIDDEN,
     _preview_stamp,
@@ -948,7 +949,7 @@ async def resume_call_tool_dispatch(
             id=original_call.id,
             output=json.dumps({
                 "is_error": True,
-                "reason": f"call_tool resume failed: {type(exc).__name__}: {exc}",
+                "reason": f"call_tool resume failed: {type(exc).__name__}: {redact_credentials(str(exc))}",
                 "tool_name": original_call.name,
             }),
             error=True,

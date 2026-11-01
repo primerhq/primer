@@ -475,6 +475,65 @@ async def test_a_poisoned_tool_call_reaches_terminal_failed_with_a_synthesized_r
 
 
 @pytest.mark.asyncio
+async def test_takeover_of_a_crashed_holder_reaches_the_retry_cap():
+    """GR-7: the tool-call retry cap must count the row's unclean executions,
+    not only the lease's attempt_count (which a crashed holder never bumps:
+    reclaiming an expired lease starts at 0, and only a release counts). A
+    row RUNNING under a dead holder's token with attempts far above
+    max_attempts is taken over and, at the cap, fails terminal with a
+    synthesized result_state instead of running the tool that keeps killing
+    the worker."""
+    from primer.worker.engine_handlers import run_engine_tool_call
+
+    config = WorkerConfig(
+        concurrency=2,
+        heartbeat_interval_seconds=1,
+        lease_ttl_seconds=5,
+        poll_interval_seconds=0.1,
+        drain_timeout_seconds=3,
+        tool_calls_as_claims_enabled=True,
+        max_attempts=2,
+        base_backoff_seconds=0.1,
+        max_backoff_seconds=1.0,
+    )
+    pool, engine, provider, toolset, _s, _t, scheduler, _w = await _build_pool(
+        outstanding_task_ids=[TASK_ID], config=config,
+    )
+    try:
+        task_storage = provider.get_storage(ToolCallTask)
+        max_attempts = pool.config.max_attempts
+        # Simulate max_attempts + 3 previous holders that each claimed the row (state
+        # RUNNING, attempts bumped on every takeover) and died with the process (no
+        # release ran).
+        row = task_storage._data[TASK_ID]  # noqa: SLF001
+        task_storage._data[TASK_ID] = row.model_copy(update={  # noqa: SLF001
+            "state": ToolCallTaskState.RUNNING,
+            "claim_token": "dead-worker:2026-10-31T00:00:00+00:00:abcdef",
+            "attempts": max_attempts + 3,
+        })
+        leases = await engine.claim_due("w-next", max_count=1, kinds=[ClaimKind.TOOL_CALL])
+        assert leases, "the lease was not claimable"
+        lease = leases[0]
+        # The fresh lease counted none of the crashes ...
+        assert lease.attempt_count == 0
+        await run_engine_tool_call(pool, lease)
+        after = task_storage._data[TASK_ID]  # noqa: SLF001
+        # ... so the cap must count the row's own unclean executions (the
+        # takeover itself bumped them to max_attempts + 4): the tool that
+        # keeps killing its worker is failed terminal, never re-run.
+        assert toolset.calls == []
+        assert after.state is ToolCallTaskState.FAILED
+        assert after.result_state is not None
+        assert after.result_state.get("error") is True
+        assert after.result_state.get("id") == CALL_ID
+        assert after.last_error
+        assert after.attempts == max_attempts + 4
+        assert (ClaimKind.TOOL_CALL, TASK_ID) not in engine._leases
+    finally:
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
 async def test_a_tool_that_raises_is_done_with_an_error_result_on_its_first_attempt():
     """W16 (ruling D1): a tool that raises is answered by the tool manager as an error result, so the task is DONE on its first
     attempt carrying that result (the model sees its own error under its own tool_use), and it is not retried: a retry would run

@@ -784,6 +784,7 @@ async def persist_resume_tool_result_record_for_graph(
         WorkspaceSession,
     )
     from primer.session.persistence import WorkspaceMessageWriter
+    from primer.session.seq_reservation import advance_last_seq
     from primer.worker.graph_resume import fresh_session_row_and_last_seq
 
     tool_result_part = next(
@@ -803,7 +804,7 @@ async def persist_resume_tool_result_record_for_graph(
         break
 
     try:
-        fresh, last_seq = await fresh_session_row_and_last_seq(pool, session)
+        _fresh, last_seq = await fresh_session_row_and_last_seq(pool, session)
         ws = await pool._load_workspace_for_persist(session.workspace_id)
         writer = WorkspaceMessageWriter(
             workspace_io=ws, session_id=session.id, start_seq=last_seq,
@@ -820,10 +821,10 @@ async def persist_resume_tool_result_record_for_graph(
             created_at=datetime.now(timezone.utc),
         ))
         await writer.flush()
-        # Base the update on the FRESH row, not the stale `session`
-        # parameter - see fresh_session_row_and_last_seq's own docstring.
-        storage = pool._storage.get_storage(WorkspaceSession)
-        await storage.update(fresh.model_copy(update={"last_seq": new_seq}))
+        # ONE field-scoped write: advance last_seq only (GR-5). The whole-row update from the
+        # pre-append read wrote back whatever a concurrent writer committed during the append
+        # (a Cancel, a steer) to its old value, and regressed last_seq below the steer's seq.
+        await advance_last_seq(pool._storage.get_storage(WorkspaceSession), session.id, new_seq)
         if pool._event_bus is not None:
             try:
                 await pool._event_bus.publish(

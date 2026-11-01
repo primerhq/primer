@@ -52,13 +52,13 @@ class _FakeSessionStorage:
     def __init__(self, *, fresh_row: "WorkspaceSession | None" = None) -> None:
         self.updated: list[WorkspaceSession] = []
         # 7a gate review (R2-3 discriminating-coverage follow-up): the
-        # existing four tests all pass fresh_row=None deliberately - that
-        # exercises the legitimate "no fresh row available" fallback,
-        # where fresh_session_row_and_last_seq correctly falls back to
-        # the caller's own `session` object. Only the DEDICATED test
-        # below passes a real fresh row, since that's the only shape
-        # that can actually distinguish the fix from a revert of it (see
-        # that test's own docstring).
+        # existing tests pass fresh_row=None deliberately - that exercises
+        # the legitimate "no fresh row available" fallback, where
+        # fresh_session_row_and_last_seq correctly falls back to the
+        # caller's own `session` object. Only the DEDICATED test below
+        # passes a real fresh row, since that's the only shape that can
+        # actually distinguish the fix from a revert of it (see that
+        # test's own docstring).
         self._fresh_row = fresh_row
 
     async def get(self, session_id: str) -> "WorkspaceSession | None":
@@ -66,6 +66,20 @@ class _FakeSessionStorage:
 
     async def update(self, session: WorkspaceSession) -> None:
         self.updated.append(session)
+
+    async def patch_if(self, session_id: str, patch: dict, where=None, **_kw):
+        """Honor the field-scoped writer's (``advance_last_seq``) last_seq fence; the row write
+        the persist functions must issue (GR-5)."""
+        from primer.model.except_ import NotFoundError
+
+        fresh = self._fresh_row
+        if fresh is None:
+            raise NotFoundError(f"session {session_id} not found")
+        if where is not None and "last_seq" in where and where["last_seq"] != [fresh.last_seq]:
+            return None
+        self._fresh_row = fresh.model_copy(update=patch)
+        self.updated.append(self._fresh_row)
+        return self._fresh_row
 
 
 class _FakeStorage:
@@ -143,8 +157,9 @@ async def test_writes_tool_result_with_scoped_call_id_and_node_tag():
     assert record["payload"]["call_id"] == "asker:tool:0:1"
     assert record["payload"]["output"] == "Alice"
     assert record["node_id"] == "asker"
-    assert session_storage.updated
-    assert session_storage.updated[-1].last_seq > session.last_seq
+    # The row write is field-scoped (GR-5): with no fresh row there is nothing to advance,
+    # and no whole-row write happens.
+    assert session_storage.updated == []
 
 
 @pytest.mark.asyncio
@@ -196,23 +211,22 @@ async def test_publishes_tick():
 
 
 @pytest.mark.asyncio
-async def test_seeds_writer_from_fresh_row_and_bases_update_on_it():
-    """7a gate review (verdict R2-3, discriminating-coverage follow-up):
-    the other three tests above all pass ``fresh_row=None``, so they
-    exercise ONLY the legitimate no-fresh-row fallback - reverting the
-    fix (``start_seq=session.last_seq`` /
-    ``session.model_copy(update=...)``) leaves them green too, since
-    with ``fresh=None`` the fixed and unfixed paths are byte-identical.
+async def test_seeds_writer_from_fresh_row_and_writes_last_seq_field_scoped():
+    """7a gate review (verdict R2-3) + GR-5: the other tests above pass
+    ``fresh_row=None``, so they exercise ONLY the legitimate no-fresh-row
+    fallback - reverting the writer seeding (``start_seq=session.last_seq``)
+    leaves them green too, since with ``fresh=None`` the fixed and unfixed
+    paths are byte-identical.
 
     A FRESH row with an ADVANCED ``last_seq`` (mirroring a
     ``_ResumeDrainTap`` that already wrote during the SAME resume chain
-    - the exact hazard this fix addresses) plus a DIFFERING secondary
-    field (``status``) makes the fix's effect observable: the written
-    record's own seq must continue from the fresh last_seq (51), not
-    the stale ``session`` parameter's (6), and the update's model_copy
-    must be based on the fresh row (status WAITING survives), not the
-    stale session (status RUNNING) - either assertion flips if the fix
-    is reverted.
+    - the exact hazard the seeding fix addresses) plus a DIFFERING secondary
+    field (``status``) makes the effect observable: the written record's own
+    seq must continue from the fresh last_seq (51), not the stale
+    ``session`` parameter's (6). The row write is ONE field-scoped
+    ``advance_last_seq`` (GR-5): only ``last_seq`` moves, so the fresh row's
+    other fields (status WAITING) are never rewritten by a whole-row write
+    from the pre-append read.
     """
     ws = _FakeWorkspaceIO()
     stale_session = _make_graph_session(last_seq=5)
@@ -244,9 +258,8 @@ async def test_seeds_writer_from_fresh_row_and_bases_update_on_it():
     assert session_storage.updated
     updated = session_storage.updated[-1]
     assert updated.last_seq == 51
-    # Based on the FRESH row, not the stale `session` param - a stale
-    # base would silently carry the session's OWN status (RUNNING)
-    # forward instead of the fresh row's (WAITING).
+    # Field-scoped: the write touched only last_seq, so the fresh row's
+    # own status (WAITING) is never overwritten by the write.
     assert updated.status == SessionStatus.WAITING
 
 
@@ -311,3 +324,56 @@ async def test_a_key_that_names_no_entry_records_the_first_entry_with_the_raw_id
     record = await _written_record("ask_user:gs-1:legacy")
 
     assert record["node_id"] == "asker-a" and record["payload"]["call_id"] == "asker-a:tool:0:1"
+
+
+class _RacingWorkspace:
+    """Workspace IO whose first append lets a concurrent Cancel + steer commit
+    (as another API process would): the record writer reads the row before the
+    append and must not write those fields back to their old values (GR-5)."""
+
+    def __init__(self, sessions, sid):
+        self._sessions, self._sid, self.raced = sessions, sid, False
+
+    async def append_message_line(self, session_id, line):
+        if not self.raced:
+            self.raced = True
+            await self._sessions.patch_if(
+                self._sid,
+                {"cancel_requested": True, "turn_status": "claimable", "last_seq": 50},
+                where={"workspace_id": ["ws-1"]},
+            )
+
+
+@pytest.mark.asyncio
+async def test_agent_answer_record_write_keeps_a_concurrent_cancel_and_steer():
+    """GR-5: the graph agent-answer record writer reads the row, appends
+    through the workspace runtime (a round trip), and must not write the
+    WHOLE row back from the pre-append read: a Cancel and a steer that
+    committed during the append keep their values, and last_seq never
+    regresses below the steer's reserved seq. The write is field-scoped
+    (advance_last_seq, like the agent-path sibling)."""
+    from types import SimpleNamespace
+
+    from tests.conftest import _FakeStorageProvider
+
+    provider = _FakeStorageProvider()
+    sessions = provider.get_storage(WorkspaceSession)
+    session = _make_graph_session(last_seq=10)
+    await sessions.create(session)
+    ws = _RacingWorkspace(sessions, session.id)
+    pool = SimpleNamespace(
+        _storage=provider, _event_bus=None,
+        _load_workspace_for_persist=lambda _wid: _async_return(ws),
+    )
+
+    await graph_resume_coordinator.persist_resume_tool_result_record_for_graph(
+        pool, session=session, checkpoint={}, tcid="tc-1",
+        agent_tool_result=_make_agent_tool_result("tc-1"),
+    )
+
+    after = await sessions.get(session.id)
+    assert ws.raced
+    # the Cancel and the steer committed during the append survive; last_seq never regressed below 50.
+    assert after.cancel_requested is True
+    assert after.turn_status == "claimable"
+    assert after.last_seq == 50
