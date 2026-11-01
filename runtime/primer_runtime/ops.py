@@ -616,37 +616,65 @@ async def state_commit(
     allow_empty: bool = bool(args.get("allow_empty", False))
 
     state_dir = os.path.join(workspace_root, ".state")
-    await _ensure_state_repo(state_dir)
 
-    # Write files to disk and collect paths to stage.
-    staged: list[str] = []
-    for rel_path, content_b64 in files.items():
-        try:
-            content = base64.b64decode(content_b64)
-        except Exception as exc:
-            raise OpError(ErrorCode.EPROTOCOL, f"Invalid base64 for {rel_path!r}: {exc}")
-        dest = pathlib.Path(state_dir) / rel_path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(content)
-        staged.append(rel_path)
+    def _write_files() -> list[str]:
+        """Write files to disk and collect paths to stage."""
+        staged: list[str] = []
+        for rel_path, content_b64 in files.items():
+            try:
+                content = base64.b64decode(content_b64)
+            except Exception as exc:
+                raise OpError(ErrorCode.EPROTOCOL, f"Invalid base64 for {rel_path!r}: {exc}")
+            dest = pathlib.Path(state_dir) / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content)
+            staged.append(rel_path)
+        return staged
 
-    # Stage new/modified files.
-    if staged:
-        await _run_git(state_dir, "add", "--", *staged)
+    async def _commit() -> dict:
+        # One commit at a time per repo across every connection (GI-5): the platform's commit lock is per process, and
+        # two commits interleaving here failed on git's locks or took in each other's files.
+        async with (locks or _STATE_LOCKS).hold_scope(os.path.realpath(state_dir)):
+            await _ensure_state_repo(state_dir)
+            staged = await asyncio.to_thread(_write_files)
 
-    # Delete files.
-    if deletes:
-        await _run_git(state_dir, "rm", "--quiet", "--ignore-unmatch", "--", *deletes)
+            # Stage new/modified files.
+            if staged:
+                await _run_git(state_dir, "add", "--", *staged)
 
-    # Commit.
-    commit_args = ["commit", "--quiet", "-m", message]
-    if allow_empty:
-        commit_args.insert(1, "--allow-empty")
-    await _run_git(state_dir, *commit_args)
+            # Delete files.
+            if deletes:
+                await _run_git(state_dir, "rm", "--quiet", "--ignore-unmatch", "--", *deletes)
 
-    # Return the HEAD sha.
-    sha_raw, _ = await _run_git(state_dir, "rev-parse", "HEAD")
-    return {"sha": sha_raw.strip()}
+            # Commit.
+            commit_args = ["commit", "--quiet", "-m", message]
+            if allow_empty:
+                commit_args.insert(1, "--allow-empty")
+            await _run_git(state_dir, *commit_args)
+
+            # Return the HEAD sha.
+            sha_raw, _ = await _run_git(state_dir, "rev-parse", "HEAD")
+            return {"sha": sha_raw.strip()}
+
+    # Shielded: a commit whose connection closed still completes (as it did when it ran inline), so its staged files
+    # never ride into the next commit under another session's trailers.
+    task = asyncio.ensure_future(_commit())
+    _COMMITS.add(task)
+    task.add_done_callback(_commit_done)
+    return await asyncio.shield(task)
+
+
+# The server passes its app-wide table (shared by every connection); a direct caller passes none and gets this one.
+_STATE_LOCKS = WorkspaceLockTable()
+
+# Strong references to the commits in flight (see ``state_commit``): the loop keeps only weak ones to its tasks.
+_COMMITS: set[asyncio.Task[dict]] = set()
+
+
+def _commit_done(task: asyncio.Task[dict]) -> None:
+    _COMMITS.discard(task)
+    if not task.cancelled():
+        task.exception()  # retrieved: nobody awaits a commit whose connection closed
 
 
 async def state_read(

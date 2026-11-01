@@ -48,12 +48,15 @@ _KEY_BROADCASTER: web.AppKey["EventBroadcaster"] = web.AppKey(
 # Mutating single-shot ops that acquire a Tier-A write lock and therefore may
 # park on a busy scope/path lock. These are offloaded off the message loop as
 # tracked tasks so a parked writer never blocks unrelated reads/list/stat/state
-# on the same connection - only other writers to the same target wait. All the
-# other single-shot ops (reads/list/stat + the git-backed state ops) stay inline.
+# on the same connection - only other writers to the same target wait. A
+# state_commit parks the same way, on the runtime-wide lock of the state repo
+# (GI-5). All the other single-shot ops (reads/list/stat + the read-only state
+# ops) stay inline.
 _MUTATING_OPS: frozenset[str] = frozenset({
     OpName.WRITE_FILE,
     OpName.APPEND_LINE,
     OpName.DELETE,
+    OpName.STATE_COMMIT,
 })
 
 # ---------------------------------------------------------------------------

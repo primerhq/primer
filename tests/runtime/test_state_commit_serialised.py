@@ -177,3 +177,46 @@ async def test_a_fresh_index_lock_fails_the_commit(tmp_path: Path) -> None:
     else:
         raise AssertionError("a commit went through a live index.lock")
     assert (tmp_path / ".state" / ".git" / "index.lock").exists()
+
+
+# ---------------------------------------------------------------------------
+# GI-5: concurrent commits queue behind each other inside the runtime
+# ---------------------------------------------------------------------------
+
+
+def _anomalies(root: Path, i: int, results: list) -> list[str]:
+    found = []
+    for name, result in zip(("a", "b"), results):
+        if isinstance(result, BaseException):
+            found.append(f"{i}{name}: {type(result).__name__}: {getattr(result, 'message', result)}"[:200])
+            continue
+        other = "b" if name == "a" else "a"
+        held = _files(root, result["sha"])
+        if held != [f"sessions/{name}/{i}.json"]:
+            found.append(f"{i}{name}: commit {result['sha'][:8]} holds {held} (other side: {other})")
+    return found
+
+
+async def test_concurrent_commits_each_hold_only_their_own_files(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    await ops.state_commit({"files": {"init.txt": _b64(b"0")}, "message": "init"}, root)
+    anomalies: list[str] = []
+    for i in range(10):
+        a = {"files": {f"sessions/a/{i}.json": _b64(b"a%d" % i)}, "message": f"a{i}"}
+        b = {"files": {f"sessions/b/{i}.json": _b64(b"b%d" % i)}, "message": f"b{i}"}
+        results = await asyncio.gather(ops.state_commit(a, root), ops.state_commit(b, root), return_exceptions=True)
+        anomalies += _anomalies(tmp_path, i, results)
+    assert anomalies == []
+
+
+async def test_two_connections_committing_at_once_never_mix_or_fail(runtime) -> None:  # noqa: F811
+    connect, root, _url = runtime
+    first, second = await connect(), await connect()  # the API process and a worker each hold their own connection
+    anomalies: list[str] = []
+    for i in range(10):
+        rid_a = await first.send("state_commit", {"files": {f"sessions/a/{i}.json": _b64(b"a")}, "message": f"a{i}"})
+        rid_b = await second.send("state_commit", {"files": {f"sessions/b/{i}.json": _b64(b"b")}, "message": f"b{i}"})
+        replies = [await first.reply(rid_a), await second.reply(rid_b)]
+        results = [r["result"] if r["ok"] else RuntimeError(r["error"]["message"]) for r in replies]
+        anomalies += _anomalies(root, i, results)
+    assert anomalies == []
