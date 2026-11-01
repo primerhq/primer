@@ -78,6 +78,10 @@ function GB_Builder(props) {
   const [layoutNonce, setLayoutNonce] = useState(0);
   const [jsonErrors, setJsonErrors] = useState({});
   const [retryNonce, setRetryNonce] = useState(0);
+  const [runBusy, setRunBusy] = useState(false);
+  // A second Run press in the same frame lands before runBusy has re-rendered
+  // the button's disabled, so only a ref can hold it back (UI-M11).
+  const runBusyRef = useRef(false);
 
   // Undo stack - cheap because the reducer is pure and drafts are small.
   const undoRef = useRef([]);
@@ -507,7 +511,14 @@ function GB_Builder(props) {
           onFix={applyFix}
           onSelectNode={setSelectedId}
           canRun={canRun}
+          // D10: a run starts from the SAVED graph, so unsaved edits make the
+          // button a trap; it stays off until the draft is saved.
+          dirty={dirty}
+          running={runBusy}
           onRun={async () => {
+            if (runBusyRef.current) return;
+            runBusyRef.current = true;
+            setRunBusy(true);
             try {
               let parsed = sampleInput;
               try { parsed = JSON.parse(sampleInput); } catch (_e) { /* string */ }
@@ -519,6 +530,9 @@ function GB_Builder(props) {
               if (onRefresh) onRefresh();
             } catch (err) {
               if (pushToast) pushToast({ kind: "error", title: (err && err.title) || "Couldn't start the run", detail: (err && (err.detail || err.message)) || String(err) });
+            } finally {
+              runBusyRef.current = false;
+              setRunBusy(false);
             }
           }}
         />

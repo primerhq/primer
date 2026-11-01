@@ -3,7 +3,10 @@
 // Falls back to a local static check when POST /graphs/{id}/dry_run is absent.
 
 function GB_DryRunDrawer(props) {
-  const { result, loading, sampleInput, onSampleInput, onRecheck, onClose, onFix, onSelectNode, onRun, canRun } = props;
+  const { result, loading, sampleInput, onSampleInput, onRecheck, onClose, onFix, onSelectNode, onRun, canRun, dirty, running } = props;
+  // D10: a run starts from the SAVED graph. Unsaved edits or a request in
+  // flight keep the Run off; the label says which one to clear first.
+  const runReady = canRun && !dirty && !running;
   const nodes = (result && result.nodes) || [];
   const blockers = (result && result.blockers) || [];
   const shape = (result && result.shape) || {};
@@ -141,17 +144,20 @@ function GB_DryRunDrawer(props) {
           <button
             type="button"
             onClick={onRun}
-            disabled={!canRun}
+            disabled={!runReady}
+            title={canRun && dirty ? "Save the draft first - the run starts from the saved graph." : null}
             style={{
               marginTop: "auto", padding: 8, borderRadius: 8, fontSize: "var(--fs-12)",
-              cursor: canRun ? "pointer" : "not-allowed",
-              background: canRun ? "var(--accent)" : "var(--bg-2)",
-              border: `1px solid ${canRun ? "var(--accent)" : "var(--border-strong)"}`,
-              color: canRun ? "var(--accent-fg)" : "var(--text-4)",
-              fontWeight: canRun ? 600 : 400,
+              cursor: runReady ? "pointer" : "not-allowed",
+              background: runReady ? "var(--accent)" : "var(--bg-2)",
+              border: `1px solid ${runReady ? "var(--accent)" : "var(--border-strong)"}`,
+              color: runReady ? "var(--accent-fg)" : "var(--text-4)",
+              fontWeight: runReady ? 600 : 400,
             }}
           >
-            {canRun ? "Run this graph" : `Run · fix ${blockers.length || 1} blocker${(blockers.length || 1) === 1 ? "" : "s"} first`}
+            {canRun
+              ? (running ? "Starting…" : dirty ? "Save first to run" : "Run this graph")
+              : `Run · fix ${blockers.length || 1} blocker${(blockers.length || 1) === 1 ? "" : "s"} first`}
           </button>
         </div>
       </div>
