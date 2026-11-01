@@ -237,7 +237,7 @@ async def workspace_terminal_ws(
     try:
         try:
             session = await resolver(workspace, cols=cols, rows=rows)
-        except Exception:  # noqa: BLE001 — resolve failure must not 500 the socket
+        except Exception:  # noqa: BLE001 - resolve failure must not 500 the socket
             logger.exception("terminal: failed to open PTY for %s", workspace_id)
             await websocket.close(code=1011, reason="terminal_open_failed")
             return

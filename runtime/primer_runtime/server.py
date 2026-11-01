@@ -288,7 +288,7 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                             )
                         else:  # PTY_CLOSE
                             found = pty_registry.close(pty_target)
-                    except Exception as exc:  # noqa: BLE001 — protocol boundary
+                    except Exception as exc:  # noqa: BLE001 - protocol boundary
                         await ws.send_str(serialize(Response(
                             req_id=frame_req_id, ok=False,
                             error={"code": ErrorCode.EPROTOCOL, "message": f"{op_name}: {exc}"},
@@ -305,7 +305,7 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
 
                 # --- Streaming exec op ----------------------------------------
                 # Spawn the exec stream as a tracked task (mirrors PTY_OPEN) so a
-                # long-running exec does NOT block this single message loop — while
+                # long-running exec does NOT block this single message loop - while
                 # it streams, pty_stdin/pty_resize and file ops on this same
                 # connection stay serviceable. The task owns its own framing
                 # (stdout/stderr/exit events + error Response) and per-req_id output

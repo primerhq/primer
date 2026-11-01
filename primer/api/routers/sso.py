@@ -24,7 +24,7 @@ Authenticated router (``sso_authed_router``, ``require_user`` applied at
 ``include_router`` time in ``_app_routes.py``) — account linking + the
 caller's linked-identity list:
 
-* ``POST /{provider_id}/link``     — same Authorization Code + PKCE
+* ``POST /{provider_id}/link``     - same Authorization Code + PKCE
   flow as ``/{provider_id}/login``, but requires an active session and
   stamps the signed state with ``mode="link"`` plus the CURRENT user's
   id (never a URL/query param). Reuses the exact same

@@ -317,7 +317,7 @@ class SlackChannelAdapter(ChannelAdapter):
             async with gate:
                 try:
                     resp = await self._http().get(url, headers={"Authorization": f"Bearer {token}"})
-                except Exception:  # noqa: BLE001 — download is best-effort
+                except Exception:  # noqa: BLE001 - download is best-effort
                     logger.warning("slack: media download raised for %s", url, exc_info=True)
                     return "none", None
             if getattr(resp, "status_code", 0) != 200:

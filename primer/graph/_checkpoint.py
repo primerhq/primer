@@ -226,7 +226,7 @@ class _CheckpointMixin:
           ``{"fanout_node_id": ..., "spec": <FanOutSpec.model_dump>}``.
         * ``fanout_drain_state`` — drain_key → drain_state dict.
         * ``pending_toolcalls`` — list of pending ToolCall dicts.
-        * ``max_iter_routed`` — the ``on_max_iterations`` reroute already fired.
+        * ``max_iter_routed`` - the ``on_max_iterations`` reroute already fired.
         * ``pending_ended_reason`` / ``pending_ended_detail`` (01a0812c) —
           a sticky, un-suppressed node failure discovered before a park,
           so the eventual terminal outcome doesn't silently downgrade to

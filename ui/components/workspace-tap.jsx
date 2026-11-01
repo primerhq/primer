@@ -448,7 +448,7 @@ function WorkspaceTap({ wid, sessionId, fillHeight }) {
             state, not the empty list's. */}
         {historyError ? (
           <div data-testid="tap-history-error" className="muted text-sm" style={{ padding: "6px 18px" }}>
-            Could not load event history — {historyError}. The live tap still tails for in-flight runs.
+            Could not load event history - {historyError}. The live tap still tails for in-flight runs.
             <button type="button" className="nv-btn-secondary" style={{ marginLeft: 8 }}
               data-testid="tap-history-retry"
               onClick={function () { setHistoryRetry(function (t) { return t + 1; }); }}>Retry</button>

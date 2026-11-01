@@ -7,10 +7,10 @@ loop; event-based kinds (e.g. a future ``channel`` kind) are excluded.
 
 ``on_release`` recomputes ``next_fire_at`` from the trigger's source:
 
-* ``delayed``  — one-off; once its fire finished (:func:`delayed_fire_finished`),
+* ``delayed``  - one-off; once its fire finished (:func:`delayed_fire_finished`),
   disable + null the next-fire pointer so the row never re-fires. A fire
   that raised before it finished leaves the row armed.
-* ``scheduled`` — advance to the cron occurrence after the tick the claim
+* ``scheduled`` - advance to the cron occurrence after the tick the claim
   fired (``outcome.fired_tick``; after now when it is not given), in the
   trigger's timezone. A tick that passed during the fire is left due.
 * anything else — null the pointer defensively so the engine doesn't
