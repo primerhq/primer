@@ -182,16 +182,6 @@ class _WorkspaceIOShim:
                 f"workspace {workspace_id!r} could not be resolved while reading {state_relative_path!r}"
             )
         full_path = f"{getattr(workspace, 'state_path', '.state')}/{state_relative_path}"
-        tail = getattr(workspace, "read_file_tail", None)
-        if tail is not None:
-            return await tail(full_path, max_bytes)
-        stat = getattr(workspace, "stat", None)
-        ranged = getattr(workspace, "read_file_from", None)
-        if stat is None or ranged is None:
-            return None
-        info = await stat(full_path)
-        if info is None:
-            raise NotFoundError(f"{full_path!r} not found")
-        if info.size_bytes <= max_bytes:
-            return await workspace.read_file(full_path), True
-        return await ranged(full_path, info.size_bytes - max_bytes), False
+        from primer.workspace.tail_read import tail_of
+
+        return await tail_of(workspace, full_path, max_bytes)

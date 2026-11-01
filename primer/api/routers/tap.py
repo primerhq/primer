@@ -508,7 +508,11 @@ def build_usage_frame(raw_lines: list[str]) -> dict:
     """Token totals, turns and model calls for what the session currently shows (see ``SessionUsage``)."""
     from primer.session.usage import session_usage
 
-    usage = session_usage(raw_lines)
+    return usage_frame(session_usage(raw_lines))
+
+
+def usage_frame(usage) -> dict:
+    """The usage frame of a ``SessionUsage``."""
     return {
         "turns": usage.turns,
         "model_calls": usage.model_calls,

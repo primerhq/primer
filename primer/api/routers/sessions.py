@@ -37,7 +37,7 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.api.pagination import FindRequest, empty_page, parse_order_by, parse_page
 from primer.session.mutation_lock import session_lifecycle_lock
-from primer.session.timeline import build_turn_timeline
+from primer.session.timeline import TimelineSources, build_turn_timeline_from, parse_sources
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
@@ -47,7 +47,7 @@ from primer.model.except_ import (
 )
 from primer.session.default_binding import resolve_initial_binding
 from primer.model.problem_details import record_without_traceback
-from primer.session.usage_cache import UsageCache
+from primer.session.usage_cache import UsageCache, fold_usage
 from primer.model.workspace_session import (
     PendingSessionMessage,
     WorkspaceSession,
@@ -896,6 +896,9 @@ _PENDING_PAGE = 100
 # The session detail's usage totals, kept per log identity (see ``_session_usage_totals``; architecture review A-05).
 USAGE_CACHE = UsageCache()
 
+# The parsed sources of a turn's timeline, per log identity (see ``get_session_turn_timeline``).
+TIMELINE_CACHE = TimelineSources()
+
 
 async def _session_usage_totals(
     session: WorkspaceSession, workspace_registry,
@@ -905,7 +908,7 @@ async def _session_usage_totals(
     messages.jsonl), or ``None`` if the log is otherwise unreadable -
     mirrors build_usage_frame's own shape (tap.py), the only other place
     session_usage() is assembled into a response."""
-    from primer.api.routers.tap import build_usage_frame
+    from primer.api.routers.tap import build_usage_frame, usage_frame
 
     workspace = await workspace_registry.get_workspace(session.workspace_id)
     if workspace is None:
@@ -929,15 +932,14 @@ async def _session_usage_totals(
         if cached is not None:
             return cached
     try:
-        raw = await workspace.read_file(rel)
+        # Folds only what the log gained since the last read of this session when the workspace can read a range (usage_cache.fold_usage).
+        usage = usage_frame(await fold_usage(workspace, rel, USAGE_CACHE, (session.workspace_id, session.id)))
     except NotFoundError:  # a session that never ran a turn wrote no log: empty, not an error
         logger.debug(
             "session %s has no messages log yet; serving the empty usage frame",
             session.id,
         )
         return build_usage_frame([])
-    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-    usage = build_usage_frame(text.splitlines())
     if key is not None:
         USAGE_CACHE.put(key, usage)
     return usage
@@ -1530,11 +1532,20 @@ async def get_session_turn_timeline(
         )
         return raw.decode("utf-8", errors="replace").splitlines()
 
-    timeline = build_turn_timeline(
-        message_lines=await _lines("messages.jsonl"),
-        turn_log_lines=await _lines("turns.jsonl"),
-        turn_no=turn_no,
-    )
+    # The parsed windows and envelopes are kept per log identity (the key of the usage totals, over both files), so the next turn of the same
+    # session reads and parses nothing. A workspace that cannot stat a file is never cached.
+    key = None
+    try:
+        infos = [await workspace.file_info(f"{state_path}/sessions/{session_id}/{name}") for name in ("messages.jsonl", "turns.jsonl")]
+        key = (sess.workspace_id, session_id, sess.last_seq, sess.turn_no, *((i.size_bytes, i.modified_at) for i in infos))
+    except Exception:  # noqa: BLE001 - no identity, no cache (a missing turns.jsonl lands here too: read below, uncached)
+        key = None
+    sources = TIMELINE_CACHE.get(key) if key is not None else None
+    if sources is None:
+        sources = parse_sources(await _lines("messages.jsonl"), await _lines("turns.jsonl"))
+        if key is not None:
+            TIMELINE_CACHE.put(key, sources)
+    timeline = build_turn_timeline_from(sources, turn_no)
     if timeline is None:
         raise NotFoundError(
             f"Session {session_id!r} has no turn {turn_no}"
