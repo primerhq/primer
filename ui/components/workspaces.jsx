@@ -1639,6 +1639,9 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
 
   const items = sessionsForBadge?.data?.items ?? [];
   const active = items.filter((s) => !WS_TERMINAL.has(s.status));
+  // UI-L9e: while the badge read is out, the cells printed a 0 that reads as
+  // "nothing to cancel" before the destroy confirm; a loading state until it lands.
+  const counting = !sessionsForBadge || sessionsForBadge.data == null;
 
   const destroy = useMutation(
     () => apiFetch("DELETE", `/workspaces/${encodeURIComponent(wid)}`),
@@ -1693,8 +1696,8 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
       )}
       <div className="kv mt-3" style={{ gridTemplateColumns: "160px 1fr" }}>
         <dt>workspace</dt><dd className="mono">{wid}</dd>
-        <dt>active sessions</dt><dd className="mono">{active.length} {active.length > 0 && <span className="muted">(will be cancelled)</span>}</dd>
-        <dt>total sessions</dt><dd className="mono">{items.length}</dd>
+        <dt>active sessions</dt><dd className="mono" data-testid="ws-destroy-active">{counting ? "…" : active.length} {!counting && active.length > 0 && <span className="muted">(will be cancelled)</span>}</dd>
+        <dt>total sessions</dt><dd className="mono" data-testid="ws-destroy-total">{counting ? "…" : items.length}</dd>
       </div>
       <div className="mt-4">
         <Btn kind="danger" icon="trash" busy={destroy.loading} onClick={() => setShowConfirm(true)}>Destroy workspace</Btn>

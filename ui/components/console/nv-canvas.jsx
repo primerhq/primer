@@ -83,6 +83,10 @@ function NV_canvasValidateFrameMessage(msg) {
   }
   if (t === "open_link") {
     if (typeof msg.url !== "string" || !msg.url) return null;
+    // UI-L4: the console opens this URL after the confirm (window.open), so the
+    // console side must not steer it to another scheme - the same rule the
+    // vendor's markdown link renderer uses (http(s) and mailto only).
+    if (!/^(https?:|mailto:)/i.test(msg.url)) return null;
     var o = { type: "open_link", url: msg.url };
     if (msg.element !== undefined) {
       if (!CV_isFrameId(msg.element)) return null;

@@ -72,3 +72,50 @@ def test_the_ids_are_encoded_in_the_canvas_paths(api) -> None:
 
 def test_the_canvas_read_key_names_the_session(api) -> None:
     assert _js(api, "SH_api.keys.canvas('s1')") == "nv-canvas:s1"
+
+
+# ---- the frame->console message validator (UI-L4) -------------------------------------------------------------
+
+NV_CANVAS = ROOT / "ui" / "components" / "console" / "nv-canvas.jsx"
+
+
+@pytest.fixture
+def canvas(api):
+    """``NV_canvasValidateFrameMessage`` is pure (no hooks): the real file, the same context."""
+    api.eval(transpile(NV_CANVAS))
+    return api
+
+
+def _validate(canvas, msg) -> object:
+    return _js(canvas, "NV_canvasValidateFrameMessage(" + json.dumps(msg) + ")")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "javascript:alert(1)",
+        "data:text/html,<img src=x onerror=alert(1)>",
+        "ftp://files.example/x",
+        "vbscript:msgbox(1)",
+        "JAVASCRIPT:alert(1)",
+    ],
+)
+def test_an_open_link_to_an_unsafe_scheme_is_dropped(canvas, url) -> None:
+    """The console-side validator is the second line after the renderer frame's own link check: it must not
+    steer the console (a ``window.open`` after the confirm) to anything but http(s) or mailto - the rule
+    ``ui/vendor/markdown.jsx`` uses for links."""
+    assert _validate(canvas, {"type": "open_link", "url": url}) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/a?b=1#frag",
+        "http://example.com",
+        "mailto:ada@example.com?subject=hi",
+        "HTTPS://EXAMPLE.COM",
+    ],
+)
+def test_an_open_link_to_http_or_mailto_is_accepted(canvas, url) -> None:
+    out = _validate(canvas, {"type": "open_link", "url": url, "element": "lnk"})
+    assert out == {"type": "open_link", "url": url, "element": "lnk"}

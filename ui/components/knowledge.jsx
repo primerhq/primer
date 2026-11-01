@@ -66,6 +66,16 @@ function KN_Tree({ cid, parent, depth, expanded, toggle, selectedPath, onSelect,
   if (nodes.loading && !nodes.data) {
     return <div className="muted text-sm" style={{ paddingLeft: 8 + depth * 14 }}>Loading…</div>;
   }
+  // UI-L9a: a failed tree read used to render an empty column with no way to
+  // tell why or to retry; show the refusal's words and the Retry.
+  if (nodes.error && !nodes.data) {
+    return (
+      <div className="muted text-sm" style={{ paddingLeft: 8 + depth * 14 }} data-testid="kn-tree-error">
+        {window.primerApi.readRefusal(nodes.error).message}{" "}
+        <Btn size="sm" data-testid="kn-tree-retry" onClick={nodes.refetch}>Retry</Btn>
+      </div>
+    );
+  }
   return (
     <>
       {items.map((n) => (

@@ -31,7 +31,10 @@ function NV_FileContextMenu(props) {
         title: "Rename " + f.path, defaultValue: f.path,
       }).then(function (dst) {
         if (!dst || dst === f.path) return;
-        SH_api.fileMove(con.wid, f.path, dst).then(props.onChanged);
+        // UI-L2: a refused rename (a 403 on a read-only workspace, a 404) toasts the refusal instead of leaving an unhandled rejection.
+        SH_api.fileMove(con.wid, f.path, dst).then(props.onChanged, function (err) {
+          con.toast("Rename failed: " + window.primerApi.readRefusal(err).message);
+        });
       });
     },
   });
@@ -46,7 +49,9 @@ function NV_FileContextMenu(props) {
         danger: true,
       }).then(function (ok) {
         if (!ok) return;
-        SH_api.fileDelete(con.wid, f.path).then(props.onChanged);
+        SH_api.fileDelete(con.wid, f.path).then(props.onChanged, function (err) {
+          con.toast("Delete failed: " + window.primerApi.readRefusal(err).message);
+        });
       });
     },
   });
@@ -253,7 +258,9 @@ function NV_FilesSidebar() {
           onClick={function () {
             promptDialog({ title: "New file path" }).then(function (p) {
               if (!p) return;
-              SH_api.fileWrite(con.wid, p, "").then(refetch);
+              SH_api.fileWrite(con.wid, p, "").then(refetch, function (err) {
+                con.toast("Create failed: " + window.primerApi.readRefusal(err).message);
+              });
             });
           }}>+</button>
         <button type="button" className="nv-rail-iconbtn" title={wsRo ? con.wsRoNote : "Upload"}
@@ -339,7 +346,9 @@ function NV_FilesSidebar() {
                     promptDialog({ title: "New file path" })
                       .then(function (p) {
                         if (!p) return;
-                        SH_api.fileWrite(con.wid, p, "").then(refetch);
+                        SH_api.fileWrite(con.wid, p, "").then(refetch, function (err) {
+                          con.toast("Create failed: " + window.primerApi.readRefusal(err).message);
+                        });
                       });
                   }}>New file</button>
               </div>
