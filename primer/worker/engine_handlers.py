@@ -483,16 +483,22 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
         return
 
     # ---- 3. the retry cap (D-A2-03) ---------------------------------------------
-    if engine_lease.attempt_count >= pool.config.max_attempts:
+    # The cap counts UNCLEAN executions across holders: the lease's
+    # attempt_count (bumped by every release of it) and the row's attempts
+    # (bumped by every takeover of a crashed holder's RUNNING row - a crash
+    # the lease never sees, because reclaiming an expired lease starts at 0).
+    # GR-7: read the two together, so a tool whose execution kills its worker
+    # is failed at the cap instead of taken over and re-run for ever.
+    if max(engine_lease.attempt_count, claimed_row.attempts) >= pool.config.max_attempts:
         # The cap: the tool has already failed max_attempts times; it does not
         # run again. Terminal FAILED WITH a synthesized result_state, so the
         # resume coordinator (which reads result_state first) hands the model a
         # tool_result for its tool_use instead of wedging the turn.
         last_error = engine_lease.last_error or task.last_error or "tool call failed"
         logger.warning(
-            "tool-call task %s reached the retry cap (attempt_count=%d >= "
-            "max_attempts=%d): failing it terminally without running the tool",
-            task.id, engine_lease.attempt_count, pool.config.max_attempts,
+            "tool-call task %s reached the retry cap (lease attempt_count=%d, "
+            "row attempts=%d >= max_attempts=%d): failing it terminally without running the tool",
+            task.id, engine_lease.attempt_count, claimed_row.attempts, pool.config.max_attempts,
         )
         await pool._release_lease(
             engine_lease,
