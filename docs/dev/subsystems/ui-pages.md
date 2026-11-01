@@ -490,7 +490,7 @@ A form that PUTs or PATCHes a row sends only what the operator changed, laid ove
 ## Console polling and fan-out (T87)
 
 - A tap-driven refetch keeps its trailing frame: `PR_trailingThrottle(state, ms, fn)` (`ui/foundation/api.js`) runs `fn` on the first frame and once more when a window that saw further frames ends. The rail's Inbox and the phone shell use it, so a second session yielding 100 ms after the first shows at once, not at the next 10 s poll.
-- The cross-workspace attention aggregate (`/yields/pending`) is read through one hook, `SH_useAttention` (`ui/components/shell/sh-api.jsx`), under the key `nv-rail-inbox`; the rail, both phone tabs and both System panels share it, with the per-workspace fallback for a server that 404s.
+- The cross-workspace attention aggregate (`/yields/pending`) is read through one hook, `SH_useAttention` (`ui/components/shell/sh-api.jsx`), under the key `nv-rail-inbox`; the rail, both phone tabs and both System panels share it, with the per-workspace fallback for a server that 404s. The key carries no workspace ids (a new key is a new cache entry, which dropped a failed read's error to Loading when the workspace list landed); a fallback answer (`perWorkspace`) is read again in place when the list changes.
 - The approvals audit reads every parked session (`PR_fetchAllFind`, polled with `PR_pagedPollMs`), polls each session's pending record at a rate that stretches with the count, and refetches a session's record on its `yielded` or `resumed` tap frame.
 - The agent Sessions panel reads one `limit=10` page and takes its count from `total`. The agents and graphs lists run their per-row reads through `PR_mapLimit` (at most 4 in flight).
 

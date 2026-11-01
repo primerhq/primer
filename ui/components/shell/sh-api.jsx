@@ -549,10 +549,14 @@ window.SH_api = SH_api;
 // The one read of the cross-workspace attention aggregate (UI-L11): the rail's Inbox, the phone's tabs and both System attention panels share this key, so the
 // endpoint is read once per poll however many of them are mounted. A server predating the aggregate 404s: that falls back to the per-workspace reads of
 // `workspaces` (the rows a caller needs from the answer are mapped by the caller). Every row names its workspace as `workspace_id`.
+// The key holds no workspace ids: the aggregate does not depend on them, and a new key is a new cache entry, so the workspace list landing after a failed
+// read used to drop the phone Inbox's error to "Loading" and read again (Try again detached, ui_e2e mobile inbox journey). Only a fallback answer
+// (`perWorkspace`) depends on the list; it is read again in place when the list changes.
 function SH_useAttention(workspaces, opts) {
   var list = workspaces || [];
   var ids = list.map(function (w) { return w.id; });
-  return window.primerApi.useResource(
+  var idsKey = ids.join(",");
+  var res = window.primerApi.useResource(
     "nv-rail-inbox",
     function (signal) {
       return SH_api.pendingAttention(signal)
@@ -571,12 +575,21 @@ function SH_useAttention(workspaces, opts) {
               });
             });
           })).then(function (perWs) {
-            return { items: perWs.reduce(function (a, b) { return a.concat(b); }, []) };
+            return { items: perWs.reduce(function (a, b) { return a.concat(b); }, []), perWorkspace: true };
           });
         });
     },
-    Object.assign({ pollMs: 10000, deps: [ids.join(",")] }, opts || {})
+    Object.assign({ pollMs: 10000 }, opts || {})
   );
+  var seenIdsRef = React.useRef(idsKey);
+  var refetch = res.refetch;
+  var perWorkspace = !!(res.data && res.data.perWorkspace);
+  React.useEffect(function () {
+    if (seenIdsRef.current === idsKey) return;
+    seenIdsRef.current = idsKey;
+    if (perWorkspace) refetch();
+  }, [idsKey]);
+  return res;
 }
 window.SH_useAttention = SH_useAttention;
 
