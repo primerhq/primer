@@ -37,7 +37,8 @@ async def test_entity_search_routes_are_admin_only(client, app, plural) -> None:
 
     r = await client.post(f"/v1/{plural}/search", json={"query": "anything"})
 
-    assert r.status_code in (401, 403), (plural, r.status_code, r.text)
+    # The routes were removed (D18): nothing answers a non-admin with results, and a re-added route must refuse one.
+    assert r.status_code in (401, 403, 404, 405), (plural, r.status_code, r.text)
 
 
 async def test_private_agent_absent_from_live_map_and_wiki_search(sp) -> None:
