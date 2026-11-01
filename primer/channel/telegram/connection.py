@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +44,9 @@ class _TelegramConnectionRegistry:
     def __init__(self) -> None:
         self._entries: dict[str, _Entry] = {}
         self._lock = asyncio.Lock()
+        #: Called with the provider id once its connection is closed: the factory then forgets it installed handlers on it, so a
+        #: reopened connection gets them again (W8).
+        self.on_close: Callable[[str], None] | None = None
 
     async def acquire(self, provider: ChannelProvider) -> Any:
         async with self._lock:
@@ -79,6 +83,8 @@ class _TelegramConnectionRegistry:
                         "telegram: shutdown failed for %s", provider.id,
                     )
                 del self._entries[provider.id]
+                if self.on_close is not None:
+                    self.on_close(provider.id)
                 logger.info(
                     "telegram: application stopped for provider %s", provider.id,
                 )

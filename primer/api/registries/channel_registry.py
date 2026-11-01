@@ -123,7 +123,8 @@ class ChannelRegistry:
                 scheduler=self._scheduler,
             )
             adapter.stt_registry = self._stt_registry
-            await adapter.initialize()
+            # The factory has initialized the adapter: a second initialize() acquired the shared connection twice, so
+            # invalidate never closed it (W8).
             self._adapters[channel_id] = adapter
             return adapter
 

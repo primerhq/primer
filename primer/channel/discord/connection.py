@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -92,6 +93,9 @@ class _DiscordConnectionRegistry:
     def __init__(self) -> None:
         self._entries: dict[str, _Entry] = {}
         self._lock = asyncio.Lock()
+        #: Called with the provider id once its connection is closed: the factory then forgets it installed handlers on it, so a
+        #: reopened connection gets them again (W8).
+        self.on_close: Callable[[str], None] | None = None
 
     async def acquire(self, provider: ChannelProvider) -> Any:
         async with self._lock:
@@ -125,6 +129,8 @@ class _DiscordConnectionRegistry:
                 # The entry goes FIRST: whatever the close does (it fails, or the releasing task is cancelled while it runs),
                 # a stale entry would hand the next acquire a closed client, and the gateway task is stopped either way.
                 del self._entries[provider.id]
+                if self.on_close is not None:
+                    self.on_close(provider.id)
                 try:
                     # On its own task with a bounded wait: a cancel of the releasing task must not leave the HTTP session
                     # and the websocket half closed.

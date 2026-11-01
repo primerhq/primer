@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 _HANDLERS_INSTALLED: set[str] = set()
+# A closed connection takes its handlers with it, so the next connection of the provider gets them again (W8).
+SLACK_CONNECTIONS.on_close = lambda provider_id: _HANDLERS_INSTALLED.discard(provider_id)
 
 
 async def _route_channel_event(
