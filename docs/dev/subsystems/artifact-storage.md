@@ -10,7 +10,8 @@ adapters, `store_inbound_media` in `primer/channel/media.py`), the workspace fil
 `attachments` of a session message, `primer/api/routers/workspaces.py`), the workspace files an agent attaches to an `inform_user` or
 `ask_user` prompt (`primer/agent/inform.py`, `primer/worker/yield_runtime.py`), and the files of published service bundles
 (`primer/service/publish.py`, served by `primer/api/routers/svc_serve.py`). A message part carries an `artifact_id`, never the bytes; the
-agent loop reads the bytes back at turn time (`hydrate_prompt_parts` in `primer/media/hydrate.py`, called by `primer/agent/loop.py`) and a
+agent loop reads the bytes back at turn time (`hydrate_prompt_parts` in `primer/media/hydrate.py`, called by `primer/agent/loop.py`; a part whose artifact is gone and that has no `url` or `file_id` is sent as the text
+`[attachment unavailable: <mime type>]` instead of an image with no source, which the provider would refuse on every later turn) and a
 channel adapter at send time (`hydrate_media_dicts` in `primer/channel/media.py`). The subsystem decides where each file is written, finds it again by its id, and keeps a store from being deleted or moved while it still holds
 files.
 

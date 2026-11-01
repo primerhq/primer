@@ -36,10 +36,10 @@ async def test_distinct_artifacts_are_fetched_concurrently_and_a_repeated_one_on
     assert all(p.artifact_id is None for m in out for p in m.parts if hasattr(p, "data"))
 
 
-async def test_a_missing_artifact_leaves_its_part_and_the_rest_are_filled():
+async def test_a_missing_artifact_becomes_a_note_and_the_rest_are_filled():
     arts = _Arts()
     out = await hydrate_prompt_parts(arts, [Message(role="user", parts=[
         ImagePart(artifact_id="missing", mime_type="image/png"), ImagePart(artifact_id="ok", mime_type="image/png"),
     ])])
-    assert out[0].parts[0].artifact_id == "missing" and out[0].parts[0].data is None
+    assert out[0].parts[0] == TextPart(text="[attachment unavailable: image/png]")   # GX-8: never an image with no source
     assert out[0].parts[1].data == b"ok"

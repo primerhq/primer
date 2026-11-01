@@ -15,7 +15,7 @@ import asyncio
 import logging
 
 from primer.int.artifact_storage import ArtifactStorage
-from primer.model.chat import Message, Part
+from primer.model.chat import Message, Part, TextPart
 
 
 logger = logging.getLogger(__name__)
@@ -58,8 +58,8 @@ async def hydrate_prompt_parts(
     """
     if artifact_storage is None:
         return messages
-    # Every distinct artifact the prompt names is fetched once, all at once (bounded), instead of one after another per part (L5). A fetch
-    # that fails or finds nothing leaves its parts un-hydrated, as before.
+    # Every distinct artifact the prompt names is fetched once, all at once (bounded), instead of one after another per part (L5). A part
+    # whose artifact is not found, and that has no url or file_id either, is replaced in this copy by a note naming its type (GX-8).
     wanted = list(dict.fromkeys(
         aid
         for msg in messages
@@ -92,7 +92,10 @@ def _with_blob(part: Part, blobs: dict[str, object]) -> Part:
     blob = blobs.get(aid)
     if blob is None:
         logger.warning("hydrate_part: artifact %s not found", aid)
-        return part
+        if getattr(part, "url", None) or getattr(part, "file_id", None):
+            return part
+        # A part with no source left is refused by the provider, on this turn and every later one of the session (GX-8): tell the model instead.
+        return TextPart(text=f"[attachment unavailable: {getattr(part, 'mime_type', None) or part.type}]")
     update: dict = {"data": blob.data, "artifact_id": None}  # type: ignore[attr-defined]
     if getattr(part, "mime_type", None) is None:
         update["mime_type"] = blob.mime_type  # type: ignore[attr-defined]
