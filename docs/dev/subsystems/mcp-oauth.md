@@ -132,7 +132,10 @@ secret the current key cannot open) is a 409 asking someone with full access to
 sign in first (`start_sign_in(may_reregister=...)`, review finding 1). The first
 registration of a toolset is made by whoever starts first. With
 `PRIMER_PUBLIC_URL` set the redirect URI is the deployment's, not the caller's,
-and every start behaves as before.
+so a moved public URL re-registers for anyone; a registration that must be
+renewed (another issuer, a client secret the current key cannot open, as on a
+process whose `PRIMER_ENCRYPTION_KEY` differs) is still a 409 for a caller below
+full access (GX-13).
 The start answer also sets the `primer_mcp_oauth` cookie: a fresh nonce,
 HttpOnly, `SameSite=Lax`, scoped to the callback path, living as long as the
 pending sign-in (600 s), and `Secure` when the callback is https. The pending row
