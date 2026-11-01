@@ -28,6 +28,8 @@ const IC_CACHE_EMBED = "ic:embedding-providers";
 const IC_CACHE_RERANK = "ic:rerank-providers";
 const IC_CACHE_SSP = "ic:ssp";
 const IC_CACHE_BOOTSTRAP = "ic:bootstrap-status";
+// How long after its own bootstrap settles this client ignores the status poll's running-to-terminal transition: longer than one poll (5 s) plus a slow answer.
+const IC_OWN_RUN_SETTLE_MS = 12000;
 
 // Eight steps in order, the backend's BootstrapPhase enum (primer/model/internal.py) as the client sees it -
 // keeping the UI's per-phase rendering in sync with it is the whole point of the list (a missing phase used
@@ -184,8 +186,11 @@ function ConfiguredCard({ config, onRefresh, pushToast }) {
   const [updateOpen, setUpdateOpen] = React.useState(false);
   const bootstrapStatus = _useBootstrapStatus();
 
+  // UI-L7: the status poll sees "running" while THIS client's synchronous POST is in flight, so its transition effect used to toast and refresh a
+  // second time for a run whose onSuccess already did. A run this client started owns its outcome until the poll has had time to settle.
+  const ownRunUntil = React.useRef(0);
   const bootstrap = useMutation(
-    () => apiFetch("POST", "/internal_collections/bootstrap"),
+    () => { ownRunUntil.current = Infinity; return apiFetch("POST", "/internal_collections/bootstrap"); },
     {
       invalidates: [IC_CACHE_CONFIG, IC_CACHE_BOOTSTRAP],
       // 01a08c05: the route is fully synchronous (the backend handler
@@ -205,6 +210,7 @@ function ConfiguredCard({ config, onRefresh, pushToast }) {
       // straight to the already-terminal status - there is no
       // "running" tick for this client's own poll to observe.
       onSuccess: (data) => {
+        ownRunUntil.current = Date.now() + IC_OWN_RUN_SETTLE_MS;
         bootstrapStatus.refetch();
         if (data?.status === "succeeded") {
           pushToast({ kind: "success", title: "Bootstrap complete", detail: "Subsystem is now active." });
@@ -218,6 +224,7 @@ function ConfiguredCard({ config, onRefresh, pushToast }) {
         }
       },
       onError: (err) => {
+        ownRunUntil.current = 0;
         if (err?.status === 409) {
           // Already running (started elsewhere) - genuinely nothing
           // terminal to report from THIS request; sync the status and
@@ -244,7 +251,10 @@ function ConfiguredCard({ config, onRefresh, pushToast }) {
   React.useEffect(() => {
     const prev = prevStatusRef.current;
     const curr = bootstrapStatus.data?.status;
-    if (prev === "running" && curr === "succeeded") {
+    const own = ownRunUntil.current > Date.now();
+    if (own) {
+      // this client's own run: its onSuccess has said it
+    } else if (prev === "running" && curr === "succeeded") {
       pushToast({ kind: "success", title: "Bootstrap complete", detail: "Subsystem is now active." });
       onRefresh();
     } else if (prev === "running" && curr === "failed") {
@@ -319,8 +329,11 @@ function ActiveCard({ config, onRefresh, pushToast }) {
   const [updateOpen, setUpdateOpen] = React.useState(false);
   const bootstrapStatus = _useBootstrapStatus();
 
+  // UI-L7: the status poll sees "running" while THIS client's synchronous POST is in flight, so its transition effect used to toast and refresh a
+  // second time for a run whose onSuccess already did. A run this client started owns its outcome until the poll has had time to settle.
+  const ownRunUntil = React.useRef(0);
   const bootstrap = useMutation(
-    () => apiFetch("POST", "/internal_collections/bootstrap"),
+    () => { ownRunUntil.current = Infinity; return apiFetch("POST", "/internal_collections/bootstrap"); },
     {
       invalidates: [IC_CACHE_CONFIG, IC_CACHE_BOOTSTRAP],
       // 01a08c05: same fix as ConfiguredCard's own bootstrap mutation
@@ -329,6 +342,7 @@ function ActiveCard({ config, onRefresh, pushToast }) {
       // read it directly instead of announcing a "started... running in
       // the background" state that no longer exists.
       onSuccess: (data) => {
+        ownRunUntil.current = Date.now() + IC_OWN_RUN_SETTLE_MS;
         bootstrapStatus.refetch();
         if (data?.status === "succeeded") {
           pushToast({ kind: "success", title: "Re-bootstrap complete" });
@@ -342,6 +356,7 @@ function ActiveCard({ config, onRefresh, pushToast }) {
         }
       },
       onError: (err) => {
+        ownRunUntil.current = 0;
         if (err?.status === 409) {
           bootstrapStatus.refetch();
           return;
@@ -357,7 +372,10 @@ function ActiveCard({ config, onRefresh, pushToast }) {
   React.useEffect(() => {
     const prev = prevStatusRef.current;
     const curr = bootstrapStatus.data?.status;
-    if (prev === "running" && curr === "succeeded") {
+    const own = ownRunUntil.current > Date.now();
+    if (own) {
+      // this client's own run: its onSuccess has said it
+    } else if (prev === "running" && curr === "succeeded") {
       pushToast({ kind: "success", title: "Re-bootstrap complete" });
       onRefresh();
     } else if (prev === "running" && curr === "failed") {

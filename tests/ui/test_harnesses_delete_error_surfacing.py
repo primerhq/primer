@@ -73,14 +73,12 @@ def test_fetch_sync_build_push_errors_are_surfaced_too():
     way, fetchMut/syncMut) share the identical onError-suppresses-the-
     default-toast gap uninstallMut had - all five construct useMutation
     with an onError that only refetches. One shared banner covers
-    whichever of the four non-destructive mutations most recently
-    failed."""
+    the four non-destructive mutations, showing the last one pressed."""
     src = _src()
     assert "actionError" in src
-    assert "fetchMut.error" in src
-    assert "syncMut.error" in src
-    assert "buildMut.error" in src
-    assert "pushMut.error" in src
+    # UI-L9b: the banner shows the error of the action pressed LAST, picked from the four mutations (a Sync that worked clears an old Fetch failure).
+    assert "{ fetch: fetchMut, sync: syncMut, build: buildMut, push: pushMut }[lastAction]" in src
+    assert "|| {}).error" in src
 
 
 def test_action_error_banner_uses_the_established_banner_convention():
