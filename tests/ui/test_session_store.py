@@ -192,30 +192,58 @@ def test_snapshot_is_stable_across_a_no_op_frame() -> None:
     assert out["gatesDegraded"] is True
 
 
-def test_refcount_does_not_clear_accumulated_state() -> None:
-    """dispose() drops the refcount to zero but keeps the accumulated
-    records (background sessions keep accumulating)."""
+def test_refcount_frees_accumulated_records_after_a_grace() -> None:
+    """Lead ruling on UI-H1: once nothing displays a session (refs at zero), its accumulated records and live parts are
+    freed after a 60 s grace from the last release, so reopening a tab within a minute does not refetch. The status and the
+    high-water stay (the pulse dot and the tap cursor still work), and a re-mount inside the grace cancels the free."""
     ctx = _ctx()
     out = json.loads(ctx.eval(
         """
         (function () {
-          var s = SS_getStore("w6", "s6");
-          SS_retain(s);
-          SS_apply(s, {"class": "assistant_token", session_id: "s6", seq: 1,
-            payload: {text: "kept"}});
-          SS_dispose(s);
-          var refs = s.refs;
-          var snap = SS_getSnapshot(s, "transcript");
-          var rec = snap.filter(function (r) { return r.kind === "record"; });
+          function filled(sid) {
+            var s = SS_getStore("w6", sid);
+            SS_retain(s);
+            SS_apply(s, {"class": "tool_call", session_id: sid, seq: 1, payload: {name: "shell", id: "c1"}});
+            SS_apply(s, {"class": "assistant_token", session_id: sid, seq: 2, payload: {text: "kept"}});
+            SS_apply(s, {"class": "text_delta", session_id: sid, part_id: "n:text", kind: "text", delta: "live"});
+            return s;
+          }
+          function kept(s) {
+            var snap = SS_getSnapshot(s, "transcript") || [];
+            return s.recordsBySeq.length === 2 && snap.filter(function (r) { return r.kind === "record"; }).length === 2
+              && !!s.parts["n:text"];
+          }
+          var a = filled("s6");
+          var b = filled("s6b");
+          var TIMERS = [];
+          window.setTimeout = function (fn, ms) { TIMERS.push({fn: fn, ms: ms, live: true}); return TIMERS.length; };
+          window.clearTimeout = function (id) { if (TIMERS[id - 1]) TIMERS[id - 1].live = false; };
+          SS_dispose(a);
+          var withinGrace = kept(a);
+          var graceMs = TIMERS.map(function (t) { return t.ms; });
+          SS_dispose(b);
+          SS_retain(b);   // re-mounted inside the grace
+          TIMERS.forEach(function (t) { if (t.live) t.fn(); });
           return JSON.stringify({
-            refs: refs,
-            recordKept: rec.length === 1 && rec[0].text === "kept"
+            refs: a.refs,
+            withinGrace: withinGrace,
+            graceMs: graceMs,
+            freedRecords: a.recordsBySeq.length + Object.keys(a.records).length,
+            freedParts: Object.keys(a.parts).length,
+            statusKept: a.status && a.status.verb,
+            highWaterKept: SS_highWater(a),
+            remountKept: kept(b),
+            remountRefs: b.refs
           });
         })()
         """
     ))
     assert out["refs"] == 0
-    assert out["recordKept"] is True
+    assert out["withinGrace"] is True, "records are kept during the grace"
+    assert out["graceMs"] == [60000]
+    assert out["freedRecords"] == 0 and out["freedParts"] == 0, "freed after the grace"
+    assert out["statusKept"] == "shell" and out["highWaterKept"] == 2
+    assert out["remountKept"] is True and out["remountRefs"] == 1, "a re-mount inside the grace keeps them"
 
 
 def test_frames_for_other_sessions_do_not_touch_the_store() -> None:
