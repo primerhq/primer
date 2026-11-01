@@ -361,8 +361,8 @@ class TestReferenceBlocks:
         assert is_error and answer["type"] == "conflict" and "agg-1" in answer["message"]
 
     @pytest.mark.asyncio
-    async def test_an_llm_provider_with_a_referenced_profile_cannot_be_deleted(self, world) -> None:
-        """GS-5: the tool refuses what the REST delete refuses."""
+    async def test_an_llm_provider_is_deleted_whatever_names_it(self, world) -> None:
+        """As the REST route (e2e t0344): no reference check, no cascade; the profile and the agent stay."""
         sp, toolset, _ = world
         await sp.get_storage(ModelProfile).create(_profile())
         agent = Agent.model_validate({**_agent().model_dump(mode="json"), "model": {"profile_id": "mp-1"}})
@@ -370,20 +370,10 @@ class TestReferenceBlocks:
 
         is_error, answer = await _call(toolset, "delete_llm_provider", id="anthropic-1")
 
-        assert is_error and answer["type"] == "conflict" and "in_use_by" in answer["message"] and "mp-1" in answer["message"]
-        assert await sp.get_storage(LLMProvider).get("anthropic-1") is not None
-        assert await sp.get_storage(ModelProfile).get("mp-1") is not None
-
-    @pytest.mark.asyncio
-    async def test_an_llm_provider_is_deleted_with_its_unreferenced_profiles(self, world) -> None:
-        sp, toolset, _ = world
-        await sp.get_storage(ModelProfile).create(_profile())
-
-        is_error, answer = await _call(toolset, "delete_llm_provider", id="anthropic-1")
-
         assert not is_error, answer
         assert await sp.get_storage(LLMProvider).get("anthropic-1") is None
-        assert await sp.get_storage(ModelProfile).get("mp-1") is None
+        assert await sp.get_storage(ModelProfile).get("mp-1") is not None
+        assert await sp.get_storage(Agent).get("agt-1") is not None
 
     @pytest.mark.asyncio
     async def test_a_model_profile_a_graph_node_overrides_with_cannot_be_deleted(self, world) -> None:

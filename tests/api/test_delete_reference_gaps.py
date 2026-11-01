@@ -8,43 +8,18 @@ from tests._support.model_profiles import seed_profile
 from tests.api.test_model_profiles_router import _agent, _seed_provider
 
 
-async def test_llm_provider_delete_is_refused_while_one_of_its_profiles_is_referenced(client, app) -> None:
+async def test_llm_provider_delete_stays_permissive_and_the_agent_status_reports_it(client, app) -> None:
+    """The e2e suite pins this as the design (t0344, t0265, t0033): a provider is deleted whatever names it; profiles and agents stay and report the break."""
     await _seed_provider(client, "gap-prov")
     pid = await seed_profile(client, "gap-prov", "model-a")
     assert (await client.post("/v1/agents", json=_agent("gap-agent", pid))).status_code == 201
 
-    deleted = await client.delete("/v1/llm_providers/gap-prov")
+    assert (await client.delete("/v1/llm_providers/gap-prov")).status_code == 204
 
-    assert deleted.status_code == 409 and "in_use_by" in deleted.text and pid in deleted.text and "gap-agent" in deleted.text
     assert (await app.state.storage_provider.get_storage(ModelProfile).get(pid)) is not None
-    assert (await client.get("/v1/llm_providers/gap-prov")).status_code == 200
-
-
-async def test_llm_provider_delete_takes_its_unreferenced_profiles_with_it(client, app) -> None:
-    await _seed_provider(client, "gap-cascade")
-    first = await seed_profile(client, "gap-cascade", "model-a")
-    second = await seed_profile(client, "gap-cascade", "model-b")
-
-    assert (await client.delete("/v1/llm_providers/gap-cascade")).status_code == 204
-
-    profiles = app.state.storage_provider.get_storage(ModelProfile)
-    assert await profiles.get(first) is None and await profiles.get(second) is None
-    assert (await client.get("/v1/llm_providers/gap-cascade")).status_code == 404
-
-
-async def test_one_referenced_profile_keeps_all_of_them(client, app) -> None:
-    await _seed_provider(client, "gap-keep")
-    used = await seed_profile(client, "gap-keep", "model-a")
-    spare = await seed_profile(client, "gap-keep", "model-b")
-    assert (await client.post("/v1/agents", json=_agent("gap-keeper", used))).status_code == 201
-
-    assert (await client.delete("/v1/llm_providers/gap-keep")).status_code == 409
-    assert (await app.state.storage_provider.get_storage(ModelProfile).get(spare)) is not None
-
-
-async def test_unreferenced_llm_provider_delete_still_answers_204(client) -> None:
-    await _seed_provider(client, "gap-free")
-    assert (await client.delete("/v1/llm_providers/gap-free")).status_code == 204
+    assert (await client.get("/v1/agents/gap-agent")).status_code == 200
+    status = (await client.get("/v1/agents/gap-agent/status")).json()
+    assert status["ok"] is False and any("gap-prov" in str(issue) for issue in status["issues"]), status
 
 
 async def test_profile_delete_is_refused_while_a_graph_node_overrides_with_it(client, app) -> None:

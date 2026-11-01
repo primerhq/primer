@@ -161,7 +161,6 @@ from primer.model.yield_ import ToolContext, Yielded
 from primer.session.peer_messages import ACCESS_NOTE
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
-from primer.storage.provider_cascade import delete_llm_provider_profiles
 from primer.storage.references import MODEL_PROFILE_GRAPH_REFERENCE
 from primer.artifact.checks import (
     ARTIFACT_DEFAULT_WRITE_NOTE,
@@ -716,11 +715,7 @@ def build_system_toolset(
     async def _artifact_provider_pre_delete(existing: ArtifactStorageProvider) -> None:
         await check_artifact_provider_delete(storage_provider, existing.id)
 
-    async def _llm_provider_pre_delete(existing: LLMProvider) -> None:
-        await delete_llm_provider_profiles(storage_provider, existing.id)
-
     pre_deletes_by_label: dict[str, Any] = {
-        "llm_provider": _llm_provider_pre_delete,
         "artifact_storage_provider": _artifact_provider_pre_delete,
         "collection": _collection_pre_delete,
         "toolset": _toolset_pre_delete,

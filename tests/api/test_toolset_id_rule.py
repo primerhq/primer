@@ -18,7 +18,7 @@ async def test_rest_create_refuses_an_id_a_provider_would_refuse(client, tid) ->
     assert r.status_code == 422, r.text
 
 
-@pytest.mark.parametrize("tid", ["acme-web", "web_tools_2", "a", "a" * 48, "0day"])
+@pytest.mark.parametrize("tid", ["acme-web", "web_tools_2", "a", "a" * 48, "0day", "ts-t0721-xxxx-INSERTED", "Web_Tools"])
 async def test_rest_create_accepts_a_conforming_id(client, tid) -> None:
     body = _toolset().model_dump(mode="json") | {"id": tid}
     r = await client.post("/v1/toolsets?allow_unreachable=1", json=body)

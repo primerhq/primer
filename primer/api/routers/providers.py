@@ -111,7 +111,6 @@ from primer.model.provider import (
     TransportType,
 )
 from primer.api.routers._references import ReferenceCheck
-from primer.storage.provider_cascade import delete_llm_provider_profiles
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalPolicy
 
@@ -700,11 +699,6 @@ async def draft_test_cross_encoder_provider(body: _ModelProviderDraft) -> dict[s
     return await cross_encoder_draft_test(body.model_dump())
 
 
-async def _llm_provider_pre_delete(existing: LLMProvider, request: Request) -> None:
-    """The provider goes with its profiles when none is in use; a profile in use refuses the delete with a 409 naming the references (GS-5)."""
-    await delete_llm_provider_profiles(get_storage_provider(request), existing.id)
-
-
 llm_provider_router = make_crud_router(
     model_cls=LLMProvider,
     grantable=True,
@@ -716,7 +710,6 @@ llm_provider_router = make_crud_router(
     on_pre_create=_make_reserved_create_guard(RESERVED_LLM_IDS, "llm_provider"),
     on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_make_reserved_delete_guard(RESERVED_LLM_IDS, "llm_provider"),
-    on_pre_delete=_llm_provider_pre_delete,
 )
 
 
