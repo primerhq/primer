@@ -55,7 +55,8 @@ def set_append_only_default(on: bool) -> None:
 
 
 def append_only_default() -> bool:
-    return _append_only_configured
+    """The configured flag, or ``PRIMER_SESSION_LOG_APPEND_ONLY=1`` (how a whole test suite is run append-only)."""
+    return _append_only_configured or os.environ.get("PRIMER_SESSION_LOG_APPEND_ONLY", "") not in ("", "0", "false", "False")
 
 
 def set_verify_default(on: bool) -> None:

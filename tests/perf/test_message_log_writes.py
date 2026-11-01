@@ -57,4 +57,4 @@ async def test_an_append_only_turn_writes_its_own_bytes_and_the_same_number_of_g
     assert whole_written["whole"] > 2_000_000 * 2 and whole_written["appended"] == 0         # the persist and the steer each rewrote the log
     assert appended_written["whole"] == 0 and 0 < appended_written["appended"] < 2_000       # only the new lines were written
     assert len(appended_git) == len(whole_git)                                               # and the same git commands ran
-    assert appended_bytes.endswith(whole_bytes[-300:]) or len(appended_bytes) == len(whole_bytes)
+    assert appended_bytes.count(b"\n") == whole_bytes.count(b"\n")                             # the same lines (byte identity: the goldens)

@@ -700,7 +700,8 @@ class TestTheExecutor:
                 await session.aclose()
                 await backend.aclose()
 
-        assert len(_run(scenario)) == 2
+        # Whole-file writing reads the file for the snapshot and for the rewrite (2); an append-only log (Task 14 stage 2) has no rewrite to read for.
+        assert len(_run(scenario)) <= 2
 
     def test_a_turn_that_ends_on_a_question_still_waits_for_the_user_without_re_reading_the_history(self) -> None:
         from primer.model.workspace_session import SessionStatus
