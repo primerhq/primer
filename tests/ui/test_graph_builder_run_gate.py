@@ -44,7 +44,7 @@ window.primerApi = {
   useFocusTrap: function () {},
   focusablesOf: function () { return []; },
 };
-function Btn(p) { return React.createElement("button", { "data-testid": p["data-testid"], disabled: p.disabled, onClick: p.onClick }, p.children); }
+function Btn(p) { return React.createElement("button", { "data-testid": p["data-testid"], disabled: p.disabled, title: p.title, onClick: p.busy ? function () {} : p.onClick }, p.children); }
 function Banner(p) { return React.createElement("div", null, p.children); }
 function Icon() { return null; }
 function Modal(p) { return React.createElement("div", { "data-testid": "modal" }, p.title, p.children, p.footer); }
