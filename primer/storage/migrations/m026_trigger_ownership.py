@@ -16,7 +16,9 @@ full on the trigger and makes the re-enabler the subscription's owner. After thi
 subscription with no owner (:func:`primer.trigger.reach.refuse_fire_out_of_reach`, fail closed).
 
 A row that already carries owners, grants or ``public`` (a subscription that already has an owner) is left alone, so re-running
-converges. Rows are read in full before any write, through migration-local views with ``extra="allow"``, as ``m021`` does.
+converges. Users and triggers are read in full before any write, through migration-local views with ``extra="allow"``, as ``m021``
+does; only the subscriptions with no owner are read, and each is adopted with ``patch_if``, which writes those two fields and leaves the
+rest of the document as stored (PERF-T16).
 """
 
 from __future__ import annotations
@@ -30,11 +32,9 @@ from pydantic import ConfigDict
 from primer.int.storage_provider import StorageProvider
 from primer.storage.migrations._rows import iter_rows, read_all
 from primer.model.common import Identifiable
-from primer.model.storage import OffsetPage
+from primer.storage.q import Q
 
 logger = logging.getLogger(__name__)
-
-_PAGE = 200
 
 
 class _View(Identifiable):
@@ -121,15 +121,13 @@ class M026TriggerOwnership:
         )
         subs = sp.get_storage(Subscription)
         adopted = 0
-        for sub in await _read_all(subs):
-            if sub.owner is not None:
-                continue
+        async for sub in iter_rows(subs, predicate=Q(Subscription).where_null("owner").build()):
             owner = run_as.get(sub.trigger_id) or admin_ref
             if owner is None:
                 continue
             # Disabled as well: the adopted identity must not run a row nobody can vouch for until its owner re-enables it.
-            await subs.update(sub.model_copy(update={"owner": owner, "enabled": False}))
-            adopted += 1
+            if await subs.patch_if(sub.id, {"owner": owner, "enabled": False}, where={"owner": [None]}) is not None:
+                adopted += 1
         if stamped:
             logger.info("gave existing triggers an owner", extra={"triggers": stamped})
         if adopted:

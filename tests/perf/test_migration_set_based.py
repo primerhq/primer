@@ -16,6 +16,10 @@ from primer.storage.migrations.m024_cross_workspace_list_field import (
     M024CrossWorkspaceListField,
     WorkspaceSession as SessionView,
 )
+from primer.storage.migrations.m026_trigger_ownership import M026TriggerOwnership
+from primer.storage.migrations.m026_trigger_ownership import Subscription as SubView
+from primer.storage.migrations.m026_trigger_ownership import Trigger as TriggerView
+from primer.storage.migrations.m026_trigger_ownership import User as UserView
 from primer.storage.sqlite import SqliteStorageProvider
 from tests.perf.counting import CountingStorageProvider
 from tests.storage._migration_golden import insert_raw
@@ -52,3 +56,18 @@ async def test_m024_reads_and_writes_only_the_rows_without_a_workspace(sp) -> No
     assert c.calls("find", model="ExternalToolCall") == 1
     assert c.rows <= 2 * NEED + 1  # each changed row read once and written once, plus the one session
     assert c.total <= NEED + 3  # the writes, one page per table, one session read
+
+
+async def test_m026_reads_and_writes_only_the_subscriptions_without_an_owner(sp) -> None:
+    alice = {"type": "user", "id": "u1", "user_id": "u1"}
+    await insert_raw(sp, UserView, {"u1": {"role": "admin", "created_at": "2025-01-01T00:00:00Z"}})
+    await insert_raw(sp, TriggerView, {"t1": {"owner": alice, "access": {"owners": ["u1"]}}})
+    await insert_raw(sp, SubView, _mix({"trigger_id": "t1"}, {"trigger_id": "t1", "owner": alice}))
+
+    with sp.counted() as c:
+        await M026TriggerOwnership().apply(sp)
+
+    assert c.calls("update") == 0
+    assert c.calls("patch_if", model="Subscription") == NEED
+    assert c.calls("find", "list", model="Subscription") == 1
+    assert c.rows <= 2 * NEED + 2  # each changed subscription read once and written once, plus the user and the trigger
