@@ -69,9 +69,9 @@ def topics_job_id(agent_id: str) -> str:
 
 async def _memory_agent(sp: Any, session: Any) -> tuple[str, AgentMemory] | None:
     """The agent of a session that memory learns from, with its settings: an agent session of its own (not a graph's, not a sub-agent's) whose
-    agent has memory on and which has completed a turn."""
+    agent has memory on and which has completed a turn. ``completed_turn_no`` is 0-based (the first turn is 0); a job counts turns from 1."""
     binding = session.binding
-    if getattr(binding, "kind", None) != "agent" or session.parent_session_id is not None or (session.completed_turn_no or 0) < 1:
+    if getattr(binding, "kind", None) != "agent" or session.parent_session_id is not None or session.completed_turn_no is None:
         return None
     settings = await sp.get_storage(AgentMemory).get(binding.agent_id)
     if settings is None or not settings.enabled:
@@ -104,7 +104,7 @@ async def _enqueue_reflect(sp: Any, engine: Any, session: Any, now: datetime, *,
         return
     agent_id, settings = found
     job_id = reflect_job_id(agent_id, session.id)
-    await _upsert_job(sp, job_id, kind="reflect", agent_id=agent_id, session_id=session.id, target_turn=session.completed_turn_no, now=now)
+    await _upsert_job(sp, job_id, kind="reflect", agent_id=agent_id, session_id=session.id, target_turn=session.completed_turn_no + 1, now=now)
     await engine.upsert(ClaimKind.MEMORY, job_id, next_attempt_at=due(settings))
 
 

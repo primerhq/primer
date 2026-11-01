@@ -10,6 +10,7 @@ import primer.memory.jobs as jobs
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind, Lease
 from primer.memory.jobs import (
+    MIN_TURNS,
     MemoryDeps,
     budget_allows,
     consume_budget,
@@ -32,7 +33,7 @@ NOW = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
 def _session(*, agent_id="a1", turns=1, binding=None, parent=None, sid="s1") -> WorkspaceSession:
     return WorkspaceSession(
         id=sid, workspace_id="w1", binding=binding or AgentSessionBinding(agent_id=agent_id), created_at=NOW, turn_no=turns,
-        completed_turn_no=turns, parent_session_id=parent, status=SessionStatus.RUNNING,
+        completed_turn_no=turns - 1, parent_session_id=parent, status=SessionStatus.RUNNING,
     )
 
 
@@ -90,6 +91,19 @@ async def test_turn_completed_enqueues_debounced_reflect(fake_storage_provider, 
     (job,) = (await fake_storage_provider.get_storage(MemoryJob).list(_page())).items
     assert (job.id, job.kind, job.agent_id, job.session_id, job.target_turn) == ("reflect:a1:s1", "reflect", "a1", "s1", 2)
     assert _due(engine, job.id) == second + timedelta(minutes=10), "the later turn re-arms the lease: the debounce"
+
+
+async def test_the_first_turn_is_turn_zero_and_counts_as_one(fake_storage_provider, engine):
+    """``completed_turn_no`` is 0-based: a session that finished turns 0 and 1 has two turns, enough to reflect on (a 1-based reading dropped it)."""
+    await _agent(fake_storage_provider)
+    first = _session(turns=1)
+    assert first.completed_turn_no == 0
+    await on_turn_completed(fake_storage_provider, engine, first, NOW)
+    second = _session(turns=2)
+    assert second.completed_turn_no == 1
+    await on_turn_completed(fake_storage_provider, engine, second, NOW)
+    job = await fake_storage_provider.get_storage(MemoryJob).get("reflect:a1:s1")
+    assert job.target_turn - job.reflected_turn >= MIN_TURNS
 
 
 async def test_session_ended_makes_job_due_now(fake_storage_provider, engine):
