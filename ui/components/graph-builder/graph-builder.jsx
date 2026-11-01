@@ -231,7 +231,7 @@ function GB_Builder(props) {
   const save = useMutation(
     () => GB_api.putGraph(graphId, buildSaveBody()),
     {
-      invalidates: ["graphs:list", `graph:${graphId}`, `graph-detail:${graphId}`, `graph-status:${graphId}`],
+      invalidates: ["graphs:list", `graph:${graphId}`, `graph-detail:${graphId}`, `graph-status:${graphId}`, `graph:status:${graphId}`],
       // Same toast the console uses everywhere else, including which graph it
       // was - a revamp is no reason to invent different copy for a save.
       onSuccess: () => {
