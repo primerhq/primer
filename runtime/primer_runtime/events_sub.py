@@ -12,12 +12,16 @@ cancelled on connection close). A subscriber names the kinds it wants:
   regardless of which connection requested the exec, and each matching
   subscriber receives a ``ws_event`` frame.
 
-The broadcaster never raises out of :meth:`EventBroadcaster.broadcast`:
-a subscriber whose send fails (connection gone) is dropped.
+The broadcaster never raises out of :meth:`EventBroadcaster.broadcast`,
+and never waits on a subscriber's socket: each subscriber has a bounded
+queue drained by its own task (GI-12). A subscriber whose queue is full
+loses that event (counted and logged); one whose send fails (connection
+gone) is dropped.
 """
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import logging
 from collections.abc import Callable, Coroutine
@@ -32,12 +36,18 @@ log = logging.getLogger(__name__)
 EXEC_KINDS = frozenset({"exec_started", "exec_exited"})
 ALL_KINDS = EXEC_KINDS | {"file_changed"}
 
+# Lifecycle frames one subscriber may have waiting for its socket before it loses new ones.
+_QUEUE_MAX = 256
+
 
 @dataclass
 class _Subscriber:
     req_id: int
     kinds: frozenset[str]
     send: Callable[[str], Coroutine[Any, Any, None]]
+    queue: asyncio.Queue[str] = field(default_factory=lambda: asyncio.Queue(maxsize=_QUEUE_MAX))
+    task: asyncio.Task[None] | None = None
+    dropped: int = 0
 
 
 @dataclass
@@ -57,16 +67,27 @@ class EventBroadcaster:
         send: Callable[[str], Coroutine[Any, Any, None]],
     ) -> int:
         handle = next(self._ids)
-        self._subs[handle] = _Subscriber(req_id=req_id, kinds=kinds, send=send)
+        sub = _Subscriber(req_id=req_id, kinds=kinds, send=send)
+        sub.task = asyncio.create_task(self._pump(handle, sub), name=f"events_sub:{req_id}")
+        self._subs[handle] = sub
         return handle
 
     def unsubscribe(self, handle: int) -> None:
-        self._subs.pop(handle, None)
+        sub = self._subs.pop(handle, None)
+        if sub is not None and sub.task is not None:
+            sub.task.cancel()
+
+    async def _pump(self, handle: int, sub: _Subscriber) -> None:
+        """Send one subscriber's frames in order; a failed send (subscriber gone) drops it."""
+        try:
+            while True:
+                await sub.send(await sub.queue.get())
+        except Exception:  # noqa: BLE001 - subscriber gone
+            self._subs.pop(handle, None)
 
     async def broadcast(self, kind: str, data: dict[str, Any]) -> None:
-        """Deliver one lifecycle event to every matching subscriber."""
-        dead: list[int] = []
-        for handle, sub in list(self._subs.items()):
+        """Queue one lifecycle event for every matching subscriber; never waits on a socket (GI-12)."""
+        for sub in list(self._subs.values()):
             if kind not in sub.kinds:
                 continue
             frame = serialize(Event(
@@ -75,11 +96,13 @@ class EventBroadcaster:
                 data={"kind": kind, **data},
             ))
             try:
-                await sub.send(frame)
-            except Exception:  # noqa: BLE001 - subscriber gone
-                dead.append(handle)
-        for handle in dead:
-            self.unsubscribe(handle)
+                sub.queue.put_nowait(frame)
+            except asyncio.QueueFull:
+                sub.dropped += 1
+                log.warning(
+                    "events subscriber req_id=%d is not keeping up: dropped %s (%d dropped so far)",
+                    sub.req_id, kind, sub.dropped,
+                )
 
 
 async def start_events_subscribe(

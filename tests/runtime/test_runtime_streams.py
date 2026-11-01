@@ -236,3 +236,70 @@ async def test_a_watch_whose_setup_fails_sends_watch_error(tmp_path: Path, monke
     assert frames[0]["req_id"] == 4
     assert frames[0]["data"]["code"] == "EINTERNAL"
     assert "OS file watch limit reached" in frames[0]["data"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# GI-12: one stalled lifecycle subscriber holds up nobody
+# ---------------------------------------------------------------------------
+
+
+async def test_a_stalled_subscriber_does_not_hold_up_the_broadcast_or_the_others() -> None:
+    broadcaster = EventBroadcaster()
+    never = asyncio.Event()
+    got: list[dict] = []
+
+    async def stalled(frame: str) -> None:
+        await never.wait()  # a subscriber whose socket is back-pressured
+
+    async def healthy(frame: str) -> None:
+        got.append(json.loads(frame))
+
+    broadcaster.subscribe(req_id=1, kinds=EXEC_KINDS, send=stalled)
+    broadcaster.subscribe(req_id=2, kinds=EXEC_KINDS, send=healthy)
+    task = asyncio.ensure_future(broadcaster.broadcast("exec_started", {"cmd": ["true"]}))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert task.done()
+    assert [f["data"]["kind"] for f in got] == ["exec_started"]
+
+
+async def test_an_exec_runs_while_a_subscriber_is_stalled(tmp_path: Path) -> None:
+    broadcaster = EventBroadcaster()
+    never = asyncio.Event()
+
+    async def stalled(frame: str) -> None:
+        await never.wait()
+
+    broadcaster.subscribe(req_id=1, kinds=EXEC_KINDS, send=stalled)
+    frames: list[dict] = []
+
+    async def send(frame: str) -> None:
+        frames.append(json.loads(frame))
+
+    task = exec_mod.start_exec(
+        5, {"cmd": ["/bin/sh", "-c", "echo ran"], "access": "read"}, str(tmp_path), WorkspaceLockTable(), send,
+        exec_mod.ExecRegistry(), broadcaster=broadcaster,
+    )
+    try:
+        await asyncio.wait_for(task, timeout=10)
+    finally:
+        task.cancel()
+    assert frames[-1]["event"] == "exit" and frames[-1]["data"] == {"code": 0}
+
+
+async def test_a_subscriber_that_falls_behind_loses_events_counted_and_logged(caplog) -> None:
+    broadcaster = EventBroadcaster()
+    never = asyncio.Event()
+
+    async def stalled(frame: str) -> None:
+        await never.wait()
+
+    broadcaster.subscribe(req_id=3, kinds=EXEC_KINDS, send=stalled)
+    with caplog.at_level("WARNING", logger="primer_runtime.events_sub"):
+        for i in range(300):
+            await asyncio.wait_for(broadcaster.broadcast("exec_exited", {"cmd": [str(i)]}), 5)
+            await asyncio.sleep(0)
+    dropped = [r for r in caplog.records if "dropped" in r.getMessage()]
+    assert dropped, caplog.text
+    # one frame is in the stalled send, 256 wait in its queue, the rest are dropped
+    assert dropped[-1].getMessage().endswith("(43 dropped so far)")
