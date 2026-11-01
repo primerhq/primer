@@ -93,8 +93,8 @@ async def test_the_first_of_a_cancel_and_a_steer_result_decides_the_call_and_eve
 
     * cancel first: R_c's park flip lands and R_c is held at its ``cancelled`` row write while R_s runs. R_s answers
       409 ``already_decided`` and writes nothing; released, R_c answers 202 and the row is ``cancelled`` with no result.
-    * steer first: R_s completes the call; R_c then answers 409 ``already_decided``, publishes nothing and leaves the
-      row ``completed`` with the result."""
+    * steer first: R_s completes the call; R_c then answers 202 (the cancel route's contract for a decided park), changes
+      nothing and publishes nothing, and the row stays ``completed`` with the result."""
     bus = _RecordingBus()
     app.state.event_bus = bus
     wid = await _parked_external_session(client, wsr, sp)
@@ -118,8 +118,11 @@ async def test_the_first_of_a_cancel_and_a_steer_result_decides_the_call_and_eve
         loser, winner = r_c, r_s
 
     assert 200 <= winner.status_code < 300, winner.text
-    assert loser.status_code == 409, loser.text
-    assert loser.json()["extensions"]["code"] == "already_decided"
+    if first == "cancel":
+        assert loser.status_code == 409, loser.text
+        assert loser.json()["extensions"]["code"] == "already_decided"
+    else:
+        assert (loser.status_code, loser.json()) == (202, {"status": "accepted"}), loser.text
     row = await calls.get(ROW_ID)
     session = await sp.get_storage(WorkspaceSession).get("sess-1")
     assert session.parked_status == "resumable"
