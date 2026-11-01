@@ -224,7 +224,7 @@ Adapters never construct themselves on the consumer path. A per-row registry sit
 - `ProviderRegistry` (`primer/api/registries/provider_registry.py`) caches LLM / Embedder / CrossEncoder / Toolset adapters keyed by row id under one `asyncio.Lock`; default factories dispatch on the provider-type enum.
 - `SemanticSearchRegistry` and `WebSearchRegistry` each cache one provider instance per row id, running the storage lookup and factory call outside the lock so concurrent gets for different ids do not serialise; on a same-id race the loser is `aclose()`'d.
 
-The registry contract is uniform: lazy `get_*` constructs on miss and caches; `invalidate_*` drops the cached entry after `aclose()`; `aclose()` closes every cached adapter. There are more than two indirections between an adapter and its consumer (lifespan to registry to bus to factory to adapter), so the sequence below shows the full wiring for the `ProviderRegistry` case.
+The registry contract is uniform: lazy `get_*` constructs on miss and caches; `invalidate_*` drops the cached entry at once, so new requests build a fresh adapter, and RETIRES the old one (`primer/api/registries/retirement.py`): its coroutine and async-generator methods are counted in place when it is built, and it is closed only when none of its calls is running and it has been idle for `retire_idle_seconds` (30 s), so an edit or the Invalidate button no longer cuts a reply that is streaming from it (GX-1); `aclose()` closes every cached and every retired adapter at once. There are more than two indirections between an adapter and its consumer (lifespan to registry to bus to factory to adapter), so the sequence below shows the full wiring for the `ProviderRegistry` case.
 
 ```mermaid
 sequenceDiagram

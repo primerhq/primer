@@ -15,6 +15,8 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from primer.api.registries.retirement import RETIRE_IDLE_SECONDS, AdapterRetirement
+
 if TYPE_CHECKING:
     from primer.int.storage import Storage
     from primer.int.vector_store import VectorStore
@@ -63,7 +65,9 @@ class SemanticSearchRegistry:
         *,
         storage: "Storage",
         factory: Callable[["SemanticSearchProvider"], "VectorStoreProvider"] | None = None,
+        retire_idle_seconds: float = RETIRE_IDLE_SECONDS,
     ) -> None:
+        self._retirement = AdapterRetirement(retire_idle_seconds)
         self._storage = storage
         self._factory = factory or _default_factory
         self._instances: dict[str, "VectorStoreProvider"] = {}
@@ -92,7 +96,7 @@ class SemanticSearchRegistry:
             raise NotFoundError(
                 f"semantic search provider {ssp_id!r} does not exist"
             )
-        provider = self._factory(row)
+        provider = self._retirement.track(self._factory(row))
         await provider.initialize()
 
         # Insert under the lock, with a re-check in case a concurrent
@@ -132,13 +136,7 @@ class SemanticSearchRegistry:
         async with self._lock:
             inst = self._instances.pop(ssp_id, None)
         if inst is not None:
-            try:
-                await inst.aclose()
-            except Exception as exc:  # noqa: BLE001 - best-effort cleanup
-                logger.warning(
-                    "SemanticSearchRegistry.invalidate: aclose() on the dropped instance for %r failed: %s",
-                    ssp_id, exc,
-                )
+            self._retirement.retire(inst, repr(ssp_id))         # closed once its in-flight calls are done (GX-1)
 
     async def aclose(self) -> None:
         """Drop + aclose every cached instance."""
@@ -153,3 +151,4 @@ class SemanticSearchRegistry:
                     "SemanticSearchRegistry.aclose: instance close failed: %s",
                     exc,
                 )
+        await self._retirement.close_all()

@@ -20,6 +20,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from primer.api.registries.retirement import RETIRE_IDLE_SECONDS, AdapterRetirement
 from primer.model.except_ import NotFoundError
 from primer.model.provider import SpeechToTextProvider, TextToSpeechProvider
 
@@ -42,7 +43,9 @@ class SpeechRegistry:
         storage: "Storage[Any]",
         factory: Callable[[Any], Any],
         label: str = "speech",
+        retire_idle_seconds: float = RETIRE_IDLE_SECONDS,
     ) -> None:
+        self._retirement = AdapterRetirement(retire_idle_seconds)
         self._storage = storage
         self._factory = factory
         self._label = label
@@ -65,7 +68,7 @@ class SpeechRegistry:
             raise NotFoundError(
                 f"{self._label} provider {provider_id!r} does not exist"
             )
-        candidate = self._factory(row)
+        candidate = self._retirement.track(self._factory(row))
 
         async with self._lock:
             winner = self._instances.get(provider_id)
@@ -86,14 +89,7 @@ class SpeechRegistry:
         async with self._lock:
             instance = self._instances.pop(provider_id, None)
         if instance is not None:
-            try:
-                await instance.aclose()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "SpeechRegistry(%s).invalidate: aclose failed: %s",
-                    self._label,
-                    exc,
-                )
+            self._retirement.retire(instance)     # closed once its in-flight calls are done (GX-1)
 
     async def aclose(self) -> None:
         """Drop and aclose every cached instance."""
@@ -109,6 +105,7 @@ class SpeechRegistry:
                     self._label,
                     exc,
                 )
+        await self._retirement.close_all()
 
 
 def default_stt_factory(provider: SpeechToTextProvider) -> "ASR":
