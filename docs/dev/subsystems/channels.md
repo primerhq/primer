@@ -98,7 +98,7 @@ erDiagram
 | `primer/worker/pool.py` | Hands its `channel_dispatcher` to the turn (`SessionDispatchDeps.channel_dispatcher`). |
 | `primer/toolset/system.py` | `channel_provider` / `channel` CRUD tools + `set_reply_binding` / `clear_reply_binding` + `create_channel_binding` / `list_channel_bindings` / `delete_channel_binding`. |
 | `primer/toolset/workspace_ext.py` | `subscribe_to_channel_event` yielding tool (parks a session until a matching channel event). |
-| `ui/components/channel_rules.jsx` | Console rule editor (capability-aware event picker + binding list). |
+| `ui/components/channel_rules.jsx` | Console rule editor (capability-aware event picker + binding list). The New rule dialog keeps the trigger a failed create already POSTed in a ref and refreshes the trigger list right after the trigger POST, so a retry posts the subscription again and not the trigger (re-POSTing the same slug is a 409 `trigger_slug_conflict`). |
 | `ui/components/channels.jsx` | Console UI for channel entities, hosted by the shell's `channels` overlay. |
 
 ## 5. Data model

@@ -400,6 +400,10 @@ function CR_RuleModal({ providers, allTriggers, roomStartsSessionsById, initialP
   const [actionFields, setActionFields] = React.useState({});
   const [replyTarget, setReplyTarget] = React.useState("");
   const [creating, setCreating] = React.useState(false);
+  // The trigger a failed create already POSTed: the dialog stays open after a failed
+  // subscription POST and the trigger list is not refreshed yet, so without this ref the
+  // retry re-POSTs the same slug (409 trigger_slug_conflict) and strands the trigger.
+  const createdRef = React.useRef(null);
 
   const selectedCap = capEvents.find((e) => e.type === eventType) || { type: eventType, supported: true, prerequisites: [] };
   const prereqs = selectedCap.prerequisites || [];
@@ -418,12 +422,21 @@ function CR_RuleModal({ providers, allTriggers, roomStartsSessionsById, initialP
       const wantChannel = channelId || null;
       let trig = triggers.find((t) => ((t.config && t.config.channel_id) || null) === wantChannel);
       if (!trig) {
-        const cfg = { kind: "channel", provider_id: provider.id };
-        if (channelId) cfg.channel_id = channelId;
-        const roomLabel = channelId || "all";
-        const slug = ("ch-" + provider.id + "-" + roomLabel).toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 64);
-        const name = "Channel rule " + provider.id + " / " + roomLabel;
-        trig = await apiFetch("POST", "/triggers", { slug, name, config: cfg });
+        const prior = createdRef.current;
+        if (prior && ((prior.config && prior.config.channel_id) || null) === wantChannel) {
+          trig = prior;
+        } else {
+          const cfg = { kind: "channel", provider_id: provider.id };
+          if (channelId) cfg.channel_id = channelId;
+          const roomLabel = channelId || "all";
+          const slug = ("ch-" + provider.id + "-" + roomLabel).toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 64);
+          const name = "Channel rule " + provider.id + " / " + roomLabel;
+          trig = await apiFetch("POST", "/triggers", { slug, name, config: cfg });
+          createdRef.current = trig;
+          // Refresh the list now: the trigger exists, and a failed subscription must not
+          // make the retry recreate it.
+          if (typeof onChanged === "function") onChanged();
+        }
       }
       const event_matcher = { event_type: eventType };
       if (surface.length) event_matcher.surface = surface;
