@@ -30,7 +30,7 @@ from typing import Any
 
 from primer.agent.call_scope import current_call_scope
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
-from primer.session.persistence import _CoalesceState, flush_partial_output, translate_stream_event
+from primer.session.persistence import _CoalesceState, flush_partial_output, publish_tick, translate_stream_event
 
 logger = logging.getLogger(__name__)
 
@@ -104,11 +104,7 @@ class DelegationRecorder:
             created_at=datetime.now(UTC),
             node_id=current_graph_node_id(),
         ))
-        if self._bus is not None:
-            try:
-                await self._bus.publish(f"session:{self._session_id}:tick", {"seq": seq})
-            except Exception:  # noqa: BLE001 - advisory: the record is appended; a console catches up on its next read
-                logger.warning("session %s: the tick for record %d could not be published", self._session_id, seq, exc_info=True)
+        await publish_tick(self._bus, self._session_id, seq)
         return seq
 
     @staticmethod
@@ -129,9 +125,7 @@ class DelegationRecorder:
                 return  # abandoned while an earlier record of this batch was being written
             self._stamp(rec, **ids)
             seq = await self._writer.append(rec)
-            await self._bus.publish(
-                f"session:{self._session_id}:tick", {"seq": seq},
-            )
+            await publish_tick(self._bus, self._session_id, seq)
 
     async def on_event(
         self,

@@ -375,6 +375,9 @@ class _BaseAgentExecutor(ABC):
         write; later the loop ends it and the rounds that completed are
         kept.
         """
+        # No schema from the caller: the agent's own is the default (``Agent.response_format``; AG-M3, ruling D14).
+        if response_format is None:
+            response_format = self._agent.response_format
         # An output cap that fills the window can never be served by a provider that checks it. The reactive guard in
         # ``_recover_from_overflow`` acts only AFTER a rejection, so say it up front, once per turn, and run the turn
         # anyway (a server that clamps the cap serves it). An aggregated profile (no provider of its own) is skipped:

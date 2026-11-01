@@ -76,6 +76,7 @@ from primer.session.delegation import (
 from primer.session.graph_end import graph_end_for
 from primer.session.mutation_lock import IN_LOCK_IO_TIMEOUT_S, session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
+from primer.session.response_format import EPHEMERAL_KEY, effective_response_format
 from primer.session.seq_reservation import reserve_next_seq
 from primer.session.slot_view import rows_for_session_ids
 from primer.storage import raw_generation
@@ -91,6 +92,7 @@ from primer.session.persistence import (
     flush_partial_output,
     infer_agent_phase,
     materialize_pending_tool_wait_rows,
+    publish_tick,
     stash_and_flush_tool_call_record,
     stash_graph_scoped_ids,
     translate_stream_event,
@@ -267,17 +269,7 @@ async def run_one_session_turn(
                 await _clear_turn_running(session_storage, session_id)
         return ReleaseOutcome(success=True, drop_lease=True)
     if session.cancel_requested:
-        session.status = SessionStatus.ENDED
-        session.ended_reason = "cancelled"
-        session.ended_at = _now()
-        # Per the comment above, this branch is itself a crash-recovery
-        # path (cancel_requested carried over from a process that died
-        # mid-turn) - reset unconditionally, same rationale as
-        # session_reconcile's workspace_lost transition.
-        session.turn_status = "idle"
-        session.turn_started_at = None
-        await session_storage.update(session)
-        return ReleaseOutcome(success=True, drop_lease=True)
+        return await _end_cancelled_at_claim(deps, session_storage, session_id)
     # * If pause_requested is set, the operator paused the session while it
     #   was running or parked. Honour it BEFORE building the executor or
     #   resuming: transition to PAUSED and drop the lease without running a
@@ -758,7 +750,11 @@ async def run_one_session_turn(
     # refcount drops - but that runs on a LATER event-loop tick, not
     # in-line, so a mid-turn cancel on a wide fan-out could leave sibling
     # node tasks running in the background for a tick or few.
-    turn_events = executor.invoke([])
+    # The turn's structured-output schema (AG-M3): the one-turn override the running flip consumed, else the session's; with neither
+    # the agent executor falls back to its agent's own. A graph executor takes none (each agent node carries its own), and an
+    # executor is handed the argument only when there is a schema.
+    response_format = None if isinstance(session.binding, GraphSessionBinding) else effective_response_format(session)
+    turn_events = executor.invoke([], **({"response_format": response_format} if response_format is not None else {}))
     # Set where the stream falls through to the cancelled or the clean-completion exit below: those exits flip the turn back to idle
     # themselves, as the LAST write of their terminal block, so the finally leaves it to them (audit G7-03, see _clear_turn_running).
     terminal_block_clears_running = False
@@ -819,9 +815,7 @@ async def run_one_session_turn(
                         executor, "_tool_calls_as_claims_enabled", False,
                     ),
                 )
-                await deps.event_bus.publish(
-                    f"session:{session_id}:tick", {"seq": seq}
-                )
+                await publish_tick(deps.event_bus, session_id, seq)
                 if rec.kind == SessionMessageKind.GRAPH_TRANSITION:
                     await _emit_graph_transition(deps, session, rec)
 
@@ -1983,8 +1977,7 @@ async def _land_cancelled_turn(
     change in between: this re-reads and decides again, and a row that is already ENDED, or gone (a
     force-delete), is left alone (no record, no overwrite; the slot is mirrored with the row's own reason when it
     accepts one, as in the terminal write's skip) while the terminal event and the release still happen. Not every cancelled turn comes through here: a turn whose Cancel was already on
-    the row when it was claimed takes the short-circuit at the top of ``run_one_session_turn`` (ENDED/
-    cancelled without running). A Cancel ALWAYS sets
+    the row when it was claimed never runs and takes :func:`_end_cancelled_at_claim`. A Cancel ALWAYS sets
     ``cancel_requested`` before it publishes, so that flag alone separates the two: not set means a Stop.
     ``interrupt_requested`` is deliberately NOT read: a human steer that lands mid-turn flips ``turn_status``
     to claimable and ``wake_session`` then clears it, which turned a Stop into a hard End for exactly the
@@ -2020,6 +2013,9 @@ async def _land_cancelled_turn(
                 ended_reason = "force_deleted"
             else:
                 ended_reason = fresh.ended_reason
+                # The status stays the row's, but the seqs the writer numbered are the turn's: a later reopen or release marker
+                # must start after them (AG-L2).
+                await _persist_last_seq(session_storage, session_id, writer.last_seq)
                 await _mirror_ended_row_onto_slot(session, fresh, executor=executor, workspace_registry=None)
                 await _clear_turn_running(session_storage, session_id)
         else:
@@ -2055,7 +2051,7 @@ async def _land_cancelled_turn(
             if own_outcome:
                 await _mark_turn_completed(session_storage, session_id, session.turn_no)
     if seq is not None:
-        await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
+        await publish_tick(deps.event_bus, session_id, seq)
     await _best_effort_io("the TurnLogCancelled turn log entry", session_id, _safe_turn_log(turn_log, TurnLogCancelled(
         seq=0, ts=_now(), turn_no=session.turn_no, reason=reason,
     )))
@@ -2065,6 +2061,47 @@ async def _land_cancelled_turn(
     await _apply_pending_switch_at_checkpoint(deps, session)
     await _realize_pending_at_checkpoint(deps, session)
     _observe_turn(session, "cancelled", started_at)
+    return ReleaseOutcome(success=True, drop_lease=True)
+
+
+async def _end_cancelled_at_claim(deps: "SessionDispatchDeps", session_storage: Any, session_id: str) -> ReleaseOutcome:
+    """A Cancel already on the row when the turn is claimed: the session ends cancelled without running a turn (AG-L1).
+
+    The steps of the cancelled exit that apply to a turn that never ran, under the lifecycle lock and decided from a row read
+    inside it: the CANCELLED record at a seq reserved on the row, then ONE field-scoped ``patch_if`` fenced on the row not
+    being ENDED (an end another path committed since the top read keeps its own reason), then the drain cursor. This is also a
+    crash-recovery path (the flag carried over from a process that died mid-turn), so ``turn_status`` goes back to idle
+    whatever it says. Then the tick, the terminal announcement (``session.ended`` and the ``:terminal`` key a webhook hold
+    waits on) and the drain checkpoint. No ``completed_turn_no``: no turn ran.
+    """
+    seq = None
+    async with session_lifecycle_lock().acquire(session_id):
+        row = await session_storage.get(session_id)
+        if row is not None and row.status != SessionStatus.ENDED:
+            reserved = await reserve_next_seq(session_storage, session_id)
+            if reserved is not None:
+                writer = WorkspaceMessageWriter(workspace_io=deps.workspace_io, session_id=session_id, start_seq=reserved - 1)
+                seq = await _write_cancelled_record(writer, session_id, _CANCEL_REASON)
+            patch = to_jsonable_python({
+                "status": SessionStatus.ENDED, "ended_reason": "cancelled", "ended_at": _now(),
+                "turn_status": "idle", "turn_started_at": None,
+            })
+            try:
+                row = (
+                    await session_storage.patch_if(session_id, patch, where={"status": NON_ENDED_STATUSES()})
+                    or await session_storage.get(session_id)
+                )
+            except NotFoundError:
+                row = None
+            if row is not None:
+                await _advance_drain_cursor(session_storage, session_id)
+        if row is None:
+            return _drop_vanished_row(session_id, "under the claim-time cancel")
+    if seq is not None:
+        await publish_tick(deps.event_bus, session_id, seq)
+    await _publish_terminal(deps, row, SessionStatus.ENDED, row.ended_reason)
+    await _apply_pending_switch_at_checkpoint(deps, row)
+    await _realize_pending_at_checkpoint(deps, row)
     return ReleaseOutcome(success=True, drop_lease=True)
 
 
@@ -2176,7 +2213,7 @@ async def _flush_and_tick(
             session_id,
         )
     seq = writer.last_seq
-    await deps.event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
+    await publish_tick(deps.event_bus, session_id, seq)
     return seq
 
 
@@ -2344,8 +2381,9 @@ def _post_turn_status(
         # Translate ended-but-stop-reason into a finer reason when we can.
         mapped = _STOP_REASON_TO_STATUS.get(last_done_reason or "", (None, None))
         return (SessionStatus.ENDED, mapped[1] or "completed")
-    # Executor-set WAITING (e.g. assistant asked a question heuristic).
-    if agent_status == SessionStatus.WAITING:
+    # Executor-set WAITING (e.g. assistant asked a question heuristic). An autonomous session has nobody to answer it, so it
+    # falls through to the stop reason and ends (AG-M4).
+    if agent_status == SessionStatus.WAITING and not autonomous:
         return (SessionStatus.WAITING, None)
     # The model kept asking for tools and max_tool_turns stopped the turn. Its last model
     # event was Done(tool_use), which the mapping below reads as "the executor will queue
@@ -2361,7 +2399,9 @@ def _post_turn_status(
     if last_done_reason is None:
         return (SessionStatus.ENDED, "completed")
     mapped = _STOP_REASON_TO_STATUS.get(last_done_reason)
-    if mapped is None:
+    if mapped is None or (autonomous and mapped[0] == SessionStatus.WAITING):
+        # An autonomous session never rests WAITING (``max_tokens``, ``content_filter``): a resting one-shot holds a
+        # ``parallelism="skip"`` gate shut for ever (AG-M4).
         return (SessionStatus.ENDED, "completed")
     return mapped
 
@@ -2803,12 +2843,16 @@ async def _flip_to_running(
         # Likewise the last turn's failure (C-024): this turn is past it, and the failure exit writes it again if this one fails too.
         "last_turn_error": None,
     })
+    # The one-turn structured-output override is consumed by the turn that runs with it (AG-M3): cleared in this same write, so a
+    # retry of the turn falls back to the session's schema. Only a row that carries one is touched.
+    once = {("metadata", EPHEMERAL_KEY): None} if (session.metadata or {}).get(EPHEMERAL_KEY) is not None else None
     for _ in range(_RUNNING_FLIP_ATTEMPTS):
         try:
             written = await session_storage.patch_if(
                 session_id, patch,
                 # Never over a wake's ``arming``: that wake is writing the message this turn would answer (audit G7-03, review H1).
                 where={"status": NON_ENDED_STATUSES_NOT_PAUSED(), "turn_status": ["idle", "claimable", "running"]},
+                set_paths=once,
             )
         except NotFoundError:
             return None, _drop_vanished_row(session_id, "before the running flip")

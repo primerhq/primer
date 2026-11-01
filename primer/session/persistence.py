@@ -409,6 +409,20 @@ class WorkspaceMessageWriter:
             raise WorkspaceWriteTimeout(f"session {self._session_id}: {self._broken}")
 
 
+async def publish_tick(event_bus: Any, session_id: str, seq: int) -> None:
+    """Tell the tap the session's log now goes to ``seq``. Advisory: a publish that fails is logged and swallowed.
+
+    The record is already appended (or durable); a console catches up on its next read. A turn must not fail, strand its row or
+    skip writing ``last_seq`` back because a NOTIFY failed (AG-M1), as ``_publish_terminal`` already treats its own publish.
+    """
+    if event_bus is None:
+        return
+    try:
+        await event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
+    except Exception:  # noqa: BLE001 - advisory
+        logger.warning("session %s: the tick for seq %d could not be published", session_id, seq, exc_info=True)
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -1577,5 +1591,5 @@ def infer_agent_phase(event: StreamEvent) -> str | None:
 
 __all__ = [
     "WorkspaceMessageWriter", "WorkspaceWriteTimeout", "WorkspaceIO", "_CoalesceState", "configure_write_timeout",
-    "translate_stream_event", "stash_graph_scoped_ids",
+    "translate_stream_event", "stash_graph_scoped_ids", "publish_tick",
 ]
