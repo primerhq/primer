@@ -25,9 +25,13 @@ class Diff:
 def diff_renderings(
     old: list[RenderedEntry], new: list[RenderedEntry],
 ) -> Diff:
-    """Diff by (kind, template_name)."""
+    """Diff by (kind, resolved_id): the parent and a sub-harness may share a template name (GX-5).
+
+    ``resolved_id`` has been a required field of every stored snapshot entry since the model was introduced, so an old
+    snapshot diffs by the same key.
+    """
     def key(e: RenderedEntry) -> tuple[str, str]:
-        return (e.kind, e.template_name)
+        return (e.kind, e.resolved_id)
 
     old_idx = {key(e): e for e in old}
     new_idx = {key(e): e for e in new}

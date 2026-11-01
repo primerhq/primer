@@ -63,6 +63,7 @@ from primer.harness.service import (
     apply_sync,
     apply_uninstall,
     build_rendered_entries,
+    resolved_id,
 )
 from primer.harness.template import (
     HarnessTemplateError,
@@ -739,6 +740,11 @@ def _token_for_dependency(parent_url: str | None, dep_url: str, token: str | Non
     return token
 
 
+def _document_files_by_id(rendered: list[RenderedFile], slug: str) -> dict[str, RenderedFile]:
+    """The document files keyed by resolved id: the parent and a sub may share a template name (GX-5)."""
+    return {resolved_id(f.source_slug or slug, f.template_name): f for f in rendered if f.kind == "document"}
+
+
 async def _render_sub_bundle(
     *,
     dep: ResolvedDependency,
@@ -934,15 +940,7 @@ async def _do_install(
                     {"code": "build_errors", "errors": build_errors.errors}
                 )
 
-            # Build rendered_files_by_name (kept template_name-keyed for
-            # document-content lookups). When multiple subs declare the
-            # same template_name a later entry would overwrite an earlier
-            # one in this dict, but document content lookup matches by
-            # template_name anyway — keep the parent's last to mirror the
-            # entries order (deepest-first then parent).
-            rendered_files_by_name: dict[str, RenderedFile] = {
-                f.template_name: f for f in rendered
-            }
+            rendered_files_by_name = _document_files_by_id(rendered, harness.slug)
 
             overrides_hash = hash_overrides(harness.overrides)
 
@@ -1140,9 +1138,7 @@ async def _do_sync(
                     {"code": "build_errors", "errors": build_errors.errors}
                 )
 
-            rendered_files_by_name: dict[str, RenderedFile] = {
-                f.template_name: f for f in rendered
-            }
+            rendered_files_by_name = _document_files_by_id(rendered, harness.slug)
 
             error = await apply_sync(
                 storage_provider=deps.storage_provider,
