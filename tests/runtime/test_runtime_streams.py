@@ -144,3 +144,23 @@ async def test_a_subscriber_whose_send_fails_is_dropped() -> None:
         await asyncio.sleep(0)
     assert len(calls) == 1
 
+
+
+# ---------------------------------------------------------------------------
+# GI-7: exec output pushes back on the command instead of piling up
+# ---------------------------------------------------------------------------
+
+
+async def test_a_slow_consumer_holds_at_most_256_exec_events(tmp_path: Path, monkeypatch) -> None:
+    peak = {"n": 0}
+
+    class RecordingQueue(asyncio.Queue):
+        def put_nowait(self, item):
+            super().put_nowait(item)
+            peak["n"] = max(peak["n"], self.qsize())
+
+    monkeypatch.setattr(exec_mod.asyncio, "Queue", RecordingQueue)
+    events = await _exec_events(tmp_path, "head -c 20000000 /dev/zero", pause_after_first=2.0)
+    assert _stream(events, "stdout") == bytes(20000000)
+    assert events[-1].data == {"code": 0}
+    assert peak["n"] <= 256

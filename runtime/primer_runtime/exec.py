@@ -36,6 +36,8 @@ from primer_runtime.protocol import ErrorCode, Event, Response, serialize
 log = logging.getLogger(__name__)
 
 _CHUNK_SIZE: int = 4096
+# Most output events one exec holds while its client is slow (the PTY path caps the same queue at 256).
+_QUEUE_MAX: int = 256
 _DEFAULT_TIMEOUT_S: float = 60.0
 
 
@@ -136,8 +138,10 @@ async def run_exec(
             **NEW_SESSION,
         )
 
-        # Collect events in an async queue so stdout/stderr can be read concurrently
-        queue: asyncio.Queue[Event | None] = asyncio.Queue()
+        # Collect events in an async queue so stdout/stderr can be read concurrently. Bounded like the PTY's (GI-7): a
+        # full queue stops the readers, the pipe fills and the command blocks on its output while the client is slow,
+        # instead of the whole output piling up in the runtime's memory.
+        queue: asyncio.Queue[Event | None] = asyncio.Queue(maxsize=_QUEUE_MAX)
 
         async def _reader(stream: asyncio.StreamReader, event_name: str) -> None:
             while True:
@@ -147,14 +151,14 @@ async def run_exec(
                     break
                 if not chunk:
                     break
-                queue.put_nowait(
+                await queue.put(
                     Event(
                         req_id=req_id,
                         event=event_name,
                         data={"data_b64": base64.b64encode(chunk).decode()},
                     )
                 )
-            queue.put_nowait(None)  # sentinel: this reader is done
+            await queue.put(None)  # sentinel: this reader is done
 
         assert proc.stdout is not None
         assert proc.stderr is not None
