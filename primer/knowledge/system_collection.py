@@ -226,15 +226,27 @@ def _collection_body(c) -> str:
 # agents/, graphs/ and collections/ need those root paths). Tools are absent
 # on purpose: they are enumerated from toolset providers rather than stored
 # as rows, so nothing mutates one and there is no hook to hang this on.
-def _workspace_body(w) -> str:
+def _workspace_body(w, public_templates: frozenset[str] | set[str] = frozenset(), public_providers: frozenset[str] | set[str] = frozenset()) -> str:
+    """A public workspace's page. Its template and provider are named only when they are public too: the map is public, and a private row's id is not."""
     quoted_label = json.dumps(w.name or w.id, ensure_ascii=False)
+    template = w.template_id if w.template_id in public_templates else "a private template"
+    provider = w.provider_id if w.provider_id in public_providers else "a private provider"
     return (
         f"# Workspace {w.id}\n\n"
         f"- name (user-supplied): {quoted_label}\n"
-        f"- template: {w.template_id}\n"
-        f"- provider: {w.provider_id}\n"
+        f"- template: {template}\n"
+        f"- provider: {provider}\n"
         f"- phase: {w.phase}\n"
     )
+
+
+async def _public_workspace_parts(storage_provider) -> tuple[set[str], set[str]]:
+    """The ids of the public workspace templates and the public workspace providers."""
+    from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
+
+    templates = {r.id for r in await _list_all(storage_provider, WorkspaceTemplate) if _listed(r)}
+    providers = {r.id for r in await _list_all(storage_provider, WorkspaceProvider) if _listed(r)}
+    return templates, providers
 
 
 def _entity_kinds() -> dict:
@@ -310,6 +322,7 @@ async def _workspaces_map(storage_provider, *, root: str = "") -> dict[str, str]
 
     prefix = f"{root}/" if root else ""
     rows = [r for r in await _all_rows(storage_provider, Workspace) if _listed(r)]
+    public_templates, public_providers = await _public_workspace_parts(storage_provider)
     out: dict[str, str] = {}
     lines = ["# Workspaces", "", "Places sessions run. One page each.", ""]
     for row in rows:
@@ -319,13 +332,7 @@ async def _workspaces_map(storage_provider, *, root: str = "") -> dict[str, str]
         lines.append(
             f"- [{row.id}]({prefix}workspaces/{slug}) - name (user-supplied): {quoted_label}, phase {row.phase}"
         )
-        out[f"{prefix}workspaces/{slug}"] = (
-            f"# Workspace {row.id}\n\n"
-            f"- name (user-supplied): {quoted_label}\n"
-            f"- template: {row.template_id}\n"
-            f"- provider: {row.provider_id}\n"
-            f"- phase: {row.phase}\n"
-        )
+        out[f"{prefix}workspaces/{slug}"] = _workspace_body(row, public_templates, public_providers)
     if not rows:
         lines.append("No workspaces exist yet.")
     out[f"{prefix}workspaces"] = "\n".join(lines) + "\n"
@@ -847,7 +854,7 @@ async def _wiki_pass(
 
     stored = await read_stamp(storage_provider)
     decision = decide(
-        stored, app_version=app_version, content_hash=build.content_hash,
+        stored, app_version=app_version, content_hash=build.content_hash, source_hash=build.source_hash,
     )
     if decision in ("older", "superseded"):
         logger.info(
@@ -868,7 +875,7 @@ async def _wiki_pass(
     for _ in range(_CLAIM_PASSES):
         claimed = await claim(
             storage_provider,
-            app_version=app_version, content_hash=build.content_hash,
+            app_version=app_version, content_hash=build.content_hash, source_hash=build.source_hash,
         )
         if claimed:
             break
@@ -877,7 +884,7 @@ async def _wiki_pass(
         # nothing left to do.
         stored = await read_stamp(storage_provider)
         decision = decide(
-            stored, app_version=app_version, content_hash=build.content_hash,
+            stored, app_version=app_version, content_hash=build.content_hash, source_hash=build.source_hash,
         )
         if decision != "write":
             logger.info(
@@ -1010,6 +1017,37 @@ def _deferred(indexer):
     return _schedule
 
 
+# The kinds whose change re-renders the provider pages and the agent pages that name a profile (the live map converges as a whole: providers are few).
+_PROVIDER_KINDS = frozenset({"llm_provider", "model_profile", "embedding_provider", "semantic_search_provider"})
+
+
+async def _converge_providers(storage_provider, *, provider_registry=None, semantic_search_registry=None) -> bool:
+    """A provider or a model profile changed: bring ``this-install/providers`` and the agent pages (they name a public profile) up to date.
+
+    Never raises, like the per-entity convergence: a map that is briefly stale must not fail the write that changed the row.
+    """
+    try:
+        if await storage_provider.get_storage(Collection).get(SYSTEM_COLLECTION_ID) is None:
+            return False
+        indexer = unindexer = None
+        if semantic_search_registry is not None:
+            unindexer = make_document_unindexer(storage_provider=storage_provider, semantic_search_registry=semantic_search_registry)
+            if provider_registry is not None:
+                indexer = _deferred(make_document_indexer(
+                    storage_provider=storage_provider, provider_registry=provider_registry, semantic_search_registry=semantic_search_registry,
+                ))
+        tree = DocumentTreeService(storage_provider, indexer=indexer, unindexer=unindexer)
+        live = await _live_pages(storage_provider)
+        written = await _converge(tree, live)
+        written += await _prune_live(
+            storage_provider, tree, live, provider_registry=provider_registry, semantic_search_registry=semantic_search_registry,
+        )
+        return written > 0
+    except Exception:  # noqa: BLE001 - never fail the write that changed the row
+        logger.exception("system collection: converging the provider pages failed")
+        return False
+
+
 async def converge_entity(
     storage_provider, *, entity_type: str, entity_id: str,
     provider_registry=None, semantic_search_registry=None,
@@ -1035,6 +1073,10 @@ async def converge_entity(
     changed the entity.
     """
     kinds = _entity_kinds()
+    if entity_type in _PROVIDER_KINDS:
+        return await _converge_providers(
+            storage_provider, provider_registry=provider_registry, semantic_search_registry=semantic_search_registry,
+        )
     if entity_type not in kinds:
         return False
     subtree, model_cls, render, title = kinds[entity_type]
@@ -1076,7 +1118,12 @@ async def converge_entity(
                 pass
             wrote_page = True
         else:
-            body = _agent_body(entity, await _public_profile_ids(storage_provider)) if entity_type == "agent" else render(entity)
+            if entity_type == "agent":
+                body = _agent_body(entity, await _public_profile_ids(storage_provider))
+            elif entity_type == "workspace":
+                body = _workspace_body(entity, *await _public_workspace_parts(storage_provider))
+            else:
+                body = render(entity)
             page = _live_page(path, body)
             try:
                 current = await tree.read(
