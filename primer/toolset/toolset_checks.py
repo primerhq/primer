@@ -245,7 +245,7 @@ def check_oauth_resource_uri(entity: Toolset) -> None:
 
 # A new toolset's id: every tool goes out as ``<toolset_id>__<tool>``, and OpenAI and Anthropic refuse a tool name outside [a-zA-Z0-9_-]{1,64}.
 # 48 characters leaves 14 for ``__`` and the tool's own name. Existing toolsets keep the ids they have (GI-20).
-TOOLSET_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,47}")
+TOOLSET_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,47}")
 
 
 def check_new_toolset_id(entity: Toolset) -> None:
@@ -254,7 +254,7 @@ def check_new_toolset_id(entity: Toolset) -> None:
         shown = entity.id if len(entity.id or "") <= 64 else f"{entity.id[:61]}..."
         raise EntityCheckError(
             "validation",
-            f"{shown!r} is not a valid toolset id: use 1 to 48 lowercase letters, digits, '_' or '-', starting with a letter or digit "
+            f"{shown!r} is not a valid toolset id: use 1 to 48 letters, digits, '_' or '-', starting with a letter or digit "
             "(the id is part of every tool name sent to the model)",
             field="id",
         )
