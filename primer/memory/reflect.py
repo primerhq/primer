@@ -39,7 +39,7 @@ from primer.model.memory import (
     ReflectionOutput,
 )
 from primer.model.provider import LLMProvider
-from primer.model.workspace_session import WorkspaceSession
+from primer.model.workspace_session import SessionMessageKind, WorkspaceSession
 
 logger = logging.getLogger(__name__)
 
@@ -314,28 +314,65 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
     return report
 
 
+async def _log_lines(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]], job: MemoryJob) -> list[str] | None:
+    """The lines of the job's session log, or None when the session or its log is gone."""
+    if not job.session_id:
+        return None
+    row = await sp.get_storage(WorkspaceSession).get(job.session_id)
+    if row is None:
+        return None
+    try:
+        raw = await read_log(row.workspace_id, f"sessions/{row.id}/messages.jsonl")
+    except Exception:  # noqa: BLE001 - an unreadable log is reported by the caller as "no transcript"
+        logger.info("memory job %s: the session log cannot be read", job.id, exc_info=True)
+        return None
+    return (raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)).splitlines()
+
+
+def _without_compaction_markers(lines: list[str]) -> list[str]:
+    """The log as the model never saw it folded: a compaction marker summarises the head of the history FOR THE MODEL and deletes nothing, and
+    what a reflection learns from is what was said and done, not its summary. Rewinds stay: a rewound turn did not happen."""
+    marker = SessionMessageKind.COMPACTION_MARKER.value
+    kept = []
+    for line in lines:
+        if marker in line:
+            try:
+                if json.loads(line).get("kind") == marker:
+                    continue
+            except (ValueError, AttributeError):
+                pass
+        kept.append(line)
+    return kept
+
+
 def session_message_loader(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]]) -> Callable[[MemoryJob], Awaitable[list[Message] | None]]:
-    """``MemoryDeps.load_messages``: the session's whole LLM history (compaction markers honoured), or None when the session or its log is gone.
+    """``MemoryDeps.load_messages``: the session's whole history as it was lived (compaction markers ignored, the same parse as the executor's),
+    or None when the session or its log is gone.
 
     ``read_log(workspace_id, relative_path)`` reads a workspace state file (the worker's IO shim).
     """
     from primer.workspace.session import reconstruct_compacted_history
 
     async def load(job: MemoryJob) -> list[Message] | None:
-        if not job.session_id:
-            return None
-        row = await sp.get_storage(WorkspaceSession).get(job.session_id)
-        if row is None:
-            return None
-        try:
-            raw = await read_log(row.workspace_id, f"sessions/{row.id}/messages.jsonl")
-        except Exception:  # noqa: BLE001 - an unreadable log is reported by the caller as "no transcript"
-            logger.info("memory job %s: the session log cannot be read", job.id, exc_info=True)
-            return None
-        text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
-        return reconstruct_compacted_history(text.splitlines())
+        lines = await _log_lines(sp, read_log, job)
+        return None if lines is None else reconstruct_compacted_history(_without_compaction_markers(lines))
 
     return load
 
 
-__all__ = ["DEFAULT_REFLECTION_PROMPT", "ReflectionReport", "ReflectionTransient", "reflect", "resolve_agent_llm", "session_message_loader", "used_entries"]
+def session_log_shapes(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]]) -> Callable[[MemoryJob], Awaitable[str]]:
+    """``MemoryDeps.describe_log``: what the first lines of the session log are (a role, or a kind), for a skip event to show the real file."""
+
+    async def describe(job: MemoryJob) -> str:
+        lines = await _log_lines(sp, read_log, job) or []
+        shapes = []
+        for line in lines[:20]:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                shapes.append("?")
+                continue
+            shapes.append(str(obj.get("role") or obj.get("kind") or "?") if isinstance(obj, dict) else "?")
+        return f"{len(lines)} log lines: " + ",".join(shapes)
+
+    return describe
