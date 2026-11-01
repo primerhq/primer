@@ -38,7 +38,7 @@ async def _wait_for_log(client: httpx.AsyncClient, session_id: str, text: str, *
     """Poll the session's log until an assistant answer holds ``text``."""
     for _ in range(int(timeout_s / 0.5)):
         items = (await client.get(f"/v1/sessions/{session_id}/messages", params={"limit": 500})).json()["items"]
-        if any(text in str(r.get("payload", {}).get("text", "")) for r in items if r["kind"] == "assistant_token"):
+        if any(text in str(r.get("payload", {}).get("text", "")) for r in items if r.get("kind") == "assistant_token"):
             return
         await asyncio.sleep(0.5)
     raise AssertionError(f"session {session_id} never answered {text!r}")
