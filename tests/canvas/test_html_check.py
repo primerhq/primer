@@ -549,3 +549,23 @@ def test_known_limit_import_is_not_checked(html):
 def test_known_limit_a_script_inside_a_nested_srcdoc_frame_is_not_seen():
     assert check_html_scripts(f'<iframe srcdoc="&lt;script src=&quot;{EVIL}&quot;&gt;&lt;/script&gt;"></iframe>') == []
     assert check_html_scripts('<iframe srcdoc="&lt;script&gt;var = ;&lt;/script&gt;"></iframe>') == []
+
+
+def test_scripts_past_the_cap_are_not_compiled_and_say_so_once(spy):
+    """GU-23: one V8 call per inline script held a worker thread for seconds on a body of thousands of tiny scripts."""
+    from primer.canvas.html_check import MAX_SCRIPTS_CHECKED
+
+    n = MAX_SCRIPTS_CHECKED + 300
+    problems = check_html_scripts("<script>1</script>" * n)
+    (engine,) = spy.made
+    assert len(engine.evals) == MAX_SCRIPTS_CHECKED
+    assert problems == ["300 more scripts were not checked"]
+
+
+def test_a_body_within_the_cap_is_checked_in_full_and_a_late_error_past_it_is_not_reported(spy):
+    from primer.canvas.html_check import MAX_SCRIPTS_CHECKED
+
+    inside = "<script>1</script>" * (MAX_SCRIPTS_CHECKED - 1) + "<script>var = ;</script>"
+    assert check_html_scripts(inside) == [f"script {MAX_SCRIPTS_CHECKED} does not parse: Unexpected token '='"]
+    past = "<script>1</script>" * MAX_SCRIPTS_CHECKED + "<script>var = ;</script>"
+    assert check_html_scripts(past) == ["1 more script was not checked"]

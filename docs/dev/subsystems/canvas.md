@@ -342,3 +342,12 @@ Accepted residuals (documented, accepted):
   script during another element's real activation can own that activation if its message arrives
   first; both frames are the same canvas's agent code, so this grants no gesture the agent could
   not already get on that click.
+
+## Renderer and console bridge fixes (T129)
+
+- **Busy Buttons (GU-2).** A clicked Button is `aria-disabled` plus `aria-busy` (not natively disabled, so a keyboard user keeps focus) and refuses a second click. `NV_CanvasFrame` remembers the `(rev, event_seq)` each click was sent at (`NV_canvasBusyCleared`) and posts `{type: "busy", element, on: false}` to the port when a snapshot moves either, or when the event POST fails. The renderer's 30 s timer is the last resort.
+- **State size (GU-3).** The renderer's `MAX_STATE_BYTES` is 6 MiB: the settings ceiling for a canvas (4 MiB) plus the values, file URLs and theme. A `state` message the renderer refuses is reported through `reportError`, not dropped.
+- **place() (GU-21).** Stale children are removed before survivors are moved, so removing an earlier sibling no longer re-inserts an Html frame.
+- **Disabled containers (GU-22).** An ancestor's `disabled` propagates like `hidden`: the renderer disables the controls under it and `CanvasService._is_unavailable` refuses their events (`element_disabled`). This reverses the earlier ruling that `disabled` was only a flag on its own element.
+- **Script check cap (GU-23).** `check_html_scripts_many` compiles at most `MAX_SCRIPTS_CHECKED` (200) inline scripts per batch and adds one "N more scripts were not checked" warning for a body with more.
+- **Error toasts (GU-24).** The console toasts the first of each distinct canvas error message, at most 5 per frame (`NV_canvasErrorIsNew`).

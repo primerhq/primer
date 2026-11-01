@@ -10,7 +10,7 @@ The canvas is a panel above the session's transcript. You draw on it with `canva
 
 ## Concepts
 - `canvas__canvas_apply` takes one atomic batch of Canvas Lang statements (or JSON ops). One statement per line: `id = Type(args)` creates or replaces an element; `id.prop = value` sets one property; `id += [a, b]` appends children; `del a, b` removes elements; `clear` empties the panel. If any line is wrong nothing is applied and every error names its line and the expected signature.
-- The element types are `Column`, `Row`, `Card` (containers) and `Divider`, `Text`, `Button`, `Select`, `Image`, `Audio`, `Link`, `Html`; every element also takes `hidden` and `disabled`. `src` is an https URL, a `file:<workspace path>` or a small data URI.
+- The element types are `Column`, `Row`, `Card` (containers) and `Divider`, `Text`, `Button`, `Select`, `Image`, `Audio`, `Link`, `Html`; every element also takes `hidden` and `disabled` (on a container, `disabled` also disables everything inside it, as `hidden` hides it). `src` is an https URL, a `file:<workspace path>` or a small data URI.
 - The user's clicks and choices reach you as text: a waking click (a Button click or an Html emit) as its own `<canvas_event>` block, and the changes you have not yet seen as a `<canvas_changes>` digest.
 - A Button click wakes a `canvas__canvas_wait`; a Select change does not unless you set `wake=true` on it.
 - `canvas__canvas_get` returns the Canvas Lang program you can copy, edit and resend; the user's choices are marked `# user`.

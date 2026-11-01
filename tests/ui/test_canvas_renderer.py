@@ -222,8 +222,8 @@ def test_host_messages_are_validated(ctx):
 def test_an_oversized_state_is_dropped(ctx):
     big = {**STATE, "elements": {**STATE["elements"], "t": {"type": "Text", "props": {"text": "x" * 10000}}}}
     assert call(ctx, "validateHostMessage", big) is not None
-    huge = {**STATE, "values": {f"v{i}": "x" * 1000 for i in range(2200)}}
-    assert len(json.dumps(huge)) > 2 * 1024 * 1024
+    huge = {**STATE, "values": {f"v{i}": "x" * 1000 for i in range(6500)}}
+    assert len(json.dumps(huge)) > 6 * 1024 * 1024  # the cap follows the settings ceiling (4 MiB of elements) plus the message around it (GU-3)
     assert call(ctx, "validateHostMessage", huge) is None
 
 
@@ -239,13 +239,13 @@ def test_an_over_long_value_is_refused_before_it_is_scanned_or_serialised(ctx):
         JSON.stringify = function () { calls.stringify += 1; return origStringify.apply(JSON, arguments); };
       }
       function unspy() { RegExp.prototype.test = origTest; JSON.stringify = origStringify; }
-      var huge = "x".repeat(3 * 1024 * 1024);
+      var huge = "x".repeat(7 * 1024 * 1024);
       var long = new Proxy(new Array(500000).fill(1), {get: function (t, k) {
         if (typeof k === "string" && /^[0-9]+$/.test(k)) calls.index += 1; return t[k]; }});
     """)
     out = js(ctx, "(function () { spy(); var r = CV.validateHostMessage(Object.assign({}, S, {values: {a: huge}})); unspy(); return [r, calls]; })()")
     assert out[0] is None and out[1]["stringify"] == 0
-    assert out[1]["test"] < 50, "the 3 MB string is never scanned: only the short strings before it are"
+    assert out[1]["test"] < 50, "the 7 MB string is never scanned: only the short strings before it are"
     out = js(ctx, "(function () { calls.index = 0; var r = CV.validateHostMessage(Object.assign({}, S, {values: {a: long}})); return [r, calls.index]; })()")
     assert out == [None, 0], "an array longer than the node budget is refused before one element is read"
     out = js(ctx, "(function () { spy(); calls.stringify = 0; calls.test = 0;"

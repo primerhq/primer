@@ -61,7 +61,9 @@
   //: The most elements a canvas holds (CanvasSettings.max_elements at its ceiling) and the root.
   var MAX_ELEMENTS = 1001;
 
-  var MAX_STATE_BYTES = 2 * 1024 * 1024;
+  //: The settings ceiling for a whole canvas (4 MiB, CanvasSettings.max_canvas_bytes) plus the message around it: the values (up to max_elements x 1000
+  //: characters), the file URLs and the theme. A canvas the server accepts is drawn (GU-3).
+  var MAX_STATE_BYTES = 6 * 1024 * 1024;
   var MAX_STATE_NODES = 400000;
   var MAX_THEME_PAIRS = 40;
   var MAX_OUT_BYTES = 16 * 1024;
@@ -838,7 +840,11 @@
     function onHostMessage(port, ev) {
       if (port !== host) return;
       var msg = validateHostMessage(ev ? ev.data : null);
-      if (!msg) return;
+      if (!msg) {
+        // A state the renderer refuses is said, not dropped: the person sees why the canvas did not change (GU-3).
+        if (ev && ev.data && ev.data.type === "state") reportError("The canvas could not be drawn: the state the console sent was refused (too large or malformed).");
+        return;
+      }
       try {
         if (msg.type === "state") {
           bridge.state += 1;
@@ -898,9 +904,13 @@
       var busy = isBusy(rec.id);
       if (busy) rec.node.setAttribute("aria-busy", "true");
       else rec.node.removeAttribute("aria-busy");
-      if (rec.control) rec.control.disabled = rec.el.props.disabled || busy || rec.badTarget === true;
+      // A busy Button is aria-disabled, not natively disabled: the control a keyboard user just pressed keeps focus (GU-2). Its click is refused while busy.
+      var buttonBusy = busy && rec.type === "Button";
+      if (buttonBusy) rec.control.setAttribute("aria-disabled", "true");
+      else if (rec.control) rec.control.removeAttribute("aria-disabled");
+      if (rec.control) rec.control.disabled = rec.disabledNow || (busy && !buttonBusy) || rec.badTarget === true;
       if (rec.checks) {
-        for (var i = 0; i < rec.checks.length; i++) rec.checks[i].disabled = rec.el.props.disabled || busy;
+        for (var i = 0; i < rec.checks.length; i++) rec.checks[i].disabled = rec.disabledNow || busy;
       }
     }
 
@@ -909,7 +919,7 @@
     function render(state) {
       current = state;
       var seen = Object.create(null);
-      var top = draw("root", 0, false, seen);
+      var top = draw("root", 0, false, false, seen);
       if (top && top.node.parentNode !== rootNode) {
         empty(rootNode);
         rootNode.appendChild(top.node);
@@ -920,7 +930,7 @@
       }
     }
 
-    function draw(id, depth, hiddenAbove, seen) {
+    function draw(id, depth, hiddenAbove, disabledAbove, seen) {
       if (seen[id] || depth > MAX_ELEMENTS) return null;
       var el = current.elements[id];
       if (!el) return null;
@@ -932,14 +942,16 @@
       }
       if (!rec) rec = records[id] = create(id, el);
       rec.el = el;
-      rec.unavailable = el.props.hidden || el.props.disabled || hiddenAbove;
+      // A container's disabled disables what is in it, as its hidden hides it (GU-22).
+      rec.disabledNow = el.props.disabled || disabledAbove;
+      rec.unavailable = el.props.hidden || rec.disabledNow || hiddenAbove;
       rec.node.hidden = el.props.hidden;
       UPDATE[el.type](rec, el);
       applyBusy(rec);
       if (CONTAINERS[el.type]) {
         var nodes = [];
         for (var i = 0; i < el.children.length; i++) {
-          var child = draw(el.children[i], depth + 1, hiddenAbove || el.props.hidden, seen);
+          var child = draw(el.children[i], depth + 1, hiddenAbove || el.props.hidden, disabledAbove || el.props.disabled, seen);
           if (child) nodes.push(child.node);
         }
         place(rec.body, nodes);
@@ -949,6 +961,10 @@
 
     //: Puts `nodes` into `parent` in order, moving only a node that is out of place (a moved frame reloads).
     function place(parent, nodes) {
+      // Stale children go first (GU-21): a survivor is then never moved past one that is about to be removed, and a frame that is not moved does not reload.
+      for (var s = parent.childNodes.length - 1; s >= 0; s--) {
+        if (nodes.indexOf(parent.childNodes[s]) < 0) parent.removeChild(parent.childNodes[s]);
+      }
       for (var i = 0; i < nodes.length; i++) {
         var at = parent.childNodes[i] || null;
         if (at === nodes[i]) continue;
@@ -962,7 +978,6 @@
         }
         parent.insertBefore(nodes[i], at);
       }
-      while (parent.childNodes.length > nodes.length) parent.removeChild(parent.childNodes[parent.childNodes.length - 1]);
     }
 
     function destroy(rec) {
@@ -1351,7 +1366,7 @@
       if (rec.media) {
         rec.media.loop = el.props.loop;
         rec.media.setAttribute("aria-label", el.props.title || "Audio");
-        if (el.props.disabled) rec.media.setAttribute("inert", "");
+        if (rec.disabledNow) rec.media.setAttribute("inert", "");
         else rec.media.removeAttribute("inert");
       }
     }
@@ -1390,7 +1405,7 @@
         if (run) buildFrame(rec, el);
         else buildInert(rec, key);
       }
-      if (el.props.disabled) rec.node.setAttribute("inert", "");
+      if (rec.disabledNow) rec.node.setAttribute("inert", "");
       else rec.node.removeAttribute("inert");
       if (rec.frame) {
         if (el.props.height !== null) rec.frame.style.setProperty("height", el.props.height + "px");
