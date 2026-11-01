@@ -118,8 +118,9 @@ _CLAIM_POLL_SECONDS = 0.2
 
 
 @contextlib.asynccontextmanager
-async def _conversation_lock(key: tuple[str, str]):
-    entry = _CONVERSATION_LOCKS.setdefault(key, [asyncio.Lock(), 0])
+async def _conversation_lock(key, locks: dict = _CONVERSATION_LOCKS):
+    """Hold ``key``'s lock in ``locks`` (default: the conversations being routed); entries live only while in use."""
+    entry = locks.setdefault(key, [asyncio.Lock(), 0])
     entry[1] += 1
     try:
         async with entry[0]:
@@ -127,7 +128,7 @@ async def _conversation_lock(key: tuple[str, str]):
     finally:
         entry[1] -= 1
         if not entry[1]:
-            del _CONVERSATION_LOCKS[key]
+            del locks[key]
 
 
 def _artefacts(result) -> list[tuple[str, str | None]]:

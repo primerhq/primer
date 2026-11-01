@@ -24,9 +24,37 @@ def _build_application(cfg: TelegramChannelProviderConfig) -> Any:
     """Construct a PTB Application. Deferred import keeps the
     module-import cheap when telegram isn't installed.
     """
-    from telegram.ext import Application
+    from telegram.ext import Application, BaseUpdateProcessor
 
-    builder = Application.builder().token(cfg.bot_token.get_secret_value())
+    from primer.channel.event_dispatch import _conversation_lock
+
+    class _PerChatOrder(BaseUpdateProcessor):
+        """Updates of different chats run concurrently; those of one chat one at a time, in arrival order (W37).
+
+        PTB's default handles one update at a time across every chat, so one voice note (download plus STT) stalled
+        every chat and every button of the bot. The chat lock is taken before the concurrency slot, so a busy chat
+        queues on its own lock and holds one slot at most.
+        """
+
+        def __init__(self) -> None:
+            super().__init__(max_concurrent_updates=256)
+            self._chats: dict = {}
+
+        async def process_update(self, update: object, coroutine) -> None:
+            chat = getattr(update, "effective_chat", None)
+            async with _conversation_lock(getattr(chat, "id", None), self._chats):
+                await super().process_update(update, coroutine)
+
+        async def do_process_update(self, update: object, coroutine) -> None:
+            await coroutine
+
+        async def initialize(self) -> None:
+            pass
+
+        async def shutdown(self) -> None:
+            pass
+
+    builder = Application.builder().token(cfg.bot_token.get_secret_value()).concurrent_updates(_PerChatOrder())
     # PTB's updater handles getUpdates internally; we set the poll
     # timeout on start_polling below.
     return builder.build()

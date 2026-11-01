@@ -378,3 +378,27 @@ async def test_W7_an_outbound_only_discord_connection_logs_in_without_a_gateway(
     assert client.on_message is None and client.on_interaction is None
     await a.aclose()
     assert client.closed == 1 and dc_conn.DISCORD_CONNECTIONS.entry("cp-dc") is None
+
+
+# ---- W37: a slow update in one chat does not hold up another ----------------------------------------------------------
+
+
+async def test_W37_a_slow_update_in_chat_a_does_not_delay_chat_b():
+    from primer.channel.telegram.connection import _build_application
+
+    processor = _build_application(TelegramChannelProviderConfig(bot_token=SecretStr(_TG_TOKEN))).update_processor
+    release_a, b_done = asyncio.Event(), asyncio.Event()
+
+    async def _slow():
+        await release_a.wait()
+
+    async def _fast():
+        b_done.set()
+
+    a = asyncio.create_task(processor.process_update(_update(1), _slow()))
+    b = asyncio.create_task(processor.process_update(_update(2), _fast()))
+    try:
+        await asyncio.wait_for(b_done.wait(), timeout=2)
+    finally:
+        release_a.set()
+        await asyncio.wait_for(asyncio.gather(a, b), timeout=5)
