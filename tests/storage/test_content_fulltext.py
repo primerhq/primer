@@ -100,3 +100,14 @@ async def test_fulltext_indexes_rows_that_predate_the_index(sp):
     await store.ensure_schema()
     assert [h.path for h in await store.search_fulltext("kb", "courier")] \
         == ["guides/shipping"]
+
+
+async def test_fulltext_path_prefix_wildcards_are_literal_like_the_listing(sp):
+    """CV-4: ``list(prefix=)`` escapes the LIKE metacharacters; the search scope must too, or ``my_dir`` also reaches ``myXdir`` and ``100%`` reaches ``1000``."""
+    store = sp.get_content_store()
+    for i, path in enumerate(("my_dir/a", "myXdir/a", "100%/a", "1000/a")):
+        await store.upsert(document_id=f"p{i}", collection_id="c", path=path, content="needle")
+    assert sorted(h.path for h in await store.search_fulltext("c", "needle", path_prefix="my_dir")) == ["my_dir/a"]
+    assert sorted(h.path for h in await store.search_fulltext("c", "needle", path_prefix="100%")) == ["100%/a"]
+    assert sorted(h.path for h in await store.search_fulltext("c", "needle", path_prefix="my")) == ["myXdir/a", "my_dir/a"], "a plain prefix still matches"
+
