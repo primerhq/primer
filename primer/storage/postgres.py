@@ -1694,6 +1694,7 @@ class PostgresDocumentContentStore(DocumentContentStore):
         limit: int = 20,
         conn: Any | None = None,
     ) -> list[FulltextHit]:
+        query = query.replace("\x00", "")  # Postgres refuses a NUL in a text parameter; it cannot be searched for (CV-5)
         if not query.strip():
             return []
         sql = (
@@ -1708,13 +1709,13 @@ class PostgresDocumentContentStore(DocumentContentStore):
             "WHERE collection_id = $1 "
             "AND to_tsvector('english', content) "
             "@@ websearch_to_tsquery('english', $2) "
-            "AND ($3::text IS NULL OR path LIKE $3 || '%') "
+            "AND ($3::text IS NULL OR path LIKE $3 || '%' ESCAPE '\\') "
             "ORDER BY score DESC LIMIT $4"
         )
         try:
             async with self._acquire_or_use(conn) as c:
                 rows = await c.fetch(sql, collection_id, query,
-                                     path_prefix, limit)
+                                     None if path_prefix is None else _escape_like(path_prefix), limit)
         except Exception as exc:
             raise _wrap_content_error(exc, op="search_fulltext") from exc
         return [

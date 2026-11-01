@@ -97,7 +97,8 @@ class InMemoryClaimEngine(ClaimEngine):
                 kind=kind, entity_id=entity_id, priority_score=priority,
                 next_attempt_at=_as_utc(next_attempt_at) if next_attempt_at is not None else self._clock(),
             )
-            self._notify_queue.put_nowait((kind, entity_id))
+        # Every upsert, new row or re-arm, tells the watcher (Postgres: pg_notify on every call), so a re-armed lease is not left to the next poll (CV-6).
+        self._notify_queue.put_nowait((kind, entity_id))
         self._wake.set()
 
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
@@ -297,8 +298,12 @@ class InMemoryClaimEngine(ClaimEngine):
             row.last_heartbeat_at = None
             row.expires_at = None
             row.generation += 1
+            # As the SQL: a release puts the lease back in line at now + the delay, except a lease-only hand-back with no explicit delay, which
+            # keeps its place (CV-7).
             if outcome.requeue_after is not None:
                 row.next_attempt_at = self._clock() + outcome.requeue_after
+            elif not outcome.entity_noop:
+                row.next_attempt_at = self._clock()
             if outcome.entity_noop:
                 pass  # a lease-only hand-back is not a run: attempt_count and last_error stay
             elif not outcome.success:

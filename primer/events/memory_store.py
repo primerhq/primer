@@ -66,6 +66,8 @@ class InMemoryEventStore(EventStore):
         since: datetime | None = None,
     ) -> list[Event]:
         out: list[Event] = []
+        if limit <= 0:
+            return out  # SQL's LIMIT 0: nothing (CV-11)
         for e in self._events:
             if e.id <= after_id:
                 continue
@@ -82,7 +84,7 @@ class InMemoryEventStore(EventStore):
             if since is not None and e.occurred_at < since:
                 continue
             out.append(e)
-            if len(out) >= max(0, limit):
+            if len(out) >= limit:
                 break
         return out
 

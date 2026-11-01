@@ -1620,7 +1620,7 @@ class SqliteDocumentContentStore(DocumentContentStore):
         limit: int = 20,
         conn: object | None = None,
     ) -> list[FulltextHit]:
-        fts = self._fts_query(query)
+        fts = self._fts_query(query.replace("\x00", ""))  # a NUL cannot be searched for and used to raise out of the driver (CV-5)
         if not fts:
             return []
         sql = (
@@ -1630,12 +1630,14 @@ class SqliteDocumentContentStore(DocumentContentStore):
             "FROM document_content_fts "
             "JOIN document_content dc ON dc.rowid = document_content_fts.rowid "
             "WHERE document_content_fts MATCH ? AND dc.collection_id = ? "
-            "AND (? IS NULL OR dc.path LIKE ? || '%') "
+            "AND (? IS NULL OR dc.path LIKE ? || '%' ESCAPE '\\') "
             "ORDER BY score DESC LIMIT ?"
         )
+        # The scope matches literally, like list(prefix=): a `_` or `%` in it is not a wildcard (CV-4).
+        escaped = None if path_prefix is None else _escape_like(path_prefix)
         try:
             cur = await self._conn.execute(
-                sql, (fts, collection_id, path_prefix, path_prefix, limit),
+                sql, (fts, collection_id, path_prefix, escaped, limit),
             )
             rows = await cur.fetchall()
         except Exception as exc:
