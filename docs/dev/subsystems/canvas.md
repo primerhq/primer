@@ -79,7 +79,9 @@ record. The rule of where a record lands (Decision 2) depends on whether a turn 
   contextvar), so it takes the next seq of the turn's counter and lands in order.
 - Outside a turn (an operator's batch, a clear, a user's click) the record reserves the next seq
   on the session row, guarded on the turn not running (`idle` or `claimable`), and is appended at
-  that seq.
+  that seq. The reservation and the append are one section under the session's lifecycle lock, so
+  two concurrent records land in the file in the order their reservations took their seqs (the
+  tap's seq filter skips a record that lands after a later one).
 - While a turn is running and the caller is not the turn, nothing is written. The batch or the
   event is still in the canvas row and in the platform event log, and a silent event reaches the
   agent in the next digest, so only the transcript line is skipped.
