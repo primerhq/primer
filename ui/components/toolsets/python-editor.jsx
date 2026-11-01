@@ -330,6 +330,16 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
   var source = draft == null ? stored : draft;
   var dirty = draft != null && draft !== stored;
 
+  // Clear the draft only once the refetched stored source catches up to it.
+  // A save resolves before its invalidation refetch lands; clearing the draft
+  // on success would throw away keystrokes typed while the PUT was out and
+  // briefly show the stale stored source (UI-M10). When the operator typed
+  // nothing more, stored catches up to the draft and this clears it; when
+  // they did, the draft stays dirty.
+  React.useEffect(function () {
+    if (draft != null && draft === stored) setDraft(null);
+  }, [draft, stored]);
+
   // Handle on the CodeMirror view, so the outline can jump and "Add function"
   // can insert at the end without routing text through React state.
   var viewRef = React.useRef(null);
@@ -395,7 +405,6 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
       ],
       onSuccess: function () {
         setRegError(null);
-        setDraft(null);
         if (pushToast) pushToast({ kind: "success", title: "Toolset saved", detail: toolsetId });
       },
       onError: function (err) {
