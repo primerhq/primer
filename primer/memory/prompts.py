@@ -7,27 +7,25 @@ The reflection prompt is the owner's to read and replace (``AgentMemory.reflecti
 from __future__ import annotations
 
 DEFAULT_REFLECTION_PROMPT = """\
-You review one finished run of an AI agent and decide what the agent should remember for next time. You write short, general playbook entries, never a log of what happened.
+You keep a playbook for an AI agent: short, reusable notes about how to do its kind of work well. You are given the transcript of one session, how it
+ended, the agent's existing notes (an index, and the full text of the ones most related to this session), the topics worth capturing and the topics
+never to capture.
 
-You are given the run's transcript with its outcome signals (the final status, tool errors, and any place the user corrected the agent), the agent's current notes (names and descriptions, and the full text of the few most related ones), the agent's capture topics and its exclusion list.
+Decide whether the session teaches something that will help in a future, different session. Most sessions teach nothing: then return no deltas.
 
-First decide whether the run succeeded, judging from those signals. Put that in `run_succeeded`.
-
-Then return at most 3 deltas. Return none when nothing is worth keeping; that is the usual case. A delta is one of:
-- add: a new entry (`name` a short lowercase slug such as retry-github-429, `description` one line saying when it applies, `steps`, `pitfalls`, optional `example`, `topics` from the capture topics).
-- patch: edit an existing entry by item id (add, change or remove one bullet in steps, pitfalls or example). Never rewrite a whole entry. If a lesson already exists, patch it; do not add a near-duplicate.
-- credit: say whether an entry that was shown to the agent in this run was `helpful` or `harmful`, with a one-line reason.
-
-A lesson must be:
-- general: useful beyond this one run and this one user;
-- inside the capture topics and outside the exclusion list;
-- not already in the agent's instructions or in an existing entry.
-
-A failure becomes a pitfall only as a lesson with its reason and the fix ("doing A fails because B; do C"). Never store a raw trace, a quote of the user, or what a tool returned.
-
-Write for the next run, not for a person. Replace anything that identifies someone with a role or a placeholder: people, organizations, emails, phone numbers, ids, file paths, URLs, hostnames and numbers that point at a real user become "the user", "the customer", <repo>, <customer id>, <host>. Never write a secret, a key, a token or a password, even an example of one.
-
-Answer with JSON only, matching the schema you were given.
+Rules:
+- Return at most 3 deltas. Each is one of: add (a new note), patch (item-level edits to an existing note), credit (a verdict on an existing note
+  that was used in this session).
+- Capture generalized lessons that fall inside the capture topics. Never capture anything inside the do-not-capture list.
+- Generalize: replace people, ids, emails, hostnames, paths and other specifics with placeholders such as <user>, <repo>, <path>. Never copy a
+  secret, a credential or personal data.
+- Distill failures into contrastive pitfalls: what looked right, what went wrong, and what to do instead.
+- Prefer a patch over an add when an existing note covers the same ground. Patch single items (steps, pitfalls, example), never rewrite a note.
+  A note name must not repeat an existing note.
+- Credit an existing note only if it was used in this session: helpful if it led to a better result, harmful if it misled the agent.
+- A note has a name, a one-line description, ordered steps, pitfalls, an optional example and topics.
+- Set run_succeeded to true only if you judge that the session achieved what the user asked for.
+Answer with the JSON object the schema describes and nothing else.
 """
 
 DEFAULT_TOPICS_PROMPT = """\
