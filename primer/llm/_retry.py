@@ -26,6 +26,7 @@ nothing has escaped yet.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import random
 from collections.abc import AsyncIterator, Callable
@@ -102,39 +103,55 @@ async def stream_with_retry(
         attempt += 1
         first: StreamEvent | None = None
         agen = open_stream()
+        # Every exit closes ``agen``: an abandoned attempt still holds its
+        # concurrency slot until closed, and a retry may need that very slot.
         try:
+            try:
+                async for event in agen:
+                    first = event
+                    break
+            except Exception as exc:  # noqa: BLE001 -- classified below
+                if not is_retryable(exc) or attempt > max_retries:
+                    raise
+                await _aclose(agen)
+                await _pause(exc, attempt, provider_id, provider_kind,
+                             base_backoff_seconds, max_backoff_seconds, sleep)
+                continue
+
+            if first is None:
+                return  # empty stream; nothing to retry or forward
+
+            # A stream whose FIRST event is a terminal error has emitted nothing
+            # the consumer can have acted on, so it is still safe to replay.
+            if (
+                isinstance(first, ChatError)
+                and getattr(first, "fatal", False)
+                and getattr(first, "code", None) in _RETRYABLE_CODES
+                and attempt <= max_retries
+            ):
+                await _aclose(agen)
+                await _pause(first, attempt, provider_id, provider_kind,
+                             base_backoff_seconds, max_backoff_seconds, sleep)
+                continue
+
+            # Committed: forward the first event, then the rest verbatim. Any
+            # failure from here is the consumer's to see -- retrying would
+            # duplicate output already delivered.
+            yield first
             async for event in agen:
-                first = event
-                break
-        except Exception as exc:  # noqa: BLE001 -- classified below
-            if not is_retryable(exc) or attempt > max_retries:
-                raise
-            await _pause(exc, attempt, provider_id, provider_kind,
-                         base_backoff_seconds, max_backoff_seconds, sleep)
-            continue
+                yield event
+            return
+        finally:
+            await _aclose(agen)
 
-        if first is None:
-            return  # empty stream; nothing to retry or forward
 
-        # A stream whose FIRST event is a terminal error has emitted nothing
-        # the consumer can have acted on, so it is still safe to replay.
-        if (
-            isinstance(first, ChatError)
-            and getattr(first, "fatal", False)
-            and getattr(first, "code", None) in _RETRYABLE_CODES
-            and attempt <= max_retries
-        ):
-            await _pause(first, attempt, provider_id, provider_kind,
-                         base_backoff_seconds, max_backoff_seconds, sleep)
-            continue
-
-        # Committed: forward the first event, then the rest verbatim. Any
-        # failure from here is the consumer's to see -- retrying would
-        # duplicate output already delivered.
-        yield first
-        async for event in agen:
-            yield event
-        return
+async def _aclose(agen: AsyncIterator[StreamEvent]) -> None:
+    """Close ``agen`` if it can be closed; closing a finished one is a no-op. A failure to close must not replace the
+    error being raised or end a stream that already succeeded."""
+    aclose = getattr(agen, "aclose", None)
+    if aclose is not None:
+        with contextlib.suppress(Exception):
+            await aclose()
 
 
 def _retry_after(cause: Any) -> float | None:
