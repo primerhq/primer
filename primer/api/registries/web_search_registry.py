@@ -16,6 +16,9 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from primer.api.registries._invalidation import BusInvalidated
+from primer.api.registries.retirement import RETIRE_IDLE_SECONDS, AdapterRetirement
+from primer.int.coordinator import InvalidationTopic
 from primer.model.except_ import NotFoundError
 from primer.model.web_search import (
     WebSearchProvider,
@@ -31,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class WebSearchRegistry:
+class WebSearchRegistry(BusInvalidated):
     """Cache + lifecycle for per-row WebSearchAdapter instances."""
 
     def __init__(
@@ -39,7 +42,10 @@ class WebSearchRegistry:
         *,
         storage: "Storage[WebSearchProvider]",
         factory: Callable[[WebSearchProvider], WebSearchAdapter] | None = None,
+        retire_idle_seconds: float = RETIRE_IDLE_SECONDS,
     ) -> None:
+        self._retirement = AdapterRetirement(retire_idle_seconds)
+        self._init_invalidation(InvalidationTopic.WEB_SEARCH_PROVIDER)
         self._storage = storage
         self._factory = factory or default_web_search_factory
         self._instances: dict[str, WebSearchAdapter] = {}
@@ -66,7 +72,7 @@ class WebSearchRegistry:
             raise NotFoundError(
                 f"web search provider {provider_id!r} does not exist"
             )
-        candidate = self._factory(row)
+        candidate = self._retirement.track(self._factory(row))
 
         # Insert under the lock with a re-check.
         async with self._lock:
@@ -84,20 +90,22 @@ class WebSearchRegistry:
             )
         return winner
 
-    async def invalidate(self, provider_id: str) -> None:
-        """Drop the cached instance for one id; aclose() it."""
+    async def _invalidate_local(self, provider_id: str) -> None:
+        """Drop the cached instance for one id (this process); retire it."""
         async with self._lock:
             inst = self._instances.pop(provider_id, None)
         if inst is not None:
-            try:
-                await inst.aclose()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "WebSearchRegistry.invalidate: aclose failed: %s", exc,
-                )
+            self._retirement.retire(inst)         # closed once its in-flight calls are done (GX-1)
+
+    def _flush_local(self) -> None:
+        """A bus reconnect may have dropped evictions: retire every cached adapter (in-flight calls finish), so the next get rebuilds."""
+        instances, self._instances = list(self._instances.values()), {}
+        for inst in instances:
+            self._retirement.retire(inst)
 
     async def aclose(self) -> None:
-        """Drop + aclose every cached instance."""
+        """Unsubscribe, then drop + aclose every cached instance."""
+        await self._unbind_invalidation_bus()
         async with self._lock:
             instances = list(self._instances.values())
             self._instances.clear()
@@ -109,6 +117,7 @@ class WebSearchRegistry:
                     "WebSearchRegistry.aclose: instance close failed: %s",
                     exc,
                 )
+        await self._retirement.close_all()
 
 
 def default_web_search_factory(

@@ -1209,6 +1209,7 @@ async def _do_uninstall(
             harness=harness,
             cascade=harness.uninstall_cascade,
             semantic_search_registry=deps.semantic_search_registry,
+            provider_registry=deps.provider_registry,
         )
     except Exception as exc:
         logger.exception("_do_uninstall error for harness %s", harness.id)

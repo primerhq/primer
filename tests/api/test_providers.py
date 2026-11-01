@@ -13,11 +13,14 @@ Also covers entity-specific endpoints:
 
 from __future__ import annotations
 
+import asyncio
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import SecretStr
 
+from primer.api.registries.retirement import AdapterRetirement
 from primer.api.registries import ProviderRegistry
 from primer.model.common import dump_for_storage
 from primer.model.provider import (
@@ -195,6 +198,7 @@ class TestCascadeInvalidation:
         sentinel_v2 = MagicMock()
         sentinel_v2.aclose = AsyncMock()
         registry._llm_factory = lambda _p: sentinel_v1  # type: ignore[attr-defined]
+        registry._retirement = AdapterRetirement(0.01)  # type: ignore[attr-defined]   # a replaced adapter closes once idle (GX-1)
         first = await registry.get_llm("anthropic-1")
         assert first is sentinel_v1
 
@@ -205,6 +209,7 @@ class TestCascadeInvalidation:
 
         second = await registry.get_llm("anthropic-1")
         assert second is sentinel_v2
+        await asyncio.sleep(0.1)
         sentinel_v1.aclose.assert_awaited_once()
 
 

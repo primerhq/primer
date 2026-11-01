@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from primer.api.registries.speech_registry import (
@@ -73,10 +75,11 @@ async def test_get_on_a_missing_row_raises_not_found() -> None:
 async def test_invalidate_drops_and_closes_the_cached_adapter() -> None:
     storage = _InMemoryStorage(SpeechToTextProvider)
     await storage.create(_stt_row())
-    registry = SpeechRegistry(storage=storage, factory=_Adapter)
+    registry = SpeechRegistry(storage=storage, factory=_Adapter, retire_idle_seconds=0.01)
 
     first = await registry.get("stt-a")
     await registry.invalidate("stt-a")
+    await asyncio.sleep(0.1)   # a replaced adapter closes once it has been idle (GX-1)
     assert first.closed == 1
     second = await registry.get("stt-a")
     assert second is not first

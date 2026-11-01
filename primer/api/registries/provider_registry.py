@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from primer.common.toolset_ids import canonical_toolset_id
+from primer.api.registries.retirement import RETIRE_IDLE_SECONDS, AdapterRetirement
 from primer.int.coordinator import InvalidationBus, InvalidationSubscription, RateLimiter
 from primer.int.cross_encoder import CrossEncoder
 from primer.int.embedder import Embedder
@@ -364,6 +365,7 @@ class ProviderRegistry:
         canvas_toolset_provider: ToolsetProvider | None = None,
         rate_limiter: RateLimiter | None = None,
         trace_llm_io: bool = False,
+        retire_idle_seconds: float = RETIRE_IDLE_SECONDS,
     ) -> None:
         self._sp = storage_provider
         self._rate_limiter: RateLimiter | None = rate_limiter
@@ -428,6 +430,7 @@ class ProviderRegistry:
         # on the calling workspace session's canvas, so they are dropped from chat contexts like ``workspace_ext``'s.
         self._canvas_toolset_provider = canvas_toolset_provider
 
+        self._retirement = AdapterRetirement(retire_idle_seconds)
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
         self._cross_encoder_cache: dict[str, CrossEncoder] = {}
@@ -470,7 +473,7 @@ class ProviderRegistry:
                 raise NotFoundError(
                     f"LLMProvider {provider_id!r} does not exist"
                 )
-            adapter = self._llm_factory(row)
+            adapter = self._retirement.track(self._llm_factory(row))
             if self._cache_generation == generation:
                 self._llm_cache[provider_id] = adapter
             return adapter
@@ -526,7 +529,7 @@ class ProviderRegistry:
                     f"ModelProfile {profile_id!r} does not exist"
                 )
             from primer.llm.aggregated import AggregatedLLM
-            adapter = AggregatedLLM(row, resolve_member=resolve_member)
+            adapter = self._retirement.track(AggregatedLLM(row, resolve_member=resolve_member))
             if self._cache_generation == generation:
                 self._aggregated_llm_cache[profile_id] = adapter
             return adapter
@@ -542,7 +545,7 @@ class ProviderRegistry:
                 raise NotFoundError(
                     f"EmbeddingProvider {provider_id!r} does not exist"
                 )
-            adapter = self._embedder_factory(row)
+            adapter = self._retirement.track(self._embedder_factory(row))
             if self._cache_generation == generation:
                 self._embedder_cache[provider_id] = adapter
             return adapter
@@ -558,7 +561,7 @@ class ProviderRegistry:
                 raise NotFoundError(
                     f"CrossEncoderProvider {provider_id!r} does not exist"
                 )
-            adapter = self._cross_encoder_factory(row)
+            adapter = self._retirement.track(self._cross_encoder_factory(row))
             if self._cache_generation == generation:
                 self._cross_encoder_cache[provider_id] = adapter
             return adapter
@@ -666,53 +669,25 @@ class ProviderRegistry:
         async with self._lock:
             adapter = self._llm_cache.pop(provider_id, None)
         if adapter is not None:
-            try:
-                await adapter.aclose()
-            except Exception as exc:  # noqa: BLE001 -- best-effort
-                logger.warning(
-                    "ProviderRegistry: aclose failed on LLM %r: %s",
-                    provider_id,
-                    exc,
-                )
+            self._retirement.retire(adapter)     # closed once its in-flight calls are done (GX-1)
 
     async def _invalidate_aggregated_llm_local(self, profile_id: str) -> None:
         async with self._lock:
             adapter = self._aggregated_llm_cache.pop(profile_id, None)
         if adapter is not None:
-            try:
-                await adapter.aclose()
-            except Exception as exc:  # noqa: BLE001 -- best-effort
-                logger.warning(
-                    "ProviderRegistry: aclose failed on AggregatedLLM %r: %s",
-                    profile_id,
-                    exc,
-                )
+            self._retirement.retire(adapter)     # closed once its in-flight calls are done (GX-1)
 
     async def _invalidate_embedder_local(self, provider_id: str) -> None:
         async with self._lock:
             adapter = self._embedder_cache.pop(provider_id, None)
         if adapter is not None:
-            try:
-                await adapter.aclose()
-            except Exception as exc:  # noqa: BLE001 -- best-effort
-                logger.warning(
-                    "ProviderRegistry: aclose failed on Embedder %r: %s",
-                    provider_id,
-                    exc,
-                )
+            self._retirement.retire(adapter)     # closed once its in-flight calls are done (GX-1)
 
     async def _invalidate_cross_encoder_local(self, provider_id: str) -> None:
         async with self._lock:
             adapter = self._cross_encoder_cache.pop(provider_id, None)
         if adapter is not None:
-            try:
-                await adapter.aclose()
-            except Exception as exc:  # noqa: BLE001 -- best-effort
-                logger.warning(
-                    "ProviderRegistry: aclose failed on CrossEncoder %r: %s",
-                    provider_id,
-                    exc,
-                )
+            self._retirement.retire(adapter)     # closed once its in-flight calls are done (GX-1)
 
     async def _invalidate_toolset_local(self, toolset_id: str) -> None:
         # Transparently resolve old `_*` ids to new prefix-less ids.
@@ -831,10 +806,11 @@ class ProviderRegistry:
         normally); the next get rebuilds from a post-flush row.
         """
         self._cache_generation += 1
-        self._llm_cache.clear()
-        self._aggregated_llm_cache.clear()
-        self._embedder_cache.clear()
-        self._cross_encoder_cache.clear()
+        # The flushed adapters are retired, not dropped: an in-flight request keeps working on its own, and the adapter is closed once it is idle.
+        for cache in (self._llm_cache, self._aggregated_llm_cache, self._embedder_cache, self._cross_encoder_cache):
+            for adapter in cache.values():
+                self._retirement.retire(adapter)
+            cache.clear()
         self._toolset_cache.clear()
 
     async def bind_invalidation_bus(self, bus: InvalidationBus) -> None:
@@ -928,6 +904,7 @@ class ProviderRegistry:
                     type(adapter).__name__,
                     exc,
                 )
+        await self._retirement.close_all()
 
 
 __all__ = [

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from pydantic import SecretStr
 
@@ -88,9 +90,10 @@ async def test_registry_invalidate_closes_instance():
     def factory(r):
         inst = _StubProvider(r); instances.append(inst); return inst
 
-    reg = SemanticSearchRegistry(storage=storage, factory=factory)
+    reg = SemanticSearchRegistry(storage=storage, factory=factory, retire_idle_seconds=0.01)
     await reg.get_provider("ssp-a")
     await reg.invalidate("ssp-a")
+    await asyncio.sleep(0.1)   # a replaced instance closes once it has been idle (GX-1)
     assert instances[0].closed is True
     # Next get re-constructs
     await reg.get_provider("ssp-a")
@@ -116,10 +119,11 @@ async def test_registry_invalidate_survives_an_instance_whose_close_fails():
         instances.append(inst)
         return inst
 
-    reg = SemanticSearchRegistry(storage=storage, factory=factory)
+    reg = SemanticSearchRegistry(storage=storage, factory=factory, retire_idle_seconds=0.01)
     await reg.get_provider("ssp-a")
 
     await reg.invalidate("ssp-a")  # must not raise
+    await asyncio.sleep(0.1)
 
     assert instances[0].closed is True, "the close was never attempted"
     await reg.get_provider("ssp-a")
@@ -129,11 +133,12 @@ async def test_registry_invalidate_survives_an_instance_whose_close_fails():
 @pytest.mark.asyncio
 async def test_registry_invalidate_logs_a_failed_close(caplog):
     storage = _StubStorage({"ssp-a": _make_row("ssp-a")})
-    reg = SemanticSearchRegistry(storage=storage, factory=lambda r: _FailingCloseProvider(r))
+    reg = SemanticSearchRegistry(storage=storage, factory=lambda r: _FailingCloseProvider(r), retire_idle_seconds=0.01)
     await reg.get_provider("ssp-a")
 
-    with caplog.at_level("WARNING", logger="primer.api.registries.semantic_search_registry"):
+    with caplog.at_level("WARNING", logger="primer.api.registries.retirement"):
         await reg.invalidate("ssp-a")
+        await asyncio.sleep(0.1)
 
     assert any("ssp-a" in r.getMessage() and "the pool is already gone" in r.getMessage() for r in caplog.records)
 

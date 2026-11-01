@@ -152,10 +152,11 @@ class TestLLMResolution:
         adapter = MagicMock()
         adapter.aclose = AsyncMock()
         ctor = MagicMock(return_value=adapter)
-        registry = ProviderRegistry(sp, llm_factory=lambda p: ctor(p))
+        registry = ProviderRegistry(sp, llm_factory=lambda p: ctor(p), retire_idle_seconds=0.01)
 
         await registry.get_llm("anthropic-1")
         await registry.invalidate_llm("anthropic-1")
+        await asyncio.sleep(0.1)   # a replaced adapter closes once it has been idle (GX-1)
 
         adapter.aclose.assert_awaited_once()
         await registry.get_llm("anthropic-1")
@@ -387,10 +388,11 @@ class TestCrossEncoderResolution:
 
         adapter = MagicMock()
         adapter.aclose = AsyncMock()
-        registry = ProviderRegistry(sp, cross_encoder_factory=lambda p: adapter)
+        registry = ProviderRegistry(sp, cross_encoder_factory=lambda p: adapter, retire_idle_seconds=0.01)
 
         await registry.get_cross_encoder("ce-1")
         await registry.invalidate_cross_encoder("ce-1")
+        await asyncio.sleep(0.1)
         adapter.aclose.assert_awaited_once()
 
 
@@ -402,10 +404,11 @@ class TestEmbedderInvalidation:
 
         adapter = MagicMock()
         adapter.aclose = AsyncMock()
-        registry = ProviderRegistry(sp, embedder_factory=lambda p: adapter)
+        registry = ProviderRegistry(sp, embedder_factory=lambda p: adapter, retire_idle_seconds=0.01)
 
         await registry.get_embedder("hf-1")
         await registry.invalidate_embedder("hf-1")
+        await asyncio.sleep(0.1)
         adapter.aclose.assert_awaited_once()
 
 
