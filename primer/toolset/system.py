@@ -429,6 +429,7 @@ def build_system_toolset(
         RESERVED_TOOLSET_IDS,
         RESERVED_TOOLSET_ROW_IDS,
     )
+    from primer.model.providers.vector import ssp_save_violation
 
     guards_by_label: dict[str, CrudGuards] = {
         # harness-managed rows (REST ``managed_by_field="harness_id"``)
@@ -459,6 +460,7 @@ def build_system_toolset(
         ),
         "semantic_search_provider": CrudGuards(
             kind="semantic_search_provider", reserved_create_ids=RESERVED_SSP_IDS, reserved_delete_ids=RESERVED_SSP_IDS,
+            validate=ssp_save_violation,        # the HNSW settings pgvector refuses (GI-22)
         ),
         "artifact_storage_provider": CrudGuards(
             kind="artifact_storage_provider", reserved_delete_ids=frozenset({DEFAULT_ARTIFACT_PROVIDER_ID}),

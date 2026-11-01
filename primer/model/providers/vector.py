@@ -353,3 +353,31 @@ class SemanticSearchProvider(Grantable, Identifiable):
                 f"{expected.__name__} in 'config'"
             )
         return self
+
+
+def hnsw_bound_violation(config: object) -> str | None:
+    """The sentence naming the first HNSW setting pgvector refuses, or ``None`` (GI-22).
+
+    pgvector's limits: ``m`` 2 to 100, ``ef_construction`` 4 to 1000 and at least ``2 * m``, ``hnsw.ef_search`` 1 to 1000. The model takes any
+    positive int, so this is checked at the SAVE door (the REST routes and the system tools): an out-of-range value used to be saved and then fail
+    every vector operation of the provider (the ``SET`` on every pooled connection, the index DDL of every new collection). Loading a row saved before
+    never raises: this is not a model validator.
+    """
+    m = getattr(config, "hnsw_m", None)
+    ef_construction = getattr(config, "hnsw_ef_construction", None)
+    ef_search = getattr(config, "hnsw_ef_search", None)
+    if m is not None and not 2 <= m <= 100:
+        return f"hnsw_m must be between 2 and 100 (pgvector's limit), got {m}"
+    if ef_construction is not None and not 4 <= ef_construction <= 1000:
+        return f"hnsw_ef_construction must be between 4 and 1000 (pgvector's limit), got {ef_construction}"
+    if m is not None and ef_construction is not None and ef_construction < 2 * m:
+        return f"hnsw_ef_construction must be at least 2 * hnsw_m ({2 * m}), got {ef_construction}"
+    if ef_search is not None and not 1 <= ef_search <= 1000:
+        return f"hnsw_ef_search must be between 1 and 1000 (pgvector's limit), got {ef_search}"
+    return None
+
+
+def ssp_save_violation(entity: object) -> str | None:
+    """:func:`hnsw_bound_violation` for a semantic-search provider row on its way in; ``None`` for any other backend."""
+    config = getattr(entity, "config", None)
+    return hnsw_bound_violation(config) if isinstance(config, _PgVectorBaseConfig) else None

@@ -79,6 +79,8 @@ class CrudGuards:
     # Delete blocks that are not a child row: ``async (storage_provider, entity) -> refusal sentence | None``, run after ``references``
     # (the REST router's ``on_pre_delete`` hook, which runs after its reference blocks).
     delete_blockers: tuple[Callable[[Any, Any], Awaitable[str | None]], ...] = field(default_factory=tuple)
+    # A save-time check on the body: ``(entity) -> refusal sentence | None``, run on create and on update (the REST router's pre-save hook).
+    validate: Callable[[Any], str | None] | None = None
 
 
 def refuse_create(guards: CrudGuards, entity: Any) -> ToolCallResult | None:
@@ -92,7 +94,12 @@ def refuse_create(guards: CrudGuards, entity: Any) -> ToolCallResult | None:
             f"id {entity.id!r} is reserved and cannot be created via the API (reserved: {sorted(guards.reserved_create_ids)})",
             error_type="conflict",
         )
-    return None
+    return _refuse_invalid(guards, entity)
+
+
+def _refuse_invalid(guards: CrudGuards, entity: Any) -> ToolCallResult | None:
+    sentence = guards.validate(entity) if guards.validate is not None else None
+    return None if sentence is None else _err(sentence, error_type="validation-error")
 
 
 def refuse_update(guards: CrudGuards, entity: Any, existing: Any) -> ToolCallResult | None:
@@ -102,7 +109,7 @@ def refuse_update(guards: CrudGuards, entity: Any, existing: Any) -> ToolCallRes
         return _err(f"id {existing.id!r} is a reserved {guards.kind} and cannot be updated", error_type="forbidden")
     managed = guards.managed_by_field
     if managed is None:
-        return None
+        return _refuse_invalid(guards, entity)
     current = getattr(existing, managed, None)
     if current is not None:
         return _err(
@@ -114,7 +121,7 @@ def refuse_update(guards: CrudGuards, entity: Any, existing: Any) -> ToolCallRes
             f"{managed} is set by the system that manages a {guards.kind} and cannot be set by an update",
             error_type="bad-request",
         )
-    return None
+    return _refuse_invalid(guards, entity)
 
 
 def refuse_delete_id(guards: CrudGuards, entity_id: str) -> ToolCallResult | None:
