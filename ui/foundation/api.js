@@ -482,6 +482,15 @@ function PR_trailingThrottle(state, ms, fn) {
   }, ms);
 }
 
+// Stops a PR_trailingThrottle for good (the listener's component unmounted): the window's timer is cleared and the pending trailing run dropped, so no
+// refetch happens for a view that is gone. The next frame, if the state is ever used again, starts a fresh window.
+function PR_cancelThrottle(state) {
+  if (!state) return;
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = null;
+  state.pending = false;
+}
+
 // `items.map(fn)` with at most `limit` calls in flight (one worker loop per slot); the answers keep the order of `items`. A signal that aborts stops new calls.
 function PR_mapLimit(items, limit, fn, signal) {
   var out = new Array(items.length);
@@ -517,6 +526,7 @@ window.PR_MAX_POLL_MS = PR_MAX_POLL_MS;
 window.PR_fetchAllPages = PR_fetchAllPages;
 window.PR_fetchAllFind = PR_fetchAllFind;
 window.PR_trailingThrottle = PR_trailingThrottle;
+window.PR_cancelThrottle = PR_cancelThrottle;
 window.PR_mapLimit = PR_mapLimit;
 window.PR_partialFailure = PR_partialFailure;
 window.PR_nounFor = PR_nounFor;

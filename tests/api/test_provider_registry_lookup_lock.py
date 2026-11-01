@@ -42,11 +42,13 @@ class _SP:
 
 
 class _Adapter:
+    closed = 0
+
     def __init__(self, row) -> None:
         self.id, self.version = row.id, row.version
 
     async def aclose(self) -> None:
-        return None
+        self.closed += 1
 
 
 def _held(sp: _SP, provider_id: str) -> asyncio.Event:
@@ -92,3 +94,52 @@ async def test_an_eviction_of_the_id_during_its_build_is_not_lost():
     assert (await first).version == "v1"            # the caller that started before the edit completes
     del sp.storage.hold["p1"]
     assert (await registry.get_llm("p1")).version == "v2"
+
+
+# An adapter built while an eviction or a flush landed is returned to its caller but not cached; it is retired so its client is closed once idle.
+IDLE = 0.05
+
+
+async def _evicted_during_build(registry, sp, get, invalidate):
+    release = _held(sp, "p1")
+    first = asyncio.create_task(get("p1"))
+    await sp.storage.reading["p1"].wait()
+    await invalidate("p1")
+    release.set()
+    adapter = await first
+    del sp.storage.hold["p1"]
+    return adapter
+
+
+async def test_an_llm_adapter_built_across_an_eviction_is_retired_once_idle():
+    sp = _SP()
+    registry = ProviderRegistry(sp, llm_factory=_Adapter, retire_idle_seconds=IDLE)
+    adapter = await _evicted_during_build(registry, sp, registry.get_llm, registry.invalidate_llm)
+    assert adapter.closed == 0                                # still usable by the caller it was returned to
+    await asyncio.sleep(IDLE * 6)
+    assert adapter.closed == 1
+
+
+async def test_an_embedder_built_across_an_eviction_is_retired_once_idle():
+    sp = _SP()
+    registry = ProviderRegistry(sp, embedder_factory=_Adapter, retire_idle_seconds=IDLE)
+    adapter = await _evicted_during_build(registry, sp, registry.get_embedder, registry.invalidate_embedder)
+    await asyncio.sleep(IDLE * 6)
+    assert adapter.closed == 1
+
+
+async def test_a_cached_adapter_is_not_retired_by_the_lookup_that_built_it():
+    sp = _SP()
+    registry = ProviderRegistry(sp, llm_factory=_Adapter, retire_idle_seconds=IDLE)
+    adapter = await registry.get_llm("p1")
+    await asyncio.sleep(IDLE * 6)
+    assert adapter.closed == 0 and await registry.get_llm("p1") is adapter
+
+
+async def test_a_toolset_built_across_an_eviction_is_not_retired():
+    """Toolset providers are not tracked for in-flight calls, so retiring one would close it under a call after the idle period."""
+    sp = _SP()
+    registry = ProviderRegistry(sp, toolset_factory=_Adapter, retire_idle_seconds=IDLE)
+    adapter = await _evicted_during_build(registry, sp, registry.get_toolset, registry.invalidate_toolset)
+    await asyncio.sleep(IDLE * 6)
+    assert adapter.closed == 0

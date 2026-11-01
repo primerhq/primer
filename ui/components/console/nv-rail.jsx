@@ -398,6 +398,8 @@ function NV_Rail(props) {
   // frame; the first qualifying frame still refetches immediately so the
   // update still feels live.
   var attentionThrottleRef = React.useRef({});
+  // Unmounting drops the trailing refetch the throttle still holds.
+  React.useEffect(function () { return function () { PR_cancelThrottle(attentionThrottleRef.current); }; }, []);
   window.useWorkspaceTapListener(props.selectedWorkspaceId, function (ev) {
     var cls = ev && ev["class"];
     if (cls !== "yielded" && cls !== "resumed" && cls !== "done") return;

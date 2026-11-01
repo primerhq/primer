@@ -466,9 +466,13 @@ class ProviderRegistry:
         """The storage the registry resolves rows from (read access checks on a toolset row use it)."""
         return self._sp
 
-    async def _cached(self, kind: str, cache: dict[str, Any], key: str, build: Callable[[], Awaitable[Any]]) -> Any:
+    async def _cached(
+        self, kind: str, cache: dict[str, Any], key: str, build: Callable[[], Awaitable[Any]], *, retire_uncached: bool = False,
+    ) -> Any:
         """``cache[key]``, else what ``build`` makes, cached unless an eviction or a flush landed while it was built (the generation moved): that
-        adapter came from a row read before it, so it serves this caller only."""
+        adapter came from a row read before it, so it serves this caller only. ``retire_uncached`` (the kinds whose adapters are tracked for
+        in-flight calls) retires it too, so its client is closed once it has been idle; a kind that is not tracked is never retired, as a retire would
+        close it under a call that is still using it."""
         cached = cache.get(key)
         if cached is not None:
             return cached
@@ -481,6 +485,8 @@ class ProviderRegistry:
             adapter = await build()
             if self._cache_generation == generation:
                 cache[key] = adapter
+            elif retire_uncached:
+                self._retirement.retire(adapter, f"{kind} {key}")
             return adapter
 
     async def get_llm(self, provider_id: str) -> LLM:
@@ -492,7 +498,7 @@ class ProviderRegistry:
                 )
             return self._retirement.track(self._llm_factory(row))
 
-        return await self._cached("llm", self._llm_cache, provider_id, build)
+        return await self._cached("llm", self._llm_cache, provider_id, build, retire_uncached=True)
 
     async def get_aggregated_llm(
         self,
@@ -543,7 +549,7 @@ class ProviderRegistry:
             from primer.llm.aggregated import AggregatedLLM
             return self._retirement.track(AggregatedLLM(row, resolve_member=resolve_member))
 
-        return await self._cached("aggregated_llm", self._aggregated_llm_cache, profile_id, build)
+        return await self._cached("aggregated_llm", self._aggregated_llm_cache, profile_id, build, retire_uncached=True)
 
     async def get_embedder(self, provider_id: str) -> Embedder:
         async def build() -> Embedder:
@@ -554,7 +560,7 @@ class ProviderRegistry:
                 )
             return self._retirement.track(self._embedder_factory(row))
 
-        return await self._cached("embedder", self._embedder_cache, provider_id, build)
+        return await self._cached("embedder", self._embedder_cache, provider_id, build, retire_uncached=True)
 
     async def get_cross_encoder(self, provider_id: str) -> CrossEncoder:
         async def build() -> CrossEncoder:
@@ -565,7 +571,7 @@ class ProviderRegistry:
                 )
             return self._retirement.track(self._cross_encoder_factory(row))
 
-        return await self._cached("cross_encoder", self._cross_encoder_cache, provider_id, build)
+        return await self._cached("cross_encoder", self._cross_encoder_cache, provider_id, build, retire_uncached=True)
 
     async def toolsets_off_by_design(self) -> frozenset[str]:
         """The reserved toolsets this install has switched off on purpose (module :func:`toolsets_off_by_design`)."""

@@ -1715,6 +1715,7 @@ function NV_MobileShell() {
   // Debounced so a burst of frames from the same session doesn't refetch
   // once per frame.
   var refetchThrottleRef = React.useRef({});
+  React.useEffect(function () { return function () { PR_cancelThrottle(refetchThrottleRef.current); }; }, []);
   // The Files tab's read of the workspace row (same key, one cache entry): a gone workspace's tap is not held, or the hub would reopen its
   // 404 with backoff (UI-L1), as on the desktop rail.
   var wsRow = window.primerApi.useResource(

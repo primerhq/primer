@@ -1148,6 +1148,7 @@ function NV_ApprovalsAudit() {
   var nudgeState = React.useState({});
   var nudges = nudgeState[0], setNudges = nudgeState[1];
   var tapState = React.useRef({ throttle: {}, sids: {} });
+  React.useEffect(function () { return function () { PR_cancelThrottle(tapState.current.throttle); }; }, []);
   window.useWorkspaceTapListener(con.wid, function (ev) {
     var cls = ev && ev["class"];
     if (cls !== "yielded" && cls !== "resumed") return;

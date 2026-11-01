@@ -22,9 +22,9 @@ def _api_ctx() -> MiniRacer:
     ctx = MiniRacer()
     ctx.eval(
         "var window = globalThis; window.React = {};"
-        "var TIMERS = []; var NOW = 0;"
-        "function setTimeout(fn, ms) { TIMERS.push({fn: fn, at: NOW + ms}); return TIMERS.length; }"
-        "function clearTimeout(id) {}"
+        "var TIMERS = []; var NOW = 0; var NEXT_ID = 0;"
+        "function setTimeout(fn, ms) { NEXT_ID += 1; TIMERS.push({id: NEXT_ID, fn: fn, at: NOW + ms}); return NEXT_ID; }"
+        "function clearTimeout(id) { TIMERS = TIMERS.filter(function (t) { return t.id !== id; }); }"
         "function advance(ms) { NOW += ms; var due = TIMERS.filter(function (t) { return t.at <= NOW; });"
         " TIMERS = TIMERS.filter(function (t) { return t.at > NOW; }); due.forEach(function (t) { t.fn(); }); }"
     )
@@ -48,6 +48,24 @@ def test_a_frame_inside_the_window_gets_one_trailing_refetch() -> None:
     assert ctx.eval("n") == 3
 
 
+def test_cancelling_the_throttle_drops_the_pending_trailing_run() -> None:
+    """A component that unmounts cancels its throttle: the trailing run must not refetch for a view that is gone."""
+    ctx = _api_ctx()
+    ctx.eval("var state = {}; var n = 0; function go() { PR_trailingThrottle(state, 500, function () { n += 1; }); }")
+    ctx.eval("go(); advance(100); go();")                  # a leading run and one pending frame
+    assert ctx.eval("n") == 1
+    ctx.eval("PR_cancelThrottle(state); advance(1000);")
+    assert ctx.eval("n") == 1, "the cancelled trailing run did not happen"
+    ctx.eval("go();")
+    assert ctx.eval("n") == 2, "a throttle that was cancelled starts a fresh window on the next frame"
+
+
+def test_cancelling_a_throttle_that_never_ran_is_a_no_op() -> None:
+    ctx = _api_ctx()
+    ctx.eval("var state = {}; PR_cancelThrottle(state); PR_cancelThrottle(undefined);")
+    assert ctx.eval("typeof PR_cancelThrottle") == "function"
+
+
 def test_map_limit_runs_at_most_four_at_once_and_keeps_order() -> None:
     ctx = _api_ctx()
     ctx.eval(
@@ -68,6 +86,18 @@ def test_the_three_trailing_listeners_use_the_shared_throttle() -> None:
         assert "PR_trailingThrottle(" in src, name
         assert "if (attentionRefetchTimerRef.current) return;" not in src
         assert "if (refetchTimerRef.current) return;" not in src
+
+
+def test_each_throttled_listener_cancels_its_timer_when_it_unmounts() -> None:
+    sites = (
+        ("nv-rail.jsx", "attentionThrottleRef.current"),
+        ("nv-mobile-shell.jsx", "refetchThrottleRef.current"),
+        ("nv-platform.jsx", "tapState.current.throttle"),
+    )
+    for name, state in sites:
+        src = _read(CONSOLE / name)
+        unmount = "React.useEffect(function () { return function () { PR_cancelThrottle(" + state + "); }; }, []);"
+        assert unmount in src, name
 
 
 def test_pending_attention_is_read_under_one_key() -> None:
