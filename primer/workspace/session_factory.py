@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 # invocation counter, and graph_input (validated only when it comes through the create's own graph_input field).
 RESERVED_SESSION_METADATA_KEYS = frozenset({
     "reply_binding", "relay_every_turn", "subscription_id", "trigger_id", "fire_id", "fired_at",
-    "ephemeral_response_format", "invocation", "graph_input",
+    "ephemeral_response_format", "invocation", "graph_input", "_memory_index",
 })
 
 
