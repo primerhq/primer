@@ -94,7 +94,7 @@ The entities:
   them (defence in depth; a password under 4 characters or a keyless placeholder is
   not masked, `primer.llm._failure.scrub`'s rule). Document search is
   `POST /v1/collections/{id}/search`. See [rest-api.md](../architecture/rest-api.md).
-- **Auto-bootstrap.** On Postgres-mode installs the reserved `pgvector` SSP row is seeded first (the authoritative vector default), then the reserved `lance` row, so semantic search works zero-config; the internal-collections bootstrap is a
+- **Auto-bootstrap.** On Postgres-mode installs the reserved `pgvector` SSP row is seeded first (the authoritative vector default), then the reserved `lance` row, so semantic search works zero-config. The reserved `pgvector` row copies ALL of the app's Postgres settings (schema and pool too, so two installs sharing a database keep to a schema each) and, on every boot, follows them while it still points at the app's own server: a rotated password and new pool settings reach it, and its schema moves only while the schema it is on holds no vector collections (`catalogue_has_collections`), otherwise a warning says where it stays; the operator's tuning is never touched. The internal-collections bootstrap is a
   separate state machine. See [auto-bootstrap.md](../architecture/auto-bootstrap.md).
 - **Adjacent subsystem.** Embedders, the prompt registry, the `Collection` /
   `Document` models, and the ingestion pipeline are documented in
