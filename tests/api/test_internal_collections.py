@@ -3,7 +3,7 @@
 Covers:
 
 * Config CRUD (PUT/GET/DELETE).
-* Bootstrap endpoint — enables semantic search on the system collection.
+* Bootstrap endpoint - enables semantic search on the system collection.
 * The per-entity ``/search`` routes are gone (D18).
 * Cascade: ``DELETE /v1/internal_collections/config`` disables search on
   the system collection.
