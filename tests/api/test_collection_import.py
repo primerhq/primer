@@ -116,3 +116,24 @@ async def test_an_archive_that_inflates_past_the_cap_is_413(client, monkeypatch)
     )
     assert r.status_code == 413, r.text
     assert r.json()["extensions"]["limit_bytes"] == 1000
+
+
+async def test_a_fail_conflict_answers_409_naming_what_was_written(client):
+    """KN-19b: the 409 carries the report of what the import wrote before it stopped."""
+    cid = await _mk_collection(client)
+    await client.post(f"/v1/collections/{cid}/docs", json={"parent": "", "slug": "b", "body": "old"})
+    r = await client.post(
+        f"/v1/collections/{cid}/import",
+        files={"file": ("kb.zip", _zip({"a.md": b"A", "b.md": b"B"}), "application/zip")},
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["extensions"]["report"]["created"] == ["a"]
+
+
+async def test_an_encrypted_entry_answers_400(client):
+    cid = await _mk_collection(client)
+    raw = bytearray(_zip({"a.md": b"hello"}))
+    raw[6] |= 1
+    raw[raw.rfind(b"PK\x01\x02") + 8] |= 1
+    r = await client.post(f"/v1/collections/{cid}/import", files={"file": ("kb.zip", bytes(raw), "application/zip")})
+    assert r.status_code == 400, r.text

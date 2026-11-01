@@ -33,6 +33,18 @@ class ImportReport(BaseModel):
     rejected: list[dict] = Field(default_factory=list)
 
 
+class ImportConflictError(ConflictError):
+    """``conflict="fail"`` met an existing path; the 409 carries the report of what the import wrote before it stopped."""
+
+    def __init__(self, message: str, report: ImportReport) -> None:
+        super().__init__(message)
+        self.report = report
+
+    @property
+    def problem_extensions(self) -> dict[str, object]:
+        return {"report": self.report.model_dump(mode="json")}
+
+
 def slugify_segment(raw: str) -> str | None:
     s = _STRIP_EXT.sub("", raw.strip().lower())
     s = _NON_SLUG.sub("-", s).strip("-")
@@ -148,9 +160,9 @@ def _read_bounded(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> by
                         f"(at entry {info.filename!r})",
                         limit_bytes=MAX_UNCOMPRESSED_BYTES,
                     )
-    except (zipfile.BadZipFile, EOFError, OSError, NotImplementedError) as exc:
-        # A corrupt entry, a size or CRC that does not match what the headers declared, or an
-        # unsupported compression method: a bad upload, not a server fault.
+    except (zipfile.BadZipFile, EOFError, OSError, NotImplementedError, RuntimeError) as exc:
+        # A corrupt entry, a size or CRC that does not match what the headers declared, an
+        # unsupported compression method or an encrypted entry (RuntimeError): a bad upload, not a server fault.
         raise BadRequestError(f"archive entry {info.filename!r} cannot be read: {exc}") from exc
     return bytes(out)
 
@@ -213,9 +225,12 @@ async def import_zip(
             await tree.create(collection_id=collection_id, parent=cur,
                               slug=leaf, body=text)
             report.created.append(path)
-        except ConflictError:
+        except ConflictError as exc:
             if conflict == "fail":
-                raise
+                raise ImportConflictError(
+                    f"{exc.message}; the import stopped there, after writing {len(report.created)} path(s) (extensions.report)",
+                    report,
+                ) from exc
             if conflict == "skip":
                 report.skipped.append(path)
             else:
@@ -228,6 +243,7 @@ __all__ = [
     "MAX_ARCHIVE_BYTES",
     "MAX_ENTRIES",
     "MAX_UNCOMPRESSED_BYTES",
+    "ImportConflictError",
     "ImportReport",
     "import_zip",
     "slugify_segment",

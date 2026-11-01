@@ -71,3 +71,34 @@ async def test_conflict_policies(tree):
     r = await import_zip(tree, collection_id="c1", data=data, parent="", conflict="overwrite")
     assert r.overwritten == ["a"]
     assert (await tree.read(collection_id="c1", path="a")).body == "new"
+
+
+def _encrypted_zip() -> bytes:
+    """One entry with the encryption bit set in its local and central headers (zipfile cannot write an encrypted entry)."""
+    raw = bytearray(_zip({"a.md": b"hello"}))
+    raw[6] |= 1
+    cd = raw.rfind(b"PK\x01\x02")
+    raw[cd + 8] |= 1
+    return bytes(raw)
+
+
+async def test_an_encrypted_entry_is_a_bad_request(tree):
+    """KN-19b: zipfile raises RuntimeError for an encrypted entry; it is a bad upload (4xx), not a server fault."""
+    from primer.model.except_ import BadRequestError
+
+    with pytest.raises(BadRequestError, match="a.md"):
+        await import_zip(tree, collection_id="c1", data=_encrypted_zip())
+
+
+async def test_a_fail_conflict_reports_what_was_written(tree):
+    """KN-19b: the import stops at the first existing path and says what it had already written."""
+    await tree.create(collection_id="c1", parent="", slug="b", body="old")
+    data = _zip({"a.md": b"A", "b.md": b"B", "c.md": b"C"})
+
+    with pytest.raises(ConflictError) as caught:
+        await import_zip(tree, collection_id="c1", data=data, parent="", conflict="fail")
+
+    assert "'b'" in caught.value.message
+    assert caught.value.problem_extensions["report"]["created"] == ["a"]
+    assert (await tree.read(collection_id="c1", path="a")).body == "A"
+    assert (await tree.read(collection_id="c1", path="b")).body == "old"
