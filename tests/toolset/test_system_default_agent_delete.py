@@ -83,3 +83,22 @@ async def test_the_delete_agent_descriptor_names_the_default_agent_refusal(world
     assert "resets the default to" in description and "POST /v1/setup/seed" in description, description
     assert "point the default at another agent" not in description, "nothing offers that step"
     assert "default agent" not in tools["delete_graph"].description
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_agent_by_the_tool_removes_its_memory(world) -> None:
+    """Agent memory T5: the REST route's cleanup also runs when the system tool deletes the agent."""
+    from primer.memory.collection import memory_collection_id
+    from primer.model.collection import Collection
+    from primer.model.memory import AgentMemory
+
+    sp, toolset, _ = world
+    await _seed(sp, agent_row("ag-1"))
+    await _seed(sp, AgentMemory(id="ag-1", enabled=True))
+    await _seed(sp, Collection(id=memory_collection_id("ag-1"), description="memory", memory_of="ag-1"))
+
+    is_error, answer = await _call(toolset, "delete_agent", id="ag-1")
+
+    assert not is_error, answer
+    assert await sp.get_storage(Collection).get(memory_collection_id("ag-1")) is None
+    assert await sp.get_storage(AgentMemory).get("ag-1") is None

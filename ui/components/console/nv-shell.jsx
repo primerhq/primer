@@ -787,6 +787,14 @@ function NV_Shell() {
         if (window.SHR_requestShare) window.SHR_requestShare();
       },
     });
+    // Agent memory (T14): opens the Memory section of the agent editor that is open (AG_requestMemory, agent-memory.jsx); live only while one is mounted.
+    // Its pointer affordance is the "Memory settings" button of the Memory panel (data-verb="agent.memory").
+    reg({
+      id: "agent.memory", label: "Open Agent Memory",
+      surfaces: ["overlay-button", "palette"],
+      available: function () { return window.AG_memoryLive ? window.AG_memoryLive() : false; },
+      run: function () { if (window.AG_requestMemory) window.AG_requestMemory(); },
+    });
     // Every Platform page and every provider type is a palette verb too ("Open Providers", "Open Providers: TTS", "Open LLM Profiles" ...) on the platform-nav
     // surface: the rows of the Platform sidebar are their pointer affordance (the data-verb of NV_PlatNav, nv-platform.jsx). NV_platVerbSpecs lists them in the
     // sidebar's order and leaves the custom pages out: a custom page registers its own verb with one reg() call right after this loop (platform.open.web,

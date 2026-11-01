@@ -374,6 +374,14 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # agent definition is unchanged and other sessions are unaffected.
     # (The adapter is resolved below, once the run's person is known: use of the profile is checked as that person.)
 
+    # An agent whose memory is on always has the two collection tools that read it, listed by the owner or not (agent memory). A session run
+    # only: the graph and invoke paths build their agents elsewhere and are untouched.
+    from primer.memory.runtime import memory_enabled, memory_lookup_for, memory_prompt_parts, with_memory_tools
+
+    memory_on = pool._storage is not None and await memory_enabled(pool._storage, agent)
+    if memory_on:
+        agent = agent.model_copy(update={"tools": with_memory_tools(agent.tools)})
+
     # agent.tools holds scoped tool ids (toolset_id__tool_name).
     # Derive the unique toolset prefixes so we only resolve the
     # toolset providers the agent actually needs.
@@ -436,6 +444,20 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     )
     from primer.model.external_tool import ExternalToolCall
 
+    # The memory index and instructions for the prompt: the index is frozen on the session's first turn (its metadata), so this reads the same
+    # text every turn.
+    memory_parts, memory_index = (
+        await memory_prompt_parts(pool._storage, agent, session, context_length=llm_model.context_length) if memory_on else ([], "")
+    )
+    # The opt-in per-turn lookup (agent memory ``auto_inject``): None unless the owner turned it on.
+    memory_lookup = (
+        await memory_lookup_for(
+            sp=pool._storage, provider_registry=pool._provider_registry, semantic_search_registry=pool._semantic_search_registry,
+            recorder=_pool_event_recorder(pool), agent=agent, session=session,
+        )
+        if memory_on else None
+    )
+
     tool_manager = ToolExecutionManager.for_workspace(
         toolset_providers=toolset_providers,
         session=agent_session,
@@ -488,6 +510,9 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         turn_no=session.turn_no,
         tool_calls_as_claims_enabled=pool.config.tool_calls_as_claims_enabled,
         workspace_instructions=workspace_instructions,
+        memory_parts=memory_parts,
+        memory_index=memory_index,
+        memory_lookup=memory_lookup,
     )
     return _TurnDriver(executor)
 

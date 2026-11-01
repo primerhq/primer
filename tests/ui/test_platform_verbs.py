@@ -213,6 +213,8 @@ def _run_shell_effect(ctx) -> None:
         # The Share verb's gate reads the seam (the palette's rank context carries no overlay): model a live shareable surface,
         # as the palette offers it with one of the five detail overlays open.
         "window.SHR_shareLive = function () { return true; };"
+        # The Memory verb's gate reads the same kind of seam: model a live agent editor.
+        "window.AG_memoryLive = function () { return true; };"
         "(function (registry, goView, isMobile) {" + effect + "\n})(registry, function () {}, false);"
     )
 

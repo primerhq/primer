@@ -20,12 +20,13 @@ import json
 import logging
 from datetime import datetime, timezone
 from contextlib import aclosing
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from primer.agent.base import _BaseAgentExecutor, refuse_compaction_summaries
 from primer.agent.compaction import CompactionStrategy
 from primer.agent.tool_manager import ToolExecutionManager
-from primer.model.chat import Message
+from primer.model.chat import Message, TextPart
 from primer.model.except_ import ConflictError
 from primer.model.graph import build_execution_context
 from primer.model.workspace_session import (
@@ -60,6 +61,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _latest_user_text(messages: list[Message]) -> str:
+    """The user's words of the turn being answered: the user messages after the last assistant message (a session run reads the instruction from the
+    log, so it is in the history, not in the turn's new messages)."""
+    texts: list[str] = []
+    for message in reversed(messages):
+        if message.role == "assistant":
+            break
+        if message.role == "user":
+            texts.append("\n".join(p.text for p in message.parts if isinstance(p, TextPart)))
+    return "\n".join(reversed(texts)).strip()
+
+
 class WorkspaceAgentExecutor(_BaseAgentExecutor):
     """Workspace-backed executor.
 
@@ -84,6 +97,9 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         turn_no: int | None = None,
         tool_calls_as_claims_enabled: bool = False,
         workspace_instructions: str | None = None,
+        memory_parts: Sequence[str] = (),
+        memory_index: str = "",
+        memory_lookup: "Callable[[str], Awaitable[Message | None]] | None" = None,
     ) -> None:
         # Extend the agent's system prompt with the workspace fragment
         # so the LLM sees workspace-tool documentation in its system
@@ -101,6 +117,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             *agent.system_prompt,
             session.system_prompt_fragment,
             *workspace_instructions_parts(agent, workspace_instructions),
+            *memory_parts,
         ]
         composite_agent = agent.model_copy(
             update={"system_prompt": composite_system_prompt}, deep=True,
@@ -117,12 +134,15 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
         )
         self._session = session
+        # Agent memory's per-turn lookup (``None`` unless the agent opted in): asked with the user's message, it answers the notes to show or None.
+        self._memory_lookup = memory_lookup
         self._execution_context = build_execution_context(
             surface="workspace",
             workspace_id=session.workspace_id,
             session_id=session.session_id,
             principal=principal,
             identity=identity,
+            memory_index=memory_index,
         )
         # Trailing :class:`Done.stop_reason` from the most recent
         # :meth:`invoke` call. ``None`` until the first invoke completes.
@@ -155,6 +175,24 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         self._event_log = writer
 
     # ---- Subclass hooks --------------------------------------------------
+
+    async def _with_turn_messages(self, history: list[Message], messages: list[Message]) -> list[Message]:
+        """Agent memory's notes: asked once per turn with the user's message. The prompt of THIS turn carries the notes text and nothing is recorded:
+        the messages come back as they were, so the log, the history and a compaction never see the notes (what was shown is the ``memory.lookup``
+        event, which the reflection reads). A lookup that answers nothing or fails leaves the turn as it was."""
+        self._turn_notes = None
+        if self._memory_lookup is None:
+            return messages
+        text = _latest_user_text([*history, *messages])
+        try:
+            notes = await self._memory_lookup(text)
+        except Exception:  # noqa: BLE001 - memory never fails a turn
+            logger.warning("agent memory: the per-turn lookup failed; the turn runs without notes", exc_info=True)
+            return messages
+        if notes is None:
+            return messages
+        self._turn_notes = notes
+        return messages
 
     async def _load_history(self) -> list[Message]:
         """Read every message from the session's ``messages.jsonl``."""

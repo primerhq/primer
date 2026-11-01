@@ -12,6 +12,7 @@ class ClaimKind(StrEnum):
     HARNESS = "harness"
     TRIGGER = "trigger"
     TOOL_CALL = "tool_call"
+    MEMORY = "memory"
 
 
 @dataclass(frozen=True)

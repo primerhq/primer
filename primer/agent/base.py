@@ -474,6 +474,8 @@ class _BaseAgentExecutor(ABC):
             await self._emit(note)
             yield note
 
+        # What a surface adds to the turn's input before the first model call (agent memory's notes); the base adds nothing.
+        messages = await self._with_turn_messages(history, messages)
         record = _TurnRecord(messages=list(messages), inputs=len(messages))
         from primer.model.yield_ import ToolWaitPark, YieldToWorker
 
@@ -1093,6 +1095,14 @@ class _BaseAgentExecutor(ABC):
 
     # ---- Prompt building -------------------------------------------------
 
+    #: The notes this turn's prompt carries in front of the user's message (agent memory); set by a surface's ``_with_turn_messages``. Prompt only:
+    #: they are written to no log, so no later reader of the history (a compaction, another executor) ever meets them.
+    _turn_notes: "Message | None" = None
+
+    async def _with_turn_messages(self, history: list[Message], messages: list[Message]) -> list[Message]:
+        """The turn's new messages as they are recorded (unchanged here). A surface may set ``_turn_notes`` for the prompt. Runs once per invoke, after compaction."""
+        return messages
+
     def _build_prompt(
         self,
         history: list[Message],
@@ -1108,6 +1118,8 @@ class _BaseAgentExecutor(ABC):
                 Message(role="system", parts=[TextPart(text=sys_text)])
             )
         parts.extend(history)
+        if self._turn_notes is not None:
+            parts.append(self._turn_notes)
         parts.extend(new_messages)
         return parts
 
