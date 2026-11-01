@@ -66,6 +66,8 @@ def _make_lifespan(config: AppConfig):
         from primer.common.hardening import make_non_dumpable
         from primer.toolset.python_runner.runners import detect_local_isolation, warn_if_unconfined
         make_non_dumpable()
+        from primer.service.gateway import configure_limits
+        configure_limits(global_cap=config.limits.gateway_max_concurrent, per_service_cap=config.limits.gateway_max_per_service)
         warn_if_unconfined(detect_local_isolation())
 
         # --- Observability wiring ----------------------------------------

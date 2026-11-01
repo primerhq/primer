@@ -616,6 +616,10 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "apitoken": [
         ("token_hash_uniq", True, "((data->>'token_hash'))"),
     ],
+    "service": [
+        # The name is the /svc/{name}/ URL (GS-9); tolerant of rows that already share one, like the others in _DUP_TOLERANT_UNIQUE_INDEX_NAMES.
+        ("name_uniq", True, "((data->>'name'))"),
+    ],
     "user": [
         # Two concurrent creates of one name (GS-20); created only when no duplicates exist (see _DUP_TOLERANT_UNIQUE_INDEX_NAMES).
         ("username_uniq", True, "((data->>'username'))"),
@@ -738,7 +742,7 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
 # later read and write of the table. Their creation runs under a savepoint
 # that tolerates the unique violation (log and continue without the index,
 # for an admin to resolve); every other hot-field index keeps raising.
-_DUP_TOLERANT_UNIQUE_INDEX_NAMES = ("serviceversion_service_version_uniq", "user_username_uniq")
+_DUP_TOLERANT_UNIQUE_INDEX_NAMES = ("serviceversion_service_version_uniq", "user_username_uniq", "service_name_uniq")
 
 
 def _hot_field_index_ddl(table: str, qualified: str) -> list[str]:
