@@ -196,3 +196,43 @@ def test_a_mounted_dot_follows_the_status(hook_ctx) -> None:
     hook_ctx.eval("MR.mount(Dot, {});")
     hook_ctx.eval("SS_apply(SS_getStore('w1', 's1'), { session_id: 's1', seq: 1, kind: 'tool_call', payload: { name: 'grep' } }); MR.rerender();")
     assert js(hook_ctx, "MR.texts()") == ["grep"]
+
+
+# ---- a freed session does not grow again (lead ruling on the UI-H1 gap) ------------------------------------------------
+
+
+def test_a_freed_session_takes_only_status_from_frames_and_reloads_its_history_when_shown(ctx) -> None:
+    """Once nothing displays a session and its records were freed (60 s after the last release), a live frame moves only its
+    status, its pending send and its high-water: no record, no live part. Shown again, the normal catch-up loads its
+    history, as on first open."""
+    ctx.eval(
+        "LAST = 55; var plain = record;"
+        " record = function (s) { return s === LAST ? { seq: s, kind: 'tool_call', ts: plain(s).ts, payload: { name: 'grep', id: 'g' } } : plain(s); };"
+        " var TIMERS = [];"
+        " window.setTimeout = function (fn) { TIMERS.push(fn); return TIMERS.length; }; window.clearTimeout = function () {};"
+        " var gone = SS_getStore('w1', 'gone'); SS_retain(gone);"
+        " var unsub = SS_subscribe(gone, 'transcript', function () {});"
+        " for (var s = 1; s <= 5; s++) SS_apply(gone, Object.assign({ session_id: 'gone' }, record(s)));"
+        " unsub(); SS_dispose(gone); TIMERS.splice(0).forEach(function (f) { f(); });"
+    )
+    assert js(ctx, "gone.recordsBySeq.length") == 0, "freed"
+    ctx.eval(
+        "WTAP_retain('w1'); var es = OPENED[0];"
+        " function tapFrame(f) { es.onmessage({ data: JSON.stringify(f) }); }"
+        " tapFrame({ 'class': 'part_start', session_id: 'gone', part_id: 'n:text', kind: 'text' });"
+        " for (var s = 6; s <= 55; s++) {"
+        "   var r = record(s);"
+        "   tapFrame({ 'class': r.kind, session_id: 'gone', seq: r.seq, ts: r.ts, payload: r.payload });"
+        "   tapFrame({ 'class': 'text_delta', session_id: 'gone', part_id: 'n:text', kind: 'text', delta: 'tok ' });"
+        " }"
+    )
+    assert js(ctx, "gone.recordsBySeq.length") == 0 and js(ctx, "Object.keys(gone.records).length") == 0
+    assert js(ctx, "Object.keys(gone.parts)") == []
+    status = js(ctx, "SS_getSnapshot(gone, 'status')")
+    assert status["verb"] == "grep" and status["startedMs"] == js(ctx, "Date.parse(record(55).ts)")
+    assert js(ctx, "SS_highWater(gone)") == 55
+    # Shown again (an open document binds it), the hub's catch-up on (re)open loads the history from the start.
+    ctx.eval("SS_retain(gone); SS_subscribe(gone, 'transcript', function () {}); CALLS = []; es.onopen();")
+    assert js(ctx, "CALLS") == ["/sessions/gone/messages?after_seq=0&limit=1000"]
+    assert js(ctx, "seqsOf(gone)") == list(range(1, 56))
+    assert js(ctx, "SS_getStore('w1', 'gone').status.verb") == "grep"
