@@ -213,3 +213,59 @@ class TestScore:
                 await adapter.score(
                     model="m1", query="q", documents=["a", "b"]
                 )
+
+
+class TestSharedLoad:
+    """KN-19h: concurrent cold searches load the model once; an empty token means anonymous."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_cold_scores_load_the_model_once(self) -> None:
+        import time
+
+        adapter = HuggingFaceCrossEncoder(_make_provider(models=["m1"]))
+        fake_model = MagicMock()
+        fake_model.predict.return_value = [0.5]
+        calls = 0
+
+        def slow_ctor(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            time.sleep(0.3)  # long enough for the second score to arrive while the first load runs
+            return fake_model
+
+        with patch("primer.cross_encoder.huggingface.STCrossEncoder", side_effect=slow_ctor):
+            first = asyncio.create_task(adapter.score(model="m1", query="q", documents=["a"]))
+            second = asyncio.create_task(adapter.score(model="m1", query="q", documents=["b"]))
+            assert await first == [0.5] and await second == [0.5]
+
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_load_is_not_cached(self) -> None:
+        adapter = HuggingFaceCrossEncoder(_make_provider(models=["m1"]))
+        fake_model = MagicMock()
+        fake_model.predict.return_value = [0.5]
+        with patch("primer.cross_encoder.huggingface.STCrossEncoder", side_effect=[OSError("net down"), fake_model]):
+            with pytest.raises(Exception, match="HuggingFace I/O failure"):
+                await adapter.score(model="m1", query="q", documents=["a"])
+            assert await adapter.score(model="m1", query="q", documents=["a"]) == [0.5]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_token_is_sent_as_none(self) -> None:
+        provider = _make_provider(models=["m1"])
+        provider.config.token = SecretStr("")
+        adapter = HuggingFaceCrossEncoder(provider)
+        fake_model = MagicMock()
+        fake_model.predict.return_value = [0.5]
+        with patch("primer.cross_encoder.huggingface.STCrossEncoder", return_value=fake_model) as mock_st:
+            await adapter.score(model="m1", query="q", documents=["a"])
+        assert mock_st.call_args.kwargs["token"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_real_token_is_forwarded(self) -> None:
+        adapter = HuggingFaceCrossEncoder(_make_provider(models=["m1"], token="hf_abc"))
+        fake_model = MagicMock()
+        fake_model.predict.return_value = [0.5]
+        with patch("primer.cross_encoder.huggingface.STCrossEncoder", return_value=fake_model) as mock_st:
+            await adapter.score(model="m1", query="q", documents=["a"])
+        assert mock_st.call_args.kwargs["token"] == "hf_abc"
