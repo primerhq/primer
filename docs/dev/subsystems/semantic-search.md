@@ -129,12 +129,6 @@ The entities:
 - `primer/api/routers/semantic_search.py`: `/v1/ssp` CRUD.
 - `primer/api/routers/providers.py`: `CrossEncoderProvider` CRUD.
 - `primer/api/routers/knowledge.py`: `POST /v1/collections/{id}/search`.
-- `primer/catalog/catalog.py`, `primer/catalog/types.py`: the lower-layer
-  `SemanticCatalog` (exercised by its own unit tests).
-- `primer/internal_collections.py`: the `InternalCollectionsSubsystem`, which
-  the bootstrap route constructs but never starts; its `search` backs the
-  per-entity search routes, which answer no hits since the per-entity
-  `_internal_*` indexes are no longer built.
 - `primer/model/internal.py`: `InternalCollectionsConfig`,
   `InternalCollectionsBootstrapStatus`, `INTERNAL_COLLECTION_IDS`.
 - `primer/api/routers/internal_collections.py`: the activation / bootstrap /
@@ -236,13 +230,11 @@ row, calls the factory, runs `initialize()`, and caches the `VectorStoreProvider
 `invalidate(id)` and `aclose()` close instances. The `/v1/ssp` router's
 `on_update` / `on_delete` hooks call `invalidate`.
 
-Internal-collections lifecycle: `InternalCollectionsSubsystem.bootstrap()` walks
-an explicit `BootstrapPhase` state machine (`drain_queue` ->
-`materialise_collections` -> `ingest_agents` -> `ingest_graphs` ->
-`ingest_collections` -> `ingest_tools` -> `ingest_ai_docs` -> `finalize`),
-isolating per-item failures into `IngestFailure` rows. At runtime a CDC worker
-task consumes an `asyncio.Queue[IngestEvent]` fed by the CRUD routers' after-hooks
-(`primer/api/routers/_cdc_hooks.py`).
+Internal-collections lifecycle: there is none beyond the toggle. The
+`InternalCollectionsSubsystem` (bootstrap state machine, CDC worker, per-entity
+`/search` routes) and `primer/catalog` were removed (D18); `InternalCollectionsConfig`
+is the system collection's search toggle, and `POST /v1/internal_collections/bootstrap`
+runs `enable_search` on it inline.
 
 ## 7. Persistence
 
@@ -352,10 +344,9 @@ Python: `CollectionSearcher` (`primer/search/searcher.py`), the `VectorStore` an
 - **Distance / normalisation contract**: every shipped embedder L2-normalises its
   output (HuggingFace and OpenAI adapters), so cosine ranking is well-defined.
   See [knowledge.md](knowledge.md) for the embedder prompt registry.
-- **Asymmetric retrieval**: the internal-collections subsystem embeds with
+- **Asymmetric retrieval**: the search lifecycle embeds with
   `task_type='retrieval_document'` on ingest and `'retrieval_query'` on search
-  (`InternalCollectionsSubsystem._embed_text`) so BGE / E5 / nomic models apply
-  the correct instruction prefix.
+  so BGE / E5 / nomic models apply the correct instruction prefix.
 - **SSP registry race contract**: `get_provider` constructs outside the lock;
   concurrent gets for the same id may build twice but only one wins the cache and
   the loser is `aclose()`-ed.
@@ -407,6 +398,6 @@ See [access control](../architecture/access-control.md).
 - **MMR L2-normalised vectors on the fly rather than trusting the vector store's distance metric.** Why: the orchestrator does not know which metric the backend ranks under, so normalising both query and candidate vectors makes cosine well-defined across pgvector, Lance, and future backends. Spec: docs/superpowers/specs/2026-05-05-mmr-cross-encoder-reranking-design.md.
 - **The default reserved cross-encoder shipped as `cross-encoder/ms-marco-MiniLM-L-6-v2` rather than the spec's `BAAI/bge-reranker-v2-m3`.** Why: the lighter English-only MiniLM model (~80MB) keeps the zero-config disk footprint small versus the multilingual ~2.3GB bge model. Spec: docs/superpowers/specs/2026-05-05-mmr-cross-encoder-reranking-design.md.
 - **The self-describing catalog reused the existing `Collection` / embedder / vector-store plumbing as `system=True` rows instead of a parallel index.** Why: it avoids divergent embedding pipelines and lets future CER apply to the catalog for free by toggling `Collection.search`. Spec: docs/superpowers/specs/2026-05-08-semantic-catalog-design.md.
-- **A larger production `InternalCollectionsSubsystem` (CDC worker, bootstrap state machine, AI-docs ingest, activation API) absorbed the activation surface the catalog spec deferred, leaving the smaller `primer/catalog` module as a lower layer exercised only by its own tests.** Why: the live runtime needed event-driven reconciliation, progress reporting, and a fifth AI-docs collection that the thin event-agnostic catalog deliberately did not cover. Spec: docs/superpowers/specs/2026-05-08-semantic-catalog-design.md.
+- **The `InternalCollectionsSubsystem` and `primer/catalog` were deleted (D18).** Why: nothing wrote to the per-entity indexes any more, so the four `/search` routes answered `[]`; the system collection and its search lifecycle replaced them. The config row stays as the system collection's search toggle.
 - **The five reserved `_internal_*` collections were replaced by one system collection.** Why: indexing the platform's own entities no longer needs a separate subsystem with its own namespaces and toolset. The system collection is a normal wiki that agents read and grep through the ordinary collections tools, and it needs no embedder to be useful.
 - **MMR was removed.** Why: the v2 collection model has no field that can express it, and an unreachable-but-tested code path is worse than a deleted one. Cross-encoder reranking survives because the search block still carries it.

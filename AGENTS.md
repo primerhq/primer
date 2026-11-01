@@ -118,7 +118,7 @@ checklist.
    toasts. A backend feature with no shell surface is incomplete.
 3. **System tools** - if the change adds new functionality, expose it as new
    tools in the appropriate toolset under `primer/toolset/` (built with
-   `make_tool`, registered for internal-collection ingestion, callable over
+   `make_tool`, registered with its toolset, callable over
    `POST /v1/mcp`), so agents and MCP clients can use it.
 4. **Docs** - update the agent-usage docs in `docs/agents/` plus the dev docs
    in `docs/dev/subsystems/` and `docs/dev/architecture/` as the change
