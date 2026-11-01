@@ -262,13 +262,12 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
   React.useEffect(() => {
     if (items.length === 0) return undefined;
     const ctrl = new AbortController();
-    Promise.all(
-      items.map((g) =>
-        apiFetch("GET", "/graphs/" + encodeURIComponent(g.id) + "/status", null, { signal: ctrl.signal })
-          .then((r) => [g.id, r])
-          .catch((e) => [g.id, { ok: null, error: e.title || e.message }]),
-      ),
-    ).then((entries) => setPerRowStatus(Object.fromEntries(entries)));
+    // At most four reads in flight until a batch endpoint exists (UI-L15).
+    PR_mapLimit(items, 4, (g) =>
+      apiFetch("GET", "/graphs/" + encodeURIComponent(g.id) + "/status", null, { signal: ctrl.signal })
+        .then((r) => [g.id, r])
+        .catch((e) => [g.id, { ok: null, error: e.title || e.message }]),
+    ctrl.signal).then((entries) => setPerRowStatus(Object.fromEntries(entries.filter(Boolean))));
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [list.data]);

@@ -55,6 +55,7 @@ var FETCHES = [], DIALOGS = [], TOASTS = [], CONFIRM = true;
 var __layers = [];
 var DOC = {};
 var document = { addEventListener: function (t, f) { DOC[t] = f; }, removeEventListener: function (t, f) { if (DOC[t] === f) delete DOC[t]; }, body: { style: {} } };
+window.useWorkspaceTapListener = function () {};  // the approvals audit nudges on tap frames (T87); no tap in this harness
 window.primerApi = {
   useEscape: function (h, a) { __layers.push({ handler: h, active: a === undefined ? true : !!a }); },
   useFocusTrap: function () {}, useViewport: function () { return { isMobile: false }; },

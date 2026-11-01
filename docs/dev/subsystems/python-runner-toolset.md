@@ -38,7 +38,7 @@ registration never ran it.
 | File | Responsibility |
 | --- | --- |
 | `docstring.py` | Google docstring to the purpose/when/args anatomy `make_tool` enforces. Pure. |
-| `schema.py` | Function signature to a self-contained JSON Schema. Pure, AST-based. |
+| `schema.py` | Function signature to a self-contained JSON Schema. Pure, AST-based; a parameter default must be a literal (read with `ast.literal_eval`), anything else is a `SchemaError` naming the parameter. `X | None` maps to `{"type": [X, "null"]}` (a wider union to an `anyOf` with `{"type": "null"}`), never OpenAPI's `nullable`, which Draft 2020-12 ignores. |
 | `registration.py` | Collects `@primer_tool` / `@resumes` and builds `Tool` descriptors. |
 | `protocol.py` | The host side of the shim wire format. |
 | `_shim.py` | The in-sandbox runner, shipped as a source string. |

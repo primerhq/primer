@@ -105,7 +105,10 @@ function ROWS(n) {
 
 @pytest.fixture(scope="module")
 def code() -> str:
-    return transpile(KIT) + "\n" + transpile(TOKENS)
+    # The admin read caps its per-user reads with the foundation's PR_mapLimit (GU-14).
+    api = (ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
+    map_limit = api[api.index("function PR_mapLimit("):api.index("\n}\n", api.index("function PR_mapLimit(")) + 3]
+    return map_limit + "\n" + transpile(KIT) + "\n" + transpile(TOKENS)
 
 
 @pytest.fixture

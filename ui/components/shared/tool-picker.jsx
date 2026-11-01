@@ -39,6 +39,25 @@ function TP_unavailableWord(entry) {
   return "unavailable";
 }
 
+// Selected ids the catalogue does not list, split in two (GU-18): those of a toolset that is listed as unavailable right now (waiting for a sign-in) are only
+// out for the moment, so they are labelled so and not offered for removal; the rest are really gone. A scoped id is "<toolset id>__<tool>".
+function TP_splitSelected(selected, entries) {
+  const listed = new Set();
+  const unavailableIds = [];
+  for (const ts of entries) {
+    if (ts.available === false) unavailableIds.push(ts.id);
+    for (const t of ts.tools || []) listed.add(t.scoped_id);
+  }
+  const stale = [];
+  const unavailable = [];
+  for (const id of selected) {
+    if (listed.has(id)) continue;
+    if (unavailableIds.some((tid) => id.startsWith(tid + "__"))) unavailable.push(id);
+    else stale.push(id);
+  }
+  return { stale, unavailable };
+}
+
 function TP_toggleSet(set, id) {
   const next = new Set(set);
   if (next.has(id)) next.delete(id);
@@ -116,20 +135,11 @@ function ToolPicker({ selected, onChange, pageSize, mode }) {
 
   const toolsetEntries = catalogue.data?.items ?? [];
 
-  const allScopedIds = React.useMemo(() => {
-    const s = new Set();
-    for (const ts of toolsetEntries) {
-      for (const t of ts.tools) s.add(t.scoped_id);
-    }
-    return s;
-  }, [toolsetEntries]);
-  // A selected id the catalogue no longer serves (toolset dropped the
-  // tool, or went unavailable) - surfaced so the operator can clean it
-  // up rather than silently persisting a dead reference on save.
-  const staleIds = React.useMemo(
-    () => [...selected].filter((id) => !allScopedIds.has(id)),
-    [selected, allScopedIds],
-  );
+  // A selected id the catalogue no longer serves (the toolset dropped the tool) - surfaced so the operator can clean it up rather than silently persisting
+  // a dead reference on save. A toolset that is only unavailable for now is labelled so instead (GU-18).
+  const split = React.useMemo(() => TP_splitSelected(selected, toolsetEntries), [selected, toolsetEntries]);
+  const staleIds = split.stale;
+  const unavailableIds = split.unavailable;
 
   const filteredToolsetEntries = React.useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -226,6 +236,11 @@ function ToolPicker({ selected, onChange, pageSize, mode }) {
       {staleIds.length > 0 && (
         <div className="field-help" style={{ color: "var(--amber)", marginBottom: 6 }} data-testid="tool-picker-stale">
           {staleIds.length} selected tool{staleIds.length === 1 ? "" : "s"} no longer exposed by the catalogue: {staleIds.join(", ")}
+        </div>
+      )}
+      {unavailableIds.length > 0 && (
+        <div className="field-help" style={{ marginBottom: 6 }} data-testid="tool-picker-unavailable-selected">
+          {unavailableIds.length} selected tool{unavailableIds.length === 1 ? "" : "s"} unavailable for now (their toolset is not available to you at the moment): {unavailableIds.join(", ")}
         </div>
       )}
       {catalogue.error && (

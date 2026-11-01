@@ -417,6 +417,14 @@ def registered_label_names() -> set[str]:
     return names
 
 
+def drop_idle_sessions_active(workspace_id: str) -> None:
+    """Remove ``workspace_id``'s ``sessions_active`` series once no turn of it runs in this process (GS-38): a deleted workspace's series
+    would otherwise stay for the process's life. Called right after the dec, with no await between them; only this process's turns move
+    its series, so this is right whichever process deleted the workspace."""
+    if sessions_active.labels(workspace_id)._value.get() <= 0:
+        sessions_active.remove(workspace_id)
+
+
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
@@ -721,6 +729,7 @@ def reset_for_test() -> None:
 __all__ = [
     "registry",
     "reset_for_test",
+    "drop_idle_sessions_active",
     "ALLOWED_LABEL_NAMES",
     "registered_label_names",
     # LLM

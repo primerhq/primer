@@ -14,7 +14,7 @@ A `Harness` row is the single unit of state for both directions, discriminated b
 
 A `HarnessRendering` is the persisted snapshot of the last applied bundle: a list of `RenderedEntry` rows keyed by `(kind, template_name)`. It is the diff baseline for inbound SYNC and the per-row drift baseline the outbound UI reads. Each managed entity (`Agent`, `Graph`, `Collection`, `Document`, `Toolset`) carries a nullable `harness_id` back-pointer.
 
-For inbound subharnesses, a `DependencyRef` is one declared dependency in a parent `harness.yaml`; a `ResolvedDependency` is the node the transitive walk produces, carrying the resolved slug, commit, bundle hash, depth, and `parent_name`. For outbound harnesses, a `TrackedEntity` names one live local entity plus a list of `OverrideMapping` rows; each mapping marks a JSON-pointer `field_path` on that entity to replace with a `{{ overrides.<override_path> }}` token at build time.
+For inbound subharnesses, a `DependencyRef` is one declared dependency in a parent `harness.yaml`; a `ResolvedDependency` is the node the transitive walk produces, carrying the resolved slug, commit, bundle hash, depth, and `parent_name`. For outbound harnesses, a `TrackedEntity` names one live local entity plus a list of `OverrideMapping` rows; each mapping marks a JSON-pointer `field_path` on that entity to replace with a `{{ overrides.<override_path> }}` token at build time (a segment that is not a plain name, such as `0`, `X-Api-Key` or a dict method name like `items`, is written `['seg']`, so the token reads the key the composed schema names).
 
 ```mermaid
 erDiagram

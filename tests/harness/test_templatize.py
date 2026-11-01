@@ -120,3 +120,31 @@ def test_schema_override_shallow_merges():
     assert leaf["maximum"] == 2
     # type remains (both said number)
     assert leaf["type"] == "number"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity,field_path,value", [
+    ({"tools": ["web__search", "misc__uuid_v4"]}, "/tools/0", "web__search"),             # a list element: the console seeds "tools.0"
+    ({"config": {"headers": {"X-Api-Key": "k"}}}, "/config/headers/X-Api-Key", "k"),     # a hyphenated key
+    ({"config": {"items": "x"}}, "/config/items", "x"),                                  # a dict method name: dotted access reads the method
+])
+async def test_an_override_path_that_is_not_a_jinja_name_renders_its_value(entity, field_path, value):
+    """GX-6: the token reads the value the composed schema keys by those literal segments, so an install that supplies it renders."""
+    from primer.harness.template import render_template
+
+    override_path = field_path.lstrip("/").replace("/", ".")
+    mapping = OverrideMapping(field_path=field_path, override_path=override_path)
+    templated = apply_override_mappings(entity, [mapping])
+    schema = compose_overrides_schema_from_mappings([mapping], {field_path: value})
+    overrides: dict = {}
+    cur, props = overrides, schema
+    segs = override_path.split(".")
+    for seg in segs[:-1]:
+        cur = cur.setdefault(seg, {})
+        props = props["properties"][seg]
+    cur[segs[-1]] = props["properties"][segs[-1]]["default"]
+
+    token = templated
+    for seg in field_path.lstrip("/").split("/"):
+        token = token[int(seg)] if isinstance(token, list) else token[seg]
+    assert await render_template(token, overrides=overrides, harness_ctx={}) == value

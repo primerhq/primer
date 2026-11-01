@@ -57,7 +57,7 @@ function NV_sysNavsFor(role) {
 // set. Sessions-active and attention-count need no new backend route:
 // GET /sessions?session_state=running&limit=1 (the turns in flight right now;
 // the older `status` filter also counted a session parked on a yielding tool
-// and one queued for a worker, C-036) and SH_api.pendingAttention() (the
+// and one queued for a worker, C-036) and SH_useAttention() (the
 // batch-1 aggregate) both already carry a `.total` the UI never asked for
 // before.
 function NV_HealthCards() {
@@ -77,11 +77,8 @@ function NV_HealthCards() {
     },
     { pollMs: 10000 }
   );
-  var attention = window.primerApi.useResource(
-    "nv-sys:health-attention",
-    function (signal) { return SH_api.pendingAttention(signal); },
-    { pollMs: 10000 }
-  );
+  var attentionCon = NV_useConsole();
+  var attention = SH_useAttention(attentionCon && attentionCon.workspaces);
   var data = health.data || {};
   var wp = data.worker_pool || {};
   var sched = data.scheduler || {};
@@ -733,27 +730,7 @@ function NV_SysSetupCard() {
 // panel degrades the same way the rail does rather than differently.
 function NV_AttentionEverywhere() {
   var con = NV_useConsole();
-  var wids = (con.workspaces || []).map(function (w) { return w.id; });
-  var pending = window.primerApi.useResource(
-    "nv-sys:attention:" + wids.join(","),
-    function (signal) {
-      return SH_api.pendingAttention(signal).catch(function (err) {
-        if (err && err.status !== 404) throw err;
-        return Promise.all(wids.map(function (wid) {
-          return SH_api.pendingYields(wid, signal).then(function (out) {
-            return ((out && out.items) || []).map(function (row) {
-              return Object.assign({}, row, {
-                workspace_id: wid, session_id: row.session_id,
-              });
-            });
-          }, function () { return []; });
-        })).then(function (nested) {
-          return { items: [].concat.apply([], nested) };
-        });
-      });
-    },
-    { pollMs: 10000, deps: [wids.join(",")] }
-  );
+  var pending = SH_useAttention(con.workspaces);
   var items = (pending.data && pending.data.items) || [];
   var pendingState = window.primerApi.resourceState(pending);
   function wsName(row) {

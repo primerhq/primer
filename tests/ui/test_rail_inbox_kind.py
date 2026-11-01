@@ -36,13 +36,16 @@ def test_label_still_recognizes_approval_and_defaults_to_parked() -> None:
 def test_the_aggregate_call_goes_through_sh_api() -> None:
     # Nit fix: the raw window.primerApi.apiFetch bypassed SH_api's
     # convention every sibling call in this file uses.
-    assert "SH_api.pendingAttention(signal)" in RAIL
+    # T87: the one read lives in sh-api.jsx (SH_useAttention); the rail uses it.
+    assert "SH_useAttention(" in RAIL
+    assert "SH_api.pendingAttention(signal)" in (ROOT / "ui" / "components" / "shell" / "sh-api.jsx").read_text(encoding="utf-8")
     assert 'window.primerApi.apiFetch("GET", "/yields/pending"' not in RAIL
 
 
 def test_the_404_fallback_still_exists_for_older_servers() -> None:
-    assert 'err.status !== 404' in RAIL
-    assert "SH_api.pendingYields" in RAIL
+    api = (ROOT / "ui" / "components" / "shell" / "sh-api.jsx").read_text(encoding="utf-8")
+    assert 'err.status !== 404' in api
+    assert "SH_api.pendingYields" in api
 
 
 def test_sh_api_exposes_the_aggregate_wrapper() -> None:

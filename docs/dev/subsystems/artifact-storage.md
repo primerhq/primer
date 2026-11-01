@@ -10,7 +10,8 @@ adapters, `store_inbound_media` in `primer/channel/media.py`), the workspace fil
 `attachments` of a session message, `primer/api/routers/workspaces.py`), the workspace files an agent attaches to an `inform_user` or
 `ask_user` prompt (`primer/agent/inform.py`, `primer/worker/yield_runtime.py`), and the files of published service bundles
 (`primer/service/publish.py`, served by `primer/api/routers/svc_serve.py`). A message part carries an `artifact_id`, never the bytes; the
-agent loop reads the bytes back at turn time (`hydrate_prompt_parts` in `primer/media/hydrate.py`, called by `primer/agent/loop.py`) and a
+agent loop reads the bytes back at turn time (`hydrate_prompt_parts` in `primer/media/hydrate.py`, called by `primer/agent/loop.py`; a part whose artifact is gone and that has no `url` or `file_id` is sent as the text
+`[attachment unavailable: <mime type>]` instead of an image with no source, which the provider would refuse on every later turn) and a
 channel adapter at send time (`hydrate_media_dicts` in `primer/channel/media.py`). The subsystem decides where each file is written, finds it again by its id, and keeps a store from being deleted or moved while it still holds
 files.
 
@@ -183,7 +184,11 @@ blank) and the client ignores `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and a pr
 and the region is the row's `region`, `us-east-1` when blank, never `AWS_REGION` or a profile's. Only the credentials of a row with no keys
 come from the ambient chain. `endpoint_url` is an admin-only field and, like the admin-configured LLM provider URLs, is not routed through
 the egress guard (accepted in the review of #899). A get answers `None` only for a missing key (`NoSuchKey`, `404`, `NotFound`); any other error, a
-missing bucket or a refused read, is raised, because it is an outage, not an absent file. An id that is not a backend id is never turned
+missing bucket or a refused read, is raised, because it is an outage, not an absent file. The one exception is a 403 `AccessDenied` when the
+credentials lack `s3:ListBucket` (checked with a one-key `ListObjectsV2` on that 403 only): S3 answers a missing key that way, so the read
+counts as missing and one WARNING per store names the permission (GX-12). The store needs `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject`
+on the prefix; `s3:ListBucket` on the bucket is optional and lets a refused read be told from a missing one. A read refused outright still
+fails the probe at `get`, the read of the object it has just written. An id that is not a backend id is never turned
 into a key: a get answers `None` and a delete does nothing, without a request. A put that does not complete (cancelled while its request
 is in flight, or failed in any way but one raised before a request was sent) never hands out its id, and the object it may have left is
 removed in the background once the request settles. Only no credentials, partial credentials or a parameter botocore refused prove that
@@ -226,7 +231,9 @@ of #890).
 
 **Switching** (`set_active_artifact_store`, behind `PUT /v1/artifact_storage_active_config` and `system::set_active_artifact_store`): read
 the provider (422 `unknown_provider_id` when there is none), probe it (`probe_artifact_provider`: build, initialize, put a probe object,
-read it back, delete it; 422 `artifact_store_unusable` with the failing `step`), read it again, and write the selection with a
+read it back, delete it; 422 `artifact_store_unusable` with the failing `step`; the steps share a 20 s bound (`PROBE_TIMEOUT_S`, GX-15), so a
+silent endpoint fails at the step that hung with `no answer within 20s` instead of holding the request for the client's retries, and the
+cleanup after a failure is bounded too), read it again, and write the selection with a
 compare-and-set against the selection read before the probe (`patch_if_checked`; a create for the first selection). A provider deleted
 during the probe (409 `artifact_store_deleted`), or a selection of another provider someone else wrote meanwhile (409
 `active_artifact_store_changed`), leaves the selection unchanged; a selection of the same provider written meanwhile is the answer (a 200).
