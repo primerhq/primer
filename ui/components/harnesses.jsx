@@ -140,12 +140,19 @@ function HarnessList() {
   };
 
   // Outbound-card push action — fires POST /v1/harnesses/{id}/push then refetches.
+  const [pushingId, setPushingId] = React.useState(null);
+  const [pushError, setPushError] = React.useState(null);
   const onPushOutbound = async (h, e) => {
     if (e) { e.stopPropagation(); }
+    if (pushingId) return;                    // one push at a time: a second click is not a second request
+    setPushingId(h.id);
+    setPushError(null);
     try {
       await apiFetch("POST", "/harnesses/" + encodeURIComponent(h.id) + "/push", {});
-    } catch (_err) {
-      // surfaced in the row's last_operation_error on next refetch
+    } catch (err) {
+      setPushError({ id: h.id, message: window.primerApi.readRefusal(err, "Couldn't start the push").message });
+    } finally {
+      setPushingId(null);
     }
     list.refetch();
   };
@@ -179,6 +186,9 @@ function HarnessList() {
         </div>
       </div>
 
+      {pushError && (
+        <Banner kind="error" title="Couldn't push" detail={pushError.message} data-testid="harness-push-error" />
+      )}
       {list.loading && items.length === 0 && (
         <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>
       )}
@@ -317,9 +327,10 @@ function HarnessList() {
                           kind="primary"
                           icon="upload"
                           onClick={(e) => onPushOutbound(h, e)}
+                          disabled={pushingId != null}
                           title="Push the current bundle to git"
                         >
-                          Push
+                          {pushingId === h.id ? "Pushing…" : "Push"}
                         </Btn>
                       ) : (
                         <Btn
@@ -380,16 +391,19 @@ function HarnessDetail({ id }) {
   // palette's entity.share verb dispatches to it while this surface is open).
   const [shareOpen, setShareOpen] = window.SHR_useShareOpen();
 
+  const [pendingPoll, setPendingPoll] = React.useState(false);
+  const [lastAction, setLastAction] = React.useState(null);
   const detail = useResource(
     "harness-detail:" + id,
     (signal) => apiFetch("GET", "/harnesses/" + encodeURIComponent(id), null, { signal }),
     {
-      pollMs: null,
+      pollMs: pendingPoll ? 1000 : 0,
       deps: [id],
     }
   );
 
-  // Poll every 1s while pending_operation is set
+  // Poll every 1s while pending_operation is set (UI-L8: the resource's own cadence, which waits for a read to land and pauses with the tab; a
+  // timer-driven refetch aborted the previous read on every tick, so a GET slower than a second never answered).
   const polling = detail.data?.pending_operation != null;
 
   // ACL-P6-T3: the marker row of the detail header (the harness's own
@@ -402,11 +416,7 @@ function HarnessDetail({ id }) {
   );
   const ownerNames = window.SHR_useUserNames(ownerIds);
 
-  React.useEffect(() => {
-    if (!polling) return undefined;
-    const timer = setInterval(() => detail.refetch(), 1000);
-    return () => clearInterval(timer);
-  }, [polling]);
+  React.useEffect(() => { setPendingPoll(polling); }, [polling]);
 
   const fetchMut = useMutation(
     () => apiFetch("POST", "/harnesses/" + encodeURIComponent(id) + "/fetch", {}),
@@ -503,7 +513,8 @@ function HarnessDetail({ id }) {
   // "onError just refetches, nothing explains it" gap uninstall had.
   // At most one of these fires per operator action, so one shared banner
   // covers all four without tracking which mutation it came from.
-  const actionError = fetchMut.error || syncMut.error || buildMut.error || pushMut.error;
+  // UI-L9b: only the error of the action pressed LAST is shown, so a Sync that worked clears an older Fetch failure.
+  const actionError = ({ fetch: fetchMut, sync: syncMut, build: buildMut, push: pushMut }[lastAction] || {}).error;
 
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -544,7 +555,7 @@ function HarnessDetail({ id }) {
                 kind="ghost"
                 icon="refresh"
                 disabled={!canFetch || fetchMut.loading}
-                onClick={() => fetchMut.mutate().catch(() => {})}
+                onClick={() => { setLastAction("fetch"); fetchMut.mutate().catch(() => {}); }}
                 title="Enqueue FETCH — pulls the latest commit and updates metadata"
               >
                 {fetchMut.loading ? "Fetching…" : "Fetch"}
@@ -554,7 +565,7 @@ function HarnessDetail({ id }) {
                 kind="ghost"
                 icon="refresh"
                 disabled={!canSync || syncMut.loading}
-                onClick={() => syncMut.mutate().catch(() => {})}
+                onClick={() => { setLastAction("sync"); syncMut.mutate().catch(() => {}); }}
                 title="Enqueue SYNC — re-apply the installed harness from the fetched commit"
               >
                 {syncMut.loading ? "Syncing…" : "Sync"}
@@ -568,7 +579,7 @@ function HarnessDetail({ id }) {
                 kind="ghost"
                 icon="refresh"
                 disabled={!canBuild || buildMut.loading}
-                onClick={() => buildMut.mutate().catch(() => {})}
+                onClick={() => { setLastAction("build"); buildMut.mutate().catch(() => {}); }}
                 title="Enqueue BUILD — re-render tracked entities and recompute the bundle"
               >
                 {buildMut.loading ? "Checking…" : "Check drift"}
@@ -588,7 +599,7 @@ function HarnessDetail({ id }) {
                 kind="primary"
                 icon="upload"
                 disabled={!canPush || pushMut.loading}
-                onClick={() => pushMut.mutate().catch(() => {})}
+                onClick={() => { setLastAction("push"); pushMut.mutate().catch(() => {}); }}
                 title="Enqueue PUSH — commit the rendered bundle and push to the remote ref"
               >
                 {pushMut.loading ? "Pushing…" : "Push"}
@@ -1146,6 +1157,27 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
     return "";
   };
 
+  // UI-M8: the row this dialog created ({id, slug}). DELETE /harnesses/{id} only enqueues an UNINSTALL (202): the row and its slug stay until a worker
+  // runs it, so a retry cannot delete and re-create. A retry with the SAME slug updates the row and fetches it again; a CHANGED slug enqueues the old
+  // row's uninstall (fire and forget) and creates a new one. Cancel enqueues the uninstall of a row that never reached the install step, and keeps
+  // one whose install failed (the operator needs its last_operation_error, and an uninstall would remove what was partly installed).
+  const createdRef = React.useRef(null);
+  const installTriedRef = React.useRef(false);
+  const dropCreated = async () => {
+    const row = createdRef.current;
+    if (!row) return;
+    createdRef.current = null;
+    try {
+      await apiFetch("DELETE", "/harnesses/" + encodeURIComponent(row.id) + "?cascade=false");
+    } catch (_err) {
+      // already gone, or not removable: nothing more to do for a row that never installed
+    }
+  };
+  const cancel = async () => {
+    if (!installTriedRef.current) await dropCreated();
+    onClose();
+  };
+
   // ---- Step 1: Create row + enqueue FETCH + poll until READY or ERROR ----
   const doStep1 = async () => {
     const slugErr = validateSlug(slug);
@@ -1154,11 +1186,25 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
     setFetchError("");
     setStep1Busy(true);
     try {
-      // 1. Create DRAFT
       const body = { name: name || slug, slug, git_url: gitUrl, ref: ref || "main" };
       if (subpath) body.subpath = subpath;
       if (gitToken) body.git_token = gitToken;
-      const created = await apiFetch("POST", "/harnesses", body);
+      let created;
+      if (createdRef.current && createdRef.current.slug === slug) {
+        // 1a. Same slug as the row an earlier press created: update it (the URL may have been fixed) and fetch it again.
+        const update = { name: body.name, git_url: gitUrl, ref: body.ref, subpath: subpath || "" };
+        if (gitToken) update.git_token = gitToken;
+        created = await apiFetch("PUT", "/harnesses/" + encodeURIComponent(createdRef.current.id), update);
+      } else {
+        // A changed slug: the old row goes (fire and forget), a new one is made. A row whose install failed is only forgotten (an uninstall would
+        // orphan what it partly installed), as Cancel keeps it.
+        if (installTriedRef.current) { createdRef.current = null; installTriedRef.current = false; } else { await dropCreated(); }
+        if (!mountedRef.current) return;
+        // 1b. Create DRAFT
+        created = await apiFetch("POST", "/harnesses", body);
+        createdRef.current = { id: created.id, slug };
+        if (!mountedRef.current) { await dropCreated(); return; }       // closed while the create was in flight
+      }
       if (!mountedRef.current) return;
 
       // 2. Enqueue FETCH
@@ -1169,7 +1215,7 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
       const polled = await HR_pollUntilDone(apiFetch, created.id, (row) => {
         // Done when: no pending_operation AND status is no longer DRAFT
         return row.pending_operation == null && row.status !== "DRAFT";
-      });
+      }, { isActive: () => mountedRef.current });
       if (!mountedRef.current) return;
 
       if (polled.status === "ERROR") {
@@ -1203,6 +1249,7 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
     setInstallError("");
     setStep2Busy(true);
     try {
+      installTriedRef.current = true;
       // 1. PUT overrides
       await apiFetch("PUT", "/harnesses/" + encodeURIComponent(harness.id) + "/overrides", overrides);
       if (!mountedRef.current) return;
@@ -1215,7 +1262,7 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
       const polled = await HR_pollUntilDone(apiFetch, harness.id, (row) => {
         return row.pending_operation == null &&
           (row.status === "INSTALLED" || row.status === "ERROR");
-      });
+      }, { isActive: () => mountedRef.current });
       if (!mountedRef.current) return;
 
       if (polled.status === "ERROR") {
@@ -1224,6 +1271,7 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
         return;
       }
 
+      createdRef.current = null;               // installed: the row is the operator's now
       onCreated(polled);
     } catch (err) {
       if (mountedRef.current) {
@@ -1240,10 +1288,10 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
   return (
     <Modal
       title={step === 1 ? "Register harness — Step 1: Source" : "Register harness — Step 2: Overrides"}
-      onClose={onClose}
+      onClose={cancel}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="ghost" onClick={cancel}>Cancel</Btn>
           {step === 1 && (
             <Btn
               kind="primary"
@@ -1400,10 +1448,13 @@ function HR_autoSlug(str) {
     .slice(0, 63);
 }
 
-async function HR_pollUntilDone(apiFetch, id, predicate, { maxMs = 120000, intervalMs = 1000 } = {}) {
+// ``isActive`` is false once the caller's dialog has closed: the loop stops there (and answers null), it does not poll for two minutes.
+async function HR_pollUntilDone(apiFetch, id, predicate, { maxMs = 120000, intervalMs = 1000, isActive = () => true } = {}) {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
+    if (!isActive()) return null;
     const row = await apiFetch("GET", "/harnesses/" + encodeURIComponent(id));
+    if (!isActive()) return null;
     if (predicate(row)) return row;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
