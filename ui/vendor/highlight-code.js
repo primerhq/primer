@@ -10,11 +10,18 @@
 // token colouring stays consistent across the console; js/ts/jsx and
 // bash/sh get a small hand-written tokeniser here. Theme via the same
 // var(--violet|green|amber|blue|text-4) tokens the other highlighters
-// use — no new colours introduced.
+// use - no new colours introduced.
 //
 // window.primerVendor.highlightCode(code, lang) -> string (HTML).
 // Output is escaped-then-wrapped, never raw source markup, so callers
 // may set it via dangerouslySetInnerHTML safely (see ui/vendor/markdown.jsx).
+//
+// One pass per language over the escaped source: a single alternation
+// regex claims each region once, in the pass order the per-pass design
+// used (comment, string, number, keyword), so a class can never match
+// the span markup a class before it wrapped (the string pass used to
+// wrap a "color:var(--...)" attribute, the number pass the 4 in
+// --text-4, and the console showed the CSS fragments as text).
 
 (function () {
   function escapeHtml(s) {
@@ -24,51 +31,50 @@
       .replace(/>/g, "&gt;");
   }
 
+  function span(color, text) {
+    return '<span style="color:' + color + '">' + text + '</span>';
+  }
+
   // ----- js / ts / jsx -------------------------------------------------
-  const JS_STRING = /(`(?:\\.|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g;
-  const JS_COMMENT = /(\/\/.*$|\/\*[\s\S]*?\*\/)/gm;
-  const JS_NUMBER = /\b(\d+(?:\.\d+)?)\b/g;
-  const JS_KEYWORDS = /\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|class|extends|import|from|export|default|new|this|super|async|await|try|catch|finally|throw|typeof|instanceof|in|of|yield|true|false|null|undefined|interface|type|enum|implements|public|private|protected|readonly|as)\b/g;
+  // Groups: 1 comment, 2 string, 3 number, 4 keyword.
+  const JS_TOKEN =
+    /(\/\/.*$|\/\*[\s\S]*?\*\/)|(`(?:\\.|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|\b(\d+(?:\.\d+)?)\b|\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|class|extends|import|from|export|default|new|this|super|async|await|try|catch|finally|throw|typeof|instanceof|in|of|yield|true|false|null|undefined|interface|type|enum|implements|public|private|protected|readonly|as)\b/gm;
 
   function highlightJsLike(escaped) {
-    // Strings/comments first so their contents aren't re-coloured by
-    // the keyword/number passes.
-    let html = escaped;
-    html = html.replace(JS_COMMENT, '<span style="color:var(--text-4)">$1</span>');
-    html = html.replace(JS_STRING, '<span style="color:var(--green)">$1</span>');
-    html = html.replace(JS_NUMBER, '<span style="color:var(--amber)">$1</span>');
-    html = html.replace(JS_KEYWORDS, '<span style="color:var(--violet)">$1</span>');
-    return html;
+    return escaped.replace(JS_TOKEN, function (m, comment, str, num) {
+      if (comment !== undefined) return span("var(--text-4)", m);
+      if (str !== undefined) return span("var(--green)", m);
+      if (num !== undefined) return span("var(--amber)", m);
+      return span("var(--violet)", m);
+    });
   }
 
   // ----- bash / sh -------------------------------------------------------
-  const SH_STRING = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g;
-  const SH_COMMENT = /(#.*$)/gm;
-  const SH_FLAG = /(^|\s)(-{1,2}[a-zA-Z][\w-]*)/g;
-  const SH_KEYWORDS = /\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|local|in|set|echo)\b/g;
+  // Groups: 1 comment, 2 string, 3 flag leading whitespace, 4 flag, 5 keyword.
+  const SH_TOKEN =
+    /(#.*$)|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(^|\s)(-{1,2}[a-zA-Z][\w-]*)|\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|local|in|set|echo)\b/gm;
 
   function highlightShell(escaped) {
-    let html = escaped;
-    html = html.replace(SH_COMMENT, '<span style="color:var(--text-4)">$1</span>');
-    html = html.replace(SH_STRING, '<span style="color:var(--green)">$1</span>');
-    html = html.replace(SH_FLAG, '$1<span style="color:var(--blue)">$2</span>');
-    html = html.replace(SH_KEYWORDS, '<span style="color:var(--violet)">$1</span>');
-    return html;
+    return escaped.replace(SH_TOKEN, function (m, comment, str, ws, flag) {
+      if (comment !== undefined) return span("var(--text-4)", m);
+      if (str !== undefined) return span("var(--green)", m);
+      if (flag !== undefined) return (ws || "") + span("var(--blue)", flag);
+      return span("var(--violet)", m);
+    });
   }
 
   // ----- generic fallback (unknown langs) --------------------------------
-  const GEN_STRING = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g;
-  const GEN_COMMENT = /(\/\/.*$|#.*$)/gm;
-  const GEN_NUMBER = /\b(\d+(?:\.\d+)?)\b/g;
-  const GEN_KEYWORDS = /\b(function|return|if|else|for|while|class|import|export|const|let|var|def|end|true|false|null|None|True|False)\b/g;
+  // Groups: 1 comment, 2 string, 3 number, 4 keyword.
+  const GEN_TOKEN =
+    /(\/\/.*$|#.*$)|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|\b(\d+(?:\.\d+)?)\b|\b(function|return|if|else|for|while|class|import|export|const|let|var|def|end|true|false|null|None|True|False)\b/gm;
 
   function highlightGeneric(escaped) {
-    let html = escaped;
-    html = html.replace(GEN_COMMENT, '<span style="color:var(--text-4)">$1</span>');
-    html = html.replace(GEN_STRING, '<span style="color:var(--green)">$1</span>');
-    html = html.replace(GEN_NUMBER, '<span style="color:var(--amber)">$1</span>');
-    html = html.replace(GEN_KEYWORDS, '<span style="color:var(--violet)">$1</span>');
-    return html;
+    return escaped.replace(GEN_TOKEN, function (m, comment, str, num) {
+      if (comment !== undefined) return span("var(--text-4)", m);
+      if (str !== undefined) return span("var(--green)", m);
+      if (num !== undefined) return span("var(--amber)", m);
+      return span("var(--violet)", m);
+    });
   }
 
   const JS_LANGS = { js: 1, jsx: 1, ts: 1, tsx: 1, javascript: 1, typescript: 1, mjs: 1, cjs: 1 };
@@ -81,8 +87,8 @@
   //            returns one HTML string per source line; rejoined with
   //            "\n" here so this function's contract stays a single
   //            HTML string like every other lang branch.
-  //   js/ts/jsx, bash/sh -> hand-written tokenisers above.
-  //   anything else -> generic comment/string/number/keyword pass.
+  //   js/ts/jsx, bash/sh -> single-pass tokenisers above.
+  //   anything else -> single-pass generic comment/string/number/keyword.
   function highlightCode(code, lang) {
     const src = String(code == null ? "" : code);
     const norm = String(lang || "").toLowerCase();

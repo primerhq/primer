@@ -262,8 +262,10 @@ function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged,
 
       {readOnly ? (
         <div className="kn-doc-body">
+          {/* renderMarkdown returns React children, not an HTML string: an
+              __html of the array stringifies to "[object Object]". */}
           {looksMarkdown && window.renderMarkdown
-            ? <div dangerouslySetInnerHTML={{ __html: window.renderMarkdown(body) }} />
+            ? <div>{window.renderMarkdown(body)}</div>
             : <pre className="mono">{body}</pre>}
         </div>
       ) : (
