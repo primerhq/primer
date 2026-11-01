@@ -110,6 +110,7 @@ from primer.toolset._describe import make_tool
 from primer.toolset._system_access import access_tools
 from primer.toolset._system_artifact import artifact_store_tools
 from primer.toolset._system_canvas import canvas_settings_tools
+from primer.toolset._system_memory import memory_tools
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.model.collection import Collection, Document
 from primer.model.except_ import (
@@ -1331,6 +1332,10 @@ def build_system_toolset(
     registry.update(artifact_store_tools(storage_provider=storage_provider))
     # Sharing (access control, Phase 1): the twins of GET / PUT /v1/{plural}/{id}/access and GET /v1/users/lookup.
     registry.update(access_tools(storage_provider=storage_provider))
+    # An agent's memory (agent memory T13): the tool twins of the entry routes, owner-checked inside.
+    registry.update(memory_tools(
+        storage_provider=storage_provider, provider_registry=provider_registry, semantic_search_registry=semantic_search_registry,
+    ))
     # The canvas settings (pivot P5): the tool twins of GET / PUT /v1/canvas_settings, admin-only. Not in the canvas toolset, which keeps the
     # design's three tools.
     registry.update(canvas_settings_tools(storage_provider))

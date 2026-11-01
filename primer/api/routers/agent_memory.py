@@ -153,13 +153,7 @@ class ActivityList(BaseModel):
 
 
 def _view(entry: Any) -> EntryView:
-    def items(pairs: list[tuple[str, str]]) -> list[BodyItem]:
-        return [BodyItem(id=i, text=t) for i, t in pairs]
-
-    return EntryView(
-        name=entry.name, status=entry.status, description=entry.description, meta=entry.meta,
-        body=EntryBodyView(steps=items(entry.body.steps), pitfalls=items(entry.body.pitfalls), example=items(entry.body.example)),
-    )
+    return EntryView(**entry.as_dict())
 
 
 def _store(request: Request) -> Any:
