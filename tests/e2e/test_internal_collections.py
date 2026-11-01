@@ -61,20 +61,6 @@ async def test_t0021_bootstrap_404_when_no_config(
 
 
 # ============================================================================
-# T0318 — search top_k=100 (documented max) accepted before bootstrap
-# ============================================================================
-
-
-
-
-# ============================================================================
-# T0319 — search with very long query string returns clean envelope
-# ============================================================================
-
-
-
-
-# ============================================================================
 # T0326 — DELETE /internal_collections/config before any PUT clean envelope
 # ============================================================================
 
@@ -94,20 +80,6 @@ async def test_t0326_ic_config_delete_before_put_clean_envelope(
         envelope = resp.json()
         assert envelope["type"].startswith("/errors/"), envelope
         assert envelope["type"] != "/errors/internal", envelope
-
-
-# ============================================================================
-# T0560 — /v1/agents/search query="   " (whitespace-only) clean envelope
-# ============================================================================
-
-
-
-
-# ============================================================================
-# T0587 — /v1/agents/search query="🚀🎉" (emoji-only) clean envelope
-# ============================================================================
-
-
 
 
 # ============================================================================
@@ -262,13 +234,6 @@ async def test_t0707_ic_config_put_against_deleted_embedding_provider(
         await client.delete("/v1/internal_collections/config")
         # Provider already deleted; idempotent best-effort
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
-
-
-# ============================================================================
-# T0717 — Concurrent IC-config DELETE racing 5 /v1/agents/search calls
-# ============================================================================
-
-
 
 
 # ============================================================================

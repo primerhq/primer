@@ -6318,7 +6318,7 @@ async def test_t0734_two_graph_bound_sessions_isolated_termination(
 
 
 # ============================================================================
-# T0754 — DELETE EmbeddingProvider referenced by IC config: the config
+# T0754 - DELETE EmbeddingProvider referenced by IC config: the config
 # read stays clean (the per-entity search routes are gone, D18). IC config row may itself stay
 # (with an orphaned embedding_provider_id) or be cascade-cleaned; both
 # are acceptable provided the read remains clean.
