@@ -6,12 +6,12 @@ Moved out of ``primer/api/routers/model_profiles.py``, where they were bound to 
 ``field``. The router's hooks re-raise the exact ``HTTPException(422, detail={error, field, message})`` they always raised; the
 system ``create_`` / ``update_model_profile`` tools answer ``validation-error``.
 
-The three checks (see the router's module docstring for the aggregation directive):
+The checks (see the router's module docstring for the aggregation directive):
 
 * a single profile's ``provider_id`` names a stored LLMProvider;
 * an aggregated profile names two or more distinct, existing, single members, and not itself;
-* on an update, a profile another aggregate lists as a member cannot become an aggregate itself (nested aggregation is not
-  supported).
+* on an update, the profile's kind is unchanged (GX-16: single and aggregated are not interconvertible, which is also why a listed member can
+  never become an aggregate).
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING
 from primer.common.entity_checks import EntityCheckError
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import LLMProvider
-from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
@@ -91,29 +90,18 @@ async def check_aggregation_valid(entity: ModelProfile, *, storage_provider: "St
             )
 
 
-async def check_not_a_member_becoming_aggregated(entity: ModelProfile, *, storage_provider: "StorageProvider") -> None:
-    """An UPDATE must not turn a profile into ``kind="aggregated"`` while some OTHER aggregate lists it as a member.
+def check_kind_unchanged(entity: ModelProfile, existing: ModelProfile) -> None:
+    """An UPDATE must keep the stored profile's ``kind``: single and aggregated profiles are not interconvertible (GX-16).
 
-    ``check_aggregation_valid`` only validates an aggregate's OWN members at ITS OWN write time. Without this check, writing member
-    profile A as an aggregate passes every other check and silently leaves the containing aggregate G in violation of "every member
-    must be single", discovered only at resolve time with an error that misattributes the problem to G instead of A. Same CONTAINS
-    lookup the reference block uses to stop deleting a member out from under its aggregate.
+    Fixing the kind at creation also removes a race the old "a listed member may not become an aggregate" check could not close (one admin adds P
+    to an aggregate while another turns P into one: two unfenced reads); with the kind fixed, a member (always single) stays single.
     """
-    if entity.kind != "aggregated":
-        return
-    storage = storage_provider.get_storage(ModelProfile)
-    predicate = Predicate(
-        left=FieldRef(name="members"), op=Op.CONTAINS, right=Value(value=entity.id),
-    )
-    page = await storage.find(predicate, OffsetPage(offset=0, length=1))
-    if page.items:
+    if entity.kind != existing.kind:
         raise _refuse(
-            "member_of_another_aggregate",
+            "profile_kind_immutable",
             "kind",
-            f"profile {entity.id!r} is a member of aggregate "
-            f"{page.items[0].id!r} and cannot become kind='aggregated' "
-            "itself (nested aggregation is not supported); remove it "
-            "from that aggregate's members first",
+            f"profile {entity.id!r} is kind={existing.kind!r} and cannot become kind={entity.kind!r}: a profile's kind is fixed when it is "
+            "created; create a new profile instead",
         )
 
 
@@ -123,16 +111,17 @@ async def check_profile_on_create(entity: ModelProfile, *, storage_provider: "St
     await check_aggregation_valid(entity, storage_provider=storage_provider)
 
 
-async def check_profile_on_update(entity: ModelProfile, *, storage_provider: "StorageProvider") -> None:
-    """Every update-time check, in the router's order (the checks validate the incoming shape only)."""
+async def check_profile_on_update(entity: ModelProfile, existing: ModelProfile, *, storage_provider: "StorageProvider") -> None:
+    """Every update-time check, in order: the kind is unchanged, then the incoming shape is valid. Both write doors (the REST router and the
+    system tools) run exactly this."""
+    check_kind_unchanged(entity, existing)
     await check_provider_exists(entity, storage_provider=storage_provider)
     await check_aggregation_valid(entity, storage_provider=storage_provider)
-    await check_not_a_member_becoming_aggregated(entity, storage_provider=storage_provider)
 
 
 __all__ = [
     "check_aggregation_valid",
-    "check_not_a_member_becoming_aggregated",
+    "check_kind_unchanged",
     "check_profile_on_create",
     "check_profile_on_update",
     "check_provider_exists",

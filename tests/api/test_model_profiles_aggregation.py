@@ -189,41 +189,39 @@ class TestUpdateValidation:
         assert r.json()["extensions"]["error"] == "provider_not_found"
 
     @pytest.mark.asyncio
-    async def test_update_to_aggregated_validates_members(self, client) -> None:
+    async def test_update_of_an_aggregate_validates_members(self, client) -> None:
         """The aggregation checks apply on update, not just create."""
         await _seed_provider(client, "magg-prov-upd-d")
-        pid = await seed_profile(client, "magg-prov-upd-d", "model-1")
+        m1 = await seed_profile(client, "magg-prov-upd-d", "model-1")
+        m2 = await seed_profile(client, "magg-prov-upd-d", "model-2")
+        r = await client.post("/v1/model_profiles", json=_aggregated_body("magg-upd-d", [m1, m2]))
+        assert r.status_code in (200, 201), r.text
 
         r = await client.put(
-            f"/v1/model_profiles/{pid}",
-            json=_aggregated_body(pid, ["does-not-exist", "also-missing"]),
+            "/v1/model_profiles/magg-upd-d",
+            json=_aggregated_body("magg-upd-d", ["does-not-exist", "also-missing"]),
         )
         assert r.status_code == 422, r.text
         assert r.json()["extensions"]["error"] == "member_not_found"
 
     @pytest.mark.asyncio
-    async def test_update_to_valid_aggregation_succeeds(self, client) -> None:
+    async def test_update_of_an_aggregate_to_valid_members_succeeds(self, client) -> None:
         await _seed_provider(client, "magg-prov-upd-e")
-        pid = await seed_profile(client, "magg-prov-upd-e", "model-to-convert")
         m1 = await seed_profile(client, "magg-prov-upd-e", "model-1")
         m2 = await seed_profile(client, "magg-prov-upd-e", "model-2")
+        m3 = await seed_profile(client, "magg-prov-upd-e", "model-3")
+        r = await client.post("/v1/model_profiles", json=_aggregated_body("magg-upd-e", [m1, m2]))
+        assert r.status_code in (200, 201), r.text
 
-        r = await client.put(
-            f"/v1/model_profiles/{pid}", json=_aggregated_body(pid, [m1, m2]),
-        )
+        r = await client.put("/v1/model_profiles/magg-upd-e", json=_aggregated_body("magg-upd-e", [m2, m3]))
         assert r.status_code == 200, r.text
-        assert r.json()["kind"] == "aggregated"
+        assert r.json()["kind"] == "aggregated" and r.json()["members"] == [m2, m3]
         assert r.json()["provider_id"] is None
 
     @pytest.mark.asyncio
-    async def test_update_a_member_to_aggregated_is_blocked(self, client) -> None:
-        """01a067c4 gate finding #5: PUT'ing a profile that is currently a
-        MEMBER of some other aggregate to kind="aggregated" itself must
-        be rejected -- it would leave the containing aggregate silently
-        violating "every member must be kind=single" (nested
-        aggregation), discovered only later at resolve time with an
-        error that misattributes the problem to the containing aggregate
-        instead of this update."""
+    async def test_update_a_member_to_aggregated_is_refused_as_a_kind_change(self, client) -> None:
+        """01a067c4 gate finding #5 (a listed member turned into an aggregate would leave the containing aggregate nested), now closed at the root:
+        a profile's kind is fixed at creation (GX-16), so the PUT is refused as a kind change, whoever lists the profile."""
         await _seed_provider(client, "magg-prov-upd-f")
         m1 = await seed_profile(client, "magg-prov-upd-f", "model-1")
         m2 = await seed_profile(client, "magg-prov-upd-f", "model-2")
@@ -232,7 +230,6 @@ class TestUpdateValidation:
         )
         assert r.status_code in (200, 201), r.text
 
-        # m1 is a member of magg-containing; try to convert it in place.
         other1 = await seed_profile(client, "magg-prov-upd-f", "other-1")
         other2 = await seed_profile(client, "magg-prov-upd-f", "other-2")
         r = await client.put(
@@ -240,9 +237,8 @@ class TestUpdateValidation:
             json=_aggregated_body(m1, [other1, other2]),
         )
         assert r.status_code == 422, r.text
-        assert r.json()["extensions"]["error"] == "member_of_another_aggregate"
+        assert r.json()["extensions"]["error"] == "profile_kind_immutable"
 
-        # m1 itself is unchanged -- still a single profile.
         got = await client.get(f"/v1/model_profiles/{m1}")
         assert got.json()["kind"] == "single"
 

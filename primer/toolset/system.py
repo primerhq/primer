@@ -512,8 +512,7 @@ def build_system_toolset(
         await check_profile_on_create(entity, storage_provider=storage_provider)
 
     async def _profile_pre_update(entity: ModelProfile, existing: ModelProfile) -> None:
-        del existing  # the checks validate the incoming shape only
-        await check_profile_on_update(entity, storage_provider=storage_provider)
+        await check_profile_on_update(entity, existing, storage_provider=storage_provider)
 
     async def _channel_pre_create(entity: Channel, *, person: Any = None) -> None:
         await check_channel_on_create(entity, storage_provider=storage_provider, person=person)

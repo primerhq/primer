@@ -57,7 +57,7 @@ from primer.model.model_profile import ModelProfile, ModelProfileChoice
 from primer.model.provider import LLMProvider
 from primer.model_profile.checks import (
     check_aggregation_valid,
-    check_not_a_member_becoming_aggregated,
+    check_profile_on_update,
     check_provider_exists,
 )
 from primer.model_profile.choices import list_model_profile_choices
@@ -197,17 +197,6 @@ async def _check_aggregation_valid(entity: ModelProfile, request: Request) -> No
         raise _as_rest_error(exc) from exc
 
 
-async def _check_not_a_member_becoming_aggregated(
-    entity: ModelProfile, request: Request,
-) -> None:
-    """422 when an UPDATE turns a profile into ``kind="aggregated"`` while it is currently named as a member of some OTHER
-    aggregate (nested aggregation is not supported)."""
-    try:
-        await check_not_a_member_becoming_aggregated(entity, storage_provider=request.app.state.storage_provider)
-    except EntityCheckError as exc:
-        raise _as_rest_error(exc) from exc
-
-
 async def _on_pre_create(entity: ModelProfile, request: Request) -> None:
     await _check_provider_exists(entity, request)
     await _check_aggregation_valid(entity, request)
@@ -216,10 +205,10 @@ async def _on_pre_create(entity: ModelProfile, request: Request) -> None:
 async def _on_pre_update(
     entity: ModelProfile, existing: ModelProfile, request: Request
 ) -> None:
-    del existing  # both checks validate the incoming shape only
-    await _check_provider_exists(entity, request)
-    await _check_aggregation_valid(entity, request)
-    await _check_not_a_member_becoming_aggregated(entity, request)
+    try:
+        await check_profile_on_update(entity, existing, storage_provider=request.app.state.storage_provider)
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
 
 
 def _agent_storage_from_request(request: Request):
