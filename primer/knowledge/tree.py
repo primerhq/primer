@@ -34,6 +34,9 @@ def check_body_size(body: str) -> None:
     if len(body.encode("utf-8")) > DOCUMENT_BODY_CAP:
         raise PayloadTooLargeError(BODY_CAP_MESSAGE, limit_bytes=DOCUMENT_BODY_CAP)
 
+#: Parent ids per ``parent_id IN (...)`` query.
+_PARENTS_PER_QUERY = 200
+
 Indexer = Callable[..., Awaitable[None]]
 Unindexer = Callable[..., Awaitable[None]]
 PathRewriter = Callable[..., Awaitable[None]]
@@ -124,6 +127,27 @@ class DocumentTreeService:
             if len(resp.items) < page:
                 return out
             offset += page
+
+    async def _children_of(
+        self, collection_id: str, parent_ids: list[str],
+    ) -> list[Document]:
+        """The children of every parent in ``parent_ids`` in one query per page (``parent_id = ANY(...)``), not one query per parent."""
+        out: list[Document] = []
+        for i in range(0, len(parent_ids), _PARENTS_PER_QUERY):
+            predicate = (
+                Q(Document).where("collection_id", collection_id)
+                .where_in("parent_id", parent_ids[i:i + _PARENTS_PER_QUERY]).build()
+            )
+            offset, page = 0, 200
+            while True:
+                resp = await self._docs.find(
+                    predicate, OffsetPage(offset=offset, length=page, want_total=False)
+                )
+                out.extend(resp.items)
+                if len(resp.items) < page:
+                    break
+                offset += page
+        return out
 
     async def _resolve_parent(
         self, collection_id: str, parent: str
@@ -298,20 +322,28 @@ class DocumentTreeService:
                    depth: int = 1) -> list[TreeNode]:
         parent_id, _ = await self._resolve_parent(collection_id, parent)
         out: list[TreeNode] = []
-        frontier: list[tuple[str | None, int]] = [(parent_id, 1)]
-        while frontier:
-            pid, level = frontier.pop(0)
-            for node in await self._child_nodes(collection_id, pid):
-                out.append(node)
-                if level < depth and node.has_children:
-                    frontier.append((node.document_id, level + 1))
+        level_kids = await self._children(collection_id, parent_id)
+        level = 1
+        while level_kids:
+            # One query for the children of the whole level: they say which of this level's nodes have children, and (while
+            # the walk goes deeper) they are the next level.
+            grand = await self._children_of(collection_id, [k.id for k in level_kids])
+            has_children = {g.parent_id for g in grand}
+            for k in sorted(level_kids, key=lambda d: d.slug):
+                out.append(TreeNode(
+                    path=k.path, slug=k.slug, title=k.title or k.slug,
+                    document_id=k.id, has_children=k.id in has_children,
+                ))
+            level_kids = grand if level < depth else []
+            level += 1
         return sorted(out, key=lambda n: n.path)
 
-
-    async def read(self, *, collection_id: str, path: str) -> TreeReadResult:
+    async def read(self, *, collection_id: str, path: str,
+                   with_children: bool = True) -> TreeReadResult:
+        """The page at ``path``; ``with_children=False`` skips the child listing (``children`` is empty) for a caller that only compares the page."""
         doc = await self.resolve(collection_id=collection_id, path=path)
         body = await self._content.get(doc.id)
-        children = await self._child_nodes(collection_id, doc.id)
+        children = await self._child_nodes(collection_id, doc.id) if with_children else []
         return TreeReadResult(document=doc, body=body or "", children=children)
 
     async def _child_nodes(
@@ -320,14 +352,14 @@ class DocumentTreeService:
         kids = sorted(
             await self._children(collection_id, parent_id), key=lambda d: d.slug
         )
-        nodes: list[TreeNode] = []
-        for k in kids:
-            grand = await self._children(collection_id, k.id)
-            nodes.append(TreeNode(
+        has_children = {g.parent_id for g in await self._children_of(collection_id, [k.id for k in kids])}
+        return [
+            TreeNode(
                 path=k.path, slug=k.slug, title=k.title or k.slug,
-                document_id=k.id, has_children=bool(grand),
-            ))
-        return nodes
+                document_id=k.id, has_children=k.id in has_children,
+            )
+            for k in kids
+        ]
 
 
 __all__ = ["DocumentTreeService", "TreeNode", "TreeReadResult", "STRICT_SLUG_RE"]

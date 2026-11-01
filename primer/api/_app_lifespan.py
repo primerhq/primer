@@ -1147,6 +1147,12 @@ def _make_lifespan(config: AppConfig):
                         await task.stop()
                     except Exception:
                         logger.exception("%s.stop failed", name)
+            try:
+                from primer.knowledge.system_collection import settle as settle_live_map
+
+                await settle_live_map()                  # the live map's deferred index rebuilds run before the storage closes
+            except Exception:
+                logger.exception("live map flush failed")
             if workspace_tap_router is not None:
                 try:
                     await workspace_tap_router.aclose()

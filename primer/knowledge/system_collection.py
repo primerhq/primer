@@ -23,6 +23,8 @@ import hashlib
 import json
 import logging
 import re
+import time
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -199,10 +201,29 @@ def _agent_body(a, public_profiles: frozenset[str] | set[str] = frozenset()) -> 
     )
 
 
-async def _public_profile_ids(storage_provider) -> set[str]:
+#: How long the set of public model profile ids is reused by the per-agent convergence; a ModelProfile event drops it at once.
+_PROFILE_IDS_TTL_S = 5.0
+_PROFILE_IDS: "weakref.WeakKeyDictionary[Any, tuple[float, set[str]]]" = weakref.WeakKeyDictionary()
+
+
+def _forget_public_profile_ids(storage_provider) -> None:
+    _PROFILE_IDS.pop(storage_provider, None)
+
+
+async def _public_profile_ids(storage_provider, *, cached: bool = False) -> set[str]:
+    """The ids of the public model profiles. ``cached`` (the per-agent convergence) reuses a set read less than ``_PROFILE_IDS_TTL_S`` ago."""
     from primer.model.model_profile import ModelProfile
 
-    return {p.id for p in await _list_all(storage_provider, ModelProfile) if _listed(p)}
+    if cached:
+        hit = _PROFILE_IDS.get(storage_provider)
+        if hit is not None and time.monotonic() - hit[0] < _PROFILE_IDS_TTL_S:
+            return set(hit[1])
+    ids = {p.id for p in await _list_all(storage_provider, ModelProfile) if _listed(p)}
+    try:
+        _PROFILE_IDS[storage_provider] = (time.monotonic(), ids)
+    except TypeError:                                         # a provider that cannot be weakly referenced is simply not cached
+        pass
+    return set(ids)
 
 
 def _graph_body(g) -> str:
@@ -656,7 +677,7 @@ async def _converge(
         page = pages[path]
         try:
             current = await tree.read(
-                collection_id=SYSTEM_COLLECTION_ID, path=path,
+                collection_id=SYSTEM_COLLECTION_ID, path=path, with_children=False,
             )
         except PrimerError:
             current = None
@@ -1024,6 +1045,18 @@ def _deferred(indexer):
 _PROVIDER_KINDS = frozenset({"llm_provider", "model_profile", "embedding_provider", "semantic_search_provider"})
 
 
+def _make_tree(storage_provider, provider_registry, semantic_search_registry) -> DocumentTreeService:
+    """The tree service the live map writes through: with the indexing hooks when the registries are supplied."""
+    indexer = unindexer = None
+    if semantic_search_registry is not None:
+        unindexer = make_document_unindexer(storage_provider=storage_provider, semantic_search_registry=semantic_search_registry)
+        if provider_registry is not None:
+            indexer = _deferred(make_document_indexer(
+                storage_provider=storage_provider, provider_registry=provider_registry, semantic_search_registry=semantic_search_registry,
+            ))
+    return DocumentTreeService(storage_provider, indexer=indexer, unindexer=unindexer)
+
+
 async def _converge_providers(storage_provider, *, provider_registry=None, semantic_search_registry=None) -> bool:
     """A provider or a model profile changed: bring ``this-install/providers`` and the agent pages (they name a public profile) up to date.
 
@@ -1032,14 +1065,7 @@ async def _converge_providers(storage_provider, *, provider_registry=None, seman
     try:
         if await storage_provider.get_storage(Collection).get(SYSTEM_COLLECTION_ID) is None:
             return False
-        indexer = unindexer = None
-        if semantic_search_registry is not None:
-            unindexer = make_document_unindexer(storage_provider=storage_provider, semantic_search_registry=semantic_search_registry)
-            if provider_registry is not None:
-                indexer = _deferred(make_document_indexer(
-                    storage_provider=storage_provider, provider_registry=provider_registry, semantic_search_registry=semantic_search_registry,
-                ))
-        tree = DocumentTreeService(storage_provider, indexer=indexer, unindexer=unindexer)
+        tree = _make_tree(storage_provider, provider_registry, semantic_search_registry)
         live = await _live_pages(storage_provider)
         written = await _converge(tree, live)
         written += await _prune_live(
@@ -1051,9 +1077,94 @@ async def _converge_providers(storage_provider, *, provider_registry=None, seman
         return False
 
 
+# --- coalescing ------------------------------------------------------------------------------------------------------------------------------
+# A bulk change fires one event per entity, and each used to rewrite the whole subtree index (a scan of every row of the kind) or, for a
+# provider or a profile, the whole provider map and every agent page: O(N^2) for N changes. The index is a function of the FINAL state, so
+# the rewrite is deferred per (storage, kind) and runs once, ``_INDEX_DEBOUNCE_S`` after the last change of a burst (trailing edge).
+
+#: Quiet time after the last change of a burst before the index of its kind is rebuilt.
+_INDEX_DEBOUNCE_S = 0.25
+
+
+class _Pending:
+    def __init__(self, run: Callable[[], Awaitable[Any]], deadline: float) -> None:
+        self.run, self.deadline, self.dirty = run, deadline, False
+        self.wake = asyncio.Event()
+        self.task: asyncio.Task | None = None
+
+
+_PENDING: dict[tuple[int, str], _Pending] = {}
+
+
+def _schedule(storage_provider, kind: str, run: Callable[[], Awaitable[Any]]) -> None:
+    """Rebuild ``kind``'s index once the burst of changes it is part of has been quiet for ``_INDEX_DEBOUNCE_S``; the latest ``run`` wins."""
+    loop = asyncio.get_running_loop()
+    key = (id(storage_provider), kind)
+    pending = _PENDING.get(key)
+    if pending is not None:
+        pending.run, pending.deadline, pending.dirty = run, loop.time() + _INDEX_DEBOUNCE_S, True
+        return
+    pending = _Pending(run, loop.time() + _INDEX_DEBOUNCE_S)
+    _PENDING[key] = pending
+    pending.task = loop.create_task(_drain(key, pending))
+
+
+async def _drain(key: tuple[int, str], pending: _Pending) -> None:
+    loop = asyncio.get_running_loop()
+    try:
+        while True:
+            wait = pending.deadline - loop.time()
+            if wait > 0:
+                try:
+                    await asyncio.wait_for(pending.wake.wait(), wait)
+                except TimeoutError:
+                    pass
+                pending.wake.clear()
+                continue
+            pending.dirty = False
+            try:
+                await pending.run()
+            except Exception:  # noqa: BLE001 - a rebuild never takes the dispatcher down
+                logger.exception("system collection: rebuilding the %s index failed", key[1])
+            if not pending.dirty:                         # nothing arrived while it ran: done (no await between here and the pop)
+                return
+    finally:
+        if _PENDING.get(key) is pending:
+            del _PENDING[key]
+
+
+async def settle() -> None:
+    """Run every deferred index rebuild now and wait for it: the end of a burst for a test, and the flush at shutdown."""
+    while _PENDING:
+        batch = list(_PENDING.values())
+        for pending in batch:
+            pending.deadline = 0.0
+            pending.wake.set()
+        await asyncio.gather(*(p.task for p in batch if p.task is not None), return_exceptions=True)
+
+
+async def _rewrite_kind_index(storage_provider, entity_type: str, provider_registry, semantic_search_registry) -> bool:
+    """Re-render the ``this-install/<kind>`` index from the rows as they are now; True when the page was written."""
+    subtree, model_cls, _render, title = _entity_kinds()[entity_type]
+    if await storage_provider.get_storage(Collection).get(SYSTEM_COLLECTION_ID) is None:
+        return False
+    tree = _make_tree(storage_provider, provider_registry, semantic_search_registry)
+    rows = await _list_all(storage_provider, model_cls)
+    children = [(f"{subtree}/{_live_slug(r.id)}", r.id) for r in rows if _listed(r)]
+    index = _live_page(subtree, _index_body(title, children), summary=_LIVE_INDEX_SUMMARIES.get(subtree, ""))
+    try:
+        current = await tree.read(collection_id=SYSTEM_COLLECTION_ID, path=subtree, with_children=False)
+    except PrimerError:
+        current = None
+    if current is not None and current.body == index.body and current.document.title == index.title and current.document.meta == index.meta:
+        return False
+    await _write_tree_page(tree, path=subtree, body=index.body, title=index.title, meta=index.meta)
+    return True
+
+
 async def converge_entity(
     storage_provider, *, entity_type: str, entity_id: str,
-    provider_registry=None, semantic_search_registry=None,
+    provider_registry=None, semantic_search_registry=None, coalesce: bool = False,
 ) -> bool:
     """Bring one entity's page in the system collection up to date.
 
@@ -1071,12 +1182,23 @@ async def converge_entity(
     tools on each write, which is the slow, network-touching part of
     that pass and has no business on a CRUD path.
 
+    ``coalesce`` (the event dispatcher): the subtree index (and, for a provider or a profile, the whole provider map) is not rebuilt per
+    event but once per burst, ``_INDEX_DEBOUNCE_S`` after the last change, from the rows as they are then; ``settle()`` runs it at once.
+    The entity's own page is still written at once. The return value then says only whether the entity's own page was written.
+
     Returns True when something was written. Never raises: a system
     collection that is briefly stale must not fail the write that
     changed the entity.
     """
     kinds = _entity_kinds()
+    if entity_type == "model_profile":
+        _forget_public_profile_ids(storage_provider)
     if entity_type in _PROVIDER_KINDS:
+        if coalesce:
+            _schedule(storage_provider, "providers", lambda: _converge_providers(
+                storage_provider, provider_registry=provider_registry, semantic_search_registry=semantic_search_registry,
+            ))
+            return False
         return await _converge_providers(
             storage_provider, provider_registry=provider_registry, semantic_search_registry=semantic_search_registry,
         )
@@ -1089,21 +1211,7 @@ async def converge_entity(
         if await colls.get(SYSTEM_COLLECTION_ID) is None:
             return False
 
-        indexer = unindexer = None
-        if semantic_search_registry is not None:
-            unindexer = make_document_unindexer(
-                storage_provider=storage_provider,
-                semantic_search_registry=semantic_search_registry,
-            )
-            if provider_registry is not None:
-                indexer = _deferred(make_document_indexer(
-                    storage_provider=storage_provider,
-                    provider_registry=provider_registry,
-                    semantic_search_registry=semantic_search_registry,
-                ))
-        tree = DocumentTreeService(
-            storage_provider, indexer=indexer, unindexer=unindexer,
-        )
+        tree = _make_tree(storage_provider, provider_registry, semantic_search_registry)
 
         entity = await storage_provider.get_storage(model_cls).get(entity_id)
         path = f"{subtree}/{_live_slug(entity_id)}"
@@ -1122,7 +1230,7 @@ async def converge_entity(
             wrote_page = True
         else:
             if entity_type == "agent":
-                body = _agent_body(entity, await _public_profile_ids(storage_provider))
+                body = _agent_body(entity, await _public_profile_ids(storage_provider, cached=True))
             elif entity_type == "workspace":
                 body = _workspace_body(entity, *await _public_workspace_parts(storage_provider))
             else:
@@ -1130,7 +1238,7 @@ async def converge_entity(
             page = _live_page(path, body)
             try:
                 current = await tree.read(
-                    collection_id=SYSTEM_COLLECTION_ID, path=path,
+                    collection_id=SYSTEM_COLLECTION_ID, path=path, with_children=False,
                 )
             except PrimerError:
                 current = None
@@ -1147,30 +1255,12 @@ async def converge_entity(
                 wrote_page = True
 
         # Re-render the subtree index so its links match what is there.
-        rows = await _list_all(storage_provider, model_cls)
-        children = [(f"{subtree}/{_live_slug(r.id)}", r.id) for r in rows if _listed(r)]
-        index_body = _index_body(title, children)
-        index = _live_page(
-            subtree, index_body, summary=_LIVE_INDEX_SUMMARIES.get(subtree, ""),
-        )
-        try:
-            current_index = await tree.read(
-                collection_id=SYSTEM_COLLECTION_ID, path=subtree,
-            )
-        except PrimerError:
-            current_index = None
-        wrote_index = False
-        if (
-            current_index is None
-            or current_index.body != index.body
-            or current_index.document.title != index.title
-            or current_index.document.meta != index.meta
-        ):
-            await _write_tree_page(
-                tree, path=subtree, body=index.body,
-                title=index.title, meta=index.meta,
-            )
-            wrote_index = True
+        if coalesce:
+            _schedule(storage_provider, entity_type, lambda: _rewrite_kind_index(
+                storage_provider, entity_type, provider_registry, semantic_search_registry,
+            ))
+            return wrote_page
+        wrote_index = await _rewrite_kind_index(storage_provider, entity_type, provider_registry, semantic_search_registry)
         return wrote_page or wrote_index
     except Exception:  # noqa: BLE001 - never fail the entity write
         logger.exception(
@@ -1185,4 +1275,5 @@ __all__ = [
     "WIKI_TITLE",
     "converge_entity",
     "regenerate_system_collection",
+    "settle",
 ]
