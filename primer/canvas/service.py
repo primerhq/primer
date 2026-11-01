@@ -178,7 +178,7 @@ def _option_order(props: dict[str, Any], chosen: list[str]) -> list[str]:
 
 
 def _is_unavailable(row: SessionCanvas, element: str) -> bool:
-    """Whether the user cannot act on ``element``: it is hidden or disabled, or a container above it is hidden."""
+    """Whether the user cannot act on ``element``: it is hidden or disabled, or a container above it is hidden or disabled (GU-22)."""
     if row.elements[element]["props"].get("hidden") or row.elements[element]["props"].get("disabled"):
         return True
     parent_of = {child: parent for parent, el in row.elements.items() for child in el.get("children", ())}
@@ -187,7 +187,8 @@ def _is_unavailable(row: SessionCanvas, element: str) -> bool:
     while current in parent_of and current not in seen:
         seen.add(current)
         current = parent_of[current]
-        if row.elements.get(current, {}).get("props", {}).get("hidden"):
+        above = row.elements.get(current, {}).get("props", {})
+        if above.get("hidden") or above.get("disabled"):
             return True
     return False
 
