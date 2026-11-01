@@ -206,3 +206,26 @@ def test_a_non_literal_default_is_a_registration_error_and_the_report_gives_a_ve
     bad, good = register_module_report(_NON_LITERAL, "ts", 30.0)
     assert isinstance(bad, ToolRegistrationFailure) and bad.field == "n"
     assert not isinstance(good, ToolRegistrationFailure)
+
+
+_NULL_EXAMPLE = '''
+@primer_tool()
+def fetch(url: str | None = None) -> str:
+    """Fetch one page.
+
+    Use when the user names a page.
+
+    Args:
+        url: the page, or none for the home page.
+
+    Examples:
+        {"url": null}
+    """
+    return ""
+'''
+
+
+def test_a_null_example_for_an_optional_argument_registers() -> None:
+    """GX-10: the documented ``{"url": null}`` example refused the whole toolset ("does not match the argument schema")."""
+    [tool] = register_module(_NULL_EXAMPLE, "ts", 30.0)
+    assert tool.tool.args_schema["properties"]["url"]["type"] == ["string", "null"]

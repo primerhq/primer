@@ -63,12 +63,13 @@ def _annotation_to_schema(node: ast.expr, param: str) -> dict[str, Any]:
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         left = _annotation_to_schema(node.left, param)
         right = _annotation_to_schema(node.right, param)
-        # `X | None` is the common case: keep X's shape and mark it nullable
-        # rather than emitting an anyOf the model has to reason about.
-        if right == {"type": "null"}:
-            return {**left, "nullable": True}
-        if left == {"type": "null"}:
-            return {**right, "nullable": True}
+        # `X | None` is the common case: keep X's shape and add "null" to its type rather than emitting an anyOf the model has to reason
+        # about. Not OpenAPI's `nullable`, which Draft 2020-12 (what make_tool validates examples with) ignores (GX-10).
+        if {"type": "null"} in (left, right):
+            other = left if right == {"type": "null"} else right
+            if isinstance(other.get("type"), str):
+                return {**other, "type": [other["type"], "null"]}
+            return {"anyOf": [other, {"type": "null"}]}
         return {"anyOf": [left, right]}
     raise SchemaError(
         f"parameter {param!r} has an annotation this runner cannot map to a "

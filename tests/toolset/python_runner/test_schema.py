@@ -76,8 +76,9 @@ def test_the_schema_is_self_contained() -> None:
 def test_optional_and_list_types_survive() -> None:
     doc = "Do a thing.\n\nUse when you must.\n\nArgs:\n    a: The a.\n"
     s = _schema("def f(a: list[str] | None = None) -> str: ...", doc)
-    assert s["properties"]["a"]["type"] == "array"
+    assert s["properties"]["a"]["type"] == ["array", "null"]     # GX-10: JSON Schema has no ``nullable``; null is a type
     assert s["properties"]["a"]["items"]["type"] == "string"
+    assert "nullable" not in s["properties"]["a"]
 
 
 def test_an_unmappable_annotation_is_an_error_naming_the_param() -> None:
@@ -100,3 +101,15 @@ def test_a_non_literal_default_is_a_schema_error_naming_the_param() -> None:
             _schema(src, doc)
         assert exc.value.field == "n"
         assert "literal" in str(exc.value)
+
+
+def test_an_optional_value_accepts_null_and_a_wider_union_says_so_with_any_of() -> None:
+    from jsonschema import Draft202012Validator
+
+    doc = "Do a thing.\n\nUse when you must.\n\nArgs:\n    a: The a.\n"
+    s = _schema("def f(a: None | str = None) -> str: ...", doc)
+    assert s["properties"]["a"]["type"] == ["string", "null"]
+    Draft202012Validator(s).validate({"a": None})
+    s = _schema("def f(a: str | int | None = None) -> str: ...", doc)
+    assert s["properties"]["a"]["anyOf"][1] == {"type": "null"}
+    Draft202012Validator(s).validate({"a": None})
