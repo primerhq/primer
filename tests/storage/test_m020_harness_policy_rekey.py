@@ -190,3 +190,85 @@ async def test_a_second_run_writes_nothing(sp):
     assert await _rows(sp) == policies, "a second run must find nothing left to move"
     assert await sp.get_storage(McpExposure).get("singleton") == exposure
     assert await sp.get_storage(Agent).get("ag-1") == agent
+
+
+# -- golden characterization (PERF-T16) ---------------------------------------------------------------------------------------------------
+
+from primer.model.except_ import ConflictError  # noqa: E402
+from primer.storage.migrations.m020_harness_policy_rekey import Agent as AgentView  # noqa: E402
+from primer.storage.migrations.m020_harness_policy_rekey import McpExposure as ExposureView  # noqa: E402
+from primer.storage.migrations.m020_harness_policy_rekey import ToolApprovalPolicy as PolicyView  # noqa: E402
+from primer.storage.migrations.m020_harness_policy_rekey import _rekeyed  # noqa: E402
+from primer.storage.q import Q  # noqa: E402
+from tests.storage._migration_golden import assert_golden, bulk, insert_raw  # noqa: E402
+
+
+async def _old_apply(sp) -> None:
+    """Migration 20 as it was before PERF-T16, frozen: OFFSET pages into full lists, then ``update`` per moved row."""
+    store = sp.get_storage(PolicyView)
+    rows = []
+    offset = 0
+    while True:
+        page = await store.find(Q(PolicyView).where("toolset_id", "harness").build(), OffsetPage(offset=offset, length=200, want_total=False))
+        rows.extend(page.items)
+        if len(page.items) < 200:
+            break
+        offset += 200
+    for row in rows:
+        if not row.tool_name.startswith("harness__") or not row.tool_name.removeprefix("harness__"):
+            continue
+        new_name = row.tool_name.removeprefix("harness__")
+        if any(other.id != row.id and other.tool_name == new_name for other in rows):
+            continue
+        try:
+            await store.update(row.model_copy(update={"tool_name": new_name}))
+        except ConflictError:
+            continue
+
+    exposure = sp.get_storage(ExposureView)
+    page = await exposure.list(OffsetPage(offset=0, length=200))
+    row = next((item for item in page.items if item.id == "singleton"), None)
+    if row is not None and any(entry.startswith("harness__harness__") for entry in row.allowed_tools):
+        await exposure.update(row.model_copy(update={"allowed_tools": _rekeyed(row.allowed_tools)}))
+
+    agents = sp.get_storage(AgentView)
+    rows = []
+    offset = 0
+    while True:
+        page = await agents.list(OffsetPage(offset=offset, length=200, want_total=False))
+        rows.extend(page.items)
+        if len(page.items) < 200:
+            break
+        offset += 200
+    for row in rows:
+        rewritten = _rekeyed(row.tools)
+        if rewritten == row.tools:
+            continue
+        try:
+            await agents.update(row.model_copy(update={"tools": rewritten}))
+        except ConflictError:
+            continue
+
+
+async def _golden_seed(sp) -> None:
+    await insert_raw(sp, PolicyView, {
+        "pol-1": {"toolset_id": "harness", "tool_name": "harness__install", "config": {"mode": "required"}},
+        "pol-2": {"toolset_id": "harness", "tool_name": "harness__uninstall"},
+        "pol-3": {"toolset_id": "harness", "tool_name": "uninstall", "enabled": False},
+        "pol-4": {"toolset_id": "harness", "tool_name": "harness__"},
+        "pol-5": {"toolset_id": "other", "tool_name": "harness__x"},
+        "pol-6": {"toolset_id": "harness", "tool_name": "sync"},
+        **bulk("pb", 450, lambda i: {"toolset_id": "harness", "tool_name": f"harness__t{i:03d}"}),
+    })
+    await insert_raw(sp, ExposureView, {"singleton": {"allowed_tools": ["harness__harness__install", "x__y", "harness__sync"], "on": True}})
+    await insert_raw(sp, AgentView, {
+        "a1": {"tools": ["harness__harness__install", "harness__sync", "other"], "description": "d"},
+        "a2": {"tools": []},
+        "a3": {"description": "no tools key"},
+        **bulk("ab", 450, lambda i: {"tools": [f"harness__harness__t{i:03d}"] if i % 2 else ["plain"]}),
+    })
+
+
+async def test_golden_rows_match_the_old_implementation_and_a_second_run_changes_nothing(tmp_path: Path) -> None:
+    views = (PolicyView, ExposureView, AgentView)
+    await assert_golden(tmp_path, _golden_seed, views, _old_apply, M020HarnessPolicyRekey().apply)
