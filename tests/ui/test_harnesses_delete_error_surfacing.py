@@ -89,4 +89,4 @@ def test_action_error_banner_uses_the_established_banner_convention():
     assert "<Banner" in banner_block
     assert 'kind="error"' in banner_block
     assert "actionError.title" in banner_block
-    assert "actionError.detail" in banner_block
+    assert "readRefusal(actionError)" in banner_block      # the refusal sentence is in the problem body's extensions (GS-27)

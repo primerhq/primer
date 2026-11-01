@@ -612,7 +612,7 @@ function HarnessDetail({ id }) {
         <Banner
           kind="error"
           title={actionError.title || "Couldn't start the operation"}
-          detail={actionError.detail || actionError.message}
+          detail={window.primerApi.readRefusal(actionError).message}
         />
       )}
 
@@ -748,7 +748,7 @@ function HarnessDetail({ id }) {
               <Banner
                 kind="error"
                 title={uninstallMut.error.title || `Couldn't ${isOutbound ? "delete" : "uninstall"} the harness`}
-                detail={uninstallMut.error.detail || uninstallMut.error.message}
+                detail={window.primerApi.readRefusal(uninstallMut.error).message}
               />
             </div>
           )}
@@ -1186,7 +1186,7 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
       setStep(2);
     } catch (err) {
       if (mountedRef.current) {
-        setFetchError(err.detail || err.title || err.message || "Request failed");
+        setFetchError(window.primerApi.readRefusal(err, "Request failed").message);
       }
     } finally {
       if (mountedRef.current) setStep1Busy(false);
@@ -1227,7 +1227,7 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
       onCreated(polled);
     } catch (err) {
       if (mountedRef.current) {
-        setInstallError(err.detail || err.title || err.message || "Request failed");
+        setInstallError(window.primerApi.readRefusal(err, "Request failed").message);
       }
     } finally {
       if (mountedRef.current) setStep2Busy(false);

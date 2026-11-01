@@ -25,7 +25,6 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from primer.access.service import rewrite_keeping_access
 from primer.access.person import person_from_request
 from primer.access.policy import require, visible_predicate
 from primer.api.routers.access import make_access_router
@@ -42,7 +41,7 @@ from primer.harness.outbound import (
     build_outbound,
     refuse_unreadable_tracked,
 )
-from primer.model.common import refuse_served_masks
+from primer.model.common import dump_for_storage, refuse_served_masks
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.harness import (
     Harness,
@@ -186,6 +185,45 @@ def _requested_by(request: Request) -> PrincipalRef | None:
     return PrincipalRef.from_principal(actor) if actor is not None else None
 
 
+def _refuse(status_code: int, code: str, message: str, **extra: Any) -> HTTPException:
+    """A refusal as RFC 7807 problem+json (through the shared HTTPException handler): ``code`` and ``message`` land in the extensions (GS-27)."""
+    return HTTPException(status_code=status_code, detail={"code": code, "message": message, **extra})
+
+
+async def _write_changed(
+    storage, before: dict[str, Any], harness: Harness, *, fenced: tuple[str, ...] = (), what: str | None = None,
+) -> Harness:
+    """Write ONLY the fields ``harness`` now differs from ``before`` (its dump when the route read it), iff the ``fenced`` fields still hold what was read.
+
+    The routes used to rewrite every field but ``access`` from their read: an operation that finished in between (the worker clears
+    ``pending_operation`` and stamps the terminal status) was put back, and a second enqueue overwrote the first (GS-7, the REST twin of AG-L5).
+    A fence that no longer holds answers 409 ``conflict`` and nothing is written.
+    """
+    after = dump_for_storage(harness)
+    changes = {name: value for name, value in after.items() if name not in ("id", "access") and value != before.get(name)}
+    if not changes:
+        return harness
+    guard = {name: [before[name]] for name in fenced}
+    written = None
+    for _ in range(5):
+        # The write names no ``access`` field, so a sharing change in between never conflicts: the guard reads the sharing as it is NOW.
+        current = await storage.get(harness.id)
+        if current is None:
+            raise NotFoundError(f"{what or f'Harness {harness.id!r}'} does not exist")
+        rev = current.access.rev
+        written = await storage.patch_if(harness.id, changes, where={**guard, ("access", "rev"): [rev, None] if rev == 0 else [rev]})
+        if written is not None:
+            break
+        now = dump_for_storage(current)
+        if any(now[name] != before[name] for name in fenced):
+            break                                   # a fenced field moved: a real conflict, not a sharing change
+    if written is None:
+        raise ConflictError(
+            f"{what or f'Harness {harness.id!r}'} changed while this request ran (an operation was enqueued or finished); nothing was written, retry"
+        )
+    return written
+
+
 # ---------------------------------------------------------------------------
 # POST /v1/harnesses  — create DRAFT
 # ---------------------------------------------------------------------------
@@ -210,31 +248,17 @@ async def create_harness(
         body.direction == HarnessDirection.INBOUND
         and body.tracked_entities
     ):
-        return JSONResponse(
-            status_code=422,
-            content={
-                "code": "tracked_entities_on_inbound",
-                "detail": (
+        raise _refuse(422, "tracked_entities_on_inbound", (
                     "tracked_entities may only be supplied when "
                     "direction='outbound'"
-                ),
-            },
-        )
+                ))
 
     if body.direction == HarnessDirection.OUTBOUND:
         seen: set[str] = set()
         for te in body.tracked_entities:
             if te.template_name in seen:
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "code": "outbound_template_name_collision",
-                        "detail": (
-                            f"duplicate template_name {te.template_name!r} "
-                            f"in tracked_entities"
-                        ),
-                    },
-                )
+                raise _refuse(422, "outbound_template_name_collision", f"duplicate template_name {te.template_name!r} "
+                            f"in tracked_entities")
             seen.add(te.template_name)
 
     # A create has nothing stored to restore a served mask from: the copy-a-harness move would store the mask as the password of the url (01a11d32).
@@ -248,16 +272,10 @@ async def create_harness(
     # bundle tarball, so git is optional — a push target only if the user wants
     # one.
     if body.direction == HarnessDirection.INBOUND and not body.git_url:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "code": "git_url_required_inbound",
-                "detail": (
+        raise _refuse(422, "git_url_required_inbound", (
                     "inbound harnesses install from a git repo, so git_url "
                     "is required"
-                ),
-            },
-        )
+                ))
 
     # Enforce slug uniqueness
     slug_pred = Q(Harness).where("slug", body.slug).build()
@@ -385,6 +403,8 @@ async def update_harness(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+    before = dump_for_storage(harness)
+    harness = harness.model_copy(deep=True)       # never edit the row the storage handed back
 
     # The url is served without the password of its userinfo, so the client sends the served one back: put the stored credential back first, for the same scheme, host, port and user only
     # (another remote is a 422, as the stored token is never carried to one either: SEC-03). The served url is then the stored url and is not a "move" for the token rule below.
@@ -426,16 +446,10 @@ async def update_harness(
             body.git_url is None
             and harness.direction == HarnessDirection.INBOUND
         ):
-            return JSONResponse(
-                status_code=422,
-                content={
-                    "code": "git_url_required_inbound",
-                    "detail": (
+            raise _refuse(422, "git_url_required_inbound", (
                         "inbound harnesses require a git_url; it cannot be "
                         "cleared"
-                    ),
-                },
-            )
+                    ))
         harness.git_url = body.git_url
         if body.git_url is None:
             # Clearing the remote forgets the push history: those stamps point
@@ -447,7 +461,7 @@ async def update_harness(
             harness.last_pushed_at = None
 
     harness.overrides_dirty = overrides_dirty
-    return await rewrite_keeping_access(storage, harness, what="Harness")
+    return await _write_changed(storage, before, harness, fenced=())
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +496,8 @@ async def delete_harness(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+    before = dump_for_storage(harness)
+    harness = harness.model_copy(deep=True)       # never edit the row the storage handed back
 
     if harness.pending_operation is not None:
         raise ConflictError(
@@ -497,7 +513,7 @@ async def delete_harness(
         cascade if cascade is not None
         else harness.direction == HarnessDirection.INBOUND
     )
-    updated = await rewrite_keeping_access(storage, harness, what="Harness")
+    updated = await _write_changed(storage, before, harness, fenced=("pending_operation",))
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
@@ -526,14 +542,18 @@ async def put_harness_overrides(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+    before = dump_for_storage(harness)
+    harness = harness.model_copy(deep=True)       # never edit the row the storage handed back
 
-    overrides_body: dict[str, Any] = await request.json()
+    try:
+        overrides_body = await request.json()
+    except ValueError:        # json.JSONDecodeError and an undecodable body
+        overrides_body = None
+    if not isinstance(overrides_body, dict):
+        raise _refuse(422, "overrides_not_json_object", "the overrides must be a JSON object")
 
     if harness.overrides_schema is None:
-        return JSONResponse(  # type: ignore[return-value]
-            status_code=422,
-            content={"code": "overrides_schema_missing", "detail": "No overrides schema cached for this harness"},
-        )
+        raise _refuse(422, "overrides_schema_missing", "No overrides schema cached for this harness")
 
     # Validate against the schema
     try:
@@ -545,10 +565,7 @@ async def put_harness_overrides(
             errors.append(str(exc.message))
         else:
             errors.append(str(exc))
-        return JSONResponse(  # type: ignore[return-value]
-            status_code=422,
-            content={"code": "overrides_invalid", "errors": errors},
-        )
+        raise _refuse(422, "overrides_invalid", "; ".join(errors), errors=errors)
 
     harness.overrides = overrides_body
     harness.overrides_hash = hash_overrides(overrides_body)
@@ -561,7 +578,7 @@ async def put_harness_overrides(
     else:
         harness.overrides_dirty = False
 
-    return await rewrite_keeping_access(storage, harness, what="Harness")
+    return await _write_changed(storage, before, harness, fenced=())
 
 
 # ---------------------------------------------------------------------------
@@ -585,18 +602,12 @@ async def fetch_harness(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+    before = dump_for_storage(harness)
+    harness = harness.model_copy(deep=True)       # never edit the row the storage handed back
 
     if harness.direction == HarnessDirection.OUTBOUND:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "code": "direction_mismatch",
-                "detail": (
-                    f"Harness {harness_id!r} is outbound; "
-                    "fetch is an inbound operation"
-                ),
-            },
-        )
+        raise _refuse(409, "direction_mismatch", f"Harness {harness_id!r} is outbound; "
+                    "fetch is an inbound operation")
 
     if harness.pending_operation is not None:
         raise ConflictError(
@@ -605,7 +616,7 @@ async def fetch_harness(
         )
 
     harness.pending_operation = HarnessOperation.FETCH
-    updated = await rewrite_keeping_access(storage, harness, what="Harness")
+    updated = await _write_changed(storage, before, harness, fenced=("pending_operation",))
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
@@ -635,18 +646,12 @@ async def install_harness(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+    before = dump_for_storage(harness)
+    harness = harness.model_copy(deep=True)       # never edit the row the storage handed back
 
     if harness.direction == HarnessDirection.OUTBOUND:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "code": "direction_mismatch",
-                "detail": (
-                    f"Harness {harness_id!r} is outbound; "
-                    "install is an inbound operation"
-                ),
-            },
-        )
+        raise _refuse(409, "direction_mismatch", f"Harness {harness_id!r} is outbound; "
+                    "install is an inbound operation")
 
     if harness.pending_operation is not None:
         raise ConflictError(
@@ -662,13 +667,7 @@ async def install_harness(
         )
 
     if harness.overrides_schema is None:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "code": "overrides_schema_missing",
-                "detail": "No overrides schema cached; run fetch first",
-            },
-        )
+        raise _refuse(422, "overrides_schema_missing", "No overrides schema cached; run fetch first")
 
     # Always validate the current overrides against the schema — even if
     # overrides is an empty dict, the schema may declare required fields
@@ -684,16 +683,13 @@ async def install_harness(
             errors.append(str(exc.message))
         else:
             errors.append(str(exc))
-        return JSONResponse(
-            status_code=422,
-            content={"code": "overrides_invalid", "errors": errors},
-        )
+        raise _refuse(422, "overrides_invalid", "; ".join(errors), errors=errors)
 
     harness.pending_operation = HarnessOperation.INSTALL
     harness.operation_requested_by = _requested_by(request)
     # What this install is asked for: the worker refuses it when the inputs change before it runs (ticket 01a16a29).
     harness.operation_inputs = operation_input_digests(harness)
-    updated = await rewrite_keeping_access(storage, harness, what="Harness")
+    updated = await _write_changed(storage, before, harness, fenced=("pending_operation", "status"))
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
@@ -723,18 +719,12 @@ async def sync_harness(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+    before = dump_for_storage(harness)
+    harness = harness.model_copy(deep=True)       # never edit the row the storage handed back
 
     if harness.direction == HarnessDirection.OUTBOUND:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "code": "direction_mismatch",
-                "detail": (
-                    f"Harness {harness_id!r} is outbound; "
-                    "sync is an inbound operation"
-                ),
-            },
-        )
+        raise _refuse(409, "direction_mismatch", f"Harness {harness_id!r} is outbound; "
+                    "sync is an inbound operation")
 
     if harness.pending_operation is not None:
         raise ConflictError(
@@ -750,18 +740,12 @@ async def sync_harness(
         )
 
     if harness.available_bundle_hash is None:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "code": "fetch_required",
-                "detail": "No bundle fetched yet; run fetch first",
-            },
-        )
+        raise _refuse(422, "fetch_required", "No bundle fetched yet; run fetch first")
 
     harness.pending_operation = HarnessOperation.SYNC
     harness.operation_requested_by = _requested_by(request)
     harness.operation_inputs = operation_input_digests(harness)
-    updated = await rewrite_keeping_access(storage, harness, what="Harness")
+    updated = await _write_changed(storage, before, harness, fenced=("pending_operation", "status"))
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
@@ -789,32 +773,18 @@ async def put_tracked_entities(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+    before = dump_for_storage(harness)
+    harness = harness.model_copy(deep=True)       # never edit the row the storage handed back
 
     if harness.direction != HarnessDirection.OUTBOUND:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "code": "direction_mismatch",
-                "detail": (
-                    f"Harness {harness_id!r} is inbound; "
-                    "tracked_entities can only be edited on outbound harnesses"
-                ),
-            },
-        )
+        raise _refuse(409, "direction_mismatch", f"Harness {harness_id!r} is inbound; "
+                    "tracked_entities can only be edited on outbound harnesses")
 
     seen: set[str] = set()
     for te in body.tracked_entities:
         if te.template_name in seen:
-            return JSONResponse(
-                status_code=422,
-                content={
-                    "code": "outbound_template_name_collision",
-                    "detail": (
-                        f"duplicate template_name {te.template_name!r} "
-                        f"in tracked_entities"
-                    ),
-                },
-            )
+            raise _refuse(422, "outbound_template_name_collision", f"duplicate template_name {te.template_name!r} "
+                        f"in tracked_entities")
         seen.add(te.template_name)
 
     # Tracked set changed → re-BUILD required. Clear bundle_hash and
@@ -823,7 +793,7 @@ async def put_tracked_entities(
     harness.tracked_entities = list(body.tracked_entities)
     harness.bundle_hash = None
     harness.status = HarnessStatus.DRAFT
-    updated = await rewrite_keeping_access(storage, harness, what="Harness")
+    updated = await _write_changed(storage, before, harness, fenced=())
     return JSONResponse(
         status_code=200,
         content=_harness_to_json(updated),
@@ -851,42 +821,22 @@ async def build_harness(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+    before = dump_for_storage(harness)
+    harness = harness.model_copy(deep=True)       # never edit the row the storage handed back
 
     if harness.direction != HarnessDirection.OUTBOUND:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "code": "direction_mismatch",
-                "detail": (
-                    f"Harness {harness_id!r} is inbound; "
-                    "build is an outbound operation"
-                ),
-            },
-        )
+        raise _refuse(409, "direction_mismatch", f"Harness {harness_id!r} is inbound; "
+                    "build is an outbound operation")
 
     if harness.pending_operation is not None:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "code": "operation_in_flight",
-                "detail": (
-                    f"Harness {harness_id!r} already has a pending operation: "
-                    f"{harness.pending_operation.value!r}"
-                ),
-            },
-        )
+        raise _refuse(409, "operation_in_flight", f"Harness {harness_id!r} already has a pending operation: "
+                    f"{harness.pending_operation.value!r}")
 
     if not harness.tracked_entities:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "code": "outbound_no_entities",
-                "detail": "No tracked entities; nothing to build",
-            },
-        )
+        raise _refuse(422, "outbound_no_entities", "No tracked entities; nothing to build")
 
     harness.pending_operation = HarnessOperation.BUILD
-    updated = await rewrite_keeping_access(storage, harness, what="Harness")
+    updated = await _write_changed(storage, before, harness, fenced=("pending_operation",))
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,
@@ -913,16 +863,8 @@ async def download_harness_bundle(
     harness = await _readable_harness(request, sp, harness_id)
 
     if harness.direction != HarnessDirection.OUTBOUND:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "code": "direction_mismatch",
-                "detail": (
-                    f"Harness {harness_id!r} is inbound; "
-                    "bundle download is an outbound operation"
-                ),
-            },
-        )
+        raise _refuse(409, "direction_mismatch", f"Harness {harness_id!r} is inbound; "
+                    "bundle download is an outbound operation")
 
     # Build fresh from the live DB (the source of truth for an outbound
     # harness) and stream it — no queue, no worker, no ephemeral pod fs.
@@ -931,10 +873,7 @@ async def download_harness_bundle(
     try:
         result = await build_outbound(harness, storage_provider=sp)
     except OutboundBuildError as exc:
-        return JSONResponse(
-            status_code=422,
-            content={"code": exc.code, "detail": exc.message},
-        )
+        raise _refuse(422, exc.code, exc.message)
 
     tar_gz = build_bundle_targz(result)
     filename = f"{harness.slug}-{result.bundle_hash[:12]}.tar.gz"
@@ -966,54 +905,28 @@ async def push_harness(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+    before = dump_for_storage(harness)
+    harness = harness.model_copy(deep=True)       # never edit the row the storage handed back
 
     if harness.direction != HarnessDirection.OUTBOUND:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "code": "direction_mismatch",
-                "detail": (
-                    f"Harness {harness_id!r} is inbound; "
-                    "push is an outbound operation"
-                ),
-            },
-        )
+        raise _refuse(409, "direction_mismatch", f"Harness {harness_id!r} is inbound; "
+                    "push is an outbound operation")
 
     if harness.pending_operation is not None:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "code": "operation_in_flight",
-                "detail": (
-                    f"Harness {harness_id!r} already has a pending operation: "
-                    f"{harness.pending_operation.value!r}"
-                ),
-            },
-        )
+        raise _refuse(409, "operation_in_flight", f"Harness {harness_id!r} already has a pending operation: "
+                    f"{harness.pending_operation.value!r}")
 
     if not harness.tracked_entities:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "code": "outbound_no_entities",
-                "detail": "No tracked entities; nothing to push",
-            },
-        )
+        raise _refuse(422, "outbound_no_entities", "No tracked entities; nothing to push")
 
     if not harness.git_url:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "code": "git_remote_not_configured",
-                "detail": (
+        raise _refuse(422, "git_remote_not_configured", (
                     "This harness has no git_url configured; set one before "
                     "pushing, or download the bundle via /bundle.tar.gz"
-                ),
-            },
-        )
+                ))
 
     harness.pending_operation = HarnessOperation.PUSH
-    updated = await rewrite_keeping_access(storage, harness, what="Harness")
+    updated = await _write_changed(storage, before, harness, fenced=("pending_operation",))
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
         status_code=202,

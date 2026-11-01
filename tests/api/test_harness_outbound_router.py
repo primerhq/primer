@@ -132,7 +132,7 @@ async def test_create_inbound_with_tracked_entities_rejected(client):
         },
     )
     assert r.status_code == 422
-    assert r.json()["code"] == "tracked_entities_on_inbound"
+    assert r.json()["extensions"]["code"] == "tracked_entities_on_inbound"
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ async def test_create_outbound_duplicate_template_names_rejected(client):
         },
     )
     assert r.status_code == 422
-    assert r.json()["code"] == "outbound_template_name_collision"
+    assert r.json()["extensions"]["code"] == "outbound_template_name_collision"
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +211,7 @@ async def test_put_tracked_entities_inbound_rejected(client, app, fake_storage_p
         json={"tracked_entities": []},
     )
     assert r.status_code == 409
-    assert r.json()["code"] == "direction_mismatch"
+    assert r.json()["extensions"]["code"] == "direction_mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +235,7 @@ async def test_put_tracked_entities_duplicate_names_rejected(client, app, fake_s
         },
     )
     assert r.status_code == 422
-    assert r.json()["code"] == "outbound_template_name_collision"
+    assert r.json()["extensions"]["code"] == "outbound_template_name_collision"
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +282,7 @@ async def test_build_inbound_rejected(client, app, fake_storage_provider):
 
     r = await client.post("/v1/harnesses/hns_bld_in/build")
     assert r.status_code == 409
-    assert r.json()["code"] == "direction_mismatch"
+    assert r.json()["extensions"]["code"] == "direction_mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +302,7 @@ async def test_build_outbound_no_entities_rejected(client, app, fake_storage_pro
 
     r = await client.post("/v1/harnesses/hns_bld_empty/build")
     assert r.status_code == 422
-    assert r.json()["code"] == "outbound_no_entities"
+    assert r.json()["extensions"]["code"] == "outbound_no_entities"
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +322,7 @@ async def test_build_with_pending_op_rejected(client, app, fake_storage_provider
 
     r = await client.post("/v1/harnesses/hns_bld_pending/build")
     assert r.status_code == 409
-    assert r.json()["code"] == "operation_in_flight"
+    assert r.json()["extensions"]["code"] == "operation_in_flight"
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +355,7 @@ async def test_push_inbound_rejected(client, app, fake_storage_provider):
 
     r = await client.post("/v1/harnesses/hns_push_in/push")
     assert r.status_code == 409
-    assert r.json()["code"] == "direction_mismatch"
+    assert r.json()["extensions"]["code"] == "direction_mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +375,7 @@ async def test_push_outbound_no_entities_rejected(client, app, fake_storage_prov
 
     r = await client.post("/v1/harnesses/hns_push_empty/push")
     assert r.status_code == 422
-    assert r.json()["code"] == "outbound_no_entities"
+    assert r.json()["extensions"]["code"] == "outbound_no_entities"
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +391,7 @@ async def test_fetch_on_outbound_rejected(client, app, fake_storage_provider):
 
     r = await client.post("/v1/harnesses/hns_fetch_out/fetch")
     assert r.status_code == 409
-    assert r.json()["code"] == "direction_mismatch"
+    assert r.json()["extensions"]["code"] == "direction_mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +411,7 @@ async def test_install_on_outbound_rejected(client, app, fake_storage_provider):
 
     r = await client.post("/v1/harnesses/hns_inst_out/install")
     assert r.status_code == 409
-    assert r.json()["code"] == "direction_mismatch"
+    assert r.json()["extensions"]["code"] == "direction_mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +432,7 @@ async def test_sync_on_outbound_rejected(client, app, fake_storage_provider):
 
     r = await client.post("/v1/harnesses/hns_sync_out/sync")
     assert r.status_code == 409
-    assert r.json()["code"] == "direction_mismatch"
+    assert r.json()["extensions"]["code"] == "direction_mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +527,7 @@ async def test_download_bundle_no_entities(client, app, fake_storage_provider):
 
     r = await client.get("/v1/harnesses/hns_dl_empty/bundle.tar.gz")
     assert r.status_code == 422
-    assert r.json()["code"] == "outbound_no_entities"
+    assert r.json()["extensions"]["code"] == "outbound_no_entities"
 
 
 @pytest.mark.asyncio
@@ -537,7 +537,7 @@ async def test_download_bundle_inbound_rejected(client, app, fake_storage_provid
 
     r = await client.get("/v1/harnesses/hns_dl_in/bundle.tar.gz")
     assert r.status_code == 409
-    assert r.json()["code"] == "direction_mismatch"
+    assert r.json()["extensions"]["code"] == "direction_mismatch"
 
 
 @pytest.mark.asyncio
@@ -583,7 +583,7 @@ async def test_create_inbound_without_git_url_rejected(client):
         },
     )
     assert r.status_code == 422, r.text
-    assert r.json()["code"] == "git_url_required_inbound"
+    assert r.json()["extensions"]["code"] == "git_url_required_inbound"
 
 
 @pytest.mark.asyncio
@@ -596,7 +596,7 @@ async def test_push_without_git_url_rejected(client, app, fake_storage_provider)
 
     r = await client.post("/v1/harnesses/hns_push_nogit/push")
     assert r.status_code == 422, r.text
-    assert r.json()["code"] == "git_remote_not_configured"
+    assert r.json()["extensions"]["code"] == "git_remote_not_configured"
 
 
 @pytest.mark.asyncio
@@ -641,7 +641,7 @@ async def test_update_clear_git_url_inbound_rejected(
 
     r = await client.put("/v1/harnesses/hns_clr_in", json={"git_url": None})
     assert r.status_code == 422, r.text
-    assert r.json()["code"] == "git_url_required_inbound"
+    assert r.json()["extensions"]["code"] == "git_url_required_inbound"
 
 
 @pytest.mark.asyncio
