@@ -27,6 +27,9 @@ class StateRepo(Protocol):
     All methods are async. Implementations may raise NotImplementedError
     (HTTP 501 equivalent) for methods that are not applicable to their
     backend -- show_commit in particular may 501 on the sandbox backend.
+
+    Two capabilities are OPTIONAL and declared apart, in :class:`StatingStateRepo` and :class:`AppendingStateRepo`: callers probe for them
+    with ``getattr`` and degrade when they are absent.
     """
 
     async def initialize(self) -> None:
@@ -117,4 +120,44 @@ class StateRepo(Protocol):
         ...
 
 
-__all__ = ["StateRepo"]
+@runtime_checkable
+class StatingStateRepo(Protocol):
+    """OPTIONAL: a repo that can say cheaply whether a state file changed (the message-log cache asks).
+
+    Callers reach it with ``getattr(repo, "stat_state_file", None)`` and fall back to reading the file when it is absent, so a repo that
+    lacks it (the sandbox backend) is still a :class:`StateRepo`; one that has it must answer as below.
+    """
+
+    async def stat_state_file(self, path: str) -> tuple[int, int] | None:
+        """``(size, mtime_ns)`` of a file relative to the .state/ repo root, or None when it is absent."""
+        ...
+
+
+@runtime_checkable
+class AppendingStateRepo(Protocol):
+    """OPTIONAL: a repo whose ``commit`` can extend a file by appending (``messages.jsonl`` lines) instead of rewriting it.
+
+    Callers check ``getattr(repo, "supports_append", False)`` before passing ``appends=`` to ``commit``; a repo without the flag is
+    committed whole-file. A repo that sets it true must accept ``appends={relative path: bytes}`` on ``commit`` (the keyword is the only
+    addition to :meth:`StateRepo.commit`).
+    """
+
+    supports_append: bool
+
+    async def commit(
+        self,
+        session_id: str,
+        *,
+        summary: str,
+        op: Op,
+        tool: str | None = None,
+        call_id: str | None = None,
+        files: dict[str, str | bytes] | None = None,
+        delete_files: list[str] | None = None,
+        appends: dict[str, bytes] | None = None,
+    ) -> str:
+        """As :meth:`StateRepo.commit`, plus bytes added to the end of the named files under sessions/<session_id>/."""
+        ...
+
+
+__all__ = ["AppendingStateRepo", "StateRepo", "StatingStateRepo"]
