@@ -335,6 +335,10 @@ function WS_FilesTab({ wid, pushToast }) {
   // can do something useful (today: .md). For everything else the
   // toggle isn't shown and this stays at "raw".
   const [viewMode, setViewMode] = React.useState("raw");
+  // A save 412'd (the file moved on disk since the read, e.g. an agent's
+  // write): keep the draft and offer the console editor's choice - Reload
+  // takes the disk version, Overwrite re-PUTs without the etag.
+  const [saveConflict, setSaveConflict] = React.useState(false);
   // Reset to "rendered" whenever a fresh markdown file is selected —
   // that's the natural default for .md (the operator can flip to raw
   // if they want the source). For non-md files force "raw" so the
@@ -382,9 +386,13 @@ function WS_FilesTab({ wid, pushToast }) {
   }, [fileContent.data, editing]);
 
   const saveFile = useMutation(
-    ({ content, encoding }) => apiFetch(
+    ({ content, encoding, force }) => apiFetch(
       "PUT",
-      `/workspaces/${encodeURIComponent(wid)}/files?path=${encodeURIComponent(selected)}`,
+      `/workspaces/${encodeURIComponent(wid)}/files?path=${encodeURIComponent(selected)}`
+      // The read's etag makes a write that lost a race to the disk 412
+      // instead of replacing the disk's bytes. A forced overwrite (the
+      // operator's explicit choice after a 412) goes out without it.
+      + (force || !fileContent.data?.etag ? "" : `&etag=${encodeURIComponent(fileContent.data.etag)}`),
       { content, encoding }
     ),
     {
@@ -394,11 +402,20 @@ function WS_FilesTab({ wid, pushToast }) {
       ],
       onSuccess: () => {
         setEditing(false);
+        setSaveConflict(false);
         if (typeof pushToast === "function") {
           pushToast({ kind: "success", title: "File saved", detail: selected });
         }
       },
-      onError: _wsToastErr(pushToast, "Save failed"),
+      onError: (err) => {
+        if (err && err.status === 412) {
+          // The file changed on disk while the operator edited: keep the
+          // draft and let them choose between Reload and Overwrite.
+          setSaveConflict(true);
+          return;
+        }
+        _wsToastErr(pushToast, "Save failed")(err);
+      },
     }
   );
 
@@ -478,6 +495,7 @@ function WS_FilesTab({ wid, pushToast }) {
   const selectFile = (path) => {
     setSelected(path);
     setEditing(false);
+    setSaveConflict(false);
   };
 
   const requestDelete = (path, isDir) => setPendingDelete({ path, isDir });
@@ -488,19 +506,51 @@ function WS_FilesTab({ wid, pushToast }) {
     setCreateContent("");
   };
 
-  const onSubmitCreate = () => {
+  const onSubmitCreate = async () => {
     const path = createPath.trim().replace(/^\/+/, "");
     if (!path) return;
     if (createMode === "dir") {
       makeDirMut.mutate({ path });
-    } else {
-      createFileMut.mutate({ path, content: createContent });
+      return;
     }
+    // A PUT to an existing path replaces the file: read it first, and when
+    // a file is there, ask before the overwrite goes out. A 404 read means
+    // the path is free and the create goes out directly.
+    let exists = true;
+    try {
+      await apiFetch(
+        "GET",
+        `/workspaces/${encodeURIComponent(wid)}/files/read?path=${encodeURIComponent(path)}&encoding=text`
+      );
+    } catch (err) {
+      // A 404 read means the path is free; any other refusal (a binary
+      // that is not UTF-8, a refused read) still means a file sits at
+      // that path: confirm too.
+      exists = !(err && err.status === 404);
+    }
+    if (exists) {
+      const ok = await window.confirmDialog({
+        title: "File exists",
+        message: `${path} already exists. Overwrite it?`,
+        confirmLabel: "Overwrite",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    createFileMut.mutate({ path, content: createContent });
   };
 
-  const onSave = () => {
+  const onSave = (force) => {
     if (!selected) return;
-    saveFile.mutate({ content: draft, encoding: "text" });
+    saveFile.mutate({ content: draft, encoding: "text", force: !!force });
+  };
+
+  // Reload after a 412: discard the draft and take whatever is on disk now.
+  const onReload = () => {
+    setSaveConflict(false);
+    setEditing(false);
+    setDraft(fileContent.data?.content || "");
+    fileContent.refetch();
   };
 
   return (
@@ -561,8 +611,8 @@ function WS_FilesTab({ wid, pushToast }) {
               <>
                 {editing ? (
                   <>
-                    <Btn size="sm" kind="ghost" onClick={() => { setEditing(false); setDraft(fileContent.data?.content || ""); }}>Discard</Btn>
-                    <Btn size="sm" kind="primary" icon="check" disabled={saveFile.loading} onClick={onSave}>Save</Btn>
+                    <Btn size="sm" kind="ghost" onClick={() => { setEditing(false); setDraft(fileContent.data?.content || ""); setSaveConflict(false); }}>Discard</Btn>
+                    <Btn size="sm" kind="primary" icon="check" data-testid="ws-file-edit-save" disabled={saveFile.loading} onClick={() => onSave(false)}>Save</Btn>
                   </>
                 ) : (
                   <>
@@ -584,7 +634,7 @@ function WS_FilesTab({ wid, pushToast }) {
                     >
                       <Btn size="sm" kind="ghost" icon="external">Download</Btn>
                     </a>
-                    <Btn size="sm" kind="ghost" icon="copy" onClick={() => setEditing(true)}>Edit</Btn>
+                    <Btn size="sm" kind="ghost" icon="copy" data-testid="ws-file-edit-edit" onClick={() => setEditing(true)}>Edit</Btn>
                     <Btn
                       size="sm"
                       kind="danger"
@@ -636,6 +686,7 @@ function WS_FilesTab({ wid, pushToast }) {
                 <Btn
                   kind="primary"
                   icon="check"
+                  data-testid="ws-create-submit"
                   disabled={!createPath.trim() || createFileMut.loading || makeDirMut.loading}
                   onClick={onSubmitCreate}
                 >
@@ -676,6 +727,22 @@ function WS_FilesTab({ wid, pushToast }) {
             </p>
           </Modal>
         )}
+        {saveConflict && selected && (
+          <div
+            className="row"
+            data-testid="ws-file-conflict"
+            style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", gap: 8, alignItems: "center" }}
+          >
+            <span className="muted text-sm">
+              This file changed on disk while you edited it. Reload takes
+              the new version (your draft is lost); Overwrite keeps yours.
+            </span>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+              <Btn size="sm" kind="ghost" data-testid="ws-file-conflict-reload" onClick={onReload}>Reload</Btn>
+              <Btn size="sm" kind="primary" data-testid="ws-file-conflict-overwrite" busy={saveFile.loading} onClick={() => onSave(true)}>Overwrite</Btn>
+            </div>
+          </div>
+        )}
         <div style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}>
           {!selected ? (
             <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>
@@ -691,6 +758,7 @@ function WS_FilesTab({ wid, pushToast }) {
           ) : editing ? (
             <textarea
               className="textarea mono"
+              data-testid="ws-file-edit"
               style={{ width: "100%", border: 0, borderRadius: 0, height: "100%", minHeight: 400, background: "var(--bg)", fontSize: 12, lineHeight: 1.55, padding: 14 }}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -812,6 +880,7 @@ function WS_FileRow({ path, name, depth, isDir, open, isSelected, system, onClic
   return (
     <div
       onClick={onClick}
+      data-testid={`ws-file-row:${path}`}
       style={{
         display: "flex",
         alignItems: "center",
