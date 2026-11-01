@@ -30,11 +30,13 @@ import primer.harness.dispatch as harness_dispatch
 import primer.observability.metrics as metrics
 from primer.api._app_lifespan_phases import recover_sessions
 from primer.claim.adapters.harnesses import HarnessClaimAdapter
+from primer.claim.adapters.memory import MemoryClaimAdapter
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.claim.adapters.triggers import TriggerClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimAdapter, ClaimKind, ParkRequest, ReleaseOutcome, read_for_eligibility
+from primer.model.memory import MemoryJob
 from primer.model.harness import Harness, HarnessOperation, HarnessStatus
 from primer.model.provider import SqliteConfig
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
@@ -65,6 +67,7 @@ def engine(sp) -> InMemoryClaimEngine:
         ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=sp.get_storage(Harness)),
         ClaimKind.TRIGGER: TriggerClaimAdapter(storage=sp.get_storage(Trigger)),
         ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=sp.get_storage(ToolCallTask)),
+        ClaimKind.MEMORY: MemoryClaimAdapter(storage=sp.get_storage(MemoryJob)),
     })
 
 

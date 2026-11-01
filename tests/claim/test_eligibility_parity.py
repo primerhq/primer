@@ -29,11 +29,13 @@ import pytest_asyncio
 from pydantic import BaseModel
 
 from primer.claim.adapters.harnesses import HarnessClaimAdapter
+from primer.claim.adapters.memory import MemoryClaimAdapter
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.claim.adapters.triggers import TriggerClaimAdapter
 from primer.int.claim import ClaimAdapter, ClaimKind
 from primer.model.harness import Harness, HarnessOperation, HarnessStatus
+from primer.model.memory import MemoryJob
 from primer.model.provider import PoolConfig, PostgresConfig, SqliteConfig
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
 from primer.model.trigger import ChannelTriggerConfig, DelayedTriggerConfig, ScheduledTriggerConfig, Trigger
@@ -67,6 +69,9 @@ def _rows(now: datetime, prefix: str) -> list[_Row]:
     def harness(name: str, *, pending: HarnessOperation | None, status: HarnessStatus) -> Harness:
         return Harness(id=sid(name), slug=f"h{uuid.uuid4().hex[:8]}", name="h", status=status, pending_operation=pending, created_at=now)
 
+    def memory_job(name: str) -> MemoryJob:
+        return MemoryJob(id=sid(name), kind="reflect", agent_id="ag1", session_id="s1", created_at=now, expires_at=now + timedelta(days=7))
+
     def trigger(name: str, config, *, enabled: bool = True, next_fire_at: datetime | None) -> Trigger:
         return Trigger(
             id=sid(name), slug=f"t-{name}-{uuid.uuid4().hex[:8]}", name="t", config=config, enabled=enabled, next_fire_at=next_fire_at,
@@ -94,6 +99,7 @@ def _rows(now: datetime, prefix: str) -> list[_Row]:
              True),
         _Row("harness operation finished", ClaimKind.HARNESS, harness("h-done", pending=None, status=HarnessStatus.INSTALLED), False),
         _Row("harness operation failed", ClaimKind.HARNESS, harness("h-failed", pending=None, status=HarnessStatus.ERROR), False),
+        _Row("memory job (eligible while its row exists)", ClaimKind.MEMORY, memory_job("m-job"), True),
         _Row("scheduled, due a second ago", ClaimKind.TRIGGER, trigger("t-past", daily, next_fire_at=now - timedelta(seconds=1)), True),
         _Row("scheduled, due exactly now", ClaimKind.TRIGGER, trigger("t-now", daily, next_fire_at=now), True),
         _Row("scheduled, due a microsecond after now", ClaimKind.TRIGGER, trigger("t-next", daily, next_fire_at=now + tick), False),
@@ -125,6 +131,7 @@ def _rows(now: datetime, prefix: str) -> list[_Row]:
 
 _MODELS = {
     ClaimKind.SESSION: WorkspaceSession, ClaimKind.HARNESS: Harness, ClaimKind.TRIGGER: Trigger, ClaimKind.TOOL_CALL: ToolCallTask,
+    ClaimKind.MEMORY: MemoryJob,
 }
 
 
@@ -134,6 +141,7 @@ def _adapters(provider) -> dict[ClaimKind, ClaimAdapter]:
         ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=provider.get_storage(Harness)),
         ClaimKind.TRIGGER: TriggerClaimAdapter(storage=provider.get_storage(Trigger)),
         ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=provider.get_storage(ToolCallTask)),
+        ClaimKind.MEMORY: MemoryClaimAdapter(storage=provider.get_storage(MemoryJob)),
     }
 
 

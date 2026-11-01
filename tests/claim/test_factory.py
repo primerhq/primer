@@ -104,6 +104,7 @@ def test_factory_in_memory_engine_has_all_four_adapters():
     # actually checked TRIGGER at all.
     assert ClaimKind.TRIGGER in engine._adapters
     assert ClaimKind.TOOL_CALL in engine._adapters
+    assert ClaimKind.MEMORY in engine._adapters
 
 
 def test_factory_postgres_engine_has_all_four_adapters():
@@ -116,6 +117,7 @@ def test_factory_postgres_engine_has_all_four_adapters():
     assert ClaimKind.HARNESS in engine._adapters
     assert ClaimKind.TRIGGER in engine._adapters
     assert ClaimKind.TOOL_CALL in engine._adapters
+    assert ClaimKind.MEMORY in engine._adapters
 
 
 # ---------------------------------------------------------------------------
