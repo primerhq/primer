@@ -4,10 +4,12 @@
 and ``title`` from ``doc.data`` on every change of the read. After a save the
 cached read still holds the pre-save body, so the wake refetch (tab regained)
 or an agent's write landed a new read and the effect wiped whatever the
-operator had typed in the meantime. Now the pane keeps the last seeded body in
-a ref and re-seeds only when the path changed or the editor still holds exactly
-what was seeded; a successful save also refetches the doc key so the cache
-holds the saved body and the next wake refetch lands nothing new.
+operator had typed in the meantime. Now the pane keeps the last seeded body
+and title in a ref and re-seeds each only when the path changed, the editor
+still holds exactly what was seeded, or the re-read carries exactly what the
+editor holds (in sync - the save's own refetch lands this way); a successful
+save also refetches the doc key so the cache holds the saved body and the
+next wake refetch lands nothing new.
 
 MiniRacer on the real file with a stubbed ``window.primerApi``: the
 ``useResource`` stub hands out a stable data identity the test swaps to model
@@ -132,6 +134,37 @@ def test_an_agents_write_keeps_the_operators_unsaved_edit() -> None:
         ctx.eval('__type("v1");')
         ctx.eval('__landRead("agent", "T0");')
         assert _js(ctx, "__value()") == "v1", "the re-read wiped the operator's unsaved edit"
+    finally:
+        ctx.close()
+
+
+def test_an_external_re_read_after_the_save_refetch_shows_the_new_body() -> None:
+    # The save's refetch lands with body === draft (the saved body): the
+    # pane is in sync, so the NEXT external re-read (an agent's write) must
+    # re-seed the editor instead of being ignored.
+    ctx = _ctx()
+    try:
+        ctx.eval('__type("v1"); __clickSave(); __saveLands();')
+        ctx.eval('__landRead("v1", "T1");')
+        ctx.eval('__landRead("agent", "TA");')
+        assert _js(ctx, "__value()") == "agent", (
+            "an external update after the save's refetch was ignored"
+        )
+    finally:
+        ctx.close()
+
+
+def test_a_title_only_edit_survives_a_re_read() -> None:
+    # The body is untouched, only the title is: a re-read must not wipe
+    # the title the operator is holding.
+    ctx = _ctx()
+    try:
+        ctx.eval('__title("My new title");')
+        ctx.eval('__landRead("b0", "T0");')
+        assert _js(ctx, "__titleValue()") == "My new title", (
+            "a title-only edit was wiped by a re-read"
+        )
+        assert _js(ctx, "__value()") == "b0"
     finally:
         ctx.close()
 

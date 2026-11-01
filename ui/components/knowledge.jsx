@@ -137,20 +137,34 @@ function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged,
     { pollMs: null },
   );
 
-  // The last body this pane seeded the editor with: a re-read (the save
-  // refetch, an agent's write, the tab-wake refetch) re-seeds only when the
-  // path changed or the editor still holds exactly what was seeded. An
-  // unsaved edit is the operator's and the pane keeps it.
-  const seeded = React.useRef({ path: null, body: null });
+  // The last body and title this pane seeded the editor with: a re-read
+  // (the save refetch, an agent's write, the tab-wake refetch) re-seeds
+  // only when the path changed or the editor still holds exactly what was
+  // seeded. A re-read whose value equals the editor's is in sync (the
+  // save's own refetch lands this way) and becomes the new seed. An
+  // unsaved edit - body or title - is the operator's and the pane keeps
+  // it (UI-M3).
+  const seeded = React.useRef({ path: null, body: null, title: null });
 
   React.useEffect(() => {
     if (doc.data) {
       const body = doc.data.body ?? "";
-      if (path !== seeded.current.path || draft === seeded.current.body) {
+      const newTitle = doc.data.document?.title || "";
+      const seedBody = path !== seeded.current.path
+        || draft === seeded.current.body
+        || draft === body;
+      const seedTitle = path !== seeded.current.path
+        || title === seeded.current.title
+        || title === newTitle;
+      if (seedBody) {
         setDraft(body);
-        setTitle(doc.data.document?.title || "");
-        seeded.current = { path: path, body: body };
+        seeded.current.body = body;
       }
+      if (seedTitle) {
+        setTitle(newTitle);
+        seeded.current.title = newTitle;
+      }
+      seeded.current.path = path;
     }
   }, [doc.data, path]);
 
