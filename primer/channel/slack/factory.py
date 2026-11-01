@@ -213,6 +213,15 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                     oldest=message_ts, inclusive=True, limit=1,
                 )
                 orig_blocks = (hist.get("messages") or [{}])[0].get("blocks")
+                if orig_blocks is None:
+                    # A reply in a thread (where approvals are posted) is not in the channel history; conversations.replies
+                    # returns it, after the thread's parent (W56d).
+                    thread = await client.conversations_replies(
+                        channel=channel_id, ts=message_ts, latest=message_ts, oldest=message_ts, inclusive=True,
+                    )
+                    orig_blocks = next(
+                        (m.get("blocks") for m in thread.get("messages") or [] if m.get("ts") == message_ts), None,
+                    )
             except Exception:
                 logger.warning("slack: history lookup for reject update failed")
             try:

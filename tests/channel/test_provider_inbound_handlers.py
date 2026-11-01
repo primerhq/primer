@@ -228,3 +228,25 @@ async def test_W56c_a_discord_reject_modal_submit_is_decided_once(monkeypatch):
     adapter._handle_decision.assert_awaited_once()
     assert adapter._handle_decision.await_args.kwargs["reason"] == "too risky"
     click.message.edit.assert_awaited_once()
+
+
+# ---- W56d: a Slack reject in a thread keeps the tool and args blocks ---------------------------------------------------
+
+
+async def test_W56d_a_rejected_slack_thread_reply_keeps_its_tool_and_args_blocks(monkeypatch):
+    adapter = sl._mock_adapter()
+    _, app = sl._install(monkeypatch, sl._FakeEntry({"C123": adapter}))
+    client = SimpleNamespace(
+        conversations_history=AsyncMock(return_value={"messages": []}),  # a thread reply is not in the channel history
+        conversations_replies=AsyncMock(return_value={"messages": [
+            {"ts": "100.0", "text": "session root"},  # the thread's parent comes first
+            {"ts": "111.2", "blocks": _APPROVAL_BLOCKS},
+        ]}),
+        chat_update=AsyncMock(),
+    )
+
+    await app.views[slack_factory.REJECT_MODAL_CALLBACK_ID](AsyncMock(), {"user": {"id": "U1"}}, _reject_view(), client)
+
+    assert client.conversations_replies.await_args.kwargs["ts"] == "111.2"
+    blocks = client.chat_update.await_args.kwargs["blocks"]
+    assert blocks[:2] == _APPROVAL_BLOCKS[:2] and blocks[2]["type"] == "context"
