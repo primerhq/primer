@@ -479,7 +479,7 @@ function NV_MobileFileScreen(props) {
 // three has a load-order dependency on either of the others.
 function NV_Mobile_Pulse(props) {
   var statusSnap = typeof window.useSessionStore === "function"
-    ? window.useSessionStore(props.wid, props.sid, "status")
+    ? window.useSessionStore(props.wid, props.sid, "status", { records: false })
     : null;
   if (!statusSnap || !statusSnap.verb) return null;
   return <span className="nv-dot-pulse" title="running" />;

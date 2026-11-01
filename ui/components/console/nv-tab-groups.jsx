@@ -66,7 +66,7 @@ function NV_TG_SessionPulse(props) {
   var wid = props.wid;
   var sid = props.sid;
   var statusSnap = wid && typeof window.useSessionStore === "function"
-    ? window.useSessionStore(wid, sid, "status")
+    ? window.useSessionStore(wid, sid, "status", { records: false })
     : null;
   if (!statusSnap || !statusSnap.verb) return null;
   return <span className="nv-dot-pulse" title="running" />;
