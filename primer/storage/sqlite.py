@@ -119,6 +119,18 @@ ModelT = TypeVar("ModelT", bound=Identifiable)
 # ``<table>_<suffix>`` and ``expr`` is a SQLite ``json_extract`` expression
 # list suitable for ``CREATE [UNIQUE] INDEX ... ON "{table}" {expr}``.
 _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
+    # M2: the same hot fields as the postgres registry (single-process installs scan too, just later).
+    "sessions": [
+        ("parent_session_id", False, "(json_extract(data,'$.parent_session_id'))"),
+        ("last_worker_id", False, "(json_extract(data,'$.last_worker_id'))"),
+        ("binding_agent_id", False, "(json_extract(data,'$.binding.agent_id'))"),
+        ("binding_graph_id", False, "(json_extract(data,'$.binding.graph_id'))"),
+        ("turn_status", False, "(json_extract(data,'$.turn_status'))"),
+        ("parked_status", False, "(json_extract(data,'$.parked_status'))"),
+    ],
+    "subscription": [
+        ("trigger_id", False, "(json_extract(data,'$.trigger_id'))"),
+    ],
     "artifactlocation": [
         (
             "provider_id",
@@ -132,6 +144,7 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             True,
             "(json_extract(data,'$.provider_id'), json_extract(data,'$.subject'))",
         ),
+        ("user_id", False, "(json_extract(data,'$.user_id'))"),
     ],
     "service": [
         # Mirrors the postgres entry (GS-9): the name is the /svc URL; created only when no duplicate name exists.
@@ -1778,6 +1791,14 @@ class SqliteEventStore(EventStore):
                 await self._conn.execute(
                     "CREATE INDEX IF NOT EXISTS events_occurred "
                     "ON events (occurred_at)"
+                )
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS events_session_id "
+                    "ON events (session_id, id)"
+                )
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS events_workspace_id "
+                    "ON events (workspace_id, id)"
                 )
                 await self._conn.execute(
                     "CREATE TABLE IF NOT EXISTS event_cursors ("

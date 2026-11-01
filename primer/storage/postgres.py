@@ -629,6 +629,15 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # Cross-workspace list filters push `workspace_id IN <readable>`
         # into the query (access-control P2 Task 5); index-backed.
         ("workspace_id", False, "((data->>'workspace_id'))"),
+        # M2: the lookups the sweeps, the routers and the claim path run by these fields were sequential scans of the sessions table.
+        ("parent_session_id", False, "((data->>'parent_session_id'))"),
+        ("last_worker_id", False, "((data->>'last_worker_id'))"),
+        ("binding_agent_id", False, "((data->'binding'->>'agent_id'))"),
+        ("binding_graph_id", False, "((data->'binding'->>'graph_id'))"),
+        ("turn_status", False, "((data->>'turn_status'))"),
+        ("parked_status", False, "((data->>'parked_status'))"),
+        # The default list order (`ORDER BY data->>'created_at' DESC NULLS LAST, id`).
+        ("created_at_desc", False, "((data->>'created_at') DESC NULLS LAST, id)"),
     ],
     "workspace": [
         # Access-control list queries filter on the derived membership
@@ -688,6 +697,12 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     ],
     "useridentity": [
         ("provider_subject_uniq", True, "((data->>'provider_id'), (data->>'subject'))"),
+        # Listing a person's linked identities, and deleting a user's (M2).
+        ("user_id", False, "((data->>'user_id'))"),
+    ],
+    "subscription": [
+        # A trigger's subscriptions are listed and deleted by trigger_id (M2).
+        ("trigger_id", False, "((data->>'trigger_id'))"),
     ],
     "webhookdelivery": [
         # Startup webhook recovery filters status='pending' on every boot;
@@ -1796,6 +1811,20 @@ class PostgresEventStore(EventStore):
             'CREATE INDEX IF NOT EXISTS events_workspace '
             f'ON {self._qualified} (workspace_id)'
         )
+        # M2: reads of one session's events and of one workspace's events page by id; the type index takes `LIKE 'prefix%'` filters
+        # (text_pattern_ops matters under a non-C collation; under C it is the same as the default and costs a second index).
+        ddl_session = (
+            'CREATE INDEX IF NOT EXISTS events_session_id '
+            f'ON {self._qualified} (session_id, id)'
+        )
+        ddl_workspace_id = (
+            'CREATE INDEX IF NOT EXISTS events_workspace_id '
+            f'ON {self._qualified} (workspace_id, id)'
+        )
+        ddl_type_pattern = (
+            'CREATE INDEX IF NOT EXISTS events_type_pattern '
+            f'ON {self._qualified} (event_type text_pattern_ops)'
+        )
         ddl_cursors = (
             f'CREATE TABLE IF NOT EXISTS {self._qualified_cursors} ('
             'subscriber_id text PRIMARY KEY, '
@@ -1810,6 +1839,9 @@ class PostgresEventStore(EventStore):
                 await conn.execute(ddl_entity)
                 await conn.execute(ddl_occurred)
                 await conn.execute(ddl_workspace)
+                await conn.execute(ddl_session)
+                await conn.execute(ddl_workspace_id)
+                await conn.execute(ddl_type_pattern)
                 await conn.execute(ddl_cursors)
 
     async def append(
