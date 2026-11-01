@@ -61,32 +61,18 @@ logger = logging.getLogger(__name__)
 
 
 def _similarity(distance_metric: str, raw_distance: float) -> float:
-    """Map LanceDB's distance value to a similarity score per the
-    VectorStore convention (higher = more similar).
+    """Map LanceDB's ``_distance`` to a similarity (higher = more similar), for a query made WITH the collection's own distance type (KN-11, D4).
 
-    LanceDB's ``vector_search()`` returns the **squared L2 distance**
-    by default, regardless of the distance label stored in our
-    catalogue, because ``create_table()`` doesn't propagate a distance
-    metric to the underlying Lance schema. Since the IC ingest path
-    L2-normalises every vector (in ``HuggingFaceEmbedder._encode_sync``
-    and the OpenAI embedder's response handler), the squared chord
-    length equals ``2 * (1 - cos)`` — that's the raw distance we
-    receive here. So to recover cosine similarity:
-
-        cos = 1 - raw / 2
-
-    The ranking is identical to true cosine because L2 and cosine
-    rank unit-norm vectors equivalently; the score is what the bug
-    fix corrects. See ``scripts/diag_lance_distance.py`` for the
-    isolation test that pinned this empirically.
+    Every query names the catalogue's metric (``distance_type``), so the raw value is that metric's distance whatever the vectors' norm and whether or
+    not the index exists: ``cosine`` returns ``1 - cos`` (similarity ``cos``), ``l2`` the squared L2 distance (similarity ``1 / (1 + d)``), ``dot``
+    ``1 - <a, b>`` (similarity the inner product). The score of the same pair therefore does not change when the index is built.
     """
     if distance_metric == "cosine":
-        return 1.0 - (float(raw_distance) / 2.0)
+        return 1.0 - float(raw_distance)
     if distance_metric == "l2":
         return 1.0 / (1.0 + float(raw_distance))
     if distance_metric == "dot":
-        # dot returns the negated inner product (lower = better).
-        return -float(raw_distance)
+        return 1.0 - float(raw_distance)
     return float(raw_distance)
 
 
@@ -505,7 +491,9 @@ class LanceVectorStore(VectorStore):
         # materialises an empty dataset; rows arrive via put().
         schema = _record_schema(dimensions)
         try:
-            await self._provider.db.create_table(table_name, schema=schema)
+            # No catalogue row says this collection does not exist, so a table of that name is an orphan of a crash between the create and the catalogue
+            # insert: replace it (an empty one holds nothing, and rows of a collection nobody can reach are lost anyway) instead of failing forever (KN-14).
+            await self._provider.db.create_table(table_name, schema=schema, mode="overwrite")
         except Exception as exc:
             raise ProviderError(
                 f"failed to create Lance table {table_name!r}: {exc}",
@@ -677,6 +665,7 @@ class LanceVectorStore(VectorStore):
             # directly. Use vector_search() to avoid needing two awaits.
             rows = await (
                 table.vector_search([float(x) for x in vector])
+                .distance_type(cat["distance"])      # the collection's metric, not Lance's default L2 (KN-11)
                 .limit(int(k))
                 .ef(int(self._provider.config.hnsw_ef_search))
                 .to_list()
