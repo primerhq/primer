@@ -884,29 +884,21 @@ function _wsGuessLang(path) {
 }
 
 function WS_CodeHighlight({ code, lang }) {
-  const lines = (code || "").split("\n");
-  const isPy = lang === "python";
-  const kw = /\b(import|from|def|class|return|if|else|elif|async|await|yield|in|not|and|or|with|as|for|while|try|except|finally|raise|pass|None|True|False)\b/g;
+  // The single-pass vendor highlighter (ui/vendor/highlight-python.js):
+  // keyword colouring only when lang is "python", comment/string/number
+  // otherwise; plain escaped lines when the vendor file is not loaded.
+  const hl = window.primerVendor?.highlightPython;
+  const lines = hl
+    ? hl(code || "", lang)
+    : (code || "").split("\n").map((line) => line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
   return (
     <>
-      {lines.map((line, i) => {
-        let html = line
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;");
-        html = html.replace(/(#.*$)/g, '<span style="color:var(--text-4);font-style:italic">$1</span>');
-        html = html.replace(/(""".*?"""|".*?"|'.*?')/g, '<span style="color:var(--green)">$1</span>');
-        html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span style="color:var(--amber)">$1</span>');
-        if (isPy) {
-          html = html.replace(kw, '<span style="color:var(--violet)">$1</span>');
-        }
-        return (
-          <div key={i} style={{ display: "flex" }}>
-            <span style={{ width: 36, color: "var(--text-4)", textAlign: "right", paddingRight: 12, userSelect: "none", flexShrink: 0 }}>{i + 1}</span>
-            <span dangerouslySetInnerHTML={{ __html: html || "&nbsp;" }} />
-          </div>
-        );
-      })}
+      {lines.map((line, i) => (
+        <div key={i} style={{ display: "flex" }}>
+          <span style={{ width: 36, color: "var(--text-4)", textAlign: "right", paddingRight: 12, userSelect: "none", flexShrink: 0 }}>{i + 1}</span>
+          <span dangerouslySetInnerHTML={{ __html: line || "&nbsp;" }} />
+        </div>
+      ))}
     </>
   );
 }
