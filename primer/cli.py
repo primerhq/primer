@@ -48,7 +48,7 @@ import uvicorn
 import yaml
 
 from primer.api.app import create_app, _build_storage_provider
-from primer.api.config import AppConfig
+from primer.api.config import UVICORN_GRACEFUL_SHUTDOWN_SECONDS, AppConfig
 from primer.common.log import configure_logging
 from primer.model.scheduler import RuntimeMode
 
@@ -144,6 +144,7 @@ def _run_uvicorn(config: AppConfig) -> None:  # pragma: no cover
         host=config.host,
         port=config.port,
         log_level=config.log_level,
+        timeout_graceful_shutdown=UVICORN_GRACEFUL_SHUTDOWN_SECONDS,
     )
 
 

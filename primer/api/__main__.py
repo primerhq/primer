@@ -7,7 +7,7 @@ import logging
 import uvicorn
 
 from primer.api.app import create_app
-from primer.api.config import AppConfig
+from primer.api.config import UVICORN_GRACEFUL_SHUTDOWN_SECONDS, AppConfig
 from primer.common.log import configure_logging
 
 
@@ -27,6 +27,7 @@ def main() -> None:
         host=config.host,
         port=config.port,
         log_level=config.log_level,
+        timeout_graceful_shutdown=UVICORN_GRACEFUL_SHUTDOWN_SECONDS,
     )
 
 

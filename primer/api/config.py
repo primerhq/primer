@@ -108,6 +108,12 @@ class AuthConfig(BaseModel):
     )
 
 
+#: Seconds uvicorn waits for open connections (the console's SSE taps among them) after SIGTERM before it cancels them and lets the lifespan shutdown
+#: run (worker drain, lease release, deferred flushes). Short of the default lease TTL (30 s) and of systemd's default TimeoutStopSec (90 s), so the
+#: lifespan still has the rest of the orchestrator's grace period. Shared by `python -m primer.api` and `primer api` / `primer worker`.
+UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 10
+
+
 class RequestLimitsConfig(BaseModel):
     """Request-body size caps enforced app-wide by ``BodySizeLimitMiddleware`` (FS-05).
 
