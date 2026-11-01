@@ -486,3 +486,17 @@ A form that PUTs or PATCHes a row sends only what the operator changed, laid ove
 - The share dialog's access read does not refetch on wake, so a draft survives a tab switch.
 - The harness enum select hands back the schema's own member (a numeric enum stays a number) and `null` for the blank option.
 - A blank secret still keeps the stored one. The channel provider edit form (optional secrets) and the SSO edit form have an explicit Clear control: channels send `null` for the field, SSO adds `?clear_client_secret=true` to the PUT (`primer/api/routers/oidc_providers.py`).
+
+## Console polling and fan-out (T87)
+
+- A tap-driven refetch keeps its trailing frame: `PR_trailingThrottle(state, ms, fn)` (`ui/foundation/api.js`) runs `fn` on the first frame and once more when a window that saw further frames ends. The rail's Inbox and the phone shell use it, so a second session yielding 100 ms after the first shows at once, not at the next 10 s poll.
+- The cross-workspace attention aggregate (`/yields/pending`) is read through one hook, `SH_useAttention` (`ui/components/shell/sh-api.jsx`), under the key `nv-rail-inbox`; the rail, both phone tabs and both System panels share it, with the per-workspace fallback for a server that 404s.
+- The approvals audit reads every parked session (`PR_fetchAllFind`, polled with `PR_pagedPollMs`), polls each session's pending record at a rate that stretches with the count, and refetches a session's record on its `yielded` or `resumed` tap frame.
+- The agent Sessions panel reads one `limit=10` page and takes its count from `total`. The agents and graphs lists run their per-row reads through `PR_mapLimit` (at most 4 in flight).
+
+## Inbox totals, phone Files errors, token fan-out, tool picker (T132)
+
+- The Inbox heading, the phone tab label and the rail count show the server's `total` (`SH_attentionTotal`), with a "Showing the newest N of T" note when the aggregate's newest 100 are fewer. The decisions audit reads every page of `/tool_approval/records` (`PR_fetchAllPages` with `lengthParam: "length"`).
+- A failed read on the phone Files tab (tree, turn commits, an opened file) shows the server's words with a Retry (`NV_MobileReadError`), only while nothing has loaded.
+- The admin API-keys page reads at most 4 users' keys at once (`PR_mapLimit`).
+- The tool picker labels selected tools of an unavailable toolset "unavailable for now" and keeps "no longer exposed" for tools their toolset really dropped (`TP_splitSelected`).

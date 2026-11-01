@@ -331,11 +331,11 @@ var PR_MAX_PAGES = 50;
 // The longest a lengthened poll may get (ruling 4 of round 2): a session's status a minute stale is the most a list may show.
 var PR_MAX_POLL_MS = 60000;
 
-function PR_pageUrl(path, limit, offset) {
+function PR_pageUrl(path, limit, offset, lengthParam) {
   var at = path.indexOf("?");
   var base = at < 0 ? path : path.slice(0, at);
   var query = at < 0 ? "" : path.slice(at + 1);
-  return base + "?limit=" + limit + "&offset=" + offset + (query ? "&" + query : "");
+  return base + "?" + (lengthParam || "limit") + "=" + limit + "&offset=" + offset + (query ? "&" + query : "");
 }
 
 function PR_fetchAllPages(path, opts) {
@@ -345,7 +345,7 @@ function PR_fetchAllPages(path, opts) {
   var idKey = o.idKey || "id";
   var fetchPage = o.apiFetch || window.primerApi.apiFetch;
   return PR_pagedLoop(size, maxPages, idKey, o.signal, function (offset) {
-    return fetchPage("GET", PR_pageUrl(path, size, offset), null, { signal: o.signal });
+    return fetchPage("GET", PR_pageUrl(path, size, offset, o.lengthParam), null, { signal: o.signal });
   });
 }
 
@@ -470,6 +470,32 @@ function PR_pagedPollMs(base, pages) {
   return Math.max(base, Math.min(base * Math.max(1, pages || 1), PR_MAX_POLL_MS));
 }
 
+// A tap-driven refetch that keeps its trailing frame (UI-L5, GU-9): the first frame runs `fn` at once, frames inside the next `ms` set one pending flag, and when the
+// window ends a pending one runs `fn` once more (and opens a new window). `state` is a per-listener object (a ref's current value); `fn` may change between calls.
+function PR_trailingThrottle(state, ms, fn) {
+  state.fn = fn;
+  if (state.timer) { state.pending = true; return; }
+  fn();
+  state.timer = setTimeout(function () {
+    state.timer = null;
+    if (state.pending) { state.pending = false; PR_trailingThrottle(state, ms, state.fn); }
+  }, ms);
+}
+
+// `items.map(fn)` with at most `limit` calls in flight (one worker loop per slot); the answers keep the order of `items`. A signal that aborts stops new calls.
+function PR_mapLimit(items, limit, fn, signal) {
+  var out = new Array(items.length);
+  var next = 0;
+  function worker() {
+    if (next >= items.length || (signal && signal.aborted)) return Promise.resolve();
+    var i = next++;
+    return Promise.resolve(fn(items[i], i)).then(function (v) { out[i] = v; return worker(); });
+  }
+  var workers = [];
+  for (var k = 0; k < Math.min(limit > 0 ? limit : 1, items.length); k++) workers.push(worker());
+  return Promise.all(workers).then(function () { return out; });
+}
+
 // useResource for a list read with PR_fetchAllPages, polled at most one page per base tick (ruling 4), within a minute (PR_pagedPollMs). Every page is read on
 // each poll, so a change on any page still shows, only later; a refetch (after a write, on a Refresh, on wake) is not slowed.
 function PR_usePagedResource(key, fetcher, opts) {
@@ -490,6 +516,8 @@ window.PR_MAX_PAGES = PR_MAX_PAGES;
 window.PR_MAX_POLL_MS = PR_MAX_POLL_MS;
 window.PR_fetchAllPages = PR_fetchAllPages;
 window.PR_fetchAllFind = PR_fetchAllFind;
+window.PR_trailingThrottle = PR_trailingThrottle;
+window.PR_mapLimit = PR_mapLimit;
 window.PR_partialFailure = PR_partialFailure;
 window.PR_nounFor = PR_nounFor;
 window.PR_pagedNote = PR_pagedNote;

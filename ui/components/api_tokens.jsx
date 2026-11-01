@@ -98,7 +98,8 @@ function AT_readAdminTokens(apiFetch, signal) {
   return apiFetch("GET", "/admin/users", null, { signal })
     .then((usersRes) => {
       const users = usersRes?.items ?? [];
-      return Promise.all(users.map((u) =>
+      // At most four users' keys are read at once (GU-14): a thousand users are not a thousand simultaneous requests every minute.
+      return PR_mapLimit(users, 4, (u) =>
         apiFetch(
           "GET", "/admin/users/" + encodeURIComponent(u.id) + "/tokens",
           null, { signal },
@@ -111,11 +112,14 @@ function AT_readAdminTokens(apiFetch, signal) {
             if (e && (e.name === "AbortError" || e.code === 20)) throw e;
             return { items: [], failed: u.username || u.id };
           },
-        )
-      )).then((perUser) => ({
-        items: [].concat(...perUser.map((r) => r.items)),
-        failedUsers: perUser.map((r) => r.failed).filter(Boolean),
-      }));
+        ),
+      signal).then((rows) => {
+        const perUser = rows.filter(Boolean); // an aborted read leaves holes; its caller discards the answer
+        return {
+          items: [].concat(...perUser.map((r) => r.items)),
+          failedUsers: perUser.map((r) => r.failed).filter(Boolean),
+        };
+      });
     });
 }
 

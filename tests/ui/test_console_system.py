@@ -70,8 +70,8 @@ def test_dashboard_composition():
     # SH_api.pendingAttention) is now the PRIMARY source; pendingYields
     # (per-workspace fan-out) survives only as the pre-aggregate-server
     # fallback, same guard shape as nv-rail.jsx's own Inbox.
-    assert "pendingAttention" in SYS
-    assert "pendingYields" in SYS, "404 fallback fan-out"
+    assert "SH_useAttention" in SYS
+    assert "pendingYields" in (ROOT / "ui" / "components" / "shell" / "sh-api.jsx").read_text(encoding="utf-8"), "404 fallback fan-out"
 
 
 def test_the_worker_card_has_no_manage_button():

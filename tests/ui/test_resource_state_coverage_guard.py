@@ -46,7 +46,7 @@ _GUARDED_FILES = {
     },
 }
 
-_ASSIGN_RE_TEMPLATE = r'(?:var|const|let)\s+({names})\s*=\s*(?:window\.primerApi\.)?useResource\('
+_ASSIGN_RE_TEMPLATE = r'(?:var|const|let)\s+({names})\s*=\s*(?:window\.primerApi\.)?(?:useResource|SH_useAttention)\('
 
 
 def test_named_liveness_surfaces_consume_resource_state() -> None:
