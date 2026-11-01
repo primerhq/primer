@@ -1196,7 +1196,9 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
         if (gitToken) update.git_token = gitToken;
         created = await apiFetch("PUT", "/harnesses/" + encodeURIComponent(createdRef.current.id), update);
       } else {
-        await dropCreated();                       // a changed slug: the old row goes (fire and forget), a new one is made
+        // A changed slug: the old row goes (fire and forget), a new one is made. A row whose install failed is only forgotten (an uninstall would
+        // orphan what it partly installed), as Cancel keeps it.
+        if (installTriedRef.current) { createdRef.current = null; installTriedRef.current = false; } else { await dropCreated(); }
         if (!mountedRef.current) return;
         // 1b. Create DRAFT
         created = await apiFetch("POST", "/harnesses", body);

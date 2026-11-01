@@ -234,3 +234,16 @@ def test_a_failed_run_of_this_client_keeps_the_settle_window_and_only_a_409_clea
         assert "ownRunUntil.current = Date.now() + IC_OWN_RUN_SETTLE_MS;" in before_409, card
         assert "ownRunUntil.current = 0;" in after_409.split("return;")[0], card
         assert "ownRunUntil.current = 0;" not in before_409, card
+
+
+def test_back_to_step_one_after_a_failed_install_with_a_new_slug_deletes_nothing_and_creates_a_new_row(ctx) -> None:
+    ctx.eval("ERROR_ON_FETCH = false; click('Fetch');")
+    _settle(ctx)
+    ctx.eval("GET_ANSWER = function (row) { return { id: row.id, status: 'ERROR', pending_operation: null, last_operation_error: 'install broke' }; }; click('Create');")
+    _settle(ctx)
+    ctx.eval("GET_ANSWER = null; click('Back'); typeInto('hr-slug', 'other-slug'); click('Fetch');")
+    _settle(ctx)
+    calls = _calls(ctx)
+    assert not any(c.startswith("DELETE") for c in calls), calls          # the partly installed row stays, with its error
+    assert calls.count("POST /harnesses") == 2, calls
+    assert ctx.eval("Object.keys(ROWS).length") == 2
