@@ -25,8 +25,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from primer.access.person import person_for_tool
 from primer.access.policy import visible_predicate
-from primer.knowledge.fulltext import fulltext_collection
-from primer.knowledge.grep import grep_collection as _grep
+from primer.knowledge.collection_query import query_collection, search_capability
 from primer.knowledge.indexing import (
     make_document_indexer,
     make_document_path_rewriter,
@@ -281,65 +280,12 @@ def build_collections_toolset(
         _read_document,
     )
 
-    async def _run_semantic(
-        coll, query: str, top_k: int, *, path_prefix: str | None = None,
-    ):
-        """Embed + query the vector store; (hits, error) like _parse."""
-        from primer.model.chat import TextPart
-        from primer.model.embedding import ExtendedEmbeddingConfig
-        from primer.search.run import run_collection_search
-
-        norm_prefix = (path_prefix or "").strip().lstrip("/")
-        fetch_k = max(top_k * 5, 100) if norm_prefix else top_k
-        try:
-            embedder = await provider_registry.get_embedder(
-                coll.search.embedder.provider_id
-            )
-            response = await embedder.embed(
-                model=coll.search.embedder.model,
-                inputs=[TextPart(text=query)],
-                config=ExtendedEmbeddingConfig(task_type="retrieval_query"),
-            )
-            vector = list(response.embeddings[0].vector)
-            store = await semantic_search_registry.get_store(
-                coll.search.vector_store_provider_id
-            )
-            hits = await run_collection_search(
-                collection=coll, embedder=embedder, store=store,
-                query=query, top_k=fetch_k,
-                cross_encoder_resolver=provider_registry, query_vector=vector,
-            )
-        except PrimerError as exc:
-            return None, _map_error(exc)
-
-        out = []
-        for hit in hits:
-            path = hit.record.meta.get("path")
-            if not path:
-                doc = await docs.get(hit.record.document_id)
-                path = doc.path if doc is not None else hit.record.document_id
-            if norm_prefix and not path.startswith(norm_prefix):
-                continue
-            out.append({
-                "path": path,
-                "excerpt": hit.record.text,
-                "score": hit.score,
-            })
-            if len(out) >= top_k:
-                break
-        return out, None
-
     async def _capability(coll: Collection, ctx: ToolContext | None) -> tuple[str, bool]:
         """Best rung this collection offers right now, and whether it is the person's providers that hold semantic back."""
-        if (coll.search is not None and coll.search.state == "ready"
-                and provider_registry is not None
-                and semantic_search_registry is not None):
-            from primer.knowledge.search_use import unusable_search_provider
-
-            if await unusable_search_provider(storage_provider, person_for_tool(ctx), coll.search) is not None:
-                return "fulltext", True
-            return "semantic", False
-        return "fulltext", False
+        return await search_capability(
+            sp=storage_provider, provider_registry=provider_registry, semantic_search_registry=semantic_search_registry,
+            collection=coll, person=person_for_tool(ctx),
+        )
 
     async def _search(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         args, error = _parse(_SearchArgs, arguments)
@@ -348,63 +294,17 @@ def build_collections_toolset(
         coll, error = await _load(ctx, args.collection)
         if error is not None:
             return error
-
-        best, not_yours = await _capability(coll, ctx)
-        mode = args.mode
-        note = None
-        if mode == "auto":
-            mode = best
-            if not_yours:
-                note = "semantic search is not available to you on this collection; fell back to fulltext"
-            elif best != "semantic" and coll.search is not None:
-                note = (f"semantic index is {coll.search.state}; "
-                        "fell back to fulltext")
-        elif mode == "semantic" and best != "semantic":
-            if not_yours:
-                return _err(
-                    f"semantic search is not available to you on {args.collection!r}; "
-                    "available: fulltext, literal, regex",
-                    error_type="conflict",
-                )
-            return _err(
-                f"semantic search is not enabled on {args.collection!r}; "
-                "available: fulltext, literal, regex",
-                error_type="conflict",
+        try:
+            outcome = await query_collection(
+                sp=storage_provider, provider_registry=provider_registry, semantic_search_registry=semantic_search_registry,
+                collection=coll, query=args.query, limit=args.limit, path_prefix=args.path_prefix, mode=args.mode,
+                person=person_for_tool(ctx),
             )
-
-        if mode == "semantic":
-            hits, error = await _run_semantic(
-                coll, args.query, args.limit, path_prefix=args.path_prefix,
-            )
-            if error is not None:
-                return error
-            out: dict[str, Any] = {
-                "hits": hits, "truncated": False, "mode_used": "semantic",
-            }
-        elif mode == "fulltext":
-            try:
-                result = await fulltext_collection(
-                    content, collection_id=args.collection,
-                    query=args.query, path_prefix=args.path_prefix,
-                    max_results=args.limit,
-                )
-            except PrimerError as exc:
-                return _map_error(exc)
-            out = {"hits": [h.model_dump() for h in result.hits],
-                   "truncated": result.truncated, "mode_used": "fulltext"}
-        else:  # literal | regex
-            try:
-                result = await _grep(
-                    content, collection_id=args.collection, pattern=args.query,
-                    path_prefix=args.path_prefix, max_results=args.limit,
-                    literal=mode == "literal",
-                )
-            except PrimerError as exc:
-                return _map_error(exc)
-            out = {"hits": [h.model_dump() for h in result.hits],
-                   "truncated": result.truncated, "mode_used": mode}
-        if note:
-            out["note"] = note
+        except PrimerError as exc:
+            return _map_error(exc)
+        out: dict[str, Any] = {"hits": outcome.hits, "truncated": outcome.truncated, "mode_used": outcome.mode_used}
+        if outcome.note:
+            out["note"] = outcome.note
         return _ok(out)
 
     registry["search"] = (
