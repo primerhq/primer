@@ -778,3 +778,58 @@ def test_a_delta_for_another_part_still_streams_after_a_record() -> None:
         {"class": "text_delta", "session_id": "s-late-next", "part_id": "x:text:2", "kind": "text", "delta": "tw"},
     ])
     assert [(r["partId"], r["text"], r["state"]) for r in _rows_by_kind(rows, "part")] == [("x:text:2", "tw", "streaming")]
+
+
+# ---------------------------------------------------------------------------
+# UI-M7: the session document re-applies its history page on every poll. An already-known record must not settle the
+# pending send or walk the status back (probe /tmp/review-ui/ss.js).
+# ---------------------------------------------------------------------------
+
+_PAGE = [
+    {"seq": 1, "kind": "user_input", "payload": {"text": "first ask"}, "ts": "2026-10-31T10:00:00Z", "session_id": "s1"},
+    {"seq": 2, "kind": "tool_call", "payload": {"name": "shell", "id": "c1"}, "ts": "2026-10-31T10:00:01Z", "session_id": "s1"},
+]
+
+
+def _status(ctx) -> dict:
+    return json.loads(ctx.eval(
+        "JSON.stringify({verb: s.status && s.status.verb, startedMs: s.status && s.status.startedMs,"
+        " snap: (SS_getSnapshot(s, 'status') || {}).verb, pending: s.optimisticSendPending,"
+        " optimistic: Object.keys(s.optimistic)})"
+    ))
+
+
+def test_records_applied_in_order_walk_the_status_to_the_newest() -> None:
+    ctx = _ctx()
+    ctx.eval("globalThis.s = SS_getStore('w-m7', 's1'); var p = " + json.dumps(_PAGE) + "; p.forEach(function (r) { SS_apply(s, r); });")
+    assert _status(ctx)["verb"] == "shell"
+    ctx.eval("SS_apply(s, {seq: 3, kind: 'done', payload: {}, session_id: 's1'});")
+    assert _status(ctx)["verb"] is None
+
+
+def test_a_reseeded_page_keeps_the_pending_send_and_its_sending_status() -> None:
+    """The operator steers a running turn; before the loop takes the message, the turn writes one more record and the next
+    history poll re-applies the page. The old user_input that started the turn used to settle the send (pending cleared, the
+    optimistic row gone) and the old shell call to become the status again, with its old start time."""
+    ctx = _ctx()
+    ctx.eval("window.primerApi = { apiFetch: function () { return new Promise(function () {}); } };")  # the steer is accepted, not yet recorded
+    ctx.eval("globalThis.s = SS_getStore('w-m7', 's1'); var p = " + json.dumps(_PAGE) + "; p.forEach(function (r) { SS_apply(s, r); });")
+    ctx.eval("SS_sendUserMessage(s, 'steer: stop and do X', 'cid-1');")
+    page2 = _PAGE + [{"seq": 3, "kind": "tool_result", "payload": {"text": "ok"}, "ts": "2026-10-31T10:00:05Z", "session_id": "s1"}]
+    ctx.eval("var p2 = " + json.dumps(page2) + "; p2.forEach(function (r) { SS_apply(s, r); });")
+    after = _status(ctx)
+    assert after["pending"] == "cid-1" and after["optimistic"] == ["cid-1"], after
+    assert after["verb"] == "sending" and after["snap"] == "sending", after
+    # The server's own record of the steer (a newer user_input) still settles it.
+    ctx.eval("SS_apply(s, {seq: 4, kind: 'user_input', payload: {text: 'steer: stop and do X'}, session_id: 's1'});")
+    settled = _status(ctx)
+    assert settled["pending"] is None and settled["optimistic"] == [] and settled["verb"] == "thinking", settled
+
+
+def test_an_older_page_does_not_walk_back_a_status_the_tap_already_moved() -> None:
+    ctx = _ctx()
+    ctx.eval("globalThis.s = SS_getStore('w-m7', 's1');")
+    ctx.eval("SS_apply(s, {'class': 'tool_call', seq: 5, payload: {name: 'read_file', id: 'c5'}, ts: '2026-10-31T10:01:00Z', session_id: 's1'});")
+    ctx.eval("var p = " + json.dumps(_PAGE) + "; p.forEach(function (r) { SS_apply(s, r); });")
+    after = _status(ctx)
+    assert after["verb"] == "read_file" and after["startedMs"] == ctx.eval("Date.parse('2026-10-31T10:01:00Z')"), after

@@ -66,6 +66,7 @@ function SS_getStore(wid, sid) {
     parts: {},           // part_id -> { kind, text, state, final }
     optimistic: {},       // clientId -> { clientId, text, state }
     status: null,         // { verb, object, startedMs } | null
+    _statusSeq: -1,       // the newest durable seq the status has seen (SS_applyRecordStatus)
     // Phase 2 (01a04ddf): the live half of agent_phase. Written only by a
     // PhaseFrame tap delta (class:"phase" - primer/tap/delta.py), so on a
     // fresh mount/refresh this is null until one arrives - the consumer
@@ -359,12 +360,18 @@ function SS_apply(store, frame) {
 // The status side of a durable record (SS_apply, and the status-only catch-up): a user_input settles a pending send, then
 // the record derives the turn status. Tap durable frames name their kind field `class`; REST history records name it
 // `kind` (see SS_insertRecord's own comment) - `class` alone is blind to a REST-sourced user_input, so both are read.
+// The session document re-applies its history page on every poll (UI-M7), so only a user_input newer than the send
+// settles it, and only a record newer than every one already seen moves the status: an older record would walk it back.
 function SS_applyRecordStatus(store, frame) {
   var recordKind = frame["class"] || frame.kind;
-  if (recordKind === "user_input" && store.optimisticSendPending != null) {
+  if (recordKind === "user_input" && store.optimisticSendPending != null
+      && frame.seq > store.optimisticAfterSeq) {
     SS_reconcileOptimistic(store);
   }
-  SS_updateStatus(store, frame);
+  if (frame.seq > store._statusSeq) {
+    store._statusSeq = frame.seq;
+    SS_updateStatus(store, frame);
+  }
 }
 
 // Reconcile a pending optimistic send with the server's user_input record:
@@ -613,6 +620,8 @@ function SS_sendUserMessage(store, text, clientId, attachments) {
     state: "pending",
   };
   store.optimisticSendPending = clientId;
+  // The newest record seen so far: a user_input up to it is history, not this send's (SS_applyRecordStatus).
+  store.optimisticAfterSeq = Math.max(SS_highWater(store), store._statusSeq);
   // The "sending" status leg (C4) shows immediately. What it replaces is kept, so a send that fails can give it back.
   var priorStatus = store.status;
   var sendingStatus = { verb: "sending", object: "", startedMs: Date.now() };
