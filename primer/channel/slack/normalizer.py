@@ -50,7 +50,8 @@ class SlackEventNormalizer:
                 type=NormalizedEventType.MESSAGE_POSTED,
                 occurred_at=datetime.now(timezone.utc),
                 room_external_id=p.get("channel"),
-                surface="thread" if p.get("thread_ts") else "channel",
+                # A DM is "dm", so it continues one session, as on Discord and Telegram (W56f, ruling D13).
+                surface="dm" if p.get("channel_type") == "im" else ("thread" if p.get("thread_ts") else "channel"),
                 thread_anchor=p.get("thread_ts"),
                 message_id=p.get("ts"),
                 sender=EventSender(external_id=p.get("user") or ""),

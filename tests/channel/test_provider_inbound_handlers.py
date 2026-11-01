@@ -269,3 +269,14 @@ async def test_W56e_a_slack_thread_broadcast_reply_is_routed(monkeypatch):
         SimpleNamespace(), SimpleNamespace(),
     )
     route.assert_awaited_once()
+
+
+# ---- W56f (D13): a Slack DM continues one session ---------------------------------------------------------------------
+
+
+async def test_W56f_a_slack_dm_is_surface_dm_and_keys_on_the_sender():
+    n = SlackEventNormalizer(provider_id="p")
+    first = await n.normalize(_slack_raw(channel_type="im", ts="5.0"))
+    second = await n.normalize(_slack_raw(channel_type="im", ts="6.0", text="and another thing"))
+    assert first.surface == second.surface == "dm"
+    assert mapping_anchor(first) == mapping_anchor(second) == "dm:U1"
