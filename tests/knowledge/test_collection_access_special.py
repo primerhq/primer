@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -22,7 +21,6 @@ from primer.access.person import Person
 from primer.access.service import AccessUpdate, set_access
 from primer.api.errors import register_error_handlers
 from primer.api.routers import knowledge
-from primer.internal_collections import InternalCollectionsSubsystem
 from primer.knowledge.lifecycle import _write_search
 from primer.knowledge.system_collection import (
     SYSTEM_COLLECTION_ID,
@@ -66,8 +64,11 @@ async def sp(tmp_path) -> AsyncIterator[SqliteStorageProvider]:
 
 
 async def _materialise(sp) -> None:
-    """The bootstrap phase that writes the ``_internal_*`` rows (it reads nothing but the storage provider)."""
-    await InternalCollectionsSubsystem._materialise_collection_rows(SimpleNamespace(_sp=sp))
+    """The ``_internal_*`` rows an install keeps from the removed internal-collections bootstrap (D18): private, system, admin-only."""
+    for entity_type, coll_id in INTERNAL_COLLECTION_IDS.items():
+        await sp.get_storage(Collection).create(
+            Collection(id=coll_id, description=f"Reserved internal collection for {entity_type} semantic search.", system=True)
+        )
 
 
 @pytest_asyncio.fixture
@@ -271,15 +272,6 @@ async def test_a_revoke_racing_a_search_write_survives(sp):
     await _write_search(sp, snapshot, cfg)  # ... and writes its search state after the owner revoked bob
     row = await colls.get("kb")
     assert row.search == cfg and row.access.grants == {} and row.access.rev == 1
-
-
-async def test_a_sharing_change_survives_materialisation(sp):
-    await _materialise(sp)
-    colls = sp.get_storage(Collection)
-    await set_access(colls, sp.get_storage(User), INTERNAL, Person(ROOT, "admin"), AccessUpdate(owners=[ROOT]), what=INTERNAL)
-    await _materialise(sp)
-    row = await colls.get(INTERNAL)
-    assert row.access.owners == [ROOT] and row.system is True
 
 
 async def test_a_sharing_change_survives_the_system_title_write(sp):

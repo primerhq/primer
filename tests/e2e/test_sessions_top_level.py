@@ -6318,10 +6318,8 @@ async def test_t0734_two_graph_bound_sessions_isolated_termination(
 
 
 # ============================================================================
-# T0754 — DELETE EmbeddingProvider referenced by IC config: subsequent
-# /agents/search returns a clean envelope. Pins cascading-delete behaviour
-# of an IC subsystem dependency. Search may return 200 (degraded) /
-# 502 / 503 — never /errors/internal. IC config row may itself stay
+# T0754 — DELETE EmbeddingProvider referenced by IC config: the config
+# read stays clean (the per-entity search routes are gone, D18). IC config row may itself stay
 # (with an orphaned embedding_provider_id) or be cascade-cleaned; both
 # are acceptable provided the read remains clean.
 # ============================================================================
@@ -6333,8 +6331,7 @@ async def test_t0754_delete_embedding_provider_referenced_by_ic_config(
 ) -> None:
     """T0754 — Priority 5 (IC churn / cascading delete). Seed an
     embedding provider and a search provider; PUT an IC config that
-    references both; DELETE the embedding provider; assert subsequent
-    `POST /v1/agents/search` returns a clean envelope. Also verify
+    references both; DELETE the embedding provider; assert
     /v1/internal_collections/config remains queryable cleanly
     (either still present with orphaned reference, or 404 after
     cascade — both acceptable, never /errors/internal).
@@ -6397,25 +6394,7 @@ async def test_t0754_delete_embedding_provider_referenced_by_ic_config(
             f"{del_resp.status_code}: {del_resp.text}"
         )
 
-        # 4. /agents/search must return cleanly regardless of the
-        # delete outcome. Acceptable: 200 (engine still works), 502
-        # (provider error), 503 (subsystem inactive). Never
-        # /errors/internal.
-        search = await client.post("/v1/agents/search", json={
-            "query": "anything",
-            "limit": 5,
-        })
-        search_env = search.json() if search.content else {}
-        assert search_env.get("type") != "/errors/internal", (
-            f"/agents/search after embed-provider DELETE leaked "
-            f"/errors/internal: {search.status_code}: {search.text}"
-        )
-        assert search.status_code in (200, 400, 422, 502, 503), (
-            f"/agents/search unexpected status after embed-provider "
-            f"DELETE: {search.status_code}: {search.text}"
-        )
-
-        # 5. /internal_collections/config remains queryable cleanly.
+        # 4. /internal_collections/config remains queryable cleanly.
         cfg_get = await client.get("/v1/internal_collections/config")
         cfg_env = cfg_get.json() if cfg_get.content else {}
         assert cfg_env.get("type") != "/errors/internal", (

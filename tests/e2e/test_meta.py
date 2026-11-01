@@ -529,26 +529,6 @@ async def test_t0388_get_content_length_matches_body_bytes(
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_t0261_options_search_route_clean_response(
-    client: httpx.AsyncClient,
-) -> None:
-    """T0261 — POST /v1/agents/search is the only verb mounted on this
-    route. OPTIONS must respond cleanly (typically 200/204 with Allow
-    listing POST, or 405 if the framework doesn't auto-respond to
-    OPTIONS). NEVER /errors/internal.
-    """
-    resp = await client.request("OPTIONS", "/v1/agents/search")
-    assert resp.status_code < 500, resp.text
-    if resp.status_code in (200, 204):
-        allow = resp.headers.get("allow", "")
-        assert allow, (
-            f"OPTIONS {resp.status_code} but no Allow header"
-        )
-        # POST is the only handler — Allow must include it
-        assert "POST" in allow.upper(), (
-            f"Allow header {allow!r} should include POST"
-        )
 
 
 # ============================================================================

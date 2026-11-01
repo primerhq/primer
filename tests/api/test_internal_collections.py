@@ -3,20 +3,15 @@
 Covers:
 
 * Config CRUD (PUT/GET/DELETE).
-* Bootstrap endpoint — builds the live subsystem on the running app
-  when none was attached at boot, then ingests entities + tools.
-* Per-entity ``/search`` endpoints — 503 when inactive, hits when
-  active.
-* Cascade: ``DELETE /v1/internal_collections/config`` detaches the
-  live subsystem.
+* Bootstrap endpoint — enables semantic search on the system collection.
+* The per-entity ``/search`` routes are gone (D18).
+* Cascade: ``DELETE /v1/internal_collections/config`` disables search on
+  the system collection.
 """
 
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import Any
-from unittest.mock import patch
 
 import httpx
 import pytest
@@ -44,7 +39,6 @@ from pydantic import SecretStr
 
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
-from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.model.agent import Agent, AgentModel
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.provider import (
@@ -58,33 +52,6 @@ from primer.model.provider import (
     SemanticSearchProviderType,
 )
 from primer.model.storage import OffsetPage, OffsetPageResponse
-
-
-# ===========================================================================
-# Module-level patch: suppress the real Docling/HuggingFace ingest path
-# ===========================================================================
-
-
-# _ingest_ai_docs() defaults to DoclingSplitter (HybridChunker backed by a
-# sentence-transformers BertTokenizer) + DoclingLoader (IBM DocumentConverter).
-# Both download ML models over :443 on a cold cache, causing the suite to hang
-# in CI or on a pristine machine.  The API-surface tests in this file only care
-# that the bootstrap lifecycle (status rows, subsystem attachment, collection
-# creation) works correctly -- not that AI-doc markdown is actually embedded.
-# We therefore stub _ingest_ai_docs to a coroutine that returns 0 immediately.
-# The behaviour under a real ingester_factory is covered exhaustively by
-# tests/test_internal_collections.py::TestAiDocsBootstrap.
-@pytest.fixture(autouse=True)
-def _stub_ingest_ai_docs():
-    async def _noop(self, emit, counts, **kwargs):
-        counts["docs"] = 0
-        return 0
-
-    with patch(
-        "primer.internal_collections.InternalCollectionsSubsystem._ingest_ai_docs",
-        new=_noop,
-    ):
-        yield
 
 
 # ===========================================================================
@@ -543,12 +510,11 @@ class TestConfigCRUD:
         assert get.json()["embedding_model"] == _config_body()["embedding_model"]
 
     @pytest.mark.asyncio
-    async def test_delete_clears_config_and_detaches_subsystem(
+    async def test_delete_clears_config_and_disables_search(
         self, client, app, store
     ) -> None:
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
-        assert app.state.internal_collections is not None
         # S2: activation enables search on the ONE system collection
         # rather than materialising five reserved _internal_* namespaces.
         coll = await client.get("/v1/collections/system")
@@ -556,9 +522,7 @@ class TestConfigCRUD:
 
         delete = await client.delete("/v1/internal_collections/config")
         assert delete.status_code == 204
-        assert app.state.internal_collections is None
-        search = await client.post("/v1/agents/search", json={"query": "anything"})
-        assert search.status_code == 503
+        assert (await client.get("/v1/collections/system")).json()["search"] is None
 
     @pytest.mark.asyncio
     async def test_delete_then_reput_with_different_dimensions_succeeds(
@@ -569,7 +533,6 @@ class TestConfigCRUD:
         reserved collections are gone so a re-PUT + bootstrap rebuilds
         from scratch without colliding with stale vectors of a
         different dimensionality."""
-        from primer.model.internal import INTERNAL_COLLECTION_IDS
 
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
@@ -603,7 +566,7 @@ class TestBootstrap:
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_bootstrap_builds_subsystem_and_returns_counts(
+    async def test_bootstrap_enables_search_and_reports_the_outcome(
         self, client, app, sp
     ) -> None:
         await sp.get_storage(Agent).create(_agent("agt-1"))
@@ -618,27 +581,6 @@ class TestBootstrap:
         assert final["state"] == "ready"
         assert final["collection_id"] == "system"
         assert final["search"]["vector_store_provider_id"] == "ssp-test"
-
-    @pytest.mark.asyncio
-    async def test_bootstrap_builds_the_subsystem_with_every_builtin_toolset(
-        self, client, app, sp
-    ) -> None:
-        """The subsystem embeds the tools of the toolsets it is given. The route hands it the registry's map, one provider for every id
-        in RESERVED_TOOLSET_IDS, and not a hand-written list (the old one had lost ``collections`` and ``crud``, and could lose the
-        next built-in toolset too). The lifespan's twin is tests/api/test_lifespan_internal_collections_toolsets.py."""
-        from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
-
-        # This module's app runs on its own ``sp``, not the suite's ``fake_storage_provider``: the setting must be where the registry reads.
-        await sp.get_storage(CanvasSettings).create(
-            CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=True),
-        )
-        await client.put("/v1/internal_collections/config", json=_config_body())
-        resp = await client.post("/v1/internal_collections/bootstrap")
-        assert resp.status_code == 200, resp.text
-        given = app.state.internal_collections._toolset_providers
-        assert set(given) == set(RESERVED_TOOLSET_IDS)
-        for toolset_id, provider in given.items():
-            assert provider is await app.state.provider_registry.get_toolset(toolset_id), toolset_id
 
     @pytest.mark.asyncio
     async def test_bootstrap_is_idempotent(self, client) -> None:
@@ -689,27 +631,29 @@ class TestBootstrap:
 
 class TestSearchEndpoints:
     @pytest.mark.asyncio
-    async def test_search_returns_503_when_inactive(self, client) -> None:
+    async def test_the_per_entity_search_routes_are_gone(self, client) -> None:
+        """D18 / GI-17: the four ``POST /v1/{agents,graphs,collections,tools}/search`` routes answered ``[]`` (or 503) from a subsystem nothing
+        wrote to; they are removed, and the system collection's search (``collections.semantic_search``) is the live path."""
         for entity in ("agents", "graphs", "collections", "tools"):
             resp = await client.post(f"/v1/{entity}/search", json={"query": "anything"})
-            assert resp.status_code == 503
-            assert resp.json()["type"] == "/errors/subsystem-inactive"
+            assert resp.status_code in (404, 405), (entity, resp.status_code)
 
     @pytest.mark.asyncio
-    async def test_search_resolves_but_is_inert_when_active(self, client, sp) -> None:
-        """S2 pinned decision 15: the per-entity IC search surface stays
-        REGISTERED BUT INERT until P5 deletes it. Activation no longer
-        populates the five _internal_* namespaces - agent and graph
-        material lives in the system collection now, reachable through
-        collections.semantic_search - so these routes resolve and answer
-        with no hits rather than 503."""
-        await sp.get_storage(Agent).create(_agent("agt-1"))
+    async def test_the_app_holds_no_internal_collections_subsystem(self, client, app) -> None:
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
+        assert not hasattr(app.state, "internal_collections")
 
-        resp = await client.post("/v1/agents/search", json={"query": "research"})
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["hits"] == []
+
+def test_no_production_module_imports_the_removed_subsystem() -> None:
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "primer"
+    pattern = re.compile(r"^\s*(from|import)\s+primer\.(catalog|internal_collections)\b|from primer import (catalog|internal_collections)\b", re.M)
+    offenders = [str(p.relative_to(root)) for p in root.rglob("*.py") if pattern.search(p.read_text(encoding="utf-8"))]
+    assert offenders == []
+    assert not (root / "catalog").exists() and not (root / "internal_collections.py").exists()
 
 
 # ===========================================================================

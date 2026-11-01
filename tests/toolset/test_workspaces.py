@@ -17,16 +17,8 @@ import pytest
 
 from primer.model.access import Access
 from primer.api.registries import WorkspaceRegistry
-from primer.internal_collections import (
-    INTERNAL_COLLECTION_IDS,
-    build_subsystem,
-)
 from primer.mcp.server import current_actor
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.internal import (
-    INTERNAL_COLLECTIONS_CONFIG_ID,
-    InternalCollectionsConfig,
-)
 from primer.model.storage import CursorPageResponse, OffsetPage, OffsetPageResponse
 from tests._support.reconcile_guard import reconcile_query_must_not_fail  # noqa: F401  (autouse: see the module)
 from primer.model.workspace import (
@@ -141,7 +133,6 @@ class _LiveSession:
     """Minimal session stub for tool-handler tests."""
 
     def __init__(self, session_id="sess-1") -> None:
-        from datetime import datetime, timezone
         from primer.model.workspace_session import SessionStatus
 
         self.session_id = session_id
@@ -313,72 +304,6 @@ class _StubBackend:
         del self._workspaces[workspace_id]
 
 
-# Minimal vector store + embedder for the bootstrap path.
-class _FakeVectorStore:
-    def __init__(self) -> None:
-        self.collections: dict[str, dict] = {}
-        self.records: dict[tuple[str, str, str], Any] = {}
-
-    async def create_collection(self, collection_id, *, dimensions, distance="cosine"):
-        self.collections[collection_id] = {
-            "dimensions": dimensions,
-            "distance": distance,
-        }
-
-    async def drop_collection(self, collection_id) -> None:
-        # Idempotent: dropping a non-existent collection is a no-op.
-        self.collections.pop(collection_id, None)
-        for key in list(self.records.keys()):
-            if key[0] == collection_id:
-                del self.records[key]
-
-    async def put(self, record):
-        self.records[(record.collection_id, record.document_id, record.chunk_id)] = (
-            record
-        )
-
-    async def delete(self, cid, doc_id):
-        for key in list(self.records.keys()):
-            if key[0] == cid and key[1] == doc_id:
-                del self.records[key]
-
-    async def search(self, cid, vector, k):
-        return []
-
-
-class _FakeSSR:
-    """Fake SemanticSearchRegistry: returns the given store for any ssp_id."""
-
-    def __init__(self, store) -> None:
-        self._store = store
-        self.is_configured = True
-
-    async def get_store(self, ssp_id: str):
-        return self._store
-
-    async def aclose(self):
-        return
-
-
-class _FakeEmbedder:
-    async def embed(self, *, model, inputs, **kwargs):
-        class _R:
-            embeddings = [type("E", (), {"vector": [0.1, 0.2, 0.3, 0.4]})()]
-
-        return _R()
-
-
-class _FakePR:
-    def __init__(self, embedder) -> None:
-        self._embedder = embedder
-
-    async def get_embedder(self, _provider_id):
-        return self._embedder
-
-    async def get_toolset(self, toolset_id):
-        raise NotFoundError(f"unknown toolset {toolset_id!r}")
-
-
 # ===========================================================================
 # Fixtures
 # ===========================================================================
@@ -543,77 +468,6 @@ class TestProviderCRUD:
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "not-found"
-
-
-# ===========================================================================
-# Bootstrap-tool-ingestion: the workspaces toolset's tools end up in
-# the _internal_tools collection.
-# ===========================================================================
-
-
-class TestBootstrapIngestsWorkspacesTools:
-    @pytest.mark.asyncio
-    async def test_subsystem_bootstrap_ingests_workspace_tools(
-        self, sp, workspace_registry, toolset
-    ) -> None:
-        store = _FakeVectorStore()
-        ssr = _FakeSSR(store)
-        embedder = _FakeEmbedder()
-        pr = _FakePR(embedder)
-
-        cfg = InternalCollectionsConfig(
-            id=INTERNAL_COLLECTIONS_CONFIG_ID,
-            embedding_provider_id="hf-1",
-            embedding_model="all-MiniLM-L6-v2",
-            search_provider_id="ssp-test",
-            cross_encoder=None,
-            mmr=None,
-            activated_at=None,
-        )
-
-        subsystem = build_subsystem(
-            config=cfg,
-            storage_provider=sp,
-            provider_registry=pr,
-            semantic_search_registry=ssr,
-            toolset_providers={"workspaces": toolset},
-        )
-
-        result = await subsystem.bootstrap()
-        assert result["ok"] is True
-
-        tools_coll = INTERNAL_COLLECTION_IDS["tool"]
-        ingested_ids = {
-            doc_id for (cid, doc_id, _) in store.records.keys() if cid == tools_coll
-        }
-        ws_ingested = {
-            doc_id for doc_id in ingested_ids if doc_id.startswith("workspaces::")
-        }
-        # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26,
-        # plus workspace_tap = 27, plus restart_workspace_session (Task 8)
-        # = 28, plus interrupt_workspace_session (task 01a10871) = 29,
-        # plus read_workspace_session_messages (A-22) = 30, plus
-        # find_sessions (pivot P2) = 31, plus list_workspace_provider_choices
-        # (platform revamp 2026-10, plan 08 task 7) = 32, plus list_my_sessions
-        # and message_session (pivot P3) = 34.
-        assert len(ws_ingested) == 34
-        assert "workspaces::read_workspace_session_messages" in ws_ingested
-        assert "workspaces::find_sessions" in ws_ingested
-        assert "workspaces::list_workspace_provider_choices" in ws_ingested
-        assert "workspaces::list_my_sessions" in ws_ingested
-        assert "workspaces::message_session" in ws_ingested
-        for expected in (
-            "workspaces::list_workspace_providers",
-            "workspaces::create_workspace_template",
-            "workspaces::list_workspace_files",
-            "workspaces::pause_workspace_session",
-            "workspaces::interrupt_workspace_session",
-            "workspaces::get_workspace_log",
-            "workspaces::workspace_tap",
-        ):
-            assert expected in ws_ingested, f"missing {expected}"
-
-        await subsystem.aclose()
 
 
 # ===========================================================================
