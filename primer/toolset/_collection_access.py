@@ -13,7 +13,7 @@ from typing import Any
 
 from primer.access.person import Person
 from primer.access.policy import readable_parent_filter, require
-from primer.model.access import AccessLevel
+from primer.model.access import Access, AccessLevel
 from primer.model.chat import ToolCallResult
 from primer.model.collection import Collection
 from primer.model.except_ import AccessDeniedError, NotFoundError
@@ -29,12 +29,17 @@ async def collection_for(
     *,
     what: str | None = None,
     dangling_ok: bool = False,
+    agents: Any | None = None,
 ) -> tuple[Collection | None, ToolCallResult | None]:
     """Load ``collection_id`` and enforce ``need`` on it for ``person``: ``(row, None)``, or ``(None, refusal)``.
 
     ``what`` names the thing a refusal is about (a document inherits its collection's access, so a refused document read
     says the DOCUMENT does not exist). ``dangling_ok`` lets an admin through when the collection is gone (``(None, None)``),
     so a document row left behind by it can still be read or removed.
+
+    ``agents`` (the ``Storage[Agent]``) lets an agent's memory collection answer to its agent's access: such a collection shows itself only to who
+    can read the agent, and refuses any need above READ with ``type=forbidden`` and ``memory_collection_read_only``, whoever asks. Without it a memory
+    collection reads as nobody's.
     """
     what = what or f"Collection {collection_id!r}"
     coll = await collections.get(collection_id)
@@ -42,8 +47,18 @@ async def collection_for(
         if dangling_ok and person.is_admin:
             return None, None
         return None, err(f"{what} does not exist", error_type="not-found")
+    memory_of = getattr(coll, "memory_of", None)       # a Graph row also goes through here
+    access = coll.access
+    if memory_of:
+        from primer.memory.collection import MEMORY_READ_ONLY_CODE, memory_access, memory_read_only_message
+
+        access = await memory_access(agents, coll) if agents is not None else Access()
     try:
-        require(person, coll.access, need, what=what)
+        if memory_of:
+            require(person, access, AccessLevel.READ, what=what)     # a stranger still gets the missing-row answer, not the refusal
+            if need is not AccessLevel.READ:
+                return None, err(f"{MEMORY_READ_ONLY_CODE}: {memory_read_only_message(collection_id)}", error_type="forbidden")
+        require(person, access, need, what=what)
     except NotFoundError:
         return None, err(f"{what} does not exist", error_type="not-found")
     except AccessDeniedError as exc:

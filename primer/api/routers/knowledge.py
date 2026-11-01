@@ -71,10 +71,13 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.common.entity_checks import EntityCheckError
+from primer.memory.collection import MEMORY_READ_ONLY_CODE, memory_access, memory_read_only_message
+from primer.storage.q import Q
 from primer.knowledge.checks import (
     check_collection_id,
     check_collection_search_unchanged,
     check_collection_search_use,
+    check_collection_memory_of,
     check_collection_system_flag,
 )
 from primer.model.payload_too_large import PayloadTooLargeError
@@ -147,6 +150,29 @@ def _system_flag_refusal(exc: EntityCheckError) -> HTTPException:
     return HTTPException(status_code=403, detail={"error": exc.code, "message": exc.message})
 
 
+async def _collection_access(request: Request, coll: Collection):
+    """The access a collection answers to: its own block, or the agent's for an agent's memory collection."""
+    if coll.memory_of:
+        return await memory_access(request.app.state.storage_provider, coll)
+    return coll.access
+
+
+def _refuse_memory_write(coll: Collection | None, level: AccessLevel) -> None:
+    """403 ``memory_collection_read_only`` for any need above READ on an agent's memory collection, whoever asks."""
+    if coll is not None and coll.memory_of and level is not AccessLevel.READ:
+        raise HTTPException(status_code=403, detail={"error": MEMORY_READ_ONLY_CODE, "message": memory_read_only_message(coll.id)})
+
+
+async def _collection_access_for(coll: Collection, request: Request, need: AccessLevel):
+    """The access a collection door for level ``need`` runs against. A memory collection first shows itself only to who can read its agent (a
+    stranger still gets the missing-row 404), then refuses any need above READ."""
+    access = await _collection_access(request, coll)
+    if coll.memory_of:
+        require(person_from_request(request), access, AccessLevel.READ, what=f"Collection {coll.id!r}")
+        _refuse_memory_write(coll, need)
+    return access
+
+
 async def _collection_on_pre_create(entity: Collection, request: Request) -> None:
     """Validate the collection id (422 ``collection_id_invalid`` / ``collection_id_reserved`` at ``body.id``), refuse a create that sets
     the ``system`` flag (403), and one whose ``search`` names a provider the saver may not use (409, the not-registered answer of the
@@ -154,6 +180,7 @@ async def _collection_on_pre_create(entity: Collection, request: Request) -> Non
     try:
         check_collection_id(entity)
         check_collection_system_flag(entity)
+        check_collection_memory_of(entity)
         await check_collection_search_use(entity, storage_provider=request.app.state.storage_provider, person=person_from_request(request))
     except EntityCheckError as exc:
         if exc.kind == "validation":
@@ -168,8 +195,10 @@ async def _collection_on_pre_create(entity: Collection, request: Request) -> Non
 async def _collection_on_pre_update(entity: Collection, existing: Collection, request: Request) -> None:
     """Refuse an update that changes the ``system`` flag (403), or the delete guard below is one PUT away from being bypassed, or
     that changes ``search`` (403; the owner's search routes do that)."""
+    _refuse_memory_write(existing, AccessLevel.FULL)
     try:
         check_collection_system_flag(entity, existing)
+        check_collection_memory_of(entity, existing)
         check_collection_search_unchanged(entity, existing)
     except EntityCheckError as exc:
         raise _system_flag_refusal(exc) from exc
@@ -183,6 +212,7 @@ async def _collection_on_pre_delete(existing: Collection, request: Request) -> N
     store refuses the delete (502); see :func:`primer.knowledge.lifecycle.purge_collection`. The registry is read off ``app.state`` and
     is only needed for a collection with search configured.
     """
+    _refuse_memory_write(existing, AccessLevel.OWNER)
     if existing.system:
         # Read-only through every path, as the document routes already say (``_require_collection``): it is regenerated from platform
         # state, and the cascade below would otherwise empty it.
@@ -218,6 +248,9 @@ collection_router = make_crud_router(
     cdc_kind="collection",
     owned=True,
     managed_by_field="harness_id",
+    # An agent's memory collection is left out of every listing and answers to its agent's access (agent memory).
+    base_predicate=Q(Collection).where_null("memory_of").build(),
+    access_of=_collection_access_for,
     on_pre_create=_collection_on_pre_create,
     on_pre_update=_collection_on_pre_update,
     on_pre_delete=_collection_on_pre_delete,
@@ -263,7 +296,11 @@ async def _require_collection(
     coll = await collections.get(collection_id)
     if coll is None:
         raise NotFoundError(f"{what} does not exist")
-    require(person_from_request(request), coll.access, level, what=what)
+    person, access = person_from_request(request), await _collection_access(request, coll)
+    if coll.memory_of:
+        require(person, access, AccessLevel.READ, what=what)       # a stranger still gets the missing-row 404, not the refusal
+        _refuse_memory_write(coll, level)
+    require(person, access, level, what=what)
     if level is not AccessLevel.READ and coll.system:
         raise HTTPException(
             status_code=403,
@@ -953,12 +990,21 @@ async def _require_document_collection(
     Admins pass without a lookup (a dangling ``collection_id`` stays theirs to clean up).
     """
     person = person_from_request(request)
-    if person.is_admin:
+    if person.is_admin and level is AccessLevel.READ:
         return
     coll = await request.app.state.storage_provider.get_storage(Collection).get(collection_id)
     if coll is None:
+        if person.is_admin:
+            return
         raise NotFoundError(f"{what} does not exist")
-    require(person, coll.access, level, what=what)
+    if not person.is_admin:
+        access = await _collection_access(request, coll)
+        if coll.memory_of:
+            require(person, access, AccessLevel.READ, what=what)
+            _refuse_memory_write(coll, level)
+        require(person, access, level, what=what)
+    else:
+        _refuse_memory_write(coll, level)
 
 
 async def _document_row_guard(row: Document, request: Request, write: bool) -> None:

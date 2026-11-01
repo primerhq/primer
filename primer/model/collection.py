@@ -75,6 +75,10 @@ class ChunkingConfig(BaseModel):
     )
 
 
+#: The id prefix reserved for agent memory collections (``mem-<agent id>``); no client may create a collection under it.
+MEMORY_COLLECTION_PREFIX = "mem-"
+
+
 class CollectionSearchConfig(BaseModel):
     """Per-collection semantic-search opt-in block. None on the parent
     Collection means grep-only (the default)."""
@@ -117,6 +121,14 @@ class Collection(Owned, Describeable):
     harness_id: str | None = Field(
         default=None,
         description="When set, this row is managed by the named harness.",
+    )
+    memory_of: str | None = Field(
+        default=None,
+        description=(
+            "The id of the agent whose memory this collection holds (agent memory). Set by the platform only: a create that sets it and an "
+            "update that changes it are refused. Such a collection answers to its agent's access, is read-only to every generic door, and "
+            "is left out of every collection listing."
+        ),
     )
 
 

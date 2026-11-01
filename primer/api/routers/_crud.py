@@ -229,6 +229,8 @@ def make_crud_router(
     grantable: bool = False,
     row_guard: _RowGuardHook = None,
     list_filter: _ListFilterHook = None,
+    base_predicate: Predicate | None = None,
+    access_of: Callable[[Any, Request, AccessLevel], Awaitable["Access"]] | None = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
 
@@ -343,6 +345,10 @@ def make_crud_router(
         stamps a private block (``Access()``) and ignores the body's ``access``; update keeps the stored ``access`` through
         :func:`primer.access.service.update_keeping_access`, so an edit never resets a use grant. No level checks and no list filter (the
         router is admin-only); who may USE the row is the ``/access`` sub-resource's business.
+    base_predicate / access_of
+        ``base_predicate`` is ANDed into every LIST and FIND whatever the caller's access (rows the kind keeps out of its listings, such as an
+        agent's memory collection). ``access_of(row, request, need)`` answers the access an ``owned`` check for level ``need`` runs against, for a row that answers
+        to another row's access (and may refuse the level itself); the default is the row's own ``access``.
     row_guard / list_filter
         For a kind that inherits its access from a parent row (unscoped
         routes only): ``row_guard(row, request, write)`` runs right after the
@@ -432,12 +438,18 @@ def make_crud_router(
     router = APIRouter(tags=[tag])
 
     async def _access_predicate(request: Request) -> Predicate | None:
-        """The caller's list filter: owned rows by ``visible_predicate``, inherited rows by ``list_filter``."""
+        """The caller's list filter: owned rows by ``visible_predicate``, inherited rows by ``list_filter``; ``base_predicate`` is ANDed in."""
+        found: Predicate | None = None
         if owned:
-            return visible_predicate(person_from_request(request))
-        if list_filter is not None:
-            return await list_filter(request)
-        return None
+            found = visible_predicate(person_from_request(request))
+        elif list_filter is not None:
+            found = await list_filter(request)
+        if base_predicate is None:
+            return found
+        return base_predicate if found is None else Predicate(left=base_predicate, op=Op.AND, right=found)
+
+    async def _access_for(row: Any, request: Request, need: AccessLevel) -> "Access":
+        return row.access if access_of is None else await access_of(row, request, need)
 
     if scope_field is not None and parent_path_segment is not None:
         # ------------------------------------------------------------------
@@ -698,7 +710,7 @@ def make_crud_router(
                 # row above (spec 9: out-of-access reads answer 404).
                 require(
                     person_from_request(request),
-                    row.access,
+                    await _access_for(row, request, AccessLevel.READ),
                     AccessLevel.READ,
                     what=f"{model_cls.__name__} {entity_id!r}",
                 )
@@ -737,7 +749,7 @@ def make_crud_router(
             if owned:
                 require(
                     person_from_request(request),
-                    existing.access,
+                    await _access_for(existing, request, AccessLevel.FULL),
                     AccessLevel.FULL,
                     what=f"{model_cls.__name__} {entity_id!r}",
                 )
@@ -787,7 +799,7 @@ def make_crud_router(
                 # unreadable id still comes from require.
                 require(
                     person_from_request(request),
-                    existing.access,
+                    await _access_for(existing, request, AccessLevel.OWNER),
                     AccessLevel.OWNER,
                     what=f"{model_cls.__name__} {entity_id!r}",
                 )
