@@ -607,9 +607,11 @@ class LanceVectorStore(VectorStore):
                 if row_count >= int(self._provider.config.index_min_rows):
                     await self._build_index(table=table, collection_id=collection_id, distance_metric=cat["distance"])
 
-    async def list_chunk_texts(self, collection_id: str, document_id: str | None = None) -> list[tuple[str, str, str]]:
+    async def list_chunk_texts(
+        self, collection_id: str, document_id: str | None = None,
+    ) -> list[tuple[str, str, str, str | None]]:
         table = await self._open_table(collection_id)
-        query = table.query().select(["document_id", "chunk_id", "text"])
+        query = table.query().select(["document_id", "chunk_id", "text", "meta"])
         if document_id is not None:
             query = query.where(f"document_id = '{_escape_sql_string(document_id)}'")
         try:
@@ -617,7 +619,14 @@ class LanceVectorStore(VectorStore):
         except Exception as exc:
             raise ProviderError(f"LanceDB list_chunk_texts failed in {collection_id}: {exc}", cause=exc) from exc
         rows.sort(key=lambda r: (r["document_id"], r["chunk_id"]))
-        return [(r["document_id"], r["chunk_id"], r["text"]) for r in rows]
+        def embedder_of(raw: Any) -> str | None:
+            try:
+                value = json.loads(raw or "{}").get("embedder")
+            except (TypeError, ValueError):
+                return None
+            return value if isinstance(value, str) else None
+
+        return [(r["document_id"], r["chunk_id"], r["text"], embedder_of(r.get("meta"))) for r in rows]
 
     async def get(
         self,

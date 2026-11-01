@@ -70,23 +70,39 @@ async def _put_all(store, records) -> None:
         await store.put(record)
 
 
-async def _stored_chunk_texts(store, collection_id: str, document_id: str | None = None) -> dict[str, dict[str, str]]:
-    """``{document_id: {chunk_id: text}}`` of what the index holds, without decoding vectors where the store can avoid it. A collection the
-    store does not know reads as empty."""
-    out: dict[str, dict[str, str]] = {}
+def embedder_fingerprint(collection: Collection) -> str:
+    """Who embedded a chunk: the embedding provider and model of the collection. The documents are embedded as plain passages with no
+    per-collection prompt setting, so those two are all there is to tell one embedding from another. Stored in each chunk's meta."""
+    embedder = collection.search.embedder  # type: ignore[union-attr]
+    return f"{embedder.provider_id}|{embedder.model}"
+
+
+async def _stored_chunk_texts(
+    store, collection_id: str, document_id: str | None = None,
+) -> dict[str, dict[str, tuple[str, str | None]]]:
+    """``{document_id: {chunk_id: (text, embedder fingerprint)}}`` of what the index holds, without decoding vectors where the store can avoid
+    it. A chunk with no fingerprint (written before there was one) carries ``None``. A collection the store does not know reads as empty."""
+    out: dict[str, dict[str, tuple[str, str | None]]] = {}
     try:
         lister = getattr(store, "list_chunk_texts", None)
         if lister is not None:
             rows = await lister(collection_id, document_id)
         elif document_id is not None:
-            rows = [(r.document_id, r.chunk_id, r.text) for r in await store.get(collection_id, document_id)]
+            rows = [(r.document_id, r.chunk_id, r.text, (r.meta or {}).get("embedder")) for r in await store.get(collection_id, document_id)]
         else:
-            rows = [(r.document_id, r.chunk_id, r.text) for r in await store.search_by_meta(collection_id, {})]
+            rows = [(r.document_id, r.chunk_id, r.text, (r.meta or {}).get("embedder")) for r in await store.search_by_meta(collection_id, {})]
     except Exception:  # noqa: BLE001 - absent index reads as empty
         return {}
-    for doc_id, chunk_id, text in rows:
-        out.setdefault(doc_id, {})[chunk_id] = text
+    for row in rows:
+        doc_id, chunk_id, text = row[:3]
+        out.setdefault(doc_id, {})[chunk_id] = (text, row[3] if len(row) > 3 else None)
     return out
+
+
+def _is_current(stored: dict[str, tuple[str, str | None]] | None, chunks: list[str], fingerprint: str) -> bool:
+    """Whether the stored chunks are exactly these texts, embedded by this embedder. A chunk with no fingerprint is NOT current: it is
+    re-embedded once, the safe side when the model it came from is unknown."""
+    return stored == {str(i): (c, fingerprint) for i, c in enumerate(chunks)}
 
 
 def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
@@ -149,6 +165,7 @@ async def index_document(
     content_store: DocumentContentStore,
     dimensions: int | None = None,
     storage_provider=None,
+    force: bool = False,
 ) -> int:
     """Chunk, embed, and upsert ``document`` into its collection's vector
     store. Returns the number of chunks indexed. Re-indexing embeds the new
@@ -171,6 +188,9 @@ async def index_document(
 
     ``dimensions`` skips the per-document probe when the caller already
     knows the embedder's width (see :func:`probe_dimensions`).
+
+    A document whose stored chunks are the same texts, embedded by the same embedder (provider and model), is not re-embedded. ``force``
+    (an explicit reindex) never skips.
 
     On embedder/store failure it raises; the caller treats indexing as
     best-effort and swallows it.
@@ -242,9 +262,9 @@ async def index_document(
         ) from exc
 
     # A document whose chunks are exactly what is stored has nothing to do (the rule ``index_documents`` applies): no embedding, no write.
-    if chunks and (await _stored_chunk_texts(store, collection.id, document.id)).get(document.id) == {
-        str(i): c for i, c in enumerate(chunks)
-    }:
+    # It must have been embedded by this collection's embedder too: after a model change the same text is stale (an explicit reindex never skips).
+    fingerprint = embedder_fingerprint(collection)
+    if chunks and not force and _is_current((await _stored_chunk_texts(store, collection.id, document.id)).get(document.id), chunks, fingerprint):
         return len(chunks)
 
     # Embed FIRST, before touching the existing chunks. If the embedder
@@ -284,7 +304,7 @@ async def index_document(
                     chunk_id=str(idx),
                     text=chunk,
                     vector=list(emb.vector),
-                    meta={"path": document.path},
+                    meta={"path": document.path, "embedder": fingerprint},
                 )
             )
 
@@ -330,6 +350,7 @@ async def index_documents(
     semantic_search_registry,
     content_store: DocumentContentStore,
     storage_provider=None,
+    force: bool = False,
 ) -> int:
     """Index many documents in one pass.
 
@@ -359,6 +380,7 @@ async def index_documents(
         return 0
     await _refuse_unless_an_owner_may_use(storage_provider, collection)
     cfg = collection.search
+    fingerprint = embedder_fingerprint(collection)
     from primer.knowledge.splitter import split_text
 
     embedder = await provider_registry.get_embedder(cfg.embedder.provider_id)
@@ -380,8 +402,7 @@ async def index_documents(
             max_chars=cfg.chunking.max_chars,
             overlap=cfg.chunking.overlap,
         )
-        current = existing.get(doc.id, {})
-        if current == {str(i): c for i, c in enumerate(chunks)}:
+        if not force and _is_current(existing.get(doc.id, {}), chunks, fingerprint):
             continue
         stale.append(doc.id)
         flat.extend((doc.id, idx, chunk) for idx, chunk in enumerate(chunks))
@@ -437,7 +458,7 @@ async def index_documents(
                 chunk_id=str(idx),
                 text=chunk,
                 vector=list(emb.vector),
-                meta={"path": paths.get(doc_id, "")},
+                meta={"path": paths.get(doc_id, ""), "embedder": fingerprint},
             ))
 
     # Every vector is in hand: only now replace what is stored.

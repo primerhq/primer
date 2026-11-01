@@ -56,7 +56,7 @@ class _Store(VectorStore):
     async def list_chunk_texts(self, collection_id, document_id=None):
         self.list_chunk_texts_calls += 1
         return [
-            (r.document_id, r.chunk_id, r.text) for r in self.records.values() if document_id is None or r.document_id == document_id
+            (r.document_id, r.chunk_id, r.text, r.meta.get("embedder")) for r in self.records.values() if document_id is None or r.document_id == document_id
         ]
 
     async def count_documents(self, collection_id):
@@ -178,3 +178,83 @@ def test_the_default_put_many_is_a_loop_over_put():
     records = [EmbeddingRecord(collection_id="kb", document_id="d", chunk_id=str(i), text="t", vector=[0.0], meta={}) for i in range(3)]
     asyncio.run(plain.put_many(records))
     assert plain.puts == 3
+
+
+def _collection_with(model: str, provider="emb") -> Collection:
+    return Collection(
+        id="kb", description="d",
+        search=CollectionSearchConfig(embedder=CollectionEmbedder(provider_id=provider, model=model), vector_store_provider_id="ssp"),
+    )
+
+
+async def _index(store, embedder, content, collection, **extra):
+    registry, ssr = _wire(store, embedder)
+    return await index_document(
+        document=_doc(), collection=collection, provider_registry=registry, semantic_search_registry=ssr, content_store=content, **extra,
+    )
+
+
+async def test_the_same_text_embedded_by_another_model_is_embedded_again():
+    store, embedder = _Store(), _Embedder()
+    content = _Content({"d1": _body(3)})
+    await _index(store, embedder, content, _collection_with("model-a"))
+    before = list(embedder.calls)
+    await _index(store, embedder, content, _collection_with("model-b"))
+    assert embedder.calls != before and any(c == 3 for c in embedder.calls[len(before):])
+    assert {r.meta["embedder"] for r in store.records.values()} == {"emb|model-b"}
+    # another provider with the same model name is a different embedder too
+    await _index(store, embedder, content, _collection_with("model-b", provider="other"))
+    assert {r.meta["embedder"] for r in store.records.values()} == {"other|model-b"}
+
+
+async def test_the_same_text_by_the_same_model_is_skipped():
+    store, embedder = _Store(), _Embedder()
+    content = _Content({"d1": _body(3)})
+    await _index(store, embedder, content, _collection_with("model-a"))
+    calls = list(embedder.calls)
+    await _index(store, embedder, content, _collection_with("model-a"))
+    assert embedder.calls == calls
+
+
+async def test_a_legacy_chunk_with_no_fingerprint_is_embedded_once_then_skipped():
+    store, embedder = _Store(), _Embedder()
+    content = _Content({"d1": _body(3)})
+    collection = _collection_with("model-a")
+    await _index(store, embedder, content, collection)
+    for key, record in list(store.records.items()):  # chunks written before the fingerprint existed
+        store.records[key] = record.model_copy(update={"meta": {"path": record.meta["path"]}})
+    calls = list(embedder.calls)
+    await _index(store, embedder, content, collection)
+    assert len(embedder.calls) > len(calls)  # re-embedded once
+    assert all(r.meta["embedder"] == "emb|model-a" for r in store.records.values())
+    calls = list(embedder.calls)
+    await _index(store, embedder, content, collection)
+    assert embedder.calls == calls  # and now it is current
+
+
+async def test_an_explicit_reindex_never_skips():
+    store, embedder = _Store(), _Embedder()
+    content = _Content({"d1": _body(3)})
+    collection = _collection_with("model-a")
+    await _index(store, embedder, content, collection)
+    calls = list(embedder.calls)
+    await _index(store, embedder, content, collection, force=True)
+    assert len(embedder.calls) > len(calls)
+
+
+async def test_backfill_re_embeds_after_a_model_change_and_force_re_embeds_everything():
+    store, embedder = _Store(), _Embedder()
+    registry, ssr = _wire(store, embedder)
+    docs = [_doc(f"d{i}") for i in range(3)]
+    content = _Content({d.id: _body(2, tag=d.id) for d in docs})
+
+    def run(collection, **extra):
+        return index_documents(
+            documents=docs, collection=collection, provider_registry=registry, semantic_search_registry=ssr, content_store=content, **extra,
+        )
+
+    assert await run(_collection_with("model-a")) == 3
+    assert await run(_collection_with("model-a")) == 0
+    assert await run(_collection_with("model-b")) == 3  # same texts, new model: all re-embedded
+    assert await run(_collection_with("model-b")) == 0
+    assert await run(_collection_with("model-b"), force=True) == 3

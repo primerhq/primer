@@ -811,16 +811,18 @@ class PgVectorStore(VectorStore):
             except Exception as exc:
                 raise self._wrap_db_error(exc) from exc
 
-    async def list_chunk_texts(self, collection_id: str, document_id: str | None = None) -> list[tuple[str, str, str]]:
+    async def list_chunk_texts(
+        self, collection_id: str, document_id: str | None = None,
+    ) -> list[tuple[str, str, str, str | None]]:
         meta = await self._resolve(collection_id)
         where, args = ("", []) if document_id is None else (" WHERE document_id = $1", [document_id])
-        sql = f'SELECT document_id, chunk_id, text FROM "{self._schema}"."{meta.table_name}"{where} ORDER BY document_id, chunk_id'
+        sql = f'SELECT document_id, chunk_id, text, meta::jsonb->>\'embedder\' AS embedder FROM "{self._schema}"."{meta.table_name}"{where} ORDER BY document_id, chunk_id'
         try:
             async with self._provider.pool.acquire() as conn:
                 rows = await conn.fetch(sql, *args)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
-        return [(r["document_id"], r["chunk_id"], r["text"]) for r in rows]
+        return [(r["document_id"], r["chunk_id"], r["text"], r["embedder"]) for r in rows]
 
     async def search(
         self,

@@ -102,14 +102,17 @@ class VectorStore(ABC):
         for record in records:
             await self.put(record)
 
-    async def list_chunk_texts(self, collection_id: str, document_id: str | None = None) -> list[tuple[str, str, str]]:
-        """``(document_id, chunk_id, text)`` of every stored chunk (of one document when given), WITHOUT the vectors or meta. For comparing
-        what is stored with what a document would produce. The default reads whole records; backends override it with a projection."""
+    async def list_chunk_texts(
+        self, collection_id: str, document_id: str | None = None,
+    ) -> list[tuple[str, str, str, str | None]]:
+        """``(document_id, chunk_id, text, embedder)`` of every stored chunk (of one document when given), WITHOUT the vectors. ``embedder`` is the
+        fingerprint the chunk was written under (``meta["embedder"]``; ``None`` for a chunk written before there was one). For comparing what is
+        stored with what a document would produce. The default reads whole records; backends override it with a projection."""
         if document_id is None:
             records = await self.search_by_meta(collection_id, {})
         else:
             records = await self.get(collection_id, document_id)
-        return [(r.document_id, r.chunk_id, r.text) for r in records]
+        return [(r.document_id, r.chunk_id, r.text, (r.meta or {}).get("embedder")) for r in records]
 
     @abstractmethod
     async def search(
