@@ -76,6 +76,7 @@ from primer.session.delegation import (
 from primer.session.graph_end import graph_end_for
 from primer.session.mutation_lock import IN_LOCK_IO_TIMEOUT_S, session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
+from primer.session.response_format import EPHEMERAL_KEY, effective_response_format
 from primer.session.seq_reservation import reserve_next_seq
 from primer.session.slot_view import rows_for_session_ids
 from primer.storage import raw_generation
@@ -749,7 +750,11 @@ async def run_one_session_turn(
     # refcount drops - but that runs on a LATER event-loop tick, not
     # in-line, so a mid-turn cancel on a wide fan-out could leave sibling
     # node tasks running in the background for a tick or few.
-    turn_events = executor.invoke([])
+    # The turn's structured-output schema (AG-M3): the one-turn override the running flip consumed, else the session's; with neither
+    # the agent executor falls back to its agent's own. A graph executor takes none (each agent node carries its own), and an
+    # executor is handed the argument only when there is a schema.
+    response_format = None if isinstance(session.binding, GraphSessionBinding) else effective_response_format(session)
+    turn_events = executor.invoke([], **({"response_format": response_format} if response_format is not None else {}))
     # Set where the stream falls through to the cancelled or the clean-completion exit below: those exits flip the turn back to idle
     # themselves, as the LAST write of their terminal block, so the finally leaves it to them (audit G7-03, see _clear_turn_running).
     terminal_block_clears_running = False
@@ -2838,12 +2843,16 @@ async def _flip_to_running(
         # Likewise the last turn's failure (C-024): this turn is past it, and the failure exit writes it again if this one fails too.
         "last_turn_error": None,
     })
+    # The one-turn structured-output override is consumed by the turn that runs with it (AG-M3): cleared in this same write, so a
+    # retry of the turn falls back to the session's schema. Only a row that carries one is touched.
+    once = {("metadata", EPHEMERAL_KEY): None} if (session.metadata or {}).get(EPHEMERAL_KEY) is not None else None
     for _ in range(_RUNNING_FLIP_ATTEMPTS):
         try:
             written = await session_storage.patch_if(
                 session_id, patch,
                 # Never over a wake's ``arming``: that wake is writing the message this turn would answer (audit G7-03, review H1).
                 where={"status": NON_ENDED_STATUSES_NOT_PAUSED(), "turn_status": ["idle", "claimable", "running"]},
+                set_paths=once,
             )
         except NotFoundError:
             return None, _drop_vanished_row(session_id, "before the running flip")

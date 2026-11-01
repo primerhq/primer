@@ -372,6 +372,8 @@ async def run_subagent(
             agent=agent, llm=llm, llm_model=llm_model, tool_manager=tool_manager,
             prompt=prompt_msgs, principal=principal, messages_out=produced,
             turn_no=turn_no, interrupt=stop, interrupted_out=interrupted, capped_out=capped,
+            # The agent's own structured-output schema (AG-M3, ruling D14), on the first run and on every resume.
+            response_format=agent.response_format,
         ):
             if _sink is not None:
                 await _sink.on_event(
@@ -559,7 +561,7 @@ async def resume_subagent(
                 agent=agent, llm=llm, llm_model=llm_model,
                 tool_manager=tool_manager, prompt=resume_prompt,
                 principal=context.principal, messages_out=produced, capped_out=capped,
-                turn_no=getattr(context, "turn_no", None),
+                turn_no=getattr(context, "turn_no", None), response_format=agent.response_format,
             ):
                 if _sink is not None:
                     # The delegating call's id is ``invoke_tool_call_id`` (the frame's ``tool_call_id``): this used to read
