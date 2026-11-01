@@ -151,3 +151,16 @@ async def test_the_memory_store_batches_cursors_the_same_way():
     store = InMemoryEventStore()
     await store.set_cursors({"a": 3, "b": 7})
     assert await store.get_cursors(["a", "b", "x"]) == {"a": 3, "b": 7}
+
+
+async def test_in_memory_read_after_limit_zero_returns_nothing_like_sql():
+    """CV-11: SQL's ``LIMIT 0`` returns no rows; the double returned the first match."""
+    from primer.events.memory_store import InMemoryEventStore
+
+    store = InMemoryEventStore()
+    await store.append(event_type="a.b")
+    await store.append(event_type="a.c")
+    assert await store.read_after(0, limit=0) == []
+    assert await store.read_after(0, limit=-3) == []
+    assert len(await store.read_after(0, limit=1)) == 1
+    assert len(await store.read_after(0, limit=5)) == 2
