@@ -310,6 +310,7 @@ async def _slack_factory(
     artifact_registry=None,
     workspace_registry=None,
     scheduler=None,
+    owns_inbound=True,
     **_kw,
 ):
     adapter = SlackChannelAdapter(
@@ -318,10 +319,11 @@ async def _slack_factory(
         claim_engine=claim_engine, artifact_registry=artifact_registry,
         workspace_registry=workspace_registry, scheduler=scheduler,
     )
+    adapter.owns_inbound = owns_inbound
     await adapter.initialize()
-    # The connection is now acquired; install handlers on it once.
+    # The connection is now acquired; install handlers on it once (none on a posting-only connection, W7).
     conn = SLACK_CONNECTIONS.entry(provider.id)
-    if conn is not None:
+    if conn is not None and owns_inbound:
         _install_handlers(provider.id, conn.conn.app)
     return adapter
 

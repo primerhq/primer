@@ -23,34 +23,42 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _build_app_and_handler(cfg: SlackChannelProviderConfig) -> Any:
-    """Construct + start a slack_bolt AsyncApp + AsyncSocketModeHandler.
+class _Conn:
+    """The AsyncApp (``app``: its handlers and its web client) and its Socket Mode handler, None when posting only (W7)."""
 
-    Deferred-imports slack_bolt so module-import doesn't pay the cost.
-    The returned object is a small facade exposing ``start_async`` +
-    ``close_async`` + ``app`` (the AsyncApp) so callers can register
-    handlers.
-    """
+    def __init__(self, app: Any, handler: Any) -> None:
+        self.app = app
+        self.handler = handler
+
+    async def start_async(self) -> None:
+        if self.handler is not None:
+            await self.handler.connect_async()
+
+    async def close_async(self) -> None:
+        if self.handler is not None:
+            await self.handler.close_async()
+
+
+def _build_app(cfg: SlackChannelProviderConfig) -> Any:
+    """A slack_bolt AsyncApp for the bot token. Deferred import so module-import doesn't pay the cost."""
     from slack_bolt.async_app import AsyncApp
+
+    return AsyncApp(token=cfg.bot_token.get_secret_value())
+
+
+def _build_app_and_handler(cfg: SlackChannelProviderConfig) -> Any:
+    """An AsyncApp plus its AsyncSocketModeHandler (connected by ``start_async``), so callers can register handlers."""
     from slack_bolt.adapter.socket_mode.async_handler import (
         AsyncSocketModeHandler,
     )
 
-    app = AsyncApp(token=cfg.bot_token.get_secret_value())
-    handler = AsyncSocketModeHandler(app, cfg.app_token.get_secret_value())
+    app = _build_app(cfg)
+    return _Conn(app, AsyncSocketModeHandler(app, cfg.app_token.get_secret_value()))
 
-    class _Conn:
-        def __init__(self) -> None:
-            self.app = app
-            self.handler = handler
 
-        async def start_async(self) -> None:
-            await handler.connect_async()
-
-        async def close_async(self) -> None:
-            await handler.close_async()
-
-    return _Conn()
+def _build_outbound_app(cfg: SlackChannelProviderConfig) -> Any:
+    """The AsyncApp alone, for posting: no Socket Mode handler, so this process receives no events (W7)."""
+    return _Conn(_build_app(cfg), None)
 
 
 @dataclass
@@ -70,14 +78,18 @@ class _SlackConnectionRegistry:
         #: reopened connection gets them again (W8).
         self.on_close: Callable[[str], None] | None = None
 
-    async def acquire(self, provider: ChannelProvider) -> Any:
-        """Return the (shared) connection. Increments the refcount."""
+    async def acquire(self, provider: ChannelProvider, *, inbound: bool = True) -> Any:
+        """Return the (shared) connection. Increments the refcount.
+
+        ``inbound=False`` opens no Socket Mode connection (W7). shortcut: the first acquire of a provider decides the
+        mode and later ones share it; a process has one ChannelRegistry, so one mode.
+        """
         async with self._lock:
             entry = self._entries.get(provider.id)
             if entry is None:
                 cfg = provider.config
                 assert isinstance(cfg, SlackChannelProviderConfig)
-                conn = _build_app_and_handler(cfg)
+                conn = _build_app_and_handler(cfg) if inbound else _build_outbound_app(cfg)
                 await conn.start_async()
                 entry = _Entry(conn=conn, refcount=0)
                 self._entries[provider.id] = entry

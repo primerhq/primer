@@ -47,8 +47,12 @@ class ChannelRegistry:
         artifact_registry: object | None = None,
         workspace_registry: object | None = None,
         scheduler: object | None = None,
+        owns_inbound: bool = True,
     ) -> None:
         self._channels = channel_storage
+        #: False in a worker-only process (W7): its adapters take outbound-only connections (no poller, gateway or
+        #: socket) and install no inbound handlers, so they never compete with the API process for inbound events.
+        self.owns_inbound = owns_inbound
         self._providers = channel_provider_storage
         self._inbox = inbox
         self._storage_provider = storage_provider
@@ -121,6 +125,7 @@ class ChannelRegistry:
                 artifact_registry=self._artifact_registry,
                 workspace_registry=self._workspace_registry,
                 scheduler=self._scheduler,
+                owns_inbound=self.owns_inbound,
             )
             adapter.stt_registry = self._stt_registry
             # The factory has initialized the adapter: a second initialize() acquired the shared connection twice, so

@@ -90,7 +90,10 @@ class TelegramChannelAdapter(ChannelAdapter):
         return self._reply_targets.get(message_id)
 
     async def initialize(self) -> None:
-        self._app = await TELEGRAM_CONNECTIONS.acquire(self._provider)
+        if self.owns_inbound:
+            self._app = await TELEGRAM_CONNECTIONS.acquire(self._provider)
+        else:  # posting only (W7)
+            self._app = await TELEGRAM_CONNECTIONS.acquire(self._provider, inbound=False)
         entry = TELEGRAM_CONNECTIONS.entry(self._provider.id)
         if entry is not None:
             entry.adapters_by_chat_id[str(self._channel.external_id)] = self

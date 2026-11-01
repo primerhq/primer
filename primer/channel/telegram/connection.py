@@ -38,6 +38,7 @@ class _Entry:
     refcount: int = 0
     adapters_by_chat_id: dict[str, Any] = field(default_factory=dict)
     poll_timeout: int = 25
+    inbound: bool = True
 
 
 class _TelegramConnectionRegistry:
@@ -48,7 +49,13 @@ class _TelegramConnectionRegistry:
         #: reopened connection gets them again (W8).
         self.on_close: Callable[[str], None] | None = None
 
-    async def acquire(self, provider: ChannelProvider) -> Any:
+    async def acquire(self, provider: ChannelProvider, *, inbound: bool = True) -> Any:
+        """The provider's shared Application; refcounted.
+
+        ``inbound=False`` initializes it for posting only: no update processing and no ``getUpdates`` poll (W7).
+        shortcut: the first acquire of a provider decides the mode and later ones share it; a process has one
+        ChannelRegistry, so one mode.
+        """
         async with self._lock:
             entry = self._entries.get(provider.id)
             if entry is None:
@@ -56,10 +63,11 @@ class _TelegramConnectionRegistry:
                 assert isinstance(cfg, TelegramChannelProviderConfig)
                 app = _build_application(cfg)
                 await app.initialize()
-                await app.start()
-                # Start long-polling.
-                await app.updater.start_polling(timeout=cfg.poll_timeout_seconds)
-                entry = _Entry(app=app, poll_timeout=cfg.poll_timeout_seconds)
+                if inbound:
+                    await app.start()
+                    # Start long-polling.
+                    await app.updater.start_polling(timeout=cfg.poll_timeout_seconds)
+                entry = _Entry(app=app, poll_timeout=cfg.poll_timeout_seconds, inbound=inbound)
                 self._entries[provider.id] = entry
                 logger.info(
                     "telegram: application started for provider %s", provider.id,
@@ -75,8 +83,9 @@ class _TelegramConnectionRegistry:
             entry.refcount -= 1
             if entry.refcount <= 0:
                 try:
-                    await entry.app.updater.stop()
-                    await entry.app.stop()
+                    if entry.inbound:
+                        await entry.app.updater.stop()
+                        await entry.app.stop()
                     await entry.app.shutdown()
                 except Exception:
                     logger.exception(

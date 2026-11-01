@@ -185,7 +185,17 @@ def _make_lifespan(config: AppConfig):
             # a graph park's key can be node-qualified.
             storage_provider=storage_provider,
         )
+        # Only a process that OWNS inbound may open channel gateways. Warming a
+        # chat adapter opens its inbound listener (Telegram long-poll / Slack
+        # socket / Discord gateway); doing that in a worker-only process would
+        # be a SECOND inbound connection competing with the API's (Telegram 409
+        # Conflict; duplicate Slack/Discord deliveries). A worker-only process
+        # posts over outbound-only connections and never warms (W7).
+        owns_inbound = config.runtime_mode in (
+            RuntimeMode.API, RuntimeMode.API_PLUS_WORKER,
+        )
         channel_registry = ChannelRegistry(
+            owns_inbound=owns_inbound,
             channel_storage=storage_provider.get_storage(Channel),
             channel_provider_storage=storage_provider.get_storage(ChannelProvider),
             inbox=channel_inbox,
@@ -729,16 +739,6 @@ def _make_lifespan(config: AppConfig):
         channel_registry.set_session_wiring(
             workspace_registry=workspace_registry, scheduler=scheduler,
             stt_registry=getattr(app.state, "stt_registry", None),
-        )
-
-        # Only a process that OWNS inbound may open channel gateways. Warming a
-        # chat adapter opens its inbound listener (Telegram long-poll / Slack
-        # socket / Discord gateway); doing that in a worker-only process would
-        # be a SECOND inbound connection competing with the API's (Telegram 409
-        # Conflict; duplicate Slack/Discord deliveries). Worker-only processes
-        # do not open inbound at all, so they must NOT warm.
-        owns_inbound = config.runtime_mode in (
-            RuntimeMode.API, RuntimeMode.API_PLUS_WORKER,
         )
 
         if owns_inbound:

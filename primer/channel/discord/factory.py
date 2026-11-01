@@ -352,6 +352,7 @@ async def _discord_factory(
     artifact_registry=None,
     workspace_registry=None,
     scheduler=None,
+    owns_inbound=True,
     **_kw,
 ):
     adapter = DiscordChannelAdapter(
@@ -360,9 +361,10 @@ async def _discord_factory(
         claim_engine=claim_engine, artifact_registry=artifact_registry,
         workspace_registry=workspace_registry, scheduler=scheduler,
     )
+    adapter.owns_inbound = owns_inbound
     await adapter.initialize()
     conn = DISCORD_CONNECTIONS.entry(provider.id)
-    if conn is not None:
+    if conn is not None and owns_inbound:  # none on a posting-only connection (W7)
         _install_handlers(provider.id, conn.client, channel)
     return adapter
 

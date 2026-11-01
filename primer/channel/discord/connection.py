@@ -68,6 +68,17 @@ async def _start_client_as_task(
         raise
 
 
+async def _login_client(client: Any, token: str) -> None:
+    """Log in for REST calls only (W7): no gateway, so this process receives no events. A failed login closes the client."""
+    try:
+        await client.login(token)
+    except BaseException:
+        await run_in_background(
+            _discard_client(client, None), what="discord login", verb="cleanup", wait_s=_START_CLEANUP_WAIT_S,
+        )
+        raise
+
+
 async def _discard_client(client: Any, task: asyncio.Task | None) -> None:
     """Undo a gateway start that did not finish: stop the connect task, wait for it, then close the client. Never raises."""
     if task is not None:
@@ -97,7 +108,12 @@ class _DiscordConnectionRegistry:
         #: reopened connection gets them again (W8).
         self.on_close: Callable[[str], None] | None = None
 
-    async def acquire(self, provider: ChannelProvider) -> Any:
+    async def acquire(self, provider: ChannelProvider, *, inbound: bool = True) -> Any:
+        """The provider's shared client; refcounted. ``inbound=False`` logs in without a gateway (W7).
+
+        shortcut: the first acquire of a provider decides the mode and later ones share it; a process has one
+        ChannelRegistry, so one mode.
+        """
         async with self._lock:
             entry = self._entries.get(provider.id)
             if entry is None:
@@ -106,9 +122,11 @@ class _DiscordConnectionRegistry:
                 client = _build_client(cfg)
                 task = None
                 try:
-                    task = await _start_client_as_task(
-                        client, cfg.bot_token.get_secret_value(),
-                    )
+                    token = cfg.bot_token.get_secret_value()
+                    if inbound:
+                        task = await _start_client_as_task(client, token)
+                    else:
+                        await _login_client(client, token)
                 except Exception:
                     logger.exception(
                         "discord: failed to start client for %s", provider.id,

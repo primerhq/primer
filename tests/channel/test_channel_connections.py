@@ -84,8 +84,7 @@ def slack(monkeypatch):
         return _C()
 
     monkeypatch.setattr(conn_mod, "_build_app_and_handler", lambda cfg: _conn(cfg, socket=True))
-    if hasattr(conn_mod, "_build_outbound_app"):
-        monkeypatch.setattr(conn_mod, "_build_outbound_app", lambda cfg: _conn(cfg, socket=False))
+    monkeypatch.setattr(conn_mod, "_build_outbound_app", lambda cfg: _conn(cfg, socket=False))
     rec.conn_mod, rec.factory_mod = conn_mod, factory_mod
     return rec
 
@@ -309,3 +308,73 @@ async def test_W8_a_reopened_discord_connection_gets_its_handlers_again(monkeypa
     b = await dc_factory._discord_factory(provider, ch, None)
     assert len(clients) == 2 and clients[1].on_message is not None and clients[1].on_interaction is not None
     await b.aclose()
+
+
+# ---- W7: a registry that does not own inbound opens no poller, gateway or socket ---------------------------------------
+
+
+async def test_W7_a_worker_only_registry_dispatches_a_prompt_without_polling_or_handlers(tmp_path, telegram):
+    from primer.channel.adapter import PromptEnvelope
+    from primer.channel.dispatcher import ChannelDispatcher
+    from primer.model.workspace import Workspace, WorkspaceChannelLink, WorkspaceRuntimeMeta
+
+    p = await _sqlite(tmp_path)
+    try:
+        await p.get_storage(ChannelProvider).create(_tg_provider())
+        await p.get_storage(Channel).create(Channel(id="ch-1", provider_id="cp-tg", provider=ChannelProviderType.TELEGRAM, external_id="100"))
+        await p.get_storage(Workspace).create(Workspace(
+            id="ws-1", template_id="t-1", provider_id="p-1", created_at=datetime.now(UTC),
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://localhost:5959", token=SecretStr("t")),
+            reply_binding=WorkspaceChannelLink(channel_id="ch-1"),
+        ))
+        reg = _registry(p, owns_inbound=False)
+        results = await ChannelDispatcher(registry=reg).dispatch_prompt(envelope=PromptEnvelope(
+            kind="inform", workspace_id="ws-1", session_id=None, tool_call_id=None, prompt="done",
+            response_schema=None, choices=None, timeout_at_iso=None,
+        ))
+        assert results and "error" not in results[0]
+        assert [m["text"] for m in telegram[0].sent] == ["done"]
+        assert telegram[0].calls == ["initialize"]          # no start(), no start_polling()
+        assert telegram[0].handlers == []
+        await reg.aclose()
+        assert telegram[0].calls == ["initialize", "shutdown"]
+    finally:
+        await p.aclose()
+
+
+async def test_W7_an_outbound_only_slack_connection_opens_no_socket_and_installs_no_handlers(slack):
+    ch = Channel(id="ch-1", provider_id="cp-1", provider=ChannelProviderType.SLACK, external_id="C1")
+    a = await slack.factory_mod._slack_factory(_slack_provider(), ch, None, owns_inbound=False)
+    assert len(slack.apps) == 1 and slack.connected == [] and slack.apps[0].handlers == []
+    await a.aclose()
+    assert slack.closed == ["xoxb-OLD-aaaaaaaaaaaa"]
+
+
+async def test_W7_the_outbound_only_slack_app_has_no_socket_mode_handler():
+    from primer.channel.slack.connection import _build_outbound_app
+
+    conn = _build_outbound_app(_slack_provider().config)
+    assert conn.handler is None and conn.app.client.token == "xoxb-OLD-aaaaaaaaaaaa"
+    await conn.start_async()
+    await conn.close_async()
+
+
+async def test_W7_an_outbound_only_discord_connection_logs_in_without_a_gateway(monkeypatch):
+    from primer.channel.discord import connection as dc_conn
+    from primer.channel.discord import factory as dc_factory
+    from primer.model.channel import DiscordChannelProviderConfig
+    from tests.channel.discord.test_gateway_start_cleans_up import _Client
+
+    monkeypatch.setattr(dc_factory, "_HANDLERS_INSTALLED", set())
+    monkeypatch.setattr(dc_conn.DISCORD_CONNECTIONS, "_entries", {})
+    client = _Client(ready=True)
+    client.on_message = client.on_interaction = None
+    monkeypatch.setattr(dc_conn, "_build_client", lambda cfg: client)
+    provider = ChannelProvider(id="cp-dc", provider=ChannelProviderType.DISCORD,
+                               config=DiscordChannelProviderConfig(bot_token=SecretStr("x" * 60)))
+    ch = Channel(id="ch-1", provider_id="cp-dc", provider=ChannelProviderType.DISCORD, external_id="500")
+    a = await dc_factory._discord_factory(provider, ch, None, owns_inbound=False)
+    assert client.logged_in and not client.connect_started.is_set()
+    assert client.on_message is None and client.on_interaction is None
+    await a.aclose()
+    assert client.closed == 1 and dc_conn.DISCORD_CONNECTIONS.entry("cp-dc") is None

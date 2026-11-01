@@ -287,6 +287,7 @@ async def _telegram_factory(
     artifact_registry=None,
     workspace_registry=None,
     scheduler=None,
+    owns_inbound=True,
     **_kw,
 ):
     adapter = TelegramChannelAdapter(
@@ -295,9 +296,10 @@ async def _telegram_factory(
         claim_engine=claim_engine, artifact_registry=artifact_registry,
         workspace_registry=workspace_registry, scheduler=scheduler,
     )
+    adapter.owns_inbound = owns_inbound
     await adapter.initialize()
     conn = TELEGRAM_CONNECTIONS.entry(provider.id)
-    if conn is not None:
+    if conn is not None and owns_inbound:  # none on a posting-only connection (W7)
         _install_handlers(provider.id, conn.app)
     return adapter
 
