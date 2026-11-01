@@ -1082,6 +1082,18 @@ function NV_AuditPendingFetcher({ sid, onRecord, count, nudge }) {
   return null;
 }
 
+// A yielded or resumed frame nudges its session's pending read. The throttle keeps only its last call, so the sessions of every frame in the window are
+// collected first, and the one run (leading or trailing) refetches the parked list once and bumps every session collected since the last run.
+function NV_auditTapNudge(state, sid, refetchParked, bump) {
+  if (sid) state.sids[sid] = true;
+  PR_trailingThrottle(state.throttle, 500, function () {
+    var sids = Object.keys(state.sids);
+    state.sids = {};
+    refetchParked();
+    if (sids.length) bump(sids);
+  });
+}
+
 // Twenty decisions a page (Platform revamp 01, Task 12): the audit is a table of one-line rows, so a page holds more of them than the card grid does.
 var NV_AUDIT_PAGE_SIZE = 20;
 
@@ -1135,14 +1147,16 @@ function NV_ApprovalsAudit() {
   // A session that yields or resumes changes its pending record: read that one now instead of at its next poll (trailing frames kept).
   var nudgeState = React.useState({});
   var nudges = nudgeState[0], setNudges = nudgeState[1];
-  var tapThrottle = React.useRef({});
+  var tapState = React.useRef({ throttle: {}, sids: {} });
   window.useWorkspaceTapListener(con.wid, function (ev) {
     var cls = ev && ev["class"];
     if (cls !== "yielded" && cls !== "resumed") return;
-    var sid = ev.session_id;
-    PR_trailingThrottle(tapThrottle.current, 500, function () {
-      parkedSessions.refetch();
-      if (sid) setNudges(function (prev) { return Object.assign({}, prev, { [sid]: (prev[sid] || 0) + 1 }); });
+    NV_auditTapNudge(tapState.current, ev.session_id, parkedSessions.refetch, function (sids) {
+      setNudges(function (prev) {
+        var next = Object.assign({}, prev);
+        sids.forEach(function (sid) { next[sid] = (next[sid] || 0) + 1; });
+        return next;
+      });
     });
   });
   var records = PR_usePagedResource(

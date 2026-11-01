@@ -106,3 +106,21 @@ def test_the_list_pages_cap_their_per_row_reads() -> None:
         src = _read(UI / "components" / name)
         assert "PR_mapLimit(" in src, name
         assert re.search(r"Promise\.all\(\s*items\.map", src) is None, name
+
+
+def test_two_sessions_yielding_in_one_window_are_both_nudged_after_the_trailing_run() -> None:
+    """The throttle keeps only its last call: the audit collects the sids first so a trailing run still nudges every session."""
+    src = _read(CONSOLE / "nv-platform.jsx")
+    start = src.index("function NV_auditTapNudge(")
+    fn = src[start : src.index("\n}\n", start) + 3]
+    ctx = _api_ctx()
+    ctx.eval(fn)
+    ctx.eval(
+        "var st = {throttle: {}, sids: {}}; var parked = 0; var bumped = [];"
+        "function frame(sid) { NV_auditTapNudge(st, sid, function () { parked += 1; }, function (s) { bumped.push(s.slice().sort()); }); }"
+        "frame('a'); frame('b'); advance(100); frame('c');"
+    )
+    assert json.loads(ctx.eval("JSON.stringify(bumped)")) == [["a"]], "the first frame runs at once"
+    ctx.eval("advance(500);")
+    assert json.loads(ctx.eval("JSON.stringify(bumped)")) == [["a"], ["b", "c"]], "the trailing run nudges both"
+    assert ctx.eval("parked") == 2
