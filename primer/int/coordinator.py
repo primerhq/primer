@@ -56,6 +56,7 @@ ROLE_SESSION_MESSAGING_SWEEPER = "session-messaging-sweeper"
 ROLE_EVENT_DISPATCHER = "event-dispatcher"
 ROLE_EVENT_RETENTION = "event-retention"
 ROLE_WORKSPACE_EVENTS = "workspace-events"
+ROLE_VECTOR_MAINTENANCE = "vector-maintenance"
 
 
 class RateLimiterLease(AbstractAsyncContextManager["RateLimiterLease"]):
