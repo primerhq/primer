@@ -209,6 +209,18 @@ function SS_apply(store, frame) {
   // dropped (defensive; the store is per-sid).
   if (frame.session_id != null && frame.session_id !== store.sid) return;
 
+  // A store nothing has displayed since its records were freed (SS_freeRecords) keeps only what a pulse dot and the
+  // tap cursor read: a durable record moves its status, its pending send and its high-water, and nothing is appended
+  // (no record, no live part), so a session nobody shows does not grow again. Phase and canvas are fixed-size state.
+  if (store._freed && frame["class"] !== "phase" && frame["class"] !== "canvas") {
+    if (typeof frame.seq === "number") {
+      store._hw = Math.max(store._hw || 0, frame.seq);
+      SS_applyRecordStatus(store, frame);
+      SS_markDirty(store, "status");
+    }
+    return;
+  }
+
   // SEV-2 fix: a legacy `{role, parts}` Message row (no seq at all - see
   // legacyMessages' own comment above) used to fall through every branch
   // below untouched: not a durable record (no numeric seq), not a delta
@@ -676,6 +688,11 @@ var SS_FREE_AFTER_MS = 60000;
 
 function SS_retain(store) {
   store.refs += 1;
+  // Shown again after a free: its history starts over, so the catch-up reads it from the start, as on first open.
+  if (store._freed) {
+    store._freed = false;
+    store._hw = 0;
+  }
   if (store._freeTimer != null) {
     clearTimeout(store._freeTimer);
     store._freeTimer = null;
@@ -699,6 +716,7 @@ function SS_dispose(store) {
 }
 
 function SS_freeRecords(store) {
+  store._freed = true;
   store._hw = SS_highWater(store);
   store.records = {};
   store.recordsBySeq = [];
