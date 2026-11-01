@@ -1236,3 +1236,35 @@ def test_a_blank_copy_id_blocks_create(ctx) -> None:
     assert field_error(ctx, "Id") == RULE
     type_(ctx, "mp-single-id", "p-a-copy")
     assert field_error(ctx, "Id") is None and js(ctx, 'MR.find("mp-single-submit").props.disabled') is False
+
+
+# ---- GX-16: a profile's kind is fixed at creation ----------------------------------------------------------------------------------------------
+
+KIND_NOTE_SINGLE = "Kind: single. A profile's kind is fixed when it is created."
+KIND_NOTE_AGGREGATE = "Kind: aggregated. A profile's kind is fixed when it is created."
+
+
+def test_editing_a_single_profile_shows_its_kind_read_only(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    assert text_at(ctx, "mp-kind-fixed") == KIND_NOTE_SINGLE
+    assert js(ctx, 'allUnder("mp-kind-fixed").filter(function (n) { return n.type === "input" || n.type === "select"; }).length') == 0
+
+
+def test_editing_an_aggregate_shows_its_kind_read_only(ctx) -> None:
+    mount(ctx, {"existing": FULL_AGG})
+    assert text_at(ctx, "mp-kind-fixed") == KIND_NOTE_AGGREGATE
+
+
+def test_a_new_aggregate_shows_no_fixed_kind_note(ctx) -> None:
+    mount(ctx, {})
+    assert not present(ctx, "mp-kind-fixed")
+
+
+def test_the_edit_bodies_keep_the_kind_they_started_with(ctx) -> None:
+    """The body of a save carries the stored kind: the single form's always says single, the aggregate form's aggregated."""
+    single(ctx, FULL_SINGLE)
+    click(ctx, "mp-single-submit")
+    assert calls(ctx)[0][2]["kind"] == "single"
+    mount(ctx, {"existing": FULL_AGG})
+    click(ctx, "mp-aggregate-submit")
+    assert calls(ctx)[-1][2]["kind"] == "aggregated"

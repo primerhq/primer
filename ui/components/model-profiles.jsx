@@ -605,6 +605,7 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
       }}
     >
       <SHR_UseShare plural="model_profiles" id={existing.id} title={existing.id} />
+      {!dup ? <div className="field-help" data-testid="mp-kind-fixed">Kind: single. A profile's kind is fixed when it is created.</div> : null}
       {!dup && managed ? (
         <div data-testid="mp-single-managed">
           <Banner kind="info" title={"Managed by harness " + existing.harness_id + ". Re-run the harness to change it."} />
@@ -807,6 +808,7 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
       }}
     >
       {isEdit ? <SHR_UseShare plural="model_profiles" id={existing.id} title={existing.id} /> : null}
+      {isEdit ? <div className="field-help" data-testid="mp-kind-fixed">Kind: aggregated. A profile's kind is fixed when it is created.</div> : null}
       {managed ? (
         <div data-testid="mp-aggregate-managed">
           <Banner kind="info" title={"Managed by harness " + existing.harness_id + ". Re-run the harness to change it."} />
