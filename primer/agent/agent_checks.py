@@ -37,6 +37,8 @@ The id is reported before the description. On the route these two answer a reque
 
 from __future__ import annotations
 
+import logging
+
 import re
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING
@@ -270,6 +272,16 @@ def agent_pre_checks(
 
     async def pre_update(entity: Agent, existing: Agent, *, person: Person | None = None) -> None:
         await check_agent_on_update(entity, existing, storage_provider=storage_provider, person=person)
+        # A new prompt or toolset means new capture topics for an agent with memory on. A tool has no claim engine: the job row is queued and the
+        # agent's daily curator run takes it up (primer.memory.jobs.run_curate).
+        from datetime import UTC, datetime
+
+        from primer.memory.topics import schedule_topics_on_change
+
+        try:
+            await schedule_topics_on_change(storage_provider, None, entity, existing, datetime.now(UTC))
+        except Exception:  # noqa: BLE001 - the edit must not fail for a background derivation
+            logging.getLogger(__name__).warning("agent %s: could not queue its capture topics", existing.id, exc_info=True)
 
     # The tool factory passes the calling person to hooks that say they take one (the saver is checked, access-control P4 Task 4).
     pre_create.takes_person = True  # type: ignore[attr-defined]

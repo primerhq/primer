@@ -99,6 +99,17 @@ async def _agent_pre_update(entity: Agent, existing: Agent, request: Request) ->
         )
     except EntityCheckError as exc:
         raise _agent_check_as_rest_error(exc) from exc
+    # A new prompt or toolset means new capture topics for an agent with memory on (queued a moment on, after this edit is written).
+    from datetime import UTC, datetime
+
+    from primer.memory.topics import schedule_topics_on_change
+
+    try:
+        await schedule_topics_on_change(
+            get_storage_provider(request), getattr(request.app.state, "claim_engine", None), entity, existing, datetime.now(UTC),
+        )
+    except Exception:  # noqa: BLE001 - the edit must not fail for a background derivation
+        logger.warning("agent %s: could not queue its capture topics", existing.id, exc_info=True)
 
 
 logger = logging.getLogger(__name__)
@@ -114,6 +125,20 @@ async def _agent_pre_delete(entity: Agent, request: Request) -> None:
     refusal = await default_agent_refusal(get_storage_provider(request), entity.id, exempt=RESERVED_OPERATOR_AGENT)
     if refusal is not None:
         raise ConflictError(refusal)
+
+
+async def _agent_deleted(entity_id: str, request: Request) -> None:
+    """The agent's memory (its collection, settings, queued jobs and their leases) goes with it. The row is already gone, so a failure here is logged,
+    not answered: the memory is hidden and unreachable without its agent, and the next delete of the same id removes what is left."""
+    from primer.memory.settings import delete_agent_memory
+
+    state = request.app.state
+    try:
+        await delete_agent_memory(
+            get_storage_provider(request), getattr(state, "semantic_search_registry", None), getattr(state, "claim_engine", None), entity_id,
+        )
+    except Exception:  # noqa: BLE001 - see above
+        logger.warning("agent %s: could not remove its memory", entity_id, exc_info=True)
 
 
 # The access sub-resource (GET/PUT /agents/{id}/access) is mounted
@@ -140,6 +165,7 @@ agent_router = make_crud_router(
     # rather than strand them. The list is shared with the system delete_agent tool (primer.storage.references).
     references=[ReferenceCheck.from_spec(spec) for spec in AGENT_REFERENCES],
     on_pre_delete=_agent_pre_delete,
+    on_delete=_agent_deleted,
     owned=True,
 )
 

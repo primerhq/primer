@@ -178,7 +178,7 @@ def _listed(row) -> bool:
     The map is public (the system collection is), so a private entity's name and description must not reach it. Kinds
     with no ``access`` of their own (the providers) are listed as before.
     """
-    if isinstance(row, Collection) and row.id == SYSTEM_COLLECTION_ID:
+    if isinstance(row, Collection) and (row.id == SYSTEM_COLLECTION_ID or row.memory_of):
         return False
     access = getattr(row, "access", None)
     return access is None or access.public

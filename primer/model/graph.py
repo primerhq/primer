@@ -194,6 +194,13 @@ class ExecutionContext(BaseModel):
     now: str | None = Field(
         default=None, description="ISO-8601 UTC, captured once at construction."
     )
+    memory_index: str = Field(
+        default="",
+        description=(
+            "The agent's memory index (``- name: description`` lines of its active entries), frozen for the session; empty when the agent's "
+            "memory is off. A system prompt that places it with ``{{ ctx.memory_index }}`` gets the lines there instead of at the end."
+        ),
+    )
 
 
 def build_execution_context(
@@ -205,6 +212,7 @@ def build_execution_context(
     principal: str | None = None,
     identity: PrincipalRef | None = None,
     now: str | None = None,
+    memory_index: str = "",
 ) -> "ExecutionContext":
     """Single source of truth for an :class:`ExecutionContext`.
 
@@ -225,6 +233,7 @@ def build_execution_context(
         principal=principal,
         identity=identity,
         now=now,
+        memory_index=memory_index,
     )
 
 

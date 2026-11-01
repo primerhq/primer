@@ -39,6 +39,17 @@ ACTION_EVENT_TYPES: frozenset[str] = frozenset({
     "workspace.exec_exited",
     "canvas.updated",
     "canvas.event",
+    # Agent memory (primer/memory/): entry writes, reflections, lookups, the curator and the purge. Emitted with entity_kind="agent".
+    "memory.entry.added",
+    "memory.entry.updated",
+    "memory.entry.promoted",
+    "memory.entry.approved",
+    "memory.entry.archived",
+    "memory.reflection.completed",
+    "memory.reflection.skipped",
+    "memory.lookup",
+    "memory.curated",
+    "memory.purged",
 })
 
 _CRUD_VERBS = ("created", "updated", "deleted")

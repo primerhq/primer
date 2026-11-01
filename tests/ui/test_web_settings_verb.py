@@ -45,6 +45,8 @@ def _run_effect(ctx) -> None:
         "var registry = SH_createVerbRegistry(); var VIEWS = []; var WARNS = []; console.warn = function (m) { WARNS.push(String(m)); };"
         # The Share verb's gate reads the seam (the palette's rank context carries no overlay): model a live shareable surface.
         "window.SHR_shareLive = function () { return true; };"
+        # The Memory verb's gate reads the same kind of seam: model a live agent editor.
+        "window.AG_memoryLive = function () { return true; };"
         "(function (registry, goView, isMobile) {" + _effect_source() + "\n})(registry, function () { VIEWS.push([].slice.call(arguments)); }, false);"
     )
 

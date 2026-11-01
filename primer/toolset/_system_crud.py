@@ -59,6 +59,7 @@ from primer.model.except_ import (
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.payload_too_large import PayloadTooLargeError
 from primer.knowledge.tree import check_body_size
+from primer.model.agent import Agent
 from primer.model.storage import (
     Op,
     Predicate,
@@ -383,7 +384,10 @@ def _crud_tools_for(
     admin_note: str | None = None,
     delete_note: str | None = None,
     write_note: str | None = None,
+    base_predicate: Predicate | None = None,
+    access_of: Callable[[Any, ToolContext | None, AccessLevel], Awaitable[Any]] | None = None,
     pre_delete: _PreDelete = None,
+    post_delete: _OnMutate = None,
     row_guard: Callable[[Any, ToolContext | None, bool], Awaitable[ToolCallResult | None]] | None = None,
     list_filter: Callable[[ToolContext | None], Awaitable[Predicate | None]] | None = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
@@ -445,8 +449,16 @@ def _crud_tools_for(
     async def _visibility(ctx: ToolContext | None) -> Predicate | None:
         """The caller's list filter: owned rows by ``visible_predicate``, inherited rows by ``list_filter``."""
         if owned:
-            return visible_predicate(_owned_person(ctx))
-        return await list_filter(ctx) if list_filter is not None else None
+            found = visible_predicate(_owned_person(ctx))
+        else:
+            found = await list_filter(ctx) if list_filter is not None else None
+        if base_predicate is None:
+            return found
+        return base_predicate if found is None else Predicate(left=base_predicate, op=Op.AND, right=found)
+
+    async def _access_for(row: Any, ctx: ToolContext | None, need: AccessLevel) -> Any:
+        """The access an owned check for ``need`` runs against: the row's own, or what ``access_of`` says (a refusal result is returned as is)."""
+        return row.access if access_of is None else await access_of(row, ctx, need)
 
     # ---- list ---------------------------------------------------------
     async def _list_handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
@@ -514,7 +526,10 @@ def _crud_tools_for(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
         if owned:
-            denied = _access_refusal(_owned_person(ctx), row.access, AccessLevel.READ, f"{cls_name} {args.id!r}")  # type: ignore[attr-defined]
+            access = await _access_for(row, ctx, AccessLevel.READ)
+            if isinstance(access, ToolCallResult):
+                return access
+            denied = _access_refusal(_owned_person(ctx), access, AccessLevel.READ, f"{cls_name} {args.id!r}")  # type: ignore[attr-defined]
             if denied is not None:
                 return denied
         if row_guard is not None:
@@ -659,7 +674,10 @@ def _crud_tools_for(
                 f"{cls_name} {entity_id!r} does not exist", error_type="not-found"
             )
         if owned:
-            denied = _access_refusal(_owned_person(ctx), existing.access, AccessLevel.FULL, f"{cls_name} {entity_id!r}")  # type: ignore[attr-defined]
+            access = await _access_for(existing, ctx, AccessLevel.FULL)
+            if isinstance(access, ToolCallResult):
+                return access
+            denied = _access_refusal(_owned_person(ctx), access, AccessLevel.FULL, f"{cls_name} {entity_id!r}")  # type: ignore[attr-defined]
             if denied is not None:
                 return denied
             # The stored access is kept, whatever the body sent.
@@ -780,7 +798,10 @@ def _crud_tools_for(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
         if owned:
-            denied = _access_refusal(_owned_person(ctx), existing.access, AccessLevel.OWNER, f"{cls_name} {args.id!r}")  # type: ignore[attr-defined]
+            access = await _access_for(existing, ctx, AccessLevel.OWNER)
+            if isinstance(access, ToolCallResult):
+                return access
+            denied = _access_refusal(_owned_person(ctx), access, AccessLevel.OWNER, f"{cls_name} {args.id!r}")  # type: ignore[attr-defined]
             if denied is not None:
                 return denied
         if row_guard is not None:
@@ -811,6 +832,8 @@ def _crud_tools_for(
             return _err_from_primer(exc, error_type="storage-error")
         if on_delete is not None:
             await on_delete(args.id)
+        if post_delete is not None:
+            await post_delete(args.id)
         return _ok({"deleted": True, "id": args.id})
 
     delete_when = (
@@ -837,7 +860,7 @@ def _crud_tools_for(
                 ToolExample(args={"id": hint.sample_id}, returns="deletion ack")
             ],
             required_role=required_role,
-            interruptible=on_delete is None and pre_delete is None,   # as update_: the row delete, then the hook; a pre_delete is more steps
+            interruptible=on_delete is None and pre_delete is None and post_delete is None,   # as update_: the row delete, then the hook; a pre_delete is more steps
         ),
         _delete_handler,
     )
@@ -1681,6 +1704,7 @@ def _collection_extras(
     semantic_search_registry: "SemanticSearchRegistry | None" = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     collections = storage_provider.get_storage(Collection)
+    _memory_agents = storage_provider.get_storage(Agent)
     documents = storage_provider.get_storage(Document)
 
     out: dict[str, tuple[Tool, ToolHandler]] = {}
@@ -1696,7 +1720,7 @@ def _collection_extras(
                 return _err_from_validation(exc)
             return _err(str(exc), error_type="bad-request")
         try:
-            _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ)
+            _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ, agents=_memory_agents)
         except PrimerError as exc:
             # A fault in the lookup is a storage fault, like one in the find below.
             return _err_from_primer(exc, error_type="storage-error")
@@ -1752,7 +1776,7 @@ def _collection_extras(
                 return _err_from_validation(exc)
             return _err(str(exc), error_type="bad-request")
         try:
-            _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ)
+            _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ, agents=_memory_agents)
         except PrimerError as exc:
             # A fault in the lookup is a storage fault, like one in the find below.
             return _err_from_primer(exc, error_type="storage-error")
@@ -1813,7 +1837,7 @@ def _collection_extras(
         except ValidationError as exc:
             return _err_from_validation(exc)
         # Access first: a collection the caller cannot read answers not-found whatever this process can search.
-        coll, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ)
+        coll, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ, agents=_memory_agents)
         if denied is not None:
             return denied
         if semantic_search_registry is None:
@@ -1940,7 +1964,7 @@ def _collection_extras(
         except ValidationError as exc:
             return _err_from_validation(exc)
         # Re-indexing is search management: owner, like enabling or disabling search (P3 Decision 6).
-        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.OWNER)
+        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.OWNER, agents=_memory_agents)
         if denied is not None:
             return denied
         return _err(
@@ -2211,6 +2235,7 @@ def _document_write_tools(
     """
     docs = storage_provider.get_storage(Document)
     collections = storage_provider.get_storage(Collection)
+    _memory_agents = storage_provider.get_storage(Agent)
     out: dict[str, tuple[Tool, ToolHandler]] = {}
 
     async def _refuse_unwritable(
@@ -2218,8 +2243,7 @@ def _document_write_tools(
     ) -> ToolCallResult | None:
         """Full access on the collection (the document inherits it; P3 Decision 6), no system collection, no harness row."""
         _, denied = await collection_for(
-            collections, person_for_tool(ctx), collection_id, AccessLevel.FULL, what=what, dangling_ok=dangling_ok,
-        )
+            collections, person_for_tool(ctx), collection_id, AccessLevel.FULL, what=what, dangling_ok=dangling_ok, agents=_memory_agents)
         if denied is not None:
             return denied
         if harness_id is not None:
@@ -2456,13 +2480,14 @@ def _document_extras(
     out.update(_document_write_tools(storage_provider=storage_provider, tree_factory=tree_factory))
 
     collections = storage_provider.get_storage(Collection)
+    _memory_agents = storage_provider.get_storage(Agent)
 
     async def _get_content(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _GetDocumentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ)
+        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ, agents=_memory_agents)
         if denied is not None:
             return denied
         try:
@@ -2511,7 +2536,7 @@ def _document_extras(
             args = _PutDocumentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.FULL)
+        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.FULL, agents=_memory_agents)
         if denied is not None:
             return denied
         try:
@@ -2569,7 +2594,7 @@ def _document_extras(
             args = _ListDocumentsArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ)
+        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.READ, agents=_memory_agents)
         if denied is not None:
             return denied
         try:
@@ -2615,7 +2640,7 @@ def _document_extras(
             args = _MoveDocumentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.FULL)
+        _, denied = await collection_for(collections, person_for_tool(ctx), args.collection_id, AccessLevel.FULL, agents=_memory_agents)
         if denied is not None:
             return denied
         try:

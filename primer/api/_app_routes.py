@@ -12,6 +12,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from primer.api.routers import (
+    agent_memory,
     compute,
     health,
     internal_collections,
@@ -284,6 +285,8 @@ def _mount_routers(
     # Phase 2 — compute (Agent + Graph) — authoring feature => require_user.
     # Each access sub-resource is mounted before its CRUD router (route-order rule in _crud.py).
     app.include_router(compute.agent_access_router, prefix=prefix, dependencies=user_dep)
+    # Memory settings of an agent (read level to read, owner to change); before the agent CRUD router like the access sub-resource.
+    app.include_router(agent_memory.agent_memory_router, prefix=prefix, dependencies=user_dep)
     app.include_router(compute.agent_router, prefix=prefix, dependencies=user_dep)
     app.include_router(compute.graph_access_router, prefix=prefix, dependencies=user_dep)
     app.include_router(compute.graph_router, prefix=prefix, dependencies=user_dep)

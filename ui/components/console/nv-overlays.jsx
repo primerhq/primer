@@ -919,6 +919,7 @@ var NV_OVERLAY_MOUNTS = {
           <window.AgentDetail
             agentId={state.id}
             pushToast={window.primerApi.toastPush}
+            openMemory={state.section === "memory"}
           />
         );
       }

@@ -137,6 +137,9 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     # ticket 01a1131f "F": deleting a collection drops its vector namespace, then deletes its documents and content rows in batches, then
     # the row; a cancel between leaves a half-deleted collection (a Stop must wait for it)
     (SYSTEM_TOOLSET_ID, "delete_collection"),
+    # agent memory T5: the agent row is deleted, then its memory (the collection and its vectors, the settings row, the queued jobs and their
+    # leases): several durable writes with no single transaction, and a Stop between them would leave a hidden orphan collection
+    (SYSTEM_TOOLSET_ID, "delete_agent"),
     # task 01a111d1 (D3): delegate to DocumentTreeService: a transaction (entity + content), then the indexer / unindexer
     (SYSTEM_TOOLSET_ID, "create_document"),
     (SYSTEM_TOOLSET_ID, "delete_document"),
