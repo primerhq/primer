@@ -735,6 +735,12 @@ function GR_JsonField({ value, onChange, onError, help, errorKey, ariaLabel }) {
     if (onError && errorKey) onError(errorKey, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
+  // The parent gates Save on the keys it was told about: when this field goes
+  // away (its step is deleted) the key must clear too, or the error outlives
+  // the field and Save stays disabled for the rest of the draft.
+  const clearRef = React.useRef(() => {});
+  clearRef.current = () => { if (onError && errorKey) onError(errorKey, null); };
+  React.useEffect(() => () => { clearRef.current(); }, []);
   function commit() {
     if (text.trim() === "") {
       onChange(null);
