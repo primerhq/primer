@@ -120,7 +120,8 @@ async def schedule_job(sp: Any, engine: Any, *, kind: str, agent_id: str, next_a
     """Queue a ``curate`` or ``topics`` job of an agent, due at ``next_attempt_at``."""
     job_id = {"curate": curate_job_id, "topics": topics_job_id}[kind](agent_id)
     await _upsert_job(sp, job_id, kind=kind, agent_id=agent_id, session_id=None, target_turn=0, now=datetime.now(UTC))
-    await engine.upsert(ClaimKind.MEMORY, job_id, next_attempt_at=next_attempt_at)
+    if engine is not None:   # a tool that runs where no engine is wired leaves the row for the daily curator run
+        await engine.upsert(ClaimKind.MEMORY, job_id, next_attempt_at=next_attempt_at)
 
 
 # --- the daily reflection budget ---------------------------------------------------------------------------------------------------------------
@@ -170,7 +171,10 @@ async def run_curate(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: A
 
 
 async def run_topics(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: AgentMemory) -> None:
-    raise NotImplementedError("topic derivation lands with Task 8")
+    from primer.memory.topics import derive_topics
+
+    await derive_topics(deps, agent, settings)
+    await _forget(deps.sp.get_storage(MemoryJob), job)
 
 
 # --- the gates ---------------------------------------------------------------------------------------------------------------------------------

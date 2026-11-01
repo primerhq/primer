@@ -99,6 +99,17 @@ async def _agent_pre_update(entity: Agent, existing: Agent, request: Request) ->
         )
     except EntityCheckError as exc:
         raise _agent_check_as_rest_error(exc) from exc
+    # A new prompt or toolset means new capture topics for an agent with memory on (queued a moment on, after this edit is written).
+    from datetime import UTC, datetime
+
+    from primer.memory.topics import schedule_topics_on_change
+
+    try:
+        await schedule_topics_on_change(
+            get_storage_provider(request), getattr(request.app.state, "claim_engine", None), entity, existing, datetime.now(UTC),
+        )
+    except Exception:  # noqa: BLE001 - the edit must not fail for a background derivation
+        logger.warning("agent %s: could not queue its capture topics", existing.id, exc_info=True)
 
 
 logger = logging.getLogger(__name__)
