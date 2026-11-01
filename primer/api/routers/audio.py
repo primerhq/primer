@@ -133,6 +133,11 @@ class _SpeechBody(BaseModel):
     response_format: str = Field(default="mp3", description="Audio container.")
 
 
+class SpeechStreamBroken(Exception):
+    """The provider failed after the response had started. Raised out of the body generator so the server aborts the chunked response: the client
+    sees an incomplete body, not a clean (and silently truncated) end."""
+
+
 async def _pump_audio(
     agen: AsyncIterator[bytes | SpeechError], first: bytes,
 ) -> AsyncIterator[bytes]:
@@ -156,7 +161,7 @@ async def _pump_audio(
                 item.code,
                 item.message,
             )
-            return
+            raise SpeechStreamBroken(f"speech stream broken mid-response: {item.code}")
         yield item
 
 

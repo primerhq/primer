@@ -85,14 +85,29 @@ async def test_the_pump_yields_chunks_as_they_arrive() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_pump_stops_at_a_terminal_error_value() -> None:
+async def test_the_pump_breaks_the_stream_at_a_terminal_error_value() -> None:
+    """CV-9: the 200 and some audio are already sent, so a provider failure must not look like a clean end: the pump raises after the chunks
+    that did arrive, which aborts the chunked response (the client sees an incomplete body, not a complete short clip)."""
+    from primer.api.routers.audio import SpeechStreamBroken
+
     async def _provider():
         yield b"b"
         yield SpeechError(code="provider_error", message="dropped")
         yield b"never"
 
-    got = [chunk async for chunk in _pump_audio(_provider(), b"a")]
+    got: list[bytes] = []
+    with pytest.raises(SpeechStreamBroken):
+        async for chunk in _pump_audio(_provider(), b"a"):
+            got.append(chunk)
     assert got == [b"a", b"b"]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_the_first_chunk_aborts_the_http_response(client, app) -> None:
+    stub = _StubTTS([b"a", SpeechError(code="provider_error", message="dropped")])
+    await _configure(client, app, stub)
+    with pytest.raises(Exception, match="SpeechStreamBroken|dropped|speech stream"):
+        await client.post("/v1/audio/speech", json={"input": "hello"})
 
 
 # ---------- HTTP surface ---------------------------------------------
