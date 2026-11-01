@@ -19,8 +19,12 @@ function NV_FileDoc(props) {
   var conflictState = React.useState(false);
   var conflict = conflictState[0];
   var setConflict = conflictState[1];
-  // The body of the last successful save, kept on screen until the
-  // refetched read lands: the pre-save read is stale until then.
+  // The last successful save's body plus the read object the save went out
+  // against. The render shows the body only while that read is still the
+  // read on file: a refetch landing different content (an agent's write in
+  // between) must show that content in the same render, because the save's
+  // etag no longer matches the disk. A refetch that keeps the same read
+  // object (or identical content) still shows the body, which equals it.
   var savedRef = React.useRef(null);
   // A save already in flight; a second save would ride the same etag out
   // and 412 into a false "changed on disk" banner.
@@ -30,8 +34,9 @@ function NV_FileDoc(props) {
   var etag = meta.etag || null;
   var binary = meta.encoding === "base64";
   var tooBig = (meta.size_bytes || 0) > NV_FILE_EDIT_MAX_BYTES;
+  var saved = savedRef.current;
   var content = draft != null ? draft
-    : (savedRef.current != null ? savedRef.current : (meta.content || ""));
+    : (saved && saved.data === read.data ? saved.body : (meta.content || ""));
 
   function save(force) {
     if (draft == null) return;
@@ -44,7 +49,7 @@ function NV_FileDoc(props) {
         // Keystrokes typed while the write was out are the next edit:
         // clear the draft only if it is still exactly what went out.
         setDraft(function (cur) { return cur === sent ? null : cur; });
-        savedRef.current = sent;
+        savedRef.current = { body: sent, data: read.data };
         setConflict(false);
         read.refetch();
         con.toast("Saved " + path);
@@ -73,12 +78,6 @@ function NV_FileDoc(props) {
     window.addEventListener("keydown", onKey);
     return function () { window.removeEventListener("keydown", onKey); };
   });
-
-  React.useEffect(function () {
-    // A reloaded read is the truth now: stop showing the saved body,
-    // whether it confirms it or carries a newer write.
-    if (savedRef.current != null && read.data) savedRef.current = null;
-  }, [read.data]);
 
   // A refused read (403: a non-admin naming the runtime's .state / .tmp,
   // or any other failure) shows why instead of an empty editor that a

@@ -9,10 +9,12 @@ the Ctrl+S handler answered even when focus was in another surface.
 
 Now a save in flight is ignored (``savingRef``); the draft clears only when
 nothing was typed meanwhile (the functional ``setDraft`` compares the current
-draft with the body that went out); the saved body stays on screen until the
-refetched read lands (``savedRef``, cleared by an effect on ``read.data``);
-and Ctrl+S acts only while the focused element's nearest file-doc root is
-this doc's root (``document.activeElement`` driven in the test).
+draft with the body that went out); the saved body stays on screen only while
+the read it went out against is the read on file (``savedRef`` stores
+``{body, data}`` and the render shows ``body`` while the identities match, so
+a refetch that lands different content shows that content in the same
+render); and Ctrl+S acts only while the focused element's nearest file-doc
+root is this doc's root (``document.activeElement`` driven in the test).
 
 The harness is the strict mini React on the real file, with a deferred
 ``SH_api.fileWrite`` (the test holds the PUT in flight), a cache entry whose
@@ -215,6 +217,25 @@ def test_the_saved_body_is_shown_until_the_refetch_lands() -> None:
         # a concurrent write that lands after the save is not masked
         ctx.eval('__landRead({ content: "agent v2", etag: "e3", encoding: "utf-8", size_bytes: 8 });')
         assert _js(ctx, "__value()") == "agent v2"
+    finally:
+        ctx.close()
+
+
+def test_a_refetch_landing_different_content_shows_the_refetched_content() -> None:
+    # The save resolves, then the refetch lands a DIFFERENT body (an agent
+    # wrote in between): the editor must show the refetched content in the
+    # very render the read lands in - never the saved body, whose etag no
+    # longer matches the disk (saving over it would silently replace the
+    # agent's write, no 412).
+    ctx = _ctx()
+    try:
+        ctx.eval('__type("v1"); __clickSave();')
+        _settle(ctx, 0)
+        assert _js(ctx, "__value()") == "v1"
+        ctx.eval('__landRead({ content: "agent v2", etag: "e3", encoding: "utf-8", size_bytes: 8 });')
+        assert _js(ctx, "__value()") == "agent v2", (
+            "the saved body stayed on screen over a refetched different read"
+        )
     finally:
         ctx.close()
 
