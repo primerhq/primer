@@ -91,7 +91,7 @@ from primer.model.graph import (
     _GraphNodeRef,
     _ToolCallNode,
 )
-from primer.model.yield_ import ToolWaitPark, YieldToWorker
+from primer.model.yield_ import ToolWaitPark, YieldToWorker, wait_deadline
 
 
 class _SubgraphFailed(Exception):
@@ -400,6 +400,7 @@ class _NodeDispatchMixin:
                                 yld.yielded.resume_metadata or {}
                             ),
                             row_call_id=call_id,
+                            deadline=wait_deadline(yld.yielded.timeout),
                         )
                     )
                     await queue.put(
@@ -532,6 +533,7 @@ class _NodeDispatchMixin:
                         leaf=yld.yielded.to_jsonable() if nested_frames else None,
                         # Ticket 01a15327: the tool round the node's park left unfinished, as the node's batch stamped it.
                         **ParkedRound.of_park(yld).stored_fields(),
+                        deadline=wait_deadline(yld.yielded.timeout),
                     )
                 )
                 await queue.put(

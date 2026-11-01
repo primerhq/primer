@@ -747,6 +747,12 @@ __all__ = [
 ]
 
 
+#: The keys a multi-event (graph) park can wait on besides its primary one: the human gates and the machine wakes a graph node's tool can
+#: yield on (a timer, an event wait, a file watch, a remote MCP task). Any other key costs no second query. The flip's own guards (one wake
+#: per key, the park's deadline) keep a repeat or an early fire from landing (GR-4).
+_MEMBER_WAKE_PREFIXES = ("ask_user:", "tool_approval:", "timer:", "evwait:", "watch:", "mcp_task:")
+
+
 async def flip_sessions_parked_on(
     event_key: str,
     payload,
@@ -763,8 +769,8 @@ async def flip_sessions_parked_on(
 
     Single-event parks match on the singular ``parked_event_key``; a
     membership fallback covers multi-event parks (graph supersteps),
-    gated to human-reply keys so the common path stays one keyed
-    query. Returns the number of rows advanced.
+    gated to the human-reply and machine-wake keys (``_MEMBER_WAKE_PREFIXES``)
+    so the common path stays one keyed query. Returns the number of rows advanced.
     """
     from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 
@@ -816,7 +822,7 @@ async def flip_sessions_parked_on(
         ):
             flipped += 1
 
-    if flipped == 0 and event_key.startswith(("ask_user:", "tool_approval:")):
+    if flipped == 0 and event_key.startswith(_MEMBER_WAKE_PREFIXES):
         member_pred = _excluding_ended(Predicate(
             left=Predicate(
                 left=FieldRef(name="parked_status"),

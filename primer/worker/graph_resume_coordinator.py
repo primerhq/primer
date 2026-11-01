@@ -632,9 +632,11 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
     from copy import deepcopy
     from datetime import timedelta
     from primer.int.claim import ParkRequest, ReleaseOutcome
+    from primer.model.yield_ import wait_deadline
     from primer.worker.frames import frames_to_jsonable
 
     leaf = outcome.leaf
+    now = datetime.now(timezone.utc)
     new_ck = deepcopy(checkpoint)
     for e in new_ck.get("pending_agent_yields") or []:
         # The entry the reply resolved: its node and its event key. The raw tool_call_id is not unique (two fan-out siblings parked inside a nested
@@ -650,9 +652,10 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
             e["resume_metadata"] = dict(leaf.resume_metadata or {})
             if outcome.tool_call_id is not None:
                 e["tool_call_id"] = outcome.tool_call_id
+            # ... and its deadline is the new leaf's wait, which the park below waits on (GR-4).
+            e["deadline"] = wait_deadline(leaf.timeout, now)
             break
 
-    now = datetime.now(timezone.utc)
     timeout = leaf.timeout if leaf.timeout is not None else 3600.0
     parked_state = ParkedState(
         yielded=leaf,

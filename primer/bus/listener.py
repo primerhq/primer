@@ -117,8 +117,8 @@ class YieldEventListener:
         graph superstep with several human-interaction nodes) may be woken
         by a reply to a NON-primary key, which is a member of
         ``parked_event_keys`` but not the singular ``parked_event_key`` -
-        handled by a bounded membership fallback, gated to human-reply
-        events so the common path stays a single keyed query.
+        handled by a bounded membership fallback, gated to human-reply and
+        machine-wake keys so the common path stays a single keyed query.
 
         Errors are logged but do not break the listener loop; the next
         event is processed regardless.

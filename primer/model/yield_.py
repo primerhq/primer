@@ -39,7 +39,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from primer.model.principal import ActorRef, PrincipalRef
@@ -47,6 +47,33 @@ from primer.model.principal import ActorRef, PrincipalRef
 
 if TYPE_CHECKING:
     from primer.model.chat import ToolResultPart
+
+
+# ===========================================================================
+# The deadline of one graph wait (GR-4)
+# ===========================================================================
+
+#: The cap a wait that names no timeout of its own gets: the park's fallback (``primer.session.dispatch``) and each pending graph entry's.
+DEFAULT_WAIT_SECONDS = 3600.0
+
+
+def wait_deadline(timeout: float | None, now: datetime | None = None) -> str:
+    """The absolute deadline (ISO-8601, UTC) of a graph wait starting at ``now``: its own ``timeout``, else the cap.
+
+    Stamped on a pending graph entry when its node parks, so a re-park on its siblings does not restart its clock."""
+    start = now or datetime.now(timezone.utc)
+    return (start + timedelta(seconds=DEFAULT_WAIT_SECONDS if timeout is None else timeout)).isoformat()
+
+
+def parse_wait_deadline(value: Any) -> datetime | None:
+    """A pending graph entry's stored ``deadline``; None when it has none (written before GR-4) or it cannot be read (a damaged checkpoint)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 # ===========================================================================
