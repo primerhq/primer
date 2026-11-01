@@ -1057,7 +1057,9 @@ function NV_ProfileModalHost(props) {
 // TOOL column). 404 means this parked session isn't gated on
 // tool_approval (ask_user/sleep/watch_files etc.) - reports null so
 // the parent drops it.
-function NV_AuditPendingFetcher({ sid, onRecord }) {
+// `count` is how many sessions are being polled: the poll stretches with it (PR_pagedPollMs) so N parked sessions cost about one request per 5 s in all, and
+// `nudge` (a number the audit bumps on a yielded or resumed tap frame for this session) refetches at once (UI-L10).
+function NV_AuditPendingFetcher({ sid, onRecord, count, nudge }) {
   var pending = window.primerApi.useResource(
     "nv-plat:audit-pending:" + sid,
     function (signal) {
@@ -1065,8 +1067,13 @@ function NV_AuditPendingFetcher({ sid, onRecord }) {
         "GET", "/sessions/" + encodeURIComponent(sid) + "/tool_approval/pending",
         null, { signal: signal });
     },
-    { pollMs: 5000, deps: [sid] }
+    { pollMs: PR_pagedPollMs(5000, count), deps: [sid] }
   );
+  var firstNudge = React.useRef(true);
+  React.useEffect(function () {
+    if (firstNudge.current) { firstNudge.current = false; return; }
+    pending.refetch();
+  }, [nudge]);
   React.useEffect(function () {
     if (pending.error && pending.error.status === 404) { onRecord(sid, null); return; }
     if (!pending.data) return;
@@ -1112,21 +1119,32 @@ function NV_ApprovalsAudit() {
     });
   }, []);
 
-  var parkedSessions = window.primerApi.useResource(
+  // Every parked session, every page (a 101st one is not left out of the audit); the poll stretches with the pages read.
+  var parkedSessions = PR_usePagedResource(
     "nv-plat:audit-parked-sessions",
     function (signal) {
-      return window.primerApi.apiFetch("POST", "/sessions/find", {
-        predicate: {
-          kind: "predicate",
-          left: { kind: "field", name: "parked_status" },
-          op: "=",
-          right: { kind: "value", value: "parked" },
-        },
-        page: { kind: "offset", offset: 0, length: 100 },
-      }, { signal: signal });
+      return PR_fetchAllFind("/sessions/find", {
+        kind: "predicate",
+        left: { kind: "field", name: "parked_status" },
+        op: "=",
+        right: { kind: "value", value: "parked" },
+      }, { signal: signal, apiFetch: window.primerApi.apiFetch });
     },
     { pollMs: 5000 }
   );
+  // A session that yields or resumes changes its pending record: read that one now instead of at its next poll (trailing frames kept).
+  var nudgeState = React.useState({});
+  var nudges = nudgeState[0], setNudges = nudgeState[1];
+  var tapThrottle = React.useRef({});
+  window.useWorkspaceTapListener(con.wid, function (ev) {
+    var cls = ev && ev["class"];
+    if (cls !== "yielded" && cls !== "resumed") return;
+    var sid = ev.session_id;
+    PR_trailingThrottle(tapThrottle.current, 500, function () {
+      parkedSessions.refetch();
+      if (sid) setNudges(function (prev) { return Object.assign({}, prev, { [sid]: (prev[sid] || 0) + 1 }); });
+    });
+  });
   var records = window.primerApi.useResource(
     "nv-plat:approval-records",
     function (signal) { return SH_api.approvalRecords(signal); },
@@ -1193,7 +1211,7 @@ function NV_ApprovalsAudit() {
   return (
     <div className="nv-audit" data-testid="nv-plat-audit">
       {sessionIds.map(function (sid) {
-        return <NV_AuditPendingFetcher key={sid} sid={sid} onRecord={onPendingRecord} />;
+        return <NV_AuditPendingFetcher key={sid} sid={sid} onRecord={onPendingRecord} count={sessionIds.length} nudge={nudges[sid] || 0} />;
       })}
       <PK_PageHeader
         title="Decisions audit"

@@ -543,16 +543,7 @@ function NV_MobileSpaces(props) {
     function (signal) { return SH_api.allSessions(signal); },
     { pollMs: 5000, deps: [] }
   );
-  var inboxRes = window.primerApi.useResource(
-    "nv-rail-inbox",
-    function (signal) {
-      return SH_api.pendingAttention(signal).catch(function (err) {
-        if (err && err.status !== 404) throw err;
-        return { items: [] };
-      });
-    },
-    { pollMs: 10000, deps: [] }
-  );
+  var inboxRes = SH_useAttention(con.workspaces || []);
 
   var expandedState = React.useState({});
   var expanded = expandedState[0];
@@ -1695,16 +1686,7 @@ function NV_MobileShell() {
   // use-resource.js dedupes by that string, so switching between the
   // desktop and mobile shells at a resize boundary never runs two
   // independent poll loops side by side.
-  var inboxRes = window.primerApi.useResource(
-    "nv-rail-inbox",
-    function (signal) {
-      return SH_api.pendingAttention(signal).catch(function (err) {
-        if (err && err.status !== 404) throw err;
-        return { items: [] };
-      });
-    },
-    { pollMs: 10000, deps: [] }
-  );
+  var inboxRes = SH_useAttention(con.workspaces || []);
   var inboxItems = (inboxRes.data && inboxRes.data.items) || [];
 
   // Tap-driven nudge, same compromise nv-rail.jsx's own Inbox makes: one
@@ -1713,15 +1695,11 @@ function NV_MobileShell() {
   // workspaces' attention changes still arrive within one 10s poll.
   // Debounced so a burst of frames from the same session doesn't refetch
   // once per frame.
-  var refetchTimerRef = React.useRef(null);
+  var refetchThrottleRef = React.useRef({});
   window.useWorkspaceTapListener(con.wid, function (ev) {
     var cls = ev && ev["class"];
     if (cls !== "yielded" && cls !== "resumed" && cls !== "done") return;
-    if (refetchTimerRef.current) return;
-    inboxRes.refetch();
-    refetchTimerRef.current = setTimeout(function () {
-      refetchTimerRef.current = null;
-    }, 500);
+    PR_trailingThrottle(refetchThrottleRef.current, 500, function () { inboxRes.refetch(); });
   });
 
   // M5 spec pt 6: an incoming con.overlay naming a desktop-only overlay

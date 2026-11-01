@@ -381,37 +381,7 @@ function NV_Rail(props) {
   var viewerId = con && con.viewer && (con.viewer.user_id || con.viewer.id) || null;
   var wsGroups = [["mine", "Mine"], ["shared", "Shared with me"], ["public", "Public"]];
   var sessRes = NV_useSessionList();
-  var inboxRes = window.primerApi.useResource(
-    "nv-rail-inbox",
-    function (signal) {
-      var workspaces = ((wsRes.data && wsRes.data.items) || []);
-      return SH_api.pendingAttention(signal)
-        .then(function (out) {
-          var items = (out && out.items) || [];
-          return { items: items.map(function (it) {
-            return it.workspace_id ? it : Object.assign({}, it, { workspace_id: it.wid || null });
-          }) };
-        })
-        .catch(function (err) {
-          if (err && err.status !== 404) throw err;
-          // Compatibility path only: a server predating the aggregate
-          // endpoint (list_pending_attention) 404s here, so this fans out
-          // the per-workspace endpoint instead - same idea, N calls
-          // instead of one, and a different kind vocabulary (see
-          // NV_Rail_inboxKindLabel above).
-          return Promise.all(workspaces.map(function (w) {
-            return SH_api.pendingYields(w.id, signal).then(function (out) {
-              return ((out && out.items) || []).map(function (it) {
-                return Object.assign({}, it, { workspace_id: w.id });
-              });
-            });
-          })).then(function (perWs) {
-            return { items: perWs.reduce(function (a, b) { return a.concat(b); }, []) };
-          });
-        });
-    },
-    { pollMs: 10000, deps: [(wsRes.data && wsRes.data.items || []).length] }
-  );
+  var inboxRes = SH_useAttention((wsRes.data && wsRes.data.items) || []);
 
   // US-011f: restore the liveness the retired nv-sessions-sidebar.jsx had
   // (git show HEAD -- ui/components/console/nv-sessions-sidebar.jsx) -
@@ -427,16 +397,15 @@ function NV_Rail(props) {
   // otherwise hammer the cross-workspace aggregate endpoint once per
   // frame; the first qualifying frame still refetches immediately so the
   // update still feels live.
-  var attentionRefetchTimerRef = React.useRef(null);
+  var attentionThrottleRef = React.useRef({});
   window.useWorkspaceTapListener(props.selectedWorkspaceId, function (ev) {
     var cls = ev && ev["class"];
     if (cls !== "yielded" && cls !== "resumed" && cls !== "done") return;
-    if (attentionRefetchTimerRef.current) return;
-    sessRes.refetch();
-    inboxRes.refetch();
-    attentionRefetchTimerRef.current = setTimeout(function () {
-      attentionRefetchTimerRef.current = null;
-    }, 500);
+    // Leading AND trailing (UI-L5): a second frame inside the window is refetched when it ends, not at the next poll.
+    PR_trailingThrottle(attentionThrottleRef.current, 500, function () {
+      sessRes.refetch();
+      inboxRes.refetch();
+    });
   });
 
   var expandedState = React.useState({});

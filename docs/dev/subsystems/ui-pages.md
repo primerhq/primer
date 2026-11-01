@@ -486,3 +486,10 @@ A form that PUTs or PATCHes a row sends only what the operator changed, laid ove
 - The share dialog's access read does not refetch on wake, so a draft survives a tab switch.
 - The harness enum select hands back the schema's own member (a numeric enum stays a number) and `null` for the blank option.
 - A blank secret still keeps the stored one. The channel provider edit form (optional secrets) and the SSO edit form have an explicit Clear control: channels send `null` for the field, SSO adds `?clear_client_secret=true` to the PUT (`primer/api/routers/oidc_providers.py`).
+
+## Console polling and fan-out (T87)
+
+- A tap-driven refetch keeps its trailing frame: `PR_trailingThrottle(state, ms, fn)` (`ui/foundation/api.js`) runs `fn` on the first frame and once more when a window that saw further frames ends. The rail's Inbox and the phone shell use it, so a second session yielding 100 ms after the first shows at once, not at the next 10 s poll.
+- The cross-workspace attention aggregate (`/yields/pending`) is read through one hook, `SH_useAttention` (`ui/components/shell/sh-api.jsx`), under the key `nv-rail-inbox`; the rail, both phone tabs and both System panels share it, with the per-workspace fallback for a server that 404s.
+- The approvals audit reads every parked session (`PR_fetchAllFind`, polled with `PR_pagedPollMs`), polls each session's pending record at a rate that stretches with the count, and refetches a session's record on its `yielded` or `resumed` tap frame.
+- The agent Sessions panel reads one `limit=10` page and takes its count from `total`. The agents and graphs lists run their per-row reads through `PR_mapLimit` (at most 4 in flight).

@@ -91,6 +91,8 @@ window.primerApi = {
 window.primerApi.setTweak = function (k, v) { LOG.tweaks.push([k, v]); };
 window.useWorkspaceTapListener = function () {};
 var SH_api = { pendingAttention: function () { return Promise.resolve({ items: [] }); } };
+var SH_useAttention = function () { return { data: { items: [] }, loading: false, error: null, degraded: false, refetch: function () {} }; };
+var PR_trailingThrottle = function (state, ms, fn) { fn(); };
 window.BottomSheet = function (props) {
   return React.createElement("div", { "data-testid": "sheet", "data-open": String(!!props.open) }, props.children);
 };

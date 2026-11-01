@@ -544,3 +544,37 @@ var SH_api = {
 };
 
 window.SH_api = SH_api;
+
+// The one read of the cross-workspace attention aggregate (UI-L11): the rail's Inbox, the phone's tabs and both System attention panels share this key, so the
+// endpoint is read once per poll however many of them are mounted. A server predating the aggregate 404s: that falls back to the per-workspace reads of
+// `workspaces` (the rows a caller needs from the answer are mapped by the caller). Every row names its workspace as `workspace_id`.
+function SH_useAttention(workspaces, opts) {
+  var list = workspaces || [];
+  var ids = list.map(function (w) { return w.id; });
+  return window.primerApi.useResource(
+    "nv-rail-inbox",
+    function (signal) {
+      return SH_api.pendingAttention(signal)
+        .then(function (out) {
+          var items = (out && out.items) || [];
+          return Object.assign({}, out, { items: items.map(function (it) {
+            return it.workspace_id ? it : Object.assign({}, it, { workspace_id: it.wid || null });
+          }) });
+        })
+        .catch(function (err) {
+          if (err && err.status !== 404) throw err;
+          return Promise.all(ids.map(function (wid) {
+            return SH_api.pendingYields(wid, signal).then(function (out) {
+              return ((out && out.items) || []).map(function (it) {
+                return Object.assign({}, it, { workspace_id: wid });
+              });
+            });
+          })).then(function (perWs) {
+            return { items: perWs.reduce(function (a, b) { return a.concat(b); }, []) };
+          });
+        });
+    },
+    Object.assign({ pollMs: 10000, deps: [ids.join(",")] }, opts || {})
+  );
+}
+window.SH_useAttention = SH_useAttention;
