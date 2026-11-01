@@ -236,3 +236,63 @@ def test_a_freed_session_takes_only_status_from_frames_and_reloads_its_history_w
     assert js(ctx, "CALLS") == ["/sessions/gone/messages?after_seq=0&limit=1000"]
     assert js(ctx, "seqsOf(gone)") == list(range(1, 56))
     assert js(ctx, "SS_getStore('w1', 'gone').status.verb") == "grep"
+
+
+# ---- a pulse dot is a status-only consumer (lead ruling, the last UI-H1 step) --------------------------------------------
+# The rail's real NV_Rail_SessionPulse, on the mini React runtime with the real store and hub; DocView stands in for an open
+# session document (a transcript consumer).
+
+RAIL_EXTRA = r"""
+function DocView() { window.useSessionStore("w1", "s1", "transcript"); return null; }
+function DotAndDoc() {
+  return [React.createElement(NV_Rail_SessionPulse, { key: "dot", wid: "w1", sid: "s1" }), React.createElement(DocView, { key: "doc" })];
+}
+function tapFrames(lo, hi) {
+  for (var s = lo; s <= hi; s++) {
+    var r = record(s);
+    OPENED[0].onmessage({ data: JSON.stringify({ "class": r.kind, session_id: "s1", seq: r.seq, ts: r.ts, payload: r.payload }) });
+    OPENED[0].onmessage({ data: JSON.stringify({ "class": "text_delta", session_id: "s1", part_id: "n:text", kind: "text", delta: "tok " }) });
+  }
+  MR.settle();
+}
+"""
+
+
+@pytest.fixture
+def rail_ctx() -> Iterator[object]:
+    from tests.ui._mini_react import transpile
+
+    code = "\n;\n".join([transpile(ROOT / "ui" / "components" / "console" / "nv-rail.jsx"), RAIL_EXTRA])
+    c = mini_react_context(code, SERVER + STORE_SRC + "\n;\n" + TAP_SRC)
+    c.eval(
+        "LAST = 50; var plain = record;"
+        " record = function (s) { return s === 50 ? { seq: s, kind: 'tool_call', ts: plain(s).ts, payload: { name: 'grep', id: 'g' } } : plain(s); };"
+        " WTAP_retain('w1');"
+    )
+    try:
+        yield c
+    finally:
+        c.close()
+
+
+def test_a_pulse_dot_keeps_no_records_and_shows_the_current_status(rail_ctx) -> None:
+    rail_ctx.eval("MR.mount(NV_Rail_SessionPulse, { wid: 'w1', sid: 's1' }); tapFrames(1, 50);")
+    store = "SS_getStore('w1', 's1')"
+    assert js(rail_ctx, store + ".recordsBySeq.length") == 0 and js(rail_ctx, "Object.keys(" + store + ".parts)") == []
+    status = js(rail_ctx, "SS_getSnapshot(" + store + ", 'status')")
+    assert status["verb"] == "grep" and status["startedMs"] == js(rail_ctx, "Date.parse(record(50).ts)")
+    assert js(rail_ctx, "MR.findProp('className', 'nv-dot-pulse') !== null") is True
+
+
+def test_a_document_mounting_beside_the_dot_gets_the_history_and_the_frames_again(rail_ctx) -> None:
+    rail_ctx.eval("MR.mount(NV_Rail_SessionPulse, { wid: 'w1', sid: 's1' }); tapFrames(1, 50);")
+    rail_ctx.eval("MR.mount(DotAndDoc, {}); CALLS = []; OPENED[0].onopen();")
+    assert js(rail_ctx, "CALLS") == ["/sessions/s1/messages?after_seq=0&limit=1000"], "the catch-up reads the history from the start"
+    rail_ctx.eval("LAST = 55; tapFrames(51, 55);")
+    assert js(rail_ctx, "seqsOf(SS_getStore('w1', 's1'))") == list(range(1, 56))
+
+
+def test_every_pulse_dot_declares_it_needs_no_records() -> None:
+    for rel in ("nv-rail.jsx", "nv-mobile-shell.jsx", "nv-tab-groups.jsx"):
+        src = (ROOT / "ui" / "components" / "console" / rel).read_text(encoding="utf-8")
+        assert '"status", { records: false })' in src, rel

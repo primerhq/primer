@@ -77,7 +77,7 @@ function NV_Rail_SessionPulse(props) {
   // copy is small and kept local so this file has no load-order
   // dependency on that one.
   var statusSnap = typeof window.useSessionStore === "function"
-    ? window.useSessionStore(props.wid, props.sid, "status")
+    ? window.useSessionStore(props.wid, props.sid, "status", { records: false })
     : null;
   if (!statusSnap || !statusSnap.verb) return null;
   return <span className="nv-dot-pulse" title="running" />;

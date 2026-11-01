@@ -86,6 +86,7 @@ function SS_getStore(wid, sid) {
     connState: (window.WTAP_hubConnState
       && window.WTAP_hubConnState(wid)) || "connecting",
     refs: 0,
+    recordRefs: 0,        // the mounted consumers that read records (not status-only; SS_retain)
     _snap: { transcript: null, status: null, gates: null, phase: null, canvas: null },
     _dirty: { transcript: false, status: false, gates: false, phase: false, canvas: false },
     _sub: { transcript: [], status: [], gates: [], phase: [], canvas: [] },
@@ -209,8 +210,8 @@ function SS_apply(store, frame) {
   // dropped (defensive; the store is per-sid).
   if (frame.session_id != null && frame.session_id !== store.sid) return;
 
-  // A store nothing has displayed since its records were freed (SS_freeRecords) keeps only what a pulse dot and the
-  // tap cursor read: a durable record moves its status, its pending send and its high-water, and nothing is appended
+  // A store no record-reading consumer has shown since its records were freed (SS_freeRecords), or that only status-only
+  // consumers show, keeps only what a pulse dot and the tap cursor read: a durable record moves its status, its pending send and its high-water, and nothing is appended
   // (no record, no live part), so a session nobody shows does not grow again. Phase and canvas are fixed-size state.
   if (store._freed && frame["class"] !== "phase" && frame["class"] !== "canvas") {
     if (typeof frame.seq === "number") {
@@ -679,15 +680,27 @@ function SS_sendUserMessage(store, text, clientId, attachments) {
 
 // --- refcount / dispose (spec section 4.4) -------------------------------
 
-// Once nothing displays a session (refs at zero), its accumulated records and
-// live parts are freed after a grace, so reopening a tab within a minute does
-// not refetch and a re-mount inside it cancels the free (lead ruling on UI-H1).
-// The status, the optimistic leg and the high-water stay: the pulse dot and
-// the tap cursor still work.
+// Once no consumer that reads records displays a session, its accumulated
+// records and live parts are freed after a grace, so reopening a tab within a
+// minute does not refetch and a re-mount inside it cancels the free (lead
+// ruling on UI-H1). The status, the optimistic leg and the high-water stay:
+// the pulse dot and the tap cursor still work. A status-only consumer (a pulse
+// dot, `{ records: false }`) never needs records: a session only such
+// consumers show is treated as freed from the start.
 var SS_FREE_AFTER_MS = 60000;
 
-function SS_retain(store) {
+function SS_wantsRecords(opts) {
+  return !(opts && opts.records === false);
+}
+
+function SS_retain(store, opts) {
   store.refs += 1;
+  if (!SS_wantsRecords(opts)) {
+    // Nothing reads its records and no grace is running: it keeps none from now on.
+    if (!store.recordRefs && store._freeTimer == null && !store._freed) SS_freeRecords(store);
+    return store;
+  }
+  store.recordRefs += 1;
   // Shown again after a free: its history starts over, so the catch-up reads it from the start, as on first open.
   if (store._freed) {
     store._freed = false;
@@ -700,17 +713,19 @@ function SS_retain(store) {
   return store;
 }
 
-function SS_dispose(store) {
+function SS_dispose(store, opts) {
   store.refs -= 1;
   if (store.refs <= 0) {
     store.refs = 0;
     store._flushScheduled = false;
-    if (store._freeTimer == null && typeof setTimeout === "function") {
-      store._freeTimer = setTimeout(function () {
-        store._freeTimer = null;
-        if (store.refs === 0) SS_freeRecords(store);
-      }, SS_FREE_AFTER_MS);
-    }
+  }
+  if (!SS_wantsRecords(opts)) return store;
+  store.recordRefs = Math.max(0, store.recordRefs - 1);
+  if (!store.recordRefs && store._freeTimer == null && typeof setTimeout === "function") {
+    store._freeTimer = setTimeout(function () {
+      store._freeTimer = null;
+      if (!store.recordRefs) SS_freeRecords(store);
+    }, SS_FREE_AFTER_MS);
   }
   return store;
 }
@@ -844,17 +859,21 @@ if (typeof window !== "undefined" && window.React &&
   // Bind a component to one channel of one store. The store survives
   // unmount; the underlying connection lives at the hub. A mounted
   // consumer is one reference (retained on every render, refs only grew).
-  window.useSessionStore = function (wid, sid, channel) {
+  // `opts.records === false` declares a status-only consumer (a pulse dot):
+  // it needs no records, so a session only such consumers show keeps none.
+  window.useSessionStore = function (wid, sid, channel, opts) {
     var store = SS_getStore(wid, sid);
+    var records = SS_wantsRecords(opts);
     var snap = window.React.useSyncExternalStore(
       function (cb) { return SS_subscribe(store, channel, cb); },
       function () { return SS_getSnapshot(store, channel); },
       function () { return SS_getSnapshot(store, channel); }
     );
     window.React.useEffect(function () {
-      SS_retain(store);
-      return function () { SS_dispose(store); };
-    }, [store]);
+      var o = { records: records };
+      SS_retain(store, o);
+      return function () { SS_dispose(store, o); };
+    }, [store, records]);
     return snap;
   };
 }
