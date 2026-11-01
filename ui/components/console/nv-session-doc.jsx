@@ -2215,6 +2215,9 @@ function NV_Composer(props) {
   // the MediaRecorder to stop and hoping rec.onstop runs before the
   // component is gone.
   var streamRef = React.useRef(null);
+  // Whether the button is still held (or latched) when getUserMedia answers (UI-M6): a release before the microphone
+  // opened, or a second press while the first was still opening, must not leave a recorder running.
+  var wantMicRef = React.useRef(false);
   // US-008 R3 item 5: double-tap latches recording on (hands-free);
   // click again stops it. Hold-to-talk is unchanged - a normal
   // press-and-release still stops on release, same as before.
@@ -2365,6 +2368,10 @@ function NV_Composer(props) {
   function micStart() {
     if (recording || !props.micEnabled) return;
     navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      if (!wantMicRef.current || (recRef.current && recRef.current.state !== "inactive")) {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        return;
+      }
       var rec = new MediaRecorder(stream);
       streamRef.current = stream;
       var chunks = [];
@@ -2399,7 +2406,9 @@ function NV_Composer(props) {
     }, function () { con.toast("Microphone unavailable"); });
   }
   function micStop() {
-    if (recRef.current && recording) recRef.current.stop();
+    wantMicRef.current = false;
+    // The recorder's own state, not `recording`: this render's value is stale for a stop scheduled by an earlier one.
+    if (recRef.current && recRef.current.state !== "inactive") recRef.current.stop();
   }
   function micClearPendingStop() {
     if (micPendingStopRef.current) {
@@ -2415,6 +2424,7 @@ function NV_Composer(props) {
   // rather than stopping and restarting mid-gesture.
   function micDown() {
     if (latched) return;
+    wantMicRef.current = true;
     micClearPendingStop();
     micStart();
   }

@@ -198,3 +198,88 @@ def test_the_follow_effect_depends_on_the_transcript_snapshot() -> None:
     effect = DOC[DOC.index("if (follow) jumpLatest();"):]
     deps = effect[effect.index("}, ["):effect.index("]);")]
     assert "transcriptSnap" in deps
+
+
+# ---- UI-M6: push-to-talk released before the microphone opens -----------------------------------------------------------
+# The composer alone, with a getUserMedia the test resolves by hand, a MediaRecorder stand-in, and timers it fires itself.
+
+MIC = r"""
+var GUM = [], TRACKS = [], RECORDERS = [], TIMERS = [], POSTS = [];
+var navigator = { mediaDevices: { getUserMedia: function () {
+  return new Promise(function (resolve) { GUM.push(resolve); });
+} } };
+function micStream() {
+  var t = { stopped: false, stop: function () { this.stopped = true; } };
+  TRACKS.push(t);
+  return { getTracks: function () { return [t]; } };
+}
+function MediaRecorder(stream) { this.stream = stream; this.state = "inactive"; this.started = 0; RECORDERS.push(this); }
+MediaRecorder.prototype.start = function () { this.state = "recording"; this.started += 1; };
+MediaRecorder.prototype.stop = function () { this.state = "inactive"; if (this.onstop) this.onstop(); };
+function Blob() {}
+function FormData() { this.append = function () {}; }
+setTimeout = function (fn) { TIMERS.push({ fn: fn, id: TIMERS.length + 1, live: true }); return TIMERS.length; };
+clearTimeout = function (id) { TIMERS.forEach(function (t) { if (t.id === id) t.live = false; }); };
+function fireTimers() { TIMERS.splice(0).forEach(function (t) { if (t.live) t.fn(); }); MR.settle(); }
+function mic(handler) { MR.find("nv-mic").props[handler](); MR.settle(); }
+window.primerApi.apiFetch = function (m, path) { POSTS.push(path); return Promise.resolve({ text: "hello there" }); };
+"""
+
+
+@pytest.fixture
+def composer() -> Iterator[object]:
+    prelude = "var window = globalThis;\n" + "\n;\n".join([
+        _src("foundation/shell-status.js"),
+        _src("foundation/shell-turns.js"),
+        _src("foundation/session-store.js"),
+        _src("foundation/use-workspace-tap.js"),
+        _src("foundation/shell-attention.js"),
+        _src("foundation/shell-verbs.js"),
+        transpile(UI / "components" / "session-adapter.jsx"),
+        STUBS,
+        MIC,
+    ])
+    c = mini_react_context(transpile(DOC_PATH), prelude)
+    c.eval('MR.mount(NV_Composer, { sid: "s1", micEnabled: true, onSendStarted: function () {} });')
+    try:
+        yield c
+    finally:
+        c.close()
+
+
+def opens(c) -> None:
+    """The oldest pending getUserMedia answers; its then-callback runs once the eval's microtasks drain, then React renders."""
+    c.eval("GUM.shift()(micStream());")
+    c.eval("MR.settle();")
+
+
+def test_hold_to_talk_records_and_lands_the_words_as_editable_text(composer) -> None:
+    composer.eval("mic('onMouseDown');")
+    opens(composer)
+    assert js(composer, "RECORDERS.map(function (r) { return r.state; })") == ["recording"]
+    composer.eval("mic('onMouseUp'); fireTimers();")
+    assert js(composer, "RECORDERS[0].state") == "inactive"
+    assert js(composer, "TRACKS.every(function (t) { return t.stopped; })") is True
+    assert js(composer, "POSTS") == ["/audio/transcriptions"]
+    composer.eval("MR.settle();")
+    assert js(composer, "MR.find('nv-composer-input').props.value") == "hello there"
+
+
+def test_a_release_before_the_microphone_opens_never_starts_recording(composer) -> None:
+    """The permission prompt is up while the button is held; the operator lets go, then allows. The stop ran first and found
+    nothing to stop; the recorder then started and kept recording until the next press."""
+    composer.eval("mic('onMouseDown'); mic('onMouseUp'); fireTimers();")
+    opens(composer)
+    assert js(composer, "RECORDERS.filter(function (r) { return r.started; }).length") == 0
+    assert js(composer, "TRACKS.length") == 1 and js(composer, "TRACKS[0].stopped") is True
+
+
+def test_a_double_tap_before_the_microphone_opens_leaves_one_recorder_to_stop(composer) -> None:
+    """Two presses before getUserMedia answers asked for two streams; the first recorder was orphaned with its track live."""
+    composer.eval("mic('onMouseDown'); mic('onMouseUp'); mic('onMouseDown'); mic('onMouseUp');")  # a double tap: latched
+    opens(composer)
+    opens(composer)
+    assert js(composer, "RECORDERS.filter(function (r) { return r.started; }).length") == 1
+    composer.eval("mic('onMouseDown'); mic('onMouseUp');")  # a press while latched stops it
+    assert js(composer, "RECORDERS.every(function (r) { return r.state === 'inactive'; })") is True
+    assert js(composer, "TRACKS.every(function (t) { return t.stopped; })") is True
