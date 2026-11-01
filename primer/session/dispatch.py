@@ -1478,7 +1478,7 @@ async def run_one_session_turn(
                 # Last write of the block: present means the cursor already advanced. Not for a row another path
                 # ended meanwhile (the turn's own write was skipped).
                 if not _ended_by_another_path(written, new_status, ended_reason):
-                    await _mark_turn_completed(session_storage, session_id, session.turn_no)
+                    await _mark_turn_completed(session_storage, session_id, session.turn_no, deps)
 
         if late_cancel:
             return await _finish_despite_cancel(_land_cancelled_turn(
@@ -2052,7 +2052,7 @@ async def _land_cancelled_turn(
             # Last write of the block: present means the cursor already advanced. Not for a row another path
             # ended meanwhile (the turn's own write was skipped), as in the early branch above.
             if own_outcome:
-                await _mark_turn_completed(session_storage, session_id, session.turn_no)
+                await _mark_turn_completed(session_storage, session_id, session.turn_no, deps)
     if seq is not None:
         await publish_tick(deps.event_bus, session_id, seq)
     await _best_effort_io("the TurnLogCancelled turn log entry", session_id, _safe_turn_log(turn_log, TurnLogCancelled(
@@ -2496,7 +2496,7 @@ def _ended_by_another_path(written: "_TerminalWrite", status: SessionStatus, end
     )
 
 
-async def _mark_turn_completed(session_storage, session_id: str, turn_no: int) -> None:
+async def _mark_turn_completed(session_storage, session_id: str, turn_no: int, deps: "SessionDispatchDeps | None" = None) -> None:
     """Record that turn ``turn_no`` has committed every effect it has (``WorkspaceSession.completed_turn_no``).
 
     Called ONLY as the last write of the two terminal lock blocks of a turn that ran (the clean completion and
@@ -2525,6 +2525,23 @@ async def _mark_turn_completed(session_storage, session_id: str, turn_no: int) -
             "session %s: turn_no is no longer %d, so the turn is not recorded as completed",
             session_id, turn_no,
         )
+        return
+    # The session's agent may learn from this turn: queue (or push back) its reflection (agent memory).
+    await _memory_hook(deps, written, ended=False)
+
+
+async def _memory_hook(deps: "SessionDispatchDeps | None", session, *, ended: bool) -> None:
+    """Hand a finished turn, or an ended session, to the memory job queue. Best effort: memory never fails a turn or a release."""
+    engine = getattr(deps, "claim_engine", None)
+    if engine is None:
+        return
+    from primer.memory.jobs import on_session_ended, on_turn_completed
+
+    try:
+        hook = on_session_ended if ended else on_turn_completed
+        await hook(deps.storage_provider, engine, session, datetime.now(timezone.utc))
+    except Exception:  # noqa: BLE001 - best-effort; the turn's own outcome stands
+        logger.warning("session %s: could not queue the memory reflection", session.id, exc_info=True)
 
 
 async def _noop_if_turn_already_completed(
@@ -3005,6 +3022,7 @@ async def _publish_terminal(
             session_id=session_id,
             payload={"ended_reason": ended_reason},
         )
+        await _memory_hook(deps, session, ended=True)
     if deps.event_bus is None:
         return
     try:

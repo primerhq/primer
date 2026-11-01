@@ -79,6 +79,34 @@ async def run_engine_harness(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
         )
 
 
+async def run_engine_memory(pool: "WorkerPool", engine_lease: "ClaimLease") -> None:
+    """Handle a MEMORY claim: one background job of agent memory (reflect, curate or topics).
+
+    ``run_memory_job`` holds the gates (missing agent, disabled, expired, over budget, trivial session) and answers what to do with the lease. A job
+    that raises is dropped, never retried in a loop: its trigger (the next turn or the daily schedule) enqueues it again.
+    """
+    from primer.events.recorder import recorder_for
+    from primer.int.claim import ReleaseOutcome
+    from primer.memory.jobs import MemoryDeps, run_memory_job
+
+    deps = MemoryDeps(
+        sp=pool._storage,
+        provider_registry=pool._provider_registry,
+        semantic_search_registry=pool._semantic_search_registry,
+        engine=pool._engine,
+        recorder=recorder_for(pool._storage, pool._event_bus),
+        store=None,  # the MemoryStore of Task 3, wired when it lands
+        now=lambda: datetime.now(timezone.utc),
+    )
+    outcome = ReleaseOutcome(success=False, drop_lease=True)
+    try:
+        outcome = await run_memory_job(deps, engine_lease)
+    except Exception:
+        logger.exception("engine memory job %s raised", engine_lease.entity_id)
+    finally:
+        await pool._release_lease(engine_lease, outcome)
+
+
 def _now() -> datetime:
     """The worker's clock when it handles a claim (a seam: the catchup tests run the trigger handler on a fake one)."""
     return datetime.now(timezone.utc)

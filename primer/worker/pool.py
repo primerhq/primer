@@ -259,6 +259,7 @@ class WorkerPool:
             ClaimKind.HARNESS: self._run_engine_harness,
             ClaimKind.TRIGGER: self._run_engine_trigger,
             ClaimKind.TOOL_CALL: self._run_engine_tool_call,
+            ClaimKind.MEMORY: self._run_engine_memory,
         }
 
         # Engine path: one claim loop + one bus loop.
@@ -1647,6 +1648,9 @@ class WorkerPool:
 
     async def _run_engine_tool_call(self, engine_lease: ClaimLease) -> None:
         return await engine_handlers.run_engine_tool_call(self, engine_lease)
+
+    async def _run_engine_memory(self, engine_lease: ClaimLease) -> None:
+        return await engine_handlers.run_engine_memory(self, engine_lease)
 
     async def _cancel_loop(self) -> None:
         """Drain cancel notifications. When a sid arrives that this worker

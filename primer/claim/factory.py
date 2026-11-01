@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from primer.bus.in_memory import InMemoryEventBus
 from primer.claim.adapters.harnesses import HarnessClaimAdapter
+from primer.claim.adapters.memory import MemoryClaimAdapter
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.claim.adapters.triggers import TriggerClaimAdapter
@@ -56,6 +57,7 @@ class ClaimEngineFactory:
         """
         from primer.model.workspace_session import WorkspaceSession
         from primer.model.harness import Harness
+        from primer.model.memory import MemoryJob
         from primer.model.tool_call_task import ToolCallTask
         from primer.model.trigger import Trigger
 
@@ -73,6 +75,9 @@ class ClaimEngineFactory:
             ),
             ClaimKind.TOOL_CALL: ToolCallClaimAdapter(
                 task_storage=storage_provider.get_storage(ToolCallTask),
+            ),
+            ClaimKind.MEMORY: MemoryClaimAdapter(
+                storage=storage_provider.get_storage(MemoryJob),
             ),
         }
 
