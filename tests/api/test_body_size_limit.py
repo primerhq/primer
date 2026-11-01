@@ -177,3 +177,21 @@ async def test_the_backstop_answers_when_no_exception_handler_catches_the_refusa
         big = await c.post("/anything", content=_chunks(5, 40))
     assert ok.status_code == 200 and ok.text == "read"
     _assert_413(big, 100)
+
+
+def test_every_route_cap_applies_with_and_without_a_trailing_slash() -> None:
+    """CV-13: the middleware runs before routing, so `/files/` (which FastAPI would redirect to `/files`) must meet the same cap as `/files`."""
+    from primer.api.config import RequestLimitsConfig
+    from primer.api.middleware.body_limit import BodySizeLimitMiddleware, body_limit_options
+
+    limits = RequestLimitsConfig(max_body_bytes=10_000_000, workspace_file_max_body_bytes=9_000_000, service_publish_max_body_bytes=8_000_000)
+    mw = BodySizeLimitMiddleware(lambda *a: None, **body_limit_options(limits))
+    for method, path in (
+        ("PUT", "/v1/workspaces/w/files"),
+        ("POST", "/v1/services/s/versions"),
+        ("POST", "/v1/workspaces/w/sessions/s/canvas/events"),
+        ("POST", "/v1/workspaces/w/sessions/s/canvas/ops"),
+    ):
+        assert mw._limit_for(method, path + "/") == mw._limit_for(method, path), path
+    assert mw._limit_for("PUT", "/v1/workspaces/w/files/") == 9_000_000
+    assert mw._limit_for("PUT", "/v1/workspaces/w/files/x") == 10_000_000      # a longer path is still not the route
