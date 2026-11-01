@@ -123,6 +123,9 @@ _CALL_TOOL_ID = f"system{_SCOPE_SEPARATOR}call_tool"
 # purpose; it is treated as protected (when unsure, wait) rather than followed without bound.
 _CALL_TOOL_LOOKTHROUGH_DEPTH = 4
 
+# The longest ``name`` label the tool metrics carry (GS-38): an MCP server's tool names are its own, of any length.
+_METRIC_LABEL_MAX = 128
+
 
 def _wrapped_call(arguments: object) -> tuple[str, dict] | None:
     """The (scoped tool id, arguments) a ``call_tool`` call wraps, or None when its arguments do not name a tool."""
@@ -821,11 +824,11 @@ class ToolExecutionManager:
                 result = _without_credentials(await self._execute_inner(
                     call, principal=principal, bypass_approval=bypass_approval,
                 ))
-                _metrics.tool_calls_total.labels(call.name, "ok").inc()
+                _metrics.tool_calls_total.labels(self._metric_label(call.name), "ok").inc()
                 await self._emit_tool_called(call, ok=not result.error)
                 return result
             except Exception as _exc:
-                _metrics.tool_calls_total.labels(call.name, "fail").inc()
+                _metrics.tool_calls_total.labels(self._metric_label(call.name), "fail").inc()
                 await self._emit_tool_called(call, ok=False)
                 # A PrimerError here is a routing or gate answer the callers already handle; a park and a sign-in leave as they always did.
                 if isinstance(_exc, (PrimerError, YieldToWorker, ToolWaitPark)):
@@ -836,9 +839,16 @@ class ToolExecutionManager:
                 _tracing.record_failure(_span, _exc)  # the span still says the call failed (masked, as an escaping exception was)
                 return ToolResultPart(id=call.id, output=f"tool {call.name} failed with an internal error; see the server logs", error=True)
             finally:
-                _metrics.tool_duration_seconds.labels(call.name).observe(
+                _metrics.tool_duration_seconds.labels(self._metric_label(call.name)).observe(
                     _time.monotonic() - _t0
                 )
+
+    def _metric_label(self, name: str) -> str:
+        """The ``name`` label a call is counted under (GS-38): its scoped id when the routing table knows it, else ``unknown``, so a model
+        that invents names adds one series, not one per name."""
+        if name in self._workspace_scoped or name in self._tool_to_toolset:
+            return name[:_METRIC_LABEL_MAX]
+        return "unknown"
 
     async def _emit_tool_called(self, call: ToolCallPart, *, ok: bool) -> None:
         """Land a ``tool.called`` on the platform event log (when wired).
@@ -1374,13 +1384,13 @@ async def invoke_one(
                 principal=principal,
                 ctx=None,
             )
-            _metrics.tool_calls_total.labels(tool_name, "ok").inc()
+            _metrics.tool_calls_total.labels(tool_name[:_METRIC_LABEL_MAX], "ok").inc()
             return result
         except Exception as _exc:
-            _metrics.tool_calls_total.labels(tool_name, "fail").inc()
+            _metrics.tool_calls_total.labels(tool_name[:_METRIC_LABEL_MAX], "fail").inc()
             raise
         finally:
-            _metrics.tool_duration_seconds.labels(tool_name).observe(
+            _metrics.tool_duration_seconds.labels(tool_name[:_METRIC_LABEL_MAX]).observe(
                 _time.monotonic() - _t0
             )
 
