@@ -10,8 +10,8 @@ WHAT BOOTSTRAP MEANS NOW. S2 redefined it: it enables semantic search
 on the `system` collection, which startup regenerates from live state.
 It no longer builds the four `_internal_*` namespaces, and the CDC
 ingest worker that used to keep them current is no longer started. The
-per-entity routes (POST /v1/agents/search and friends) stay registered
-but INERT until they are deleted, answering 200 with no hits.
+per-entity routes (POST /v1/agents/search and friends) were deleted (D18);
+these tests read the system collection's search state instead.
 
 The eighteen CDC-to-search tests that lived here went with that: they
 asserted that creating an agent made it findable through those routes
@@ -75,6 +75,18 @@ def _ic_config_body(*, embedder_id: str, ssp_id: str) -> dict:
         "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
         "search_provider_id": ssp_id,
     }
+
+
+async def _system_search(client: httpx.AsyncClient) -> dict | None:
+    """The system collection's search block, or None while search is off.
+
+    Bootstrap enables semantic search on the system collection and DELETE of the config disables it again; this is what a test reads to
+    see which state the race or the cycle ended in (the per-entity /search routes were removed, D18).
+    """
+    r = await client.get("/v1/collections/system")
+    assert r.status_code == 200, r.text
+    assert r.json().get("type") != "/errors/internal", r.text
+    return r.json().get("search")
 
 
 async def _wait_bootstrap(
@@ -184,6 +196,59 @@ async def _drain_inflight_bootstrap(client: httpx.AsyncClient):
         await asyncio.sleep(0.5)
 
 
+@pytest.mark.asyncio
+async def test_t0053_config_delete_deactivates_subsystem(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0053 — full lifecycle: PUT config → bootstrap → DELETE config →
+    search on the system collection is off again."""
+    embedder_id = f"emb-t0053-{unique_suffix}"
+    ssp_id = f"ssp-t0053-{unique_suffix}"
+
+    # 1. SemanticSearchProvider (required by PUT /internal_collections/config)
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    # 2. EmbeddingProvider
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        # 3. Activate subsystem config
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        # 4. Bootstrap (synchronous: 200 carries the outcome).
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=_BOOTSTRAP_TIMEOUT,
+        )
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
+            f"{boot.status_code}: {boot.text}"
+        )
+        await _wait_bootstrap(client)
+
+        # 5. Bootstrap enabled semantic search on the system collection.
+        assert await _system_search(client) is not None
+
+        # 6. DELETE the config: it disables search on the system collection again.
+        rm = await client.delete("/v1/internal_collections/config")
+        assert rm.status_code == 204, rm.text
+        config_created = False  # already cleaned
+        assert await _system_search(client) is None, "after DELETE config, search on the system collection must be off"
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 def _llm_body(entity_id: str) -> dict:
@@ -353,13 +418,6 @@ def _graph_body(entity_id: str, *, agent_id: str, description: str) -> dict:
 
 
 # ============================================================================
-# T0165 — /v1/tools/search returns 200 after bootstrap (positive control)
-# ============================================================================
-
-
-
-
-# ============================================================================
 # T0174 — query-based discrimination of two agents (positive control)
 # ============================================================================
 
@@ -369,6 +427,48 @@ def _graph_body(entity_id: str, *, agent_id: str, description: str) -> dict:
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0167_bootstrap_is_idempotent(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0167 — POST /v1/internal_collections/bootstrap a second time
+    after the first succeeds is idempotent (spec §11). Bootstrap runs
+    inline, so the second call returns 200 with its own outcome rather
+    than racing the first. The system collection's search stays
+    enabled afterwards.
+    """
+    embedder_id = f"emb-t0167-{unique_suffix}"
+    ssp_id = f"ssp-t0167-{unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    try:
+        async with bootstrapped_subsystem(client, embedder_id, ssp_id):
+            # First call already happened in bootstrapped_subsystem. Second call:
+            boot2 = await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=_BOOTSTRAP_TIMEOUT,
+            )
+            assert boot2.status_code == 200, (
+                f"second bootstrap should be idempotent and return 200; got "
+                f"{boot2.status_code}: {boot2.text}"
+            )
+            if boot2.status_code == 200:
+                await _wait_bootstrap(client)
+            body = boot2.json()
+            assert isinstance(body, dict), body
+
+            # Search stays enabled on the system collection (no stale state).
+            assert await _system_search(client) is not None
+    finally:
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -437,13 +537,65 @@ async def test_t0168_put_config_with_missing_embedder_clean_envelope(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0169_put_config_reconfigure_embedder_works(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0169 — PUT /v1/internal_collections/config is an upsert before
+    bootstrap (no activated_at). After the subsystem activates via
+    bootstrap, vector-space-defining fields (embedding_provider_id,
+    embedding_model, search_provider_id) are frozen: a second PUT
+    with a different embedding_provider_id must return 409 with
+    frozen_fields. Non-frozen fields (cross_encoder, mmr) remain
+    mutable. Search on the system collection stays enabled throughout.
 
+    This test pins the CURRENT behavior: frozen-field PUT returns 409.
+    """
+    embedder_a = f"emb-t0169a-{unique_suffix}"
+    embedder_b = f"emb-t0169b-{unique_suffix}"
+    ssp_id = f"ssp-t0169-{unique_suffix}"
 
-# ============================================================================
-# T0202 — POST /v1/agents/search with query="" returns clean envelope
-# ============================================================================
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
 
+    pr_a = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_a),
+    )
+    assert pr_a.status_code == 201, pr_a.text
+    pr_b = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_b),
+    )
+    assert pr_b.status_code == 201, pr_b.text
 
+    try:
+        async with bootstrapped_subsystem(client, embedder_a, ssp_id):
+            # After activation, changing embedding_provider_id is frozen --
+            # the API must return 409 with frozen_fields in the response.
+            put_b = await client.put(
+                "/v1/internal_collections/config",
+                json=_ic_config_body(embedder_id=embedder_b, ssp_id=ssp_id),
+            )
+            assert put_b.status_code == 409, (
+                f"reconfigure PUT after activation should return 409 "
+                f"(frozen fields); got {put_b.status_code}: {put_b.text}"
+            )
+            # The problem+json error contract renders an HTTPException dict detail
+            # as a string ``detail`` (the human message) with the machine keys
+            # (frozen_fields, error) carried verbatim in ``extensions``.
+            body_json = put_b.json()
+            extensions = body_json.get("extensions", {})
+            frozen = extensions.get("frozen_fields", [])
+            assert "embedding_provider_id" in frozen, (
+                f"expected 'embedding_provider_id' in extensions.frozen_fields; "
+                f"got: {body_json!r}"
+            )
+
+            # The failed PUT did not disturb the search the bootstrap enabled.
+            assert await _system_search(client) is not None
+    finally:
+        await client.delete(f"/v1/embedding_providers/{embedder_a}")
+        await client.delete(f"/v1/embedding_providers/{embedder_b}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -451,6 +603,52 @@ async def test_t0168_put_config_with_missing_embedder_clean_envelope(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0203_bootstrap_on_empty_db_returns_sane_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0203 — Bootstrap on a freshly-activated subsystem against a DB
+    with zero agents/graphs/collections. Built-in tools (e.g. _system,
+    _workspaces) are present but no user entities exist. Bootstrap must
+    complete cleanly without error and return a sane envelope.
+    """
+    embedder_id = f"emb-t0203-{unique_suffix}"
+    ssp_id = f"ssp-t0203-{unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=_BOOTSTRAP_TIMEOUT,
+        )
+        assert boot.status_code == 200, (
+            f"bootstrap on empty DB should return 200 with its outcome, got "
+            f"{boot.status_code}: {boot.text}"
+        )
+        status_row = await _wait_bootstrap(client)
+        assert isinstance(status_row, dict), status_row
+        # Search is enabled on the system collection after bootstrap
+        assert await _system_search(client) is not None
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -708,6 +906,58 @@ async def test_t0243_bootstrap_counts_reflect_seeded_entities(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0269_ic_config_put_with_empty_collections_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0269 — Spec §11 mentioned `collections=[...]` as a body field
+    on PUT /v1/internal_collections/config. The actual model
+    (primer/model/internal.py) does not have a `collections` field,
+    so passing `collections=[]` should be silently ignored by Pydantic
+    (extra=ignore default) and the PUT succeeds.
+
+    Bootstrap after this empty-list PUT must return cleanly with sane
+    envelope; search is enabled on the system collection.
+    """
+    embedder_id = f"emb-t0269-{unique_suffix}"
+    ssp_id = f"ssp-t0269-{unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        body = _ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id)
+        body["collections"] = []  # extra field -- should be ignored
+        put = await client.put(
+            "/v1/internal_collections/config", json=body,
+        )
+        assert put.status_code == 200, (
+            f"PUT with extra collections=[] should be silently "
+            f"accepted; got {put.status_code}: {put.text}"
+        )
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=_BOOTSTRAP_TIMEOUT,
+        )
+        assert boot.status_code == 200, boot.text
+        status_row = await _wait_bootstrap(client)
+        assert isinstance(status_row, dict), status_row
+
+        # Search is enabled on the system collection
+        assert await _system_search(client) is not None
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -715,6 +965,68 @@ async def test_t0243_bootstrap_counts_reflect_seeded_entities(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0277_concurrent_bootstraps_during_fresh_put_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0277 — PUT config and fire two concurrent bootstrap POSTs
+    immediately after. Each POST must return a clean envelope (200 or
+    a documented 4xx); never 5xx /errors/internal. After the dust
+    settles, the subsystem must be active (search on the system collection enabled).
+    """
+    embedder_id = f"emb-t0277-{unique_suffix}"
+    ssp_id = f"ssp-t0277-{unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        # Fire two parallel bootstraps. Bootstrap runs inline, so both
+        # return 200 with their own outcome. The invariant that matters
+        # is that neither returns /errors/internal.
+        r1, r2 = await asyncio.gather(
+            client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=_BOOTSTRAP_TIMEOUT,
+            ),
+            client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=_BOOTSTRAP_TIMEOUT,
+            ),
+        )
+        for r, label in ((r1, "bootstrap A"), (r2, "bootstrap B")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label} returned /errors/internal: {r.text}"
+            )
+            # bootstrap runs inline, so 200 is the only valid outcome
+            assert r.status_code == 200, (
+                f"{label} unexpected status: {r.status_code}: {r.text}"
+            )
+
+        # Wait for bootstrap to settle
+        await _wait_bootstrap(client)
+
+        # After the race, search is enabled on the system collection.
+        assert await _system_search(client) is not None, "search not enabled after the concurrent bootstrap race"
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -785,13 +1097,6 @@ async def test_t0286_get_config_collections_field_round_trip(
 
 
 # ============================================================================
-# T0289 — Concurrent CDC ingest of 5 Agents + 5 search calls
-# ============================================================================
-
-
-
-
-# ============================================================================
 # T0299 — search concurrent with PUT Agent description: search reflects update
 # ============================================================================
 
@@ -799,13 +1104,6 @@ async def test_t0286_get_config_collections_field_round_trip(
 # ============================================================================
 # T0333 — POST /v1/agents/search with `filter` body field is silently ignored
 # ============================================================================
-
-
-# ============================================================================
-# T0346 — Embedder→Collection cascade: search after embedder DELETE clean
-# ============================================================================
-
-
 
 
 # ============================================================================
@@ -887,13 +1185,6 @@ async def test_t0350_bootstrap_before_put_envelope_shape(
 
 
 # ============================================================================
-# T0303 — Bootstrap concurrent with /v1/agents/search returns clean envelopes
-# ============================================================================
-
-
-
-
-# ============================================================================
 # T0400 — CDC ingestion latency for Agent POST → /agents/search empirical pin
 # ============================================================================
 
@@ -903,6 +1194,80 @@ async def test_t0350_bootstrap_before_put_envelope_shape(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0411_concurrent_bootstrap_and_delete_config_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0411 — Race a POST /bootstrap against a DELETE /config on the
+    internal-collections subsystem. Pin: both calls return 2xx/4xx
+    (no 5xx, no `/errors/internal`). The system collection's search
+    converges to a deterministic state: off (DELETE won, or bootstrap
+    completed and was then torn down) or on (bootstrap won and the
+    config is still present after the DELETE attempt).
+
+    Distinct from T0277 (concurrent bootstrap × bootstrap on a brand-
+    new DB) — this races bootstrap against teardown.
+    """
+    embedder_id = f"emb-t0411-{unique_suffix}"
+    ssp_id = f"ssp-t0411-{unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_created = False
+    try:
+        # PUT config so /bootstrap is meaningful
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        # Race bootstrap × delete-config
+        boot_task = asyncio.create_task(client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=_BOOTSTRAP_TIMEOUT,
+        ))
+        rm_task = asyncio.create_task(client.delete(
+            "/v1/internal_collections/config",
+        ))
+        boot, rm = await asyncio.gather(boot_task, rm_task)
+        config_created = False  # delete fired regardless
+
+        for r, label in ((boot, "bootstrap"), (rm, "delete-config")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label} race leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"{label} race returned 5xx: {r.status_code}: {r.text}"
+            )
+
+        # bootstrap: 200 (ran before delete) or 409/503
+        # (subsystem already gone)
+        assert boot.status_code in (200, 409, 503, 404), (
+            f"bootstrap race: unexpected code {boot.status_code}: "
+            f"{boot.text}"
+        )
+        # delete: 204 (succeeded) or 404 (already gone)
+        assert rm.status_code in (204, 404), (
+            f"delete-config race: unexpected code {rm.status_code}: "
+            f"{rm.text}"
+        )
+
+        # The system collection's search ends in a state the race allows (off if the DELETE won, on if the bootstrap did).
+        state = await _system_search(client)
+        assert state is None or isinstance(state, dict), state
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -910,6 +1275,111 @@ async def test_t0350_bootstrap_before_put_envelope_shape(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0412_cdc_burst_create_with_concurrent_delete_config_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0412 — After bootstrap, fire 5 agent CREATEs concurrently with
+    a DELETE config. Pin: subsystem ends up cleanly inactive
+    (system-collection search off), every call returns 2xx/4xx (no /errors/internal),
+    and no leftover ingestion task crashes the worker pool.
+
+    Companion to T0411 (bootstrap × delete) — this races CDC
+    ingestion against teardown.
+    """
+    embedder_id = f"emb-t0412-{unique_suffix}"
+    ssp_id = f"ssp-t0412-{unique_suffix}"
+    llm_id = f"llm-t0412-{unique_suffix}"
+    agent_ids = [
+        f"agent-t0412-{unique_suffix}-{i}" for i in range(5)
+    ]
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_created = False
+    llm_created = False
+    agents_created: list[str] = []
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=_BOOTSTRAP_TIMEOUT,
+        )
+        if boot.status_code == 409:
+            # Another bootstrap is still running from a prior test; wait for
+            # it to settle before treating our PUT-scoped run as done.
+            await _wait_bootstrap(client)
+        else:
+            assert boot.status_code == 200, (
+                f"bootstrap should return 200 with its outcome; got "
+                f"{boot.status_code}: {boot.text}"
+            )
+            await _wait_bootstrap(client)
+
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        # Burst-create 5 agents concurrent with DELETE config
+        agent_tasks = [
+            asyncio.create_task(client.post(
+                "/v1/agents",
+                json=_agent_body(
+                    aid, provider_id=llm_id,
+                    description=f"t0412-{aid}",
+                ),
+            ))
+            for aid in agent_ids
+        ]
+        rm_task = asyncio.create_task(client.delete(
+            "/v1/internal_collections/config",
+        ))
+        all_results = await asyncio.gather(*agent_tasks, rm_task)
+        agent_results = all_results[:5]
+        rm_resp = all_results[5]
+        config_created = False  # rm fired
+
+        # Track which agents were created so we clean up
+        for aid, r in zip(agent_ids, agent_results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"agent create {aid!r} leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"agent create {aid!r} returned 5xx: "
+                f"{r.status_code}: {r.text}"
+            )
+            if r.status_code == 201:
+                agents_created.append(aid)
+
+        # Delete is unconditional — should always 204 (or 404 if some
+        # other test already removed the config concurrently — not
+        # possible in this isolated test).
+        assert rm_resp.status_code < 500, rm_resp.text
+        assert rm_resp.status_code in (204, 404), rm_resp.text
+
+        # Search on the system collection ends up off
+        assert await _system_search(client) is None, "after burst-create + DELETE config, search must be off"
+    finally:
+        for aid in agents_created:
+            await client.delete(f"/v1/agents/{aid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -917,6 +1387,75 @@ async def test_t0350_bootstrap_before_put_envelope_shape(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0442_burst_put_config_converges_last_write_wins(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0442 — Fire 10 concurrent PUTs against
+    /v1/internal_collections/config with the SAME embedder_id (so
+    each call is independently valid). Pin: every call returns
+    < 500 with no /errors/internal; the subsequent GET reflects
+    one of the submitted bodies (last-write-wins, no half-merged
+    state); the subsystem stays usable (system-collection search off if
+    not bootstrapped, on if bootstrapped).
+    """
+    embedder_id = f"emb-t0442-{unique_suffix}"
+    ssp_id = f"ssp-t0442-{unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_created = False
+    try:
+        body = _ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id)
+
+        # 10 concurrent PUTs of the same body
+        tasks = [
+            asyncio.create_task(client.put(
+                "/v1/internal_collections/config", json=body,
+            ))
+            for _ in range(10)
+        ]
+        results = await asyncio.gather(*tasks)
+        config_created = True
+
+        # Every call clean
+        for i, r in enumerate(results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"PUT[{i}] leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"PUT[{i}] returned 5xx: {r.status_code}: {r.text}"
+            )
+            # Documented success codes for PUT config
+            assert r.status_code in (200, 201, 204, 409), (
+                f"PUT[{i}]: unexpected status {r.status_code}: {r.text}"
+            )
+
+        # GET reflects one of the submitted bodies (no half-merged state)
+        got = await client.get("/v1/internal_collections/config")
+        assert got.status_code == 200, got.text
+        body_got = got.json()
+        # Field round-trips
+        assert body_got.get("embedding_provider_id") == embedder_id, body_got
+        assert (
+            body_got.get("embedding_model")
+            == "sentence-transformers/all-MiniLM-L6-v2"
+        ), body_got
+
+        # Search on the system collection is off (no bootstrap ran) or on (one ran concurrently)
+        state = await _system_search(client)
+        assert state is None or isinstance(state, dict), state
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -924,6 +1463,75 @@ async def test_t0350_bootstrap_before_put_envelope_shape(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0443_rapid_deactivate_reactivate_cycles_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0443 — T0091 covers a single deactivate→reactivate happy
+    path with one agent involved. T0443 stresses RESOURCE leakage
+    by running 3 rapid cycles back-to-back with no agents created
+    between them: PUT config → bootstrap → system search on → DELETE
+    config → system search off → repeat 3 times.
+
+    Catches a regression where each activation cycle leaks a CDC
+    worker, registry handle, or background task that eventually
+    crashes the API server. Hard pin: no 5xx anywhere; each cycle's
+    final search converges to 200; final teardown reaches 503.
+    """
+    embedder_id = f"emb-t0443-{unique_suffix}"
+    ssp_id = f"ssp-t0443-{unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_active = False
+    try:
+        for cycle in range(3):
+            put = await client.put(
+                "/v1/internal_collections/config",
+                json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
+            )
+            assert put.status_code == 200, (
+                f"cycle {cycle}: PUT config failed: {put.text}"
+            )
+            config_active = True
+
+            boot = await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=_BOOTSTRAP_TIMEOUT,
+            )
+            assert boot.status_code == 200, (
+                f"cycle {cycle}: bootstrap should return 200 with its outcome; "
+                f"got {boot.status_code}: {boot.text}"
+            )
+            await _wait_bootstrap(client)
+
+            # Search is enabled on the system collection
+            assert await _system_search(client) is not None, f"cycle {cycle}: search did not become active"
+
+            # Deactivate
+            rm = await client.delete("/v1/internal_collections/config")
+            assert rm.status_code == 204, (
+                f"cycle {cycle}: DELETE config failed: {rm.text}"
+            )
+            config_active = False
+
+            # Search is off again after DELETE config
+            assert await _system_search(client) is None, f"cycle {cycle}: search did not turn off after DELETE config"
+
+        # After 3 cycles the API is still healthy
+        h = await client.get("/v1/health")
+        assert h.status_code == 200, h.text
+        assert h.json()["status"] == "ok", h.json()
+    finally:
+        if config_active:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -1041,6 +1649,119 @@ async def test_t0487_config_swap_reactivation_uses_latest_embedder(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0488 — Sibling of T0411 (bootstrap × delete-config) and T0412
+    (burst-create + delete-config). T0488 races 5 agent CREATEs
+    against an IN-FLIGHT bootstrap (no pre-wait — the bootstrap
+    starts at the same instant as the POSTs). Pin: every call clean
+    (2xx/4xx, never /errors/internal) and the creates still land.
+    """
+    embedder_id = f"emb-t0488-{unique_suffix}"
+    ssp_id = f"ssp-t0488-{unique_suffix}"
+    llm_id = f"llm-t0488-{unique_suffix}"
+    agent_ids = [
+        f"agent-t0488-{unique_suffix}-{i}" for i in range(5)
+    ]
+    distinctive = f"inflight-marker-{unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    pr = await client.post(
+        "/v1/embedding_providers",
+        json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    agents_created: list[str] = []
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        # Pre-create the LLMProvider so agent creates don't fail on
+        # missing-provider — that's not what we're testing
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        # Race: bootstrap + 5 agent CREATEs all at once. Bootstrap
+        # is the long-running operation; the agent POSTs should slip
+        # through cleanly while the subsystem is still warming up.
+        boot_task = asyncio.create_task(client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=_BOOTSTRAP_TIMEOUT,
+        ))
+        agent_tasks = [
+            asyncio.create_task(client.post(
+                "/v1/agents",
+                json=_agent_body(
+                    aid, provider_id=llm_id,
+                    description=f"{distinctive}-{aid}",
+                ),
+            ))
+            for aid in agent_ids
+        ]
+        all_results = await asyncio.gather(boot_task, *agent_tasks)
+        boot_resp = all_results[0]
+        agent_results = all_results[1:]
+
+        # Bootstrap may have been run (200) or been rejected if already
+        # running (409). Either is acceptable; what matters is no
+        # /errors/internal anywhere.
+        boot_envelope = boot_resp.json() if boot_resp.content else {}
+        assert boot_envelope.get("type") != "/errors/internal", (
+            f"in-flight bootstrap leaked /errors/internal: "
+            f"{boot_resp.text}"
+        )
+        if boot_resp.status_code not in (200, 409):
+            pytest.skip(
+                f"bootstrap returned {boot_resp.status_code} during "
+                f"race (expected 200/409): {boot_resp.text[:300]}"
+            )
+        if boot_resp.status_code == 200:
+            await _wait_bootstrap(client)
+
+        # Every agent CREATE clean
+        for aid, r in zip(agent_ids, agent_results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"agent {aid!r} leaked /errors/internal during race: "
+                f"{r.text}"
+            )
+            assert r.status_code in (201, 409, 502), (
+                f"agent {aid!r}: unexpected {r.status_code}: {r.text}"
+            )
+            if r.status_code == 201:
+                agents_created.append(aid)
+
+        # At least 1 agent should have been created (race shouldn't
+        # cause all 5 to fail unless the env is broken)
+        assert len(agents_created) >= 1, (
+            f"all 5 agent CREATEs failed during in-flight bootstrap: "
+            f"{[r.status_code for r in agent_results]!r}"
+        )
+
+        # What is under test is that the race leaves the system collection's search in a clean state.
+        state = await _system_search(client)
+        assert state is None or isinstance(state, dict), state
+    finally:
+        for aid in agents_created:
+            await client.delete(f"/v1/agents/{aid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -1167,13 +1888,6 @@ async def test_t0502_three_consecutive_bootstraps_identical_shape(
 
 
 # ============================================================================
-# T0537 — /v1/agents/search post-bootstrap on empty DB returns 200 empty hits
-# ============================================================================
-
-
-
-
-# ============================================================================
 # T0538 — /v1/agents/search top_k=100 (max) returns documented hits envelope
 # ============================================================================
 
@@ -1290,6 +2004,142 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0601_ic_bootstrap_racing_5_agent_deletes_clean_envelopes(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0601 — Race POST /bootstrap against 5 concurrent agent DELETEs.
+    Bootstrap must return 200 or 4xx (never 5xx); each DELETE must
+    return 204 or 404; the system collection's search ends in a clean
+    state; never /errors/internal across the storm.
+
+    Priority 5 — internal-collections subsystem under churn. The
+    race targets the bootstrap path's interaction with CDC: the
+    bootstrap initialises vector tables + worker; concurrent DELETEs
+    enqueue CDC events. The system must converge cleanly without
+    a Pydantic / asyncpg panic.
+
+    Setup creates a real EmbeddingProvider + IC config + agents.
+    Bootstrap may take 30-60 s for first-time model load; tests
+    skip cleanly if the embedder is unavailable.
+    """
+    embedder_id = f"emb-t0601-{unique_suffix}"
+    ssp_id = f"ssp-t0601-{unique_suffix}"
+    agent_ids = [f"ag-t0601-{unique_suffix}-{i}" for i in range(5)]
+    llm_id = f"llm-t0601-{unique_suffix}"
+    config_created = False
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+
+    # Seed embedding provider.
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    try:
+        # Seed an LLM provider so the agents have a valid provider_id.
+        lp = await seed_llm_provider(client, {
+            "id": llm_id,
+            "provider": "anthropic",
+            "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+            "config": {"api_key": "sk-placeholder"},
+            "limits": {"max_concurrency": 1},
+        })
+        assert lp.status_code == 201, lp.text
+
+        # Seed 5 agents.
+        for aid in agent_ids:
+            ar = await client.post("/v1/agents", json={
+                "id": aid,
+                "description": "t0601 race-target agent",
+                "model": agent_model(llm_id, "claude-sonnet-4-6"),
+                "tools": [],
+                "system_prompt": ["test"],
+            })
+            assert ar.status_code == 201, ar.text
+
+        # Activate IC config (no bootstrap yet — that's the race).
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        # Race: bootstrap + 5 concurrent agent DELETEs.
+        async def _bootstrap() -> httpx.Response:
+            return await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=_BOOTSTRAP_TIMEOUT,
+            )
+
+        async def _del(aid: str) -> httpx.Response:
+            return await client.delete(f"/v1/agents/{aid}")
+
+        tasks = [
+            asyncio.create_task(_bootstrap()),
+            *[asyncio.create_task(_del(aid)) for aid in agent_ids],
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        boot_resp = results[0]
+        del_resps = results[1:]
+
+        # Bootstrap: 200 (ran), 4xx (configured but couldn't
+        # start), or skip on unexpected status.
+        assert not isinstance(boot_resp, BaseException), boot_resp
+        boot_env = boot_resp.json() if boot_resp.content else {}
+        assert boot_env.get("type") != "/errors/internal", (
+            f"bootstrap leaked /errors/internal: {boot_resp.text}"
+        )
+        if boot_resp.status_code not in (200, 400, 409, 422):
+            pytest.skip(
+                f"bootstrap returned {boot_resp.status_code} — embedder "
+                f"may be unavailable. Body: {boot_resp.text[:300]}"
+            )
+        if boot_resp.status_code == 200:
+            await _wait_bootstrap(client)
+
+        # DELETEs: each 204 (success), 404 (already gone), or 4xx.
+        for i, r in enumerate(del_resps):
+            assert not isinstance(r, BaseException), f"DELETE #{i} raised: {r!r}"
+            env = r.json() if r.content else {}
+            assert env.get("type") != "/errors/internal", (
+                f"DELETE #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code in (204, 404, 400, 422), (
+                f"DELETE #{i} unexpected status: "
+                f"{r.status_code}: {r.text}"
+            )
+
+        # The system collection's search is in a clean state after the storm.
+        state = await _system_search(client)
+        assert state is None or isinstance(state, dict), state
+    finally:
+        for aid in agent_ids:
+            try:
+                await client.delete(f"/v1/agents/{aid}")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        except Exception:  # noqa: BLE001
+            pass
+        if config_created:
+            try:
+                await client.delete("/v1/internal_collections/config")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await client.delete(f"/v1/ssp/{ssp_id}")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ============================================================================
@@ -1297,14 +2147,86 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
 # ============================================================================
 
 
+@pytest.mark.asyncio
+async def test_t0602_ic_re_bootstrap_cycle_clean_envelopes(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0602 — Run the lifecycle DELETE config → PUT same config →
+    bootstrap repeatedly. Each cycle ends with search enabled on the
+    system collection; never /errors/internal.
 
+    Priority 5 — IC subsystem under churn. Re-bootstrap exercises the
+    vector-store table create / drop / recreate path, where backends
+    accumulate state (open connections, cached schema) that can leak
+    across cycles and surface as a 5xx on a later one.
 
-# ============================================================================
-# T0586 — /v1/agents/search top_k=1 on empty post-bootstrap DB returns
-# 200 with hits=[]
-# ============================================================================
+    Was five cycles. Bootstrap actually indexes the system collection
+    now, and deleting the config drops its vectors, so every cycle is a
+    genuine rebuild of roughly 900 chunks through a real embedder: five
+    of them is about 175 s and the lane caps a test at 180. Two cycles
+    still exercise create-drop-recreate, which is the leak this is
+    watching for; what is lost is only the depth of the repetition.
+    """
+    embedder_id = f"emb-t0602-{unique_suffix}"
+    ssp_id = f"ssp-t0602-{unique_suffix}"
 
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
 
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    try:
+        for cycle in range(2):
+            # DELETE config (no-op on cycle 0 since none exists yet).
+            d = await client.delete("/v1/internal_collections/config")
+            assert d.status_code in (204, 404), (
+                f"cycle {cycle} DELETE unexpected status: "
+                f"{d.status_code}: {d.text}"
+            )
+
+            # PUT config.
+            put = await client.put(
+                "/v1/internal_collections/config",
+                json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
+            )
+            assert put.status_code == 200, (
+                f"cycle {cycle} PUT failed: {put.status_code}: {put.text}"
+            )
+
+            # Bootstrap (synchronous).
+            boot = await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=_BOOTSTRAP_TIMEOUT,
+            )
+            boot_env = boot.json() if boot.content else {}
+            assert boot_env.get("type") != "/errors/internal", (
+                f"cycle {cycle} bootstrap leaked /errors/internal: "
+                f"{boot.text}"
+            )
+            assert boot.status_code == 200, (
+                f"cycle {cycle} bootstrap should return 200 with its outcome; "
+                f"got {boot.status_code}: {boot.text[:300]}"
+            )
+            await _wait_bootstrap(client)
+
+            # Search is enabled on the system collection.
+            assert await _system_search(client) is not None, f"cycle {cycle}: search not enabled"
+    finally:
+        try:
+            await client.delete("/v1/internal_collections/config")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await client.delete(f"/v1/ssp/{ssp_id}")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ============================================================================

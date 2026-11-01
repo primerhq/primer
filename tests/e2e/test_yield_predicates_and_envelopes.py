@@ -298,8 +298,3 @@ async def test_t0733_graph_session_post_terminal_log_query_clean(
         await _cleanup(client, cleanup_urls)
 
 
-# ===========================================================================
-# T0753 — IC search racing config DELETE: clean envelopes
-# ===========================================================================
-
-
