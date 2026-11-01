@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from primer.access.workspaces import workspace_level
@@ -581,7 +581,8 @@ class EventRetentionPruner(_BackgroundTask):
         from datetime import datetime, timedelta, timezone
 
         store = self._sp.get_event_store()
-        floor = await store.active_cursor_floor()
+        # A cursor untouched for a day (a paused subscriber, an orphaned one-shot) no longer holds retention back (M10).
+        floor = await store.active_cursor_floor(stale_after=timedelta(days=1))
         keep_after_id = floor if floor is not None else await store.max_id()
         return await store.prune(
             older_than=(

@@ -53,7 +53,7 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeVar
 
@@ -1978,17 +1978,23 @@ class PostgresEventStore(EventStore):
             )
         return int(value) if value is not None else 0
 
-    async def prune(self, *, older_than: datetime, keep_after_id: int) -> int:
-        async with self._pool.acquire() as conn:
-            tag = await conn.execute(
-                f'DELETE FROM {self._qualified} '
-                'WHERE occurred_at < $1 AND id <= $2',
-                older_than, keep_after_id,
-            )
-        try:
-            return int(tag.rsplit(" ", 1)[-1])
-        except (ValueError, AttributeError):
-            return 0
+    async def prune(self, *, older_than: datetime, keep_after_id: int, batch_size: int = 10_000) -> int:
+        """Delete in batches, each its own short statement, so a long backlog never holds one big lock or one huge transaction (M10)."""
+        removed = 0
+        while True:
+            async with self._pool.acquire() as conn:
+                tag = await conn.execute(
+                    f'DELETE FROM {self._qualified} WHERE id IN ('
+                    f'SELECT id FROM {self._qualified} WHERE occurred_at < $1 AND id <= $2 ORDER BY id LIMIT $3)',
+                    older_than, keep_after_id, batch_size,
+                )
+            try:
+                n = int(tag.rsplit(" ", 1)[-1])
+            except (ValueError, AttributeError):
+                return removed
+            removed += n
+            if n < batch_size:
+                return removed
 
     # -- cursors ----------------------------------------------------------
 
@@ -2044,9 +2050,13 @@ class PostgresEventStore(EventStore):
                 subscriber_id,
             )
 
-    async def active_cursor_floor(self) -> int | None:
+    async def active_cursor_floor(self, *, stale_after: timedelta | None = None) -> int | None:
         async with self._pool.acquire() as conn:
-            value = await conn.fetchval(
-                f'SELECT MIN(cursor) FROM {self._qualified_cursors}',
-            )
+            if stale_after is None:
+                value = await conn.fetchval(f'SELECT MIN(cursor) FROM {self._qualified_cursors}')
+            else:
+                value = await conn.fetchval(
+                    f'SELECT MIN(cursor) FROM {self._qualified_cursors} WHERE updated_at > now() - $1::interval',
+                    stale_after,
+                )
         return int(value) if value is not None else None

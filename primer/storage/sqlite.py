@@ -27,7 +27,7 @@ import logging
 import os
 import sqlite3
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeVar
 
@@ -1960,21 +1960,26 @@ class SqliteEventStore(EventStore):
             ) from exc
         return int(row[0]) if row and row[0] is not None else 0
 
-    async def prune(self, *, older_than: datetime, keep_after_id: int) -> int:
-        try:
-            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
-                cur = await self._conn.execute(
-                    "DELETE FROM events WHERE occurred_at < ? AND id <= ?",
-                    (older_than.isoformat(), keep_after_id),
-                )
-                if should_commit:
-                    await self._conn.commit()
-                removed = cur.rowcount
-        except Exception as exc:
-            raise _wrap_sqlite_error(
-                exc, model_name="events", op="prune",
-            ) from exc
-        return max(0, removed)
+    async def prune(self, *, older_than: datetime, keep_after_id: int, batch_size: int = 10_000) -> int:
+        removed = 0
+        while True:
+            try:
+                async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                    cur = await self._conn.execute(
+                        "DELETE FROM events WHERE id IN ("
+                        "SELECT id FROM events WHERE occurred_at < ? AND id <= ? ORDER BY id LIMIT ?)",
+                        (older_than.isoformat(), keep_after_id, batch_size),
+                    )
+                    if should_commit:
+                        await self._conn.commit()
+                    n = max(0, cur.rowcount)
+            except Exception as exc:
+                raise _wrap_sqlite_error(
+                    exc, model_name="events", op="prune",
+                ) from exc
+            removed += n
+            if n < batch_size:
+                return removed
 
     # -- cursors ----------------------------------------------------------
 
@@ -2054,11 +2059,13 @@ class SqliteEventStore(EventStore):
                 exc, model_name="event_cursors", op="delete_cursor",
             ) from exc
 
-    async def active_cursor_floor(self) -> int | None:
+    async def active_cursor_floor(self, *, stale_after: timedelta | None = None) -> int | None:
         try:
-            cur = await self._conn.execute(
-                "SELECT MIN(cursor) FROM event_cursors",
-            )
+            if stale_after is None:
+                cur = await self._conn.execute("SELECT MIN(cursor) FROM event_cursors")
+            else:
+                cutoff = (datetime.now(timezone.utc) - stale_after).isoformat()
+                cur = await self._conn.execute("SELECT MIN(cursor) FROM event_cursors WHERE updated_at > ?", (cutoff,))
             row = await cur.fetchone()
         except Exception as exc:
             raise _wrap_sqlite_error(
