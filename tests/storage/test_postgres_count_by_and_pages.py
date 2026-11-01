@@ -109,15 +109,23 @@ async def test_workspace_list_shape_on_a_real_postgres(postgres_storage_provider
 
     from primer.model.workspace_session import AgentSessionBinding, SessionStatus
 
+    import uuid
+
+    from primer.model.storage import FieldRef, Op, Predicate, Value
+
     sessions = postgres_storage_provider.get_storage(WorkspaceSession)
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    for ws, n in {"w1": 3, "w2": 1}.items():
+    # the lane's database is shared across tests, so this test scopes every read to its own workspaces
+    tag = uuid.uuid4().hex[:8]
+    w1, w2 = f"cb-{tag}-w1", f"cb-{tag}-w2"
+    for ws, n in {w1: 3, w2: 1}.items():
         for i in range(n):
             await sessions.create(WorkspaceSession(
                 id=f"{ws}-{i}", workspace_id=ws, binding=AgentSessionBinding(agent_id="a"), status=SessionStatus.RUNNING, created_at=now,
             ))
-    assert await sessions.count_by("workspace_id", ["w1", "w2", "w-none"]) == {"w1": 3, "w2": 1}
-    page = await sessions.list(OffsetPage(offset=0, length=2))
+    assert await sessions.count_by("workspace_id", [w1, w2, f"cb-{tag}-none"]) == {w1: 3, w2: 1}
+    mine = Predicate(left=FieldRef(name="workspace_id"), op=Op.IN, right=Value(value=[w1, w2]))
+    page = await sessions.find(mine, OffsetPage(offset=0, length=2))
     assert page.length == 2 and page.total == 4
-    short = await sessions.list(OffsetPage(offset=2, length=10, want_total=False))
+    short = await sessions.find(mine, OffsetPage(offset=2, length=10, want_total=False))
     assert short.length == 2 and short.total == 4
