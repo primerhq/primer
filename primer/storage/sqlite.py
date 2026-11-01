@@ -1226,6 +1226,20 @@ class SqliteStorage(Storage[ModelT]):
     #: Rows per query of :meth:`find_ids`.
     _IDS_PAGE = 2000
 
+    supports_ids_of = True
+
+    def _translator(self) -> _SqlitePredicateTranslator:
+        return _SqlitePredicateTranslator(self._model, lambda model: f'"{self._provider.get_storage(model)._table}"')  # type: ignore[attr-defined]
+
+    async def _where(self, translator: _SqlitePredicateTranslator, predicate: Predicate | None) -> str:
+        """``predicate`` as SQL; the tables its IN subqueries read are created first (a table is created on its handle's first use)."""
+        if predicate is None:
+            return "1=1"
+        where_sql, _ = translator.translate(predicate)
+        for model in translator.joined:
+            await self._provider.get_storage(model)._ensure_table()  # type: ignore[attr-defined]
+        return where_sql
+
     async def count_by(self, field: str, values: Sequence[str], predicate: Predicate | None = None) -> dict[str, int]:
         """One ``GROUP BY`` over the rows whose ``field`` is among ``values`` (and match ``predicate``)."""
         if not values:
@@ -1236,8 +1250,8 @@ class SqliteStorage(Storage[ModelT]):
         match = Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=list(values)))
         if predicate is not None:
             match = Predicate(left=match, op=Op.AND, right=predicate)
-        translator = _SqlitePredicateTranslator(self._model)
-        where_sql, _ = translator.translate(match)
+        translator = self._translator()
+        where_sql = await self._where(translator, match)
         expr = _render_field_expr(self._model, field)
         sql = f'SELECT {expr}, count(*) FROM "{self._table}" WHERE {where_sql} GROUP BY {expr}'
         try:
@@ -1254,10 +1268,8 @@ class SqliteStorage(Storage[ModelT]):
         out: list[tuple[str, dict[str, Any] | None]] = []
         last: str | None = None
         while True:
-            translator = _SqlitePredicateTranslator(self._model)
-            where_sql = "1=1"
-            if predicate is not None:
-                where_sql, _ = translator.translate(predicate)
+            translator = self._translator()
+            where_sql = await self._where(translator, predicate)
             if last is not None:
                 translator.append_param(last)
                 where_sql = f"({where_sql}) AND id > ?"
@@ -1283,10 +1295,8 @@ class SqliteStorage(Storage[ModelT]):
         order_by: list[OrderBy] | None,
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         await self._ensure_table()
-        translator = _SqlitePredicateTranslator(self._model)
-        where_sql = "1=1"
-        if predicate is not None:
-            where_sql, _ = translator.translate(predicate)
+        translator = self._translator()
+        where_sql = await self._where(translator, predicate)
         order_clause = render_order_by_sqlite(self._model, order_by)
         if isinstance(page, OffsetPage):
             return await self._page_offset(

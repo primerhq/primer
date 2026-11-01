@@ -391,6 +391,10 @@ class Storage(ABC, Generic[ModelT]):
                 return dict(counts)
             offset += 200
 
+    #: Whether ``find`` / ``find_ids`` / ``count_by`` render an ``Op.IN`` against :class:`primer.model.storage.IdsOf` as a subquery. A backend
+    #: that does not would read it as an empty ``IN`` (no rows), so a caller builds one only when this is true.
+    supports_ids_of: bool = False
+
     async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
         """``(id, access)`` of every row matching ``predicate``, ordered by id: the two things a sharing check needs, without decoding the rows.
 

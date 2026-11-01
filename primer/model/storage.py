@@ -217,6 +217,20 @@ from an untyped dict (e.g. a JSON request body) without ambiguity.
 Predicate.model_rebuild()
 
 
+class IdsOf(Value):
+    """The right operand of an ``Op.IN`` semi-join: the ids of the ``model`` rows matching ``where``.
+
+    ``field IN IdsOf(model, where)`` is ``field IN (SELECT id FROM <model's table> WHERE <where>)``, so the id set never leaves the database.
+    Server-built only: the ``Operand`` union has no tag for it, so no request body can carry one. Its ``value`` is always the empty list, so an
+    evaluator that does not know it reads ``field IN ()`` and matches nothing (fail closed); the SQL backends render the subquery, and say so
+    with ``Storage.supports_ids_of``.
+    """
+
+    value: list[_ScalarValue] = Field(default_factory=list, max_length=0, description="Always empty (see the class docstring).")
+    model: type[BaseModel] = Field(..., description="The model whose table holds the ids.")
+    where: Predicate | None = Field(default=None, description="The rows of that table whose ids match (None: every row).")
+
+
 # ===========================================================================
 # Ordering
 # ===========================================================================
@@ -396,6 +410,7 @@ __all__ = [
     "CursorPage",
     "CursorPageResponse",
     "FieldRef",
+    "IdsOf",
     "OffsetPage",
     "OffsetPageResponse",
     "Op",

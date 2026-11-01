@@ -56,8 +56,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.access.person import person_for_tool
-from primer.access.policy import require, visible_predicate
-from primer.access.workspaces import readable_workspace_ids, require_workspace, workspace_level
+from primer.access.policy import readable_parent_filter, require, visible_predicate
+from primer.access.workspaces import require_workspace, workspace_level
 from primer.bus.watch_notify import wake_watchers_best_effort
 from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
@@ -2180,11 +2180,9 @@ def build_workspaces_toolset(
             if refusal is not None:
                 return refusal
         else:
-            ids = await readable_workspace_ids(storage_provider, person, need=AccessLevel.READ)
-            if ids is not None:
-                filters.append(
-                    Predicate(left=FieldRef(name="workspace_id"), op=Op.IN, right=Value(value=ids))
-                )
+            scope = await readable_parent_filter(storage_provider.get_storage(WorkspaceRow), WorkspaceRow, person, "workspace_id")
+            if scope is not None:
+                filters.append(scope)
         if args.workspace_id is not None:
             filters.append(
                 Predicate(

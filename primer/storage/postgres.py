@@ -1289,6 +1289,20 @@ class PostgresStorage(Storage[ModelT]):
     #: Rows per query of :meth:`find_ids`.
     _IDS_PAGE = 2000
 
+    supports_ids_of = True
+
+    def _translator(self) -> _PredicateTranslator:
+        return _PredicateTranslator(self._model, lambda model: self._provider.get_storage(model)._qualified)  # type: ignore[attr-defined]
+
+    async def _where(self, translator: _PredicateTranslator, predicate: Predicate | None) -> str:
+        """``predicate`` as SQL; the tables its IN subqueries read are created first (a table is created on its handle's first use)."""
+        if predicate is None:
+            return "TRUE"
+        where_sql, _ = translator.translate(predicate)
+        for model in translator.joined:
+            await self._provider.get_storage(model)._ensure_table()  # type: ignore[attr-defined]
+        return where_sql
+
     async def count_by(self, field: str, values: Sequence[str], predicate: Predicate | None = None) -> dict[str, int]:
         """One ``GROUP BY`` over the rows whose ``field`` is among ``values`` (and match ``predicate``)."""
         if not values:
@@ -1299,8 +1313,8 @@ class PostgresStorage(Storage[ModelT]):
         match = Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=list(values)))
         if predicate is not None:
             match = Predicate(left=match, op=Op.AND, right=predicate)
-        translator = _PredicateTranslator(self._model)
-        where_sql, _ = translator.translate(match)
+        translator = self._translator()
+        where_sql = await self._where(translator, match)
         expr = _render_field_expr(self._model, field)
         sql = f"SELECT {expr} AS k, count(*) AS n FROM {self._qualified} WHERE {where_sql} GROUP BY {expr}"
         try:
@@ -1316,10 +1330,8 @@ class PostgresStorage(Storage[ModelT]):
         out: list[tuple[str, dict[str, Any] | None]] = []
         last: str | None = None
         while True:
-            translator = _PredicateTranslator(self._model)
-            where_sql = "TRUE"
-            if predicate is not None:
-                where_sql, _ = translator.translate(predicate)
+            translator = self._translator()
+            where_sql = await self._where(translator, predicate)
             if last is not None:
                 where_sql = f"({where_sql}) AND id > {translator.append_param(last)}"
             limit_ph = translator.append_param(self._IDS_PAGE)
@@ -1347,10 +1359,8 @@ class PostgresStorage(Storage[ModelT]):
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         await self._ensure_table()
 
-        translator = _PredicateTranslator(self._model)
-        where_sql = "TRUE"
-        if predicate is not None:
-            where_sql, _ = translator.translate(predicate)
+        translator = self._translator()
+        where_sql = await self._where(translator, predicate)
 
         order_clause = render_order_by(self._model, order_by)
 

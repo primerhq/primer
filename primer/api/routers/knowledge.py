@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field
 
 from primer.model.storage import MAX_OFFSET
 from primer.access.person import person_from_request
-from primer.access.policy import readable_ids, require
+from primer.access.policy import readable_parent_filter, require
 from primer.api.deps import (
     get_collection_storage,
     get_document_service,
@@ -89,7 +89,6 @@ from primer.knowledge.lifecycle import (
     search_status,
 )
 from primer.search.run import run_collection_search
-from primer.storage.q import Q
 
 
 logger = logging.getLogger(__name__)
@@ -971,8 +970,7 @@ async def _document_row_guard(row: Document, request: Request, write: bool) -> N
 async def _readable_documents(request: Request) -> Predicate | None:
     """list_filter: ``collection_id IN <collections the caller can read>`` (``None`` for admins)."""
     sp = request.app.state.storage_provider
-    ids = await readable_ids(sp.get_storage(Collection), person_from_request(request))
-    return None if ids is None else Q(Document).where_in("collection_id", ids).build()
+    return await readable_parent_filter(sp.get_storage(Collection), Collection, person_from_request(request), "collection_id")
 
 
 async def _document_pre_create(entity: Document, request: Request) -> None:
