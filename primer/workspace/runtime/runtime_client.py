@@ -364,6 +364,10 @@ class RuntimeClient:
             )
             async for item in self._iter_stream(req_id, q):
                 if isinstance(item, dict):
+                    # The runtime refuses the op (no runtime implements it): surface that instead of waiting for ever.
+                    if "ok" in item and not item["ok"]:
+                        err = item.get("error") or {}
+                        raise RuntimeError(err.get("code", ErrorCode.EPROTOCOL), err.get("message", "archive failed"))
                     event = item.get("event")
                     if event == "archive_done":
                         return

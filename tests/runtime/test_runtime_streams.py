@@ -19,6 +19,7 @@ from primer_runtime import exec as exec_mod
 from primer_runtime.events_sub import EXEC_KINDS, EventBroadcaster
 from primer_runtime.locks import WorkspaceLockTable
 from primer_runtime.watch import WatchRegistry, start_watch
+from tests.runtime.test_runtime_freezes import _client, runtime  # noqa: F401 - the in-process server fixture
 
 
 async def _exec_events(root: Path, script: str, *, pause_after_first: float = 0.0) -> list[Any]:
@@ -303,3 +304,27 @@ async def test_a_subscriber_that_falls_behind_loses_events_counted_and_logged(ca
     assert dropped, caplog.text
     # one frame is in the stalled send, 256 wait in its queue, the rest are dropped
     assert dropped[-1].getMessage().endswith("(43 dropped so far)")
+
+
+# ---------------------------------------------------------------------------
+# GI-13: the client's archive() raises on the runtime's refusal
+# ---------------------------------------------------------------------------
+
+
+async def test_archive_raises_on_an_error_frame(runtime) -> None:  # noqa: F811
+    from primer.workspace.runtime.runtime_client import RuntimeError as RtError
+
+    _connect, _root, url = runtime
+    client = await _client(url)
+    try:
+        async with asyncio.timeout(10):
+            try:
+                async for _chunk in client.archive(["."]):
+                    pass
+            except RtError as exc:
+                assert exc.code == "EUNSUPPORTED"
+                assert "archive" in str(exc)
+            else:
+                raise AssertionError("archive() ended without the runtime's error")
+    finally:
+        await client.aclose()
