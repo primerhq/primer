@@ -20,6 +20,8 @@ _BINARY_SNIFF_BYTES = 1024
 class SandboxRead(WorkspaceTool):
     """Read a file with offset+limit pagination via Sandbox."""
 
+    read_only: ClassVar[bool] = True
+
     id: ClassVar[str] = "read"
     description: ClassVar[str] = (
         "Read a file with offset+limit pagination; output prefixes each "

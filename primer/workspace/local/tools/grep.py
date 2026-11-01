@@ -103,6 +103,8 @@ class Grep(WorkspaceTool):
     fires so the runtime skips outer truncation.
     """
 
+    read_only: ClassVar[bool] = True
+
     id: ClassVar[str] = "grep"
     description: ClassVar[str] = (
         "Search file contents with a regex. Choose output_mode "

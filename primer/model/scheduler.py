@@ -81,6 +81,15 @@ class WorkerConfig(BaseModel):
             "Used only to build the stable metric label."
         ),
     )
+    parallel_readonly_tool_calls: bool = Field(
+        default=False,
+        description=(
+            "When a model emits several tool calls in one message and EVERY one is a tool declared read-only (Tool.read_only), without an "
+            "approval policy, and not yielding, notifying or uninterruptible, run them concurrently and answer in call order. Any other "
+            "batch runs one call after another, exactly as before. Default OFF: today's serial order is documented behaviour (a Stop and an "
+            "approval reason about it), so the gain is opt-in."
+        ),
+    )
     tool_calls_as_claims_enabled: bool = Field(
         default=False,
         description=(

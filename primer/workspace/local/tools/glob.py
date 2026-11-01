@@ -49,6 +49,8 @@ class Glob(WorkspaceTool):
     beyond the returned window so the runtime skips outer truncation.
     """
 
+    read_only: ClassVar[bool] = True
+
     id: ClassVar[str] = "glob"
     description: ClassVar[str] = (
         "Find files by glob pattern (e.g. 'src/**/*.py'). Results "

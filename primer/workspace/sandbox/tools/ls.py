@@ -75,6 +75,8 @@ async def _walk(
 class SandboxLs(WorkspaceTool):
     """``ls``: list directory contents inside a sandbox."""
 
+    read_only: ClassVar[bool] = True
+
     id: ClassVar[str] = "ls"
     # Kept byte-identical to primer.workspace.local.tools.ls.Ls's
     # description (drift guard: tests/toolset/test_local_tool_
