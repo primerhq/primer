@@ -2036,33 +2036,14 @@ async def test_seq_strictly_increases_across_invoke_and_restart(
     assert min(surfaced) > high_water
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Residual mid-turn concurrent-steer race: wake_session's USER_INPUT "
-        "writer and the in-flight turn writer own INDEPENDENT seq counters. A "
-        "steer landing DURING a running turn (before that turn persists its "
-        "advancing last_seq at turn end) reads a stale row.last_seq and its "
-        "USER_INPUT seq collides with the turn's still-buffered output. "
-        "Persisting the row per-flush does not help — the two counters can't "
-        "be reconciled without a single shared per-session seq source (both "
-        "writers incrementing row.last_seq under the lifecycle lock per "
-        "record), which is a WorkspaceMessageWriter redesign tracked as a "
-        "follow-up. This test marks that boundary and will flip to a failing "
-        "XPASS once the shared-seq-source fix lands."
-    ),
-)
 @pytest.mark.asyncio
-async def test_midturn_concurrent_steer_seq_collision_is_known_gap(
+async def test_midturn_concurrent_steer_repeats_no_seq(
     fake_storage_provider,
     fake_event_bus: InMemoryEventBus,
 ) -> None:
-    """Documents the residual mid-turn-concurrent-steer seq collision.
+    """A steer that lands WHILE turn 1 is streaming writes a USER_INPUT at a seq the turn's writer does not use.
 
-    A steer that lands WHILE turn 1 is streaming (its writer counter still
-    mid-flight, last_seq not yet persisted) writes a USER_INPUT whose seq
-    collides with turn 1's output. Strictly-increasing unique seqs therefore
-    do NOT hold — the known gap the turn-boundary fix does not close.
+    The turn's writer leases seqs on the row (ticket 01a16c3a N6), so the steer reserves one past the lease.
     """
     from primer.session.enqueue import SessionWakeDeps, wake_session
 

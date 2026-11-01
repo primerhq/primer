@@ -434,6 +434,8 @@ async def run_one_session_turn(
         # the per-session (session_id, seq) sequence monotonically instead of
         # restarting at seq=1 and colliding with prior turns / USER_INPUT rows.
         start_seq=seed_seq,
+        # Leases seqs on the row while the turn runs, so a record another writer reserves meanwhile cannot repeat one of ours.
+        lease=session_storage,
     )
     # Bounded: the production turn log writes over the same workspace connection as the message log, so on a dead connection every
     # entry (and its first-append bootstrap read) would hold the turn's exits, the park arms' first statement among them. The first
@@ -685,7 +687,7 @@ async def run_one_session_turn(
         async with session_lifecycle_lock().acquire(session_id):
             # Every record of the turn is on the row before its status moves: a wake on another process that sees the row ENDED reopens it at
             # the next seq, so it must never read a last_seq the turn has already written past (audit G7-03, review H2).
-            await _persist_last_seq(session_storage, session_id, writer.last_seq)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq, writer)
             # BEFORE the status moves: a reader that sees the row after the transition must see why (C-024).
             stamped = await _record_last_turn_error(session_storage, session_id, failure_code, session.binding_epoch)
             # Without its stamp a rested first-turn failure has every mark of a session that never started, so it ends. A Cancel that lands
@@ -1059,7 +1061,7 @@ async def run_one_session_turn(
         # that eventually resumes this park.
         async with session_lifecycle_lock().acquire(session_id):
             await _clear_interrupt_requested(session_storage, session_id)
-            await _persist_last_seq(session_storage, session_id, writer.last_seq)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq, writer)
 
         _observe_turn(session, "parked", _turn_started_at)
         # 01a0518b: fold any co-pending tool_wait batches' own wake keys
@@ -1292,7 +1294,7 @@ async def run_one_session_turn(
 
         async with session_lifecycle_lock().acquire(session_id):
             await _clear_interrupt_requested(session_storage, session_id)
-            await _persist_last_seq(session_storage, session_id, writer.last_seq)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq, writer)
 
         _observe_turn(session, "parked", _turn_started_at)
         return ReleaseOutcome(
@@ -1459,7 +1461,7 @@ async def run_one_session_turn(
             else:
                 # Every record of the turn is on the row before its status moves: a wake on another process that sees it ENDED reopens it at
                 # the next seq (audit G7-03, review H2).
-                await _persist_last_seq(session_storage, session_id, writer.last_seq)
+                await _persist_last_seq(session_storage, session_id, writer.last_seq, writer)
                 written = await _transition_session_status(
                     session_storage,
                     session,
@@ -2015,7 +2017,7 @@ async def _land_cancelled_turn(
                 ended_reason = fresh.ended_reason
                 # The status stays the row's, but the seqs the writer numbered are the turn's: a later reopen or release marker
                 # must start after them (AG-L2).
-                await _persist_last_seq(session_storage, session_id, writer.last_seq)
+                await _persist_last_seq(session_storage, session_id, writer.last_seq, writer)
                 await _mirror_ended_row_onto_slot(session, fresh, executor=executor, workspace_registry=None)
                 await _clear_turn_running(session_storage, session_id)
         else:
@@ -2028,7 +2030,7 @@ async def _land_cancelled_turn(
                 new_status, ended_reason = SessionStatus.ENDED, "cancelled"
             # The CANCELLED record and every other record of the turn are on the row before its status moves: a wake on another process that
             # sees it ENDED reopens it at the next seq (audit G7-03, review H2: "Cancel, then type straight away").
-            await _persist_last_seq(session_storage, session_id, writer.last_seq)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq, writer)
             written = await _transition_session_status(
                 session_storage,
                 session,
@@ -2417,7 +2419,7 @@ def _has_client_toolset(executor: Any) -> bool:
 
 
 async def _persist_last_seq(
-    session_storage, session_id: str, seq: int,
+    session_storage, session_id: str, seq: int, writer: Any = None,
 ) -> None:
     """Persist the turn writer's advancing seq back to the session row.
 
@@ -2436,6 +2438,9 @@ async def _persist_last_seq(
     """
     from primer.session.seq_reservation import advance_last_seq
 
+    if writer is not None:
+        # The turn's writer holds a lease on the row's ``last_seq`` (ticket 01a16c3a N6): it gives back what it did not use.
+        await writer.settle()
     await advance_last_seq(session_storage, session_id, seq)
 
 
