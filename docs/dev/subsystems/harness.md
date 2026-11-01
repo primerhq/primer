@@ -12,7 +12,7 @@ The provider-agnostic core lives in `primer/harness/` (`dispatch.py`, `service.p
 
 A `Harness` row is the single unit of state for both directions, discriminated by its `direction` field (`INBOUND` default, `OUTBOUND`). The row carries git coordinates (`git_url`, `ref`, `subpath`, `git_token`), the operator's `overrides` plus the cached `overrides_schema`, a set of content hashes used for drift detection, a `status`, and a `pending_operation` that is the sole signal the claim engine watches.
 
-A `HarnessRendering` is the persisted snapshot of the last applied bundle: a list of `RenderedEntry` rows keyed by `(kind, template_name)`. It is the diff baseline for inbound SYNC and the per-row drift baseline the outbound UI reads. Each managed entity (`Agent`, `Graph`, `Collection`, `Document`, `Toolset`) carries a nullable `harness_id` back-pointer.
+A `HarnessRendering` is the persisted snapshot of the last applied bundle: a list of `RenderedEntry` rows keyed by `(kind, resolved_id)` (the parent and a sub-harness may share a template name, so the bare name is not a key; the body map dispatch hands `apply_install` / `apply_sync` is keyed by resolved id for the same reason). It is the diff baseline for inbound SYNC and the per-row drift baseline the outbound UI reads. Each managed entity (`Agent`, `Graph`, `Collection`, `Document`, `Toolset`) carries a nullable `harness_id` back-pointer.
 
 For inbound subharnesses, a `DependencyRef` is one declared dependency in a parent `harness.yaml`; a `ResolvedDependency` is the node the transitive walk produces, carrying the resolved slug, commit, bundle hash, depth, and `parent_name`. For outbound harnesses, a `TrackedEntity` names one live local entity plus a list of `OverrideMapping` rows; each mapping marks a JSON-pointer `field_path` on that entity to replace with a `{{ overrides.<override_path> }}` token at build time (a segment that is not a plain name, such as `0`, `X-Api-Key` or a dict method name like `items`, is written `['seg']`, so the token reads the key the composed schema names).
 
@@ -58,7 +58,7 @@ The identity rule is `resolved_id(slug, template_name) = f"{slug}__{template_nam
 | `primer/harness/templatize.py` | Outbound point-to-templatize core: JSON-pointer resolve/set, `apply_override_mappings`, `infer_schema_fragment`, `compose_overrides_schema_from_mappings`. |
 | `primer/harness/outbound.py` | `build_outbound`: walk tracked entities, strip system fields, substitute override tokens, emit `templates/*.yaml` + `harness.yaml` + `overrides.schema.json`, compute `bundle_hash`; `OutboundBuildError`. |
 | `primer/harness/dependencies.py` | `canonical_key`; `walk_dependencies` post-order DFS with cycle and version-conflict detection; `DependencyCycleError`, `DependencyVersionConflictError`. |
-| `primer/harness/diff.py` | 3-way `diff_renderings` keyed by `(kind, template_name)`. |
+| `primer/harness/diff.py` | 3-way `diff_renderings` keyed by `(kind, resolved_id)`. |
 | `primer/harness/hashes.py` | Canonical SHA-256 helpers: `hash_bundle`, `hash_overrides`, `hash_schema`, `hash_template_source`, `hash_rendered_payload`. |
 | `primer/claim/adapters/harnesses.py` | `HarnessClaimAdapter`: `eligibility_sql` + `on_release` (clears `pending_operation`, sets READY or ERROR). |
 | `primer/worker/pool.py` | The unified `_claim_loop` dispatch table maps `ClaimKind.HARNESS` to `_run_engine_harness`, which builds `HarnessDispatchDeps` and calls `run_one_harness_operation`. |

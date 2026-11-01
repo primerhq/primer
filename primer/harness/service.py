@@ -415,6 +415,13 @@ def _entity_from_entry(
     return model_cls.model_validate(data)
 
 
+def _document_body(entry: RenderedEntry, files: dict[str, RenderedFile]) -> str | None:
+    """A document entry's body: its file keyed by resolved id (dispatch's map, GX-5: the parent and a sub may share a
+    template name), else by bare template name (the map a direct caller without dependencies passes)."""
+    f = files.get(entry.resolved_id) or files.get(entry.template_name)
+    return None if f is None else f.content
+
+
 def _storage_for_kind(storage_provider: Any, kind: str) -> Any:
     """Return the storage bucket for a given entity kind string."""
     model_cls = _harness_kind_models()[kind]
@@ -746,8 +753,8 @@ async def apply_install(
                 # stable id, addressed by collection_id + path) after the
                 # entity is created, so it is readable by path + indexable.
                 doc_content: str | None = None
-                if kind == "document" and entry.template_name in rendered_files_by_name:
-                    doc_content = rendered_files_by_name[entry.template_name].content
+                if kind == "document":
+                    doc_content = _document_body(entry, rendered_files_by_name)
 
                 entity = _entity_from_entry(
                     RenderedEntry(
@@ -928,8 +935,8 @@ async def apply_sync(
     for entry in _sorted_by_kind(diff.creates, _INSTALL_ORDER):
         payload = dict(entry.rendered_payload)
         doc_content: str | None = None
-        if entry.kind == "document" and entry.template_name in rendered_files_by_name:
-            doc_content = rendered_files_by_name[entry.template_name].content
+        if entry.kind == "document":
+            doc_content = _document_body(entry, rendered_files_by_name)
 
         entity = _entity_from_entry(
             RenderedEntry(
@@ -983,8 +990,8 @@ async def apply_sync(
     for _old_entry, new_entry in diff.updates:
         payload = dict(new_entry.rendered_payload)
         doc_content: str | None = None
-        if new_entry.kind == "document" and new_entry.template_name in rendered_files_by_name:
-            doc_content = rendered_files_by_name[new_entry.template_name].content
+        if new_entry.kind == "document":
+            doc_content = _document_body(new_entry, rendered_files_by_name)
 
         entity = _entity_from_entry(
             RenderedEntry(
