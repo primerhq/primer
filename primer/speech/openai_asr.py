@@ -10,6 +10,7 @@ connect/read pair, never a scalar.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
@@ -22,7 +23,8 @@ from primer.model.provider import (
     SpeechToTextProviderType,
 )
 from primer.model.speech import SpeechError, Transcription
-from primer.speech._errors import speech_error_from_exception
+from primer.llm._retry import backoff_delay
+from primer.speech._errors import is_replayable, speech_error_from_exception
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ class OpenAIASR(ASR):
             self._client = AsyncOpenAI(
                 base_url=str(self._config.url),
                 api_key=key,
+                max_retries=0,  # the row's max_retries is the only policy (W50)
             )
         return self._client
 
@@ -80,25 +83,37 @@ class OpenAIASR(ASR):
         extra: dict[str, str] = {}
         if language:
             extra["language"] = language
-        try:
-            response = await self._get_client().audio.transcriptions.create(
-                model=model,
-                file=(filename, audio, mimetype),
-                response_format="json",
-                timeout=self._timeout(),
-                **extra,
-            )
-        except Exception as exc:  # noqa: BLE001 -- error is a value here
-            logger.warning(
-                "ASR transcription failed",
-                extra={
-                    "provider_id": self._provider.id,
-                    "model": model,
-                    "exception": type(exc).__name__,
-                },
-            )
-            return speech_error_from_exception(exc)
-        return Transcription(text=getattr(response, "text", "") or "")
+        limits = self._provider.limits
+        attempts = limits.max_retries + 1
+        for attempt in range(attempts):
+            try:
+                response = await self._get_client().audio.transcriptions.create(
+                    model=model,
+                    file=(filename, audio, mimetype),
+                    response_format="json",
+                    timeout=self._timeout(),
+                    **extra,
+                )
+            except Exception as exc:  # noqa: BLE001 -- error is a value here
+                replayable = attempt < attempts - 1 and is_replayable(exc)
+                logger.warning(
+                    "ASR transcription failed",
+                    extra={
+                        "provider_id": self._provider.id,
+                        "model": model,
+                        "exception": type(exc).__name__,
+                        "will_retry": replayable,
+                    },
+                )
+                if not replayable:
+                    return speech_error_from_exception(exc)
+                await asyncio.sleep(backoff_delay(
+                    attempt + 1,
+                    base=limits.retry_backoff_seconds,
+                    cap=limits.retry_backoff_max_seconds,
+                ))
+                continue
+            return Transcription(text=getattr(response, "text", "") or "")
 
     async def aclose(self) -> None:
         if self._client is not None:
