@@ -370,7 +370,7 @@ def test_single_implementation_guard_no_forked_session_doc_internals() -> None:
 
 
 def test_inbox_has_tap_driven_refetch_like_the_rail() -> None:
-    assert "window.useWorkspaceTapListener(con.wid" in MOBILE
+    assert "window.useWorkspaceTapListener(wsGone ? null : con.wid" in MOBILE
     for cls in ('"yielded"', '"resumed"', '"done"'):
         assert cls in MOBILE, cls
 

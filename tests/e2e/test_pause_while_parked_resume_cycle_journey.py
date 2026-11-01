@@ -303,6 +303,30 @@ async def _wait_for_status(
     )
 
 
+async def _wait_for_turn_no(
+    client: httpx.AsyncClient,
+    session_id: str,
+    expected_turn_no: int,
+    *,
+    timeout_s: float = 20.0,
+    interval_s: float = 0.4,
+) -> dict[str, Any]:
+    """Poll GET /v1/sessions/{id} until turn_no matches; returns that row."""
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    last_body: dict[str, Any] = {}
+    while asyncio.get_event_loop().time() < deadline:
+        r = await client.get(f"/v1/sessions/{session_id}")
+        if r.status_code == 200:
+            last_body = r.json()
+            if last_body.get("turn_no") == expected_turn_no:
+                return last_body
+        await asyncio.sleep(interval_s)
+    raise AssertionError(
+        f"session {session_id} turn_no did not reach {expected_turn_no} "
+        f"within {timeout_s}s; last_body={last_body!r}"
+    )
+
+
 async def _wait_for_park_cleared(
     client: httpx.AsyncClient,
     session_id: str,
@@ -412,7 +436,9 @@ async def test_t0867_pause_while_parked_then_cancel_then_resume_cycle(
         # marks the lease runnable. Worker pool's claim loop picks
         # it up; _run_one_turn sees pause_requested=True FIRST and
         # transitions to PAUSED (skipping _handle_resume).
-        paused_body = await _wait_for_status(client, sid, "paused")
+        await _wait_for_status(client, sid, "paused")
+        # The release bumps turn_no in its own commit after PAUSED lands.
+        paused_body = await _wait_for_turn_no(client, sid, initial_turn_no + 1)
 
         # ----- 6. Observable post-pause-claim ---------------------
         # parked_status retained — complete_turn does NOT touch

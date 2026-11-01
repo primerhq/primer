@@ -1720,7 +1720,15 @@ function NV_MobileShell() {
   // Debounced so a burst of frames from the same session doesn't refetch
   // once per frame.
   var refetchThrottleRef = React.useRef({});
-  window.useWorkspaceTapListener(con.wid, function (ev) {
+  // The Files tab's read of the workspace row (same key, one cache entry): a gone workspace's tap is not held, or the hub would reopen its
+  // 404 with backoff (UI-L1), as on the desktop rail.
+  var wsRow = window.primerApi.useResource(
+    con.wid ? SH_api.keys.workspace(con.wid) : null,
+    function (signal) { return SH_api.workspace(con.wid, signal); },
+    { pollMs: 0, deps: [con.wid] }
+  );
+  var wsGone = typeof window.NV_isWorkspaceGone === "function" && window.NV_isWorkspaceGone(wsRow.error);
+  window.useWorkspaceTapListener(wsGone ? null : con.wid, function (ev) {
     var cls = ev && ev["class"];
     if (cls !== "yielded" && cls !== "resumed" && cls !== "done") return;
     PR_trailingThrottle(refetchThrottleRef.current, 500, function () { inboxRes.refetch(); });

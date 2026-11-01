@@ -90,7 +90,8 @@ window.primerApi = {
 // The tweaks store's setter, recorded: the theme helpers persist through it (ui/foundation/tweaks.js has its own tests).
 window.primerApi.setTweak = function (k, v) { LOG.tweaks.push([k, v]); };
 window.useWorkspaceTapListener = function () {};
-var SH_api = { pendingAttention: function () { return Promise.resolve({ items: [] }); } };
+var SH_api = { pendingAttention: function () { return Promise.resolve({ items: [] }); }, workspace: function () { return Promise.resolve({}); },
+  keys: { workspace: function (wid) { return "shell-workspace:" + wid; } } };
 var SH_useAttention = function () { return { data: { items: [] }, loading: false, error: null, degraded: false, refetch: function () {} }; };
 var PR_trailingThrottle = function (state, ms, fn) { fn(); };
 var SH_attentionTotal = function (d) { return d && d.items ? d.items.length : 0; };
