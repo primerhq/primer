@@ -690,7 +690,7 @@ function AG_toolsForSave(selected, stored) {
   return kept.concat(added);
 }
 
-function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading, onShare, onOpenHarness }) {
+function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading, onShare, onOpenHarness, openMemory }) {
   // Same modal serves both create (existing == null) and edit
   // (existing == agent row). In edit mode the id field is locked,
   // submit PUT-replaces, and the success callback is just close().
@@ -702,6 +702,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   // that direct-edit is the landing view instead of Edit being a
   // second click away.
   const isManaged = isEdit && !!existing.harness_id;
+  // The agent.memory verb (and the agents:memory:<id> overlay) open the Memory fold; each run of the verb counts once.
+  const memoryOpens = window.AG_useMemoryOpens();
   const { useResource, useMutation, apiFetch } = window.primerApi;
   // The agent's model field is a single profile id. A profile already
   // pins the provider, the wire model name and the API-level config, so
@@ -1241,6 +1243,12 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
           </PK_Field>
         </div>
       </PK_Fold>
+      {isEdit && (
+        <PK_Fold key={"memory-" + memoryOpens} open={memoryOpens > 0 || !!openMemory} label="Memory" testid="agent-memory-fold">
+          <window.AG_MemorySettings agentId={existing.id} pushToast={pushToast} />
+        </PK_Fold>
+      )}
+      {isEdit && <window.AG_MemoryPanel agentId={existing.id} pushToast={pushToast} />}
       {isEdit && <AG_SessionsPanel agentId={existing.id} />}
       {isEdit && (
         <AG_JsonDisclosure agent={existing} open={showJson} onToggle={() => setShowJson((v) => !v)} />
@@ -1278,7 +1286,7 @@ async function AG_findDefaultWorkspace(apiFetch) {
   }
 }
 
-function AgentDetail({ agentId, pushToast }) {
+function AgentDetail({ agentId, pushToast, openMemory }) {
   const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { params, navigate } = useRouter();
   const id = agentId || params.id;
@@ -1395,6 +1403,7 @@ function AgentDetail({ agentId, pushToast }) {
         existing={a}
         status={status}
         pushToast={pushToast}
+        openMemory={openMemory}
         onChat={startChat}
         chatLoading={startChatMut.loading}
         onShare={() => setShareOpen(true)}
