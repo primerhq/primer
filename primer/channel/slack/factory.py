@@ -25,6 +25,7 @@ from primer.channel.slack.adapter import (
     SlackChannelAdapter,
 )
 from primer.channel.slack.connection import SLACK_CONNECTIONS
+from primer.channel.slack.normalizer import _ROUTED_SUBTYPES
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
 )
@@ -240,10 +241,11 @@ def _install_handlers(provider_id: str, app: Any) -> None:
     @app.event("message")
     async def _on_message(event, client, context):
         # Ignore bot/self messages and edits/deletes (no plain text payload).
-        # A "file_share" subtype carries the user's uploaded files, so it is
-        # let through (any other subtype - edits, deletes, joins - is dropped).
+        # A "file_share" subtype carries the user's uploaded files and a
+        # "thread_broadcast" is a thread reply also sent to the channel, so
+        # they are let through (any other subtype - edits, deletes, joins - is dropped).
         subtype = event.get("subtype")
-        if event.get("bot_id") or (subtype and subtype != "file_share"):
+        if event.get("bot_id") or (subtype and subtype not in _ROUTED_SUBTYPES):
             return
         thread_ts = event.get("thread_ts")
         channel_id = event["channel"]

@@ -250,3 +250,22 @@ async def test_W56d_a_rejected_slack_thread_reply_keeps_its_tool_and_args_blocks
     assert client.conversations_replies.await_args.kwargs["ts"] == "111.2"
     blocks = client.chat_update.await_args.kwargs["blocks"]
     assert blocks[:2] == _APPROVAL_BLOCKS[:2] and blocks[2]["type"] == "context"
+
+
+# ---- W56e: a Slack thread_broadcast reply is routed -------------------------------------------------------------------
+
+
+async def test_W56e_a_slack_thread_broadcast_reply_is_routed(monkeypatch):
+    event = await SlackEventNormalizer(provider_id="p").normalize(_slack_raw(subtype="thread_broadcast", thread_ts="1.0"))
+    assert (event.surface, event.thread_anchor) == ("thread", "1.0")
+
+    adapter = sl._mock_adapter()
+    _, app = sl._install(monkeypatch, sl._FakeEntry({"C123": adapter}))
+    route = AsyncMock(return_value=True)
+    monkeypatch.setattr(slack_factory, "_route_channel_event", route)
+    _corr(monkeypatch, None)
+    await app.events["message"](
+        {"channel": "C123", "ts": "5.0", "user": "U1", "subtype": "thread_broadcast", "thread_ts": "1.0", "text": "fyi"},
+        SimpleNamespace(), SimpleNamespace(),
+    )
+    route.assert_awaited_once()

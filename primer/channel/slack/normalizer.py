@@ -11,6 +11,11 @@ from primer.model.channel_event import (
 )
 
 
+#: Message subtypes that are a person's message: uploaded files, and a thread reply also sent to the channel (W56e).
+#: Every other subtype (edits, deletes, joins) is not routed.
+_ROUTED_SUBTYPES = frozenset({"file_share", "thread_broadcast"})
+
+
 class SlackEventNormalizer:
     def __init__(self, *, provider_id: str) -> None:
         self._provider_id = provider_id
@@ -36,7 +41,7 @@ class SlackEventNormalizer:
             if p.get("bot_id"):
                 return None
             subtype = p.get("subtype")
-            if subtype and subtype != "file_share":
+            if subtype and subtype not in _ROUTED_SUBTYPES:
                 return None
             return ChannelEvent(
                 provider=ChannelProviderType.SLACK,
