@@ -490,6 +490,20 @@ async def _refuse_toolsets(
 # ---------------------------------------------------------------------------
 
 
+async def _evict_toolset(provider_registry: Any | None, toolset_id: str) -> None:
+    """Drop the cached adapter of a toolset row the harness just wrote or deleted, in every process (the REST update and the system tools do the same).
+
+    Without it a moved MCP url, a rotated header or a new python source is served from the old adapter until restart, and an uninstalled toolset keeps
+    being served (GX-2). Best effort: the row write already landed.
+    """
+    if provider_registry is None:
+        return
+    try:
+        await provider_registry.invalidate_toolset(toolset_id)
+    except Exception:  # noqa: BLE001 - a failed eviction must not fail a sync that already wrote
+        logger.warning("harness: could not evict the cached toolset %s", toolset_id, exc_info=True)
+
+
 async def _write_entity_with_body(
     *,
     storage_provider: Any,
@@ -497,6 +511,7 @@ async def _write_entity_with_body(
     entity: Any,
     content: str | None,
     is_update: bool,
+    provider_registry: Any | None = None,
 ) -> None:
     """Write an entity row and (for documents) its content-store body row
     inside ONE backend transaction, so the two never diverge.
@@ -536,6 +551,8 @@ async def _write_entity_with_body(
                 content=content,
                 conn=conn,
             )
+    if type(entity).__name__ == "Toolset":
+        await _evict_toolset(provider_registry, entity.id)           # the row changed: no process may keep serving the old adapter (GX-2)
     if hasattr(entity, "access") and not is_update:
         # An install racing a revoke: the harness's access was read inside the transaction, but the revoke's fan-out ran before this row was committed, so it
         # missed it. Read the harness again now that the row is visible and copy what changed (access-control P3 SEC, finding 11a); a no-op when it did not.
@@ -635,7 +652,9 @@ async def _index_installed_document(
         )
 
 
-async def _delete_installed(storage_provider: Any, entry: RenderedEntry, semantic_search_registry: Any | None) -> None:
+async def _delete_installed(
+    storage_provider: Any, entry: RenderedEntry, semantic_search_registry: Any | None, provider_registry: Any | None = None,
+) -> None:
     """Delete one installed row as the REST door does, for a sync that drops it and for uninstall.
 
     A row already gone is done (KN-3: a retried sync or uninstall meets the rows an earlier attempt removed). A collection's
@@ -655,6 +674,8 @@ async def _delete_installed(storage_provider: Any, entry: RenderedEntry, semanti
         await storage.delete(entry.resolved_id)
     except NotFoundError:
         pass
+    if entry.kind == "toolset":
+        await _evict_toolset(provider_registry, entry.resolved_id)      # a deleted toolset must not keep being served (GX-2)
     if entry.kind != "document":
         return
     # A document also owns a content-store row keyed by the same stable id: an orphan would trip the content store's
@@ -751,6 +772,7 @@ async def apply_install(
                         entity=entity,
                         content=doc_content if kind == "document" else None,
                         is_update=False,
+                        provider_registry=provider_registry,
                     )
                 except ConflictError as conflict:
                     # Inspect the colliding row: if it's owned by another
@@ -894,7 +916,7 @@ async def apply_sync(
     # Process deletes first (reverse uninstall order: graph → ... → toolset)
     for entry in _sorted_by_kind(diff.deletes, _UNINSTALL_ORDER):
         try:
-            await _delete_installed(storage_provider, entry, semantic_search_registry)
+            await _delete_installed(storage_provider, entry, semantic_search_registry, provider_registry)
             if entry.kind == "toolset":
                 await _forget_toolset_sign_in(storage_provider, entry.resolved_id)
         except Exception as exc:
@@ -931,6 +953,7 @@ async def apply_sync(
                     entity=entity,
                     content=doc_content if entry.kind == "document" else None,
                     is_update=False,
+                    provider_registry=provider_registry,
                 )
             except ConflictError:
                 # A row of THIS harness holds the id: an earlier sync created it and then failed, so the snapshot it kept
@@ -946,6 +969,7 @@ async def apply_sync(
                     entity=entity,
                     content=doc_content if entry.kind == "document" else None,
                     is_update=True,
+                    provider_registry=provider_registry,
                 )
         except Exception as exc:
             apply_errors.append(
@@ -985,6 +1009,7 @@ async def apply_sync(
                 entity=entity,
                 content=doc_content if new_entry.kind == "document" else None,
                 is_update=True,
+                provider_registry=provider_registry,
             )
         except Exception as exc:
             apply_errors.append(
@@ -1050,6 +1075,7 @@ async def apply_uninstall(
     harness: Harness,
     cascade: bool = True,
     semantic_search_registry: Any | None = None,
+    provider_registry: Any | None = None,
 ) -> None:
     """Remove the harness. When ``cascade`` is True (default), also delete
     every managed entity in reverse-DAG order (graph → agent → document →
@@ -1078,7 +1104,7 @@ async def apply_uninstall(
 
             for kind in _UNINSTALL_ORDER:
                 for entry in entries_by_kind.get(kind, []):
-                    await _delete_installed(storage_provider, entry, semantic_search_registry)
+                    await _delete_installed(storage_provider, entry, semantic_search_registry, provider_registry)
                     if kind == "toolset":
                         try:
                             await _forget_toolset_sign_in(storage_provider, entry.resolved_id)
