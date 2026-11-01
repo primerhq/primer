@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 _HANDLERS_INSTALLED: set[str] = set()
+# A closed connection takes its handlers with it, so the next connection of the provider gets them again (W8).
+TELEGRAM_CONNECTIONS.on_close = lambda provider_id: _HANDLERS_INSTALLED.discard(provider_id)
 
 
 async def _route_channel_event(adapter: Any, provider_id: str, msg: Any) -> bool:
@@ -37,10 +39,10 @@ async def _route_channel_event(adapter: Any, provider_id: str, msg: Any) -> bool
     it to the adapter's event router. A best-effort path: any failure is logged
     and swallowed (returning ``False``) so it never breaks the chat-surface
     dispatch."""
-    router = adapter._inbound_router()
-    if router is None:
-        return False
     try:
+        router = adapter._inbound_router()
+        if router is None:
+            return False
         from primer.channel.telegram.normalizer import TelegramEventNormalizer
 
         chat = msg.chat
@@ -54,7 +56,8 @@ async def _route_channel_event(adapter: Any, provider_id: str, msg: Any) -> bool
         bot_id = getattr(bot, "id", None) if bot is not None else None
         bot_username = getattr(bot, "username", None) if bot is not None else None
         entities = []
-        for e in (msg.entities or []):
+        # A media message's text is its caption, whose entities are caption_entities (W56a).
+        for e in ((msg.entities if msg.text else msg.caption_entities) or []):
             ent = {
                 "type": getattr(e, "type", None),
                 "offset": getattr(e, "offset", 0),
@@ -240,6 +243,10 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         # is stored in _reply_targets with kind="reject".)
         target = adapter.resolve_reply_target(replied_mid)
         if target is None:
+            # A quote-reply that answers no question and no reject prompt is an ordinary message (W36): every inbound
+            # message is a routed event (S6 section 5).
+            if sp is not None:
+                await _route_channel_event(adapter, provider_id, msg)
             return
         kind = target.get("kind")
         ids = {k: target[k] for k in ("workspace_id", "session_id", "tool_call_id")}
@@ -285,6 +292,7 @@ async def _telegram_factory(
     artifact_registry=None,
     workspace_registry=None,
     scheduler=None,
+    owns_inbound=True,
     **_kw,
 ):
     adapter = TelegramChannelAdapter(
@@ -293,9 +301,10 @@ async def _telegram_factory(
         claim_engine=claim_engine, artifact_registry=artifact_registry,
         workspace_registry=workspace_registry, scheduler=scheduler,
     )
+    adapter.owns_inbound = owns_inbound
     await adapter.initialize()
     conn = TELEGRAM_CONNECTIONS.entry(provider.id)
-    if conn is not None:
+    if conn is not None and owns_inbound:  # none on a posting-only connection (W7)
         _install_handlers(provider.id, conn.app)
     return adapter
 

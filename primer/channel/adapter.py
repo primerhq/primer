@@ -191,6 +191,9 @@ class ChannelAdapter(ABC):
     #: The app's speech-to-text registry (``app.state.stt_registry``), set by the channel registry when it builds the
     #: adapter, so a voice message is transcribed through the cached adapter rather than a throwaway one (W56g).
     stt_registry: Any = None
+    #: False in a process that does not own inbound (a worker-only one, W7): ``initialize()`` takes a connection for
+    #: posting only, with no poller, gateway or socket. The factory sets it before ``initialize()``.
+    owns_inbound: bool = True
 
     @abstractmethod
     async def initialize(self) -> None: ...

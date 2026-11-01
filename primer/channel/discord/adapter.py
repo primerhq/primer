@@ -69,7 +69,10 @@ class DiscordChannelAdapter(ChannelAdapter):
         return "discord_user_id"
 
     async def initialize(self) -> None:
-        self._client = await DISCORD_CONNECTIONS.acquire(self._provider)
+        if self.owns_inbound:
+            self._client = await DISCORD_CONNECTIONS.acquire(self._provider)
+        else:  # posting only (W7)
+            self._client = await DISCORD_CONNECTIONS.acquire(self._provider, inbound=False)
         entry = DISCORD_CONNECTIONS.entry(self._provider.id)
         if entry is not None:
             entry.adapters_by_channel_id[str(self._channel.external_id)] = self

@@ -88,7 +88,10 @@ class SlackChannelAdapter(ChannelAdapter):
         return ""
 
     async def initialize(self) -> None:
-        self._conn = await SLACK_CONNECTIONS.acquire(self._provider)
+        if self.owns_inbound:
+            self._conn = await SLACK_CONNECTIONS.acquire(self._provider)
+        else:  # posting only (W7)
+            self._conn = await SLACK_CONNECTIONS.acquire(self._provider, inbound=False)
         # Register this adapter on the shared connection so inbound
         # handlers can dispatch by channel_id.
         entry = SLACK_CONNECTIONS.entry(self._provider.id)
