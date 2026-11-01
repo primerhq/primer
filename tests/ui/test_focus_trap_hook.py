@@ -31,7 +31,7 @@ def test_the_hook_remembers_the_opener_traps_tab_and_restores_focus() -> None:
     assert "focusables" in src, "Tab and Shift+Tab cycle within these"
     assert 'e.key !== "Tab"' in src or 'key !== "Tab"' in src
     assert "defaultPrevented" in src, "a nested dialog's own wrap is not wrapped a second time"
-    assert "document.contains(opener)" in src, "focus goes back only to an opener that still exists"
+    assert "document.contains(el)" in src, "focus goes back only to an element that still exists (the opener, else the one before the palette)"
 
 
 def test_the_hook_is_loaded_before_the_components_that_use_it() -> None:
