@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -483,6 +484,21 @@ async def clear_canvas(
     return _applied(outcome)
 
 
+#: How old a stored event must be before a retried POST redelivers it (W57c). Inside the grace the first
+#: POST's delivery may still be running - the wake is issued, the agent has not read the event - and a
+#: redelivery would send the click to the agent twice; the retry answers ``recorded`` instead. Generous on
+#: purpose: a healthy delivery is far shorter than the grace, so a failed one is judged failed well before
+#: the client's next retry lands.
+REDELIVERY_GRACE_SECONDS = 30.0
+
+
+def _redelivery_grace_expired(at: datetime) -> bool:
+    """Whether the stored event stamped ``at`` is old enough that its first POST's delivery has had time to finish or fail."""
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - at).total_seconds() >= REDELIVERY_GRACE_SECONDS
+
+
 @canvas_router.post(
     _CANVAS_PATH + "/events",
     response_model=CanvasEventAccepted,
@@ -509,9 +525,11 @@ async def post_canvas_event(
     ``silent_rate_limited``: the others), and nothing is recorded. The body is bounded before it is read (413).
 
     A retried POST (its ``client_event_id`` recorded already) records nothing. Its event is delivered again only when it wakes the agent,
-    the agent has not read it and no queued steer carries it: the first POST's delivery failed, so the click must not be lost. A read
-    event was delivered (``recorded``), a queued one waits (``queued``), a silent one waits in the canvas for the next digest
-    (``recorded``), and one the ring no longer holds cannot be delivered (``recorded``).
+    the agent has not read it, no queued steer carries it and the stored event is older than the redelivery grace (about 30 s): inside the
+    grace the first POST's delivery may still be running, so the retry answers ``recorded`` and redelivers nothing (W57c); older than it,
+    the first POST's delivery failed, so the click must not be lost. A read event was delivered (``recorded``), a queued one waits
+    (``queued``), a silent one waits in the canvas for the next digest (``recorded``), and one the ring no longer holds cannot be delivered
+    (``recorded``).
     """
     from primer.canvas.delivery import DELIVERY_QUEUED, DELIVERY_RECORDED, deliver_canvas_event
     from primer.canvas.wait import queued_steer_carries
@@ -540,8 +558,12 @@ async def post_canvas_event(
         unread = event.seq > row.seen_event_seq and event.seq not in row.seen_ahead
         if unread and await queued_steer_carries(storage_provider, session_id, event.id):
             delivery = DELIVERY_QUEUED               # the first POST queued it: it waits behind the turn, once
-        elif unread:
-            deliver = True                           # the first POST's delivery failed: deliver it now, or the click is lost
+        elif unread and _redelivery_grace_expired(event.at):
+            # W57c: redeliver only once the stored event is older than the grace. While it is younger, the
+            # first POST's delivery may still be running (the wake is issued, the agent has not read it
+            # yet): redelivering now would send the click to the agent twice. The retry answers
+            # ``recorded`` and the click is redelivered by the next retry, or was never lost to begin with.
+            deliver = True                           # the first POST's delivery failed long ago: deliver it now, or the click is lost
     if deliver and event is not None:
         delivery = await deliver_canvas_event(
             event=event,
