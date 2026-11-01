@@ -81,14 +81,22 @@ class TestClassifyOpenaiException:
         assert result.status_code == 503
         assert result.code == "server_error"
 
-    def test_other_4xx_api_status_error_maps_to_provider_error(self) -> None:
+    def test_other_4xx_api_status_error_maps_to_bad_request(self) -> None:
+        """AG-M19: a 4xx is the API refusing the request (a pool fails over on it), as on the other classifiers."""
         sdk_exc = _make_openai_error(openai.APIStatusError, status_code=404)
+        result = classify_openai_exception(sdk_exc)
+        assert isinstance(result, BadRequestError)
+        assert result.status_code == 404
+        assert result.code == "bad_request"
+
+    def test_a_status_that_is_neither_4xx_nor_5xx_maps_to_provider_error(self) -> None:
+        sdk_exc = _make_openai_error(openai.APIStatusError, status_code=302)
         result = classify_openai_exception(sdk_exc)
         assert isinstance(result, ProviderError)
         assert not isinstance(
             result, (AuthenticationError, RateLimitError, BadRequestError, ServerError)
         )
-        assert result.status_code == 404
+        assert result.status_code == 302
 
     def test_connection_error_maps_to_network_error(self) -> None:
         sdk_exc = openai.APIConnectionError(request=MagicMock())  # type: ignore[arg-type]

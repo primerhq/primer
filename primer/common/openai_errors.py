@@ -15,6 +15,7 @@ from openai import (
     AuthenticationError as OpenAIAuthenticationError,
     BadRequestError as OpenAIBadRequestError,
     InternalServerError as OpenAIInternalServerError,
+    PermissionDeniedError as OpenAIPermissionDeniedError,
     RateLimitError as OpenAIRateLimitError,
     UnprocessableEntityError as OpenAIUnprocessableEntityError,
 )
@@ -37,12 +38,13 @@ def classify_openai_exception(exc: Exception) -> PrimerError:
 
     | openai SDK exception | primer exception |
     |---|---|
-    | AuthenticationError (401) | AuthenticationError |
+    | AuthenticationError (401), PermissionDeniedError (403) | AuthenticationError |
     | RateLimitError (429) | RateLimitError |
     | BadRequestError (400) | BadRequestError (carries error code) |
     | UnprocessableEntityError (422) | BadRequestError (carries status 422) |
     | InternalServerError (5xx) | ServerError |
     | Other APIStatusError with status >= 500 | ServerError |
+    | Other APIStatusError with a 4xx (402, 404, 409, ...) | BadRequestError (provider code, else ``bad_request``) |
     | Other APIStatusError | ProviderError |
     | APIConnectionError, APITimeoutError | NetworkError |
     | Anything else | ProviderError |
@@ -52,7 +54,7 @@ def classify_openai_exception(exc: Exception) -> PrimerError:
     whatever shape their interface requires (e.g. a terminal
     ``chat.Error(fatal=True)`` event for the streaming LLM adapter).
     """
-    if isinstance(exc, OpenAIAuthenticationError):
+    if isinstance(exc, (OpenAIAuthenticationError, OpenAIPermissionDeniedError)):
         return AuthenticationError(
             "OpenAI authentication failed",
             code="auth_error",
@@ -90,6 +92,15 @@ def classify_openai_exception(exc: Exception) -> PrimerError:
                 f"OpenAI server error ({status})",
                 code="server_error",
                 status_code=status,
+                cause=exc,
+            )
+        # Any other 4xx is the API refusing this request, as on the Anthropic, Google and Ollama classifiers: a pool
+        # fails over on it (a bare ProviderError it does not).
+        if status is not None and 400 <= status < 500:
+            return BadRequestError(
+                getattr(exc, "message", str(exc)) or f"OpenAI rejected the request ({status})",
+                status_code=status,
+                code=getattr(exc, "code", None) or "bad_request",
                 cause=exc,
             )
         return ProviderError(
