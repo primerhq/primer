@@ -69,21 +69,33 @@ function SH_ActivityPanel() {
     }, function () {});
   }, []);
 
+  // UI-L3: the filters in force for the window, set by refresh (the boxes as
+  // edited without Enter must not leak into a Load More that appends to rows
+  // read under the applied filter), plus a request number so an answer that
+  // is not the latest one's is dropped (an overlapping Refresh or Load More
+  // must not replace or re-append over the newer rows).
+  var appliedFilters = React.useRef({ eventType: null, entityKind: null, workspaceId: null });
+  var reqSeq = React.useRef(0);
+
   function query(afterId, replace) {
     setLoading(true);
     setError(null);
+    var seq = ++reqSeq.current;
+    var f = appliedFilters.current;
     SH_api.events({
       afterId: afterId,
       limit: 100,
-      eventType: filters.eventType || null,
-      entityKind: filters.entityKind || null,
-      workspaceId: filters.workspaceId || null,
+      eventType: f.eventType || null,
+      entityKind: f.entityKind || null,
+      workspaceId: f.workspaceId || null,
     }).then(function (out) {
+      if (seq !== reqSeq.current) return;
       setLoading(false);
       var items = (out && out.items) || [];
       setMaxId(out && out.max_id);
-      setRows(replace ? items : rows.concat(items));
+      setRows(function (prev) { return replace ? items : prev.concat(items); });
     }, function (err) {
+      if (seq !== reqSeq.current) return;
       setLoading(false);
       setError(err && err.message ? err.message : String(err));
     });
@@ -92,6 +104,11 @@ function SH_ActivityPanel() {
   // Open on the newest window: everything after (max_id - 100). Two
   // requests only on first load; Refresh repeats it.
   function refresh() {
+    appliedFilters.current = {
+      eventType: filters.eventType || null,
+      entityKind: filters.entityKind || null,
+      workspaceId: filters.workspaceId || null,
+    };
     SH_api.events({ limit: 1 }).then(function (out) {
       var head = (out && out.max_id) || 0;
       query(Math.max(0, head - 100), true);
