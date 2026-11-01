@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -61,6 +62,10 @@ class _Listener:
     on_termination: Callable[..., None]
 
 
+# How long the metrics scrape reuses the sessions-by-status counts.
+STATUS_COUNT_TTL_SECONDS = 10.0
+
+
 class PostgresScheduler(Scheduler):
     """Postgres impl. Tasks 9-11 fill in claim/LISTEN."""
 
@@ -69,8 +74,12 @@ class PostgresScheduler(Scheduler):
         *,
         storage_provider: "StorageProvider",
         config: PostgresSchedulerConfig,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._storage = storage_provider
+        # The sessions-by-status counts are a table scan; a scrape reads them from here for 10 s (M2).
+        self._clock = clock
+        self._status_counts: tuple[float, dict[str, int]] | None = None
         # Schema-qualified table names (CORE-8): an unqualified `workers`
         # would land in `public` and be shared by every deployment on the
         # cluster (one deployment's boot marks the others' workers dead,
@@ -450,7 +459,10 @@ class PostgresScheduler(Scheduler):
 
     async def metrics_db_snapshot(self) -> dict[str, Any]:
         """Async companion to :meth:`metrics_snapshot` for DB-side
-        aggregates. See spec §14. Sessions by status."""
+        aggregates. See spec §14. Sessions by status (cached for :data:`STATUS_COUNT_TTL_SECONDS`)."""
+        now = self._clock()
+        if self._status_counts is not None and self._status_counts[0] > now:
+            return {"primer_sessions_active": dict(self._status_counts[1])}
         async with self._storage.pool.acquire() as conn:
             sessions_table_exists = await conn.fetchval(
                 f"SELECT to_regclass('{self._sessions_table}') IS NOT NULL"
@@ -463,6 +475,7 @@ class PostgresScheduler(Scheduler):
                 )
                 for r in rows:
                     sessions_by_status[r["status"] or "unknown"] = r["n"]
+        self._status_counts = (now + STATUS_COUNT_TTL_SECONDS, sessions_by_status)
         return {
-            "primer_sessions_active": sessions_by_status,
+            "primer_sessions_active": dict(sessions_by_status),
         }
