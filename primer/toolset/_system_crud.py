@@ -387,6 +387,7 @@ def _crud_tools_for(
     base_predicate: Predicate | None = None,
     access_of: Callable[[Any, ToolContext | None, AccessLevel], Awaitable[Any]] | None = None,
     pre_delete: _PreDelete = None,
+    post_delete: _OnMutate = None,
     row_guard: Callable[[Any, ToolContext | None, bool], Awaitable[ToolCallResult | None]] | None = None,
     list_filter: Callable[[ToolContext | None], Awaitable[Predicate | None]] | None = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
@@ -831,6 +832,8 @@ def _crud_tools_for(
             return _err_from_primer(exc, error_type="storage-error")
         if on_delete is not None:
             await on_delete(args.id)
+        if post_delete is not None:
+            await post_delete(args.id)
         return _ok({"deleted": True, "id": args.id})
 
     delete_when = (
@@ -857,7 +860,7 @@ def _crud_tools_for(
                 ToolExample(args={"id": hint.sample_id}, returns="deletion ack")
             ],
             required_role=required_role,
-            interruptible=on_delete is None and pre_delete is None,   # as update_: the row delete, then the hook; a pre_delete is more steps
+            interruptible=on_delete is None and pre_delete is None and post_delete is None,   # as update_: the row delete, then the hook; a pre_delete is more steps
         ),
         _delete_handler,
     )

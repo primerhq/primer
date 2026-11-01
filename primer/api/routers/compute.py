@@ -116,6 +116,20 @@ async def _agent_pre_delete(entity: Agent, request: Request) -> None:
         raise ConflictError(refusal)
 
 
+async def _agent_deleted(entity_id: str, request: Request) -> None:
+    """The agent's memory (its collection, settings, queued jobs and their leases) goes with it. The row is already gone, so a failure here is logged,
+    not answered: the memory is hidden and unreachable without its agent, and the next delete of the same id removes what is left."""
+    from primer.memory.settings import delete_agent_memory
+
+    state = request.app.state
+    try:
+        await delete_agent_memory(
+            get_storage_provider(request), getattr(state, "semantic_search_registry", None), getattr(state, "claim_engine", None), entity_id,
+        )
+    except Exception:  # noqa: BLE001 - see above
+        logger.warning("agent %s: could not remove its memory", entity_id, exc_info=True)
+
+
 # The access sub-resource (GET/PUT /agents/{id}/access) is mounted
 # BEFORE the CRUD router (route-order rule in _crud.py).
 agent_access_router = make_access_router(
@@ -140,6 +154,7 @@ agent_router = make_crud_router(
     # rather than strand them. The list is shared with the system delete_agent tool (primer.storage.references).
     references=[ReferenceCheck.from_spec(spec) for spec in AGENT_REFERENCES],
     on_pre_delete=_agent_pre_delete,
+    on_delete=_agent_deleted,
     owned=True,
 )
 
