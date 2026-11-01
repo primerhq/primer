@@ -183,9 +183,9 @@ async def resolve_llm(
     ``provider_registry.get_aggregated_llm(profile_id, ...)``, which
     returns the SAME :class:`~primer.llm.aggregated.AggregatedLLM`
     instance on every call for a given profile id (cached, keyed by
-    profile id, re-fetched by the registry itself INSIDE its lock -- not
-    the row this function already fetched above, which is a separate,
-    outside-the-lock read; see get_aggregated_llm's own docstring for why
+    profile id, re-fetched by the registry itself after it samples its
+    cache generation -- not the row this function already fetched above,
+    which no eviction guard covers; see get_aggregated_llm's own docstring for why
     that distinction is load-bearing) -- NOT a fresh one per call. A
     fresh instance every call would reset ``AggregatedLLM._cursor`` to 0
     each time, so ROUND_ROBIN routing would never actually rotate past
