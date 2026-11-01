@@ -140,6 +140,12 @@ function GB_Builder(props) {
   useEffect(() => {
     const onKey = (e) => {
       const mod = e.metaKey || e.ctrlKey;
+      // While the operator is typing (an input, textarea or contenteditable
+      // holds the key), the keys are the browser's: the draft must not be
+      // undone from a text box, and the builder must not preventDefault a
+      // Cmd-K that the shell's command palette will take (UI-M15).
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       // A harness-managed builder (readOnly) drops staged edits silently (dispatch is a no-op), so a palette whose picks go nowhere must not open: the shortcut does nothing there, as the outline's add button is already hidden.
       if (!readOnly && mod && e.key.toLowerCase() === "k") { e.preventDefault(); setPaletteAfter(selectedId || null); }
       if (mod && e.key.toLowerCase() === "z" && !e.shiftKey && undoRef.current.length) {
@@ -154,8 +160,11 @@ function GB_Builder(props) {
         rawDispatch({ type: "SET_DRAFT", draft: next });
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // Capture: the builder's preventDefault must land before the shell
+    // palette's bubble handler on the same window, so one Cmd-K opens one
+    // palette (nv-palette returns on ev.defaultPrevented).
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [selectedId, undo, readOnly]);
 
   const dirty = useMemo(
