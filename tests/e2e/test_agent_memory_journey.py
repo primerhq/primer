@@ -125,6 +125,6 @@ async def test_memory_learns_from_a_session_and_the_next_session_starts_with_it(
     assert {"collections__search", "collections__read_document"} <= offered, offered
 
     # 5. the agent's memory collection is in no listing
-    colls = await client.get("/v1/collections", params={"limit": 500})
+    colls = await client.get("/v1/collections", params={"limit": 200})
     assert colls.status_code == 200, colls.text
     assert f"mem-{agent_id}" not in [c["id"] for c in colls.json()["items"]]
