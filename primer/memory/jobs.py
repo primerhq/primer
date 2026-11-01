@@ -30,6 +30,8 @@ JOB_LIFETIME = timedelta(days=7)
 MIN_TURNS = 2
 #: A reflection whose model cannot be reached is tried this many times, then given up on.
 MAX_ATTEMPTS = 3
+#: The curator runs at most once in this long.
+CURATE_EVERY = timedelta(hours=24)
 
 
 @dataclass
@@ -120,7 +122,8 @@ async def schedule_job(sp: Any, engine: Any, *, kind: str, agent_id: str, next_a
     """Queue a ``curate`` or ``topics`` job of an agent, due at ``next_attempt_at``."""
     job_id = {"curate": curate_job_id, "topics": topics_job_id}[kind](agent_id)
     await _upsert_job(sp, job_id, kind=kind, agent_id=agent_id, session_id=None, target_turn=0, now=datetime.now(UTC))
-    await engine.upsert(ClaimKind.MEMORY, job_id, next_attempt_at=next_attempt_at)
+    if engine is not None:   # a tool that runs where no engine is wired leaves the row for the daily curator run
+        await engine.upsert(ClaimKind.MEMORY, job_id, next_attempt_at=next_attempt_at)
 
 
 # --- the daily reflection budget ---------------------------------------------------------------------------------------------------------------
@@ -165,12 +168,34 @@ async def run_reflect(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: 
     await reflect(deps, job, agent, settings)
 
 
-async def run_curate(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: AgentMemory) -> None:
-    raise NotImplementedError("the curator lands with Task 9")
+async def run_curate(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: AgentMemory) -> ReleaseOutcome:
+    """The daily curator pass; the job requeues itself a day on, whatever the pass did (a failed pass is tried again tomorrow)."""
+    from primer.memory.curate import curate
+
+    now = deps.now()
+    last = settings.last_curated_at
+    if last is not None and now - last < CURATE_EVERY:
+        return ReleaseOutcome(success=True, requeue_after=CURATE_EVERY - (now - last))
+    jobs = deps.sp.get_storage(MemoryJob)
+    # A prompt edit made where no claim engine is wired left its topics job without a lease: it is taken up here, at the latest a day later.
+    pending = await jobs.get(topics_job_id(agent.id))
+    if pending is not None:
+        await run_topics(deps, pending, agent, settings)
+    try:
+        await curate(deps, agent, settings, now)
+    except Exception:  # noqa: BLE001 - tomorrow's pass tries again; the chain of daily jobs must not end here
+        logger.warning("memory job %s: the curator failed", job.id, exc_info=True)
+    await deps.sp.get_storage(AgentMemory).patch_if(settings.id, {"last_curated_at": now.isoformat()}, where={"enabled": [settings.enabled]})
+    # The job outlives its week, or the daily chain would end with the first expiry.
+    await jobs.patch_if(job.id, to_jsonable_python({"expires_at": now + JOB_LIFETIME}), where={"agent_id": [job.agent_id]})
+    return ReleaseOutcome(success=True, requeue_after=CURATE_EVERY)
 
 
 async def run_topics(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: AgentMemory) -> None:
-    raise NotImplementedError("topic derivation lands with Task 8")
+    from primer.memory.topics import derive_topics
+
+    await derive_topics(deps, agent, settings)
+    await _forget(deps.sp.get_storage(MemoryJob), job)
 
 
 # --- the gates ---------------------------------------------------------------------------------------------------------------------------------
@@ -243,7 +268,7 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
                 actor=f"memory:{agent.id}", entity_kind="agent", entity_id=agent.id,
             )
     elif job.kind == "curate":
-        await run_curate(deps, job, agent, settings)
+        return await run_curate(deps, job, agent, settings) or _DROP
     else:
         await run_topics(deps, job, agent, settings)
     return _DROP

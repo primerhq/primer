@@ -251,11 +251,21 @@ async def test_schedule_job_makes_a_curate_or_topics_job_with_its_lease(fake_sto
     assert ran == ["topics"]
 
 
-async def test_the_runners_are_stubs_until_their_tasks_land(fake_storage_provider, engine):
+async def test_a_topics_job_derives_the_topics_and_leaves_no_row(fake_storage_provider, engine, monkeypatch):
+    import primer.memory.topics as topics
+
+    derived = []
+
+    async def derive(deps, agent, settings):
+        derived.append(agent.id)
+        return settings
+
+    monkeypatch.setattr(topics, "derive_topics", derive)
     await _agent(fake_storage_provider)
     await schedule_job(fake_storage_provider, engine, kind="topics", agent_id="a1", next_attempt_at=NOW)
-    with pytest.raises(NotImplementedError):
-        await run_memory_job(_deps(fake_storage_provider, engine), _lease("topics:a1"))
+    out = await run_memory_job(_deps(fake_storage_provider, engine), _lease("topics:a1"))
+    assert out.drop_lease and derived == ["a1"]
+    assert await fake_storage_provider.get_storage(MemoryJob).get("topics:a1") is None
 
 
 def _page():

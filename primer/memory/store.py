@@ -44,6 +44,7 @@ class MemoryEntry:
     description: str
     body: EntryBody
     meta: dict[str, Any] = field(default_factory=dict)
+    updated_at: datetime | None = None   # the document's last write (meta-only writes do not move it)
 
     def as_dict(self) -> dict[str, Any]:
         """The entry as the routes and tools show it: the body's items as ``{id, text}``."""
@@ -87,6 +88,7 @@ class MemoryStore:
             description=meta.get("description", ""),
             body=parse_body(got.content),
             meta=meta,
+            updated_at=got.document.updated_at,
         )
 
     async def _find(self, agent_id: str, name: str) -> MemoryEntry | None:
@@ -299,8 +301,9 @@ class MemoryStore:
         run_succeeded: bool,
         trial: bool,
         at: datetime,
+        trigger_run: bool = False,
     ) -> MemoryEntry | None:
-        """Count the verdict. A candidate that was helpful in a successful trial run (and needs no approval) is promoted; a harmful candidate is archived.
+        """Count the verdict (``trigger_run``: the session was a trigger's, which keeps the entry from going stale; see the curator). A candidate that was helpful in a successful trial run (and needs no approval) is promoted; a harmful candidate is archived.
         None when the entry is missing or archived."""
         entry = await self._find(agent_id, name)
         if entry is None or entry.status == "archived":
@@ -313,6 +316,8 @@ class MemoryStore:
         actor = _worker(agent_id)
         if verdict == "helpful" and entry.status == "active":
             await self._set_meta(doc_id, {"last_validated_at": at.isoformat()})
+        if trigger_run:
+            await self._set_meta(doc_id, {"last_trigger_use_at": at.isoformat()})
         await self._emit_event(
             "memory.entry.updated",
             agent_id,
@@ -339,6 +344,12 @@ class MemoryStore:
                     {"name": entry.name, "reason": "harmful in a trial run"},
                 )
         return await self._find(agent_id, entry.name)
+
+    async def write_snapshot(self, agent_id: str, path: str, text: str) -> None:
+        """A document outside the three folders (the curator's snapshots). Not indexed: the agent's searches never reach it."""
+        from primer.knowledge.document_service import DocumentService
+
+        await DocumentService(self._sp).upsert(collection_id=memory_collection_id(agent_id), path=path, content=text, title=path)
 
     # ---- writes by an owner --------------------------------------------------------------------------------------------------------------
 
@@ -369,11 +380,16 @@ class MemoryStore:
         return await self._require(agent_id, entry.name)
 
     async def archive(
-        self, agent_id: str, name: str, *, actor: str, reason: str
+        self, agent_id: str, name: str, *, actor: str, reason: str, merged_into: str | None = None
     ) -> MemoryEntry:
+        """Move the entry to archived (``merged_into``: the entry that took its place, kept in meta as a pointer)."""
         entry = await self._require(agent_id, name)
         if entry.status != "archived":
             await self._move(agent_id, entry, "archived")
+            if merged_into is not None:
+                doc_id = await self._doc_id(agent_id, "archived", slugify_name(entry.name) or entry.name)
+                if doc_id is not None:
+                    await self._set_meta(doc_id, {"merged_into": merged_into})
             await self._emit_event(
                 "memory.entry.archived",
                 agent_id,

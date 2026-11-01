@@ -24,9 +24,7 @@ _EMIT_RE = re.compile(r"""emit\w*\(\s*\n?\s*["']([a-z_]+(?:\.[a-z_]+)+)["']""")
 
 # Catalog types whose emitting task of agent memory has not landed yet (the reflection runner, the lookup, the curator, the purge route). Remove
 # each name as its emitter lands; the test below then holds it to the rule like the rest.
-_NOT_YET_EMITTED = frozenset({
-    "memory.curated",
-})
+_NOT_YET_EMITTED: frozenset[str] = frozenset()
 
 
 def _emitted_literals() -> set[str]:
