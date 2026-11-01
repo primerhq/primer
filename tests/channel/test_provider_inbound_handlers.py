@@ -183,3 +183,24 @@ async def test_W36_an_uncorrelated_telegram_quote_reply_is_routed(monkeypatch):
     adapter._handle_decision.assert_not_awaited()
     route.assert_awaited_once()
     assert route.await_args.args[2] is msg
+
+
+# ---- W56a: UTF-16 entity offsets; caption entities --------------------------------------------------------------------
+
+
+def test_W56a_telegram_mention_offsets_are_utf16():
+    # The emoji is 2 UTF-16 code units, so the mention entity is at offset 3, length 6.
+    ents = [{"type": "mention", "offset": 3, "length": 6}]
+    assert _mentions_bot(ents, "\U0001F44B @mybot hi", bot_id=1, bot_username="mybot") is True
+
+
+async def test_W56a_a_caption_mention_of_the_bot_counts():
+    router = tg._EventCaptureRouter()
+    msg = tg._mention_msg(None, "mention", 0, 0)
+    msg.entities = None
+    msg.caption = "\U0001F44B @MyBot look"
+    msg.caption_entities = [SimpleNamespace(type="mention", offset=3, length=6)]
+
+    await tg_factory._route_channel_event(tg._bot_adapter(router), "p", msg)
+
+    assert router.events[0].text == "\U0001F44B @MyBot look" and router.events[0].mentions_bot is True

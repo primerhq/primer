@@ -56,7 +56,8 @@ async def _route_channel_event(adapter: Any, provider_id: str, msg: Any) -> bool
         bot_id = getattr(bot, "id", None) if bot is not None else None
         bot_username = getattr(bot, "username", None) if bot is not None else None
         entities = []
-        for e in (msg.entities or []):
+        # A media message's text is its caption, whose entities are caption_entities (W56a).
+        for e in ((msg.entities if msg.text else msg.caption_entities) or []):
             ent = {
                 "type": getattr(e, "type", None),
                 "offset": getattr(e, "offset", 0),
