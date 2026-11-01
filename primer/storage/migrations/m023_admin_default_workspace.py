@@ -21,6 +21,7 @@ from pydantic import ConfigDict
 
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.int.storage_provider import StorageProvider
+from primer.storage.migrations._rows import iter_rows, read_all
 from primer.model.common import Identifiable
 from primer.model.storage import OffsetPage
 
@@ -45,14 +46,7 @@ class Workspace(Identifiable):  # noqa: N801
 
 
 async def _read_all(store) -> list[Any]:
-    rows: list[Any] = []
-    offset = 0
-    while True:
-        page = await store.list(OffsetPage(offset=offset, length=_PAGE))
-        rows.extend(page.items)
-        if len(page.items) < _PAGE:
-            return rows
-        offset += _PAGE
+    return await read_all(store)
 
 
 class M023AdminDefaultWorkspace:

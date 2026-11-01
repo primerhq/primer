@@ -70,7 +70,7 @@ class M009DockerTemplateRuntimeImage:
         rows: list[WorkspaceTemplate] = []
         offset = 0
         while True:
-            page = await storage.list(OffsetPage(offset=offset, length=_PAGE))
+            page = await storage.list(OffsetPage(offset=offset, length=_PAGE, want_total=False))
             rows.extend(page.items)
             if len(page.items) < _PAGE:
                 break

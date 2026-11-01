@@ -110,7 +110,7 @@ class M020HarnessPolicyRekey:
         while True:
             page = await store.find(
                 Q(ToolApprovalPolicy).where("toolset_id", _TOOLSET_ID).build(),
-                OffsetPage(offset=offset, length=_PAGE),
+                OffsetPage(offset=offset, length=_PAGE, want_total=False),
             )
             rows.extend(page.items)
             if len(page.items) < _PAGE:
@@ -150,7 +150,7 @@ class M020HarnessPolicyRekey:
         rows: list[Agent] = []
         offset = 0
         while True:
-            page = await store.list(OffsetPage(offset=offset, length=_PAGE))
+            page = await store.list(OffsetPage(offset=offset, length=_PAGE, want_total=False))
             rows.extend(page.items)
             if len(page.items) < _PAGE:
                 break

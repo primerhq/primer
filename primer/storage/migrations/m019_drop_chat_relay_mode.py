@@ -61,7 +61,7 @@ class M019DropChatRelayMode:
         # Read every row before writing any: an update can move a row within the list order, and paging while writing could
         # skip one.
         while True:
-            page = await channels.list(OffsetPage(offset=offset, length=_PAGE))
+            page = await channels.list(OffsetPage(offset=offset, length=_PAGE, want_total=False))
             rows.extend(page.items)
             if len(page.items) < _PAGE:
                 break

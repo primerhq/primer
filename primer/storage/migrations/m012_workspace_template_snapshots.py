@@ -56,7 +56,7 @@ class M012WorkspaceTemplateSnapshots:
         templates = sp.get_storage(WorkspaceTemplate)
         offset = 0
         while True:
-            page = await workspaces.list(OffsetPage(offset=offset, length=_PAGE))
+            page = await workspaces.list(OffsetPage(offset=offset, length=_PAGE, want_total=False))
             for row in page.items:
                 if row.template_snapshot is not None:
                     continue
