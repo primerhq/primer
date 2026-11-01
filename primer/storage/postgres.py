@@ -760,6 +760,24 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
 _DUP_TOLERANT_UNIQUE_INDEX_NAMES = ("serviceversion_service_version_uniq", "user_username_uniq", "service_name_uniq")
 
 
+# Trigram indexes for the console's `?q=` search (an ILIKE '%q%' over each field; a btree cannot serve a leading wildcard). table -> the
+# fields its router searches (Decision 11). They need the ``pg_trgm`` extension, which a role may not be allowed to create: then they are
+# skipped with ONE log line and the search stays a scan. They are never part of the table's transaction and never fail a boot.
+_TRIGRAM_FIELDS: dict[str, tuple[str, ...]] = {
+    "modelprofile": ("id", "description", "model_name"),
+    "service": ("id", "name", "description"),
+    "agent": ("id", "description"),
+    "graph": ("id", "description"),
+}
+_trigram_unavailable_logged = False
+
+
+def _trigram_index_ddl(table: str, qualified: str, field: str) -> str:
+    """``CREATE INDEX IF NOT EXISTS`` over the exact expression the ILIKE predicate renders for ``field`` (an index serves only its own expression)."""
+    expr = "id" if field == "id" else f"data->>'{field}'"
+    return f'CREATE INDEX IF NOT EXISTS "{table}_{field}_trgm" ON {qualified} USING gin (({expr}) gin_trgm_ops)'
+
+
 def _hot_field_index_ddl(table: str, qualified: str) -> list[str]:
     """Return the ``CREATE INDEX IF NOT EXISTS`` statements for *table*'s hot
     fields (empty when the table has none registered)."""
@@ -872,6 +890,27 @@ class PostgresStorage(Storage[ModelT]):
         # Reached only when the DDL committed (a race loss means the other
         # process committed the same table): mark this handle ensured.
         self._table_ensured = True
+        await self._ensure_trigram_indexes()
+
+    async def _ensure_trigram_indexes(self) -> None:
+        """Best-effort trigram indexes for this table's searchable fields (see ``_TRIGRAM_FIELDS``). Never raises."""
+        global _trigram_unavailable_logged
+        fields = _TRIGRAM_FIELDS.get(self._table)
+        if not fields:
+            return
+        try:
+            async with self._provider.pool.acquire() as conn:
+                try:
+                    await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+                except Exception as exc:  # noqa: BLE001 - the role may not create extensions
+                    if not _trigram_unavailable_logged:
+                        _trigram_unavailable_logged = True
+                        logger.warning("pg_trgm is not available (%s); the ?q= search stays a scan", type(exc).__name__)
+                    return
+                for field in fields:
+                    await conn.execute(_trigram_index_ddl(self._table, self._qualified, field))
+        except Exception:  # noqa: BLE001 - an index is an optimisation, never a reason not to boot
+            logger.warning("could not create the trigram indexes of %s", self._qualified, exc_info=True)
 
     async def _create_dup_tolerant_index(self, conn: Any, ddl: str) -> None:
         """Create a duplicate-tolerant unique index (serviceversion, user) over possibly-dirty rows.
