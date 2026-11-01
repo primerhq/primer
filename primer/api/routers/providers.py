@@ -1330,6 +1330,16 @@ async def get_cross_encoder_provider_models(
 # internal-collections vector index entry, so no CDC event hooks are wired.
 register_cdc_kind("toolset", Toolset)
 
+# The provider kinds emit CRUD events too, so the seeded ``system-cdc`` subscription converges the live map's provider pages (and the agent pages that
+# name a profile) when one changes, without a restart (GI-16). Admin-only: not in the user-safe event kinds.
+from primer.model.model_profile import ModelProfile as _ModelProfile  # noqa: E402
+from primer.model.provider import SemanticSearchProvider as _SemanticSearchProvider  # noqa: E402
+
+register_cdc_kind("llm_provider", LLMProvider)
+register_cdc_kind("model_profile", _ModelProfile)
+register_cdc_kind("embedding_provider", EmbeddingProvider)
+register_cdc_kind("semantic_search_provider", _SemanticSearchProvider)
+
 
 # ---- Toolset storage helper (for reference check) --------------------------
 

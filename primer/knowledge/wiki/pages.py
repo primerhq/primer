@@ -79,15 +79,17 @@ def page_line(page: WikiPage, *, depth: int = 0) -> str:
 
 
 def resolve_wiki_dir() -> Path:
-    """``$PRIMER_WIKI_DIR`` when set, else ``docs/wiki`` beside the ``primer`` package.
+    """``$PRIMER_WIKI_DIR`` when set, else the wiki the package carries, else ``docs/wiki`` beside it.
 
-    The image copies ``docs/`` next to the package (``Dockerfile``: ``COPY docs ./docs``),
-    so the default holds in a deployment as well as in a checkout.
+    The wheel maps ``docs/wiki`` to ``primer/_docs/wiki`` (pyproject ``force-include``), which comes first so a pip install finds it; the image
+    copies ``docs/`` next to the package (``Dockerfile``: ``COPY docs ./docs``), so the repo-relative default holds in a deployment and a checkout.
     """
     env = os.getenv(WIKI_DIR_ENV)
     if env:
         return Path(env)
-    return Path(primer.__file__).resolve().parent.parent / "docs" / "wiki"
+    package = Path(primer.__file__).resolve().parent
+    packaged = package / "_docs" / "wiki"
+    return packaged if packaged.is_dir() else package.parent / "docs" / "wiki"
 
 
 def _split_frontmatter(text: str, label: str) -> tuple[str, str]:
