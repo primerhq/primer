@@ -154,7 +154,7 @@ async def test_a_shorter_edit_still_drops_the_stale_chunks():
     assert sorted(chunk for _, chunk in store.records) == ["0", "1"]
 
 
-async def test_backfill_reads_chunk_texts_only_and_writes_in_one_call():
+async def test_backfill_reads_chunk_texts_only_and_writes_once_per_document():
     store, embedder = _Store(), _Embedder()
     registry, ssr = _wire(store, embedder)
     docs = [_doc(f"d{i}") for i in range(10)]
@@ -162,10 +162,11 @@ async def test_backfill_reads_chunk_texts_only_and_writes_in_one_call():
     kwargs = dict(documents=docs, collection=_collection(), provider_registry=registry, semantic_search_registry=ssr, content_store=content)
     assert await index_documents(**kwargs) == 10
     assert store.search_by_meta_calls == 0 and store.list_chunk_texts_calls == 1  # no vectors decoded for the comparison
-    assert store.put_many_calls == 1 and store.puts == 0
+    # one batched write per finished document (KN-13: a document lands as soon as its vectors are in hand, so an interrupted backfill keeps it); never a per-chunk put
+    assert store.put_many_calls == 10 and store.puts == 0
     calls = list(embedder.calls)
     assert await index_documents(**kwargs) == 0  # nothing drifted
-    assert embedder.calls == calls and store.put_many_calls == 1
+    assert embedder.calls == calls and store.put_many_calls == 10
 
 
 def test_the_default_put_many_is_a_loop_over_put():
