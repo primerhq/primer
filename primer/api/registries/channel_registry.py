@@ -207,7 +207,7 @@ class ChannelRegistry:
         started = 0
         offset = 0
         while True:
-            page = await channel_storage.list(OffsetPage(offset=offset, length=200))
+            page = await channel_storage.list(OffsetPage(offset=offset, length=200, want_total=False))
             items = list(page.items)
             for channel in items:
                 cfg = getattr(channel, "config", None)

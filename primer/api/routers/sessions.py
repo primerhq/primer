@@ -13,6 +13,8 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field, model_validator
 from pydantic_core import to_jsonable_python
 
+from primer.model.workspace import Workspace
+from primer.storage.q import Q
 from primer.model.storage import MAX_OFFSET
 from primer.model.external_tool import (
     ExternalToolDef,
@@ -863,16 +865,6 @@ async def recent_sessions(
     client-side normalisation already did (SH_api.allSessions), just
     moved server-side where the workspace join can happen too.
     """
-    live_workspaces: dict[str, str] = {}
-    offset = 0
-    while True:
-        page = await workspaces.list(OffsetPage(offset=offset, length=200))
-        for ws in page.items:
-            live_workspaces[ws.id] = ws.name or ws.id
-        if len(page.items) < 200:
-            break
-        offset += 200
-
     # Access (P2 Task 5): the readable workspaces filter the candidate query itself, BEFORE the window: filtering the window afterwards would let
     # 200 newer sessions of other users push a person's own out of it and leave their feed empty.
     nothing, scoped = await scope_to_readable_workspaces(storage_provider, person_from_request(request))
@@ -883,6 +875,15 @@ async def recent_sessions(
     candidates = (
         await sessions.find(scoped, window, order_by=order) if scoped is not None else await sessions.list(window, order_by=order)
     )
+
+    # Only the workspaces of the candidate sessions are read (at most the window's worth), never the whole table (M1).
+    live_workspaces: dict[str, str] = {}
+    wanted = sorted({session.workspace_id for session in candidates.items})
+    if wanted:
+        found = await workspaces.find(
+            Q(Workspace).where_in("id", wanted).build(), OffsetPage(offset=0, length=200, want_total=False),
+        )
+        live_workspaces = {ws.id: ws.name or ws.id for ws in found.items}
 
     rows: list[RecentSessionRow] = []
     for session in candidates.items:

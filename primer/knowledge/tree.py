@@ -103,7 +103,7 @@ class DocumentTreeService:
         offset, page = 0, 200
         while True:
             resp = await self._docs.find(
-                predicate, OffsetPage(offset=offset, length=page)
+                predicate, OffsetPage(offset=offset, length=page, want_total=False)
             )
             out.extend(resp.items)
             if len(resp.items) < page:

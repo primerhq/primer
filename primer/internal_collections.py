@@ -573,7 +573,7 @@ class InternalCollectionsSubsystem:
         count = 0
         while True:
             page = await storage.list(
-                OffsetPage(offset=offset, length=page_size)
+                OffsetPage(offset=offset, length=page_size, want_total=False)
             )
             for entity in page.items:
                 payload = entity.model_dump(mode="json")
@@ -615,7 +615,7 @@ class InternalCollectionsSubsystem:
         page_size = 200
         while True:
             page = await ts_storage.list(
-                OffsetPage(offset=offset, length=page_size)
+                OffsetPage(offset=offset, length=page_size, want_total=False)
             )
             for ts in page.items:
                 seen_toolset_ids.add(ts.id)
@@ -680,7 +680,7 @@ class InternalCollectionsSubsystem:
         count = 0
         while True:
             page = await storage.list(
-                OffsetPage(offset=offset, length=page_size)
+                OffsetPage(offset=offset, length=page_size, want_total=False)
             )
             for entity in page.items:
                 payload = entity.model_dump(mode="json")
@@ -709,7 +709,7 @@ class InternalCollectionsSubsystem:
         page_size = 200
         while True:
             page = await ts_storage.list(
-                OffsetPage(offset=offset, length=page_size)
+                OffsetPage(offset=offset, length=page_size, want_total=False)
             )
             for ts in page.items:
                 seen_toolset_ids.add(ts.id)

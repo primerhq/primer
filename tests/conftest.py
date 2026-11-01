@@ -154,6 +154,16 @@ class _InMemoryStorage(Generic[_T]):
             next_cursor = str(offset + page.length)
         return CursorPageResponse(next_cursor=next_cursor, items=sliced)
 
+    async def count_by(self, field, values, predicate=None):
+        """``Storage.count_by`` over the stored rows."""
+        wanted = set(values)
+        counts: dict[str, int] = {}
+        for e in self._data.values():
+            key = getattr(e, field, None)
+            if key in wanted and (predicate is None or _eval_predicate(e, predicate)):
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
     async def find_ids(self, predicate):
         """``(id, access)`` of every match, ordered by id (the ``Storage.find_ids`` contract)."""
         rows = [e for e in self._data.values() if predicate is None or _eval_predicate(e, predicate)]

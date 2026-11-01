@@ -97,6 +97,16 @@ class _Storage:
         self._data[e.id] = e
         return e
 
+    async def count_by(self, field, values, predicate=None):
+        """``Storage.count_by`` over the stored rows."""
+        wanted = set(values)
+        counts: dict[str, int] = {}
+        for e in self._data.values():
+            key = getattr(e, field, None)
+            if key in wanted and (predicate is None or True):
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
     async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
         """``Storage.patch_if`` over the stored model, by the pure-Python reference statement (the guarded
         ``ExternalToolCall`` writers use it). The written row replaces the stored object, like a backend's."""

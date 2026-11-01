@@ -788,7 +788,6 @@ workspace_access_router = make_access_router(
 
 _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
 
-_SESSION_COUNT_PAGE_SIZE = 200
 
 
 class WorkspaceRowOut(WorkspaceRow):
@@ -837,22 +836,8 @@ async def _enrich_with_session_counts(
     """Attach a live session count, and the ``is_default`` flag, to one page of workspaces."""
     session_storage = get_storage_provider(request).get_storage(WorkspaceSession)
 
-    counts: Counter[str] = Counter()
-    page_ids = [item.id for item in resp.items]
-    if page_ids:
-        # Only the page's workspaces (P2 Task 2): a bounded walk scoped by a
-        # where_in, never a scan of every session row.
-        predicate = Q(WorkspaceSession).where_in("workspace_id", page_ids).build()
-        offset = 0
-        while True:
-            page = await session_storage.find(
-                predicate, OffsetPage(offset=offset, length=_SESSION_COUNT_PAGE_SIZE)
-            )
-            for session in page.items:
-                counts[session.workspace_id] += 1
-            if len(page.items) < _SESSION_COUNT_PAGE_SIZE:
-                break
-            offset += _SESSION_COUNT_PAGE_SIZE
+    # Only the page's workspaces, in ONE grouped count (P2 Task 2 scoped it by where_in; M1 drops the walk over every session row).
+    counts = await session_storage.count_by("workspace_id", [item.id for item in resp.items])
 
     default_id = await resolve_default_workspace_id(get_storage_provider(request), person_from_request(request))
     # ``dict(item)``, not ``item.model_dump()``: the field values as the storage read them, so nothing is validated again. A dump

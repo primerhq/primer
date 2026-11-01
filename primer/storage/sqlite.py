@@ -1198,6 +1198,28 @@ class SqliteStorage(Storage[ModelT]):
     #: Rows per query of :meth:`find_ids`.
     _IDS_PAGE = 2000
 
+    async def count_by(self, field: str, values: Sequence[str], predicate: Predicate | None = None) -> dict[str, int]:
+        """One ``GROUP BY`` over the rows whose ``field`` is among ``values`` (and match ``predicate``)."""
+        if not values:
+            return {}
+        await self._ensure_table()
+        from primer.model.storage import FieldRef, Op, Value
+
+        match = Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=list(values)))
+        if predicate is not None:
+            match = Predicate(left=match, op=Op.AND, right=predicate)
+        translator = _SqlitePredicateTranslator(self._model)
+        where_sql, _ = translator.translate(match)
+        expr = _render_field_expr(self._model, field)
+        sql = f'SELECT {expr}, count(*) FROM "{self._table}" WHERE {where_sql} GROUP BY {expr}'
+        try:
+            async with self._provider.read_snapshot():
+                cur = await self._provider.connection.execute(sql, list(translator._params))  # noqa: SLF001
+                rows = await cur.fetchall()
+        except Exception as exc:
+            raise _wrap_sqlite_error(exc, model_name=self._model.__name__, op="count_by") from exc
+        return {key: int(n) for key, n in rows if key is not None}
+
     async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
         """``(id, access)`` of every matching row: ``id`` and the ``access`` block only, keyset-paged on ``id``, no ``COUNT`` and no row decode."""
         await self._ensure_table()
@@ -1284,11 +1306,16 @@ class SqliteStorage(Storage[ModelT]):
             async with self._provider.read_snapshot():
                 cur = await self._provider.connection.execute(select_sql, params)
                 rows = await cur.fetchall()
-                cur = await self._provider.connection.execute(
-                    count_sql, count_params,
-                )
-                row = await cur.fetchone()
-                total = int(row[0]) if row is not None else None
+                total = None
+                if len(rows) < page.length and (rows or page.offset == 0):
+                    # A short page is the end of the result: no COUNT(*) needed.
+                    total = page.offset + len(rows)
+                elif page.want_total:
+                    cur = await self._provider.connection.execute(
+                        count_sql, count_params,
+                    )
+                    row = await cur.fetchone()
+                    total = int(row[0]) if row is not None else None
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="list",

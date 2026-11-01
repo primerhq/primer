@@ -236,7 +236,8 @@ async def test_offset_count_and_page_are_one_snapshot(
 
     comp = asyncio.ensure_future(competitor())
     try:
-        page = await things.list(OffsetPage(offset=0, length=100))
+        # A page that is not the end of the result, so its total needs the COUNT (a short page shows its own end and needs none).
+        page = await things.list(OffsetPage(offset=0, length=3))
         await comp
     finally:
         provider._conn = real_conn  # noqa: SLF001
@@ -245,9 +246,8 @@ async def test_offset_count_and_page_are_one_snapshot(
     # The page and its total saw the SAME world: neither reflects the
     # competitor's two inserts (serialised behind the snapshot's write lock).
     assert page.total == 5
-    assert page.length == 5
-    assert len(page.items) == 5
-    assert page.total == page.length
+    assert page.length == 3
+    assert len(page.items) == 3
 
     # The competitor's writes DID happen (the race was real): a fresh,
     # post-snapshot list sees all seven rows -- the guard reordered the write to

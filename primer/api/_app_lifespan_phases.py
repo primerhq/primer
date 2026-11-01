@@ -139,7 +139,7 @@ async def check_filesystem_artifact_stores(
         try:
             # Ordered by id, so the offset pages neither skip nor repeat a row.
             page = await provider_storage.find(
-                filesystem_rows, OffsetPage(offset=offset, length=_STORE_CHECK_PAGE), order_by=[OrderBy(field="id", direction="asc")],
+                filesystem_rows, OffsetPage(offset=offset, length=_STORE_CHECK_PAGE, want_total=False), order_by=[OrderBy(field="id", direction="asc")],
             )
         except Exception:
             logger.exception("startup check of the filesystem artifact stores: the provider rows could not be read")

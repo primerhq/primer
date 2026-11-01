@@ -238,7 +238,7 @@ async def list_service_versions(
     items: list[ServiceVersion] = []
     offset = 0
     while True:
-        page = await versions.find(predicate, OffsetPage(offset=offset, length=100))
+        page = await versions.find(predicate, OffsetPage(offset=offset, length=100, want_total=False))
         items.extend(page.items)
         if len(page.items) < 100:
             break
