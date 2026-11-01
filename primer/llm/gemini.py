@@ -564,13 +564,16 @@ class _StreamState:
     last_usage_metadata: Any = None
     emitted_stream_start: bool = False
     last_text_index: int = 0
+    # (thought?, index) of the text part still open: consecutive text chunks of one kind continue it (AG-L8).
+    open_text: tuple[bool, int] | None = None
     server_tool_index: dict[str, int] = field(default_factory=dict)
 
 
 def _next_index(state: _StreamState) -> int:
-    """Allocate and return the next flat block index."""
+    """Allocate and return the next flat block index (a new block closes the open text part)."""
     idx = state.next_index
     state.next_index += 1
+    state.open_text = None
     return idx
 
 
@@ -621,8 +624,12 @@ def _part_to_events(
 
     text = getattr(part, "text", None)
     if text:
-        thought = getattr(part, "thought", None)
-        idx = _next_index(state)
+        thought = bool(getattr(part, "thought", None))
+        if state.open_text is not None and state.open_text[0] == thought:
+            idx = state.open_text[1]
+        else:
+            idx = _next_index(state)
+            state.open_text = (thought, idx)
         state.last_text_index = idx
         if thought:
             out.append(ReasoningDelta(text=text, index=idx))
