@@ -245,11 +245,28 @@ provider_registry: Any | None = None,
 
                 return _read
 
+            def _make_read_tail(rel_path: Path):
+                target = rel_path
+
+                async def _read(max_bytes: int):
+                    def _do():
+                        if not target.exists():
+                            return b"", True
+                        with target.open("rb") as fh:
+                            size = fh.seek(0, 2)
+                            fh.seek(max(0, size - max_bytes))
+                            return fh.read(), size <= max_bytes
+
+                    return await asyncio.to_thread(_do)
+
+                return _read
+
             def _factory(node_id: str) -> TurnLogWriter:
                 target = state_root / "nodes" / node_id / "turns.jsonl"
                 return WorkspaceTurnLogWriter(
                     append_line=_make_append_line(target),
                     read_existing=_make_read_existing(target),
+                    read_tail=_make_read_tail(target),
                 )
 
             self._turn_log_factory = _factory
@@ -257,6 +274,7 @@ provider_registry: Any | None = None,
             self._graph_turn_log: TurnLogWriter = WorkspaceTurnLogWriter(
                 append_line=_make_append_line(graph_target),
                 read_existing=_make_read_existing(graph_target),
+                read_tail=_make_read_tail(graph_target),
             )
         else:
             # Sandbox (container/k8s) backend: turn-log I/O is not wired
