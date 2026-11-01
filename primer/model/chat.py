@@ -1856,7 +1856,9 @@ def output_to_message(events: Iterable[StreamEvent]) -> Message:
     * :class:`ToolCallStart` — opens a new :class:`ToolCallPart` keyed
       by ``id``.
     * :class:`ToolCallEnd` — supplies the parsed ``arguments`` dict for
-      the matching :class:`ToolCallPart`.
+      the matching :class:`ToolCallPart`. A call with no end (the stream
+      was cut, or an aggregated pool failed over mid-call) is dropped:
+      its arguments never arrived, so it must never be run.
     * :class:`ToolCallDelta` — ignored. The End event already carries
       the fully-parsed arguments dict; replaying the partial JSON
       fragments is unnecessary.
@@ -1900,7 +1902,7 @@ def output_to_message(events: Iterable[StreamEvent]) -> Message:
     ------
     ValueError
         If the event stream contains no convertible events (no
-        :class:`TextDelta` and no :class:`ToolCallStart`). Callers
+        :class:`TextDelta` and no finished tool call). Callers
         should handle empty or error-only streams before invoking this
         converter.
     """
@@ -1934,18 +1936,20 @@ def output_to_message(events: Iterable[StreamEvent]) -> Message:
             parts.append(TextPart(text="".join(text_buffers[key])))
         else:  # "tool"
             assert isinstance(key, str)
+            if key not in tool_call_args:
+                continue  # never finished streaming: no arguments to run it with
             parts.append(
                 ToolCallPart(
                     id=key,
                     name=tool_call_names[key],
-                    arguments=tool_call_args.get(key, {}),
+                    arguments=tool_call_args[key],
                 )
             )
 
     if not parts:
         raise ValueError(
             "no convertible events found in stream "
-            "(need at least one TextDelta or ToolCallStart)"
+            "(need at least one TextDelta or finished tool call)"
         )
 
     return Message(role="assistant", parts=parts)

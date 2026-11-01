@@ -33,6 +33,7 @@ from primer.llm._reasoning import openchat_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
 from primer.llm._openai_compat import (
     _build_sampling_params,
+    _end_of_stream,
     _build_usage,
     _extract_extended_kwargs as _extract_compat_kwargs,
     _map_finish_reason,
@@ -374,6 +375,8 @@ class OpenChatLLM(LLM):
                         message=err.message,
                     )
                     return
+                for event in _end_of_stream(state):
+                    yield event
             _span.set_attribute(
                 "llm.duration_ms",
                 int((time.monotonic() - _t0) * 1000),
