@@ -50,6 +50,7 @@ class MemoryDeps:
     store: Any
     now: Callable[[], datetime]
     load_messages: Callable[[MemoryJob], Awaitable[list[Message] | None]] | None = None
+    describe_log: Callable[[MemoryJob], Awaitable[str]] | None = None
 
 
 def reflect_job_id(agent_id: str, session_id: str) -> str:
@@ -231,7 +232,8 @@ async def _trivial(deps: MemoryDeps, job: MemoryJob) -> str | None:
     turns = new_turns(messages, job)
     if _nothing_happened(turns):
         roles = ",".join(m.role for m in messages)
-        return f"{len(turns)} of {len(messages)} messages in turns {job.reflected_turn + 1} to {job.target_turn} ({roles}), no tool call or second input"
+        shapes = await deps.describe_log(job) if deps.describe_log is not None else ""
+        return f"{len(turns)} of {len(messages)} messages in turns {job.reflected_turn + 1} to {job.target_turn} ({roles}), no tool call or second input; {shapes}"[:900]
     return None
 
 
