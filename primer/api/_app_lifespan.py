@@ -25,6 +25,7 @@ from primer.api._app_lifespan_phases import (
     assert_harness_kinds_registered,
     check_filesystem_artifact_stores,
     recover_ic_bootstrap,
+    recover_interrupted_indexing,
     recover_sessions,
     recover_webhook_deliveries,
     run_first_boot_bootstrap,
@@ -822,6 +823,8 @@ def _make_lifespan(config: AppConfig):
         # claim them again. Without this, a session created in the
         # previous process sits at status=RUNNING forever with no owner
         # — the diagnostic-report Bug 1.
+        # A search backfill that was running when the previous process ended left its collection reading "indexing": say so (KN-13).
+        await recover_interrupted_indexing(storage_provider)
         if claim_engine is not None:
             await recover_sessions(claim_engine, scheduler, storage_provider)
             # The executor's boot sweep (BPF wave 1, its step 9): void the
