@@ -615,6 +615,11 @@ async def resume_graph_continuation(
     )
 
 
+def _drained_reply_keys(session) -> frozenset[str]:
+    """The ``resume_event_payloads`` keys of the resume's claim-time row (``session``): read and drained, so never carried onto its re-park (GR-3)."""
+    return frozenset((getattr(session, "parked_state", None) or {}).get("resume_event_payloads") or {})
+
+
 def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, ay, outcome):
     """Re-park a GRAPH SESSION whose node's nested subagent re-yielded.
 
@@ -671,6 +676,7 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
             parked_event_keys=getattr(leaf, "event_keys", None),
             parked_until=now + timedelta(seconds=timeout),
             parked_at=now,
+            drained_reply_keys=_drained_reply_keys(session),
         ),
     )
 
@@ -901,6 +907,7 @@ def _repark_graph_yield_outcome(session, repark, *, node_tool_call_seq=None):
             parked_event_keys=repark.yielded.event_keys,
             parked_until=now + timedelta(seconds=timeout),
             parked_at=now,
+            drained_reply_keys=_drained_reply_keys(session),
         ),
     )
 
@@ -988,6 +995,7 @@ def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None)
             parked_event_keys=wake_keys or None,
             parked_until=now + timedelta(seconds=timeout),
             parked_at=now,
+            drained_reply_keys=_drained_reply_keys(session),
         ),
     )
 
