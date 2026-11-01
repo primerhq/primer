@@ -27,7 +27,8 @@ async def test_a_timed_out_git_does_not_wedge_later_commits(tmp_path, monkeypatc
     repo = await _repo(tmp_path)
     (tmp_path / ".state" / "a.txt").write_text("changed")
     with pytest.raises(SubprocessTimeoutError):
-        await repo._run_git("-c", f"core.editor={editor}", "commit", "-a", "--allow-empty")
+        # an explicit identity: a CI runner has no global git user, and git checks it before it opens the editor
+        await repo._run_git("-c", "user.name=t", "-c", "user.email=t@example.com", "-c", f"core.editor={editor}", "commit", "-a", "--allow-empty")
     assert not (tmp_path / ".state" / ".git" / "index.lock").exists()
     monkeypatch.undo()
     await repo.commit_arbitrary(summary="next", files={"b.txt": "2"})
