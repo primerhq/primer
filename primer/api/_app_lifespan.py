@@ -474,6 +474,7 @@ def _make_lifespan(config: AppConfig):
         timeout_sweeper = None
         event_dispatcher = None
         event_retention_pruner = None
+        session_retention_sweeper = None
         vector_maintenance = None
         workspace_event_bridge = None
         stuck_session_sweeper = None
@@ -581,6 +582,14 @@ def _make_lifespan(config: AppConfig):
             )
             event_retention_pruner.start(coordinator.leader_elector)
             app.state.event_dispatcher = event_dispatcher
+            # Off unless session_retention_days is set: then ENDED sessions past the window are deleted in bounded batches, on the leader only (GR-6).
+            session_retention_sweeper = None
+            if config.session_retention_days is not None:
+                from primer.bus.scheduler_tasks import SessionRetentionSweeper
+                session_retention_sweeper = SessionRetentionSweeper(
+                    storage_provider=storage_provider, retention_days=config.session_retention_days, workspace_registry=workspace_registry,
+                )
+                session_retention_sweeper.start(coordinator.leader_elector)
 
             # Runs maintain_indexes on each semantic-search provider's reindex_cron (Lance: nightly), on the leader only (GI-28).
             from primer.model.providers.vector import SemanticSearchProvider as _SemanticSearchProvider
@@ -1121,6 +1130,7 @@ def _make_lifespan(config: AppConfig):
                 (harness_sweeper, "harness_sweeper"),
                 (workspace_event_bridge, "workspace_event_bridge"),
                 (event_retention_pruner, "event_retention_pruner"),
+                (session_retention_sweeper, "session_retention_sweeper"),
                 (vector_maintenance, "vector_maintenance"),
                 (event_dispatcher, "event_dispatcher"),
                 (timeout_sweeper, "timeout_sweeper"),

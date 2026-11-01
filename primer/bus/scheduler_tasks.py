@@ -34,6 +34,7 @@ from pydantic_core import to_jsonable_python
 
 from primer.int.coordinator import (
     ROLE_HARNESS_SWEEPER,
+    ROLE_SESSION_RETENTION,
     ROLE_SESSION_MESSAGING_SWEEPER,
     ROLE_STUCK_SESSION_SWEEPER,
     ROLE_TIMEOUT_SWEEPER,
@@ -868,6 +869,55 @@ class HarnessSweeper(_BackgroundTask):
                 logger.exception("harness-sweeper: tick failed: %s", exc)
             try:
                 await asyncio.sleep(self._poll)
+            except asyncio.CancelledError:
+                break
+
+
+class SessionRetentionSweeper(_BackgroundTask):
+    """Deletes ENDED sessions older than ``session_retention_days``, oldest first, in bounded batches (GR-6, ruling D16).
+
+    Leader-elected like the other sweepers. A tick that filled its batch runs the next one soon; an idle tick waits the full interval. With no
+    retention configured the sweeper is never started.
+    """
+
+    role = ROLE_SESSION_RETENTION
+
+    def __init__(
+        self,
+        *,
+        storage_provider,
+        retention_days: int,
+        workspace_registry=None,
+        batch: int = 100,
+        interval_seconds: float = 3600.0,
+        busy_seconds: float = 30.0,
+    ) -> None:
+        super().__init__(name="session-retention")
+        self._sp = storage_provider
+        self._days = retention_days
+        self._registry = workspace_registry
+        self._batch = batch
+        self._interval = interval_seconds
+        self._busy = busy_seconds
+
+    async def sweep_once(self, *, now: datetime | None = None) -> int:
+        from primer.session.purge import sweep_ended_sessions
+
+        return await sweep_ended_sessions(
+            self._sp, retention_days=self._days, batch=self._batch, workspace_registry=self._registry, now=now,
+        )
+
+    async def _run(self) -> None:
+        while not self._stopping:
+            deleted = 0
+            try:
+                deleted = await self.sweep_once()
+                if deleted:
+                    logger.info("session-retention: deleted %d ended session(s)", deleted)
+            except Exception:  # noqa: BLE001
+                logger.exception("session-retention: sweep failed")
+            try:
+                await asyncio.sleep(self._busy if deleted >= self._batch else self._interval)
             except asyncio.CancelledError:
                 break
 

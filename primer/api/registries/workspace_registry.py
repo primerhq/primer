@@ -580,6 +580,14 @@ class WorkspaceRegistry(BusInvalidated):
                     pass
 
                 await reconcile_sessions_to_workspace_lost(self._sp, workspace_id)
+                # The ended sessions go with their workspace: orphans their owner could never reach (require_session answers a dangling workspace id
+                # with 404) and only an admin could delete one by one (GR-6, ruling D16). Best effort, like the reconcile.
+                try:
+                    from primer.session.purge import purge_workspace_sessions
+
+                    await purge_workspace_sessions(self._sp, workspace_id)
+                except Exception:  # noqa: BLE001 - a failure leaves the orphans the retention sweep (when configured) removes; the destroy goes on
+                    logger.warning("WorkspaceRegistry: could not delete the sessions of workspace %s", workspace_id, exc_info=True)
                 await self._sp.get_storage(WorkspaceRow).delete(workspace_id)
             except BaseException as exc:
                 # BaseException: a cancel (a client disconnect on REST) leaves the teardown as unfinished as an error does.
