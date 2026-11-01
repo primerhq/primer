@@ -86,6 +86,7 @@ from primer.common.log import redact_url_secrets
 from primer.model.common import preserve_masked_secrets
 from primer.toolset.toolset_checks import (
     check_mcp_url_resolves_public,
+    check_new_toolset_id,
     check_oauth_resource_uri,
     check_python_toolset,
     oauth_settings_changed,
@@ -110,7 +111,7 @@ from primer.model.provider import (
     TransportType,
 )
 from primer.api.routers._references import ReferenceCheck
-from primer.storage.references import LLM_PROVIDER_REFERENCES
+from primer.storage.provider_cascade import delete_llm_provider_profiles
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalPolicy
 
@@ -699,6 +700,11 @@ async def draft_test_cross_encoder_provider(body: _ModelProviderDraft) -> dict[s
     return await cross_encoder_draft_test(body.model_dump())
 
 
+async def _llm_provider_pre_delete(existing: LLMProvider, request: Request) -> None:
+    """The provider goes with its profiles when none is in use; a profile in use refuses the delete with a 409 naming the references (GS-5)."""
+    await delete_llm_provider_profiles(get_storage_provider(request), existing.id)
+
+
 llm_provider_router = make_crud_router(
     model_cls=LLMProvider,
     grantable=True,
@@ -710,7 +716,7 @@ llm_provider_router = make_crud_router(
     on_pre_create=_make_reserved_create_guard(RESERVED_LLM_IDS, "llm_provider"),
     on_pre_update=preserve_masked_secrets_on_update,
     on_pre_delete_id=_make_reserved_delete_guard(RESERVED_LLM_IDS, "llm_provider"),
-    references=[ReferenceCheck.from_spec(spec) for spec in LLM_PROVIDER_REFERENCES],
+    on_pre_delete=_llm_provider_pre_delete,
 )
 
 
@@ -1661,6 +1667,10 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
                 ),
             },
         )
+    try:
+        check_new_toolset_id(entity)
+    except EntityCheckError as exc:
+        raise RequestValidationError([{"type": "value_error", "loc": ("body", "id"), "msg": exc.message, "input": None}]) from exc
     _refuse_a_resource_uri_elsewhere(entity)
     await _refuse_a_name_that_resolves_internal(entity, request)
     if _toolset_probe_bypassed(request):

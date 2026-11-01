@@ -204,6 +204,14 @@ class McpConfig(BaseModel):
         ...,
         description="Transport-specific connection details. Must match ``transport``.",
     )
+    read_timeout_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "How long one request to the server (a tool call included) may wait for its answer before it fails as a tool error. "
+            "300 s is the MCP SDK's own HTTP read timeout, so a stdio server gets the same bound."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_config_matches_transport(self) -> "McpConfig":

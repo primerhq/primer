@@ -132,6 +132,19 @@ class RequestLimitsConfig(BaseModel):
             "file grows by a third on the wire, so this admits a file of roughly 96 MiB."
         ),
     )
+    gateway_max_concurrent: int = Field(
+        default=32,
+        gt=0,
+        description=(
+            "Most service gateway function calls (POST /svc/{name}/_gateway/functions/{fn}) that run at once, process-wide (default 32). "
+            "Each is a python process; a call over the cap answers 503 at once."
+        ),
+    )
+    gateway_max_per_service: int | None = Field(
+        default=None,
+        gt=0,
+        description="Optional cap on the calls one service runs at once, so one busy service cannot take every slot (default: none).",
+    )
     service_publish_max_body_bytes: int = Field(
         default=128 * 1024 * 1024,
         gt=0,

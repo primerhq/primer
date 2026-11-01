@@ -29,6 +29,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
+from primer.common.validation_errors import without_input
 from primer.common.bounded_read import ACCEPT_ENCODING, UnsupportedContentEncoding, read_capped
 from primer.common.netguard import EgressRefused
 from primer.model.chat import Tool, ToolCallResult, ToolExample
@@ -171,6 +172,11 @@ class DownloadArgs(BaseModel):
     )
 
 
+def _errors_of(exc: ValidationError) -> str:
+    """A validation error's ``type``, ``loc`` and ``msg`` without the submitted input (AG-L6: a header or URL may carry a credential)."""
+    return json.dumps(without_input(exc.errors()), default=str)
+
+
 # ---- Tool descriptors (the JSON schemas the LLM sees) ----------------------
 
 
@@ -286,7 +292,7 @@ def make_web_search_handler(service: "WebSearchService") -> ToolHandler:
             args = WebSearchArgs.model_validate(arguments)
         except ValidationError as exc:
             raise BadRequestError(
-                f"web-search: invalid arguments: {exc}"
+                f"web-search: invalid arguments: {_errors_of(exc)}"
             ) from exc
 
         try:
@@ -352,7 +358,7 @@ def make_http_request_handler(
             args = HttpRequestArgs.model_validate(arguments)
         except ValidationError as exc:
             raise BadRequestError(
-                f"http-request: invalid arguments: {exc}"
+                f"http-request: invalid arguments: {_errors_of(exc)}"
             ) from exc
 
         try:
@@ -425,7 +431,7 @@ def make_web_fetch_handler(service: "WebFetchService") -> ToolHandler:
         try:
             args = WebFetchArgs.model_validate(arguments)
         except ValidationError as exc:
-            raise BadRequestError(f"web-fetch: invalid arguments: {exc}") from exc
+            raise BadRequestError(f"web-fetch: invalid arguments: {_errors_of(exc)}") from exc
 
         try:
             page: FetchedPage = await service.fetch(
@@ -508,7 +514,7 @@ def make_download_handler(
             args = DownloadArgs.model_validate(arguments)
         except ValidationError as exc:
             raise BadRequestError(
-                f"download: invalid arguments: {exc}"
+                f"download: invalid arguments: {_errors_of(exc)}"
             ) from exc
 
         url_str = str(args.url)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -680,6 +681,15 @@ class _FanoutDrainState:
     first_failure: tuple[str, str] | None = None  # (synthesized_id, ended_detail)
 
 
+# AG-M24 (lead ruling D7): the most copies one fan-out spec may start; a wider broadcast or map fails ``fanout_source_invalid``
+# before any copy runs. Set by PRIMER_MAX_FANOUT_INSTANCES (read at import, like PRIMER_MAX_INVOCATION_DEPTH).
+MAX_FANOUT_INSTANCES = int(os.environ.get("PRIMER_MAX_FANOUT_INSTANCES", "1000"))
+
+
+def _over_cap(n: int) -> str | None:
+    return f"{n} copies exceed the fan-out cap of {MAX_FANOUT_INSTANCES}" if n > MAX_FANOUT_INSTANCES else None
+
+
 def _resolve_fanout_spec(
     spec: "FanOutSpec",
     context: "GraphContext",
@@ -701,6 +711,8 @@ def _resolve_fanout_spec(
     if spec.kind == "broadcast":
         target = spec.target_node_id or ""
         n = spec.count or 0
+        if (why := _over_cap(n)) is not None:
+            raise _FanoutSourceInvalid(target, "count", why)
         return [
             _FanoutInstance(
                 synthesized_id=f"{target}[{i}]",
@@ -746,6 +758,8 @@ def _resolve_fanout_spec(
             source_node_id, source_path,
             f"resolved to non-list value (type={type(value).__name__})",
         )
+    if (why := _over_cap(len(value))) is not None:
+        raise _FanoutSourceInvalid(source_node_id, source_path, why)
     target = spec.target_node_id or ""
     return [
         _FanoutInstance(

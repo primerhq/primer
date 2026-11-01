@@ -77,6 +77,7 @@ from primer.trigger.service import (
     TriggerKindImmutable,
     TriggerNotFound,
     TriggerSlugConflict,
+    WebhookTokenInvalid,
     create_subscription,
     create_trigger,
     delete_subscription,
@@ -322,6 +323,8 @@ async def update_trigger_endpoint(
         _raise_code(422, "cron_invalid", str(exc))
     except TimezoneInvalid as exc:
         _raise_code(422, "timezone_invalid", str(exc))
+    except WebhookTokenInvalid as exc:
+        _raise_code(422, "webhook_token_invalid", str(exc))
     return JSONResponse(
         status_code=200,
         content=await _served(trigger, request, sp),

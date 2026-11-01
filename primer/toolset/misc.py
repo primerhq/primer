@@ -342,6 +342,18 @@ async def _hash_handler(arguments: dict[str, Any]) -> ToolCallResult:
 # ===========================================================================
 
 
+# Python's int-to-str limit: a larger integer cannot be written into the JSON answer, so it is refused, and a power is refused before it is computed.
+_MAX_INT_DIGITS = 4300
+_TOO_LARGE = f"result too large: an integer over {_MAX_INT_DIGITS} digits"
+
+
+def _pow(base: Any, exp: Any, *mod: Any) -> Any:
+    """``pow`` that refuses an integer power over :data:`_MAX_INT_DIGITS` digits instead of burning the loop computing it (AG-L4)."""
+    if not mod and type(base) is int and type(exp) is int and exp > 0 and abs(base) > 1 and exp * math.log10(abs(base)) > _MAX_INT_DIGITS:
+        raise ValueError(_TOO_LARGE)
+    return pow(base, exp, *mod)
+
+
 _BINOPS: dict[type[ast.operator], Any] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -349,7 +361,7 @@ _BINOPS: dict[type[ast.operator], Any] = {
     ast.Div: operator.truediv,
     ast.FloorDiv: operator.floordiv,
     ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
+    ast.Pow: _pow,
 }
 
 _UNARYOPS: dict[type[ast.unaryop], Any] = {
@@ -358,7 +370,7 @@ _UNARYOPS: dict[type[ast.unaryop], Any] = {
 }
 
 _FUNCTIONS: dict[str, Any] = {
-    "abs": abs, "round": round, "min": min, "max": max, "pow": pow,
+    "abs": abs, "round": round, "min": min, "max": max, "pow": _pow,
     "sqrt": math.sqrt, "log": math.log, "log2": math.log2,
     "log10": math.log10, "exp": math.exp,
     "sin": math.sin, "cos": math.cos, "tan": math.tan,
@@ -461,7 +473,7 @@ async def _calculate_handler(arguments: dict[str, Any]) -> ToolCallResult:
         )
     try:
         result = _safe_eval(tree)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:  # TypeError: a function called with the wrong arguments (``min()``)
         return _err(str(exc), error_type="bad-request")
     except (ZeroDivisionError, OverflowError) as exc:
         return _err(
@@ -474,7 +486,10 @@ async def _calculate_handler(arguments: dict[str, Any]) -> ToolCallResult:
             f"non-finite result: {result}",
             error_type="bad-request",
         )
-    return _ok({"expression": args.expression, "result": result})
+    try:
+        return _ok({"expression": args.expression, "result": result})
+    except ValueError:  # an integer over the int-to-str limit (``10**4000 * 10**4000``)
+        return _err(_TOO_LARGE, error_type="bad-request")
 
 
 # ===========================================================================

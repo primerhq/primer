@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import stat
+import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Literal
@@ -66,6 +67,11 @@ _INSPECT_TO_STATUS: dict[str, str] = {
 }
 
 
+# How long a listing reuses the last session-id list, and how long an id without a slot is left alone (W42).
+_SESSION_IDS_TTL_SECONDS = 5.0
+_SLOTLESS_TTL_SECONDS = 300.0
+
+
 class SandboxWorkspace(Workspace):
     """Workspace backed by a :class:`Sandbox`. Shared by Container + K8s."""
 
@@ -93,6 +99,10 @@ class SandboxWorkspace(Workspace):
         self._workspace_root = workspace_root.rstrip("/")
         self._sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
+        # Listing sessions costs a commit-history read and two RPCs per id; a repeated listing (the console pages) reuses the last id list for a
+        # few seconds, and an id with no slot (a deleted session) is not asked about again for a while (W42).
+        self._ids_cache: tuple[float, list[str]] | None = None
+        self._slotless_until: dict[str, float] = {}
 
     @classmethod
     async def materialise(
@@ -276,6 +286,7 @@ class SandboxWorkspace(Workspace):
         """
         async with self._lock:
             removed = self._sessions.pop(session_id, None) is not None
+        self._ids_cache = None
         # Reap outside the lock: it's a runtime RPC round-trip that must
         # never wedge the in-memory registry, and it's best-effort -- an
         # unreachable workspace must not fail the delete.
@@ -289,21 +300,26 @@ class SandboxWorkspace(Workspace):
             )
         return removed
 
-    async def _rehydrate_locked(self, session_id: str) -> AgentSession | None:
-        """Rebuild one session handle from persisted state. Caller holds
-        ``self._lock``. Returns ``None`` when no slot is persisted."""
+    async def _build_session(self, session_id: str) -> AgentSession | None:
+        """Rebuild one session handle from persisted state (two runtime RPCs; needs no lock). ``None`` when no slot is persisted."""
         info = await self._state_repo.load_session_info(session_id)
         binding = await self._state_repo.load_agent_binding(session_id)
         if info is None or binding is None:
             return None
-        session = AgentSession(
+        return AgentSession(
             session_info=info,
             agent_binding=binding,
             state_repo=self._state_repo,
             truncation_store=self._cache,
             workspace_tools=self._tools,
         )
-        self._sessions[session_id] = session
+
+    async def _rehydrate_locked(self, session_id: str) -> AgentSession | None:
+        """Rebuild one session handle from persisted state. Caller holds
+        ``self._lock``. Returns ``None`` when no slot is persisted."""
+        session = await self._build_session(session_id)
+        if session is not None:
+            self._sessions[session_id] = session
         return session
 
     async def _rehydrate_all_sessions(self) -> None:
@@ -312,29 +328,40 @@ class SandboxWorkspace(Workspace):
         Best-effort: a slot whose ``session.json``/``agent.json`` can't be
         read (mid-write race, partial create) is skipped rather than
         failing the whole listing."""
-        try:
-            session_ids = await self._state_repo.list_session_ids()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "SandboxWorkspace: list_session_ids failed during rehydrate",
-                extra={"workspace_id": self._workspace_id, "error": str(exc)},
-            )
-            return
-        async with self._lock:
-            for sid in session_ids:
-                if sid in self._sessions:
-                    continue
-                try:
-                    await self._rehydrate_locked(sid)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "SandboxWorkspace: skipping unrehydratable session",
-                        extra={
-                            "workspace_id": self._workspace_id,
-                            "session_id": sid,
-                            "error": str(exc),
-                        },
-                    )
+        now = time.monotonic()
+        if self._ids_cache is not None and self._ids_cache[0] > now:
+            session_ids = self._ids_cache[1]
+        else:
+            try:
+                session_ids = await self._state_repo.list_session_ids()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "SandboxWorkspace: list_session_ids failed during rehydrate",
+                    extra={"workspace_id": self._workspace_id, "error": str(exc)},
+                )
+                return
+            self._ids_cache = (now + _SESSION_IDS_TTL_SECONDS, session_ids)
+        # The runtime round-trips happen OUTSIDE the lock: a slow runtime must not stall every other call on this workspace.
+        built: dict[str, AgentSession] = {}
+        for sid in session_ids:
+            if sid in self._sessions or self._slotless_until.get(sid, 0.0) > now:
+                continue
+            try:
+                session = await self._build_session(sid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "SandboxWorkspace: skipping unrehydratable session",
+                    extra={"workspace_id": self._workspace_id, "session_id": sid, "error": str(exc)},
+                )
+                continue
+            if session is None:
+                self._slotless_until[sid] = now + _SLOTLESS_TTL_SECONDS
+            else:
+                built[sid] = session
+        if built:
+            async with self._lock:
+                for sid, session in built.items():
+                    self._sessions.setdefault(sid, session)
 
     # ---- File browsing for users ----------------------------------------
 

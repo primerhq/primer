@@ -133,6 +133,10 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             "(json_extract(data,'$.provider_id'), json_extract(data,'$.subject'))",
         ),
     ],
+    "service": [
+        # Mirrors the postgres entry (GS-9): the name is the /svc URL; created only when no duplicate name exists.
+        ("name_uniq", True, "(json_extract(data,'$.name'))"),
+    ],
     "user": [
         # Mirrors the postgres entry (GS-20); created only when no duplicate username exists.
         ("username_uniq", True, "(json_extract(data,'$.username'))"),
@@ -169,7 +173,7 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
 # Tolerate the violation for this (table, suffix) pair only (log and
 # continue without the index); every other hot-field index keeps
 # raising.
-_DUP_TOLERANT_UNIQUE_INDEXES = (("serviceversion", "service_version_uniq"), ("user", "username_uniq"))
+_DUP_TOLERANT_UNIQUE_INDEXES = (("serviceversion", "service_version_uniq"), ("user", "username_uniq"), ("service", "name_uniq"))
 
 
 def _table_name_for(model_class: type[BaseModel]) -> str:
@@ -691,13 +695,23 @@ class SqliteStorageProvider(StorageProvider):
         the ``PRIMER_AUTH__SESSION_SECRET`` / ``PRIMER_SESSION_SECRET``
         env var override is not set.
         """
-        async with self._write_guard() as should_commit:
-            await self.connection.execute(
-                "UPDATE system_state SET session_secret = ? WHERE id = ? AND session_secret IS NULL",
-                (secret, "singleton"),
-            )
-            if should_commit:
-                await self.connection.commit()
+        # Two processes booting a fresh install on one file can meet SQLITE_BUSY that busy_timeout does not
+        # wait out (a lock upgrade between two deferred transactions). The write is conditional and
+        # idempotent, so a short retry settles the race.
+        for attempt in range(5):
+            try:
+                async with self._write_guard() as should_commit:
+                    await self.connection.execute(
+                        "UPDATE system_state SET session_secret = ? WHERE id = ? AND session_secret IS NULL",
+                        (secret, "singleton"),
+                    )
+                    if should_commit:
+                        await self.connection.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == 4:
+                    raise
+                await asyncio.sleep(0.05 * (attempt + 1))
 
     async def set_sso_jit_enabled(self, enabled: bool) -> None:
         """Persist whether SSO just-in-time user provisioning is enabled."""

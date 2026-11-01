@@ -435,9 +435,9 @@ class SubprocessTimeoutError(PrimerError):
     Raised by :class:`primer.workspace.local.state.LocalStateRepo` and
     :class:`primer.workspace.local.backend.LocalWorkspaceBackend` when a
     ``git`` or ``init_command`` subprocess does not complete within
-    ``AppConfig.subprocess_timeout_seconds``.  The subprocess is killed
-    before this error is raised so the ``.git/index.lock`` commit lock is
-    always released.
+    ``AppConfig.subprocess_timeout_seconds``.  The subprocess is stopped (SIGTERM, so git
+    removes its own ``.git/index.lock``; SIGKILL only if it ignores that) before
+    this error is raised.
 
     Callers that want to distinguish a subprocess stall from other workspace
     errors can catch this subclass specifically; catching

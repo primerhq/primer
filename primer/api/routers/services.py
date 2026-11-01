@@ -17,6 +17,8 @@ task 5 of the implementation plan (they need the bundle pipeline).
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import TYPE_CHECKING
 
 from fastapi import Depends, HTTPException, Request
@@ -38,10 +40,34 @@ if TYPE_CHECKING:
     from primer.int.storage import Storage
 
 
+async def _refuse_taken_name(entity: Service, request: Request) -> None:
+    """409 when another service already holds ``entity.name``: the name is the /svc URL (GS-9). The unique index is the backstop for a race."""
+    taken = await request.app.state.storage_provider.get_storage(Service).find(
+        Predicate(left=FieldRef(name="name"), op=Op.EQ, right=Value(value=entity.name)), OffsetPage(offset=0, length=2),
+    )
+    if any(row.id != entity.id for row in taken.items):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "service_name_taken",
+                "field": "name",
+                "message": f"a service named {entity.name!r} already exists; the name is its public URL",
+            },
+        )
+
+
+async def _pre_create(entity: Service, request: Request) -> None:
+    entity.active_version_id = None          # publish and activate own the pointer
+    await _refuse_taken_name(entity, request)
+
+
 async def _reject_rename_when_published(
     entity: Service, existing: Service, request: Request
 ) -> None:
-    """409 when the incoming body renames a published service."""
+    """409 when the incoming body renames a published service or takes a name another service holds; the stored version pointer stays."""
+    entity.active_version_id = existing.active_version_id   # only publish and activate move it (GS-9, GU-15)
+    if entity.name != existing.name:
+        await _refuse_taken_name(entity, request)
     if existing.active_version_id is not None and entity.name != existing.name:
         raise HTTPException(
             status_code=409,
@@ -91,6 +117,7 @@ service_router = make_crud_router(
     tag="services",
     managed_by_field="harness_id",
     search_fields=["id", "name", "description"],
+    on_pre_create=_pre_create,
     on_pre_update=_reject_rename_when_published,
     on_pre_delete=_cascade_versions_and_artifacts,
 )
@@ -154,7 +181,7 @@ async def publish_service_version(
             },
         )
     try:
-        bundle = validate_bundle(tar_gz)
+        bundle = await asyncio.to_thread(validate_bundle, tar_gz)      # decompress, parse and register off the event loop (GS-32)
     except BundleError as exc:
         raise HTTPException(
             status_code=422,

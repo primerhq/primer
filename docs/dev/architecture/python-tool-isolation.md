@@ -7,7 +7,7 @@ what each deployment actually enforces, and what it does not.
 
 The honesty is the point. Every level below is a real, different guarantee,
 and the weakest of them is one most deployments will land on. A single
-"sandboxed" badge over all four would be a lie in three of them.
+"sandboxed" badge over all five would be a lie in most of them.
 
 ## 2. Visual overview
 
@@ -17,7 +17,8 @@ The level is computed at startup, reported on
 | Level | Enforced by | Where |
 | --- | --- | --- |
 | `container` | namespaces and cgroups, via the workspace `Sandbox` | container / k8s backends |
-| `seccomp` | syscall filter via libseccomp, plus rlimits | Linux with libseccomp |
+| `landlock` | Landlock file confinement (read-only on the interpreter, TLS and DNS files; read-write on the call's scratch dir; nothing else), plus the seccomp filter and rlimits where libseccomp exists | Linux 5.13+ with Landlock enabled |
+| `seccomp` | syscall filter via libseccomp, plus rlimits | Linux with libseccomp, no Landlock |
 | `sandbox-exec` | macOS sandbox profile, plus rlimits | macOS with sandbox-exec |
 | `rlimit-only` | resource limits only | anywhere else |
 
@@ -25,10 +26,12 @@ The level is computed at startup, reported on
 graph TD
     Start["tool invocation"] --> Detect{"isolation available?"}
     Detect -->|"workspace sandbox"| Container["container: namespaces + cgroups"]
+    Detect -->|"linux + landlock"| Landlock["landlock: file confinement + seccomp + rlimits"]
     Detect -->|"linux + libseccomp"| Seccomp["seccomp: syscall filter + rlimits"]
     Detect -->|"macos + sandbox-exec"| MacOS["sandbox-exec: profile + rlimits"]
     Detect -->|"none of the above"| Rlimit["rlimit-only: resource limits"]
     Container --> Shim["python -I -S shim"]
+    Landlock --> Shim
     Seccomp --> Shim
     MacOS --> Shim
     Rlimit --> Shim
@@ -108,6 +111,17 @@ holds everywhere: a tool cannot import primer's own packages.
 - **The syscall filter is default-allow, not default-deny.** Why: a
   default-deny filter must enumerate everything CPython touches to start, and
   a single omission is a crash rather than a contained tool.
-- **The level is reported rather than assumed.** Why: three of the four levels
+- **The level is reported rather than assumed.** Why: most of the five levels
   enforce materially less than "sandboxed" implies, and an operator choosing
   to run agent-supplied code deserves to know which one they have.
+
+### Landlock and the API process (GS-2, ruling D17)
+
+The shim applies a Landlock ruleset after the rlimits and the seccomp filter, before the tool loads (`_apply_landlock`; seccomp goes first because
+loading libseccomp starts `ldconfig`, which the ruleset would refuse). Read-only: the interpreter's prefixes, system library directories, name
+resolution and TLS trust files, zone data and `/dev/urandom`; read and write: `/dev/null` and a fresh scratch directory per call (the tool's cwd
+and `TMPDIR`, removed after the call); nothing else, and no `execute` anywhere. The API process also marks itself non-dumpable at start
+(`primer.common.hardening.make_non_dumpable`), so a same-user child cannot read `/proc/<ppid>/environ`; a side effect is that a same-user debugger
+cannot attach to it. Where Landlock is missing the tool still runs, the badge says what the host really has, and startup logs a WARNING. If the
+kernel reported Landlock but the shim cannot apply it, the call fails with `RunnerError` instead of running unconfined under a false claim.
+`os.access(path, W_OK)` is not mediated by Landlock, so a tool sees `True` for a path it still cannot write; the write itself is refused.

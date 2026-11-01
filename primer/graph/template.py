@@ -108,6 +108,12 @@ _ENV.filters["fromjson"] = _fromjson
 _ENV.filters["strip_fences"] = _strip_fences
 
 
+class InputTemplateError(BadRequestError):
+    """An agent or subgraph node's ``input_template`` did not render: the node fails with ``ended_detail='template_error'`` (AG-L11d)."""
+
+    ended_detail_code = "template_error"
+
+
 def render_input_template(
     template: str,
     *,
@@ -142,7 +148,7 @@ def render_input_template(
     try:
         compiled = _ENV.from_string(template)
     except TemplateSyntaxError as exc:
-        raise BadRequestError(
+        raise InputTemplateError(
             f"render_input_template: template syntax error at line {exc.lineno}: {exc.message}"
         ) from exc
     scope: dict[str, Any] = {
@@ -156,7 +162,7 @@ def render_input_template(
     try:
         return render_bounded(compiled, scope)
     except TemplateError as exc:
-        raise BadRequestError(
+        raise InputTemplateError(
             f"render_input_template: render error: {exc!s}"
         ) from exc
 
@@ -194,4 +200,4 @@ def render_template_safely(
     return render_bounded(compiled, scope)
 
 
-__all__ = ["render_input_template", "render_template_safely"]
+__all__ = ["InputTemplateError", "render_input_template", "render_template_safely"]

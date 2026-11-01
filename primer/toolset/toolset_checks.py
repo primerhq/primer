@@ -18,6 +18,8 @@ the difference is documented in rest-api.md and in the ``create_toolset`` / ``up
 
 from __future__ import annotations
 
+import re
+
 from primer.common.entity_checks import EntityCheckError
 from primer.common.netguard import url_resolves_internal, url_targets_internal_literal
 from primer.common.origin import origin_of
@@ -241,8 +243,26 @@ def check_oauth_resource_uri(entity: Toolset) -> None:
         raise EntityCheckError("validation", RESOURCE_URI_PROBLEM, code="invalid_resource_uri", field=RESOURCE_URI_FIELD)
 
 
+# A new toolset's id: every tool goes out as ``<toolset_id>__<tool>``, and OpenAI and Anthropic refuse a tool name outside [a-zA-Z0-9_-]{1,64}.
+# 48 characters leaves 14 for ``__`` and the tool's own name. Existing toolsets keep the ids they have (GI-20).
+TOOLSET_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,47}")
+
+
+def check_new_toolset_id(entity: Toolset) -> None:
+    """Refuse a NEW toolset whose id would make a tool name the model providers reject. Create doors only."""
+    if not TOOLSET_ID_PATTERN.fullmatch(entity.id or ""):
+        shown = entity.id if len(entity.id or "") <= 64 else f"{entity.id[:61]}..."
+        raise EntityCheckError(
+            "validation",
+            f"{shown!r} is not a valid toolset id: use 1 to 48 lowercase letters, digits, '_' or '-', starting with a letter or digit "
+            "(the id is part of every tool name sent to the model)",
+            field="id",
+        )
+
+
 def check_toolset_on_create(entity: Toolset) -> None:
-    """The create-time checks a tool can run: an OAuth resource indicator on the server's origin, and a python toolset's source must register."""
+    """The create-time checks a tool can run: the id's shape, an OAuth resource indicator on the server's origin, and a python toolset's source must register."""
+    check_new_toolset_id(entity)
     check_oauth_resource_uri(entity)
     if entity.provider == ToolsetProviderType.PYTHON:
         check_python_toolset(entity)
@@ -260,7 +280,9 @@ def check_toolset_on_update(entity: Toolset, existing: Toolset) -> None:
 
 __all__ = [
     "RESOURCE_URI_FIELD",
+    "TOOLSET_ID_PATTERN",
     "check_mcp_url_resolves_public",
+    "check_new_toolset_id",
     "check_oauth_resource_uri",
     "check_python_toolset",
     "check_toolset_on_create",

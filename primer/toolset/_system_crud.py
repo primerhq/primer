@@ -37,6 +37,7 @@ from primer.agent.approval import (
 from primer.agent.inner_dispatch import dispatch_inner_tool, inner_role_refusal
 from primer.authz import _role_allows
 from primer.common.entity_checks import EntityCheckError
+from primer.common.text_caps import check_text_caps
 from primer.common.toolset_ids import canonical_toolset_id
 from primer.model.access import Access, AccessLevel
 from primer.model.chat import Tool, ToolCallResult, ToolExample
@@ -561,6 +562,10 @@ def _crud_tools_for(
         refusal = refuse_create(guards, entity)
         if refusal is not None:
             return refusal
+        try:
+            check_text_caps(entity, None)
+        except EntityCheckError as exc:               # the REST twin is a 422
+            return _err(exc.tool_message(), error_type=exc.tool_error_type)
         # A create has nothing stored to restore a mask from: get_* then create_* under a new id (copy a provider) would store the masks as the values.
         try:
             refuse_served_masks(entity)
@@ -681,6 +686,10 @@ def _crud_tools_for(
             preserve_masked_secrets(entity, existing)
         except PrimerValidationError as exc:          # a served mask that cannot be restored (another host or user): the REST twin is a 422
             return _err(exc.message, error_type="validation-error")
+        try:
+            check_text_caps(entity, existing)
+        except EntityCheckError as exc:               # the REST twin is a 422
+            return _err(exc.tool_message(), error_type=exc.tool_error_type)
         if pre_update is not None:
             try:
                 await pre_update(

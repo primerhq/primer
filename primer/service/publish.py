@@ -14,10 +14,11 @@ import mimetypes
 
 from primer.int.artifact_storage import ArtifactStorage
 from primer.int.storage_provider import StorageProvider
-from primer.model.except_ import ConflictError
+from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.service import Service, ServiceVersion
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.service.bundle import ValidatedBundle
+from primer.storage._patch import raw_generation
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ RETAINED_VERSIONS = 20
 """Newest versions kept per service; the active version is always kept."""
 
 _CREATE_ATTEMPTS = 3
+_POINTER_ATTEMPTS = 5
 """A concurrent publish can steal the computed version number: both read
 the same latest version and both target next_number. The unique
 (service_id, version) index (KN-19j) makes the loser's create a
@@ -101,8 +103,7 @@ async def publish_version(
         raise
 
     if activate:
-        service.active_version_id = created.id
-        await sp.get_storage(Service).update(service)
+        service = await _point_at(sp, service, created.id)
 
     # Re-read for retention: a concurrent publish may have added a row
     # since this publish read the version list.
@@ -182,9 +183,25 @@ async def activate_version(
             f"version {version_id!r} does not belong to service "
             f"{service.name!r}"
         )
-    service.active_version_id = version.id
-    await sp.get_storage(Service).update(service)
-    return service
+    return await _point_at(sp, service, version.id)
+
+
+async def _point_at(sp: StorageProvider, service: Service, version_id: str) -> Service:
+    """Write ONLY ``active_version_id`` (a field-scoped patch), so a ``viewer_auth`` or description edit that landed since ``service`` was read
+    survives (GS-26). Guarded on the pointer read just before, re-read and retried when another publish moved it first."""
+    storage = sp.get_storage(Service)
+    for _ in range(_POINTER_ATTEMPTS):
+        current = await storage.get(service.id)
+        if current is None:
+            raise NotFoundError(f"Service {service.id!r} does not exist")
+        written = await storage.patch_if(
+            service.id, {"active_version_id": version_id},
+            where={"active_version_id": [raw_generation(current, "active_version_id")]},
+        )
+        if written is not None:
+            service.active_version_id = written.active_version_id     # callers hold this object: its pointer follows the row
+            return written
+    raise ConflictError(f"service {service.name!r} was changed by another publish; try again")
 
 
 __all__ = [

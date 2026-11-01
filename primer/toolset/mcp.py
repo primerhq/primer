@@ -618,7 +618,7 @@ class McpToolsetProvider(ToolsetProvider):
                     async with sse_client(
                         url=http_cfg.url, headers=headers, auth=auth, **sse_kwargs,
                     ) as (read, write):
-                        async with ClientSession(read, write) as session:
+                        async with ClientSession(read, write, read_timeout_seconds=self._config.read_timeout_seconds) as session:
                             await session.initialize()
                             yield session
                 else:
@@ -632,7 +632,7 @@ class McpToolsetProvider(ToolsetProvider):
                         async with streamable_http_client(
                             url=http_cfg.url, http_client=http_client,
                         ) as (read, write):
-                            async with ClientSession(read, write) as session:
+                            async with ClientSession(read, write, read_timeout_seconds=self._config.read_timeout_seconds) as session:
                                 await session.initialize()
                                 yield session
             except (ConfigError, GeneratorExit):
@@ -691,7 +691,7 @@ class McpToolsetProvider(ToolsetProvider):
 
         try:
             read, write = await stack.enter_async_context(stdio_client(params))
-            session = await stack.enter_async_context(ClientSession(read, write))
+            session = await stack.enter_async_context(ClientSession(read, write, read_timeout_seconds=self._config.read_timeout_seconds))
             await session.initialize()
         except FileNotFoundError as exc:
             await stack.aclose()
@@ -740,6 +740,9 @@ class McpToolsetProvider(ToolsetProvider):
                     "handshake (not an MCP server, or it exited "
                     "immediately)"
                 ) from exc
+            if isinstance(exc, Exception):
+                # Classified here, not by each caller: call and the task requests enter the session outside their own try (AG-M15).
+                raise self._classified(exc) from exc
             raise
 
         logger.info(
@@ -775,6 +778,9 @@ class McpToolsetProvider(ToolsetProvider):
             text_chunks.append(
                 "```json\n" + json.dumps(non_text, indent=2) + "\n```"
             )
+        if not text_chunks and r.structured_content is not None:
+            # A result with only structuredContent reached the model as "" (AG-L3).
+            text_chunks.append(json.dumps(r.structured_content))
 
         extended: dict[str, Any] | None = None
         if non_text:

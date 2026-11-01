@@ -37,6 +37,7 @@ a plain git-backed graph runner without workspace integration.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -397,8 +398,10 @@ provider_registry: Any | None = None,
             seed: Any = self._graph_input
         else:
             seed = messages
-        async for ev in super().invoke(seed):  # type: ignore[arg-type]
-            yield ev
+        # aclosing (AG-L11b): closing this generator closes the base one now, so its node tasks are cancelled before aclose returns.
+        async with contextlib.aclosing(super().invoke(seed)) as steps:  # type: ignore[arg-type]
+            async for ev in steps:
+                yield ev
 
     # ---- Subclass hooks --------------------------------------------------
 
@@ -718,6 +721,7 @@ provider_registry: Any | None = None,
         # graph's terminal commit.
         if (
             status == SessionStatus.ENDED
+            and ended_reason != "cancelled"  # a closed or cancelled run (AG-L11c): the session's own cancel exit decides the session's status (a Stop rests it WAITING)
             and self._owns_session_lifecycle
             and self._workspace_session is not None
         ):

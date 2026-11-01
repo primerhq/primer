@@ -268,3 +268,20 @@ async def test_rotate_webhook_token_rejects_non_webhook(fake_storage_provider):
     )
     with pytest.raises(ValueError, match="kind='webhook'"):
         await rotate_webhook_token(trigger_id=trigger.id, owner=PrincipalRef.system(), deps=deps)
+
+
+@pytest.mark.asyncio
+async def test_update_refuses_a_caller_chosen_token_that_is_not_32_hex(fake_storage_provider):
+    """GI-24: a guessable token (`x`) would give the trigger a public URL anyone can find."""
+    from primer.trigger.service import WebhookTokenInvalid, update_trigger
+
+    deps = ServiceDeps(storage_provider=fake_storage_provider)
+    trigger = await create_trigger(
+        slug="wh-chosen", name="WH Chosen", description=None, config=WebhookTriggerConfig(), enabled=True, deps=deps,
+    )
+    for bad in ("x", "A" * 32, "g" * 32, "a" * 31, "a" * 33):
+        with pytest.raises(WebhookTokenInvalid):
+            await update_trigger(trigger_id=trigger.id, config=WebhookTriggerConfig(token=bad), owner=trigger.owner, deps=deps)
+    after = await update_trigger(trigger_id=trigger.id, config=WebhookTriggerConfig(token="ab" * 16), owner=trigger.owner, deps=deps)
+    assert after.config.token == "ab" * 16
+
