@@ -241,12 +241,13 @@ class MemoryStore:
                 entry.name,
             )
             return None
-        await self._write_body(
+        if not await self._write_body(
             agent_id,
             entry,
             content,
             extra={"sources": [*entry.meta.get("sources", []), source]},
-        )
+        ):
+            return None
         await self._emit_event(
             "memory.entry.updated",
             agent_id,
@@ -262,25 +263,24 @@ class MemoryStore:
         content: str,
         *,
         extra: dict[str, Any] | None = None,
-    ) -> None:
-        """Replace the body and push the old one onto ``revisions`` (the last ``MAX_REVISIONS``). The meta leaves written are only those named."""
+    ) -> bool:
+        """Replace the body and push the old one onto ``revisions`` (the last ``MAX_REVISIONS``), by document id and only while the entry is still in
+        the folder it was read from; False when it moved or went since, so a concurrent curator's move is never undone or the entry re-created."""
+        slug = slugify_name(entry.name) or entry.name
+        doc_id = await self._doc_id(agent_id, entry.status, slug)
+        if doc_id is None:
+            return False
         revisions = [
             *entry.meta.get("revisions", []),
             {"body": render_body(entry.body), "at": _now().isoformat()},
         ][-MAX_REVISIONS:]
-        # shortcut: the body and the meta are two writes, and a body write to a path a curator just moved would re-create it; the window is the
-        # gap between the read above and this write, closed when the curator takes the per-agent job lease (Task 8).
-        await self._documents.upsert(
-            collection_id=memory_collection_id(agent_id),
-            path=f"{entry.status}/{slugify_name(entry.name)}",
+        written = await self._documents.write_body_at(
+            document_id=doc_id,
+            path=f"{entry.status}/{slug}",
             content=content,
-            title=entry.name,
+            meta_set={"revisions": revisions, **(extra or {})},
         )
-        doc_id = await self._doc_id(
-            agent_id, entry.status, slugify_name(entry.name) or entry.name
-        )
-        if doc_id is not None:
-            await self._set_meta(doc_id, {"revisions": revisions, **(extra or {})})
+        return written is not None
 
     async def credit(
         self,
@@ -410,9 +410,11 @@ class MemoryStore:
     ) -> MemoryEntry:
         entry = await self._require(agent_id, name)
         if body is not None:
-            await self._write_body(
-                agent_id, entry, render_body(body)
-            )  # ValueError over the cap reaches the caller
+            # a ValueError over the cap reaches the caller
+            if not await self._write_body(agent_id, entry, render_body(body)):
+                raise NotFoundError(
+                    f"memory entry {entry.name!r} moved while it was being edited"
+                )
         if description is not None:
             doc_id = await self._doc_id(
                 agent_id, entry.status, slugify_name(entry.name) or entry.name

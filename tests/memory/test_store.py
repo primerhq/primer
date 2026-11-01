@@ -12,7 +12,6 @@ from primer.knowledge.document_service import DocumentService
 from primer.memory.collection import memory_collection_id
 from primer.memory.entry import EntryBody, parse_body
 from primer.memory.store import MemoryEntry, MemoryStore
-from primer.model.agent import Agent, AgentModel
 from primer.model.collection import Collection
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.memory import ItemEdit, MemoryAdd, MemoryPatch
@@ -214,3 +213,34 @@ async def test_every_write_emits_its_event(store, sp) -> None:
     by_type = {e.event_type: e for e in reversed(events)}     # the first event of each type
     assert by_type["memory.entry.added"].actor == f"memory:{AGENT}" and by_type["memory.entry.added"].payload["name"] == "retry-github-429"
     assert by_type["memory.entry.archived"].actor == "user:o" and by_type["memory.entry.archived"].payload["reason"] == "r"
+
+
+async def _archived_between_read_and_write(store, entry) -> None:
+    """The curator archives the entry after the worker read it and before the worker writes."""
+    real_find = store._find
+    docs = store._documents
+
+    async def find_then_archive(agent_id, name):
+        found = await real_find(agent_id, name)
+        if found is not None and found.status == "candidates":
+            store._find = real_find
+            await docs.move(collection_id=f"mem-{agent_id}", src=f"candidates/{entry.name}", dst=f"archived/{entry.name}")
+        return found
+
+    store._find = find_then_archive
+
+
+@pytest.mark.parametrize("write", ["patch", "edit"])
+async def test_a_body_write_does_not_recreate_an_entry_the_curator_just_moved(store, sp, write) -> None:
+    entry = await _candidate(store)
+    await _archived_between_read_and_write(store, entry)
+    if write == "patch":
+        assert await store.patch(AGENT, _patch(entry.name, "late"), source=SRC) is None
+    else:
+        with pytest.raises(NotFoundError):
+            await store.edit(AGENT, entry.name, body=entry.body, actor="user:o")
+    assert await store.list_entries(AGENT, "candidates") == []
+    archived = await store.get(AGENT, entry.name)
+    assert archived is not None and archived.status == "archived"
+    assert [s for s in archived.body.steps if s[1] == "late"] == []
+    assert len(await store.list_entries(AGENT)) == 1

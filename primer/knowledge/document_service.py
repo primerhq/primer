@@ -239,6 +239,27 @@ class DocumentService:
             await self._indexer(document=doc, content=content)
         return doc
 
+    async def write_body_at(
+        self, *, document_id: str, path: str, content: str, meta_set: dict[str, Any] | None = None,
+    ) -> Document | None:
+        """Replace the body of document ``document_id``, only while it is still at ``path``; never creates a document.
+
+        For a writer that read the document earlier and must not re-create it if another writer moved or deleted it since (an upsert by path
+        would). The guard, the named ``meta`` leaves (``meta_set``, nothing else of the row) and the body go in one transaction; the indexer runs
+        after it, as in :meth:`upsert`. Returns the stored document, or ``None`` when the guard failed.
+        """
+        async with self._sp.transaction() as conn:
+            doc = await self._docs.patch_if(
+                document_id, {"updated_at": _utcnow().isoformat()}, where={"path": [path]},
+                set_paths={("meta", k): v for k, v in (meta_set or {}).items()}, conn=conn,
+            )
+            if doc is None:
+                return None
+            await self._content.upsert(document_id=document_id, collection_id=doc.collection_id, path=doc.path, content=content, conn=conn)
+        if self._indexer is not None:
+            await self._indexer(document=doc, content=content)
+        return doc
+
     async def _parent_id(self, collection_id: str, path: str, *, conn: Any = None) -> str | None:
         """The id of the document at ``path``'s parent path, so a new nested document sits under it in the tree; ``None`` for a root path
         (and for a parent path that holds no document: an import may write leaves first, and no parent is invented)."""
