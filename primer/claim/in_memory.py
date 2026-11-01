@@ -97,7 +97,8 @@ class InMemoryClaimEngine(ClaimEngine):
                 kind=kind, entity_id=entity_id, priority_score=priority,
                 next_attempt_at=_as_utc(next_attempt_at) if next_attempt_at is not None else self._clock(),
             )
-            self._notify_queue.put_nowait((kind, entity_id))
+        # Every upsert, new row or re-arm, tells the watcher (Postgres: pg_notify on every call), so a re-armed lease is not left to the next poll (CV-6).
+        self._notify_queue.put_nowait((kind, entity_id))
         self._wake.set()
 
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
