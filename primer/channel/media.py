@@ -20,6 +20,7 @@ persisted parts carry only an ``artifact_id`` reference.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from dataclasses import dataclass, field
@@ -97,6 +98,16 @@ def enforce_limits(*, size: int, mime_type: str | None, config: MediaConfig) -> 
         raise MediaTypeNotAllowed(f"MIME type {mime_type!r} is not allowed")
 
 
+def declared_size_refused(size: object, config: "MediaConfig | None" = None) -> bool:
+    """Whether a size the sender DECLARED (Slack ``size``, Discord ``size``) is already over the cap, so the bytes need not be downloaded at all."""
+    cfg = config or MediaConfig()
+    return isinstance(size, int) and not isinstance(size, bool) and size > cfg.max_bytes
+
+
+#: How many attachments one message downloads at a time.
+ATTACHMENT_CONCURRENCY = 4
+
+
 def compress_image(
     data: bytes, mime_type: str | None, config: MediaConfig,
 ) -> tuple[bytes, str]:
@@ -149,7 +160,8 @@ async def store_inbound_media(
     artifact-referencing chat Part. Raises :class:`MediaError` on rejection."""
     cfg = config or MediaConfig()
     enforce_limits(size=len(data), mime_type=mime_type, config=cfg)
-    stored, stored_mime = compress_image(data, mime_type, cfg)
+    # Pillow decodes and re-encodes on the CPU: off the event loop, so one big photo does not stall every other request (L7, W56k).
+    stored, stored_mime = await asyncio.to_thread(compress_image, data, mime_type, cfg)
     aid = await artifact_storage.put(
         data=stored, mime_type=stored_mime, filename=filename,
     )
@@ -293,7 +305,9 @@ __all__ = [
     "MediaTooLarge",
     "MediaTypeNotAllowed",
     "collect_media_parts",
+    "ATTACHMENT_CONCURRENCY",
     "compress_image",
+    "declared_size_refused",
     "enforce_limits",
     "hydrate_media_dicts",
     "hydrate_part",

@@ -47,6 +47,8 @@ _UNREADABLE = frozenset({ErrorCode.ENOENT, ErrorCode.EACCES, ErrorCode.EISDIR, E
 class SandboxGrep(WorkspaceTool):
     """Regex search across sandbox files."""
 
+    read_only: ClassVar[bool] = True
+
     id: ClassVar[str] = "grep"
     description: ClassVar[str] = (
         "Search file contents with a regex. Choose output_mode "

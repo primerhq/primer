@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -328,23 +329,36 @@ class DiscordChannelAdapter(ChannelAdapter):
         except Exception:
             logger.exception("discord: artifact store unavailable; skipping media")
             return [], text
-        parts: list = []
-        for att in attachments:
+        from primer.channel.media import ATTACHMENT_CONCURRENCY, declared_size_refused
+
+        gate = asyncio.Semaphore(ATTACHMENT_CONCURRENCY)
+
+        async def ingest(att) -> tuple[str, Any]:
+            if declared_size_refused(getattr(att, "size", None)):   # Discord declares the size: do not read what would be refused
+                return "too_large", None
             try:
-                data = await att.read()
+                async with gate:
+                    data = await att.read()
                 part = await store_inbound_media(
                     store, data=data,
                     mime_type=getattr(att, "content_type", None),
                     filename=getattr(att, "filename", None),
                 )
             except MediaError:
-                text = (text or "") + " [attachment skipped: too large]"
-                continue
+                return "too_large", None
             except Exception:
                 logger.exception("discord: failed to ingest attachment; skipping")
+                return "failed", None
+            return "part", part
+
+        parts: list = []
+        for kind, part in await asyncio.gather(*(ingest(att) for att in attachments)):   # results keep the attachments' order
+            if kind == "too_large":
+                text = (text or "") + " [attachment skipped: too large]"
+            elif kind == "failed":
                 text = (text or "") + " [attachment skipped]"
-                continue
-            parts.append(part)
+            else:
+                parts.append(part)
         return parts, text
 
 

@@ -26,6 +26,8 @@ from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 class SandboxGlob(WorkspaceTool):
     """Find files by glob pattern via Sandbox traversal."""
 
+    read_only: ClassVar[bool] = True
+
     id: ClassVar[str] = "glob"
     description: ClassVar[str] = (
         "Find files by glob pattern (e.g. 'src/**/*.py'). Results "

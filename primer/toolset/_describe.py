@@ -46,6 +46,7 @@ def make_tool(
     required_role: str | None = None,
     tool_class: Literal["standard", "notifying"] = "standard",
     interruptible: bool = True,
+    read_only: bool = False,
     preview_args: Sequence[str] | None = None,
 ) -> Tool:
     """Build a Tool with validated examples and the standard description anatomy.
@@ -106,5 +107,6 @@ def make_tool(
         required_role=required_role,
         tool_class=tool_class,
         interruptible=interruptible,
+        read_only=read_only,
         preview_args=declared,
     )

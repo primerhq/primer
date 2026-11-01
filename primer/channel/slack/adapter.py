@@ -8,6 +8,7 @@ share one Socket Mode connection.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -62,6 +63,7 @@ class SlackChannelAdapter(ChannelAdapter):
         self._provider = provider
         self._channel = channel
         self._inbox = inbox
+        self._http_client: httpx.AsyncClient | None = None
         # Chat-surface wiring. Optional so existing callers (session/workspace
         # channels) keep working; the chat dispatch path stays inactive when
         # _sp is None.
@@ -100,6 +102,9 @@ class SlackChannelAdapter(ChannelAdapter):
         # Handlers are registered once-per-connection in Task 6 (factory).
 
     async def aclose(self) -> None:
+        client, self._http_client = self._http_client, None
+        if client is not None and hasattr(client, "aclose"):
+            await client.aclose()
         entry = SLACK_CONNECTIONS.entry(self._provider.id)
         if entry is not None:
             entry.adapters_by_channel_id.pop(self._channel.external_id, None)
@@ -294,40 +299,50 @@ class SlackChannelAdapter(ChannelAdapter):
             return text, []
         if self._artifacts is None or self._sp is None:
             return text, []
-        from primer.channel.media import MediaError, store_inbound_media
+        from primer.channel.media import ATTACHMENT_CONCURRENCY, MediaError, declared_size_refused, store_inbound_media
         store = await self._artifacts.get_default()
         token = self._provider.config.bot_token.get_secret_value()
-        parts: list = []
-        for f in files:
+        gate = asyncio.Semaphore(ATTACHMENT_CONCURRENCY)
+
+        async def fetch(f: dict) -> tuple[str, Any]:
+            """``("part", part)``, ``("skipped", None)`` (over the cap) or ``("none", None)`` for one file; never raises."""
             url = f.get("url_private_download") or f.get("url_private")
             if not url:
-                continue
+                return "none", None
             if not url.startswith("https://files.slack.com/"):   # the bot token goes to Slack's file host only
                 logger.warning("slack: not fetching a file outside https://files.slack.com: %s", url)
-                continue
-            try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(
-                        url, headers={"Authorization": f"Bearer {token}"})
-            except Exception:  # noqa: BLE001 — download is best-effort
-                logger.warning("slack: media download raised for %s", url,
-                               exc_info=True)
-                continue
+                return "none", None
+            if declared_size_refused(f.get("size")):             # Slack says how big it is: do not download what would be refused
+                return "skipped", None
+            async with gate:
+                try:
+                    resp = await self._http().get(url, headers={"Authorization": f"Bearer {token}"})
+                except Exception:  # noqa: BLE001 — download is best-effort
+                    logger.warning("slack: media download raised for %s", url, exc_info=True)
+                    return "none", None
             if getattr(resp, "status_code", 0) != 200:
-                logger.warning(
-                    "slack: media download for %s returned %s", url,
-                    getattr(resp, "status_code", "?"))
-                continue
+                logger.warning("slack: media download for %s returned %s", url, getattr(resp, "status_code", "?"))
+                return "none", None
             try:
                 part = await store_inbound_media(
-                    store, data=resp.content,
-                    mime_type=f.get("mimetype"),
-                    filename=f.get("name") or f.get("title"))
+                    store, data=resp.content, mime_type=f.get("mimetype"), filename=f.get("name") or f.get("title"))
             except MediaError:
+                return "skipped", None
+            return "part", part
+
+        parts: list = []
+        for kind, part in await asyncio.gather(*(fetch(f) for f in files)):   # results keep the files' order
+            if kind == "skipped":
                 text = (text or "") + " [attachment skipped: too large]"
-                continue
-            parts.append(part)
+            elif kind == "part":
+                parts.append(part)
         return text, parts
+
+    def _http(self) -> httpx.AsyncClient:
+        """The adapter's one HTTP client (not one per file)."""
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient()
+        return self._http_client
 
 
 

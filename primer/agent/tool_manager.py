@@ -276,6 +276,9 @@ class ToolExecutionManager:
         # :meth:`is_interruptible_call` must still find their declaration. Filled in ``list_tools``;
         # the loop asks only once a Stop has fired.
         self._uninterruptible: set[str] = set()
+        # Scoped ids of the tools declared ``read_only`` (``Tool.read_only``): the only ones a batch may run concurrently
+        # (:meth:`is_parallel_safe`), and only when ``parallel_readonly_tool_calls`` is on.
+        self._read_only: set[str] = set()
         # Scoped workspace-tool id (``workspace__bare_name``) -> bare_name.
         # Separate map so dispatch can look up the WorkspaceTool from
         # ``_workspace_tools`` (still keyed by bare name).
@@ -367,6 +370,7 @@ class ToolExecutionManager:
         event_recorder: "Any | None" = None,
         turn_no: int | None = None,
         actor: ActorRef | None = None,
+        parallel_readonly: bool = False,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -383,7 +387,7 @@ class ToolExecutionManager:
         the same way — see ``ToolContext.turn_no``.
         """
         ws_tools = {t.id: t for t in session.workspace_tools}
-        return cls(
+        manager = cls(
             event_recorder=event_recorder,
             toolset_providers=toolset_providers,
             workspace_tools=ws_tools,
@@ -398,6 +402,8 @@ class ToolExecutionManager:
             turn_no=turn_no,
             actor=actor,
         )
+        manager.parallel_readonly_tool_calls = parallel_readonly
+        return manager
 
     def rebind_workspace(
         self,
@@ -430,6 +436,7 @@ class ToolExecutionManager:
             initiated_by=initiated_by or self._initiated_by,
             turn_no=self._turn_no,
             actor=self._actor_override,
+            parallel_readonly=self.parallel_readonly_tool_calls,
         )
 
     async def list_tools(
@@ -561,6 +568,8 @@ class ToolExecutionManager:
                     # cannot call directly can still be reached through ``call_tool``.
                     if not t.interruptible:
                         self._uninterruptible.add(scoped_id)
+                    if getattr(t, "read_only", False):
+                        self._read_only.add(scoped_id)
                     # External tools bypass the agent allowlist: they are
                     # per-invocation grants carried by the triggering
                     # message, not entries in Agent.tools.
@@ -596,6 +605,8 @@ class ToolExecutionManager:
                 # getattr: the ABC always has it, but tests (and embedders) hand in duck-typed tools.
                 if not getattr(ws_tool, "interruptible", True):
                     self._uninterruptible.add(scoped_id)
+                if getattr(ws_tool, "read_only", False):
+                    self._read_only.add(scoped_id)
             # Together, once the walk is whole: a listing that fails or is cancelled halfway leaves neither behind.
             self._unavailable = unavailable
             self._unavailable_states = unavailable_states
@@ -670,6 +681,28 @@ class ToolExecutionManager:
             ):
                 match = (toolset_id, reason)
         return match
+
+    #: Whether a batch of read-only calls may run concurrently (``WorkerConfig.parallel_readonly_tool_calls``; default OFF).
+    parallel_readonly_tool_calls: bool = False
+
+    async def is_parallel_safe(self, call: ToolCallPart) -> bool:
+        """Whether THIS call may run beside its batch siblings: its tool is declared read-only, is not notifying, yielding or uninterruptible,
+        and has no approval policy (a gated call parks the session and must be decided in order). ``call_tool`` is never parallel: the tool it
+        forwards to is not looked through. Anything the manager does not know is not parallel."""
+        name = call.name
+        if name not in self._read_only or name in self._notifying or name in self._uninterruptible:
+            return False
+        descriptor = self._descriptors.get(name)
+        if descriptor is None or descriptor.yields:
+            return False
+        if self._approval_resolver is not None:
+            if name in self._workspace_scoped:
+                toolset_id, tool_id = WORKSPACE_TOOLSET_ID, self._workspace_scoped[name]
+            else:
+                toolset_id, tool_id = self._tool_to_toolset.get(name, (None, None))
+            if toolset_id is None or await self._approval_resolver.find(toolset_id=toolset_id, tool_name=tool_id) is not None:
+                return False
+        return True
 
     def is_notifying(self, tool_name: str) -> bool:
         """True iff the SCOPED ``tool_name`` was declared notifying.

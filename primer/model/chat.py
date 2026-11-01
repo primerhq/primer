@@ -734,6 +734,15 @@ class Tool(Describeable):
             "excluded from serialization."
         ),
     )
+    read_only: bool = Field(
+        default=False,
+        exclude=True,
+        description=(
+            "True for a tool that only reads: it changes nothing a sibling call of the same batch could observe or depend on. Declared at the "
+            "make_tool call site; the loop may run a batch made only of such calls concurrently when WorkerConfig.parallel_readonly_tool_calls "
+            "is on (and the calls have no approval policy and do not yield). In-memory metadata only; excluded from serialization."
+        ),
+    )
     interruptible: bool = Field(
         default=True,
         exclude=True,
