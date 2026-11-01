@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
-_FENCE_RE = re.compile(r"^(```|~~~)")
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
 
 
 def _pack_paragraphs(text: str, *, max_chars: int, overlap: int) -> list[str]:
@@ -54,11 +54,14 @@ def _sections(text: str) -> list[tuple[list[str], str]]:
     lines = text.splitlines()
     sections: list[tuple[list[str], list[str]]] = [([], [])]
     crumbs: list[tuple[int, str]] = []
-    in_fence = False
+    fence = ""  # the open fence's run; only a run of the same character, at least as long, closes it (CommonMark)
     for line in lines:
-        if _FENCE_RE.match(line.strip()):
-            in_fence = not in_fence
-        m = None if in_fence else _HEADING_RE.match(line)
+        f = _FENCE_RE.match(line.strip())
+        if f and not fence:
+            fence = f.group(1)
+        elif f and f.group(1)[0] == fence[0] and len(f.group(1)) >= len(fence):
+            fence = ""
+        m = None if fence else _HEADING_RE.match(line)
         if m:
             level, title = len(m.group(1)), m.group(2).strip()
             crumbs = [(lv, t) for lv, t in crumbs if lv < level] + [(level, title)]
@@ -73,7 +76,8 @@ def _sections(text: str) -> list[tuple[list[str], str]]:
 
 
 def split_text(text: str, *, max_chars: int = 1500, overlap: int = 200) -> list[str]:
-    text = (text or "").strip()
+    # CRLF first, so paragraph packing finds "\n\n" in a Windows-edited document too.
+    text = (text or "").replace("\r\n", "\n").strip()
     if not text:
         return []
     if len(text) <= max_chars:
