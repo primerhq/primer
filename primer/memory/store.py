@@ -1,0 +1,431 @@
+"""The memory entry store (agent memory Task 3): playbook entries as documents of the agent's memory collection.
+
+An entry is the document ``<folder>/<slug>`` in ``mem-<agent id>``, ``folder`` one of ``active``, ``candidates`` and ``archived``; its title is its name,
+its body the rendered :class:`~primer.memory.entry.EntryBody`, and everything else (description, counts, provenance, revisions) is document ``meta``.
+Promotion and archiving are a document move. Every meta change is a field-scoped ``patch_if`` of the leaves it owns (a counter is compare-and-set), so a
+curator run and a reflection cannot overwrite each other. Each write emits its ``memory.*`` event with ``entity_kind="agent"``.
+
+This is the only writer of the collection besides the curator and the purge; the generic doors refuse it (Task 2).
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, Literal
+
+from primer.memory.collection import memory_collection_id
+from primer.memory.entry import (
+    MEMORY_FOLDERS,
+    EntryBody,
+    apply_edits,
+    body_from_add,
+    parse_body,
+    render_body,
+    slugify_name,
+)
+from primer.model.collection import Document
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.memory import MemoryAdd, MemoryPatch
+
+logger = logging.getLogger(__name__)
+
+Status = Literal["active", "candidates", "archived"]
+#: Revisions kept per entry (spec 4 and 6.6).
+MAX_REVISIONS = 10
+_CAS_ATTEMPTS = 8
+
+
+@dataclass
+class MemoryEntry:
+    name: str
+    status: Status
+    description: str
+    body: EntryBody
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _worker(agent_id: str) -> str:
+    return f"memory:{agent_id}"
+
+
+class MemoryStore:
+    def __init__(self, sp: Any, documents: Any, recorder: Any) -> None:
+        self._sp = sp
+        self._documents = documents
+        self._recorder = recorder
+        self._docs = sp.get_storage(Document)
+
+    # ---- reads ---------------------------------------------------------------------------------------------------------------------------
+
+    async def _read(
+        self, agent_id: str, status: Status, slug: str
+    ) -> MemoryEntry | None:
+        try:
+            got = await self._documents.read(
+                collection_id=memory_collection_id(agent_id), path=f"{status}/{slug}"
+            )
+        except NotFoundError:
+            return None
+        meta = dict(got.document.meta or {})
+        return MemoryEntry(
+            name=got.document.title or slug,
+            status=status,
+            description=meta.get("description", ""),
+            body=parse_body(got.content),
+            meta=meta,
+        )
+
+    async def _find(self, agent_id: str, name: str) -> MemoryEntry | None:
+        """The entry called ``name`` in whichever folder holds it, else None."""
+        slug = slugify_name(name)
+        if slug is None:
+            return None
+        for status in MEMORY_FOLDERS:
+            entry = await self._read(agent_id, status, slug)
+            if entry is not None:
+                return entry
+        return None
+
+    async def get(self, agent_id: str, name: str) -> MemoryEntry | None:
+        return await self._find(agent_id, name)
+
+    async def list_entries(
+        self, agent_id: str, status: Status | None = None
+    ) -> list[MemoryEntry]:
+        out: list[MemoryEntry] = []
+        for folder in (status,) if status else MEMORY_FOLDERS:
+            for item in await self._documents.list(
+                collection_id=memory_collection_id(agent_id), prefix=f"{folder}/"
+            ):
+                entry = await self._read(
+                    agent_id, folder, item.path.removeprefix(f"{folder}/")
+                )
+                if entry is not None:
+                    out.append(entry)
+        return out
+
+    # ---- field-scoped meta writes --------------------------------------------------------------------------------------------------------
+
+    async def _doc_id(self, agent_id: str, status: Status, slug: str) -> str | None:
+        return await self._sp.get_content_store().resolve_id(
+            memory_collection_id(agent_id), f"{status}/{slug}"
+        )
+
+    async def _set_meta(self, doc_id: str, leaves: dict[str, Any]) -> None:
+        """Set the named ``meta`` leaves and nothing else of the row."""
+        await self._docs.patch_if(
+            doc_id,
+            set_paths={("meta", key): value for key, value in leaves.items()},
+            where=await self._anchor(doc_id),
+        )
+
+    async def _anchor(self, doc_id: str) -> dict:
+        """An always-true guard on the row's collection (``patch_if`` needs a non-empty ``where``)."""
+        row = await self._docs.get(doc_id)
+        if row is None:
+            raise NotFoundError(f"document {doc_id!r} does not exist")
+        return {"collection_id": [row.collection_id]}
+
+    async def _bump(self, doc_id: str, key: str) -> None:
+        """Increment the counter ``meta[key]`` by compare-and-set, so concurrent credits are not lost."""
+        for _ in range(_CAS_ATTEMPTS):
+            row = await self._docs.get(doc_id)
+            if row is None:
+                raise NotFoundError(f"document {doc_id!r} does not exist")
+            current = int((row.meta or {}).get(key, 0) or 0)
+            done = await self._docs.patch_if(
+                doc_id,
+                set_paths={("meta", key): current + 1},
+                where={("meta", key): [current]},
+            )
+            if done is not None:
+                return
+        raise ConflictError(
+            f"could not update the {key!r} count of {doc_id!r}: it keeps changing"
+        )
+
+    # ---- events --------------------------------------------------------------------------------------------------------------------------
+
+    async def _emit_event(
+        self, event_type: str, agent_id: str, actor: str, payload: dict[str, Any]
+    ) -> None:
+        await self._recorder.emit(
+            event_type,
+            payload=payload,
+            actor=actor,
+            entity_kind="agent",
+            entity_id=agent_id,
+        )
+
+    # ---- moves ---------------------------------------------------------------------------------------------------------------------------
+
+    async def _move(self, agent_id: str, entry: MemoryEntry, to: Status) -> None:
+        slug = slugify_name(entry.name) or entry.name
+        await self._documents.move(
+            collection_id=memory_collection_id(agent_id),
+            src=f"{entry.status}/{slug}",
+            dst=f"{to}/{slug}",
+        )
+
+    # ---- writes by the worker ------------------------------------------------------------------------------------------------------------
+
+    async def add_candidate(
+        self,
+        agent_id: str,
+        add: MemoryAdd,
+        *,
+        source: dict,
+        taught_by: str,
+        needs_approval: bool,
+    ) -> MemoryEntry | None:
+        """A new candidate, or None when the name does not slugify, already names an entry in any folder, or the body is over the cap."""
+        slug = slugify_name(add.name)
+        if slug is None or await self._find(agent_id, slug) is not None:
+            return None
+        try:
+            content = render_body(body_from_add(add))
+        except ValueError:
+            logger.info(
+                "memory %s: a new entry %r was dropped: its body is over the cap",
+                agent_id,
+                slug,
+            )
+            return None
+        meta = {
+            "description": add.description,
+            "topics": list(add.topics),
+            "helpful": 0,
+            "harmful": 0,
+            "sources": [source],
+            "revisions": [],
+            "last_validated_at": None,
+            "pinned": False,
+            "needs_approval": needs_approval,
+            "taught_by": taught_by,
+            "created_at": _now().isoformat(),
+        }
+        await self._documents.upsert(
+            collection_id=memory_collection_id(agent_id),
+            path=f"candidates/{slug}",
+            content=content,
+            title=slug,
+            meta=meta,
+        )
+        await self._emit_event(
+            "memory.entry.added",
+            agent_id,
+            _worker(agent_id),
+            {"name": slug, "status": "candidates", "taught_by": taught_by},
+        )
+        return await self._read(agent_id, "candidates", slug)
+
+    async def patch(
+        self, agent_id: str, patch: MemoryPatch, *, source: dict
+    ) -> MemoryEntry | None:
+        """Apply the item edits as a new revision; None when the entry is missing or archived (it is never created or revived by a patch)."""
+        entry = await self._find(agent_id, patch.name)
+        if entry is None or entry.status == "archived":
+            return None
+        try:
+            content = render_body(apply_edits(entry.body, patch.edits))
+        except ValueError:
+            logger.info(
+                "memory %s: a patch of %r was dropped: the body would be over the cap",
+                agent_id,
+                entry.name,
+            )
+            return None
+        await self._write_body(
+            agent_id,
+            entry,
+            content,
+            extra={"sources": [*entry.meta.get("sources", []), source]},
+        )
+        await self._emit_event(
+            "memory.entry.updated",
+            agent_id,
+            _worker(agent_id),
+            {"name": entry.name, "status": entry.status, "change": "patch"},
+        )
+        return await self._read(agent_id, entry.status, entry.name)
+
+    async def _write_body(
+        self,
+        agent_id: str,
+        entry: MemoryEntry,
+        content: str,
+        *,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Replace the body and push the old one onto ``revisions`` (the last ``MAX_REVISIONS``). The meta leaves written are only those named."""
+        revisions = [
+            *entry.meta.get("revisions", []),
+            {"body": render_body(entry.body), "at": _now().isoformat()},
+        ][-MAX_REVISIONS:]
+        # shortcut: the body and the meta are two writes, and a body write to a path a curator just moved would re-create it; the window is the
+        # gap between the read above and this write, closed when the curator takes the per-agent job lease (Task 8).
+        await self._documents.upsert(
+            collection_id=memory_collection_id(agent_id),
+            path=f"{entry.status}/{slugify_name(entry.name)}",
+            content=content,
+            title=entry.name,
+        )
+        doc_id = await self._doc_id(
+            agent_id, entry.status, slugify_name(entry.name) or entry.name
+        )
+        if doc_id is not None:
+            await self._set_meta(doc_id, {"revisions": revisions, **(extra or {})})
+
+    async def credit(
+        self,
+        agent_id: str,
+        name: str,
+        verdict: Literal["helpful", "harmful"],
+        *,
+        run_succeeded: bool,
+        trial: bool,
+        at: datetime,
+    ) -> MemoryEntry | None:
+        """Count the verdict. A candidate that was helpful in a successful trial run (and needs no approval) is promoted; a harmful candidate is archived.
+        None when the entry is missing or archived."""
+        entry = await self._find(agent_id, name)
+        if entry is None or entry.status == "archived":
+            return None
+        slug = slugify_name(entry.name) or entry.name
+        doc_id = await self._doc_id(agent_id, entry.status, slug)
+        if doc_id is None:
+            return None
+        await self._bump(doc_id, verdict)
+        actor = _worker(agent_id)
+        if verdict == "helpful" and entry.status == "active":
+            await self._set_meta(doc_id, {"last_validated_at": at.isoformat()})
+        await self._emit_event(
+            "memory.entry.updated",
+            agent_id,
+            actor,
+            {"name": entry.name, "status": entry.status, "change": f"credit:{verdict}"},
+        )
+        if entry.status == "candidates":
+            if (
+                verdict == "helpful"
+                and trial
+                and run_succeeded
+                and not entry.meta.get("needs_approval")
+            ):
+                await self._move(agent_id, entry, "active")
+                await self._emit_event(
+                    "memory.entry.promoted", agent_id, actor, {"name": entry.name}
+                )
+            elif verdict == "harmful":
+                await self._move(agent_id, entry, "archived")
+                await self._emit_event(
+                    "memory.entry.archived",
+                    agent_id,
+                    actor,
+                    {"name": entry.name, "reason": "harmful in a trial run"},
+                )
+        return await self._find(agent_id, entry.name)
+
+    # ---- writes by an owner --------------------------------------------------------------------------------------------------------------
+
+    async def _require(self, agent_id: str, name: str) -> MemoryEntry:
+        entry = await self._find(agent_id, name)
+        if entry is None:
+            raise NotFoundError(f"memory entry {name!r} does not exist")
+        return entry
+
+    async def approve(self, agent_id: str, name: str, *, actor: str) -> MemoryEntry:
+        """Move a candidate to active and clear its ``needs_approval``. An active entry is returned as it is; an archived one cannot be approved."""
+        entry = await self._require(agent_id, name)
+        if entry.status == "active":
+            return entry
+        if entry.status == "archived":
+            raise ConflictError(
+                f"memory entry {entry.name!r} is archived; it cannot be approved"
+            )
+        await self._move(agent_id, entry, "active")
+        doc_id = await self._doc_id(
+            agent_id, "active", slugify_name(entry.name) or entry.name
+        )
+        if doc_id is not None:
+            await self._set_meta(doc_id, {"needs_approval": False})
+        await self._emit_event(
+            "memory.entry.approved", agent_id, actor, {"name": entry.name}
+        )
+        return await self._require(agent_id, entry.name)
+
+    async def archive(
+        self, agent_id: str, name: str, *, actor: str, reason: str
+    ) -> MemoryEntry:
+        entry = await self._require(agent_id, name)
+        if entry.status != "archived":
+            await self._move(agent_id, entry, "archived")
+            await self._emit_event(
+                "memory.entry.archived",
+                agent_id,
+                actor,
+                {"name": entry.name, "reason": reason},
+            )
+        return await self._require(agent_id, entry.name)
+
+    async def set_pinned(
+        self, agent_id: str, name: str, pinned: bool, *, actor: str
+    ) -> MemoryEntry:
+        entry = await self._require(agent_id, name)
+        if entry.status != "active":
+            raise ConflictError(
+                f"memory entry {entry.name!r} is {entry.status}; only an active entry can be pinned"
+            )
+        doc_id = await self._doc_id(
+            agent_id, "active", slugify_name(entry.name) or entry.name
+        )
+        if doc_id is not None:
+            await self._set_meta(doc_id, {"pinned": pinned})
+        await self._emit_event(
+            "memory.entry.updated",
+            agent_id,
+            actor,
+            {
+                "name": entry.name,
+                "status": "active",
+                "change": "pinned" if pinned else "unpinned",
+            },
+        )
+        return await self._require(agent_id, entry.name)
+
+    async def edit(
+        self,
+        agent_id: str,
+        name: str,
+        *,
+        description: str | None = None,
+        body: EntryBody | None = None,
+        actor: str,
+    ) -> MemoryEntry:
+        entry = await self._require(agent_id, name)
+        if body is not None:
+            await self._write_body(
+                agent_id, entry, render_body(body)
+            )  # ValueError over the cap reaches the caller
+        if description is not None:
+            doc_id = await self._doc_id(
+                agent_id, entry.status, slugify_name(entry.name) or entry.name
+            )
+            if doc_id is not None:
+                await self._set_meta(doc_id, {"description": description})
+        await self._emit_event(
+            "memory.entry.updated",
+            agent_id,
+            actor,
+            {"name": entry.name, "status": entry.status, "change": "edit"},
+        )
+        return await self._require(agent_id, entry.name)
+
+
+__all__ = ["MAX_REVISIONS", "MemoryEntry", "MemoryStore", "Status"]
