@@ -184,7 +184,11 @@ blank) and the client ignores `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and a pr
 and the region is the row's `region`, `us-east-1` when blank, never `AWS_REGION` or a profile's. Only the credentials of a row with no keys
 come from the ambient chain. `endpoint_url` is an admin-only field and, like the admin-configured LLM provider URLs, is not routed through
 the egress guard (accepted in the review of #899). A get answers `None` only for a missing key (`NoSuchKey`, `404`, `NotFound`); any other error, a
-missing bucket or a refused read, is raised, because it is an outage, not an absent file. An id that is not a backend id is never turned
+missing bucket or a refused read, is raised, because it is an outage, not an absent file. The one exception is a 403 `AccessDenied` when the
+credentials lack `s3:ListBucket` (checked with a one-key `ListObjectsV2` on that 403 only): S3 answers a missing key that way, so the read
+counts as missing and one WARNING per store names the permission (GX-12). The store needs `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject`
+on the prefix; `s3:ListBucket` on the bucket is optional and lets a refused read be told from a missing one. A read refused outright still
+fails the probe at `get`, the read of the object it has just written. An id that is not a backend id is never turned
 into a key: a get answers `None` and a delete does nothing, without a request. A put that does not complete (cancelled while its request
 is in flight, or failed in any way but one raised before a request was sent) never hands out its id, and the object it may have left is
 removed in the background once the request settles. Only no credentials, partial credentials or a parameter botocore refused prove that

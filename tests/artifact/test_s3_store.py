@@ -432,6 +432,74 @@ async def test_a_read_error_that_is_not_a_missing_key_is_raised(s3_endpoint: str
         await s3.aclose()
 
 
+def _without_list_bucket(store: S3ArtifactStorage, monkeypatch: pytest.MonkeyPatch, *, get_object_granted: bool = True) -> None:
+    """The store's credentials as a least-privilege policy grants them: Get/Put/DeleteObject on the prefix and no s3:ListBucket, so S3 answers
+    a missing key with 403 AccessDenied, as AWS documents. With ``get_object_granted`` False, every read is refused too."""
+    from botocore.exceptions import ClientError
+
+    def denied(operation: str) -> ClientError:
+        return ClientError({"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}, operation)
+
+    real_get = store._client.get_object
+
+    async def get_object(**kwargs):
+        if not get_object_granted:
+            raise denied("GetObject")
+        try:
+            return await real_get(**kwargs)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "NoSuchKey":
+                raise denied("GetObject") from None
+            raise
+
+    async def list_objects_v2(**kwargs):
+        raise denied("ListObjectsV2")
+
+    monkeypatch.setattr(store._client, "get_object", get_object)
+    monkeypatch.setattr(store._client, "list_objects_v2", list_objects_v2)
+
+
+async def test_a_least_privilege_bucket_passes_the_probe_and_reads_a_missing_key_as_missing(
+    store: S3ArtifactStorage, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """GX-12: the probe's "is it gone" read answered AccessDenied, so the store could never pass Test or be made active, and a read of an absent
+    artifact answered 500. A 403 counts as missing only when the credentials cannot list the bucket either (one warning names s3:ListBucket)."""
+    probed = S3ArtifactStorage(store.config)
+    await probed.initialize()
+    _without_list_bucket(probed, monkeypatch)
+    row = ArtifactStorageProvider(id="s3-lp", provider="s3", config=store.config)
+    assert (await probe_artifact_provider(row, storage_provider=None, build=lambda r, storage_provider: probed)).as_dict() == {"ok": True}
+
+    _without_list_bucket(store, monkeypatch)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="primer.artifact.s3"):
+        assert await store.get("artifact-" + "0" * 32) is None
+        assert await store.get("artifact-" + "1" * 32) is None
+    assert sum("s3:ListBucket" in r.getMessage() for r in caplog.records) == 1
+
+
+async def test_a_refused_read_with_list_bucket_granted_is_raised(store: S3ArtifactStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With s3:ListBucket a missing key answers 404, so a 403 is a real refusal: an outage, raised."""
+    from botocore.exceptions import ClientError
+
+    _without_list_bucket(store, monkeypatch, get_object_granted=False)
+
+    async def list_objects_v2(**kwargs):
+        return {"KeyCount": 0}
+
+    monkeypatch.setattr(store._client, "list_objects_v2", list_objects_v2)
+    with pytest.raises(ClientError, match="AccessDenied"):
+        await store.get("artifact-" + "0" * 32)
+
+
+async def test_a_bucket_that_refuses_every_read_still_fails_the_probe(store: S3ArtifactStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GetObject not granted at all: the read of the object the probe has just written finds nothing, so Test fails at ``get``."""
+    _without_list_bucket(store, monkeypatch, get_object_granted=False)
+    row = ArtifactStorageProvider(id="s3-nr", provider="s3", config=store.config)
+    result = await probe_artifact_provider(row, storage_provider=None, build=lambda r, storage_provider: store)
+    assert (result.ok, result.step) == (False, "get")
+
+
 async def test_a_cancelled_put_leaves_no_object(store: S3ArtifactStorage, s3_admin, s3_prefix: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """The #890 round-2 rule (item 2) for S3: a put cancelled while its request is in flight (a client that went away) never hands its id to
     anyone, and the request may still complete on the server: once it does, the object is removed."""
