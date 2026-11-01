@@ -184,7 +184,9 @@ async def test_a_wide_broadcast_under_the_cap_runs_every_copy_in_index_order():
 
     assert _ends(events) == [",".join(str(i) for i in range(40))]
     assert thread.ended_reason == "completed"
-    assert order == [sid[2:-1] for sid in sorted(f"t[{i}]" for i in range(40))], "instances are admitted in their sorted id order"
+    # Every copy runs once. Their dispatch order is not a contract (each renders its arguments in a worker thread first, so
+    # copies admitted together reach the tool in thread order): what users see is the aggregator's index order, pinned above.
+    assert sorted(order, key=int) == [str(i) for i in range(40)]
 
 
 @pytest.mark.asyncio
