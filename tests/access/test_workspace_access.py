@@ -318,7 +318,8 @@ async def test_the_events_table_declares_a_workspace_id_index() -> None:
     conn = _RecordingConn()
     store = PostgresEventStore(pool=_AcquireConn(conn), schema="public")  # type: ignore[arg-type]
     await store.ensure_schema()
-    (stmt,) = [s for s in conn.statements if "workspace_id" in s and "CREATE INDEX" in s]
+    # PERF-T2 added a (workspace_id, id) paging index beside it; this pins the plain one the access reads use.
+    (stmt,) = [s for s in conn.statements if "INDEX IF NOT EXISTS events_workspace " in s]
     assert "events_workspace" in stmt
     assert "ON \"public\".events (workspace_id)" in stmt
 
