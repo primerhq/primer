@@ -174,3 +174,27 @@ async def test_a_busy_gateway_answers_503_with_a_fixed_title(client, monkeypatch
     got = await client.post("/svc/busyapp/_gateway/functions/one", json={})
     assert got.status_code == 503 and got.json()["title"] == "the service is busy, try again shortly"
     assert "32" not in got.text
+
+
+# --- GS-31 (gateway half) --------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_an_unavailable_runner_answers_fixed_words_and_logs_the_detail(client, monkeypatch, caplog):
+    import logging
+
+    from primer.api.routers import svc_serve
+    from primer.service.gateway import RunnerUnavailable
+
+    svc = (await _mk(client, "norunner", viewer_auth="none")).json()
+    r = await client.post(f"/v1/services/{svc['id']}/versions", content=_tar({"functions.py": FN}),
+                          headers={"content-type": "application/gzip"})
+    assert r.status_code == 201, r.text
+
+    async def down(**kwargs):
+        raise RunnerUnavailable("[Errno 12] cannot allocate memory: /srv/primer/secret-path")
+
+    monkeypatch.setattr(svc_serve, "call_function", down)
+    with caplog.at_level(logging.WARNING):
+        got = await client.post("/svc/norunner/_gateway/functions/one", json={})
+    assert got.status_code == 503 and "secret-path" not in got.text and got.json()["title"] == "the sandbox runner is unavailable"
+    assert "secret-path" in caplog.text

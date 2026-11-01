@@ -11,6 +11,7 @@ by plan task 8.
 from __future__ import annotations
 
 import html
+import logging
 import mimetypes
 
 from fastapi import APIRouter, Request
@@ -28,6 +29,8 @@ from primer.service.gateway import (
     call_function,
 )
 from primer.service.serve import get_artifact_lru, get_resolver, pick_path
+
+logger = logging.getLogger(__name__)
 
 svc_serve_router = APIRouter(tags=["svc"])
 
@@ -193,11 +196,12 @@ async def svc_gateway_function(
             media_type="application/problem+json",
         )
     except RunnerUnavailable as exc:
+        logger.warning("svc gateway: the sandbox runner is unavailable: %s", exc)     # the detail is for the log, not an anonymous caller
         return JSONResponse(
             status_code=503,
             content={
                 "type": "/errors/subsystem-inactive",
-                "title": f"the sandbox runner is unavailable: {exc}",
+                "title": "the sandbox runner is unavailable",
                 "status": 503,
             },
             media_type="application/problem+json",
