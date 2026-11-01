@@ -218,7 +218,7 @@ async def test_trivial_session_skipped_without_model_call(fake_storage_provider,
     out = await run_memory_job(deps, _lease(job_id))
     job = await fake_storage_provider.get_storage(MemoryJob).get(job_id)
     assert out.drop_lease is True and job.reflected_turn == 3 and ran == []
-    assert "2 messages" in deps.recorder.events[0][1]["detail"]
+    assert "0 of 2 messages" in deps.recorder.events[0][1]["detail"] and "user,assistant" in deps.recorder.events[0][1]["detail"]
 
 
 async def test_a_substantial_session_reaches_the_reflect_runner(fake_storage_provider, engine, ran):
@@ -245,7 +245,7 @@ async def test_an_unreachable_model_is_retried_twice_then_skipped(fake_storage_p
     await _agent(fake_storage_provider)
 
     async def worked(job):
-        return [Message(role="user", parts=[TextPart(text="a")]), Message(role="user", parts=[TextPart(text="b")])]
+        return [Message(role="user", parts=[TextPart(text="a")]), Message(role="assistant", parts=[TextPart(text="x")]), Message(role="user", parts=[TextPart(text="b")])]
 
     async def down(*args, **kwargs):
         raise ReflectionTransient("connection refused")

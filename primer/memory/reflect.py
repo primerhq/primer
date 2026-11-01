@@ -132,9 +132,15 @@ def _clip(text: str, limit: int = _CLIP) -> str:
     return text if len(text) <= limit else text[:limit] + " [...]"
 
 
-def _new_turns(messages: list[Message], job: MemoryJob) -> list[Message]:
-    """The messages of turns ``reflected_turn + 1 .. target_turn``; a turn starts at a user message."""
-    starts = [i for i, m in enumerate(messages) if m.role == "user"]
+def turn_starts(messages: list[Message]) -> list[int]:
+    """Where each turn's input begins. A turn's input is a run of user messages (a session starts with its instructions after a greeting
+    message, a steer carries its attachments): the run counts once, and the tool results of a round are not user messages."""
+    return [i for i, m in enumerate(messages) if m.role == "user" and (i == 0 or messages[i - 1].role != "user")]
+
+
+def new_turns(messages: list[Message], job: MemoryJob) -> list[Message]:
+    """The messages of turns ``reflected_turn + 1 .. target_turn``."""
+    starts = turn_starts(messages)
     if not starts or job.reflected_turn >= len(starts):
         return []
     end = starts[job.target_turn] if job.target_turn < len(starts) else len(messages)
@@ -246,7 +252,7 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
     messages = await deps.load_messages(job) if deps.load_messages is not None else None
     if messages is None:
         return await _skip(deps, agent, job, "transcript_unavailable")
-    turns = _new_turns(messages, job)
+    turns = new_turns(messages, job)
     if not turns:
         await _mark_reflected(deps, job)
         return await _skip(deps, agent, job, "no_new_turns")
