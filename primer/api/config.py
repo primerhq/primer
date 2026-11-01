@@ -436,6 +436,16 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    session_retention_days: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Days an ENDED session is kept after it ended; a leader-elected sweeper then deletes it (its slot, canvas, thread mappings and "
+            "peer-message ledger with it) in bounded batches. Unset (the default): no session is ever deleted by age. Env: "
+            "PRIMER_SESSION_RETENTION_DAYS."
+        ),
+    )
+
     event_dispatch_poll_seconds: float = Field(
         default=5.0,
         description=(

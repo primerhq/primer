@@ -19,6 +19,7 @@ import pytest
 from httpx import ASGITransport
 
 from primer.api.app import create_test_app
+from tests._support.keep_destroyed_sessions import keep_destroyed_sessions  # noqa: F401  (the fixture)
 from tests._support.reconcile_guard import reconcile_query_must_not_fail  # noqa: F401  (autouse: see the module)
 from primer.api.registries import (
     ProviderRegistry,
@@ -888,6 +889,7 @@ class TestWorkspaceRouter:
         assert get2.status_code == 404
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("keep_destroyed_sessions")
     async def test_destroy_reconciles_open_sessions_to_workspace_lost(
         self, client, sp
     ) -> None:
@@ -1803,6 +1805,7 @@ class TestSessionsSubResource:
         return wid
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("keep_destroyed_sessions")
     async def test_a_steer_racing_a_workspace_delete_that_has_finished_answers_not_found(
         self, client, wsr, sp, monkeypatch
     ) -> None:

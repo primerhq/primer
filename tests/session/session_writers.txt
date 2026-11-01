@@ -42,7 +42,7 @@ primer/workspace/session_factory.py | create_session | update | 1 | none (a new 
 primer/workspace/session_factory.py | interrupt_session | update | 1 | S4 patch_if on interrupt_requested / cancel_requested_at where status == running and parked_status is null (3.8 condition 4); a Stop on a parked row is a 409 with no write
 
 [deletes]
-primer/api/routers/sessions.py | delete_session | delete | 1 | regression pin only (C11, N109): non-force delete of a RUNNING session answers 409; closure (C3(a)/(b)) in delete is S4
+primer/session/purge.py | delete_session_rows | delete | 1 | regression pin only (C11, N109, GR-6): the one row delete the DELETE route, a workspace destroy and the retention sweep share; the route decides under session_lifecycle_lock on a fresh read and answers 409 for a RUNNING session before it gets here (GS-21), the destroy and the sweep delete ENDED rows only
 
 [unresolved]
 primer/harness/service.py | _write_entity_with_body | storage.update | 1 | generic entity writer: its storage comes from _storage_for_kind(), which maps a harness entry kind (toolset, collection, document, agent, graph) to a model held in a variable, so the scan cannot name the model. Not a session writer today: WorkspaceSession is not a harness kind. It becomes one if _harness_kind_models() gains WorkspaceSession; then move the line to [writers] with a disposition

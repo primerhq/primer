@@ -32,6 +32,7 @@ from primer.model.principal import Principal
 from primer.model.workspace import Workspace, WorkspaceProvider, WorkspaceTemplate
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.toolset.workspaces import build_workspaces_toolset
+from tests._support.keep_destroyed_sessions import keep_destroyed_sessions  # noqa: F401  (the fixture)
 from tests.api.test_workspaces import _provider, _template, sp, wsr  # noqa: F401  (fixtures)
 
 #: The person the tool calls act as (access-control P2 T6): the tool's no-ctx call resolves ``current_actor``, and the run's person must hold
@@ -80,6 +81,7 @@ async def _session(sp) -> WorkspaceSession:  # noqa: F811
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("keep_destroyed_sessions")
 async def test_a_reader_sees_terminating_while_the_teardown_runs(sp, wsr, wid, toolset) -> None:  # noqa: F811
     backend = await wsr.get_backend("local-1")
     real_destroy = backend.destroy
@@ -122,6 +124,7 @@ async def test_a_failed_teardown_leaves_the_row_failed_and_says_why(sp, wsr, wid
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("keep_destroyed_sessions")
 async def test_a_row_that_cannot_be_deleted_after_the_teardown_is_failed(sp, wsr, wid) -> None:  # noqa: F811
     """The runtime is gone and the sessions are ended, but the row delete failed: the row says so instead of staying terminating."""
     store = sp.get_storage(Workspace)
