@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from primer.model.provider import SqliteConfig
+from primer.storage.migrations.m008_embedding_provider_repair import EmbeddingProvider as EmbeddingView
+from primer.storage.migrations.m008_embedding_provider_repair import M008EmbeddingProviderRepair
 from primer.storage.migrations.m024_cross_workspace_list_field import (
     ExternalToolCall as CallView,
     M024CrossWorkspaceListField,
@@ -71,3 +73,16 @@ async def test_m026_reads_and_writes_only_the_subscriptions_without_an_owner(sp)
     assert c.calls("patch_if", model="Subscription") == NEED
     assert c.calls("find", "list", model="Subscription") == 1
     assert c.rows <= 2 * NEED + 2  # each changed subscription read once and written once, plus the user and the trigger
+
+
+async def test_m008_reads_only_openai_rows_and_writes_only_the_refused_ones(sp) -> None:
+    await insert_raw(sp, EmbeddingView, _mix({"provider": "openai", "config": {"api_key": "k"}}, {"provider": "huggingface", "config": {}}))
+
+    with sp.counted() as c:
+        await M008EmbeddingProviderRepair().apply(sp)
+
+    assert c.calls("list") == 0, "a full-table read"
+    assert c.calls("update") == 0
+    assert c.calls("patch_if", model="EmbeddingProvider") == NEED
+    assert c.calls("find", model="EmbeddingProvider") == 1
+    assert c.rows <= 2 * NEED
