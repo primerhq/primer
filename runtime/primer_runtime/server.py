@@ -23,7 +23,7 @@ from aiohttp import WSMsgType
 
 from primer_runtime.exec import ExecRegistry, start_exec
 from primer_runtime.locks import WorkspaceLockTable
-from primer_runtime.ops import HANDLERS, OpError, start_mutating_op, MutatingOpRegistry
+from primer_runtime.ops import HANDLERS, start_mutating_op, MutatingOpRegistry
 from primer_runtime.events_sub import (
     EventBroadcaster,
     start_events_subscribe,
@@ -45,19 +45,6 @@ _KEY_BROADCASTER: web.AppKey["EventBroadcaster"] = web.AppKey(
     "event_broadcaster", object,  # type: ignore[arg-type]
 )
 
-# Mutating single-shot ops that acquire a Tier-A write lock and therefore may
-# park on a busy scope/path lock. These are offloaded off the message loop as
-# tracked tasks so a parked writer never blocks unrelated reads/list/stat/state
-# on the same connection - only other writers to the same target wait. A
-# state_commit parks the same way, on the runtime-wide lock of the state repo
-# (GI-5). All the other single-shot ops (reads/list/stat + the read-only state
-# ops) stay inline.
-_MUTATING_OPS: frozenset[str] = frozenset({
-    OpName.WRITE_FILE,
-    OpName.APPEND_LINE,
-    OpName.DELETE,
-    OpName.STATE_COMMIT,
-})
 
 # ---------------------------------------------------------------------------
 # Version constants
@@ -186,9 +173,9 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     # Per-connection exec registry — tracks in-flight streaming exec tasks so
     # a long exec never blocks the message loop below.
     exec_registry = ExecRegistry()
-    # Per-connection mutating-op registry - tracks in-flight write_file/
-    # append_line/delete tasks so a writer parked on a busy Tier-A lock never
-    # blocks the message loop below (reads/list/stat/state stay inline).
+    # Per-connection single-shot-op registry - tracks every in-flight file and
+    # state op task so none of them (a writer parked on a busy lock, a long git
+    # op, a big read) blocks the message loop below.
     op_registry = MutatingOpRegistry()
 
     # The teardown runs however the loop ends (GI-8): a reply that cannot be sent because the client left, or any
@@ -376,43 +363,20 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                     await ws.send_str(serialize(err_resp))
                     continue
 
-                # Mutating ops take a Tier-A write lock and may PARK on a busy
-                # scope/path lock; offload them as tracked tasks (mirrors EXEC/
-                # PTY_OPEN) so a parked writer never blocks unrelated reads/list/
-                # stat/state on this connection. The task owns its own single
-                # Response, keyed by frame_req_id, so multiplexing is unchanged.
-                if op_name in _MUTATING_OPS:
-                    start_mutating_op(
-                        handler,  # type: ignore[arg-type]
-                        op_name,
-                        frame_req_id,
-                        args,
-                        workspace_root,
-                        locks,
-                        ws.send_str,
-                        op_registry,
-                    )
-                    continue
-
-                try:
-                    result = await handler(args, workspace_root, locks)  # type: ignore[operator]
-                    ok_resp = Response(req_id=frame_req_id, ok=True, result=result)
-                    await ws.send_str(serialize(ok_resp))
-                except OpError as exc:
-                    err_resp = Response(
-                        req_id=frame_req_id,
-                        ok=False,
-                        error={"code": exc.code, "message": exc.message},
-                    )
-                    await ws.send_str(serialize(err_resp))
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("Unexpected error handling op %r", op_name)
-                    err_resp = Response(
-                        req_id=frame_req_id,
-                        ok=False,
-                        error={"code": ErrorCode.EINTERNAL, "message": str(exc)},
-                    )
-                    await ws.send_str(serialize(err_resp))
+                # Every single-shot op runs as a tracked task (mirrors EXEC/PTY_OPEN): a writer parked on a busy lock,
+                # a long git state op or a big read never blocks this loop, so HEALTH and every other frame on this
+                # connection are answered meanwhile (GI-10). The task owns its own single Response, keyed by
+                # frame_req_id, so multiplexing is unchanged.
+                start_mutating_op(
+                    handler,  # type: ignore[arg-type]
+                    op_name,
+                    frame_req_id,
+                    args,
+                    workspace_root,
+                    locks,
+                    ws.send_str,
+                    op_registry,
+                )
             elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
                 break
     except ConnectionError:

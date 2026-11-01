@@ -727,16 +727,18 @@ async def state_read(
     paths: list[str] = args.get("paths") or []
     state_dir = pathlib.Path(workspace_root) / ".state"
 
-    result: dict[str, str | None] = {}
-    for rel_path in paths:
-        target = state_dir / rel_path
-        if target.exists() and target.is_file():
-            content = target.read_bytes()
-            result[rel_path] = base64.b64encode(content).decode()
-        else:
-            result[rel_path] = None
+    def _read() -> dict[str, str | None]:
+        result: dict[str, str | None] = {}
+        for rel_path in paths:
+            target = state_dir / rel_path
+            if target.exists() and target.is_file():
+                content = target.read_bytes()
+                result[rel_path] = base64.b64encode(content).decode()
+            else:
+                result[rel_path] = None
+        return result
 
-    return {"files": result}
+    return {"files": await asyncio.to_thread(_read)}  # off the loop (GI-10)
 
 
 async def state_history(
@@ -795,8 +797,8 @@ HANDLERS: dict[str, object] = {
 
 
 # ---------------------------------------------------------------------------
-# Mutating-op-as-task: keep the runtime message loop free while a writer parks
-# on a busy Tier-A lock (mirrors exec.start_exec).
+# Single-shot-op-as-task: keep the runtime message loop free while a writer
+# parks on a busy lock or a long op runs (mirrors exec.start_exec).
 # ---------------------------------------------------------------------------
 
 
@@ -806,9 +808,11 @@ class MutatingOpRegistry:
     ``write_file``/``append_line``/``delete`` acquire a Tier-A write lock and
     may PARK on a busy scope/path lock. The server spawns each as a tracked
     task (mirrors :class:`~primer_runtime.exec.ExecRegistry`) so a parked
-    writer never blocks the single runtime message loop - reads/list/stat/state
-    on the same connection stay serviceable. ``cancel_all`` is invoked on WS
-    close to tear down any op still waiting on a lock.
+    writer never blocks the single runtime message loop. Every other
+    single-shot op (reads, list, stat, the git state ops) runs the same way
+    since GI-10, so HEALTH never waits behind one. ``cancel_all`` is invoked on
+    WS close to tear down any op still in flight (a ``state_commit`` finishes
+    behind its shield).
     """
 
     def __init__(self) -> None:

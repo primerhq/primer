@@ -258,3 +258,26 @@ async def test_an_index_lock_older_than_the_timeout_is_removed_and_the_commit_re
     sha = (await ops.state_commit({"files": {"b.txt": _b64(b"2")}, "message": "second"}, root))["sha"]
     assert _files(tmp_path, sha) == ["b.txt"]
     assert not lock.exists()
+
+
+# ---------------------------------------------------------------------------
+# GI-10: HEALTH never waits behind a single-shot op on the same connection
+# ---------------------------------------------------------------------------
+
+
+async def test_health_answers_while_a_slow_op_runs_on_the_same_connection(runtime, monkeypatch) -> None:  # noqa: F811
+    connect, _root, _url = runtime
+    gate = asyncio.Event()
+    real = ops.HANDLERS["state_history"]
+
+    async def slow_history(args, root, locks=None):  # a long git op, a big read
+        await gate.wait()
+        return await real(args, root, locks)
+
+    monkeypatch.setitem(ops.HANDLERS, "state_history", slow_history)
+    conn = await connect()
+    rid = await conn.send("state_history", {"limit": 1})
+    assert (await conn.health(timeout=5))["ok"] is True
+    gate.set()
+    reply = await conn.reply(rid)
+    assert reply["ok"] is False and reply["error"]["code"] == "EINTERNAL"  # no repo yet: the op's own answer, unchanged
