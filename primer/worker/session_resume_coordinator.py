@@ -28,6 +28,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from primer.common.log import redact_credentials
 from primer.model.yield_ import YieldToWorker, wake_gate_id_of
 
 # Imported for its side effect: registers the ``_external`` resume hook.
@@ -360,7 +361,7 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
                     "is_error": True,
                     "reason": (
                         f"continuation resume failed: "
-                        f"{type(exc).__name__}: {exc}"
+                        f"{type(exc).__name__}: {redact_credentials(str(exc))}"
                     ),
                     "tool_name": parked.yielded.tool_name,
                 }),
@@ -459,7 +460,7 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
             id=parked.tool_call_id or "unknown",
             output=json.dumps({
                 "is_error": True,
-                "reason": f"resume failed: {type(exc).__name__}: {exc}",
+                "reason": f"resume failed: {type(exc).__name__}: {redact_credentials(str(exc))}",
                 "tool_name": tool_name,
             }),
             error=True,
