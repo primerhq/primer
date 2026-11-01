@@ -43,7 +43,9 @@ from primer.model.except_ import (
     PrimerError,
 )
 from primer.model.access import AccessLevel
-from primer.model.storage import OffsetPage
+from primer.model.agent import Agent
+from primer.model.storage import OffsetPage, Op, Predicate
+from primer.storage.q import Q
 from primer.model.yield_ import ToolContext
 from primer.toolset._collection_access import collection_for
 from primer.toolset._describe import make_tool
@@ -159,6 +161,7 @@ def build_collections_toolset(
         path_rewriter=rewriter,
     )
     colls = storage_provider.get_storage(Collection)
+    _memory_agents = storage_provider.get_storage(Agent)
     docs = storage_provider.get_storage(Document)
     content = storage_provider.get_content_store()
 
@@ -166,8 +169,7 @@ def build_collections_toolset(
         ctx: ToolContext | None, collection_id: str, need: AccessLevel = AccessLevel.READ,
     ) -> tuple[Collection | None, ToolCallResult | None]:
         return await collection_for(
-            colls, person_for_tool(ctx), collection_id, need, what=f"collection {collection_id!r}",
-        )
+            colls, person_for_tool(ctx), collection_id, need, what=f"collection {collection_id!r}", agents=_memory_agents)
 
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
 
@@ -177,6 +179,9 @@ def build_collections_toolset(
         rows: list[Collection] = []
         offset, page = 0, 200
         visible = visible_predicate(person_for_tool(ctx))
+        # An agent's memory collection is in no listing (it is reached by id, through its agent).
+        no_memory = Q(Collection).where_null("memory_of").build()
+        visible = no_memory if visible is None else Predicate(left=visible, op=Op.AND, right=no_memory)
         while True:
             window = OffsetPage(offset=offset, length=page)
             resp = await (colls.list(window) if visible is None else colls.find(visible, window))

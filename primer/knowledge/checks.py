@@ -24,7 +24,7 @@ from typing import Any
 
 from primer.common.entity_checks import EntityCheckError
 from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
-from primer.model.collection import Collection
+from primer.model.collection import MEMORY_COLLECTION_PREFIX, Collection
 from primer.model.except_ import ConflictError
 from primer.model.graph import Graph
 
@@ -42,8 +42,9 @@ def _is_valid_slug_id(value: str) -> bool:
 
 
 def is_reserved_collection_id(cid: str) -> bool:
-    """Whether ``cid`` is an id the platform keeps for its own collections (an ``_internal_`` prefix, or the platform wiki's id)."""
-    return cid.startswith(RESERVED_COLLECTION_ID_PREFIX) or cid == SYSTEM_COLLECTION_ID
+    """Whether ``cid`` is an id the platform keeps for its own collections (an ``_internal_`` prefix, an agent's ``mem-`` memory prefix, or the
+    platform wiki's id)."""
+    return cid.startswith((RESERVED_COLLECTION_ID_PREFIX, MEMORY_COLLECTION_PREFIX)) or cid == SYSTEM_COLLECTION_ID
 
 
 def check_collection_id(entity: Collection) -> None:
@@ -64,7 +65,8 @@ def check_collection_id(entity: Collection) -> None:
         raise EntityCheckError(
             "validation",
             f"{cid!r} is reserved for the platform: a collection id may not start with {RESERVED_COLLECTION_ID_PREFIX!r} (the internal "
-            f"collections) or be {SYSTEM_COLLECTION_ID!r} (the platform wiki); choose another id",
+            f"collections) or {MEMORY_COLLECTION_PREFIX!r} (an agent's memory), or be {SYSTEM_COLLECTION_ID!r} (the platform wiki); choose "
+            "another id",
             code=COLLECTION_ID_RESERVED,
             field="id",
         )
@@ -99,6 +101,21 @@ def check_collection_system_flag(entity: Collection, existing: Collection | None
             f"the system flag of collection {existing.id!r} cannot be changed through the API ({kept}; "
             "send the stored value, and note that leaving the field out means false)",
             code=SYSTEM_FLAG_PROTECTED,
+        )
+
+
+#: A client write that sets ``memory_of`` on create or changes it on update (403 / ``forbidden``).
+MEMORY_OF_PROTECTED = "memory_of_protected"
+
+
+def check_collection_memory_of(entity: Collection, existing: Collection | None = None) -> None:
+    """Refuse a client write that sets ``memory_of`` on create (``existing`` is ``None``) or changes it on update: only the platform makes a
+    memory collection."""
+    if (existing is None and entity.memory_of is not None) or (existing is not None and entity.memory_of != existing.memory_of):
+        raise EntityCheckError(
+            "forbidden",
+            "memory_of is set by the platform (an agent's memory collection) and cannot be set or changed through the API",
+            code=MEMORY_OF_PROTECTED,
         )
 
 

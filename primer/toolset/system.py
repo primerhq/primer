@@ -100,7 +100,9 @@ from primer.agent.invoke import (
 from primer.access.person import person_for_tool
 from primer.access.workspaces import workspace_level
 from primer.model.access import AccessLevel, LEVEL_RANK
+from primer.memory.collection import memory_access
 from primer.model.agent import Agent
+from primer.storage.q import Q
 from primer.model.model_profile import ModelProfile
 from primer.common.log import redact_credentials
 from primer.model.chat import Tool, ToolCallResult, ToolExample, ToolTurnCapReached, TurnStreamFailure
@@ -176,6 +178,7 @@ from primer.knowledge.checks import (
     check_collection_id,
     check_collection_search_unchanged,
     check_collection_search_use,
+    check_collection_memory_of,
     check_collection_system_flag,
     check_graph_id,
 )
@@ -535,12 +538,14 @@ def build_system_toolset(
     async def _collection_pre_create(entity: Collection, *, person: Any = None) -> None:
         check_collection_id(entity)
         check_collection_system_flag(entity)
+        check_collection_memory_of(entity)
         await check_collection_search_use(entity, storage_provider=storage_provider, person=person)
 
     _collection_pre_create.takes_person = True  # type: ignore[attr-defined]
 
     async def _collection_pre_update(entity: Collection, existing: Collection) -> None:
         check_collection_system_flag(entity, existing)
+        check_collection_memory_of(entity, existing)
         check_collection_search_unchanged(entity, existing)
 
     async def _graph_pre_create(entity: Graph, *, person: Any = None) -> None:
@@ -725,12 +730,12 @@ def build_system_toolset(
     from primer.toolset._collection_access import collection_for, readable_documents
 
     _collection_rows = storage_provider.get_storage(Collection)
+    _memory_agents = storage_provider.get_storage(Agent)
 
     async def _document_row_guard(row: Document, ctx: ToolContext | None, write: bool) -> Any:
         level = AccessLevel.FULL if write else AccessLevel.READ
         _, denied = await collection_for(
-            _collection_rows, person_for_tool(ctx), row.collection_id, level, what=f"Document {row.id!r}", dangling_ok=True,
-        )
+            _collection_rows, person_for_tool(ctx), row.collection_id, level, what=f"Document {row.id!r}", dangling_ok=True, agents=_memory_agents)
         return denied
 
     async def _document_list_filter(ctx: ToolContext | None) -> Any:
@@ -749,6 +754,16 @@ def build_system_toolset(
     async def _graph_thread_list_filter(ctx: ToolContext | None) -> Any:
         return await readable_parent_filter(_graph_rows, Graph, person_for_tool(ctx), "graph_id")
 
+    async def _collection_access_of(row: Collection, ctx: ToolContext | None, need: AccessLevel) -> Any:
+        """A memory collection answers to its agent's access and refuses any need above READ; every other collection to its own block."""
+        if not row.memory_of:
+            return row.access
+        _, denied = await collection_for(_collection_rows, person_for_tool(ctx), row.id, need, agents=_memory_agents)
+        return denied if denied is not None else await memory_access(_memory_agents, row)
+
+    # An agent's memory collection is in no listing, and the generic collection row doors send it through its agent's access.
+    hidden_by_label: dict[str, Any] = {"collection": (Q(Collection).where_null("memory_of").build(), _collection_access_of)}
+
     inherited_by_label: dict[str, Any] = {
         "document": (_document_row_guard, _document_list_filter),
         "graph_thread": (_graph_thread_row_guard, _graph_thread_list_filter),
@@ -756,6 +771,7 @@ def build_system_toolset(
     for label, plural, cls, on_c, on_u, on_d, role, owned in crud_specs:
         pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
         row_guard, list_filter = inherited_by_label.get(label, (None, None))
+        base_predicate, access_of = hidden_by_label.get(label, (None, None))
         registry.update(
             _crud_tools_for(
                 entity_label=label,
@@ -767,6 +783,8 @@ def build_system_toolset(
                 on_delete=on_d,
                 required_role=role,
                 owned=owned,
+                base_predicate=base_predicate,
+                access_of=access_of,
                 grantable=label in _GRANTABLE_LABELS,
                 guards=guards_by_label.get(label),
                 pre_create=pre_create,
