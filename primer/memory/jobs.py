@@ -19,7 +19,7 @@ from primer.int.claim import ClaimKind, Lease, ReleaseOutcome
 from primer.model.agent import Agent
 from primer.model.chat import Message, ToolCallPart
 from primer.model.except_ import ConflictError
-from primer.memory.reflect import ReflectionTransient
+from primer.memory.reflect import ReflectionTransient, new_turns, turn_starts
 from primer.model.memory import AgentMemory, MemoryJob
 
 logger = logging.getLogger(__name__)
@@ -207,17 +207,16 @@ def _until_next_utc_midnight(now: datetime) -> timedelta:
     return datetime.combine(_day(now) + timedelta(days=1), time.min, tzinfo=UTC) - now.astimezone(UTC)
 
 
-def _nothing_happened(messages: list[Message]) -> bool:
-    """No tool call and no user message after the first user message: a chat that taught nothing."""
-    start = next((i for i, m in enumerate(messages) if m.role == "user"), None)
-    if start is None:
-        return True
-    rest = messages[start + 1 :]
-    return not any(m.role == "user" or any(isinstance(p, ToolCallPart) for p in m.parts) for m in rest)
+def _nothing_happened(turns: list[Message]) -> bool:
+    """A reflected range with no tool call and a single turn input: a chat that taught nothing."""
+    return len(turn_starts(turns)) < 2 and not any(isinstance(p, ToolCallPart) for m in turns for p in m.parts)
 
 
 async def _trivial(deps: MemoryDeps, job: MemoryJob) -> str | None:
-    """Why the session is too small to learn from (the detail the skip event carries), or None when it is worth a model call."""
+    """Why the session is too small to learn from (the detail the skip event carries), or None when it is worth a model call.
+
+    The gate reads the whole range the reflection would read (turns ``reflected_turn + 1 .. target_turn``), not the whole log.
+    """
     if job.target_turn - job.reflected_turn < MIN_TURNS:
         return f"turns {job.reflected_turn + 1} to {job.target_turn}: fewer than {MIN_TURNS}"
     if deps.load_messages is None:
@@ -227,8 +226,12 @@ async def _trivial(deps: MemoryDeps, job: MemoryJob) -> str | None:
     except Exception:  # noqa: BLE001 - an unreadable log is the runner's to report, not a reason to skip
         logger.warning("memory job %s: could not read the session messages for the triviality gate", job.id, exc_info=True)
         return None
-    if messages is not None and _nothing_happened(messages):
-        return f"{len(messages)} messages and no tool call or second user message"
+    if messages is None:
+        return None
+    turns = new_turns(messages, job)
+    if _nothing_happened(turns):
+        roles = ",".join(m.role for m in messages)
+        return f"{len(turns)} of {len(messages)} messages in turns {job.reflected_turn + 1} to {job.target_turn} ({roles}), no tool call or second input"
     return None
 
 
