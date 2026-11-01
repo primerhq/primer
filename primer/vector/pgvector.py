@@ -776,6 +776,54 @@ class PgVectorStore(VectorStore):
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 
+    async def put_many(self, records: list[EmbeddingRecord]) -> None:
+        """One transaction and one ``executemany`` per collection (validated first, so a bad row writes nothing)."""
+        by_collection: dict[str, list[EmbeddingRecord]] = {}
+        for record in records:
+            by_collection.setdefault(record.collection_id, []).append(record)
+        for collection_id, batch in by_collection.items():
+            meta = await self._resolve(collection_id)
+            for record in batch:
+                if len(record.vector) != meta.dimensions:
+                    raise BadRequestError(
+                        f"vector dimensionality {len(record.vector)} does not match "
+                        f"collection {collection_id!r} dimensions={meta.dimensions}"
+                    )
+            sql = (
+                f'INSERT INTO "{self._schema}"."{meta.table_name}" '
+                f'(document_id, chunk_id, text, vector, meta) '
+                f'VALUES ($1, $2, $3, $4, $5::jsonb) '
+                f'ON CONFLICT (document_id, chunk_id) DO UPDATE SET '
+                f'text = EXCLUDED.text, vector = EXCLUDED.vector, meta = EXCLUDED.meta'
+            )
+            args = [
+                (
+                    r.document_id, r.chunk_id, r.text,
+                    HalfVector(r.vector) if meta.vector_type == "halfvec" else r.vector,
+                    json.dumps(r.meta),
+                )
+                for r in batch
+            ]
+            try:
+                async with self._provider.pool.acquire() as conn:
+                    async with conn.transaction():
+                        await conn.executemany(sql, args)
+            except Exception as exc:
+                raise self._wrap_db_error(exc) from exc
+
+    async def list_chunk_texts(
+        self, collection_id: str, document_id: str | None = None,
+    ) -> list[tuple[str, str, str, str | None]]:
+        meta = await self._resolve(collection_id)
+        where, args = ("", []) if document_id is None else (" WHERE document_id = $1", [document_id])
+        sql = f'SELECT document_id, chunk_id, text, meta::jsonb->>\'embedder\' AS embedder FROM "{self._schema}"."{meta.table_name}"{where} ORDER BY document_id, chunk_id'
+        try:
+            async with self._provider.pool.acquire() as conn:
+                rows = await conn.fetch(sql, *args)
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
+        return [(r["document_id"], r["chunk_id"], r["text"], r["embedder"]) for r in rows]
+
     async def search(
         self,
         collection_id: str,

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re as _re
+import time
 
 from primer.int.document_content import DocumentContentStore
 from primer.model.chat import TextPart
@@ -37,6 +38,71 @@ logger = logging.getLogger(__name__)
 # the previous ingester's default so user-collection ingestion and
 # the internal-collection catalog batch identically.
 _EMBED_BATCH_SIZE = 32
+
+# The width of an embedder's vectors, per (collection, embedder, model): every write to a collection used to spend an embedder call
+# asking. The key names the embedder, so a collection moved to another one asks again; the ttl bounds a provider whose width was edited
+# in place (M5).
+_DIMENSIONS_TTL_SECONDS = 600.0
+_dimensions: dict[tuple[str, str, str], tuple[float, int]] = {}
+
+
+def forget_dimensions(collection_id: str | None = None) -> None:
+    """Drop the cached embedder widths (of one collection, or all): call when a collection is recreated or its embedder is edited."""
+    if collection_id is None:
+        _dimensions.clear()
+        return
+    for key in [k for k in _dimensions if k[0] == collection_id]:
+        del _dimensions[key]
+
+
+def _dimensions_key(collection: Collection) -> tuple[str, str, str]:
+    embedder = collection.search.embedder  # type: ignore[union-attr]
+    return (collection.id, embedder.provider_id, embedder.model)
+
+
+async def _put_all(store, records) -> None:
+    """One write when the store offers it (``put_many``), else one ``put`` per record."""
+    put_many = getattr(store, "put_many", None)
+    if put_many is not None:
+        await put_many(records)
+        return
+    for record in records:
+        await store.put(record)
+
+
+def embedder_fingerprint(collection: Collection) -> str:
+    """Who embedded a chunk: the embedding provider and model of the collection. The documents are embedded as plain passages with no
+    per-collection prompt setting, so those two are all there is to tell one embedding from another. Stored in each chunk's meta."""
+    embedder = collection.search.embedder  # type: ignore[union-attr]
+    return f"{embedder.provider_id}|{embedder.model}"
+
+
+async def _stored_chunk_texts(
+    store, collection_id: str, document_id: str | None = None,
+) -> dict[str, dict[str, tuple[str, str | None]]]:
+    """``{document_id: {chunk_id: (text, embedder fingerprint)}}`` of what the index holds, without decoding vectors where the store can avoid
+    it. A chunk with no fingerprint (written before there was one) carries ``None``. A collection the store does not know reads as empty."""
+    out: dict[str, dict[str, tuple[str, str | None]]] = {}
+    try:
+        lister = getattr(store, "list_chunk_texts", None)
+        if lister is not None:
+            rows = await lister(collection_id, document_id)
+        elif document_id is not None:
+            rows = [(r.document_id, r.chunk_id, r.text, (r.meta or {}).get("embedder")) for r in await store.get(collection_id, document_id)]
+        else:
+            rows = [(r.document_id, r.chunk_id, r.text, (r.meta or {}).get("embedder")) for r in await store.search_by_meta(collection_id, {})]
+    except Exception:  # noqa: BLE001 - absent index reads as empty
+        return {}
+    for row in rows:
+        doc_id, chunk_id, text = row[:3]
+        out.setdefault(doc_id, {})[chunk_id] = (text, row[3] if len(row) > 3 else None)
+    return out
+
+
+def _is_current(stored: dict[str, tuple[str, str | None]] | None, chunks: list[str], fingerprint: str) -> bool:
+    """Whether the stored chunks are exactly these texts, embedded by this embedder. A chunk with no fingerprint is NOT current: it is
+    re-embedded once, the safe side when the model it came from is unknown."""
+    return stored == {str(i): (c, fingerprint) for i, c in enumerate(chunks)}
 
 
 def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
@@ -99,6 +165,7 @@ async def index_document(
     content_store: DocumentContentStore,
     dimensions: int | None = None,
     storage_provider=None,
+    force: bool = False,
 ) -> int:
     """Chunk, embed, and upsert ``document`` into its collection's vector
     store. Returns the number of chunks indexed. Re-indexing embeds the new
@@ -121,6 +188,9 @@ async def index_document(
 
     ``dimensions`` skips the per-document probe when the caller already
     knows the embedder's width (see :func:`probe_dimensions`).
+
+    A document whose stored chunks are the same texts, embedded by the same embedder (provider and model), is not re-embedded. ``force``
+    (an explicit reindex) never skips.
 
     On embedder/store failure it raises; the caller treats indexing as
     best-effort and swallows it.
@@ -154,7 +224,12 @@ async def index_document(
     # -- without wasting a full embedding pass on a batch that cannot be
     # stored. We register (or validate) the collection in the store now so
     # that a ConflictError (dim mismatch) surfaces here, not after work.
-    if dimensions is None:
+    probe_dim = dimensions
+    if probe_dim is None:
+        cached = _dimensions.get(_dimensions_key(collection))
+        if cached is not None and cached[0] > time.monotonic():
+            probe_dim = cached[1]
+    if probe_dim is None:
         probe_response = await embedder.embed(
             model=cfg.embedder.model,
             inputs=[TextPart(text="dimensionality probe")],
@@ -165,8 +240,7 @@ async def index_document(
                 f"(collection {collection.id!r})"
             )
         probe_dim = len(probe_response.embeddings[0].vector)
-    else:
-        probe_dim = dimensions
+        _dimensions[_dimensions_key(collection)] = (time.monotonic() + _DIMENSIONS_TTL_SECONDS, probe_dim)
     try:
         await store.create_collection(collection.id, dimensions=probe_dim)
     except ConflictError as exc:
@@ -186,6 +260,12 @@ async def index_document(
             collection_id=collection.id,
             cause=exc,
         ) from exc
+
+    # A document whose chunks are exactly what is stored has nothing to do (the rule ``index_documents`` applies): no embedding, no write.
+    # It must have been embedded by this collection's embedder too: after a model change the same text is stale (an explicit reindex never skips).
+    fingerprint = embedder_fingerprint(collection)
+    if chunks and not force and _is_current((await _stored_chunk_texts(store, collection.id, document.id)).get(document.id), chunks, fingerprint):
+        return len(chunks)
 
     # Embed FIRST, before touching the existing chunks. If the embedder
     # fails (transient error, missing key), we must not have already
@@ -224,7 +304,7 @@ async def index_document(
                     chunk_id=str(idx),
                     text=chunk,
                     vector=list(emb.vector),
-                    meta={"path": document.path},
+                    meta={"path": document.path, "embedder": fingerprint},
                 )
             )
 
@@ -253,8 +333,7 @@ async def index_document(
     await store.create_collection(
         collection.id, dimensions=len(records[0].vector)
     )
-    for record in records:
-        await store.put(record)
+    await _put_all(store, records)
 
     logger.info(
         "indexed document %s into collection %s (%d chunks)",
@@ -271,6 +350,7 @@ async def index_documents(
     semantic_search_registry,
     content_store: DocumentContentStore,
     storage_provider=None,
+    force: bool = False,
 ) -> int:
     """Index many documents in one pass.
 
@@ -300,6 +380,7 @@ async def index_documents(
         return 0
     await _refuse_unless_an_owner_may_use(storage_provider, collection)
     cfg = collection.search
+    fingerprint = embedder_fingerprint(collection)
     from primer.knowledge.splitter import split_text
 
     embedder = await provider_registry.get_embedder(cfg.embedder.provider_id)
@@ -309,14 +390,7 @@ async def index_documents(
 
     # What the index already holds, read once for the whole pass. An
     # unregistered collection means "nothing", which is the first run.
-    existing: dict[str, dict[str, str]] = {}
-    try:
-        for record in await store.search_by_meta(collection.id, {}):
-            existing.setdefault(record.document_id, {})[
-                record.chunk_id
-            ] = record.text
-    except Exception:  # noqa: BLE001 - absent index reads as empty
-        existing = {}
+    existing = await _stored_chunk_texts(store, collection.id)
 
     # (document, chunk_index, text) flattened across the documents that
     # actually need work.
@@ -328,8 +402,7 @@ async def index_documents(
             max_chars=cfg.chunking.max_chars,
             overlap=cfg.chunking.overlap,
         )
-        current = existing.get(doc.id, {})
-        if current == {str(i): c for i, c in enumerate(chunks)}:
+        if not force and _is_current(existing.get(doc.id, {}), chunks, fingerprint):
             continue
         stale.append(doc.id)
         flat.extend((doc.id, idx, chunk) for idx, chunk in enumerate(chunks))
@@ -385,7 +458,7 @@ async def index_documents(
                 chunk_id=str(idx),
                 text=chunk,
                 vector=list(emb.vector),
-                meta={"path": paths.get(doc_id, "")},
+                meta={"path": paths.get(doc_id, ""), "embedder": fingerprint},
             ))
 
     # Every vector is in hand: only now replace what is stored.
@@ -394,8 +467,7 @@ async def index_documents(
             await store.delete(collection.id, doc_id)
         except PrimerError:
             pass
-    for record in records:
-        await store.put(record)
+    await _put_all(store, records)
 
     logger.info(
         "indexed %d document(s) into collection %s (%d chunks)",

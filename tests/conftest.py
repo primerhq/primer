@@ -946,3 +946,13 @@ __all__ = [
     "_FakeLLM",
     "_InMemoryStorage",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _forget_embedder_dimensions():
+    """The indexing code caches an embedder's vector width per (collection, embedder, model); tests reuse those names with different widths."""
+    from primer.knowledge.indexing import forget_dimensions
+
+    forget_dimensions()
+    yield
+    forget_dimensions()
