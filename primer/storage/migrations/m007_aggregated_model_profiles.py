@@ -53,6 +53,7 @@ from typing import Any
 from pydantic import ConfigDict, Field
 
 from primer.int.storage_provider import StorageProvider
+from primer.storage.migrations._rows import iter_rows, read_all
 from primer.model.common import Identifiable
 from primer.model.model_profile import (
     FailoverClasses,
@@ -87,17 +88,9 @@ class LLMProvider(Identifiable):  # noqa: N801 - name selects the storage table
 
 
 async def _iter_rows(storage, model_cls):
-    """Page through every row of one table."""
-    offset = 0
-    while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE))
-        if not page.items:
-            return
-        for row in page.items:
-            yield row
-        if len(page.items) < _PAGE:
-            return
-        offset += _PAGE
+    """Page through every row of one table (keyset; see ``_rows``)."""
+    async for row in iter_rows(storage):
+        yield row
 
 
 class M007AggregatedModelProfiles:

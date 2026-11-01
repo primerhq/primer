@@ -93,7 +93,7 @@ class M008EmbeddingProviderRepair:
         rows: list[EmbeddingProvider] = []
         offset = 0
         while True:
-            page = await storage.list(OffsetPage(offset=offset, length=_PAGE))
+            page = await storage.list(OffsetPage(offset=offset, length=_PAGE, want_total=False))
             rows.extend(page.items)
             if len(page.items) < _PAGE:
                 break

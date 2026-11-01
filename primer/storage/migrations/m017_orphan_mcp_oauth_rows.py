@@ -27,6 +27,7 @@ from collections.abc import Callable
 from pydantic import ConfigDict
 
 from primer.int.storage_provider import StorageProvider
+from primer.storage.migrations._rows import iter_rows, read_all
 from primer.model.common import Identifiable
 from primer.model.except_ import NotFoundError
 from primer.model.storage import CursorPage
@@ -71,14 +72,7 @@ _OAUTH_TABLES: tuple[tuple[type[Identifiable], Callable[[Identifiable], object]]
 
 
 async def _all_rows(store) -> list[Identifiable]:
-    rows: list[Identifiable] = []
-    cursor: str | None = None
-    while True:
-        page = await store.list(CursorPage(cursor=cursor, length=_PAGE))
-        rows.extend(page.items)
-        cursor = page.next_cursor
-        if cursor is None:
-            return rows
+    return await read_all(store)
 
 
 class M017OrphanMcpOAuthRows:

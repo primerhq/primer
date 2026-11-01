@@ -53,7 +53,7 @@ class M013HnswEfSearchDefault:
         providers = sp.get_storage(SemanticSearchProvider)
         offset = 0
         while True:
-            page = await providers.list(OffsetPage(offset=offset, length=_PAGE))
+            page = await providers.list(OffsetPage(offset=offset, length=_PAGE, want_total=False))
             for row in page.items:
                 if not isinstance(row.config, dict):
                     continue
