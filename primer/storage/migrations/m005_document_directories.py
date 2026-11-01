@@ -45,11 +45,26 @@ class M005DocumentDirectories:
         content = sp.get_content_store()
         rows = [row async for row in _iter_rows(docs)]
 
-        by_path: dict[tuple[str, str], str] = {
-            (row.collection_id, row.path): row.id
+        # The paths some row hangs from. A row at one of them is only a usable parent if the content store resolves its path to it: a run
+        # that died between a directory's row and its content entry left a row the tree cannot see, and adopting it would give the children
+        # a parent that resolves to nothing (GR-12). Such an orphan is not adopted; it is deleted when the directory is rebuilt.
+        parent_paths = {
+            (row.collection_id, prefix)
             for row in rows
-            if row.collection_id and row.path and row.id
+            if row.collection_id and row.path
+            for prefix in self._ancestors(row.path)
         }
+        by_path: dict[tuple[str, str], str] = {}
+        orphans: dict[tuple[str, str], str] = {}
+        for row in rows:
+            if not (row.collection_id and row.path and row.id):
+                continue
+            key = (row.collection_id, row.path)
+            if key in parent_paths and not await self._resolves(content, row):
+                orphans[key] = row.id
+                continue
+            by_path[key] = row.id
+        rows = [row for row in rows if row.id not in set(orphans.values())]
 
         repaired = 0
         synthesised = 0
@@ -66,7 +81,7 @@ class M005DocumentDirectories:
             ):
                 continue  # already hangs from the right row
             parent_id, made = await self._ensure_chain(
-                docs, content, row.collection_id, parent_path, by_path,
+                docs, content, row.collection_id, parent_path, by_path, orphans,
             )
             synthesised += made
             await docs.update(
@@ -83,9 +98,25 @@ class M005DocumentDirectories:
                 "reparented nested documents", extra={"count": repaired},
             )
 
+    @staticmethod
+    async def _resolves(content, row) -> bool:
+        """Whether the content store resolves ``row``'s path to ``row``. A store that cannot answer (an install from before the content table
+        existed) cannot show an orphan either, so the row is kept, as this migration always did."""
+        try:
+            return await content.resolve_id(row.collection_id, row.path) == row.id
+        except Exception:  # noqa: BLE001
+            return True
+
+    @staticmethod
+    def _ancestors(path: str) -> list[str]:
+        """Every proper prefix of ``path`` that names a directory (``a/b/c.md`` -> ``a``, ``a/b``)."""
+        parts = path.split("/")[:-1]
+        return ["/".join(parts[: i + 1]) for i in range(len(parts))]
+
     async def _ensure_chain(
         self, docs, content, collection_id: str, parent_path: str,
         by_path: dict[tuple[str, str], str],
+        orphans: dict[tuple[str, str], str] | None = None,
     ) -> tuple[str | None, int]:
         """Return the id owning ``parent_path``, building the chain if absent."""
         made = 0
@@ -98,6 +129,9 @@ class M005DocumentDirectories:
                 parent_id = existing
                 continue
             node_id = LiveDocument(collection_id="_", slug="x", path="x").id
+            orphan_id = (orphans or {}).pop((collection_id, walked), None)
+            if orphan_id is not None:
+                await docs.delete(orphan_id)  # the half-built row of a crashed run, before the real one is written
             try:
                 await docs.create(
                     Document(
