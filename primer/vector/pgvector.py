@@ -279,6 +279,9 @@ class PgVectorStoreProvider(VectorStoreProvider):
             # Re-register the vector codec on the pooled connection
             # (the extension may not have existed when init ran).
             await register_vector(conn)
+            # The connections the pool opened before the extension existed could not register the codec, so they skipped the search GUC too and would
+            # search at pgvector's default for their whole life: set it here, then recycle them (GI-29).
+            await self._apply_search_guc(conn)
             await conn.execute(
                 f'CREATE TABLE IF NOT EXISTS "{self._schema}".primer_collections ('
                 'collection_id text PRIMARY KEY, '
@@ -298,6 +301,10 @@ class PgVectorStoreProvider(VectorStoreProvider):
                 "ADD COLUMN IF NOT EXISTS vector_type text NOT NULL "
                 "DEFAULT 'vector'"
             )
+
+        expire = getattr(self._pool, "expire_connections", None)
+        if expire is not None:
+            await expire()
 
         logger.info(
             "%s initialised (schema=%r, host=%s:%d, exts=%s)",
@@ -322,6 +329,14 @@ class PgVectorStoreProvider(VectorStoreProvider):
             # ``initialize`` body re-registers explicitly.
             return
         await self._apply_search_guc(conn)
+
+    def candidate_list_sql(self, k: int) -> str | None:
+        """The statement that lets one query return ``k`` rows from the HNSW index (``SET LOCAL``, so it ends with the query's transaction), or ``None``
+        when ``k`` is within the configured ``hnsw.ef_search``. Capped at pgvector's 1000. A provider on another index type overrides this."""
+        configured = int(self._config.hnsw_ef_search)
+        if k <= configured:
+            return None
+        return f"SET LOCAL hnsw.ef_search = {min(int(k), 1000)}"
 
     async def _apply_search_guc(self, conn: asyncpg.Connection) -> None:
         """Set the query-time index search-list size GUC for this session.
@@ -676,25 +691,7 @@ class PgVectorStore(VectorStore):
                     collection_id,
                 )
                 if existing is not None:
-                    if (
-                        int(existing["dimensions"]) != dimensions
-                        or existing["distance"] != distance
-                    ):
-                        raise ConflictError(
-                            f"collection {collection_id!r} already exists with "
-                            f"dimensions={existing['dimensions']}, "
-                            f"distance={existing['distance']!r}; "
-                            f"requested dimensions={dimensions}, "
-                            f"distance={distance!r}"
-                        )
-                    # The names the catalogue STORED, not freshly computed ones: a collection made under an older naming keeps its table.
-                    self._collections[collection_id] = _CollectionMeta(
-                        table_name=existing["table_name"],
-                        index_name=existing["index_name"],
-                        dimensions=dimensions,
-                        distance=distance,
-                        vector_type=existing["vector_type"] or "vector",
-                    )
+                    self._adopt(collection_id, existing, dimensions, distance)
                     return
 
                 use_halfvec = bool(self._provider.config.use_halfvec)
@@ -728,24 +725,37 @@ class PgVectorStore(VectorStore):
                     opclass=opclass,
                 )
 
-                async with conn.transaction():
-                    await conn.execute(ddl_table)
-                    await conn.execute(ddl_doc_index)
-                    await conn.execute(ddl_meta_index)
-                    await conn.execute(ddl_ann)
-                    await conn.execute(
-                        f'INSERT INTO "{self._schema}".primer_collections '
-                        f'(collection_id, table_name, index_name, '
-                        f'index_kind, dimensions, distance, vector_type) '
-                        f'VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                try:
+                    async with conn.transaction():
+                        await conn.execute(ddl_table)
+                        await conn.execute(ddl_doc_index)
+                        await conn.execute(ddl_meta_index)
+                        await conn.execute(ddl_ann)
+                        await conn.execute(
+                            f'INSERT INTO "{self._schema}".primer_collections '
+                            f'(collection_id, table_name, index_name, '
+                            f'index_kind, dimensions, distance, vector_type) '
+                            f'VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                            collection_id,
+                            table_name,
+                            index_name,
+                            self._index_kind(),
+                            dimensions,
+                            distance,
+                            vector_type,
+                        )
+                except (asyncpg.UniqueViolationError, asyncpg.DuplicateTableError):
+                    # A peer creating the same new collection committed first (the concurrent-DDL race, or the catalogue's primary key): read its row
+                    # and use it. Only a row of ANOTHER shape is a conflict; with no row behind the violation it is a real failure (GI-27).
+                    peer = await conn.fetchrow(
+                        f'SELECT table_name, index_name, dimensions, distance, vector_type FROM '
+                        f'"{self._schema}".primer_collections WHERE collection_id = $1',
                         collection_id,
-                        table_name,
-                        index_name,
-                        self._index_kind(),
-                        dimensions,
-                        distance,
-                        vector_type,
                     )
+                    if peer is None:
+                        raise
+                    self._adopt(collection_id, peer, dimensions, distance)
+                    return
         except (ConflictError, BadRequestError):
             raise
         except Exception as exc:
@@ -769,6 +779,25 @@ class PgVectorStore(VectorStore):
             distance,
             self._index_kind(),
             table_name,
+        )
+
+    def _adopt(self, collection_id: str, row: Any, dimensions: int, distance: str) -> None:
+        """Use the catalogue row of a collection that already exists: ``ConflictError`` when it is another shape than the one asked for."""
+        if int(row["dimensions"]) != dimensions or row["distance"] != distance:
+            raise ConflictError(
+                f"collection {collection_id!r} already exists with "
+                f"dimensions={row['dimensions']}, "
+                f"distance={row['distance']!r}; "
+                f"requested dimensions={dimensions}, "
+                f"distance={distance!r}"
+            )
+        # The names the catalogue STORED, not freshly computed ones: a collection made under an older naming keeps its table.
+        self._collections[collection_id] = _CollectionMeta(
+            table_name=row["table_name"],
+            index_name=row["index_name"],
+            dimensions=dimensions,
+            distance=distance,
+            vector_type=row["vector_type"] or "vector",
         )
 
     async def _resolve(self, collection_id: str) -> _CollectionMeta:
@@ -926,7 +955,14 @@ class PgVectorStore(VectorStore):
 
         try:
             async with self._provider.pool.acquire() as conn:
-                rows = await conn.fetch(sql, qvector, k)
+                guc = self._provider.candidate_list_sql(k)
+                if guc is None:
+                    rows = await conn.fetch(sql, qvector, k)
+                else:
+                    # HNSW returns at most hnsw.ef_search rows: a search for more raises it for this transaction only (GI-29).
+                    async with conn.transaction():
+                        await conn.execute(guc)
+                        rows = await conn.fetch(sql, qvector, k)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 

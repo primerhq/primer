@@ -36,6 +36,7 @@ from pydantic import BaseModel, ValidationError
 from primer.api.deps import get_semantic_search_registry, get_semantic_search_storage
 from primer.api.errors import common_responses
 from primer.api.registries.provider_registry import RESERVED_SSP_IDS
+from primer.model.providers.vector import ssp_save_violation
 from primer.api.routers._probe_text import draft_error, probe_error
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.api.routers.providers import _form_field
@@ -54,8 +55,21 @@ from primer.model.provider import (
 # ---------------------------------------------------------------------------
 
 
+def _refuse_out_of_range(entity) -> None:
+    """422 for an HNSW setting pgvector refuses (GI-22): saved, it would fail every vector operation of the provider."""
+    sentence = ssp_save_violation(entity)
+    if sentence is not None:
+        raise HTTPException(status_code=422, detail={"code": "hnsw_out_of_range", "message": sentence})
+
+
+async def _pre_update(entity, existing, request: Request) -> None:
+    await preserve_masked_secrets_on_update(entity, existing, request)
+    _refuse_out_of_range(entity)
+
+
 async def _reject_reserved_ssp_create(entity, request: Request) -> None:
-    """Reject POST /v1/ssp with a reserved SSP id (409)."""
+    """Reject POST /v1/ssp with a reserved SSP id (409), and an out-of-range HNSW setting (422)."""
+    _refuse_out_of_range(entity)
     if entity.id in RESERVED_SSP_IDS:
         raise HTTPException(
             status_code=409,
@@ -283,7 +297,7 @@ semantic_search_router = make_crud_router(
     on_update=_on_update,
     on_delete=_on_update,
     on_pre_create=_reject_reserved_ssp_create,
-    on_pre_update=preserve_masked_secrets_on_update,
+    on_pre_update=_pre_update,
     on_pre_delete_id=_reject_reserved_ssp_delete,
 )
 

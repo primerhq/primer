@@ -68,6 +68,10 @@ class PgVectorScaleStoreProvider(PgVectorStoreProvider):
         else:
             await super()._apply_search_guc(conn)
 
+    def candidate_list_sql(self, k: int) -> str | None:
+        """The per-query candidate-list raise is an HNSW matter: a DiskANN index keeps its configured ``search_list_size``."""
+        return None if self._config.enable_diskann else super().candidate_list_sql(k)
+
     def _make_store(self) -> PgVectorStore:
         return PgVectorScaleStore(provider=self)
 
