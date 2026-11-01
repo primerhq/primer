@@ -86,7 +86,7 @@ GOLDEN: dict[str, tuple[int, str, str]] = {
     'profile_member_becomes_aggregate': (
         422,
         'application/problem+json',
-        '{"type":"/errors/validation-error","title":"Validation Error","status":422,"detail":"profile \'wire-prov-agg--model-1\' is a member of aggregate \'agg-inner\' and cannot become kind=\'aggregated\' itself (nested aggregation is not supported); remove it from that aggregate\'s members first","instance":"/v1/model_profiles/wire-prov-agg--model-1","extensions":{"error":"member_of_another_aggregate","field":"kind","message":"profile \'wire-prov-agg--model-1\' is a member of aggregate \'agg-inner\' and cannot become kind=\'aggregated\' itself (nested aggregation is not supported); remove it from that aggregate\'s members first","request_id":"req-<id>"}}',
+        '{"type":"/errors/validation-error","title":"Validation Error","status":422,"detail":"profile \'wire-prov-agg--model-1\' is kind=\'single\' and cannot become kind=\'aggregated\': a profile\'s kind is fixed when it is created; create a new profile instead","instance":"/v1/model_profiles/wire-prov-agg--model-1","extensions":{"error":"profile_kind_immutable","field":"kind","message":"profile \'wire-prov-agg--model-1\' is kind=\'single\' and cannot become kind=\'aggregated\': a profile\'s kind is fixed when it is created; create a new profile instead","request_id":"req-<id>"}}',
     ),
     'profile_missing_provider_create': (
         422,

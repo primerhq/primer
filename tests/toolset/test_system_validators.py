@@ -443,17 +443,21 @@ class TestModelProfile:
         assert await sp.get_storage(ModelProfile).get("agg-outer") is None
 
     @pytest.mark.asyncio
-    async def test_a_member_cannot_become_an_aggregate_while_another_aggregate_lists_it(self, world) -> None:
+    async def test_a_profiles_kind_cannot_change_in_either_direction(self, world) -> None:
+        """GX-16: kind is fixed at creation (this also closes the race of an aggregate gaining a member that becomes an aggregate)."""
         sp, toolset, _ = world
         await self._seed_singles(sp, "mp-1", "mp-2", "mp-3")
         await sp.get_storage(ModelProfile).create(_aggregate("agg-1", ["mp-1", "mp-2"]))
 
-        is_error, answer = await _call(
-            toolset, "update_model_profile", id="mp-1", entity=_aggregate("mp-1", ["mp-2", "mp-3"]).model_dump(mode="json"),
+        to_aggregate, a1 = await _call(
+            toolset, "update_model_profile", id="mp-3", entity=_aggregate("mp-3", ["mp-1", "mp-2"]).model_dump(mode="json"),
         )
+        to_single, a2 = await _call(toolset, "update_model_profile", id="agg-1", entity=_profile("agg-1").model_dump(mode="json"))
 
-        assert is_error and answer["type"] == "validation-error" and "agg-1" in answer["message"]
-        assert (await sp.get_storage(ModelProfile).get("mp-1")).kind == "single"
+        for is_error, answer in ((to_aggregate, a1), (to_single, a2)):
+            assert is_error and answer["type"] == "validation-error" and "kind" in answer["message"] and "fixed" in answer["message"]
+        assert (await sp.get_storage(ModelProfile).get("mp-3")).kind == "single"
+        assert (await sp.get_storage(ModelProfile).get("agg-1")).kind == "aggregated"
 
     @pytest.mark.asyncio
     async def test_valid_single_and_aggregated_profiles_are_created_and_updated_as_before(self, world) -> None:

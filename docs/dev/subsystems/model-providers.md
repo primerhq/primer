@@ -160,8 +160,11 @@ same codes):
   profile.
 - `nested_aggregation` (field `members`): a member is itself
   `kind="aggregated"`.
-- `member_of_another_aggregate` (field `kind`, on update): the row becomes
-  an aggregate while another aggregate still lists it as a member.
+- `profile_kind_immutable` (field `kind`, on update): the update changes the
+  stored profile's kind, single to aggregated or back. A profile's kind is
+  fixed at creation (GX-16); create a new profile instead. Both write doors run
+  `check_profile_on_update`, which also means a member (always single) can never
+  become an aggregate.
 - `provider_not_found` (field `provider_id`): a single profile's provider
   names no stored LLMProvider.
 
@@ -244,7 +247,7 @@ duplicated in the output; this is the documented trade-off of the mode.
 
 **No nesting.** A member that resolves to another aggregated profile (or
 to itself) is refused at write time by the router and the system tools
-(`nested_aggregation`, `member_of_another_aggregate`, above) and refused
+(`nested_aggregation`, and `profile_kind_immutable` for a member that would become an aggregate, above) and refused
 again at resolve time with `BadRequestError`.
 
 ### Model profiles
