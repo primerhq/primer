@@ -53,7 +53,7 @@ from primer.model.chat import (
     _GraphNodeEvent,
     _LlmCall,
 )
-from primer.model.except_ import WorkspaceUnreachableError
+from primer.model.except_ import NotFoundError, WorkspaceUnreachableError
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
 from primer.observability import metrics as _metrics
 from primer.session import write_clock
@@ -79,6 +79,9 @@ _FLUSH_BYTES = 16 * 1024
 
 # 100 ms flush age threshold (seconds)
 _FLUSH_AGE_S = 0.100
+#: Seqs a turn's writer leases from the row at a time, and how often it retries a lease the row moved under it.
+_SEQ_LEASE_BLOCK = 64
+_SEQ_LEASE_ATTEMPTS = 5
 
 # How long a request may stay unanswered, from the moment it is SENT (the backend has taken the session's messages_lock; see
 # ``primer.session.write_clock``), before a flush stops waiting for its batch and abandons it. A write that takes this long means the
@@ -195,14 +198,22 @@ class WorkspaceMessageWriter:
             that append to a session with existing history (e.g.
             ``reset_session`` writing an invocation divider) pass the
             row's current ``last_seq`` so seqs stay monotonic.
+        lease: The session storage, for the writer of a running turn. Records written while the turn runs by anyone
+            else (an advisory record, an attachment steer) reserve their seq from the row; without a lease they read a
+            ``last_seq`` the turn has not advanced and repeat one of its seqs (ticket 01a16c3a N6). With one, the writer
+            moves the row's ``last_seq`` ahead of the seqs it numbers, ``_SEQ_LEASE_BLOCK`` at a time, and gives the
+            unused rest back in :meth:`settle`.
     """
 
     def __init__(
-        self, *, workspace_io: WorkspaceIO, session_id: str, start_seq: int = 0,
+        self, *, workspace_io: WorkspaceIO, session_id: str, start_seq: int = 0, lease: Any | None = None,
     ) -> None:
         self._io = workspace_io
         self._session_id = session_id
         self._seq: int = start_seq
+        # A turn's writer passes the session storage: it then holds a LEASE on the row's ``last_seq`` (see ``_next_seq``).
+        self._lease = lease
+        self._leased_to: int = start_seq
 
         # Buffer state
         self._buffer: list[bytes] = []
@@ -231,6 +242,52 @@ class WorkspaceMessageWriter:
         """
         return self._seq
 
+    async def _next_seq(self) -> int:
+        """The seq of the next record this writer numbers, leasing a new block from the row when the last one is used up.
+
+        The lease is one guarded ``patch_if`` of ``last_seq`` alone, fenced on the value just read, so a writer that moved the
+        row first (a steer, an advisory record) is read again and the block starts past its seq: the writer's counter jumps
+        over it, which is the only time this writer's seqs are not contiguous. A row that is gone leaves the writer on its own counter.
+        """
+        if self._lease is not None and self._seq >= self._leased_to:
+            for _ in range(_SEQ_LEASE_ATTEMPTS):
+                row = await self._lease.get(self._session_id)
+                if row is None:
+                    break
+                top = max(row.last_seq, self._seq)
+                try:
+                    written = await self._lease.patch_if(
+                        self._session_id, {"last_seq": top + _SEQ_LEASE_BLOCK}, where={"last_seq": [row.last_seq]},
+                    )
+                except NotFoundError:
+                    break
+                if written is not None:
+                    self._seq, self._leased_to = top, top + _SEQ_LEASE_BLOCK
+                    break
+            else:
+                logger.warning("session %s: no seq lease could be taken; numbering from the writer's own counter", self._session_id)
+        return self._seq + 1
+
+    async def settle(self) -> None:
+        """Give back the part of the lease this writer did not use: the row's ``last_seq`` goes down to the writer's last seq.
+
+        Only when nobody took a seq past the lease (the row still holds exactly the lease's end); otherwise the row is only
+        ever raised to this writer's last seq, never lowered under a seq another writer took.
+        """
+        if self._lease is None:
+            return
+        from primer.session.seq_reservation import advance_last_seq
+
+        if self._leased_to > self._seq:
+            try:
+                await self._lease.patch_if(
+                    self._session_id, {"last_seq": self._seq}, where={"last_seq": [self._leased_to]},
+                )
+            except NotFoundError:
+                return
+            self._leased_to = self._seq
+        await advance_last_seq(self._lease, self._session_id, self._seq)
+
     async def reserve_seq(self) -> int:
         """Flush what is buffered, then hand out the next seq to a record somebody else writes.
 
@@ -240,7 +297,7 @@ class WorkspaceMessageWriter:
         lower seqs). Flushing first keeps the file in seq order; advancing the counter keeps it unique.
         """
         await self._do_flush()
-        self._seq += 1
+        self._seq = await self._next_seq()
         return self._seq
 
     async def append(self, record: SessionMessageRecord) -> int:
@@ -254,7 +311,7 @@ class WorkspaceMessageWriter:
         self._raise_if_broken()
 
         # Assign writer-controlled seq
-        self._seq += 1
+        self._seq = await self._next_seq()
         assigned_seq = self._seq
 
         # Rebuild with the correct seq

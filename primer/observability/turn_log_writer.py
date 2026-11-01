@@ -164,6 +164,43 @@ def _log_unexpected(error_id: str, exc: BaseException) -> None:
 
 AppendLine = Callable[[bytes], Awaitable[None]]
 ReadExisting = Callable[[], Awaitable[bytes]]
+#: ``read_tail(max_bytes)``: the last ``max_bytes`` of the file and whether that is the whole file, or ``None`` when the backend cannot
+#: read a tail. Raises like :data:`ReadExisting` (``NotFoundError`` for an absent file).
+ReadTail = Callable[[int], Awaitable["tuple[bytes, bool] | None"]]
+#: How much of the end of the log a new writer reads to find the last seq (a line longer than this falls back to the full scan).
+_TAIL_BYTES = 64 * 1024
+
+
+def _max_seq(raw: bytes) -> int:
+    """The highest ``seq`` of any parsable line of ``raw`` (0 when none)."""
+    max_seq = 0
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            seq = int(json.loads(line).get("seq", 0))
+        except Exception:  # noqa: BLE001 -- bogus line
+            continue
+        max_seq = max(max_seq, seq)
+    return max_seq
+
+
+def _last_seq(tail: bytes) -> int | None:
+    """The ``seq`` of the last parsable line of a tail that starts mid-line, or ``None`` when no line of it parses.
+
+    Appends are ordered, so the last line carries the highest seq. The first segment may be cut and is never trusted.
+    """
+    lines = tail.decode("utf-8", errors="replace").splitlines()[1:]
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return int(json.loads(line).get("seq", 0))
+        except Exception:  # noqa: BLE001 -- bogus or partial line
+            continue
+    return None
 
 
 class TurnLogWriter(ABC):
@@ -265,9 +302,11 @@ class WorkspaceTurnLogWriter(TurnLogWriter):
         *,
         append_line: AppendLine,
         read_existing: ReadExisting | None = None,
+        read_tail: ReadTail | None = None,
     ) -> None:
         self._append = append_line
         self._read = read_existing
+        self._read_tail = read_tail
         self._seq = 0
         self._closed = False
         self._bootstrapped = read_existing is None
@@ -283,22 +322,23 @@ class WorkspaceTurnLogWriter(TurnLogWriter):
             if self._bootstrapped:
                 return
             assert self._read is not None  # _bootstrapped is True otherwise
-            try:
-                raw = await self._read()
-            except NotFoundError:
-                raw = b""
-            max_seq = 0
-            for line in raw.decode("utf-8", errors="replace").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
+            seeded: int | None = None
+            if self._read_tail is not None:
                 try:
-                    obj = json.loads(line)
-                    seq = int(obj.get("seq", 0))
-                except Exception:  # noqa: BLE001 -- bogus line
-                    continue
-                if seq > max_seq:
-                    max_seq = seq
+                    got = await self._read_tail(_TAIL_BYTES)
+                except NotFoundError:
+                    got = (b"", True)
+                if got is not None:
+                    tail, whole = got
+                    # Parsed off the loop: a tail is small, but a loop that serves other sessions never parses log lines.
+                    seeded = await asyncio.to_thread(_max_seq if whole else _last_seq, tail)
+            if seeded is None:
+                try:
+                    raw = await self._read()
+                except NotFoundError:
+                    raw = b""
+                seeded = await asyncio.to_thread(_max_seq, raw)
+            max_seq = seeded
             self._seq = max_seq
             self._bootstrapped = True
 

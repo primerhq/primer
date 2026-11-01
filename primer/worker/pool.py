@@ -1007,9 +1007,13 @@ class WorkerPool:
             async def _read_existing() -> bytes:
                 return await io_shim.read_state_file(workspace_id, rel)
 
+            async def _read_tail(max_bytes: int):
+                return await io_shim.read_state_tail(workspace_id, rel, max_bytes)
+
             return WorkspaceTurnLogWriter(
                 append_line=_append,
                 read_existing=_read_existing,
+                read_tail=_read_tail,
             )
 
         deps = SessionDispatchDeps(

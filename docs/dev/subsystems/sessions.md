@@ -251,17 +251,14 @@ Four rules make that safe:
   Known and ticketed, not covered here: a wake that carries per-turn tools or
   attachment parts (the queue cannot hold them), and `restart_session`'s wake
   (no receipt), still write their USER_INPUT whatever the turn's state, and one
-  that lands WHILE a turn runs reserves its seq from a row the running turn has
-  not yet advanced (the turn's writer reserves nothing per record), so it can
-  repeat a seq of that turn; a deferred message waits for the sweep (up to
+  that lands WHILE a turn runs reserves its seq from the row, which the turn's
+  writer keeps ahead of its own seqs (a lease, see below); a deferred message waits for the sweep (up to
   30 s) when the turn that would drain it already ran its drain; a realize whose
   slot append landed and whose log write failed appends the message to the slot
   again at the next realize; the dispatch safety net flips idle without writing
   `last_seq` first, and a cancellation inside the streaming phase's `finally`
   can still leave a row `running`. From the second review round, ticketed under
-  01a16c3a: an advisory record (a PAUSE_SUPERSEDED note, a cap drop's record)
-  reserved while a turn runs can take a seq the running turn also writes (N6);
-  a turn that exits ENDED with its flag still `running` and its lease held, and
+  01a16c3a: a turn that exits ENDED with its flag still `running` and its lease held, and
   never drains, leaves a message queued behind its row (N7); a wake without a
   receipt writes `claimable` over another wake's `arming` (N8); N10 and N11 of
   that review; and the remaining whole-row writers of the session row
@@ -782,3 +779,13 @@ calls: `tool_results` in the body resolves pending external calls
 (409-atomic), message content cancels them with a synthetic result, and
 `external_tools` registers the next turn's defs; see
 [external-tools](external-tools.md).
+
+### Seq lease of a running turn (ticket 01a16c3a N6)
+
+The writer of a running turn (`WorkspaceMessageWriter(..., lease=session_storage)`, built by `run_one_session_turn`) holds a
+lease on the row's `last_seq`: before it numbers a record past the end of its block it takes the next 64 seqs with one
+field-scoped `patch_if` fenced on `last_seq`, so any other writer that reserves from the row meanwhile (`reserve_next_seq`: a
+PAUSE_SUPERSEDED record, a cap drop's record; `reserve_seq` for an attachment steer) takes a seq past the lease and cannot repeat
+one of the turn's. A reservation that moves the row between two blocks makes the writer's counter jump over it. The turn's exit
+(`_persist_last_seq`) calls `settle()`: the row goes back to the writer's last seq when nobody took a seq past the lease, so a
+turn with no concurrent writer numbers and leaves the row exactly as before; a crash leaves a gap, which readers tolerate.

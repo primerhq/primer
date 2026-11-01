@@ -387,6 +387,20 @@ class LocalWorkspace(Workspace):
 
         return await asyncio.to_thread(_tail)
 
+    async def read_file_tail(self, path: str, max_bytes: int) -> tuple[bytes, bool]:
+        """The last ``max_bytes`` of a file and whether that is the whole file."""
+        target = self._resolve_path(path)
+        if not await asyncio.to_thread(target.is_file):
+            raise NotFoundError(f"{path!r} not found")
+
+        def _tail() -> tuple[bytes, bool]:
+            with target.open("rb") as handle:
+                size = handle.seek(0, 2)
+                handle.seek(max(0, size - max_bytes))
+                return handle.read(), size <= max_bytes
+
+        return await asyncio.to_thread(_tail)
+
     async def download_archive(
         self,
         paths: list[str] | None = None,
