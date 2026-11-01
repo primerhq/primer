@@ -667,11 +667,19 @@ function SS_sendUserMessage(store, text, clientId, attachments) {
 
 // --- refcount / dispose (spec section 4.4) -------------------------------
 
-// refs==0 does NOT clear accumulated state (background sessions keep
-// accumulating); it only stops the active flush + subscription work. The
-// hub retains the store's connection; the store keeps its records.
+// Once nothing displays a session (refs at zero), its accumulated records and
+// live parts are freed after a grace, so reopening a tab within a minute does
+// not refetch and a re-mount inside it cancels the free (lead ruling on UI-H1).
+// The status, the optimistic leg and the high-water stay: the pulse dot and
+// the tap cursor still work.
+var SS_FREE_AFTER_MS = 60000;
+
 function SS_retain(store) {
   store.refs += 1;
+  if (store._freeTimer != null) {
+    clearTimeout(store._freeTimer);
+    store._freeTimer = null;
+  }
   return store;
 }
 
@@ -679,10 +687,24 @@ function SS_dispose(store) {
   store.refs -= 1;
   if (store.refs <= 0) {
     store.refs = 0;
-    // Stop the pending flush; keep the accumulated state.
     store._flushScheduled = false;
+    if (store._freeTimer == null && typeof setTimeout === "function") {
+      store._freeTimer = setTimeout(function () {
+        store._freeTimer = null;
+        if (store.refs === 0) SS_freeRecords(store);
+      }, SS_FREE_AFTER_MS);
+    }
   }
   return store;
+}
+
+function SS_freeRecords(store) {
+  store._hw = SS_highWater(store);
+  store.records = {};
+  store.recordsBySeq = [];
+  store.parts = {};
+  store.legacyMessages = [];
+  store._snap.transcript = null;
 }
 
 // --- cursor (moved from session-adapter.jsx SA_encodeCursor) ------------
@@ -706,9 +728,10 @@ function SS_encodeCursor(sid, seq) {
 // after its high-water and merges anything the tap missed (guarded so a
 // reconnect + a poll tick cannot thrash the endpoint).
 function SS_highWater(store) {
-  if (store.recordsBySeq.length === 0) return 0;
   var last = store.recordsBySeq[store.recordsBySeq.length - 1];
-  return (last && typeof last.seq === "number") ? last.seq : 0;
+  var seq = (last && typeof last.seq === "number") ? last.seq : 0;
+  // The high-water a free kept (SS_freeRecords), so a freed store still resumes where it was.
+  return Math.max(seq, store._hw || 0);
 }
 
 function SS_catchUp(store) {
