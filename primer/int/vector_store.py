@@ -96,6 +96,21 @@ class VectorStore(ABC):
         needed.
         """
 
+    async def put_many(self, records: list[EmbeddingRecord]) -> None:
+        """Insert or replace many rows. The default is a loop over :meth:`put`; backends override it with one write (pgvector: one
+        transaction and one statement; Lance: one table version rather than one per chunk, KN-15)."""
+        for record in records:
+            await self.put(record)
+
+    async def list_chunk_texts(self, collection_id: str, document_id: str | None = None) -> list[tuple[str, str, str]]:
+        """``(document_id, chunk_id, text)`` of every stored chunk (of one document when given), WITHOUT the vectors or meta. For comparing
+        what is stored with what a document would produce. The default reads whole records; backends override it with a projection."""
+        if document_id is None:
+            records = await self.search_by_meta(collection_id, {})
+        else:
+            records = await self.get(collection_id, document_id)
+        return [(r.document_id, r.chunk_id, r.text) for r in records]
+
     @abstractmethod
     async def search(
         self,

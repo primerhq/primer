@@ -566,6 +566,59 @@ class LanceVectorStore(VectorStore):
                     distance_metric=cat["distance"],
                 )
 
+    async def put_many(self, records: list[EmbeddingRecord]) -> None:
+        """One ``merge_insert`` per collection: one table version for the whole batch, not one per chunk (KN-15)."""
+        by_collection: dict[str, list[EmbeddingRecord]] = {}
+        for record in records:
+            by_collection.setdefault(record.collection_id, []).append(record)
+        for collection_id, batch in by_collection.items():
+            table = await self._open_table(collection_id)
+            cat = await self._provider._catalogue_get(collection_id)
+            assert cat is not None  # _open_table would have raised
+            expected_dim = int(cat["dimensions"])
+            rows = []
+            for record in batch:
+                if len(record.vector) != expected_dim:
+                    raise BadRequestError(
+                        f"vector length {len(record.vector)} does not match "
+                        f"collection {collection_id!r} dimensions={expected_dim}"
+                    )
+                rows.append({
+                    "document_id": record.document_id,
+                    "chunk_id": record.chunk_id,
+                    "text": record.text,
+                    "vector": [float(x) for x in record.vector],
+                    "meta": json.dumps(record.meta or {}, sort_keys=True),
+                })
+            try:
+                await (
+                    table.merge_insert(["document_id", "chunk_id"])
+                    .when_matched_update_all()
+                    .when_not_matched_insert_all()
+                    .execute(rows)
+                )
+            except Exception as exc:
+                raise ProviderError(f"LanceDB put_many failed for {collection_id}: {exc}", cause=exc) from exc
+            if not cat.get("indexed", False):
+                try:
+                    row_count = await table.count_rows()
+                except Exception:
+                    row_count = 0
+                if row_count >= int(self._provider.config.index_min_rows):
+                    await self._build_index(table=table, collection_id=collection_id, distance_metric=cat["distance"])
+
+    async def list_chunk_texts(self, collection_id: str, document_id: str | None = None) -> list[tuple[str, str, str]]:
+        table = await self._open_table(collection_id)
+        query = table.query().select(["document_id", "chunk_id", "text"])
+        if document_id is not None:
+            query = query.where(f"document_id = '{_escape_sql_string(document_id)}'")
+        try:
+            rows = await query.to_list()
+        except Exception as exc:
+            raise ProviderError(f"LanceDB list_chunk_texts failed in {collection_id}: {exc}", cause=exc) from exc
+        rows.sort(key=lambda r: (r["document_id"], r["chunk_id"]))
+        return [(r["document_id"], r["chunk_id"], r["text"]) for r in rows]
+
     async def get(
         self,
         collection_id: str,
