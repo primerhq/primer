@@ -179,8 +179,9 @@ async def _wake(sp, yielded: Yielded, *, session_id: str, interaction: dict[str,
     return envelope
 
 
-def _result_event(yielded: Yielded, envelope: dict[str, Any]) -> dict[str, Any]:
+async def _result_event(yielded: Yielded, envelope: dict[str, Any]) -> dict[str, Any]:
     out = get_resume_hook("wait_for_event")(yielded.resume_metadata, envelope, None)
+    out = await out if hasattr(out, "__await__") else out        # the hook is async since it removes a timed-out wait's subscription
     assert not out.is_error, out.output
     return json.loads(out.output)["event"]
 
@@ -235,7 +236,7 @@ async def test_a_non_admin_wait_on_its_workspace_gets_another_sessions_canvas_ev
         assert not set(INPUT) & set(envelope["payload"]), f"the wake carried the input: {envelope['payload']}"
         assert envelope["payload"]["element"] == INTERACTIONS[interaction]["element"] and envelope["payload"]["by"] == "owner"
         assert envelope["payload"].get("name") == INTERACTIONS[interaction].get("name"), "the Html emit name is kept"
-        assert not set(INPUT) & set(_result_event(yielded, envelope)["payload"]), "the tool result carried the input"
+        assert not set(INPUT) & set((await _result_event(yielded, envelope))["payload"]), "the tool result carried the input"
 
 
 async def test_a_non_admin_wait_on_its_own_session_is_stripped_too(sp) -> None:
@@ -262,7 +263,7 @@ async def test_an_admin_wait_gets_no_input_either(sp, interaction: str) -> None:
         envelope = await _wake(sp, yielded, session_id=OTHER, interaction=INTERACTIONS[interaction])
 
         assert not set(INPUT) & set(envelope["payload"]), f"the admin's wake carried the input: {envelope['payload']}"
-        event = _result_event(yielded, envelope)
+        event = await _result_event(yielded, envelope)
         assert not set(INPUT) & set(event["payload"]) and ENTERED_TEXT[interaction] not in json.dumps(event)
         assert event["payload"]["element"] == INTERACTIONS[interaction]["element"]
 
