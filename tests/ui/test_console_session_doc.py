@@ -1480,7 +1480,11 @@ def test_rewind_candidates_match_check_rewind_target_via_mini_racer():
 
 def test_file_doc_keeps_the_etag_discipline():
     assert "412" in FDOCS and "nv-file-conflict" in FDOCS
-    assert re.search(r"fileWrite\(con\.wid, path, draft, force \? null : etag\)",
+    # The body that goes out is the draft captured when the save starts
+    # (UI-M2: nothing between capture and call), with the etag except on a
+    # forced overwrite.
+    assert "var sent = draft;" in FDOCS
+    assert re.search(r"fileWrite\(con\.wid, path, sent, force \? null : etag\)",
                      FDOCS)
     assert "NV_FILE_EDIT_MAX_BYTES" in FDOCS
 
