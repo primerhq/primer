@@ -225,3 +225,52 @@ def test_the_frozen_views_select_the_live_tables(model):
     assert getattr(m017, model.__name__).__name__ == model.__name__
     assert m017.Toolset.__name__ == Toolset.__name__
     assert "toolset_id" in McpOAuthPendingSignIn.model_fields, "the pending row names its toolset in toolset_id"
+
+
+# -- golden characterization (PERF-T16) ---------------------------------------------------------------------------------------------------
+
+from primer.model.except_ import NotFoundError  # noqa: E402
+from primer.storage.migrations._rows import read_all  # noqa: E402
+from primer.storage.migrations.m017_orphan_mcp_oauth_rows import _OAUTH_TABLES, M017OrphanMcpOAuthRows  # noqa: E402
+from primer.storage.migrations.m017_orphan_mcp_oauth_rows import McpOAuthClient as ClientView  # noqa: E402
+from primer.storage.migrations.m017_orphan_mcp_oauth_rows import McpOAuthPendingSignIn as PendingView  # noqa: E402
+from primer.storage.migrations.m017_orphan_mcp_oauth_rows import McpOAuthTokenSet as TokenView  # noqa: E402
+from primer.storage.migrations.m017_orphan_mcp_oauth_rows import Toolset as ToolsetView  # noqa: E402
+from tests.storage._migration_golden import assert_golden, bulk, insert_raw  # noqa: E402
+
+
+async def _old_apply(sp) -> None:
+    """Migration 17 as it was before PERF-T16, frozen: read each table whole, then delete the rows whose toolset is gone."""
+    toolsets = sp.get_storage(ToolsetView)
+    for view, owner in _OAUTH_TABLES:
+        store = sp.get_storage(view)
+        for row in await read_all(store):
+            toolset_id = owner(row)
+            if not isinstance(toolset_id, str) or not toolset_id:
+                continue
+            if await toolsets.get(toolset_id) is not None:
+                continue
+            try:
+                await store.delete(row.id)
+            except NotFoundError:
+                continue
+
+
+async def _golden_seed(sp) -> None:
+    # Every odd bulk toolset is gone: its token, client and pending sign-in are deleted while the step pages through them.
+    await insert_raw(sp, ToolsetView, {"t1": {"kind": "mcp"}, "t2": {}, **{f"ts-{i:03d}": {} for i in range(0, 450, 2)}})
+    await insert_raw(sp, TokenView, {"t1": {"sealed": "x"}, "t-gone": {"sealed": "y", "n": 1.5}, **bulk("ts-", 450, lambda i: {"v": i})})
+    await insert_raw(sp, ClientView, {"t2": {"client_id": "c"}, "t-gone": {}, **bulk("ts-", 450, lambda i: {})})
+    await insert_raw(sp, PendingView, {
+        "p1": {"toolset_id": "t1"},
+        "p2": {"toolset_id": "t-gone"},
+        "p3": {},
+        "p4": {"toolset_id": ""},
+        "p5": {"toolset_id": None},
+        **bulk("pb", 450, lambda i: {"toolset_id": f"ts-{i:03d}"}),
+    })
+
+
+async def test_golden_rows_match_the_old_implementation_and_a_second_run_changes_nothing(tmp_path: Path) -> None:
+    views = (TokenView, ClientView, PendingView, ToolsetView)
+    await assert_golden(tmp_path, _golden_seed, views, _old_apply, M017OrphanMcpOAuthRows().apply)
