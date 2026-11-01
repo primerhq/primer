@@ -212,7 +212,7 @@ async def _mark_reflected(deps: Any, job: MemoryJob) -> None:
     await deps.sp.get_storage(MemoryJob).patch_if(job.id, {"reflected_turn": job.target_turn}, where={"agent_id": [job.agent_id]})
 
 
-async def _resolve(deps: Any, agent: Agent) -> tuple[Any, Any] | None:
+async def resolve_agent_llm(deps: Any, agent: Agent) -> tuple[Any, Any] | None:
     from primer.model_profile.resolver import resolve_llm
 
     try:
@@ -224,7 +224,7 @@ async def _resolve(deps: Any, agent: Agent) -> tuple[Any, Any] | None:
 
 async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory) -> ReflectionReport:
     """Reflect on the session's new turns and apply the deltas. The budget is counted by the caller."""
-    resolved = await _resolve(deps, agent)
+    resolved = await resolve_agent_llm(deps, agent)
     if resolved is None:
         return await _skip(deps, agent, job, "profile_unavailable")
     llm, model = resolved
@@ -257,6 +257,7 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
 
     ref = (session.turn_person or session.initiated_by) if session else None
     person = person_from_ref(ref)
+    trigger_run = bool(ref is not None and ref.type == "trigger")
     needs_approval = settings.promotion == "approve" or (settings.teachers == "owner" and level_of(person, agent.access) != AccessLevel.OWNER)
     source = {"session_id": job.session_id, "from_turn": job.reflected_turn + 1, "to_turn": job.target_turn}
     names = await known_names(deps.sp)
@@ -271,6 +272,7 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
             if slug in used:
                 done = await deps.store.credit(
                     agent.id, delta.name, delta.verdict, run_succeeded=output.run_succeeded, trial=slug == trial, at=deps.now(),
+                    trigger_run=trigger_run,
                 )
         elif personal_data_hits(_texts(delta), known_names=names, provider=provider):
             done = None
@@ -315,4 +317,4 @@ def session_message_loader(sp: Any, read_log: Callable[[str, str], Awaitable[byt
     return load
 
 
-__all__ = ["DEFAULT_REFLECTION_PROMPT", "ReflectionReport", "ReflectionTransient", "reflect", "session_message_loader", "used_entries"]
+__all__ = ["DEFAULT_REFLECTION_PROMPT", "ReflectionReport", "ReflectionTransient", "reflect", "resolve_agent_llm", "session_message_loader", "used_entries"]
