@@ -376,7 +376,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
 
     # An agent whose memory is on always has the two collection tools that read it, listed by the owner or not (agent memory). A session run
     # only: the graph and invoke paths build their agents elsewhere and are untouched.
-    from primer.memory.runtime import memory_enabled, memory_prompt_parts, with_memory_tools
+    from primer.memory.runtime import memory_enabled, memory_lookup_for, memory_prompt_parts, with_memory_tools
 
     memory_on = pool._storage is not None and await memory_enabled(pool._storage, agent)
     if memory_on:
@@ -449,6 +449,14 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     memory_parts, memory_index = (
         await memory_prompt_parts(pool._storage, agent, session, context_length=llm_model.context_length) if memory_on else ([], "")
     )
+    # The opt-in per-turn lookup (agent memory ``auto_inject``): None unless the owner turned it on.
+    memory_lookup = (
+        await memory_lookup_for(
+            sp=pool._storage, provider_registry=pool._provider_registry, semantic_search_registry=pool._semantic_search_registry,
+            recorder=_pool_event_recorder(pool), agent=agent, session=session,
+        )
+        if memory_on else None
+    )
 
     tool_manager = ToolExecutionManager.for_workspace(
         toolset_providers=toolset_providers,
@@ -504,6 +512,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         workspace_instructions=workspace_instructions,
         memory_parts=memory_parts,
         memory_index=memory_index,
+        memory_lookup=memory_lookup,
     )
     return _TurnDriver(executor)
 

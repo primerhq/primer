@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,7 +24,6 @@ from primer.memory.scrub import known_names, personal_data_hits
 from primer.model.access import AccessLevel
 from primer.model.agent import Agent
 from primer.model.chat import (
-    ExtendedPart,
     Message,
     TextPart,
     ToolCallPart,
@@ -50,7 +49,6 @@ _CHARS_PER_TOKEN = 4
 #: Related entry bodies sent with the transcript, at most.
 RELATED_ENTRIES = 5
 _CLIP = 500
-_NOTES_KIND = "memory_notes"
 
 
 
@@ -83,11 +81,11 @@ def _search_paths(output: str) -> list[str]:
     return [h["path"] for h in hits if isinstance(h, dict) and isinstance(h.get("path"), str)]
 
 
-def used_entries(messages: list[Message], collection_id: str) -> tuple[set[str], str | None]:
+def used_entries(messages: list[Message], collection_id: str, lookups: Iterable[dict[str, Any]] = ()) -> tuple[set[str], str | None]:
     """``(names the run used, the trial candidate's name)``.
 
-    Used means a ``collections__search`` hit or a successful ``collections__read_document`` on this collection, or an entry the injected notes
-    message (an ``ExtendedPart`` of kind ``memory_notes``, carrying ``paths`` and ``trial``) put in front of the model. Nothing else counts.
+    Used means a ``collections__search`` hit or a successful ``collections__read_document`` on this collection, or an entry a ``memory.lookup``
+    event of the run shows was put in front of the model (``lookups`` are the payloads: ``paths`` and ``trial``). Nothing else counts.
     """
     calls: dict[str, ToolCallPart] = {}
     names: set[str] = set()
@@ -101,16 +99,33 @@ def used_entries(messages: list[Message], collection_id: str) -> tuple[set[str],
                 call = calls[part.id]
                 paths = _search_paths(part.output) if call.name == "collections__search" else [str(call.arguments.get("path", ""))]
                 names.update(n for n in map(_entry_name, paths) if n)
-            elif isinstance(part, ExtendedPart) and getattr(part.extended, "type", None) == _NOTES_KIND:
-                found = [n for n in map(_entry_name, getattr(part.extended, "paths", [])) if n]
-                names.update(found)
-                if getattr(part.extended, "trial", None):
-                    trial = _entry_name(part.extended.trial) or part.extended.trial
-                    names.add(trial)
+    for lookup in lookups:
+        names.update(n for n in map(_entry_name, lookup.get("paths") or []) if n)
+        if lookup.get("trial"):
+            trial = _entry_name(lookup["trial"]) or lookup["trial"]
+            names.add(trial)
     return names, trial
 
 
 # --- the input ---------------------------------------------------------------------------------------------------------------------------------
+
+
+async def _lookups(deps: Any, agent: Agent, job: MemoryJob) -> list[dict[str, Any]]:
+    """The ``memory.lookup`` payloads of this session within the turns being reflected on (``reflected_turn < turn <= target_turn``)."""
+    if not job.session_id:
+        return []
+    events = deps.sp.get_event_store()
+    out: list[dict[str, Any]] = []
+    after = 0
+    while True:
+        page = await events.read_after(after, limit=200, event_type_prefix="memory.lookup", entity_kind="agent", entity_id=agent.id)
+        for event in page:
+            payload = event.payload or {}
+            if event.session_id == job.session_id and job.reflected_turn < int(payload.get("turn", 0)) <= job.target_turn:
+                out.append(payload)
+        if len(page) < 200:
+            return out
+        after = page[-1].id
 
 
 def _clip(text: str, limit: int = _CLIP) -> str:
@@ -236,7 +251,7 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
         await _mark_reflected(deps, job)
         return await _skip(deps, agent, job, "no_new_turns")
     collection_id = memory_collection_id(agent.id)
-    used, trial = used_entries(messages, collection_id)
+    used, trial = used_entries(messages, collection_id, await _lookups(deps, agent, job))
     session = await deps.sp.get_storage(WorkspaceSession).get(job.session_id) if job.session_id else None
     user_message = await _build_input(deps, agent, settings, session, turns, used)
     try:
