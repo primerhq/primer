@@ -1,0 +1,119 @@
+{
+ "git": [
+  {
+   "files": [
+    "sessions/<sid>/agent.json",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "<sid>: attach"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: hello"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: assistant turn"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: done"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: steer: also check Y"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: saw the steer"
+  }
+ ],
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c230adf86cf69bcf"
+    ]
+   ],
+   "role": "user",
+   "text": "start"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "467032e6aca22292"
+    ]
+   ],
+   "role": "assistant",
+   "text": "working"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "21dfa4b8c763c999"
+    ]
+   ],
+   "role": "assistant",
+   "text": "done"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "f41f567ce9be7ff8"
+    ]
+   ],
+   "role": "user",
+   "text": "steer: also check Y"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "0a64890913aa474c"
+    ]
+   ],
+   "role": "assistant",
+   "text": "saw the steer"
+  }
+ ],
+ "max_event_log_seq": 0,
+ "messages_jsonl": {
+  "bytes": 380,
+  "lines": [
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"start\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"working\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"done\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"steer: also check Y\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"saw the steer\"}]}"
+  ],
+  "sha": "9ae52e89e2b72e7f"
+ },
+ "pending": []
+}
