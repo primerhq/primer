@@ -4,7 +4,7 @@ Before this step a toolset had ONE token row, stored under the toolset id, used 
 belongs to one person, stored under ``token_key(toolset, user)`` and naming both in ``toolset_id`` / ``user_id``; a client-credentials sign-in stays
 the shared row under the bare toolset id. Each token row that names no ``toolset_id`` yet (its id is then the toolset id):
 
-* a browser row moves to its heir: the user whose id is its ``connected_by``, else the ENABLED admin whose username it is (the admin who connected
+* a browser row is COPIED to its heir (and the bare row stays as the shared copy, stamped, so an auth-disabled install that once had users keeps its sign-ins): the user whose id is its ``connected_by``, else the ENABLED admin whose username it is (the admin who connected
   it; a name now held by a plain user, or by a disabled admin, does not count: review finding 3), else the first enabled admin (the enabled admin
   ``User`` with the oldest ``created_at``). Not the toolset's owner: the token is an upstream account, and handing it to someone who never held it
   would be an escalation through a credential. The copy keeps every stored field (the sealed tokens as their ciphertext, the version, the lease);
@@ -16,7 +16,7 @@ Every pending sign-in is dropped (they last ten minutes, and the old ones name n
 What the step reads is frozen here: the three table names (each view's class name selects its table) and the key function. The views keep every
 stored field (``extra="allow"``), so a row the live models may reject is still read and copied whole; no sealed value is opened or logged. Every row
 is read before any is written. A row that already names its toolset is done, so a second run changes nothing; a run that died after writing the
-heir's copy and before deleting the bare row finishes the delete and leaves the copy as it is.
+heir's copy and before stamping the bare row finishes the stamp and leaves the copy as it is.
 """
 
 from __future__ import annotations
@@ -111,10 +111,9 @@ class M029McpOAuthPerUser:
                 await tokens.create(row.model_copy(update={"id": _token_key(row.id, heir), "toolset_id": row.id, "user_id": heir}))
             except ConflictError:
                 pass                                    # an earlier run wrote the copy and died before the delete
-            try:
-                await tokens.delete(row.id)
-            except NotFoundError:
-                pass
+            # The bare id stays, stamped as the shared row: an auth-disabled install that once had users acts as the system person, which reads
+            # only that row, and would otherwise find every OAuth toolset signed out (GR-14). The heir's copy is the person's own sign-in.
+            await tokens.update(row.model_copy(update={"toolset_id": row.id, "user_id": None}))
             moved += 1
         dropped = 0
         for row in pending_rows:

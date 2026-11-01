@@ -108,7 +108,11 @@ async def test_connected_by_user_wins_and_unknown_username_goes_to_the_first_adm
         token_key("gh", "u-root"): _moved(before["gh"], token_key("gh", "u-root"), "gh", "u-root"),
         token_key("nb", "u-root"): _moved(before["nb"], token_key("nb", "u-root"), "nb", "u-root"),
         "cc": _moved(before["cc"], "cc", "cc", None),
-    }, "a browser row moves to its heir with its tokens as stored; client credentials stay the shared row"
+        # GR-14: the bare id stays a shared copy (stamped), which an auth-disabled install's system person still reads
+        "kb": _moved(before["kb"], "kb", "kb", None),
+        "gh": _moved(before["gh"], "gh", "gh", None),
+        "nb": _moved(before["nb"], "nb", "nb", None),
+    }, "a browser row is copied to its heir with its tokens as stored; the bare row stays as the shared copy; client credentials stay shared"
 
 
 async def test_no_users_leaves_the_row_under_the_bare_id(sp):
@@ -145,8 +149,8 @@ async def test_second_run_changes_nothing(sp):
     assert {view.__name__: await _rows(sp, view) for view in (TOKENS, PENDING, McpOAuthClient)} == once
 
 
-async def test_a_run_that_died_after_the_copy_finishes_the_move(sp):
-    """The heir's row was written and the bare row not yet deleted: the next run deletes the bare row and keeps the copy as it is."""
+async def test_a_run_that_died_after_the_copy_finishes_the_stamp(sp):
+    """The heir's row was written and the bare row not yet stamped: the next run stamps the bare row and keeps the copy as it is."""
     await _an_install(sp)
     before = await _rows(sp, TOKENS)
     key = token_key("kb", "u-alice")
@@ -155,7 +159,7 @@ async def test_a_run_that_died_after_the_copy_finishes_the_move(sp):
     await run_migrations(sp, is_fresh_install=False)
 
     after = await _rows(sp, TOKENS)
-    assert "kb" not in after and after[key] == _moved(before["kb"], key, "kb", "u-alice")
+    assert after["kb"] == _moved(before["kb"], "kb", "kb", None) and after[key] == _moved(before["kb"], key, "kb", "u-alice")
 
 
 def test_it_is_registered_as_version_29():
@@ -192,3 +196,13 @@ async def test_no_enabled_admin_leaves_the_row(sp):
     await run_migrations(sp, is_fresh_install=False)
 
     assert {key: (row["toolset_id"], row["user_id"]) for key, row in (await _rows(sp, TOKENS)).items()} == {"kb": ("kb", None)}
+
+
+async def test_the_bare_id_shared_row_survives_the_move(sp):
+    """GR-14: an install that once had auth on (so users exist) and now has it off acts as the system person, which reads only the bare-id row."""
+    await _an_install(sp)
+    await run_migrations(sp, is_fresh_install=False)
+    after = await _rows(sp, TOKENS)
+    for toolset_id in ("kb", "gh", "nb"):
+        assert after[toolset_id]["toolset_id"] == toolset_id and after[toolset_id]["user_id"] is None
+        assert after[toolset_id]["access_token_enc"] == "v1:sealed-access"
