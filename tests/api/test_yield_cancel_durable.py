@@ -1,9 +1,9 @@
-"""The yield cancel is a durable wake that refuses a decided gate (Part 3 Task 109, GS-6).
+"""The yield cancel is a durable wake that never overrides a decided gate (Part 3 Task 109, GS-6).
 
 Characterization (pinned before the change, with the bus listener running): a cancel of a pending ask_user or approval answers
 202 and the session resumes with today's cancelled payload. Then, inverted from the coverage-gap probe: with NO listener the
-cancel still flips the row, a cancel of a gate that already holds a decision answers 409 ``already_decided``, and an
-``_external`` audit row is resolved only after the flip landed.
+cancel still flips the row. A cancel of a park that already holds a decision (answered, approved, resumable) answers 202, as the
+API always has, and changes nothing: the park keeps its decision and an ``_external`` audit row is not written.
 """
 
 from __future__ import annotations
@@ -105,39 +105,51 @@ async def test_a_cancel_lands_without_a_listener(fake_storage_provider, fake_pro
     assert _cancelled(row.parked_state["resume_event_payload"]) == {"__yield_cancelled__": True, "reason": "skip"}
 
 
-async def test_a_cancel_after_an_approve_answers_409(fake_storage_provider, fake_provider_registry) -> None:
+async def test_a_cancel_after_an_approve_answers_202_and_changes_nothing(fake_storage_provider, fake_provider_registry) -> None:
     responses, store = await _run(
         fake_storage_provider, fake_provider_registry, [_parked("s-1", "_approval")],
         [("/v1/sessions/s-1/tool_approval/respond", {"tool_call_id": "tc-1", "decision": "approved"}),
          ("/v1/sessions/s-1/yields/tc-1/cancel", {"reason": "skip"})],
         listener=False,
     )
-    assert [r.status_code for r in responses] == [202, 409], [r.text for r in responses]
-    assert responses[1].json()["extensions"]["code"] == "already_decided"
-    assert (await store.get("s-1")).parked_state["resume_event_payload"]["decision"] == "approved"
+    assert [r.status_code for r in responses] == [202, 202], [r.text for r in responses]
+    row = await store.get("s-1")
+    assert row.parked_status == "resumable"
+    assert row.parked_state["resume_event_payload"]["decision"] == "approved"
 
 
-async def test_a_cancel_after_an_answer_answers_409(fake_storage_provider, fake_provider_registry) -> None:
+async def test_a_cancel_after_an_answer_answers_202_and_changes_nothing(fake_storage_provider, fake_provider_registry) -> None:
     responses, store = await _run(
         fake_storage_provider, fake_provider_registry, [_parked("s-1", "ask_user")],
         [("/v1/sessions/s-1/ask_user/respond", {"tool_call_id": "tc-1", "response": "bob"}),
          ("/v1/sessions/s-1/yields/tc-1/cancel", {"reason": "skip"})],
         listener=False,
     )
-    assert [r.status_code for r in responses] == [202, 409], [r.text for r in responses]
-    assert (await store.get("s-1")).parked_state["resume_event_payload"]["response"] == "bob"
+    assert [r.status_code for r in responses] == [202, 202], [r.text for r in responses]
+    row = await store.get("s-1")
+    assert row.parked_status == "resumable"
+    assert row.parked_state["resume_event_payload"]["response"] == "bob"
 
 
-async def test_an_external_audit_row_is_resolved_only_after_the_flip_lands(fake_storage_provider, fake_provider_registry) -> None:
+async def test_a_cancel_of_an_already_resumable_park_answers_202_and_leaves_park_and_row_unchanged(
+    fake_storage_provider, fake_provider_registry,
+) -> None:
+    """Mirrors e2e T0801: the park is ALREADY ``resumable`` (decided, waiting for the worker) when the cancel arrives. The cancel
+    answers 202 with no double flip: the park keeps its decision and the external call's audit row stays as it was."""
     sess = _parked("s-1", "_external", meta={"external_call_row_id": "etool-1"})
-    sess.parked_status = "resumable"           # the results already landed: the cancel's flip cannot
-    sess.parked_state["resume_event_payload"] = {"results": ["done"]}
+    sess.parked_status = "resumable"
+    sess.parked_state["resume_event_payload"] = {"result": "done", "is_error": False}
     await fake_storage_provider.get_storage(ExternalToolCall).create(ExternalToolCall(
         id="etool-1", session_id="s-1", tool_call_id="tc-1", tool_name="t", arguments={}, created_at=datetime.now(UTC),
     ))
-    responses, _ = await _run(
+    responses, store = await _run(
         fake_storage_provider, fake_provider_registry, [sess],
-        [("/v1/sessions/s-1/yields/tc-1/cancel", {"reason": "skip"})], listener=False,
+        [("/v1/sessions/s-1/yields/tc-1/cancel", {"reason": "post-resumable cancel"})], listener=False,
     )
-    assert [r.status_code for r in responses] == [409], responses[0].text
-    assert (await fake_storage_provider.get_storage(ExternalToolCall).get("etool-1")).status == "pending"
+    assert [r.status_code for r in responses] == [202], responses[0].text
+    assert responses[0].json() == {"status": "accepted"}
+    row = await store.get("s-1")
+    assert row.parked_status == "resumable"
+    assert row.parked_state["resume_event_payload"] == {"result": "done", "is_error": False}
+    call = await fake_storage_provider.get_storage(ExternalToolCall).get("etool-1")
+    assert (call.status, call.result) == ("pending", None)
