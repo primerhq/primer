@@ -463,7 +463,7 @@ function NV_Rail(props) {
       <div className="nv-rail-inbox" data-testid="nv-rail-inbox">
         <div className="nv-rail-section-head">
           <span>Inbox — needs you</span>
-          <span className="nv-rail-count">{inboxItems.length}</span>
+          <span className="nv-rail-count" title={SH_attentionTotal(inboxRes.data) > inboxItems.length ? "Showing the newest " + inboxItems.length : undefined}>{SH_attentionTotal(inboxRes.data)}</span>
           <div style={{ flex: 1 }} />
           <button type="button" className="nv-rail-iconbtn" title="Create session"
             data-verb="session.create"

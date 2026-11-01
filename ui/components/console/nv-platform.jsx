@@ -1145,7 +1145,7 @@ function NV_ApprovalsAudit() {
       if (sid) setNudges(function (prev) { return Object.assign({}, prev, { [sid]: (prev[sid] || 0) + 1 }); });
     });
   });
-  var records = window.primerApi.useResource(
+  var records = PR_usePagedResource(
     "nv-plat:approval-records",
     function (signal) { return SH_api.approvalRecords(signal); },
     { pollMs: 5000 }

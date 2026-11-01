@@ -493,3 +493,10 @@ A form that PUTs or PATCHes a row sends only what the operator changed, laid ove
 - The cross-workspace attention aggregate (`/yields/pending`) is read through one hook, `SH_useAttention` (`ui/components/shell/sh-api.jsx`), under the key `nv-rail-inbox`; the rail, both phone tabs and both System panels share it, with the per-workspace fallback for a server that 404s.
 - The approvals audit reads every parked session (`PR_fetchAllFind`, polled with `PR_pagedPollMs`), polls each session's pending record at a rate that stretches with the count, and refetches a session's record on its `yielded` or `resumed` tap frame.
 - The agent Sessions panel reads one `limit=10` page and takes its count from `total`. The agents and graphs lists run their per-row reads through `PR_mapLimit` (at most 4 in flight).
+
+## Inbox totals, phone Files errors, token fan-out, tool picker (T132)
+
+- The Inbox heading, the phone tab label and the rail count show the server's `total` (`SH_attentionTotal`), with a "Showing the newest N of T" note when the aggregate's newest 100 are fewer. The decisions audit reads every page of `/tool_approval/records` (`PR_fetchAllPages` with `lengthParam: "length"`).
+- A failed read on the phone Files tab (tree, turn commits, an opened file) shows the server's words with a Retry (`NV_MobileReadError`), only while nothing has loaded.
+- The admin API-keys page reads at most 4 users' keys at once (`PR_mapLimit`).
+- The tool picker labels selected tools of an unavailable toolset "unavailable for now" and keeps "no longer exposed" for tools their toolset really dropped (`TP_splitSelected`).

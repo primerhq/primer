@@ -283,10 +283,11 @@ var SH_api = {
       null, { signal: signal });
   },
 
+  // Every decision, every page of 200 (the route pages with offset and length; GU-8 read only the first page and counted that).
   approvalRecords: function (signal) {
-    return window.primerApi.apiFetch(
-      "GET", "/tool_approval/records?status=all&offset=0&length=200",
-      null, { signal: signal });
+    return window.PR_fetchAllPages("/tool_approval/records?status=all", {
+      signal: signal, lengthParam: "length", apiFetch: window.primerApi.apiFetch,
+    });
   },
 
   // uiv2 Wave 3: the session-detail transcript's resolved-decision
@@ -578,3 +579,10 @@ function SH_useAttention(workspaces, opts) {
   );
 }
 window.SH_useAttention = SH_useAttention;
+
+// How many sessions need a person: the server's `total` (the aggregate answers its newest 100 and counts them all, GU-8), never fewer than the rows in hand.
+function SH_attentionTotal(data) {
+  var rows = (data && data.items) ? data.items.length : 0;
+  return data && typeof data.total === "number" && data.total > rows ? data.total : rows;
+}
+window.SH_attentionTotal = SH_attentionTotal;

@@ -134,7 +134,7 @@ def test_inbox_tab_carries_a_real_attention_count() -> None:
     sh_api = (ROOT / "ui" / "components" / "shell" / "sh-api.jsx").read_text(encoding="utf-8")
     assert '"nv-rail-inbox"' in sh_api
     assert "SH_useAttention(" in MOBILE  # the shared read (sh-api.jsx) under the rail's key
-    assert "inboxItems.length" in MOBILE
+    assert "inboxTotal" in MOBILE  # the server's total, not the page length (GU-8)
 
 
 def test_stub_panels_are_named_for_their_own_later_phase() -> None:

@@ -331,11 +331,11 @@ var PR_MAX_PAGES = 50;
 // The longest a lengthened poll may get (ruling 4 of round 2): a session's status a minute stale is the most a list may show.
 var PR_MAX_POLL_MS = 60000;
 
-function PR_pageUrl(path, limit, offset) {
+function PR_pageUrl(path, limit, offset, lengthParam) {
   var at = path.indexOf("?");
   var base = at < 0 ? path : path.slice(0, at);
   var query = at < 0 ? "" : path.slice(at + 1);
-  return base + "?limit=" + limit + "&offset=" + offset + (query ? "&" + query : "");
+  return base + "?" + (lengthParam || "limit") + "=" + limit + "&offset=" + offset + (query ? "&" + query : "");
 }
 
 function PR_fetchAllPages(path, opts) {
@@ -345,7 +345,7 @@ function PR_fetchAllPages(path, opts) {
   var idKey = o.idKey || "id";
   var fetchPage = o.apiFetch || window.primerApi.apiFetch;
   return PR_pagedLoop(size, maxPages, idKey, o.signal, function (offset) {
-    return fetchPage("GET", PR_pageUrl(path, size, offset), null, { signal: o.signal });
+    return fetchPage("GET", PR_pageUrl(path, size, offset, o.lengthParam), null, { signal: o.signal });
   });
 }
 
