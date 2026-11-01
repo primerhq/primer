@@ -132,6 +132,9 @@ function NV_Palette() {
   // Ctrl+K opens. Registered while mounted.
   React.useEffect(function () {
     function onKey(ev) {
+      // The graph builder takes Cmd-K for its add-step palette in the capture
+      // phase and preventDefaults it: one press must open one palette (UI-M15).
+      if (ev.defaultPrevented) return;
       if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "k") {
         ev.preventDefault();
         con.paletteRef.current.open();

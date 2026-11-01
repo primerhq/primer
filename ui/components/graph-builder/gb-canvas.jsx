@@ -9,6 +9,10 @@ function GB_Canvas(props) {
   const hostRef = useRef(null);
   const g6Ref = useRef(null);
   const [boxes, setBoxes] = useState(null); // {nodeId: {x,y,w,h}} in host pixels
+  // The rAF loop below outlives the render that started it, so it cannot
+  // compare against the boxes state variable (a stale closure); the ref is
+  // the last measurement the loop itself set.
+  const lastBoxesRef = useRef(null);
 
   // Measure the rendered node cards so overlays track pan/zoom. G6 draws to
   // canvas, so positions come from the draft + the container's transform; a
@@ -30,7 +34,14 @@ function GB_Canvas(props) {
             if (p) next[n.id] = { x: p[0], y: p[1], w: sz.w * zoom, h: sz.h * zoom, zoom };
           } catch (_e) { /* node not rendered yet */ }
         }
-        setBoxes(Object.keys(next).length ? next : null);
+        // A fresh object per frame would be a setState - and a re-render of the
+        // canvas and G6's host - at the display's refresh rate even when
+        // nothing moved: compare before setting (UI-M13).
+        const value = Object.keys(next).length ? next : null;
+        if (JSON.stringify(value) !== JSON.stringify(lastBoxesRef.current)) {
+          lastBoxesRef.current = value;
+          setBoxes(value);
+        }
       }
       raf = window.requestAnimationFrame(measure);
     };
