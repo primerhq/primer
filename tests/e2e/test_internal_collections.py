@@ -30,54 +30,10 @@ async def test_t0020_internal_collections_config_404_when_inactive(
     assert "PUT" in body["detail"] or "configure" in body["detail"].lower()
 
 
-@pytest.mark.asyncio
-async def test_t0019_search_503_subsystem_inactive(
-    client: httpx.AsyncClient,
-) -> None:
-    """T0019 — `POST /v1/agents/search` returns 503 with the manually-set
-    `/errors/subsystem-inactive` slug when the subsystem is not active.
-
-    Bringup never activates the subsystem, so this test runs against the
-    inactive state without any setup of its own.
-    """
-    body = {"query": "anything", "top_k": 5}
-    resp = await client.post("/v1/agents/search", json=body)
-    assert resp.status_code == 503, resp.text
-    envelope = resp.json()
-    assert envelope["type"] == "/errors/subsystem-inactive", envelope
-    assert envelope["status"] == 503
 
 
-@pytest.mark.asyncio
-async def test_t0060_search_top_k_zero_rejected(
-    client: httpx.AsyncClient,
-) -> None:
-    """T0060 — Pydantic validates SearchRequest.top_k (ge=1) before the
-    handler runs, so top_k=0 yields 422 even when the subsystem is
-    inactive."""
-    resp = await client.post(
-        "/v1/agents/search", json={"query": "x", "top_k": 0},
-    )
-    assert resp.status_code == 422, resp.text
-    body = resp.json()
-    assert body["type"] == "/errors/validation-error", body
-    assert body["status"] == 422
 
 
-@pytest.mark.asyncio
-async def test_t0061_search_top_k_above_cap_rejected(
-    client: httpx.AsyncClient,
-) -> None:
-    """T0061 — top_k=101 is above the documented cap of 100 (le=100);
-    Pydantic body validation rejects it with 422 regardless of
-    subsystem state."""
-    resp = await client.post(
-        "/v1/agents/search", json={"query": "x", "top_k": 101},
-    )
-    assert resp.status_code == 422, resp.text
-    body = resp.json()
-    assert body["type"] == "/errors/validation-error", body
-    assert body["status"] == 422
 
 
 @pytest.mark.asyncio
@@ -102,33 +58,6 @@ async def test_t0021_bootstrap_404_when_no_config(
     )
 
 
-@pytest.mark.asyncio
-async def test_t0166_graphs_and_tools_search_503_subsystem_inactive(
-    client: httpx.AsyncClient,
-) -> None:
-    """T0166 — extends T0019's agent-side gating proof to the other two
-    search routes. Both `/v1/graphs/search` and `/v1/tools/search` must
-    return 503 with `/errors/subsystem-inactive` when the
-    internal-collections subsystem hasn't been bootstrapped.
-
-    `/v1/collections/search` is the fourth search route; T0019 already
-    pins the agent route. Together with this test, three of the four
-    search routes are explicitly gated. The collections route is
-    expected to behave the same way; future iteration may add the
-    fourth pin if needed.
-    """
-    body = {"query": "anything", "top_k": 5}
-    for path in ("/v1/graphs/search", "/v1/tools/search"):
-        resp = await client.post(path, json=body)
-        assert resp.status_code == 503, (
-            f"{path} expected 503 before bootstrap, got "
-            f"{resp.status_code}: {resp.text}"
-        )
-        envelope = resp.json()
-        assert envelope["type"] == "/errors/subsystem-inactive", (
-            f"{path}: {envelope!r}"
-        )
-        assert envelope["status"] == 503
 
 
 # ============================================================================
@@ -136,30 +65,6 @@ async def test_t0166_graphs_and_tools_search_503_subsystem_inactive(
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_t0318_search_top_k_at_documented_max_accepted(
-    client: httpx.AsyncClient,
-) -> None:
-    """T0318 — Spec §11 / T0061 say top_k is bounded `1..100`. T0061
-    rejects 101; T0062 covers top_k=1. This pins the upper boundary
-    (100 itself) is accepted: the request passes Pydantic validation
-    and reaches the subsystem check (returning 503 since the
-    subsystem isn't bootstrapped in this test).
-
-    The contract pin is "top_k=100 is NOT a 422" — distinguishing
-    Pydantic body validation from subsystem-inactive gating.
-    """
-    resp = await client.post(
-        "/v1/agents/search",
-        json={"query": "anything", "top_k": 100},
-    )
-    # Pydantic accepts 100 → reaches subsystem-inactive check → 503
-    assert resp.status_code == 503, (
-        f"top_k=100 should reach the subsystem check (503), not be "
-        f"rejected as 422: got {resp.status_code}: {resp.text}"
-    )
-    envelope = resp.json()
-    assert envelope["type"] == "/errors/subsystem-inactive", envelope
 
 
 # ============================================================================
@@ -167,35 +72,6 @@ async def test_t0318_search_top_k_at_documented_max_accepted(
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_t0319_search_with_oversize_query_string_clean_envelope(
-    client: httpx.AsyncClient,
-) -> None:
-    """T0319 — POST /v1/agents/search with a 10000-character query
-    string. Must produce a clean envelope (no /errors/internal): if
-    the route accepts large queries, response is 503 (subsystem
-    inactive) or 200 (if active); if there's a documented size cap,
-    response is a clean 4xx.
-
-    Catches a regression where a giant query string crashes the
-    embedder or the SQL query builder.
-    """
-    huge_query = "x" * 10000
-    resp = await client.post(
-        "/v1/agents/search",
-        json={"query": huge_query, "top_k": 5},
-    )
-    envelope = resp.json() if resp.content else {}
-    assert envelope.get("type") != "/errors/internal", (
-        f"oversize query leaked /errors/internal: {resp.text}"
-    )
-    # Acceptable codes: 503 (subsystem-inactive — most likely on
-    # this iteration), 200 (subsystem active — unlikely without
-    # bootstrap), or 4xx (size cap rejection)
-    assert resp.status_code in (200, 422, 503) or 400 <= resp.status_code < 500, (
-        f"unexpected status for oversize query: {resp.status_code}: "
-        f"{resp.text}"
-    )
 
 
 # ============================================================================
@@ -225,35 +101,6 @@ async def test_t0326_ic_config_delete_before_put_clean_envelope(
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_t0560_search_with_whitespace_only_query_clean_envelope(
-    client: httpx.AsyncClient,
-) -> None:
-    """T0560 — Search query="   " (three spaces, no other chars).
-    Per the SearchRequest spec, `query` has min_length=1; whether
-    the validator strips whitespace before checking is the unknown
-    being pinned. Pin: clean envelope (422 if validator rejects
-    whitespace-only OR 503 if it reaches subsystem-inactive OR 200
-    with empty hits if subsystem is active and treats whitespace
-    as no-op). Never /errors/internal.
-    """
-    resp = await client.post(
-        "/v1/agents/search",
-        json={"query": "   ", "top_k": 5},
-    )
-    envelope = resp.json() if resp.content else {}
-    assert envelope.get("type") != "/errors/internal", (
-        f"whitespace-only query leaked /errors/internal: {resp.text}"
-    )
-    assert resp.status_code in (200, 422, 503), (
-        f"unexpected status: {resp.status_code}: {resp.text}"
-    )
-    # If 200 (subsystem active), hits is a list; if 503 (inactive)
-    # or 422 (rejected), envelope is cleanly typed
-    if resp.status_code == 200:
-        assert isinstance(resp.json().get("hits"), list), resp.text
-    else:
-        assert envelope.get("type", "").startswith("/errors/"), envelope
 
 
 # ============================================================================
@@ -261,38 +108,6 @@ async def test_t0560_search_with_whitespace_only_query_clean_envelope(
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_t0587_search_with_emoji_only_query_clean_envelope(
-    client: httpx.AsyncClient,
-) -> None:
-    """T0587 — Sister of T0560 (whitespace-only query). Multi-byte
-    UTF-8 emoji-only query string ("🚀🎉" = 2 codepoints, 8 bytes
-    UTF-8 encoded). Some embedder pre-tokenisers strip non-ASCII
-    aggressively and end up with empty input — pin that the route
-    handles this with a clean envelope, never /errors/internal.
-
-    Bringup never activates the subsystem, so the expected response
-    is 503 /errors/subsystem-inactive. The hard pin is "no
-    /errors/internal regardless of subsystem state" — even if a
-    future iteration enables bootstrap, an emoji-only query must
-    still produce a clean 200/4xx envelope.
-    """
-    resp = await client.post(
-        "/v1/agents/search",
-        json={"query": "🚀🎉", "top_k": 5},
-    )
-    envelope = resp.json() if resp.content else {}
-    assert envelope.get("type") != "/errors/internal", (
-        f"emoji-only query leaked /errors/internal: {resp.text}"
-    )
-    assert resp.status_code in (200, 400, 422, 503), (
-        f"unexpected status for emoji-only query: "
-        f"{resp.status_code}: {resp.text}"
-    )
-    if resp.status_code == 200:
-        assert isinstance(resp.json().get("hits"), list), resp.text
-    else:
-        assert envelope.get("type", "").startswith("/errors/"), envelope
 
 
 # ============================================================================
@@ -454,65 +269,6 @@ async def test_t0707_ic_config_put_against_deleted_embedding_provider(
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_t0717_ic_config_delete_racing_5_agents_search_calls(
-    client: httpx.AsyncClient,
-) -> None:
-    """T0717 — Two-state-machine combo: subsystem teardown vs
-    in-flight search. Race 1 IC-config DELETE against 5 concurrent
-    /v1/agents/search calls. Each call must produce a clean envelope:
-    DELETE 204/404; each search 200 (subsystem still active) OR 503
-    /errors/subsystem-inactive (subsystem torn down). Never
-    /errors/internal under config-DELETE × in-flight search race.
-
-    No bootstrap required: bringup leaves subsystem inactive, so
-    DELETE is a no-op (404) and searches return 503 — the test still
-    exercises the concurrent-call path.
-    """
-    import asyncio as _asyncio
-
-    async def _delete() -> httpx.Response:
-        return await client.delete("/v1/internal_collections/config")
-
-    async def _search() -> httpx.Response:
-        return await client.post(
-            "/v1/agents/search",
-            json={"query": "anything", "top_k": 3},
-        )
-
-    tasks = [
-        _asyncio.create_task(_delete()),
-        *[_asyncio.create_task(_search()) for _ in range(5)],
-    ]
-    results = await _asyncio.gather(*tasks, return_exceptions=True)
-
-    # First task is DELETE
-    del_resp = results[0]
-    assert not isinstance(del_resp, BaseException), del_resp
-    del_env = del_resp.json() if del_resp.content else {}
-    assert del_env.get("type") != "/errors/internal", (
-        f"DELETE leaked /errors/internal: {del_resp.text}"
-    )
-    assert del_resp.status_code in (204, 404), (
-        f"DELETE unexpected status: "
-        f"{del_resp.status_code}: {del_resp.text}"
-    )
-
-    # Remaining are searches
-    for i, r in enumerate(results[1:]):
-        assert not isinstance(r, BaseException), (
-            f"search #{i} raised: {r!r}"
-        )
-        env = r.json() if r.content else {}
-        assert env.get("type") != "/errors/internal", (
-            f"search #{i} leaked /errors/internal: "
-            f"{r.status_code}: {r.text}"
-        )
-        # 200 (subsystem active), 503 (inactive), or 4xx
-        assert r.status_code in (200, 400, 422, 503), (
-            f"search #{i} unexpected status: "
-            f"{r.status_code}: {r.text}"
-        )
 
 
 # ============================================================================

@@ -13,38 +13,30 @@ Config (singleton row at id ``_internal_collections_config``):
   {"configured": false}`` instead (the console asks that way: a 404 is
   a red "Failed to load resource" console error even when it is the
   expected "off" state).
-* ``DELETE /v1/internal_collections/config`` — clear the row, detach
-  the live subsystem, and drop the four reserved collections from the
+* ``DELETE /v1/internal_collections/config`` — clear the row, disable search
+  on the system collection, and drop the four reserved collections from the
   backing SSP so a subsequent re-PUT with a different embedding model
   can rebuild cleanly. Custom (non-IC) collections in the same SSP
   are not touched.
 
 Bootstrap:
 
-* ``POST   /v1/internal_collections/bootstrap`` — synchronous
-  re-population of every internal collection. Idempotent.
+* ``POST   /v1/internal_collections/bootstrap`` — enables semantic search
+  on the system collection and indexes it, inline. Idempotent.
+* ``GET    /v1/internal_collections/bootstrap/status`` — the system
+  collection's search state in the console's polling vocabulary.
 
-Per-entity search (one per Describeable type):
-
-* ``POST   /v1/agents/search``
-* ``POST   /v1/graphs/search``
-* ``POST   /v1/collections/search``
-* ``POST   /v1/tools/search``
-
-All four return 503 ``type=/errors/subsystem-inactive`` until the
-subsystem has been bootstrapped at least once.
+The row is the system collection's search toggle. The per-entity ``/search``
+routes and the subsystem behind them were removed (D18).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
@@ -52,11 +44,9 @@ from primer.api.deps import (
     get_internal_collections_config_storage,
 )
 from primer.api.errors import (
-    PROBLEM_JSON_MEDIA_TYPE,
-    ProblemDetails,
     common_responses,
 )
-from primer.model.except_ import ConfigError, NotFoundError
+from primer.model.except_ import NotFoundError
 from primer.model.internal import (
     INTERNAL_COLLECTION_IDS,
     INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID,
@@ -113,58 +103,9 @@ class InternalCollectionsConfigBody(BaseModel):
     )
 
 
-class SearchRequest(BaseModel):
-    """Per-entity semantic search body."""
-
-    query: str = Field(
-        ...,
-        min_length=1,
-        description="Free-text query string.",
-    )
-    top_k: int = Field(
-        default=10,
-        ge=1,
-        le=100,
-        description="Maximum number of hits to return.",
-    )
-
-
-class SearchHit(BaseModel):
-    document_id: str
-    chunk_id: str
-    score: float | None = None
-    text: str
-    meta: dict[str, Any] | None = None
-
-
-class SearchResponse(BaseModel):
-    hits: list[SearchHit]
-
-
 # ===========================================================================
 # Helpers
 # ===========================================================================
-
-
-def _subsystem_inactive_response(
-    request: Request, detail: str
-) -> JSONResponse:
-    problem = ProblemDetails(
-        type="/errors/subsystem-inactive",
-        title="Subsystem Inactive",
-        status=503,
-        detail=detail,
-        instance=request.url.path,
-    )
-    return JSONResponse(
-        status_code=503,
-        content=problem.model_dump(exclude_none=True),
-        media_type=PROBLEM_JSON_MEDIA_TYPE,
-    )
-
-
-def _get_subsystem_or_none(request: Request):
-    return getattr(request.app.state, "internal_collections", None)
 
 
 # ===========================================================================
@@ -313,11 +254,6 @@ async def delete_config(
     except NotFoundError:
         pass  # nothing to disable
 
-    # Detach the live subsystem first so the CDC worker stops writing
-    # and so the search routes flip to 503 before we touch the vectors.
-    subsystem = _get_subsystem_or_none(request)
-    if subsystem is not None:
-        await subsystem.aclose()
     # Drop the four reserved internal collections from the SSP's
     # backing store. Without this, a subsequent re-PUT with a
     # different embedding model would surface a dimension mismatch on
@@ -352,9 +288,6 @@ async def delete_config(
                         "ic deactivate: drop_collection(%r) on ssp %r failed: %s",
                         coll_id, row.search_provider_id, exc,
                     )
-    # Clear in-memory subsystem state.
-    if subsystem is not None:
-        request.app.state.internal_collections = None
     # Finally, remove the config row. Doing this last means a partial
     # failure leaves the config in place so the operator can retry the
     # DELETE (drop_collection is idempotent, so retry is safe).
@@ -368,36 +301,6 @@ async def delete_config(
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-async def _build_subsystem_for_request(
-    request: Request, cfg: InternalCollectionsConfig
-):
-    """Build + attach the live subsystem when the row landed after boot.
-
-    Shared between the bootstrap launcher and the (future) restart-time
-    construction path. Returns the freshly attached subsystem.
-    """
-    from primer.bootstrap.seed import builtin_toolset_providers
-    from primer.internal_collections import build_subsystem
-
-    provider_registry = request.app.state.provider_registry
-    semantic_search_registry = request.app.state.semantic_search_registry
-    storage_provider = request.app.state.storage_provider
-    subsystem = build_subsystem(
-        config=cfg,
-        storage_provider=storage_provider,
-        provider_registry=provider_registry,
-        semantic_search_registry=semantic_search_registry,
-        # Every built-in (reserved-id) toolset must be on this map or its
-        # tools never get embedded and the ``_internal_tools`` semantic
-        # search misses them. It is built from the live registry, as the
-        # lifespan builds its own (primer/api/_app_lifespan.py): a
-        # hand-written map here had already lost ``collections`` and ``crud``.
-        toolset_providers=await builtin_toolset_providers(provider_registry),
-    )
-    request.app.state.internal_collections = subsystem
-    return subsystem
 
 
 async def _read_status(
@@ -421,83 +324,6 @@ async def _upsert_status(
         await storage.create(row)
     else:
         await storage.update(row)
-
-
-async def _run_bootstrap_in_background(
-    *,
-    app,
-    subsystem,
-    attempt_id: str,
-    status_storage,
-) -> None:
-    """asyncio.Task body: runs the long bootstrap, streams progress
-    into the status row, sets the terminal state at the end.
-
-    Catches *all* exceptions so a failure during a worker-style job
-    still results in a structured failure row the UI can render —
-    rather than a silent task that the user has no way to see.
-    """
-    # Throttle writes: the orchestrator emits a tick per page (200
-    # entities) which can be every ~50ms for a fast in-memory store.
-    # Coalesce so we write at most once per ~250ms.
-    _MIN_WRITE_INTERVAL_S = 0.25
-    last_write = 0.0
-    last_progress = {"phase": None}
-
-    async def _progress(progress) -> None:
-        nonlocal last_write
-        now_mono = asyncio.get_event_loop().time()
-        phase_changed = progress.phase != last_progress["phase"]
-        if not phase_changed and (now_mono - last_write) < _MIN_WRITE_INTERVAL_S:
-            return
-        last_progress["phase"] = progress.phase
-        last_write = now_mono
-        # Re-read the row before each update so an updated_at column
-        # in the underlying storage stays monotonic and a concurrent
-        # status write (e.g. boot recovery clearing a stale row) loses
-        # the race cleanly via attempt_id mismatch.
-        current = await _read_status(status_storage)
-        if current.attempt_id != attempt_id:
-            # Our row was overwritten by a newer attempt; stop updating.
-            raise asyncio.CancelledError("bootstrap status row preempted")
-        await _upsert_status(status_storage, current.model_copy(update={
-            "phase": progress.phase,
-            "phase_done": progress.phase_done,
-            "phase_total": progress.phase_total,
-            "counts": progress.counts,
-        }))
-
-    try:
-        result = await subsystem.bootstrap(progress_callback=_progress)
-    except asyncio.CancelledError:
-        # Bootstrap row was preempted (rare). Don't touch the row.
-        logger.info("ic bootstrap (attempt=%s) preempted by newer attempt", attempt_id)
-        return
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("ic bootstrap failed (attempt=%s)", attempt_id)
-        current = await _read_status(status_storage)
-        if current.attempt_id == attempt_id:
-            await _upsert_status(status_storage, current.model_copy(update={
-                "status": "failed",
-                "finished_at": _now(),
-                "error": f"{type(exc).__name__}: {exc}"[:1024],
-            }))
-        return
-
-    current = await _read_status(status_storage)
-    if current.attempt_id != attempt_id:
-        return
-    await _upsert_status(status_storage, current.model_copy(update={
-        "status": "succeeded",
-        "phase": None,
-        "finished_at": _now(),
-        "error": None,
-        "counts": result.get("counts", {}),
-    }))
-    logger.info(
-        "ic bootstrap succeeded (attempt=%s) counts=%s",
-        attempt_id, result.get("counts"),
-    )
 
 
 @router.post(
@@ -525,19 +351,9 @@ async def bootstrap(
             "/v1/internal_collections/config first."
         )
 
-    # Stamp activation FIRST: the subsystem snapshots its config at
-    # construction, so stamping afterwards leaves its is_activated gate
-    # shut and the per-entity search routes answering 503.
     if cfg.activated_at is None:
         cfg = cfg.model_copy(update={"activated_at": _now()})
         await config_storage.update(cfg)
-
-    # The subsystem is still CONSTRUCTED (never started): the reserved
-    # `search` toolset resolves through it, and pinned decision 15 keeps
-    # that window open until P5 removes the toolset itself.
-    subsystem = _get_subsystem_or_none(request)
-    if subsystem is None:
-        await _build_subsystem_for_request(request, cfg)
 
     # S2: "bootstrap" is now exactly "enable semantic search on the system
     # collection". The collection itself is regenerated unconditionally at
@@ -605,70 +421,7 @@ async def bootstrap_status(
     return body
 
 
-# ===========================================================================
-# Per-entity search endpoints (Agent / Graph / Collection / Tool)
-# ===========================================================================
-
-
-def _make_search_route(entity_type: str, plural: str) -> None:
-    @router.post(
-        f"/{plural}/search",
-        summary=f"Semantic search over {plural}",
-        response_model=SearchResponse,
-        responses={
-            **common_responses(422, 500),
-            503: {
-                "model": ProblemDetails,
-                "description": "Internal collections subsystem inactive",
-                "content": {PROBLEM_JSON_MEDIA_TYPE: {}},
-            },
-        },
-    )
-    async def _search(
-        body: SearchRequest, request: Request
-    ):
-        subsystem = _get_subsystem_or_none(request)
-        if subsystem is None:
-            return _subsystem_inactive_response(
-                request,
-                "internal collections subsystem is not active; configure "
-                "it via PUT /v1/internal_collections/config and run "
-                "POST /v1/internal_collections/bootstrap.",
-            )
-        try:
-            hits = await subsystem.search(
-                entity_type,  # type: ignore[arg-type]
-                query=body.query,
-                top_k=body.top_k,
-            )
-        except ConfigError as exc:
-            return _subsystem_inactive_response(request, str(exc))
-        return SearchResponse(
-            hits=[
-                SearchHit(
-                    document_id=hit.record.document_id,
-                    chunk_id=hit.record.chunk_id,
-                    score=hit.score,
-                    text=hit.record.text,
-                    meta=hit.record.meta,
-                )
-                for hit in hits
-            ]
-        )
-
-    _search.__name__ = f"search_{plural}"
-
-
-_make_search_route("agent", "agents")
-_make_search_route("graph", "graphs")
-_make_search_route("collection", "collections")
-_make_search_route("tool", "tools")
-
-
 __all__ = [
     "InternalCollectionsConfigBody",
-    "SearchHit",
-    "SearchRequest",
-    "SearchResponse",
     "router",
 ]

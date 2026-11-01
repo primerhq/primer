@@ -42,7 +42,6 @@ from primer.api.registries import (
     WorkspaceRegistry,
 )
 from primer.api.version import APP_VERSION
-from primer.internal_collections import build_subsystem, load_config_or_none
 from primer.model.provider import SemanticSearchProvider
 from primer.model.scheduler import RuntimeMode, SchedulerProviderType
 from primer.toolset.harness import build_harness_toolset_provider
@@ -383,7 +382,6 @@ def _make_lifespan(config: AppConfig):
         app.state.system_toolset = system_toolset
         app.state.misc_toolset = misc_toolset
         app.state.web_toolset = web_toolset
-        app.state.internal_collections = None
         app.state.config = config
 
         # The cookie-signing secret resolved above. Stashed on app.state so
@@ -1003,36 +1001,6 @@ def _make_lifespan(config: AppConfig):
             logger.info("lifespan: worker_pool.start() done")
         app.state.worker_pool = worker_pool
 
-        # Internal collections subsystem auto-activation: if a config
-        # row already exists in storage, build the live subsystem +
-        # search toolset and start the CDC worker. We do NOT auto-run
-        # bootstrap here — the operator does that explicitly via
-        # POST /v1/internal_collections/bootstrap.
-        logger.info("lifespan: loading IC config")
-        ic_config = await load_config_or_none(storage_provider)
-        logger.info("lifespan: IC config loaded (present=%s)", ic_config is not None)
-
-        # IC bootstrap recovery: if a bootstrap was in flight when the
-        # previous API process exited, its asyncio task is gone but the
-        # status row still says "running". Mark it as failed so the
-        # UI surfaces the interruption and the operator can re-trigger.
-        # Bootstrap recovery went with the boot-time vector pass.
-        if ic_config is not None:
-            ic_subsystem = build_subsystem(
-                config=ic_config,
-                storage_provider=storage_provider,
-                provider_registry=provider_registry,
-                semantic_search_registry=semantic_search_registry,
-                # Every built-in (reserved-id) toolset must be on this map or
-                # its tools never get embedded and the _internal_tools semantic
-                # search misses them. It is the map the ensure pass took, copied:
-                # the subsystem can register more providers on its own.
-                toolset_providers=dict(builtin_providers),
-            )
-            app.state.internal_collections = ic_subsystem
-            # The CDC vector worker no longer starts: vectorisation is
-            # the explicit search lifecycle now. The subsystem stays
-            # constructed so the reserved `search` toolset resolves.
         # Startup invariant: every kind the harness service manages must
         # appear in the CDC kinds registry.  _harness_kind_models() ensures
         # the registry is fully populated (handles test-reset and lazy-import
@@ -1190,14 +1158,6 @@ def _make_lifespan(config: AppConfig):
                     await scheduler.aclose()
                 except Exception:
                     logger.exception("scheduler.aclose failed")
-            ic_subsystem = app.state.internal_collections
-            if ic_subsystem is not None:
-                try:
-                    await ic_subsystem.aclose()
-                except Exception:
-                    logger.exception(
-                        "internal_collections.aclose failed"
-                    )
             try:
                 await web_search_registry.aclose()
             except Exception as exc:  # noqa: BLE001

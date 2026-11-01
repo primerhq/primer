@@ -376,26 +376,6 @@ def get_ingest_failure_storage(
     return sp.get_storage(IngestFailure)
 
 
-def get_internal_collections_subsystem(request: Request):
-    """Resolve the live :class:`InternalCollectionsSubsystem`.
-
-    Returns the subsystem instance attached to ``app.state`` by the
-    lifespan handler (or ``create_test_app``). Raises
-    :class:`ConfigError` when the subsystem isn't on the app — that
-    happens when the lifespan ran without a config row and the
-    subsystem hasn't been activated via the API yet.
-    """
-    _assert_app_state_initialized(request)
-    subsystem = getattr(request.app.state, "internal_collections", None)
-    if subsystem is None:
-        raise ConfigError(
-            "internal collections subsystem is not active; configure "
-            "it via PUT /v1/internal_collections/config and run "
-            "POST /v1/internal_collections/bootstrap."
-        )
-    return subsystem
-
-
 def get_scheduler(request: Request) -> "Scheduler":
     """Resolve the live :class:`Scheduler`.
 
@@ -697,7 +677,6 @@ __all__ = [
     "get_ingest_failure_storage",
     "get_internal_collections_bootstrap_status_storage",
     "get_internal_collections_config_storage",
-    "get_internal_collections_subsystem",
     "get_llm_provider_storage",
     "get_oidc_provider_storage",
     "get_user_storage",
