@@ -99,6 +99,15 @@ class _InMemoryStorage(Generic[_T]):
         self._raw[id] = (updated, produced)
         return updated
 
+    async def patch_if_or_current(
+        self, id: str, patch=None, *, where, set_paths=None, conn=None,
+    ) -> tuple[_T | None, _T | None]:
+        """``patch_if``, answering a rejection with the row as it stands (``Storage.patch_if_or_current``)."""
+        written = await self.patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+        if written is not None:
+            return written, None
+        return None, self._data.get(id)
+
     def _raw_doc(self, id: str, current: _T) -> dict[str, Any]:
         """What a backend would hold for this row: the raw document if a patch or a seed wrote one, else the
         model's own dump (which is what ``create`` and ``update`` store)."""

@@ -1088,11 +1088,18 @@ class PostgresStorage(Storage[ModelT]):
         if event_kind is not None:
             await self._provider._ensure_events_schema()
         entity_id, data_json = self._to_row(entity)
+        # ONE statement answers all three outcomes (PERF-T17 L2): the guarded UPDATE's own row (written), else the row's
+        # existence (the guard rejected it), else nothing (no such id). The existence arm reads the statement's snapshot, so a
+        # row deleted by a concurrent writer in the same instant reads as "guard rejected" (the update was ordered first).
         sql = (
-            f'UPDATE {self._qualified} '
+            f'WITH upd AS (UPDATE {self._qualified} '
             f'SET data = $2::jsonb, updated_at = now() '
             f'WHERE id = $1 AND (data->>$3) IS DISTINCT FROM $4 '
-            f'RETURNING id, data'
+            f'RETURNING id, data) '
+            f'SELECT id, data, TRUE AS written FROM upd '
+            f'UNION ALL '
+            f'SELECT t.id, NULL::jsonb, FALSE FROM {self._qualified} t '
+            f'WHERE t.id = $1 AND NOT EXISTS (SELECT 1 FROM upd)'
         )
         try:
             async with self._acquire_or_use(conn) as c:
@@ -1103,30 +1110,20 @@ class PostgresStorage(Storage[ModelT]):
                         row = await c.fetchrow(
                             sql, entity_id, data_json, field, forbidden,
                         )
-                        if row is not None:
+                        if row is not None and row["written"]:
                             await _append_crud_event(
                                 c, self._provider.schema,
                                 event_type=f"{event_kind}.updated",
                                 entity_kind=event_kind, entity_id=entity_id,
                                 payload_json=data_json,
                             )
-                if row is None:
-                    # Ambiguous on its own: no id, or guard rejected. This
-                    # probe only disambiguates WHICH exception/return
-                    # shape to give the caller - it does not affect
-                    # whether the write above was safe, that was already
-                    # decided atomically by the WHERE clause.
-                    exists = await c.fetchval(
-                        f'SELECT 1 FROM {self._qualified} WHERE id = $1',
-                        entity_id,
-                    )
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
         if row is None:
-            if not exists:
-                raise NotFoundError(
-                    f"{self._model.__name__} with id {entity_id!r} not found"
-                )
+            raise NotFoundError(
+                f"{self._model.__name__} with id {entity_id!r} not found"
+            )
+        if not row["written"]:
             return None
         return self._decode_row(row)
 
@@ -1139,6 +1136,29 @@ class PostgresStorage(Storage[ModelT]):
         set_paths: Mapping[tuple[str, ...], Any] | None = None,
         conn: Any | None = None,
     ) -> ModelT | None:
+        return (await self._patch_if(id, patch, where=where, set_paths=set_paths, conn=conn, want_current=False))[0]
+
+    async def patch_if_or_current(
+        self,
+        id: str,
+        patch: Mapping[str, Any] | None = None,
+        *,
+        where: Mapping[WhereKey, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None = None,
+        conn: Any | None = None,
+    ) -> tuple[ModelT | None, ModelT | None]:
+        return await self._patch_if(id, patch, where=where, set_paths=set_paths, conn=conn, want_current=True)
+
+    async def _patch_if(
+        self,
+        id: str,
+        patch: Mapping[str, Any] | None,
+        *,
+        where: Mapping[WhereKey, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None,
+        conn: Any | None,
+        want_current: bool,
+    ) -> tuple[ModelT | None, ModelT | None]:
         # The new document is ONE expression over the row's own ``data`` column, and the guard is
         # part of the UPDATE's WHERE: Postgres evaluates both against the row's current version
         # (re-checked after a concurrent writer commits), so there is no read-modify-write and no
@@ -1192,12 +1212,18 @@ class PostgresStorage(Storage[ModelT]):
                                 entity_kind=event_kind, entity_id=id,
                                 payload_json=row["data"],
                             )
+                current_row = None
                 if row is None:
                     # Disambiguates the shape of the answer only; the write was already decided
-                    # atomically by the WHERE clause above.
-                    exists = await c.fetchval(
-                        f'SELECT 1 FROM {self._qualified} WHERE id = $1', id,
-                    )
+                    # atomically by the WHERE clause above. A caller that wants the row as it now stands (a lost
+                    # race) reads it in the same probe: READ COMMITTED, so this sees what the winner committed.
+                    if want_current:
+                        current_row = await c.fetchrow(f'SELECT id, data FROM {self._qualified} WHERE id = $1', id)
+                        exists = current_row is not None
+                    else:
+                        exists = await c.fetchval(
+                            f'SELECT 1 FROM {self._qualified} WHERE id = $1', id,
+                        )
         except (PatchSpecError, ValidationError):
             # A malformed spec or a leaf the model drops (PatchSpecError), or a patch that leaves the row unreadable
             # (ValidationError): the caller's mistake, reported as itself. Any OTHER ValueError (a corrupt stored
@@ -1210,8 +1236,8 @@ class PostgresStorage(Storage[ModelT]):
                 raise NotFoundError(
                     f"{self._model.__name__} with id {id!r} not found"
                 )
-            return None
-        return entity
+            return None, (self._decode_row(current_row) if current_row is not None else None)
+        return entity, None
 
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
         await self._ensure_table()

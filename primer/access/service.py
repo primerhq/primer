@@ -19,6 +19,7 @@ from primer.model.common import dump_for_storage
 from primer.model.except_ import AccessDeniedError, ConflictError, NotFoundError, ValidationError
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.user import User
+from primer.storage.cas import patch_if_or_current
 
 #: Upper bound of one user lookup page.
 LOOKUP_MAX = 20
@@ -256,13 +257,14 @@ async def rewrite_keeping_access(storage: Storage[Any], entity: Any, *, what: st
     dumped = dump_for_storage(entity)
     patch = {key: value for key, value in dumped.items() if key not in ("id", "access")}
     extra = {} if conn is None else {"conn": conn}
+    current = await storage.get(entity.id, **extra)
     for _ in range(5):
-        current = await storage.get(entity.id, **extra)
         if current is None:
             raise NotFoundError(f"{what} does not exist")
         rev = current.access.rev
         guard = [rev, None] if rev == 0 else [rev]
-        written = await storage.patch_if(entity.id, patch, where={("access", "rev"): guard}, **extra)
+        # A lost race answers with the row as it now stands, so the retry has its new rev without a second read (PERF-T17 L2).
+        written, current = await patch_if_or_current(storage, entity.id, patch, where={("access", "rev"): guard}, **extra)
         if written is not None:
             return written
     raise ConflictError(f"the sharing of {what} kept changing while it was being edited; retry")
