@@ -20,14 +20,23 @@ from primer.model.chat import (
     ToolCallPart,
     ToolResultPart,
 )
+from primer.common.identity_memo import IdentityMemo
 from primer.model.media_tokens import media_tokens
+
+
+# Serialising a call's arguments or a tool's schema is the only costly step of an estimate, and a turn estimates the same objects every round.
+_CALL_MEMO = IdentityMemo()
+_TOOL_MEMO = IdentityMemo()
 
 
 def _estimate_part(part: Part) -> int:
     if isinstance(part, TextPart):
         return -(-len(part.text) // 4)
     if isinstance(part, ToolCallPart):
-        args_len = len(json.dumps(part.arguments, ensure_ascii=False))
+        args_len = _CALL_MEMO.get(
+            part, (id(part.arguments), len(part.arguments)),
+            lambda: len(json.dumps(part.arguments, ensure_ascii=False)),
+        )
         return 50 + len(part.name) + -(-args_len // 4)
     if isinstance(part, ToolResultPart):
         return 20 + -(-len(part.output) // 4)
@@ -38,7 +47,10 @@ def _estimate_part(part: Part) -> int:
 
 
 def _estimate_tool(tool: Tool) -> int:
-    schema_chars = len(json.dumps(tool.args_schema, ensure_ascii=False))
+    schema_chars = _TOOL_MEMO.get(
+        tool, (id(tool.args_schema), len(tool.args_schema)),
+        lambda: len(json.dumps(tool.args_schema, ensure_ascii=False)),
+    )
     name_chars = len(tool.id)
     desc_chars = len(tool.description or "")
     return 50 + -(-(name_chars + desc_chars + schema_chars) // 4)
