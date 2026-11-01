@@ -136,6 +136,11 @@ function NV_TabGroups(props) {
   var dragState = React.useState(null);
   var dragging = dragState[0]; // the dragged tab's id, or null
   var setDragging = dragState[1];
+  // GU-6: which file tabs hold an unsaved draft (re-renders when one appears or goes).
+  // The latest model, for a close that is answered after a question (the tabs may have changed while it was open).
+  var modelRef = React.useRef(model);
+  modelRef.current = model;
+  var drafts = typeof window.NV_useFileDrafts === "function" ? window.NV_useFileDrafts() : null;
 
   function change(next, op) {
     if (typeof props.onModelChange === "function") props.onModelChange(next, op);
@@ -156,7 +161,10 @@ function NV_TabGroups(props) {
   }
   function closeTab(tab, ev) {
     if (ev) ev.stopPropagation();
-    change(window.TG_closeTab(model, tab.id), "manage");
+    // A file tab with an unsaved draft asks first (GU-6).
+    var ask = drafts ? drafts.confirmClose(tab) : true;
+    if (ask === true) { change(window.TG_closeTab(model, tab.id), "manage"); return; }
+    Promise.resolve(ask).then(function (ok) { if (ok) change(window.TG_closeTab(modelRef.current, tab.id), "manage"); });
   }
   function focusGroup(groupId) {
     change(window.TG_focusGroup(model, groupId), "manage");
@@ -258,6 +266,9 @@ function NV_TabGroups(props) {
                       <NV_TG_SessionPulse sid={tab.ref} wid={meta && meta.wid} />
                     ) : null}
                     <span className="nv-tg-tab-label">{NV_TG_tabLabel(tab, meta)}</span>
+                    {tab.kind === "file" && drafts && drafts.dirty(tab.ref) ? (
+                      <span className="nv-tg-tab-dirty" data-testid={"nv-tg-tab-dirty:" + tab.id} title="Unsaved changes" aria-label="Unsaved changes">●</span>
+                    ) : null}
                     <button type="button" className="nv-tg-tab-close"
                       data-testid={"nv-tg-tab-close:" + tab.id}
                       onClick={function (ev) { closeTab(tab, ev); }}>x</button>
