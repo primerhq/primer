@@ -176,7 +176,7 @@ async def test_tool_exec_fail_on_unknown_tool(in_memory_tracer):
     fail_samples = [
         s for metric in m.tool_calls_total.collect()
         for s in metric.samples
-        if s.labels.get("name") == "nonexistent__tool"
+        if s.labels.get("name") == "unknown"
         and s.labels.get("outcome") == "fail"
         and s.name == "tool_calls_total"
     ]
@@ -208,3 +208,45 @@ async def test_tool_exec_duration_observed(in_memory_tracer):
         if s.labels.get("name") == "fake__timer"
     }
     assert dur_samples.get("tool_duration_seconds_count", 0) == 1
+
+
+def _label_names(m) -> set[str]:
+    return {
+        s.labels["name"]
+        for family in (m.tool_calls_total, m.tool_duration_seconds)
+        for metric in family.collect()
+        for s in metric.samples
+        if "name" in s.labels
+    }
+
+
+@pytest.mark.asyncio
+async def test_invented_tool_names_share_one_unknown_series():
+    """GS-38: a model that invents names adds ONE series, not one per name."""
+    import primer.observability.metrics as m
+    from primer.model.chat import ToolCallPart
+    from primer.model.except_ import UnsupportedContentError
+
+    mgr = _make_manager_with_fake_tool("calc", "42")
+    await mgr.list_tools()
+    for i in range(100):
+        with pytest.raises(UnsupportedContentError):
+            await mgr.execute(ToolCallPart(id=f"c{i}", name=f"fake__invented_{i}_" + "x" * 500, arguments={}))
+    await mgr.execute(ToolCallPart(id="ok", name="fake__calc", arguments={}))
+
+    assert _label_names(m) == {"unknown", "fake__calc"}
+    assert m.tool_calls_total.labels("unknown", "fail")._value.get() == 100
+
+
+@pytest.mark.asyncio
+async def test_a_long_known_tool_name_is_truncated():
+    import primer.observability.metrics as m
+    from primer.model.chat import ToolCallPart
+
+    bare = "t" * 400
+    mgr = _make_manager_with_fake_tool(bare, "done")
+    await mgr.list_tools()
+    await mgr.execute(ToolCallPart(id="c", name=f"fake__{bare}", arguments={}))
+
+    (label,) = _label_names(m)
+    assert label == f"fake__{bare}"[:128]

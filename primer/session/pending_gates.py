@@ -46,9 +46,10 @@ from it survived into this deployment.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
-from primer.model.yield_ import gate_id_of, wake_gate_id_of
+from primer.model.yield_ import gate_id_of, parse_wait_deadline, wake_gate_id_of
 from primer.session.gate_token import gate_token_matches
 from primer.session.yields import _tool_call_id_for
 
@@ -113,6 +114,28 @@ def enumerate_pending_gates(blob: dict[str, Any]) -> list[dict[str, Any]]:
         "event_key": yielded.get("event_key"),
         "resume_metadata": dict(yielded.get("resume_metadata") or {}),
     }]
+
+
+def pending_key_deadlines(session: Any) -> dict[str, datetime]:
+    """When each key of a parked session's park is due (GR-4), for the timer and timeout sweeps.
+
+    A graph park's pending entry carries its own ``deadline``. The primary key, when no entry gives it one, is due at the row's
+    ``parked_until`` (a single park, or a graph park written before entries carried a deadline). Any other key (a co-pending ``tool_wait``
+    batch, or an entry of such an older park) has no deadline here, and neither has an entry whose key the row does not wait on.
+    """
+    out: dict[str, datetime] = {}
+    waited = {*(session.parked_event_keys or []), session.parked_event_key}
+    checkpoint = (getattr(session, "parked_state", None) or {}).get("graph_checkpoint") or {}
+    for entry in [*(checkpoint.get("pending_toolcalls") or []), *(checkpoint.get("pending_agent_yields") or [])]:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("parked_event_key") or entry.get("event_key")
+        deadline = parse_wait_deadline(entry.get("deadline"))
+        if key in waited and deadline is not None:
+            out[key] = min(deadline, out.get(key, deadline))
+    if session.parked_event_key and session.parked_until is not None:
+        out.setdefault(session.parked_event_key, session.parked_until)
+    return out
 
 
 def gate_is_decided(session: Any, gate: dict[str, Any]) -> bool:

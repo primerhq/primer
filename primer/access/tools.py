@@ -1,7 +1,7 @@
 """Which tools of which toolsets a person may use (access-control spec 6.9; plan P4 Task 2).
 
-``toolset_use`` answers for a whole turn's toolsets with ONE batched read of the toolset rows. A toolset with no row (a built-in or reserved id) is open to
-every full user. A row the person holds a level on gives every tool. Otherwise only the tools the row marks public (``public_tools``) are usable, so a row with
+``toolset_use`` answers for a whole turn's toolsets with ONE batched read of the toolset rows. A toolset with no row is open to every full user only when it is a built-in or a reserved scope id; a stored toolset whose row is gone (a
+harness uninstall removed it) has no tools to use. A row the person holds a level on gives every tool. Otherwise only the tools the row marks public (``public_tools``) are usable, so a row with
 none usable is closed. Admins short-circuit with no read.
 """
 
@@ -41,10 +41,15 @@ async def toolset_use(sp: "StorageProvider", person: Person, toolset_ids: Iterab
             Predicate(left=FieldRef(name="id"), op=Op.IN, right=Value(value=chunk)), OffsetPage(offset=0, length=_PAGE),
         )
         rows.update({r.id: r for r in page.items})
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_ROW_IDS     # lazy: the registry module imports a great deal
+
     out: dict[str, ToolUse] = {}
     for spelled in ids:
-        row = rows.get(canonical_toolset_id(spelled))
-        if row is None or level_of(person, row.access) is not None:
+        canonical = canonical_toolset_id(spelled)
+        row = rows.get(canonical)
+        if row is None:
+            out[spelled] = None if canonical in RESERVED_TOOLSET_ROW_IDS else frozenset()   # a missing row is "not available", never "built-in" (GX-2)
+        elif level_of(person, row.access) is not None:
             out[spelled] = None
         else:
             out[spelled] = frozenset(row.access.public_tools)

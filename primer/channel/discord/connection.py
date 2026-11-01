@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -67,6 +68,17 @@ async def _start_client_as_task(
         raise
 
 
+async def _login_client(client: Any, token: str) -> None:
+    """Log in for REST calls only (W7): no gateway, so this process receives no events. A failed login closes the client."""
+    try:
+        await client.login(token)
+    except BaseException:
+        await run_in_background(
+            _discard_client(client, None), what="discord login", verb="cleanup", wait_s=_START_CLEANUP_WAIT_S,
+        )
+        raise
+
+
 async def _discard_client(client: Any, task: asyncio.Task | None) -> None:
     """Undo a gateway start that did not finish: stop the connect task, wait for it, then close the client. Never raises."""
     if task is not None:
@@ -92,8 +104,16 @@ class _DiscordConnectionRegistry:
     def __init__(self) -> None:
         self._entries: dict[str, _Entry] = {}
         self._lock = asyncio.Lock()
+        #: Called with the provider id once its connection is closed: the factory then forgets it installed handlers on it, so a
+        #: reopened connection gets them again (W8).
+        self.on_close: Callable[[str], None] | None = None
 
-    async def acquire(self, provider: ChannelProvider) -> Any:
+    async def acquire(self, provider: ChannelProvider, *, inbound: bool = True) -> Any:
+        """The provider's shared client; refcounted. ``inbound=False`` logs in without a gateway (W7).
+
+        shortcut: the first acquire of a provider decides the mode and later ones share it; a process has one
+        ChannelRegistry, so one mode.
+        """
         async with self._lock:
             entry = self._entries.get(provider.id)
             if entry is None:
@@ -102,9 +122,11 @@ class _DiscordConnectionRegistry:
                 client = _build_client(cfg)
                 task = None
                 try:
-                    task = await _start_client_as_task(
-                        client, cfg.bot_token.get_secret_value(),
-                    )
+                    token = cfg.bot_token.get_secret_value()
+                    if inbound:
+                        task = await _start_client_as_task(client, token)
+                    else:
+                        await _login_client(client, token)
                 except Exception:
                     logger.exception(
                         "discord: failed to start client for %s", provider.id,
@@ -125,6 +147,8 @@ class _DiscordConnectionRegistry:
                 # The entry goes FIRST: whatever the close does (it fails, or the releasing task is cancelled while it runs),
                 # a stale entry would hand the next acquire a closed client, and the gateway task is stopped either way.
                 del self._entries[provider.id]
+                if self.on_close is not None:
+                    self.on_close(provider.id)
                 try:
                     # On its own task with a bounded wait: a cancel of the releasing task must not leave the HTTP session
                     # and the websocket half closed.

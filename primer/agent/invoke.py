@@ -372,6 +372,8 @@ async def run_subagent(
             agent=agent, llm=llm, llm_model=llm_model, tool_manager=tool_manager,
             prompt=prompt_msgs, principal=principal, messages_out=produced,
             turn_no=turn_no, interrupt=stop, interrupted_out=interrupted, capped_out=capped,
+            # The agent's own structured-output schema (AG-M3, ruling D14), on the first run and on every resume.
+            response_format=agent.response_format,
         ):
             if _sink is not None:
                 await _sink.on_event(
@@ -505,7 +507,7 @@ async def resume_subagent(
 
     The run is pinned to ``depth`` (via ``_depth_set``) so nested re-entry
     keeps counting from where it parked. If the continuation yields again, a
-    FRESH :class:`AgentFrame` (carrying the new in-progress history) is
+    FRESH :class:`AgentFrame` (carrying the whole in-progress history: the parked messages, the result and the continuation) is
     prepended onto the yield's ``frames`` stack and the yield is re-raised,
     so the worker can re-park the whole chain.
     """
@@ -528,10 +530,11 @@ async def resume_subagent(
     )
 
     rehydrated = [Message.model_validate(m) for m in (llm_messages or [])]
+    answered = Message(role="tool", parts=[child_result])
     resume_prompt = [
         *_build_subagent_prompt(agent=agent, context=context),
         *rehydrated,
-        Message(role="tool", parts=[child_result]),
+        answered,
     ]
 
     produced: list[Message] = []
@@ -558,7 +561,7 @@ async def resume_subagent(
                 agent=agent, llm=llm, llm_model=llm_model,
                 tool_manager=tool_manager, prompt=resume_prompt,
                 principal=context.principal, messages_out=produced, capped_out=capped,
-                turn_no=getattr(context, "turn_no", None),
+                turn_no=getattr(context, "turn_no", None), response_format=agent.response_format,
             ):
                 if _sink is not None:
                     # The delegating call's id is ``invoke_tool_call_id`` (the frame's ``tool_call_id``): this used to read
@@ -571,10 +574,12 @@ async def resume_subagent(
                         delegate_depth=depth, delegate_node_id=node_id,
                     )
     except YieldToWorker as yld:
+        # The frame holds every message after the system and task prefix, as run_subagent's does: what was parked, the
+        # answer to that park, and the continuation (it held only the continuation, so a second resume lost the rest, AG-H4).
         _push_agent_frame_on_yield(
             yld,
             agent_id=agent_id,
-            produced=produced,
+            produced=[*rehydrated, answered, *produced],
             invoke_tool_call_id=invoke_tool_call_id,
             depth=depth,
             context=context,

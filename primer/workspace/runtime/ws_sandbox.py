@@ -147,6 +147,9 @@ class WSSandbox(Sandbox):
     async def read_file(self, path: str) -> bytes:
         return await self._client.read_file(self._resolve(path))
 
+    async def read_file_from(self, path: str, offset: int) -> bytes:
+        return await self._client.read_file(self._resolve(path), offset=offset)
+
     async def write_file(
         self, path: str, content: bytes, *, mode: int | None = None,
     ) -> None:
@@ -264,6 +267,7 @@ class WSSandbox(Sandbox):
                     fromlist=["OpName"],
                 ).OpName.HEALTH,
                 {},
+                timeout=RuntimeClient._HEALTH_TIMEOUT_S,  # a runtime that cannot be reached must not hold the caller (review W1)
             )
             return SandboxInspectInfo(
                 state="running",

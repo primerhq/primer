@@ -48,18 +48,26 @@ def _fields() -> dict:
 
 _FIELDS: dict = _fields()
 
-IDS = ["private", "public-row", "one-tool", "builtin"]
+IDS = ["private", "public-row", "one-tool", "system"]      # "system": a built-in, which has no row
 
 
 @pytest.mark.parametrize(("who", "expected"), [
-    (OWNER, {"private": None, "public-row": None, "one-tool": None, "builtin": None}),
-    (GRANTEE, {"private": None, "public-row": None, "one-tool": frozenset({"t1"}), "builtin": None}),
-    (STRANGER, {"private": frozenset(), "public-row": None, "one-tool": frozenset({"t1"}), "builtin": None}),
+    (OWNER, {"private": None, "public-row": None, "one-tool": None, "system": None}),
+    (GRANTEE, {"private": None, "public-row": None, "one-tool": frozenset({"t1"}), "system": None}),
+    (STRANGER, {"private": frozenset(), "public-row": None, "one-tool": frozenset({"t1"}), "system": None}),
     (RESTRICTED, {i: frozenset() for i in IDS}),
     (ADMIN, dict.fromkeys(IDS)),
 ], ids=["owner", "grantee", "stranger", "restricted", "admin"])
 async def test_toolset_use_matrix(sp, who, expected) -> None:
     assert await toolset_use(sp, who, IDS) == expected
+
+
+@pytest.mark.parametrize("who", [OWNER, GRANTEE, STRANGER], ids=["owner", "grantee", "stranger"])
+async def test_a_toolset_whose_row_is_gone_is_not_available_never_built_in(sp, who) -> None:
+    """GX-2: a deleted toolset (a harness uninstall removed its row) answers "no tools", not "every tool"; a built-in or scope id keeps none-means-all."""
+    got = await toolset_use(sp, who, ["deleted-by-uninstall", "acme__gone", "system", "workspaces", "client", "external"])
+    assert got["deleted-by-uninstall"] == frozenset() and got["acme__gone"] == frozenset()
+    assert got["system"] is None and got["workspaces"] is None and got["client"] is None and got["external"] is None
 
 
 async def test_admin_short_circuits_with_no_read() -> None:

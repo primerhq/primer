@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -72,8 +73,13 @@ async def fire_and_hold(
     deps: DispatchDeps,
     workspace_registry: Any,
     wait_timeout: float,
+    on_fired: Callable[[FireResult], Awaitable[None]] | None = None,
 ) -> HeldFire:
-    """Fire ``trigger_id`` and hold until every fired run reaches a terminal."""
+    """Fire ``trigger_id`` and hold until every fired run reaches a terminal.
+
+    ``on_fired`` is awaited as soon as the fire returns, before the hold waits: the webhook endpoint records the fire
+    on its delivery row there, so a recovery sweep that runs while the hold is still waiting does not fire again (W12).
+    """
     if deps.event_bus is None:
         # No bus, no completion signal: fire and report the timeout shape so
         # the caller falls back to the 202 + poll path rather than claiming
@@ -82,14 +88,19 @@ async def fire_and_hold(
             trigger_id=trigger_id, scheduled_for=None, deps=deps,
             extra_context=extra_context,
         )
+        if on_fired is not None:
+            await on_fired(result)
         return HeldFire(fire_result=result, timed_out=True)
 
-    sub = deps.event_bus.subscribe()
+    sub = deps.event_bus.subscribe(prefix=_TERMINAL_PREFIX, suffix=_TERMINAL_SUFFIX)  # only terminal events: nothing else can be dropped for them
+    await sub.ready()  # listening before the fire publishes its wake
     try:
         result = await fire_trigger(
             trigger_id=trigger_id, scheduled_for=None, deps=deps,
             extra_context=extra_context,
         )
+        if on_fired is not None:
+            await on_fired(result)
         targets = held_targets(result)
         if not targets:
             return HeldFire(fire_result=result)

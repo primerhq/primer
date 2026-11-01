@@ -385,8 +385,18 @@ function TG_restoreInto(live, saved, validKinds) {
     g.tabs.forEach(function (t) { out = TG_openTab(out, { kind: t.kind, ref: t.ref }, { promote: !t.preview }); });
   });
   var active = TG_activeDoc(live);
-  if (active) out = TG_openTab(out, { kind: active.kind, ref: active.ref }, { promote: !active.preview });
-  return out;
+  if (!active) return out;
+  out = TG_openTab(out, { kind: active.kind, ref: active.ref }, { promote: !active.preview });
+  // The restore lands after the first render and the shell keys a group by its id: the group holding the document already on screen keeps the
+  // live id, or that document remounts and starts its reads from nothing (a palette open across it saw no session).
+  var keep = live.focusedGroupId;
+  var host = out.focusedGroupId;
+  if (TG_groupIndex(out, keep) >= 0) return out;
+  return {
+    groups: out.groups.map(function (g) { return g.id === host ? { id: keep, tabs: g.tabs, activeTabId: g.activeTabId } : g; }),
+    direction: out.direction,
+    focusedGroupId: keep,
+  };
 }
 
 // ---------------------------------------------------------------------------

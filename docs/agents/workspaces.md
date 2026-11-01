@@ -465,7 +465,8 @@ session's tools act with its turn's person, like any other run.
   (`create_workspace` over REST answers 422 naming the refused
   host). The whole fetch must finish within 60 seconds, or it fails
   too. An operator can allow private sources for the whole
-  deployment with `workspace_allow_private_url_sources`.
+  deployment with `workspace_allow_private_url_sources` (link-local and
+  cloud-metadata addresses stay refused).
 - A `url` file source may carry `user:password@` (the fetch sends it
   as Basic auth). A template read back through REST or
   `get_workspace_template` / `list_workspace_templates` shows it

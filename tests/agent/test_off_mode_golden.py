@@ -22,6 +22,8 @@ History of the fixture (``captured_from`` is the ``primer/`` tree hash it was ca
    rules (+26 chars), so every call's tool dump moved, the fixed overhead grew by 6 tokens (the markers' figures moved with it) and the
    boundary turns' padding shrank by 24 chars; turn 1 and call 0 moved only by that tool dump, so their digests below moved too.
    The fixture's ``recaptures`` list says which turns moved and why.
+8. re-captured for AG-M6 (task 44): the steers the pre-turn compaction window deferred are now in that turn's own prompt, so
+   turn 4's answer call carries the two steers after the compacted history (its persisted ``messages.jsonl`` is unchanged).
 
 ``tests/_support/off_golden.py`` runs one scripted session through every path the budget work
 touches (tier 1 pruning, tier 2 summarising, the overflow replay, steers deferred during a
@@ -157,15 +159,22 @@ class TestTheFixtureCrossesWhatItPins:
         assert holds_the_prior_summary(summariser), "the summariser read the prior summary with the rest of the head"
         assert not holds_the_prior_summary(retry), "the retry's prompt holds the new summary, which folded the old one"
 
-    def test_steers_during_compaction_land_after_the_marker_in_order_and_the_turn_never_sees_them(self, golden) -> None:
+    def test_steers_during_compaction_land_after_the_marker_in_order_and_the_turn_answers_them(self, golden) -> None:
         turn = golden["turns"][3]
         lines = turn["file"]["lines"]
         marker = max(i for i, l in enumerate(lines) if l.get("record") == "compaction_marker")
         assert [l["preview"] for l in lines[marker + 1:]] == [
             "STEER-DURING-COMPACTION-1", "STEER-DURING-COMPACTION-2", "turn-4-ok",
         ]
+        # AG-M6: the steers the window's close drained are handed to the in-flight turn, after its history, in order
+        # (it used to answer without them, and they waited for the next turn).
         turn_call = golden["calls"][7]
-        assert turn_call["messages"][-1]["role"] == "assistant", "the in-flight turn is not handed the deferred steers"
+        steers = [
+            {"role": "user", "parts": [part_fingerprint(TextPart(text=f"STEER-DURING-COMPACTION-{i}"), "no-session")]}
+            for i in (1, 2)
+        ]
+        assert turn_call["messages"][-2:] == steers
+        assert turn_call["messages"][-3]["role"] == "assistant"
 
     def test_every_scripted_llm_call_is_accounted_for(self, golden) -> None:
         assert golden["call_count"] == 10 == sum(t["llm_calls"] for t in golden["turns"])

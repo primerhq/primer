@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import stat
+import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Literal
@@ -66,6 +67,11 @@ _INSPECT_TO_STATUS: dict[str, str] = {
 }
 
 
+# How long a listing reuses the last session-id list, and how long an id without a slot is left alone (W42).
+_SESSION_IDS_TTL_SECONDS = 5.0
+_SLOTLESS_TTL_SECONDS = 300.0
+
+
 class SandboxWorkspace(Workspace):
     """Workspace backed by a :class:`Sandbox`. Shared by Container + K8s."""
 
@@ -93,6 +99,10 @@ class SandboxWorkspace(Workspace):
         self._workspace_root = workspace_root.rstrip("/")
         self._sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
+        # Listing sessions costs a commit-history read and two RPCs per id; a repeated listing (the console pages) reuses the last id list for a
+        # few seconds, and an id with no slot (a deleted session) is not asked about again for a while (W42).
+        self._ids_cache: tuple[float, list[str]] | None = None
+        self._slotless_until: dict[str, float] = {}
 
     @classmethod
     async def materialise(
@@ -122,7 +132,10 @@ class SandboxWorkspace(Workspace):
             SandboxWrite(sandbox, workspace_root=workspace_root),
             SandboxEdit(sandbox, workspace_root=workspace_root),
             SandboxGlob(sandbox, workspace_root=workspace_root),
-            SandboxGrep(sandbox, workspace_root=workspace_root),
+            SandboxGrep(
+                sandbox, workspace_root=workspace_root,
+                reserved_trees=(template.state_path, template.tmp_path),
+            ),
             SandboxExec(sandbox, workspace_root=workspace_root),
         ]
         return cls(
@@ -273,6 +286,7 @@ class SandboxWorkspace(Workspace):
         """
         async with self._lock:
             removed = self._sessions.pop(session_id, None) is not None
+        self._ids_cache = None
         # Reap outside the lock: it's a runtime RPC round-trip that must
         # never wedge the in-memory registry, and it's best-effort -- an
         # unreachable workspace must not fail the delete.
@@ -286,21 +300,26 @@ class SandboxWorkspace(Workspace):
             )
         return removed
 
-    async def _rehydrate_locked(self, session_id: str) -> AgentSession | None:
-        """Rebuild one session handle from persisted state. Caller holds
-        ``self._lock``. Returns ``None`` when no slot is persisted."""
+    async def _build_session(self, session_id: str) -> AgentSession | None:
+        """Rebuild one session handle from persisted state (two runtime RPCs; needs no lock). ``None`` when no slot is persisted."""
         info = await self._state_repo.load_session_info(session_id)
         binding = await self._state_repo.load_agent_binding(session_id)
         if info is None or binding is None:
             return None
-        session = AgentSession(
+        return AgentSession(
             session_info=info,
             agent_binding=binding,
             state_repo=self._state_repo,
             truncation_store=self._cache,
             workspace_tools=self._tools,
         )
-        self._sessions[session_id] = session
+
+    async def _rehydrate_locked(self, session_id: str) -> AgentSession | None:
+        """Rebuild one session handle from persisted state. Caller holds
+        ``self._lock``. Returns ``None`` when no slot is persisted."""
+        session = await self._build_session(session_id)
+        if session is not None:
+            self._sessions[session_id] = session
         return session
 
     async def _rehydrate_all_sessions(self) -> None:
@@ -309,29 +328,40 @@ class SandboxWorkspace(Workspace):
         Best-effort: a slot whose ``session.json``/``agent.json`` can't be
         read (mid-write race, partial create) is skipped rather than
         failing the whole listing."""
-        try:
-            session_ids = await self._state_repo.list_session_ids()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "SandboxWorkspace: list_session_ids failed during rehydrate",
-                extra={"workspace_id": self._workspace_id, "error": str(exc)},
-            )
-            return
-        async with self._lock:
-            for sid in session_ids:
-                if sid in self._sessions:
-                    continue
-                try:
-                    await self._rehydrate_locked(sid)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "SandboxWorkspace: skipping unrehydratable session",
-                        extra={
-                            "workspace_id": self._workspace_id,
-                            "session_id": sid,
-                            "error": str(exc),
-                        },
-                    )
+        now = time.monotonic()
+        if self._ids_cache is not None and self._ids_cache[0] > now:
+            session_ids = self._ids_cache[1]
+        else:
+            try:
+                session_ids = await self._state_repo.list_session_ids()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "SandboxWorkspace: list_session_ids failed during rehydrate",
+                    extra={"workspace_id": self._workspace_id, "error": str(exc)},
+                )
+                return
+            self._ids_cache = (now + _SESSION_IDS_TTL_SECONDS, session_ids)
+        # The runtime round-trips happen OUTSIDE the lock: a slow runtime must not stall every other call on this workspace.
+        built: dict[str, AgentSession] = {}
+        for sid in session_ids:
+            if sid in self._sessions or self._slotless_until.get(sid, 0.0) > now:
+                continue
+            try:
+                session = await self._build_session(sid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "SandboxWorkspace: skipping unrehydratable session",
+                    extra={"workspace_id": self._workspace_id, "session_id": sid, "error": str(exc)},
+                )
+                continue
+            if session is None:
+                self._slotless_until[sid] = now + _SLOTLESS_TTL_SECONDS
+            else:
+                built[sid] = session
+        if built:
+            async with self._lock:
+                for sid, session in built.items():
+                    self._sessions.setdefault(sid, session)
 
     # ---- File browsing for users ----------------------------------------
 
@@ -371,6 +401,48 @@ class SandboxWorkspace(Workspace):
                 return r
         return None
 
+    async def reserved_tree_of_resolved(self, path: str) -> str | None:
+        """The reserved tree ``path`` reaches once the RUNTIME resolves it (symlinks followed), else ``None``.
+
+        :meth:`reserved_tree_of` reads the string; the runtime follows links, so after ``ln -s .state x`` the string ``x/...`` is the state tree.
+        The runtime's ``stat`` answers the resolved path; for a path that does not exist yet (a write creating a file) the nearest existing
+        ancestor is resolved and the rest appended (review of workspaces, W55d). A path that resolves outside the workspace is not a reserved tree
+        (the runtime refuses it itself).
+        """
+        probe = self._resolve_path(path)
+        rest: list[str] = []
+        while True:
+            info = await self._sandbox.stat(probe)
+            if info is not None:
+                break
+            if probe == self._workspace_root or "/" not in probe:
+                return None
+            probe, _, leaf = probe.rpartition("/")
+            rest.insert(0, leaf)
+        resolved = info.path
+        root = self._workspace_root.rstrip("/")
+        if resolved == root or resolved in ("", "."):
+            rel = ""
+        elif resolved.startswith(root + "/"):
+            rel = resolved[len(root) + 1:]
+        elif not resolved.startswith("/"):
+            rel = resolved.strip("/")
+        else:
+            return None
+        rel = "/".join(part for part in [rel, *rest] if part)
+        for r in (self._template.state_path, self._template.tmp_path):
+            tree = r.replace("\\", "/").strip("/")
+            if rel == tree or rel.startswith(f"{tree}/"):
+                return r
+        return None
+
+    async def _refuse_reserved_resolved(self, path: str) -> None:
+        """:meth:`_refuse_reserved` for the path as the runtime resolves it (a symlink into a reserved tree is refused too)."""
+        self._refuse_reserved(path)
+        r = await self.reserved_tree_of_resolved(path)
+        if r is not None:
+            raise BadRequestError(f"refusing to mutate path inside reserved tree {r!r}: {path!r}")
+
     def _refuse_reserved(self, path: str) -> None:
         # Classify the RESOLVED path: comparing the raw string let
         # './.state/x', 'a/../.state/x' and '.state\\x' through, and the
@@ -400,7 +472,7 @@ class SandboxWorkspace(Workspace):
 
     async def list_files(
         self, path: str = ".", *, recursive: bool = False,
-        max_entries: int | None = None,
+        max_entries: int | None = None, skip_reserved: bool = False,
     ) -> list[FileEntry]:
         target = self._resolve_path(path)
         info = await self._sandbox.stat(target)
@@ -411,7 +483,14 @@ class SandboxWorkspace(Workspace):
 
         out: list[FileEntry] = []
         if recursive:
-            await self._walk(target, out, max_entries=max_entries)
+            skip = (
+                frozenset(
+                    f"{self._workspace_root.rstrip('/')}/{r.replace(chr(92), '/').strip('/')}"
+                    for r in (self._template.state_path, self._template.tmp_path) if r
+                )
+                if skip_reserved else frozenset()
+            )
+            await self._walk(target, out, max_entries=max_entries, skip=skip)
             out.sort(key=lambda fe: fe.path)
             return out
         for fs in await self._sandbox.list_dir(target):
@@ -426,7 +505,7 @@ class SandboxWorkspace(Workspace):
         return out
 
     async def _walk(
-        self, dir_abs: str, out: list[FileEntry], *, max_entries: int | None = None,
+        self, dir_abs: str, out: list[FileEntry], *, max_entries: int | None = None, skip: frozenset[str] = frozenset(),
     ) -> None:
         # Naive unbounded recursion otherwise -- max_entries stops both
         # appending AND descending into further subdirectories the
@@ -438,9 +517,11 @@ class SandboxWorkspace(Workspace):
                 return
             name = fs.path.rsplit("/", 1)[-1]
             child = f"{dir_abs}/{name}"
+            if child in skip:  # a reserved tree (W55c): neither listed nor descended into
+                continue
             out.append(self._file_entry_from_stat(fs, child))
             if fs.kind == "dir":
-                await self._walk(child, out, max_entries=max_entries)
+                await self._walk(child, out, max_entries=max_entries, skip=skip)
 
     async def read_file(self, path: str) -> bytes:
         target = self._resolve_path(path)
@@ -457,8 +538,21 @@ class SandboxWorkspace(Workspace):
             raise BadRequestError(f"{path!r} is {kind} and cannot be read")
         return await self._sandbox.read_file(target)
 
+    async def read_file_from(self, path: str, offset: int) -> bytes:
+        """:meth:`read_file` from byte ``offset``: the same checks, then the sandbox's ranged read (a runtime at protocol 1.5 sends only the tail)."""
+        target = self._resolve_path(path)
+        info = await self._sandbox.stat(target)
+        if info is None:
+            raise NotFoundError(f"{path!r} not found")
+        if info.kind != "file":
+            raise BadRequestError(f"{path!r} is not a file")
+        if not stat.S_ISREG(info.mode):
+            kind = "a FIFO" if stat.S_ISFIFO(info.mode) else "not a regular file (a socket or a device)"
+            raise BadRequestError(f"{path!r} is {kind} and cannot be read")
+        return await self._sandbox.read_file_from(target, offset)
+
     async def write_file(self, path: str, content: bytes) -> None:
-        self._refuse_reserved(path)
+        await self._refuse_reserved_resolved(path)
         target = self._resolve_path(path)
         info = await self._sandbox.stat(target)
         if info is not None and stat.S_ISFIFO(info.mode):
@@ -472,7 +566,7 @@ class SandboxWorkspace(Workspace):
         await self._sandbox.write_file(target, content)
 
     async def make_dir(self, path: str) -> None:
-        self._refuse_reserved(path)
+        await self._refuse_reserved_resolved(path)
         target = self._resolve_path(path)
         if await self._sandbox.stat(target) is not None:
             raise BadRequestError(f"{path!r} already exists")
@@ -484,7 +578,7 @@ class SandboxWorkspace(Workspace):
             ) from exc
 
     async def delete_file(self, path: str, *, recursive: bool = False) -> None:
-        self._refuse_reserved(path)
+        await self._refuse_reserved_resolved(path)
         target = self._resolve_path(path)
         if target == self._workspace_root:
             # '.', '/', 'x/..' all normalise here; a recursive delete would take .state and .tmp

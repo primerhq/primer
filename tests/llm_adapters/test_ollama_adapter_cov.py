@@ -787,7 +787,7 @@ class TestStream:
             raise ProviderTimeoutError("connect stalled", code="connect_timeout")
 
         monkeypatch.setattr(
-            "primer.llm.ollama._open_with_connect_timeout", raise_connect_timeout
+            "primer.llm.ollama._open_lazy_with_connect_timeout", raise_connect_timeout
         )
         with pytest.raises(ProviderTimeoutError) as info:
             async for _ in llm.stream(

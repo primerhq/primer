@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 
+import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -14,13 +17,35 @@ from tests.ui_e2e._shell_helpers import default_wid, open_view
 pytestmark = [smk("SMK-UI-06", status="partial"), pytest.mark.ui_e2e]
 
 
-def test_a_set_up_install_shows_a_green_setup_card(page: Page, console_url: str) -> None:
-    wid = default_wid(console_url) or "primer"
-    open_view(page, console_url, wid, "system:dashboard")
-    card = page.get_by_test_id("nv-sys-setup")
-    expect(card).to_be_visible(timeout=20_000)
-    expect(card).to_have_attribute("data-tone", "ok")
-    expect(page.get_by_test_id("nv-sys-setup-headline")).to_have_text("All 6 setup checks pass")
+@contextmanager
+def _default_provider_answers(base_url: str, mock_base_url: str) -> Iterator[None]:
+    """Point the provider the live check probes at the mock LLM for the journey, and put it back after.
+
+    The check probes the provider of the profile the seeded agents run on (the operator's, GI-2), which is the run's setup provider: an
+    Ollama nobody listens on (conftest.install_is_set_up). The card used to read green only when the check fell through to another
+    journey's leftover mock provider, so run alone this journey was always red.
+    """
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        profile_id = c.get("/v1/agents/operator").json()["model"]["profile_id"]
+        url = "/v1/llm_providers/" + c.get(f"/v1/model_profiles/{profile_id}").json()["provider_id"]
+        original = c.get(url).json()
+        r = c.put(url, json={**original, "provider": "openchat", "config": {"url": mock_base_url, "flavor": "other"}})
+        assert r.status_code == 200, r.text
+        try:
+            yield
+        finally:
+            c.put(url, json=original)
+
+
+def test_a_set_up_install_shows_a_green_setup_card(page: Page, base_url: str, console_url: str, mock_llm_lan) -> None:
+    _registry, mock_base_url = mock_llm_lan
+    with _default_provider_answers(base_url, mock_base_url):
+        wid = default_wid(console_url) or "primer"
+        open_view(page, console_url, wid, "system:dashboard")
+        card = page.get_by_test_id("nv-sys-setup")
+        expect(card).to_be_visible(timeout=20_000)
+        expect(card).to_have_attribute("data-tone", "ok")
+        expect(page.get_by_test_id("nv-sys-setup-headline")).to_have_text("All 6 setup checks pass")
 
 
 def test_a_failing_check_is_listed_with_its_fix_and_open_providers_goes_there(

@@ -37,6 +37,7 @@ a plain git-backed graph runner without workspace integration.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -244,11 +245,28 @@ provider_registry: Any | None = None,
 
                 return _read
 
+            def _make_read_tail(rel_path: Path):
+                target = rel_path
+
+                async def _read(max_bytes: int):
+                    def _do():
+                        if not target.exists():
+                            return b"", True
+                        with target.open("rb") as fh:
+                            size = fh.seek(0, 2)
+                            fh.seek(max(0, size - max_bytes))
+                            return fh.read(), size <= max_bytes
+
+                    return await asyncio.to_thread(_do)
+
+                return _read
+
             def _factory(node_id: str) -> TurnLogWriter:
                 target = state_root / "nodes" / node_id / "turns.jsonl"
                 return WorkspaceTurnLogWriter(
                     append_line=_make_append_line(target),
                     read_existing=_make_read_existing(target),
+                    read_tail=_make_read_tail(target),
                 )
 
             self._turn_log_factory = _factory
@@ -256,6 +274,7 @@ provider_registry: Any | None = None,
             self._graph_turn_log: TurnLogWriter = WorkspaceTurnLogWriter(
                 append_line=_make_append_line(graph_target),
                 read_existing=_make_read_existing(graph_target),
+                read_tail=_make_read_tail(graph_target),
             )
         else:
             # Sandbox (container/k8s) backend: turn-log I/O is not wired
@@ -397,8 +416,10 @@ provider_registry: Any | None = None,
             seed: Any = self._graph_input
         else:
             seed = messages
-        async for ev in super().invoke(seed):  # type: ignore[arg-type]
-            yield ev
+        # aclosing (AG-L11b): closing this generator closes the base one now, so its node tasks are cancelled before aclose returns.
+        async with contextlib.aclosing(super().invoke(seed)) as steps:  # type: ignore[arg-type]
+            async for ev in steps:
+                yield ev
 
     # ---- Subclass hooks --------------------------------------------------
 
@@ -718,6 +739,7 @@ provider_registry: Any | None = None,
         # graph's terminal commit.
         if (
             status == SessionStatus.ENDED
+            and ended_reason != "cancelled"  # a closed or cancelled run (AG-L11c): the session's own cancel exit decides the session's status (a Stop rests it WAITING)
             and self._owns_session_lifecycle
             and self._workspace_session is not None
         ):

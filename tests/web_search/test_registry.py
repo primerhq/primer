@@ -130,10 +130,13 @@ class TestInvalidate:
         )
         first = await reg.get("A")
         await reg.invalidate("A")
-        assert first.aclose_count == 1
+        # GX-1: a replaced adapter is retired, not closed at once (an in-flight call may still use it); it closes when idle or at registry close
+        assert first.aclose_count == 0
         second = await reg.get("A")
         assert second is not first
         assert len(log) == 2
+        await reg.aclose()
+        assert first.aclose_count == 1
 
     @pytest.mark.asyncio
     async def test_invalidate_unknown_id_is_no_op(self) -> None:

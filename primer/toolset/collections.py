@@ -32,7 +32,8 @@ from primer.knowledge.indexing import (
     make_document_path_rewriter,
     make_document_unindexer,
 )
-from primer.knowledge.tree import DocumentTreeService
+from primer.knowledge.tree import DocumentTreeService, check_body_size
+from primer.model.payload_too_large import PayloadTooLargeError
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.collection import Collection, Document
 from primer.model.except_ import (
@@ -47,6 +48,7 @@ from primer.model.yield_ import ToolContext
 from primer.toolset._collection_access import collection_for
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok_json as _ok
+from primer.toolset._system_common import _err_from_validation
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 logger = logging.getLogger(__name__)
@@ -108,7 +110,7 @@ def _parse(model: type[BaseModel], arguments: dict[str, Any]):
     try:
         return model.model_validate(arguments or {}), None
     except ValidationError as exc:
-        return None, _err(str(exc), error_type="validation-error")
+        return None, _err_from_validation(exc)
 
 
 def _map_error(exc: PrimerError) -> ToolCallResult:
@@ -116,7 +118,7 @@ def _map_error(exc: PrimerError) -> ToolCallResult:
         return _err(str(exc), error_type="not-found")
     if isinstance(exc, ConflictError):
         return _err(str(exc), error_type="conflict")
-    if isinstance(exc, BadRequestError):
+    if isinstance(exc, (BadRequestError, PayloadTooLargeError)):
         return _err(str(exc), error_type="validation-error")
     return _err(str(exc), error_type="tool-error")
 
@@ -284,6 +286,7 @@ def build_collections_toolset(
     ):
         """Embed + query the vector store; (hits, error) like _parse."""
         from primer.model.chat import TextPart
+        from primer.model.embedding import ExtendedEmbeddingConfig
         from primer.search.run import run_collection_search
 
         norm_prefix = (path_prefix or "").strip().lstrip("/")
@@ -295,6 +298,7 @@ def build_collections_toolset(
             response = await embedder.embed(
                 model=coll.search.embedder.model,
                 inputs=[TextPart(text=query)],
+                config=ExtendedEmbeddingConfig(task_type="retrieval_query"),
             )
             vector = list(response.embeddings[0].vector)
             store = await semantic_search_registry.get_store(
@@ -438,6 +442,7 @@ def build_collections_toolset(
         if error is not None:
             return error
         try:
+            check_body_size(args.body)
             doc = await tree.create(
                 collection_id=args.collection, parent=args.parent,
                 slug=args.slug, body=args.body, title=args.title,
@@ -475,6 +480,8 @@ def build_collections_toolset(
         if error is not None:
             return error
         try:
+            if args.body is not None:
+                check_body_size(args.body)
             doc = await tree.update(
                 collection_id=args.collection, path=args.path,
                 body=args.body, title=args.title,

@@ -29,7 +29,7 @@ CHANNEL = "session_cancel"
 def _scheduler() -> tuple[FakeListenPool, PostgresScheduler]:
     pool = FakeListenPool()
     sched = PostgresScheduler(
-        storage_provider=SimpleNamespace(pool=pool),  # type: ignore[arg-type]
+        storage_provider=SimpleNamespace(pool=pool, schema="public"),  # type: ignore[arg-type]
         config=PostgresSchedulerConfig(listen_reconnect_seconds=0.1),
     )
     return pool, sched

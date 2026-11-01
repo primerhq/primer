@@ -61,6 +61,7 @@ import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from primer.common.identity_memo import IdentityMemo
 from primer.model.chat import Message, ToolResultPart
 
 SizeFn = Callable[[ToolResultPart], int]
@@ -78,6 +79,9 @@ def default_size(part: ToolResultPart) -> int:
     return 20 + -(-len(part.output) // 4)
 
 
+_DIGEST_MEMO = IdentityMemo()  # a result is hashed once however many rounds look at it
+
+
 def result_keys(messages: Sequence[Message]) -> dict[tuple[int, int], str]:
     """A position-stable key for every tool result: ``id:hash#occurrence``.
 
@@ -92,7 +96,10 @@ def result_keys(messages: Sequence[Message]) -> dict[tuple[int, int], str]:
             continue
         for pi, part in enumerate(msg.parts):
             if isinstance(part, ToolResultPart):
-                digest = hashlib.sha256(part.output.encode("utf-8")).hexdigest()[:16]
+                digest = _DIGEST_MEMO.get(
+                    part, (id(part.output), len(part.output)),
+                    lambda part=part: hashlib.sha256(part.output.encode("utf-8")).hexdigest()[:16],
+                )
                 base = f"{part.id}:{digest}"
                 keys[(mi, pi)] = f"{base}#{seen.get(base, 0)}"
                 seen[base] = seen.get(base, 0) + 1

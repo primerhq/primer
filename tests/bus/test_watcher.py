@@ -38,6 +38,7 @@ from primer.model.workspace_session import (
     SessionStatus,
 )
 from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from tests.conftest import _FakeStorageProvider
 
 
 # ===========================================================================
@@ -350,7 +351,8 @@ class TestWatcherManager:
         # Wire bus + scheduler + manager.
         bus = InMemoryEventBus()
         await bus.initialize()
-        scheduler = InMemoryScheduler()
+        sp = _FakeStorageProvider()
+        scheduler = InMemoryScheduler(storage_provider=sp)
         await scheduler.initialize()
         await scheduler.register_worker(
             worker_id="wrk-1", host="h", pid=1, capacity=1,
@@ -365,7 +367,7 @@ class TestWatcherManager:
             workspace_id="ws-A",
             paths=["f.txt"],
         )
-        scheduler._sessions["sess-A"] = sess
+        await sp.get_storage(WorkspaceSession).create(sess)  # parks live in session storage
         scheduler._leases["sess-A"] = _LeaseState(
             worker_id=None,
             expires_at=None,
@@ -407,7 +409,8 @@ class TestWatcherManager:
     ):
         bus = InMemoryEventBus()
         await bus.initialize()
-        scheduler = InMemoryScheduler()
+        sp = _FakeStorageProvider()
+        scheduler = InMemoryScheduler(storage_provider=sp)
         await scheduler.initialize()
         await scheduler.register_worker(
             worker_id="wrk-1", host="h", pid=1, capacity=1,
@@ -419,7 +422,7 @@ class TestWatcherManager:
             workspace_id="ws-B",
             paths=["x"],
         )
-        scheduler._sessions["sess-B"] = sess
+        await sp.get_storage(WorkspaceSession).create(sess)  # parks live in session storage
         scheduler._leases["sess-B"] = _LeaseState(
             worker_id=None,
             expires_at=None,
@@ -441,7 +444,7 @@ class TestWatcherManager:
             assert "watch:sess-B:tc-B" in mgr.active_watchers()
             # Simulate the listener flipping the row after a different
             # publisher (e.g. cancel-yielded-tool) hit the bus.
-            sess.parked_status = "resumable"
+            await sp.get_storage(WorkspaceSession).update(sess.model_copy(update={"parked_status": "resumable"}))
             # Wait for the manager's next scan to drop the watcher.
             for _ in range(40):
                 await asyncio.sleep(0.05)
@@ -456,7 +459,8 @@ class TestWatcherManager:
     async def test_manager_ignores_non_watch_parks(self, tmp_path):
         bus = InMemoryEventBus()
         await bus.initialize()
-        scheduler = InMemoryScheduler()
+        sp = _FakeStorageProvider()
+        scheduler = InMemoryScheduler(storage_provider=sp)
         await scheduler.initialize()
         await scheduler.register_worker(
             worker_id="wrk-1", host="h", pid=1, capacity=1,
@@ -487,7 +491,7 @@ class TestWatcherManager:
             "started_at": datetime.now(timezone.utc).isoformat(),
             "resume_event_payload": None,
         }
-        scheduler._sessions["sess-C"] = sess
+        await sp.get_storage(WorkspaceSession).create(sess)  # parks live in session storage
         scheduler._leases["sess-C"] = _LeaseState(
             worker_id=None,
             expires_at=None,

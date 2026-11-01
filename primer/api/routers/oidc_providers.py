@@ -97,6 +97,10 @@ async def _preserve_client_secret_if_blank(
     """
     incoming = entity.client_secret
     is_blank = incoming is None or incoming.get_secret_value() in ("", "**********")
+    # An explicit flag, never a blank, removes the secret (GU-20: a confidential client turned public); a blank still keeps it.
+    if is_blank and request.query_params.get("clear_client_secret") == "true":
+        entity.client_secret = None
+        return
     if is_blank and existing.client_secret is not None:
         if origin_of(entity.discovery_url or "") != origin_of(existing.discovery_url):
             raise ValidationError(f"client_secret: {REENTER_KEY}")

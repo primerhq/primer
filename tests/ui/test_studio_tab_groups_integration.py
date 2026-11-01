@@ -125,7 +125,7 @@ def test_rail_props_are_wired_to_console_verbs() -> None:
     assert m
     body = m.group(0)
     for prop in (
-        "selectedWorkspaceId={con.wid}",
+        "selectedWorkspaceId={wsGone ? null : con.wid}",
         "onSelectWorkspace=",
         "onOpenSession=",
         # onCreateSessionInWorkspace: the workspace context menu's own

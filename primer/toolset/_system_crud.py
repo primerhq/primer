@@ -37,6 +37,7 @@ from primer.agent.approval import (
 from primer.agent.inner_dispatch import dispatch_inner_tool, inner_role_refusal
 from primer.authz import _role_allows
 from primer.common.entity_checks import EntityCheckError
+from primer.common.text_caps import check_text_caps
 from primer.common.toolset_ids import canonical_toolset_id
 from primer.model.access import Access, AccessLevel
 from primer.model.chat import Tool, ToolCallResult, ToolExample
@@ -45,7 +46,7 @@ from primer.model.provider import Toolset
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import ok as _ok
 from primer.model.collection import Collection, Document
-from primer.model.common import Identifiable, preserve_masked_secrets, refuse_served_masks
+from primer.model.common import Identifiable, dump_for_storage, preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import (
     AccessDeniedError,
     AuthRequiredError,
@@ -56,6 +57,8 @@ from primer.model.except_ import (
     ProviderError,
 )
 from primer.model.except_ import ValidationError as PrimerValidationError
+from primer.model.payload_too_large import PayloadTooLargeError
+from primer.knowledge.tree import check_body_size
 from primer.model.storage import (
     Op,
     Predicate,
@@ -561,6 +564,10 @@ def _crud_tools_for(
         refusal = refuse_create(guards, entity)
         if refusal is not None:
             return refusal
+        try:
+            check_text_caps(entity, None)
+        except EntityCheckError as exc:               # the REST twin is a 422
+            return _err(exc.tool_message(), error_type=exc.tool_error_type)
         # A create has nothing stored to restore a mask from: get_* then create_* under a new id (copy a provider) would store the masks as the values.
         try:
             refuse_served_masks(entity)
@@ -681,6 +688,10 @@ def _crud_tools_for(
             preserve_masked_secrets(entity, existing)
         except PrimerValidationError as exc:          # a served mask that cannot be restored (another host or user): the REST twin is a 422
             return _err(exc.message, error_type="validation-error")
+        try:
+            check_text_caps(entity, existing)
+        except EntityCheckError as exc:               # the REST twin is a 422
+            return _err(exc.tool_message(), error_type=exc.tool_error_type)
         if pre_update is not None:
             try:
                 await pre_update(
@@ -1818,6 +1829,7 @@ def _collection_extras(
         # and index vectors share dimensionality + metric, then run the
         # similarity search against the collection's vector store.
         from primer.model.chat import TextPart
+        from primer.model.embedding import ExtendedEmbeddingConfig
         from primer.model.except_ import BadRequestError
         from primer.search.run import run_collection_search
 
@@ -1844,6 +1856,7 @@ def _collection_extras(
             response = await embedder.embed(
                 model=coll.search.embedder.model,
                 inputs=[TextPart(text=args.query)],
+                config=ExtendedEmbeddingConfig(task_type="retrieval_query"),
             )
             vector = list(response.embeddings[0].vector)
             store = await semantic_search_registry.get_store(
@@ -2326,11 +2339,25 @@ def _document_write_tools(
                 "harness_id is set by the harness that manages a document and cannot be changed here",
                 error_type="bad-request",
             )
-        updated = existing.model_copy(update={"title": entity.title, "meta": entity.meta, "updated_at": datetime.now(UTC)})
+        # The changed fields alone, fenced on the place in the tree just checked (AG-L5): a whole-row write from this read undid a
+        # move_document that landed in between.
+        read = dump_for_storage(existing)
+        changed = dump_for_storage(
+            existing.model_copy(update={"title": entity.title, "meta": entity.meta, "updated_at": datetime.now(UTC)}),
+        )
         try:
-            updated = await docs.update(updated)
+            updated = await docs.patch_if(
+                entity_id, {f: changed[f] for f in ("title", "meta", "updated_at")},
+                where={f: [read[f]] for f in ("path", "slug", "parent_id", "collection_id", "harness_id")},
+            )
         except PrimerError as exc:
             return _document_error(exc)
+        if updated is None:
+            return _err(
+                f"Document {entity_id!r} was moved (or taken over by a harness) while it was being updated; nothing was "
+                "changed, retry",
+                error_type="conflict",
+            )
         return _ok(updated)
 
     out["update_document"] = (
@@ -2488,6 +2515,7 @@ def _document_extras(
         if denied is not None:
             return denied
         try:
+            check_body_size(args.content)
             doc = await service_factory().upsert(
                 collection_id=args.collection_id,
                 path=args.path,
@@ -2495,6 +2523,8 @@ def _document_extras(
                 title=args.title,
                 meta=args.meta,
             )
+        except PayloadTooLargeError as exc:
+            return _err_from_primer(exc, error_type="validation-error")
         except ConflictError as exc:
             return _err_from_primer(exc, error_type="conflict")
         except PrimerError as exc:

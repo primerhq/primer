@@ -24,9 +24,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeVar
 
@@ -118,6 +119,18 @@ ModelT = TypeVar("ModelT", bound=Identifiable)
 # ``<table>_<suffix>`` and ``expr`` is a SQLite ``json_extract`` expression
 # list suitable for ``CREATE [UNIQUE] INDEX ... ON "{table}" {expr}``.
 _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
+    # M2: the same hot fields as the postgres registry (single-process installs scan too, just later).
+    "sessions": [
+        ("parent_session_id", False, "(json_extract(data,'$.parent_session_id'))"),
+        ("last_worker_id", False, "(json_extract(data,'$.last_worker_id'))"),
+        ("binding_agent_id", False, "(json_extract(data,'$.binding.agent_id'))"),
+        ("binding_graph_id", False, "(json_extract(data,'$.binding.graph_id'))"),
+        ("turn_status", False, "(json_extract(data,'$.turn_status'))"),
+        ("parked_status", False, "(json_extract(data,'$.parked_status'))"),
+    ],
+    "subscription": [
+        ("trigger_id", False, "(json_extract(data,'$.trigger_id'))"),
+    ],
     "artifactlocation": [
         (
             "provider_id",
@@ -131,6 +144,15 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             True,
             "(json_extract(data,'$.provider_id'), json_extract(data,'$.subject'))",
         ),
+        ("user_id", False, "(json_extract(data,'$.user_id'))"),
+    ],
+    "service": [
+        # Mirrors the postgres entry (GS-9): the name is the /svc URL; created only when no duplicate name exists.
+        ("name_uniq", True, "(json_extract(data,'$.name'))"),
+    ],
+    "user": [
+        # Mirrors the postgres entry (GS-20); created only when no duplicate username exists.
+        ("username_uniq", True, "(json_extract(data,'$.username'))"),
     ],
     "toolapprovalrecord": [
         # Mirrors postgres._HOT_FIELD_INDEXES' toolapprovalrecord entry --
@@ -143,7 +165,28 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             "(json_extract(data,'$.gate_event_key'))",
         ),
     ],
+    "serviceversion": [
+        # Mirrors the postgres entry (KN-19j): two concurrent publishes
+        # compute the same next number from the same read; the unique
+        # (service_id, version) makes the loser's create a ConflictError.
+        (
+            "service_version_uniq",
+            True,
+            "(json_extract(data,'$.service_id'), json_extract(data,'$.version'))",
+        ),
+    ],
 }
+
+
+# The one hot-field index that may be created over pre-existing
+# conflicting rows (KN-19j): a pre-fix database can already hold
+# duplicate (service_id, version) pairs -- the race the index exists to
+# stop -- and CREATE UNIQUE INDEX over them would fail inside
+# _ensure_table and break every later ServiceVersion read and write.
+# Tolerate the violation for this (table, suffix) pair only (log and
+# continue without the index); every other hot-field index keeps
+# raising.
+_DUP_TOLERANT_UNIQUE_INDEXES = (("serviceversion", "service_version_uniq"), ("user", "username_uniq"), ("service", "name_uniq"))
 
 
 def _table_name_for(model_class: type[BaseModel]) -> str:
@@ -619,14 +662,39 @@ class SqliteStorageProvider(StorageProvider):
             if should_commit:
                 await self.connection.commit()
 
+    @asynccontextmanager
+    async def migration_lock(self):
+        """An exclusive ``flock`` on ``<database>.migrate-lock`` beside the database file.
+
+        A file lock rather than an in-process one, so ``primer init`` beside a
+        running API, or two providers on one file, never run the chain at
+        once. Polled with ``LOCK_NB`` so no blocking call runs on the loop;
+        closing the descriptor releases it. Not the database file itself:
+        closing any descriptor on that would drop SQLite's own locks.
+        """
+        import fcntl  # POSIX only, like the local workspace locks
+
+        path = self._config.path.expanduser()
+        fd = os.open(path.with_name(path.name + ".migrate-lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.05)
+            yield
+        finally:
+            os.close(fd)
+
     async def set_schema_version(
         self, version: int, *, migrated_at: datetime | None = None,
     ) -> None:
-        """Stamp ``schema_version`` and ``last_migration_at``."""
+        """Stamp ``schema_version`` (never lower) and ``last_migration_at``."""
         ts = (migrated_at or datetime.now(timezone.utc)).isoformat()
         sql = (
-            "UPDATE system_state SET schema_version = ?, last_migration_at = ? "
-            "WHERE id = ?"
+            "UPDATE system_state SET schema_version = MAX(schema_version, ?), "
+            "last_migration_at = ? WHERE id = ?"
         )
         async with self._write_guard() as should_commit:
             await self.connection.execute(sql, (version, ts, "singleton"))
@@ -634,19 +702,29 @@ class SqliteStorageProvider(StorageProvider):
                 await self.connection.commit()
 
     async def set_session_secret(self, secret: str) -> None:
-        """Persist the cookie-signing HMAC secret on the singleton row.
+        """Persist the cookie-signing HMAC secret on the singleton row, only when none is stored.
 
         Called by the auth layer the first time it needs a secret and
         the ``PRIMER_AUTH__SESSION_SECRET`` / ``PRIMER_SESSION_SECRET``
         env var override is not set.
         """
-        async with self._write_guard() as should_commit:
-            await self.connection.execute(
-                "UPDATE system_state SET session_secret = ? WHERE id = ?",
-                (secret, "singleton"),
-            )
-            if should_commit:
-                await self.connection.commit()
+        # Two processes booting a fresh install on one file can meet SQLITE_BUSY that busy_timeout does not
+        # wait out (a lock upgrade between two deferred transactions). The write is conditional and
+        # idempotent, so a short retry settles the race.
+        for attempt in range(5):
+            try:
+                async with self._write_guard() as should_commit:
+                    await self.connection.execute(
+                        "UPDATE system_state SET session_secret = ? WHERE id = ? AND session_secret IS NULL",
+                        (secret, "singleton"),
+                    )
+                    if should_commit:
+                        await self.connection.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == 4:
+                    raise
+                await asyncio.sleep(0.05 * (attempt + 1))
 
     async def set_sso_jit_enabled(self, enabled: bool) -> None:
         """Persist whether SSO just-in-time user provisioning is enabled."""
@@ -755,10 +833,26 @@ class SqliteStorage(Storage[ModelT]):
                     self._table, [],
                 ):
                     kind = "UNIQUE INDEX" if unique else "INDEX"
-                    await conn.execute(
-                        f'CREATE {kind} IF NOT EXISTS "{self._table}_{suffix}" '
-                        f'ON "{self._table}" {expr}'
-                    )
+                    try:
+                        await conn.execute(
+                            f'CREATE {kind} IF NOT EXISTS "{self._table}_{suffix}" '
+                            f'ON "{self._table}" {expr}'
+                        )
+                    except sqlite3.IntegrityError:
+                        if (self._table, suffix) not in _DUP_TOLERANT_UNIQUE_INDEXES:
+                            raise
+                        # A pre-fix database already holds duplicate
+                        # (service_id, version) rows (KN-19j): skip this
+                        # index. The failed CREATE does not abort the
+                        # open transaction, so the table DDL still
+                        # commits and reads work without the index.
+                        logger.warning(
+                            "could not create unique index %s_%s: "
+                            "duplicate rows already exist; continuing "
+                            "without it until an admin resolves them "
+                            "(KN-19j, GS-20)",
+                            self._table, suffix,
+                        )
                 if should_commit:
                     await conn.commit()
         except Exception as exc:
@@ -963,6 +1057,29 @@ class SqliteStorage(Storage[ModelT]):
         set_paths: Mapping[tuple[str, ...], Any] | None = None,
         conn: object | None = None,
     ) -> ModelT | None:
+        return (await self._patch_if(id, patch, where=where, set_paths=set_paths, conn=conn, want_current=False))[0]
+
+    async def patch_if_or_current(
+        self,
+        id: str,  # noqa: A002
+        patch: Mapping[str, Any] | None = None,
+        *,
+        where: Mapping[WhereKey, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None = None,
+        conn: object | None = None,
+    ) -> tuple[ModelT | None, ModelT | None]:
+        return await self._patch_if(id, patch, where=where, set_paths=set_paths, conn=conn, want_current=True)
+
+    async def _patch_if(
+        self,
+        id: str,  # noqa: A002
+        patch: Mapping[str, Any] | None,
+        *,
+        where: Mapping[WhereKey, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None,
+        conn: object | None,
+        want_current: bool,
+    ) -> tuple[ModelT | None, ModelT | None]:
         # SQLite serialises all writes through one shared connection under _write_guard(), so the
         # guard-then-write is atomic by construction, same reasoning as update_unless() above. The
         # statement is one UPDATE whose SET expression and WHERE both read the row's own ``data``.
@@ -1023,10 +1140,15 @@ class SqliteStorage(Storage[ModelT]):
                             payload_json=row[1],
                         )
                     exists = None
+                    current_row = None
                     if row is None:
+                        # The probe reads the row itself when the caller wants it as it now stands (a lost race): no second statement.
+                        columns = "id, data" if want_current else "1"
                         exists = await (await conn_.execute(
-                            f'SELECT 1 FROM "{self._table}" WHERE id = ?', (id,),
+                            f'SELECT {columns} FROM "{self._table}" WHERE id = ?', (id,),
                         )).fetchone()
+                        if want_current:
+                            current_row = exists
                 except BaseException:
                     if savepoint:
                         await conn_.execute("ROLLBACK TO patch_if")
@@ -1050,8 +1172,8 @@ class SqliteStorage(Storage[ModelT]):
                 raise NotFoundError(
                     f"{self._model.__name__} with id {id!r} not found"
                 )
-            return None
-        return entity
+            return None, (self._decode_row(current_row[0], current_row[1]) if current_row is not None else None)
+        return entity, None
 
     async def delete(self, id: str, *, conn: object | None = None) -> None:  # noqa: A002
         # SQLite uses a single shared connection so there is nothing to
@@ -1101,6 +1223,70 @@ class SqliteStorage(Storage[ModelT]):
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         return await self._paged(predicate=predicate, page=page, order_by=order_by)
 
+    #: Rows per query of :meth:`find_ids`.
+    _IDS_PAGE = 2000
+
+    supports_ids_of = True
+
+    def _translator(self) -> _SqlitePredicateTranslator:
+        return _SqlitePredicateTranslator(self._model, lambda model: f'"{self._provider.get_storage(model)._table}"')  # type: ignore[attr-defined]
+
+    async def _where(self, translator: _SqlitePredicateTranslator, predicate: Predicate | None) -> str:
+        """``predicate`` as SQL; the tables its IN subqueries read are created first (a table is created on its handle's first use)."""
+        if predicate is None:
+            return "1=1"
+        where_sql, _ = translator.translate(predicate)
+        for model in translator.joined:
+            await self._provider.get_storage(model)._ensure_table()  # type: ignore[attr-defined]
+        return where_sql
+
+    async def count_by(self, field: str, values: Sequence[str], predicate: Predicate | None = None) -> dict[str, int]:
+        """One ``GROUP BY`` over the rows whose ``field`` is among ``values`` (and match ``predicate``)."""
+        if not values:
+            return {}
+        await self._ensure_table()
+        from primer.model.storage import FieldRef, Op, Value
+
+        match = Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=list(values)))
+        if predicate is not None:
+            match = Predicate(left=match, op=Op.AND, right=predicate)
+        translator = self._translator()
+        where_sql = await self._where(translator, match)
+        expr = _render_field_expr(self._model, field)
+        sql = f'SELECT {expr}, count(*) FROM "{self._table}" WHERE {where_sql} GROUP BY {expr}'
+        try:
+            async with self._provider.read_snapshot():
+                cur = await self._provider.connection.execute(sql, list(translator._params))  # noqa: SLF001
+                rows = await cur.fetchall()
+        except Exception as exc:
+            raise _wrap_sqlite_error(exc, model_name=self._model.__name__, op="count_by") from exc
+        return {key: int(n) for key, n in rows if key is not None}
+
+    async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
+        """``(id, access)`` of every matching row: ``id`` and the ``access`` block only, keyset-paged on ``id``, no ``COUNT`` and no row decode."""
+        await self._ensure_table()
+        out: list[tuple[str, dict[str, Any] | None]] = []
+        last: str | None = None
+        while True:
+            translator = self._translator()
+            where_sql = await self._where(translator, predicate)
+            if last is not None:
+                translator.append_param(last)
+                where_sql = f"({where_sql}) AND id > ?"
+            translator.append_param(self._IDS_PAGE)
+            sql = f"SELECT id, json_extract(data, '$.access') FROM \"{self._table}\" WHERE {where_sql} ORDER BY id LIMIT ?"
+            try:
+                async with self._provider.read_snapshot():
+                    cur = await self._provider.connection.execute(sql, list(translator._params))  # noqa: SLF001
+                    rows = await cur.fetchall()
+            except Exception as exc:
+                raise _wrap_sqlite_error(exc, model_name=self._model.__name__, op="find_ids") from exc
+            for row_id, access in rows:
+                out.append((row_id, json.loads(access) if isinstance(access, str) else access))
+            if len(rows) < self._IDS_PAGE:
+                return out
+            last = rows[-1][0]
+
     async def _paged(
         self,
         *,
@@ -1109,10 +1295,8 @@ class SqliteStorage(Storage[ModelT]):
         order_by: list[OrderBy] | None,
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         await self._ensure_table()
-        translator = _SqlitePredicateTranslator(self._model)
-        where_sql = "1=1"
-        if predicate is not None:
-            where_sql, _ = translator.translate(predicate)
+        translator = self._translator()
+        where_sql = await self._where(translator, predicate)
         order_clause = render_order_by_sqlite(self._model, order_by)
         if isinstance(page, OffsetPage):
             return await self._page_offset(
@@ -1160,11 +1344,16 @@ class SqliteStorage(Storage[ModelT]):
             async with self._provider.read_snapshot():
                 cur = await self._provider.connection.execute(select_sql, params)
                 rows = await cur.fetchall()
-                cur = await self._provider.connection.execute(
-                    count_sql, count_params,
-                )
-                row = await cur.fetchone()
-                total = int(row[0]) if row is not None else None
+                total = None
+                if len(rows) < page.length and (rows or page.offset == 0):
+                    # A short page is the end of the result: no COUNT(*) needed.
+                    total = page.offset + len(rows)
+                elif page.want_total:
+                    cur = await self._provider.connection.execute(
+                        count_sql, count_params,
+                    )
+                    row = await cur.fetchone()
+                    total = int(row[0]) if row is not None else None
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="list",
@@ -1431,7 +1620,7 @@ class SqliteDocumentContentStore(DocumentContentStore):
         limit: int = 20,
         conn: object | None = None,
     ) -> list[FulltextHit]:
-        fts = self._fts_query(query)
+        fts = self._fts_query(query.replace("\x00", ""))  # a NUL cannot be searched for and used to raise out of the driver (CV-5)
         if not fts:
             return []
         sql = (
@@ -1441,12 +1630,14 @@ class SqliteDocumentContentStore(DocumentContentStore):
             "FROM document_content_fts "
             "JOIN document_content dc ON dc.rowid = document_content_fts.rowid "
             "WHERE document_content_fts MATCH ? AND dc.collection_id = ? "
-            "AND (? IS NULL OR dc.path LIKE ? || '%') "
+            "AND (? IS NULL OR dc.path LIKE ? || '%' ESCAPE '\\') "
             "ORDER BY score DESC LIMIT ?"
         )
+        # The scope matches literally, like list(prefix=): a `_` or `%` in it is not a wildcard (CV-4).
+        escaped = None if path_prefix is None else _escape_like(path_prefix)
         try:
             cur = await self._conn.execute(
-                sql, (fts, collection_id, path_prefix, path_prefix, limit),
+                sql, (fts, collection_id, path_prefix, escaped, limit),
             )
             rows = await cur.fetchall()
         except Exception as exc:
@@ -1669,6 +1860,14 @@ class SqliteEventStore(EventStore):
                     "ON events (occurred_at)"
                 )
                 await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS events_session_id "
+                    "ON events (session_id, id)"
+                )
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS events_workspace_id "
+                    "ON events (workspace_id, id)"
+                )
+                await self._conn.execute(
                     "CREATE TABLE IF NOT EXISTS event_cursors ("
                     "  subscriber_id TEXT PRIMARY KEY,"
                     "  cursor        INTEGER NOT NULL,"
@@ -1801,21 +2000,26 @@ class SqliteEventStore(EventStore):
             ) from exc
         return int(row[0]) if row and row[0] is not None else 0
 
-    async def prune(self, *, older_than: datetime, keep_after_id: int) -> int:
-        try:
-            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
-                cur = await self._conn.execute(
-                    "DELETE FROM events WHERE occurred_at < ? AND id <= ?",
-                    (older_than.isoformat(), keep_after_id),
-                )
-                if should_commit:
-                    await self._conn.commit()
-                removed = cur.rowcount
-        except Exception as exc:
-            raise _wrap_sqlite_error(
-                exc, model_name="events", op="prune",
-            ) from exc
-        return max(0, removed)
+    async def prune(self, *, older_than: datetime, keep_after_id: int, batch_size: int = 10_000) -> int:
+        removed = 0
+        while True:
+            try:
+                async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                    cur = await self._conn.execute(
+                        "DELETE FROM events WHERE id IN ("
+                        "SELECT id FROM events WHERE occurred_at < ? AND id <= ? ORDER BY id LIMIT ?)",
+                        (older_than.isoformat(), keep_after_id, batch_size),
+                    )
+                    if should_commit:
+                        await self._conn.commit()
+                    n = max(0, cur.rowcount)
+            except Exception as exc:
+                raise _wrap_sqlite_error(
+                    exc, model_name="events", op="prune",
+                ) from exc
+            removed += n
+            if n < batch_size:
+                return removed
 
     # -- cursors ----------------------------------------------------------
 
@@ -1851,6 +2055,36 @@ class SqliteEventStore(EventStore):
                 exc, model_name="event_cursors", op="set_cursor",
             ) from exc
 
+    async def get_cursors(self, subscriber_ids: list[str]) -> dict[str, int]:
+        out: dict[str, int] = {}
+        try:
+            for i in range(0, len(subscriber_ids), 500):  # stay under the bound-variable limit
+                chunk = subscriber_ids[i:i + 500]
+                cur = await self._conn.execute(
+                    f"SELECT subscriber_id, cursor FROM event_cursors WHERE subscriber_id IN ({','.join('?' * len(chunk))})",
+                    tuple(chunk),
+                )
+                out.update({row[0]: int(row[1]) for row in await cur.fetchall()})
+        except Exception as exc:
+            raise _wrap_sqlite_error(exc, model_name="event_cursors", op="get_cursors") from exc
+        return out
+
+    async def set_cursors(self, cursors: dict[str, int]) -> None:
+        if not cursors:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                await self._conn.executemany(
+                    "INSERT INTO event_cursors (subscriber_id, cursor, updated_at) VALUES (?, ?, ?)"
+                    " ON CONFLICT(subscriber_id) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at",
+                    [(sid, cursor, now) for sid, cursor in cursors.items()],
+                )
+                if should_commit:
+                    await self._conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(exc, model_name="event_cursors", op="set_cursors") from exc
+
     async def delete_cursor(self, subscriber_id: str) -> None:
         try:
             async with self._provider._write_guard() as should_commit:  # noqa: SLF001
@@ -1865,11 +2099,13 @@ class SqliteEventStore(EventStore):
                 exc, model_name="event_cursors", op="delete_cursor",
             ) from exc
 
-    async def active_cursor_floor(self) -> int | None:
+    async def active_cursor_floor(self, *, stale_after: timedelta | None = None) -> int | None:
         try:
-            cur = await self._conn.execute(
-                "SELECT MIN(cursor) FROM event_cursors",
-            )
+            if stale_after is None:
+                cur = await self._conn.execute("SELECT MIN(cursor) FROM event_cursors")
+            else:
+                cutoff = (datetime.now(timezone.utc) - stale_after).isoformat()
+                cur = await self._conn.execute("SELECT MIN(cursor) FROM event_cursors WHERE updated_at > ?", (cutoff,))
             row = await cur.fetchone()
         except Exception as exc:
             raise _wrap_sqlite_error(

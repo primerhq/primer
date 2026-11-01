@@ -86,8 +86,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from primer.access.person import person_for_tool
-from primer.access.policy import level_of, readable_ids
-from primer.storage.q import Q
+from primer.access.policy import level_of, readable_parent_filter
 from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks, check_graph_node_profiles
 from primer.agent.approval import ApprovalResolver
 from primer.agent.approval_checks import check_policy
@@ -159,7 +158,9 @@ from primer.model.workspace import (
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.session.peer_messages import ACCESS_NOTE
+from primer.session.mutation_lock import session_lifecycle_lock
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
+from primer.storage.references import MODEL_PROFILE_GRAPH_REFERENCE
 from primer.artifact.checks import (
     ARTIFACT_DEFAULT_WRITE_NOTE,
     ARTIFACT_DELETE_NOTE,
@@ -181,6 +182,7 @@ from primer.knowledge.checks import (
 from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
 from primer.knowledge.lifecycle import purge_collection
 from primer.toolset.toolset_checks import (
+    check_mcp_url_resolves_public,
     check_toolset_on_create,
     check_toolset_on_update,
     oauth_settings_changed,
@@ -406,6 +408,10 @@ def build_system_toolset(
         if artifact_storage_registry is not None:
             await artifact_storage_registry.invalidate(eid)
 
+    async def _inv_policy(_eid: str) -> None:
+        # The gate's cached verdicts are stale in every process once a policy row changes (GS-28); ``approval_resolver`` is set below.
+        await approval_resolver.invalidate_everywhere()
+
     async def _inv_mp(eid: str) -> None:
         # The ModelProfile REST router drops the profile's cached AggregatedLLM on every update and delete (a no-op when
         # it was never cached), so the next resolve rebuilds it from the row's current members and routing policy.
@@ -422,6 +428,7 @@ def build_system_toolset(
         RESERVED_TOOLSET_IDS,
         RESERVED_TOOLSET_ROW_IDS,
     )
+    from primer.model.providers.vector import ssp_save_violation
 
     guards_by_label: dict[str, CrudGuards] = {
         # harness-managed rows (REST ``managed_by_field="harness_id"``)
@@ -434,6 +441,7 @@ def build_system_toolset(
             references=(
                 ToolReference("agent", Agent, "model.profile_id"),
                 ToolReference("model_profile (aggregate member)", ModelProfile, "members", op=Op.CONTAINS),
+                ToolReference.from_spec(MODEL_PROFILE_GRAPH_REFERENCE),
             ),
         ),
         "toolset": toolset_guards(),
@@ -451,6 +459,7 @@ def build_system_toolset(
         ),
         "semantic_search_provider": CrudGuards(
             kind="semantic_search_provider", reserved_create_ids=RESERVED_SSP_IDS, reserved_delete_ids=RESERVED_SSP_IDS,
+            validate=ssp_save_violation,        # the HNSW settings pgvector refuses (GI-22)
         ),
         "artifact_storage_provider": CrudGuards(
             kind="artifact_storage_provider", reserved_delete_ids=frozenset({DEFAULT_ARTIFACT_PROVIDER_ID}),
@@ -483,14 +492,21 @@ def build_system_toolset(
             tool_schema_of=_tool_schema_of,
         )
 
-    async def _toolset_pre_create(entity: Toolset) -> None:
+    async def _toolset_pre_create(entity: Toolset, *, person: Any = None) -> None:
         # Not the router's reachability probe (an 8 s outbound call for http / sse MCP toolsets): a tool runs inside an agent turn.
         check_toolset_on_create(entity)
+        if person is not None:
+            await check_mcp_url_resolves_public(entity, person)  # a name that resolves internal, below admin (the REST route does the same)
 
-    async def _toolset_pre_update(entity: Toolset, existing: Toolset) -> None:
+    async def _toolset_pre_update(entity: Toolset, existing: Toolset, *, person: Any = None) -> None:
         check_toolset_on_update(entity, existing)
+        if person is not None:
+            await check_mcp_url_resolves_public(entity, person)
         if mcp_oauth is not None and oauth_settings_changed(entity, existing):
             await mcp_oauth.forget(entity.id)
+
+    _toolset_pre_create.takes_person = True  # type: ignore[attr-defined]
+    _toolset_pre_update.takes_person = True  # type: ignore[attr-defined]
 
     async def _profile_pre_create(entity: ModelProfile) -> None:
         await check_profile_on_create(entity, storage_provider=storage_provider)
@@ -595,7 +611,7 @@ def build_system_toolset(
         ("graph_thread", "graph_threads", GraphThread, None, None, None, "user", False),
         ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin", False),
         ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, _inv_asp, _inv_asp, "admin", False),
-        ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, None, None, "admin", False),
+        ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, _inv_policy, _inv_policy, "admin", False),
         ("channel_provider", "channel_providers", ChannelProvider, None, None, None, "admin", False),
         ("channel", "channels", Channel, None, None, None, "user", True),
     ]
@@ -732,8 +748,7 @@ def build_system_toolset(
         return denied
 
     async def _graph_thread_list_filter(ctx: ToolContext | None) -> Any:
-        ids = await readable_ids(_graph_rows, person_for_tool(ctx))
-        return None if ids is None else Q(GraphThread).where_in("graph_id", ids).build()
+        return await readable_parent_filter(_graph_rows, Graph, person_for_tool(ctx), "graph_id")
 
     inherited_by_label: dict[str, Any] = {
         "document": (_document_row_guard, _document_list_filter),
@@ -1598,21 +1613,30 @@ def build_system_toolset(
                             error_type="not-found")
 
         sessions = storage_provider.get_storage(WorkspaceSession)
-        row = await sessions.get(ctx.session_id)
-        if row is None:
-            return _err(f"session {ctx.session_id!r} does not exist",
-                        error_type="not-found")
-
-        await sessions.update(row.model_copy(update={
-            "pending_binding_switch": {
-                "kind": args.kind,
-                "agent_id": args.agent_id,
-                "graph_id": args.graph_id,
-                "profile_id": args.profile_id,
-                "actor": "agent",
-                "reason": args.reason,
-            },
-        }))
+        # As the REST twin (AG-M13): the queued switch ALONE, under the lifecycle lock, fenced on the turn_status and last_seq
+        # read inside it. A whole-row write from this mid-turn read erased a Stop, a Cancel or a seq a steer reserved in between.
+        async with session_lifecycle_lock().acquire(ctx.session_id):
+            row = await sessions.get(ctx.session_id)
+            if row is None:
+                return _err(f"session {ctx.session_id!r} does not exist",
+                            error_type="not-found")
+            written = await sessions.patch_if(
+                ctx.session_id,
+                {"pending_binding_switch": {
+                    "kind": args.kind,
+                    "agent_id": args.agent_id,
+                    "graph_id": args.graph_id,
+                    "profile_id": args.profile_id,
+                    "actor": "agent",
+                    "reason": args.reason,
+                }},
+                where={"turn_status": [row.turn_status], "last_seq": [row.last_seq]},
+            )
+        if written is None:
+            return _err(
+                f"session {ctx.session_id!r} changed while the switch was being queued; nothing was changed, retry",
+                error_type="conflict",
+            )
         target = args.graph_id if args.kind == "graph" else args.agent_id
         return ToolCallResult(
             output=(

@@ -21,7 +21,7 @@ from tests.ui._mini_react import mini_react_context, transpile
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 NO_PROBE = {"allow_unreachable": "true"}
-MCP_URL = "http://127.0.0.1:9/mcp"
+MCP_URL = "http://mcp.example.com/mcp"
 
 PRELUDE = r"""
 var BODIES = []; var PENDING = []; var TOASTS = []; var AUTH_ROLE = "admin";
@@ -200,7 +200,7 @@ async def _stored_oauth(app) -> dict:
 
 PUBLIC_STATIC = {"grant": "authorization_code", "scopes": ["read"], "static_client": {"client_id": "pub-client"}}
 CONFIDENTIAL_STATIC = {"grant": "authorization_code", "scopes": ["read"], "static_client": {"client_id": "c1", "client_secret": "s1"}}
-CLIENT_CREDENTIALS = {"grant": "client_credentials", "scopes": ["read"], "token_endpoint": "http://127.0.0.1:9/token",
+CLIENT_CREDENTIALS = {"grant": "client_credentials", "scopes": ["read"], "token_endpoint": "http://mcp.example.com/token",
                       "static_client": {"client_id": "cc", "client_secret": "cc-secret"}}
 
 
@@ -287,7 +287,7 @@ async def test_switching_with_the_masked_secret_kept_is_refused_with_its_reason(
 async def test_a_refused_token_endpoint_is_shown_under_its_field(forms, raw_client, app) -> None:
     await _create(raw_client, app, CLIENT_CREDENTIALS, connect=False)
     form = forms(await _served(raw_client))
-    form.type_into("ts-oauth-token-endpoint", "ftp://127.0.0.1:9/token")
+    form.type_into("ts-oauth-token-endpoint", "ftp://mcp.example.com/token")
     form.type_into("ts-oauth-client-secret", "cc-secret")
 
     r = await raw_client.put("/v1/toolsets/kb", json=form.save())
@@ -324,7 +324,7 @@ async def test_an_error_with_no_field_of_its_own_is_shown_in_the_form_banner(for
     form.save()
     # The body G4-04 used to send: the OAuth block's own check refuses it, at the `oauth` loc, which no single field owns.
     refused = json.loads(json.dumps(served))
-    refused["config"]["config"]["oauth"]["token_endpoint"] = "http://127.0.0.1:9/token"
+    refused["config"]["config"]["oauth"]["token_endpoint"] = "http://mcp.example.com/token"
     r = await raw_client.put("/v1/toolsets/kb", json=refused)
     assert r.status_code == 422, r.text
     form.answer(r)

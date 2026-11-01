@@ -192,30 +192,58 @@ def test_snapshot_is_stable_across_a_no_op_frame() -> None:
     assert out["gatesDegraded"] is True
 
 
-def test_refcount_does_not_clear_accumulated_state() -> None:
-    """dispose() drops the refcount to zero but keeps the accumulated
-    records (background sessions keep accumulating)."""
+def test_refcount_frees_accumulated_records_after_a_grace() -> None:
+    """Lead ruling on UI-H1: once nothing displays a session (refs at zero), its accumulated records and live parts are
+    freed after a 60 s grace from the last release, so reopening a tab within a minute does not refetch. The status and the
+    high-water stay (the pulse dot and the tap cursor still work), and a re-mount inside the grace cancels the free."""
     ctx = _ctx()
     out = json.loads(ctx.eval(
         """
         (function () {
-          var s = SS_getStore("w6", "s6");
-          SS_retain(s);
-          SS_apply(s, {"class": "assistant_token", session_id: "s6", seq: 1,
-            payload: {text: "kept"}});
-          SS_dispose(s);
-          var refs = s.refs;
-          var snap = SS_getSnapshot(s, "transcript");
-          var rec = snap.filter(function (r) { return r.kind === "record"; });
+          function filled(sid) {
+            var s = SS_getStore("w6", sid);
+            SS_retain(s);
+            SS_apply(s, {"class": "tool_call", session_id: sid, seq: 1, payload: {name: "shell", id: "c1"}});
+            SS_apply(s, {"class": "assistant_token", session_id: sid, seq: 2, payload: {text: "kept"}});
+            SS_apply(s, {"class": "text_delta", session_id: sid, part_id: "n:text", kind: "text", delta: "live"});
+            return s;
+          }
+          function kept(s) {
+            var snap = SS_getSnapshot(s, "transcript") || [];
+            return s.recordsBySeq.length === 2 && snap.filter(function (r) { return r.kind === "record"; }).length === 2
+              && !!s.parts["n:text"];
+          }
+          var a = filled("s6");
+          var b = filled("s6b");
+          var TIMERS = [];
+          window.setTimeout = function (fn, ms) { TIMERS.push({fn: fn, ms: ms, live: true}); return TIMERS.length; };
+          window.clearTimeout = function (id) { if (TIMERS[id - 1]) TIMERS[id - 1].live = false; };
+          SS_dispose(a);
+          var withinGrace = kept(a);
+          var graceMs = TIMERS.map(function (t) { return t.ms; });
+          SS_dispose(b);
+          SS_retain(b);   // re-mounted inside the grace
+          TIMERS.forEach(function (t) { if (t.live) t.fn(); });
           return JSON.stringify({
-            refs: refs,
-            recordKept: rec.length === 1 && rec[0].text === "kept"
+            refs: a.refs,
+            withinGrace: withinGrace,
+            graceMs: graceMs,
+            freedRecords: a.recordsBySeq.length + Object.keys(a.records).length,
+            freedParts: Object.keys(a.parts).length,
+            statusKept: a.status && a.status.verb,
+            highWaterKept: SS_highWater(a),
+            remountKept: kept(b),
+            remountRefs: b.refs
           });
         })()
         """
     ))
     assert out["refs"] == 0
-    assert out["recordKept"] is True
+    assert out["withinGrace"] is True, "records are kept during the grace"
+    assert out["graceMs"] == [60000]
+    assert out["freedRecords"] == 0 and out["freedParts"] == 0, "freed after the grace"
+    assert out["statusKept"] == "shell" and out["highWaterKept"] == 2
+    assert out["remountKept"] is True and out["remountRefs"] == 1, "a re-mount inside the grace keeps them"
 
 
 def test_frames_for_other_sessions_do_not_touch_the_store() -> None:
@@ -732,3 +760,104 @@ def test_the_canvas_channel_keeps_the_highest_values() -> None:
     ))
     assert out["store"] == {"rev": 7, "eventSeq": 9}
     assert out["snap"] == {"rev": 7, "eventSeq": 9}
+
+
+def _rows_by_kind(rows, kind):
+    return [r for r in rows if r["kind"] == kind]
+
+
+def test_deltas_arriving_after_their_durable_record_do_not_add_a_second_copy() -> None:
+    """The deltas ride the bus and the record the durable log, so either can reach the store first. The turn persist makes a
+    turn's records durable while the dispatch's delta buffer still holds the answer's deltas (up to its 100 ms interval; a fast
+    model's whole answer), so a history read can hand the store the assistant_token record BEFORE the part_start / text_delta
+    of the same part_id. Those late deltas used to open a fresh live part, rendered after the last record as a second copy of
+    the answer (ui-e2e: "recovered after the retry" at nv-turn:6 and nv-turn:8). The record is final (A4) in either order."""
+    ctx = _ctx()
+    for shape in ({"kind": "assistant_token"}, {"class": "assistant_token"}):   # a REST history item, a tap frame
+        sid = "s-late-" + next(iter(shape))
+        rows = _transcript(ctx, "w-late", sid, [
+            {**shape, "session_id": sid, "seq": 6, "payload": {"part_id": "x:text:1", "text": "recovered after the retry"}},
+            {"class": "part_start", "session_id": sid, "part_id": "x:text:1", "kind": "text"},
+            {"class": "text_delta", "session_id": sid, "part_id": "x:text:1", "kind": "text",
+             "delta": "recovered after the retry"},
+            {"class": "part_end", "session_id": sid, "part_id": "x:text:1", "kind": "text"},
+        ])
+        assert _rows_by_kind(rows, "part") == [], shape
+        assert [r["text"] for r in _rows_by_kind(rows, "record")] == ["recovered after the retry"]
+
+
+def test_a_late_tool_input_delta_does_not_reopen_a_recorded_tool_call() -> None:
+    ctx = _ctx()
+    rows = _transcript(ctx, "w-late", "s-late-tool", [
+        {"class": "tool_call", "session_id": "s-late-tool", "seq": 3,
+         "payload": {"id": "x:tool:0:1", "name": "workspace__exec", "arguments": {"command": "true"}}},
+        {"class": "tool_input_delta", "session_id": "s-late-tool", "part_id": "x:tool:0:1", "kind": "tool",
+         "delta": '{"command": "true"}'},
+    ])
+    assert _rows_by_kind(rows, "part") == []
+
+
+def test_a_delta_for_another_part_still_streams_after_a_record() -> None:
+    """Only the recorded part is closed: the next part's deltas stream as before."""
+    ctx = _ctx()
+    rows = _transcript(ctx, "w-late", "s-late-next", [
+        {"class": "assistant_token", "session_id": "s-late-next", "seq": 6, "payload": {"part_id": "x:text:1", "text": "one"}},
+        {"class": "part_start", "session_id": "s-late-next", "part_id": "x:text:2", "kind": "text"},
+        {"class": "text_delta", "session_id": "s-late-next", "part_id": "x:text:2", "kind": "text", "delta": "tw"},
+    ])
+    assert [(r["partId"], r["text"], r["state"]) for r in _rows_by_kind(rows, "part")] == [("x:text:2", "tw", "streaming")]
+
+
+# ---------------------------------------------------------------------------
+# UI-M7: the session document re-applies its history page on every poll. An already-known record must not settle the
+# pending send or walk the status back (probe /tmp/review-ui/ss.js).
+# ---------------------------------------------------------------------------
+
+_PAGE = [
+    {"seq": 1, "kind": "user_input", "payload": {"text": "first ask"}, "ts": "2026-10-31T10:00:00Z", "session_id": "s1"},
+    {"seq": 2, "kind": "tool_call", "payload": {"name": "shell", "id": "c1"}, "ts": "2026-10-31T10:00:01Z", "session_id": "s1"},
+]
+
+
+def _status(ctx) -> dict:
+    return json.loads(ctx.eval(
+        "JSON.stringify({verb: s.status && s.status.verb, startedMs: s.status && s.status.startedMs,"
+        " snap: (SS_getSnapshot(s, 'status') || {}).verb, pending: s.optimisticSendPending,"
+        " optimistic: Object.keys(s.optimistic)})"
+    ))
+
+
+def test_records_applied_in_order_walk_the_status_to_the_newest() -> None:
+    ctx = _ctx()
+    ctx.eval("globalThis.s = SS_getStore('w-m7', 's1'); var p = " + json.dumps(_PAGE) + "; p.forEach(function (r) { SS_apply(s, r); });")
+    assert _status(ctx)["verb"] == "shell"
+    ctx.eval("SS_apply(s, {seq: 3, kind: 'done', payload: {}, session_id: 's1'});")
+    assert _status(ctx)["verb"] is None
+
+
+def test_a_reseeded_page_keeps_the_pending_send_and_its_sending_status() -> None:
+    """The operator steers a running turn; before the loop takes the message, the turn writes one more record and the next
+    history poll re-applies the page. The old user_input that started the turn used to settle the send (pending cleared, the
+    optimistic row gone) and the old shell call to become the status again, with its old start time."""
+    ctx = _ctx()
+    ctx.eval("window.primerApi = { apiFetch: function () { return new Promise(function () {}); } };")  # the steer is accepted, not yet recorded
+    ctx.eval("globalThis.s = SS_getStore('w-m7', 's1'); var p = " + json.dumps(_PAGE) + "; p.forEach(function (r) { SS_apply(s, r); });")
+    ctx.eval("SS_sendUserMessage(s, 'steer: stop and do X', 'cid-1');")
+    page2 = _PAGE + [{"seq": 3, "kind": "tool_result", "payload": {"text": "ok"}, "ts": "2026-10-31T10:00:05Z", "session_id": "s1"}]
+    ctx.eval("var p2 = " + json.dumps(page2) + "; p2.forEach(function (r) { SS_apply(s, r); });")
+    after = _status(ctx)
+    assert after["pending"] == "cid-1" and after["optimistic"] == ["cid-1"], after
+    assert after["verb"] == "sending" and after["snap"] == "sending", after
+    # The server's own record of the steer (a newer user_input) still settles it.
+    ctx.eval("SS_apply(s, {seq: 4, kind: 'user_input', payload: {text: 'steer: stop and do X'}, session_id: 's1'});")
+    settled = _status(ctx)
+    assert settled["pending"] is None and settled["optimistic"] == [] and settled["verb"] == "thinking", settled
+
+
+def test_an_older_page_does_not_walk_back_a_status_the_tap_already_moved() -> None:
+    ctx = _ctx()
+    ctx.eval("globalThis.s = SS_getStore('w-m7', 's1');")
+    ctx.eval("SS_apply(s, {'class': 'tool_call', seq: 5, payload: {name: 'read_file', id: 'c5'}, ts: '2026-10-31T10:01:00Z', session_id: 's1'});")
+    ctx.eval("var p = " + json.dumps(_PAGE) + "; p.forEach(function (r) { SS_apply(s, r); });")
+    after = _status(ctx)
+    assert after["verb"] == "read_file" and after["startedMs"] == ctx.eval("Date.parse('2026-10-31T10:01:00Z')"), after

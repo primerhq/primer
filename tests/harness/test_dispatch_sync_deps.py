@@ -412,3 +412,75 @@ async def test_sync_handles_dep_dropped_from_dependencies(
     by_id = {e.resolved_id: e for e in rendering.entries}
     assert "docs-base__guide" not in by_id
     assert "parent-drop__main" in by_id
+
+
+# ---------------------------------------------------------------------------
+# 4. GX-5: the parent and a sub-harness declare the same template names
+# ---------------------------------------------------------------------------
+
+
+def _assistant(description: str) -> str:
+    return f"kind: agent\nname: assistant\nspec:\n  description: \"{description}\"\n  model:\n    profile_id: openai--gpt-4\n"
+
+
+_KB = "kind: collection\nname: kb\nspec:\n  description: kb\n"
+
+
+def _readme(body: str) -> str:
+    return f"kind: document\nname: readme\nspec:\n  collection_id: kb\n  title: Readme\ncontent_inline: \"{body}\"\n"
+
+
+@pytest.mark.asyncio
+async def test_sync_applies_sub_entries_that_share_a_template_name_with_the_parent(tmp_path):
+    """Each sub entry is diffed and written by its own resolved id, not merged with the parent's same-named one: the
+    sub's document gets its own body at install, a sync writes the sub's changed agent, and a sync deletes the
+    agent the sub dropped. Real SQLite storage."""
+    from primer.model.collection import Document
+    from primer.model.provider import SqliteConfig, StorageProviderConfig, StorageProviderType
+    from primer.storage.factory import StorageProviderFactory
+
+    sub_dir = tmp_path / "dep"
+    parent_dir = tmp_path / "parent"
+    _init_repo_with_files(sub_dir, {
+        "harness.yaml": _sub_harness_yaml("Dep", "dep"), "overrides.schema.json": _EMPTY_SCHEMA,
+        "templates/assistant.yaml": _assistant("dep v1"), "templates/kb.yaml": _KB,
+        "templates/readme.yaml": _readme("dep body"),
+    })
+    _init_repo_with_files(parent_dir, {
+        "harness.yaml": _parent_harness_yaml([{"name": "dep", "git_url": f"file://{sub_dir}"}]),
+        "overrides.schema.json": _EMPTY_SCHEMA,
+        "templates/assistant.yaml": _assistant("parent v1"), "templates/kb.yaml": _KB,
+        "templates/readme.yaml": _readme("parent body"),
+    })
+
+    sp = StorageProviderFactory.create(StorageProviderConfig(
+        provider=StorageProviderType.SQLITE, config=SqliteConfig(path=tmp_path / "t.sqlite")))
+    await sp.initialize()
+    await sp.get_content_store().ensure_schema()
+    try:
+        deps = _make_deps_for(sp)
+        harness_storage = sp.get_storage(Harness)
+        await harness_storage.create(_make_harness_row("acme-id", git_url=f"file://{parent_dir}", slug="acme"))
+        await _fetch_and_install(deps, harness_storage, "acme-id")
+
+        agents = sp.get_storage(Agent)
+        content = sp.get_content_store()
+        assert (await sp.get_storage(Document).get("dep__readme")).collection_id == "dep__kb"
+        assert await content.get("dep__readme") == "dep body"
+        assert await content.get("acme__readme") == "parent body"
+
+        _commit_changes(sub_dir, {"templates/assistant.yaml": _assistant("dep v2")}, "change assistant")
+        await _refetch_and_sync(deps, harness_storage, "acme-id")
+        assert (await agents.get("dep__assistant")).description == "dep v2"
+        assert (await agents.get("acme__assistant")).description == "parent v1"
+
+        _delete_and_commit(sub_dir, ["templates/assistant.yaml"], "drop assistant")
+        await _refetch_and_sync(deps, harness_storage, "acme-id")
+        assert await agents.get("dep__assistant") is None
+        assert (await agents.get("acme__assistant")).description == "parent v1"
+        rendering = await sp.get_storage(HarnessRendering).get("acme-id")
+        assert sorted(e.resolved_id for e in rendering.entries) == [
+            "acme__assistant", "acme__kb", "acme__readme", "dep__kb", "dep__readme",
+        ]
+    finally:
+        await sp.aclose()

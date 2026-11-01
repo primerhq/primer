@@ -592,3 +592,91 @@ async def test_a_resume_that_fails_answers_the_call_with_an_error_not_a_rejectio
         "reason": "resume failed: RuntimeError: the hook broke",
         "tool_name": _RAISING_HOOK_TOOL,
     }
+
+
+class _RecordingRegistry:
+    """A workspace registry whose single workspace records transcript lines;
+    ``check_workspace_allowed`` accepts everything, as the resume branch calls it."""
+
+    def __init__(self, workspace: _FakeWorkspaceIO):
+        self._workspace = workspace
+
+    async def get_workspace(self, _workspace_id: str) -> _FakeWorkspaceIO:
+        return self._workspace
+
+    async def check_workspace_allowed(self, _workspace_id: str) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_resume_that_raises_ends_failed_keeps_the_park(monkeypatch):
+    """GR-2: a resume handler that raises an unclassified error (the resumed
+    agent's row was deleted while the session waited: NotFoundError) must end
+    the session ENDED/failed through the turn's build-failure exit, keep the
+    park (the person's answer stays in parked_state for an operator), record
+    the failure in fixed words (transcript ERROR record + last_turn_error, no
+    exception text), and drop the lease. Before the fix the default release
+    cleared the park and left the row RUNNING with no lease, forever."""
+    sid = "sess-engine-resume-raise"
+    tool_call_id = "tc-raise-1"
+    assistant_msg = Message(
+        role="assistant",
+        parts=[ToolCallPart(id=tool_call_id, name="_misc__ask_user", arguments={"prompt": "?"})],
+    )
+
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    engine = _build_engine(session_storage)
+    workspace = _FakeWorkspaceIO()
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=None,
+        storage=storage_provider,
+        workspace_registry=_RecordingRegistry(workspace),
+        provider_registry=None,
+        engine=engine,
+        event_bus=None,
+    )
+    pool._worker_id = "wrk-engine-resume"
+    await session_storage.create(_make_resumable_session(
+        sid,
+        tool_name="ask_user",
+        tool_call_id=tool_call_id,
+        resume_event_payload={"response": "Alice"},
+        llm_messages=[assistant_msg.model_dump(mode="json")],
+        turn_no=3,
+    ))
+
+    async def _agent_gone(_session, _workspace):
+        from primer.model.except_ import NotFoundError
+
+        raise NotFoundError("Agent 'ag-gone' not found")
+
+    monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _ws_id: _async_return(object()))
+    monkeypatch.setattr(pool, "_build_agent_executor", _agent_gone)
+
+    await pool._run_engine_session(await _claim_session(engine, sid))
+
+    row = await session_storage.get(sid)
+    # the session ends failed (the turn's build-failure exit, mirrored for the resume) ...
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "failed"
+    # ... the park survives: the person's answer is still there for an operator ...
+    assert row.parked_status == "resumable"
+    assert row.parked_state is not None
+    assert row.parked_state["resume_event_payload"] == {"response": "Alice"}
+    # ... and the failure is recorded in fixed words, not the exception's
+    assert row.last_turn_error is not None
+    assert row.last_turn_error.code == "resume_failed"
+    # no lease: nothing will ever re-run or re-claim the ended row
+    assert not await engine.has_lease(ClaimKind.SESSION, sid)
+    # the transcript carries the fixed ERROR record
+    error_lines = [
+        json.loads(line) for _sid, line in workspace.lines
+        if json.loads(line)["kind"] == "error"
+    ]
+    assert len(error_lines) == 1
+    assert error_lines[0]["payload"] == {
+        "message": "this session's pending resume could not be run",
+        "code": "resume_failed",
+    }

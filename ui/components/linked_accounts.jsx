@@ -11,10 +11,9 @@
 //   GET    /auth/sso/identities        -> the caller's own linked identities
 //   DELETE /auth/sso/identities/{id}   -> unlink one (owner-scoped, 204)
 //   GET    /auth/sso/providers         -> enabled providers [{id, name}]
-// Linking a NEW provider is a full-page browser navigation to
-// /v1/auth/sso/{id}/link (NOT an apiFetch call — it 302s to the IdP), so
-// that path carries the /v1 prefix explicitly (mirrors auth.jsx's
-// _SsoButtons login redirect).
+// Linking a NEW provider is a POST to /auth/sso/{id}/link that answers the IdP
+// URL; the page then navigates the browser to it (a GET link could be started
+// by any page the user visits).
 
 // ============================================================================
 // Helpers
@@ -66,6 +65,7 @@ function LA_emptyHint(providers, loaded) {
 function LA_LinkedAccountsPage() {
   const { useResource, apiFetch } = window.primerApi;
   const [confirmUnlink, setConfirmUnlink] = React.useState(null); // identity | null
+  const [linkError, setLinkError] = React.useState(null);
   const [providers, setProviders] = React.useState([]);
   // False until the providers read has ANSWERED (a failed read leaves it false: an outage is not "none configured").
   const [providersLoaded, setProvidersLoaded] = React.useState(false);
@@ -183,6 +183,7 @@ function LA_LinkedAccountsPage() {
       {linkable.length > 0 && (
         <div className="panel" style={{ padding: 14 }} data-testid="linked-accounts-link-providers">
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Link a provider</div>
+          {linkError && <div role="alert" data-testid="link-provider-error" style={{ color: "var(--danger)", fontSize: 12, marginBottom: 8 }}>{linkError}</div>}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {linkable.map((p) => (
               <Btn
@@ -191,10 +192,16 @@ function LA_LinkedAccountsPage() {
                 kind="default"
                 icon="external"
                 data-testid={`link-provider-btn-${p.id}`}
-                onClick={() => {
-                  // Full-page nav (not apiFetch) — the endpoint 302s to the
-                  // IdP. Real browser URL, so it carries the /v1 prefix.
-                  window.location.href = "/v1/auth/sso/" + encodeURIComponent(p.id) + "/link";
+                onClick={async () => {
+                  // A POST (a GET link could be started by any page the user visits): the answer is the IdP URL, which the
+                  // browser then follows with a full-page nav.
+                  try {
+                    setLinkError(null);
+                    const r = await apiFetch("POST", "/auth/sso/" + encodeURIComponent(p.id) + "/link");
+                    window.location.href = r.url;
+                  } catch (e) {
+                    setLinkError(LA_extractError(e));
+                  }
                 }}
               >
                 Link {p.name}

@@ -361,6 +361,36 @@ class TestReferenceBlocks:
         assert is_error and answer["type"] == "conflict" and "agg-1" in answer["message"]
 
     @pytest.mark.asyncio
+    async def test_an_llm_provider_is_deleted_whatever_names_it(self, world) -> None:
+        """As the REST route (e2e t0344): no reference check, no cascade; the profile and the agent stay."""
+        sp, toolset, _ = world
+        await sp.get_storage(ModelProfile).create(_profile())
+        agent = Agent.model_validate({**_agent().model_dump(mode="json"), "model": {"profile_id": "mp-1"}})
+        await sp.get_storage(Agent).create(agent)
+
+        is_error, answer = await _call(toolset, "delete_llm_provider", id="anthropic-1")
+
+        assert not is_error, answer
+        assert await sp.get_storage(LLMProvider).get("anthropic-1") is None
+        assert await sp.get_storage(ModelProfile).get("mp-1") is not None
+        assert await sp.get_storage(Agent).get("agt-1") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_model_profile_a_graph_node_overrides_with_cannot_be_deleted(self, world) -> None:
+        sp, toolset, _ = world
+        await sp.get_storage(ModelProfile).create(_profile())
+        graph = Graph.model_validate({
+            "id": "g-1", "description": "d",
+            "nodes": [{"kind": "begin", "id": "s"}, {"kind": "agent", "id": "n", "agent_id": "agt-1", "profile_id": "mp-1"}, {"kind": "end", "id": "e"}],
+            "edges": [{"kind": "static", "from_node": "s", "to_node": "n"}, {"kind": "static", "from_node": "n", "to_node": "e"}],
+        })
+        await sp.get_storage(Graph).create(graph)
+
+        is_error, answer = await _call(toolset, "delete_model_profile", id="mp-1")
+
+        assert is_error and answer["type"] == "conflict" and "g-1" in answer["message"]
+
+    @pytest.mark.asyncio
     async def test_an_unreferenced_model_profile_is_deleted(self, world) -> None:
         sp, toolset, _ = world
         await sp.get_storage(ModelProfile).create(_profile())

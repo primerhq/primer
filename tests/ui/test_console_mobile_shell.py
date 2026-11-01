@@ -131,9 +131,10 @@ def test_mobile_shell_defines_the_four_bottom_nav_tabs() -> None:
 def test_inbox_tab_carries_a_real_attention_count() -> None:
     """Not a stub number - shares the rail's own aggregate + cache key
     (nv-rail.jsx) so switching viewport bands doesn't double-fetch."""
-    assert '"nv-rail-inbox"' in MOBILE
-    assert "SH_api.pendingAttention(signal)" in MOBILE
-    assert "inboxItems.length" in MOBILE
+    sh_api = (ROOT / "ui" / "components" / "shell" / "sh-api.jsx").read_text(encoding="utf-8")
+    assert '"nv-rail-inbox"' in sh_api
+    assert "SH_useAttention(" in MOBILE  # the shared read (sh-api.jsx) under the rail's key
+    assert "inboxTotal" in MOBILE  # the server's total, not the page length (GU-8)
 
 
 def test_stub_panels_are_named_for_their_own_later_phase() -> None:
@@ -369,7 +370,7 @@ def test_single_implementation_guard_no_forked_session_doc_internals() -> None:
 
 
 def test_inbox_has_tap_driven_refetch_like_the_rail() -> None:
-    assert "window.useWorkspaceTapListener(con.wid" in MOBILE
+    assert "window.useWorkspaceTapListener(wsGone ? null : con.wid" in MOBILE
     for cls in ('"yielded"', '"resumed"', '"done"'):
         assert cls in MOBILE, cls
 
@@ -422,7 +423,7 @@ def test_spaces_tree_reuses_the_rail_and_shell_level_workspace_cache() -> None:
     body = m.group(0)
     assert "con.workspaces" in body
     assert '"nv-rail-all-sessions"' in body
-    assert '"nv-rail-inbox"' in body
+    assert "SH_useAttention(" in body  # under the rail's "nv-rail-inbox" key
 
 
 def test_spaces_tree_expands_a_workspace_to_its_sessions() -> None:

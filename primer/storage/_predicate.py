@@ -17,6 +17,7 @@ Module-private; consumed only by :mod:`primer.storage.postgres`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel
@@ -24,6 +25,7 @@ from pydantic import BaseModel
 from primer.model.except_ import BadRequestError
 from primer.model.storage import (
     FieldRef,
+    IdsOf,
     Op,
     OrderBy,
     Predicate,
@@ -175,9 +177,12 @@ class _PredicateTranslator:
     the emitted SQL correspond to the returned ``params`` list.
     """
 
-    def __init__(self, model_class: type[BaseModel]) -> None:
+    def __init__(self, model_class: type[BaseModel], tables: Callable[[type[BaseModel]], str] | None = None) -> None:
         self._model = model_class
         self._params: list[Any] = []
+        # ``tables(model)``: the quoted table of a model an IN subquery reads; ``joined``: those models, for the caller to create first.
+        self._tables = tables
+        self.joined: list[type[BaseModel]] = []
 
     def translate(self, predicate: Predicate) -> tuple[str, list[Any]]:
         """Compile the predicate tree.
@@ -264,6 +269,8 @@ class _PredicateTranslator:
     def _render_in(self, p: Predicate) -> str:
         if not isinstance(p.left, FieldRef):
             raise BadRequestError("IN requires a FieldRef on the left")
+        if isinstance(p.right, IdsOf):
+            return self._render_in_subquery(p.left.name, p.right)
         if not isinstance(p.right, Value) or not isinstance(p.right.value, list):
             raise BadRequestError("IN requires a Value with a list on the right")
 
@@ -283,6 +290,19 @@ class _PredicateTranslator:
             left_sql = f"({_render_field_expr(self._model, p.left.name)})::{scalar_cast}"
         placeholder = self.append_param(values)
         return f"({left_sql} = ANY({placeholder}::{scalar_cast}[]))"
+
+    def _render_in_subquery(self, field: str, ids: IdsOf) -> str:
+        """``field IN (SELECT id FROM <ids.model's table> WHERE <ids.where>)``: a semi-join, the id set stays in the database.
+
+        The subquery's own ``id`` and ``data`` resolve to its table (the innermost scope); its binds continue this translator's ``$N``.
+        """
+        if self._tables is None:
+            raise BadRequestError("an IN subquery needs the storage's table names")
+        inner = _PredicateTranslator(ids.model, self._tables)
+        inner._params = self._params
+        where_sql = inner._render_predicate(ids.where) if ids.where is not None else "TRUE"
+        self.joined += [ids.model, *inner.joined]
+        return f"({_render_field_expr(self._model, field)} IN (SELECT id FROM {self._tables(ids.model)} WHERE {where_sql}))"
 
     def _render_contains(self, p: Predicate) -> str:
         """Render JSON-array membership as ``data->'field' ? $n``.

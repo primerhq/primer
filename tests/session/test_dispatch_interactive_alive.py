@@ -150,5 +150,5 @@ class TestAutonomousSessionsStillEnd:
         assert reason == "failed"
         status, _ = _post_turn_status("tool_use", None, autonomous=True)
         assert status == SessionStatus.RUNNING
-        status, _ = _post_turn_status("max_tokens", None, autonomous=True)
-        assert status == SessionStatus.WAITING
+        # AG-M4: a max_tokens rest would wedge the skip gate too, so an autonomous session ends instead.
+        assert _post_turn_status("max_tokens", None, autonomous=True) == (SessionStatus.ENDED, "completed")

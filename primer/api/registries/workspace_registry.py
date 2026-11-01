@@ -24,9 +24,14 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
+from pydantic_core import to_jsonable_python
+
 from primer.bootstrap.prime import is_reserved_user_default_id, is_user_default_workspace, resolve_default_workspace_id
 from primer.access.person import Person
+from primer.api.registries._invalidation import BusInvalidated
+from primer.api.registries.retirement import AdapterRetirement
 from primer.access.policy import level_of
+from primer.int.coordinator import InvalidationTopic
 from primer.model.access import Access
 from primer.model.common import dump_for_storage
 from primer.model.except_ import ConflictError, NotFoundError, ValidationError
@@ -42,6 +47,7 @@ from primer.storage import raw_generation
 from primer.workspace.env_names import refuse_bad_env_names
 from primer.workspace.files import FileResolvers
 from primer.workspace.local_policy import LocalWorkspacePolicy
+from primer.workspace.probe import unfinished_delete_reason
 from primer.workspace.resolvers import (
     make_document_resolver,
     make_secret_resolver,
@@ -131,7 +137,7 @@ def _default_factory(
     return WorkspaceBackendFactory.create(provider)
 
 
-class WorkspaceRegistry:
+class WorkspaceRegistry(BusInvalidated):
     """Lazy backend cache keyed by :class:`WorkspaceProvider` row id."""
 
     def __init__(
@@ -153,6 +159,8 @@ class WorkspaceRegistry:
         self._factory = factory or _make_default_factory(subprocess_timeout_seconds)
         self._cache: dict[str, "WorkspaceBackend"] = {}
         self._lock = asyncio.Lock()
+        self._retirement = AdapterRetirement()                 # only a bus-reconnect flush retires; an edit still closes the backend at once
+        self._init_invalidation(InvalidationTopic.WORKSPACE_PROVIDER)
         # Workspace ids a destroy() is running for in this process (a count, so two overlapping destroys of one id hold the mark until both end).
         self._destroying: dict[str, int] = {}
         # Creates of one explicit workspace id in this process, run one at a time (round 2 of #917): a lock and how many creates hold or wait on it.
@@ -183,7 +191,7 @@ class WorkspaceRegistry:
                     f"WorkspaceProvider {provider_id!r} does not exist"
                 )
             self._local_policy.check_provider(row)
-            backend = self._factory(row)
+            backend = self._factory(row)             # not instrumented: a flush retires it after the idle period alone
             await backend.initialize()
             self._cache[provider_id] = backend
             return backend
@@ -206,13 +214,20 @@ class WorkspaceRegistry:
         except WorkspaceRefusedError as exc:
             raise exc.for_workspace(workspace_id) from None
 
-    async def invalidate(self, provider_id: str) -> None:
+    async def _invalidate_local(self, provider_id: str) -> None:
         async with self._lock:
             backend = self._cache.pop(provider_id, None)
         if backend is not None:
             await backend.aclose()
 
+    def _flush_local(self) -> None:
+        """A bus reconnect may have dropped evictions: retire every cached backend (calls in flight finish), so the next get rebuilds."""
+        backends, self._cache = list(self._cache.values()), {}
+        for backend in backends:
+            self._retirement.retire(backend)
+
     async def aclose(self) -> None:
+        await self._unbind_invalidation_bus()
         async with self._lock:
             backends = list(self._cache.values())
             self._cache.clear()
@@ -225,6 +240,7 @@ class WorkspaceRegistry:
                     type(backend).__name__,
                     exc,
                 )
+        await self._retirement.close_all()
 
     # ---- per-workspace helpers ---------------------------------------
 
@@ -266,6 +282,10 @@ class WorkspaceRegistry:
         template = row.template_snapshot
         if template is None:
             template = await self._backfill_template_snapshot(row)
+        if template is not None and row.overrides is not None and row.overrides.env:
+            # A local re-attach rebuilds the env from the template it is given: carry the workspace's own env overrides, merged as create
+            # merged them (review W54), or they are gone after a restart and in every worker. A container or a pod keeps its env itself.
+            template = template.model_copy(update={"env": {**template.env, **row.overrides.env}})
         ws = await backend.get(workspace_id, template=template)
         if ws is None:
             raise NotFoundError(
@@ -560,6 +580,14 @@ class WorkspaceRegistry:
                     pass
 
                 await reconcile_sessions_to_workspace_lost(self._sp, workspace_id)
+                # The ended sessions go with their workspace: orphans their owner could never reach (require_session answers a dangling workspace id
+                # with 404) and only an admin could delete one by one (GR-6, ruling D16). Best effort, like the reconcile.
+                try:
+                    from primer.session.purge import purge_workspace_sessions
+
+                    await purge_workspace_sessions(self._sp, workspace_id)
+                except Exception:  # noqa: BLE001 - a failure leaves the orphans the retention sweep (when configured) removes; the destroy goes on
+                    logger.warning("WorkspaceRegistry: could not delete the sessions of workspace %s", workspace_id, exc_info=True)
                 await self._sp.get_storage(WorkspaceRow).delete(workspace_id)
             except BaseException as exc:
                 # BaseException: a cancel (a client disconnect on REST) leaves the teardown as unfinished as an error does.
@@ -582,16 +610,18 @@ class WorkspaceRegistry:
         write is read again; one that keeps moving (only the probe moves it, every ~30 s) is marked whatever it is after a few tries.
         """
         storage = self._sp.get_storage(WorkspaceRow)
+        # Timed, so the probe can fail a mark whose destroy died with its process (review W52).
+        mark = {"phase": "terminating", "terminating_since": to_jsonable_python(datetime.now(timezone.utc))}
         for _ in range(_MARK_TRIES):
             current = await self.get_workspace_row(workspace_id)
             if current.phase == "terminating":
                 return None
             written = await storage.patch_if(
-                workspace_id, {"phase": "terminating"}, where={"phase": [raw_generation(current, "phase")]},
+                workspace_id, mark, where={"phase": [raw_generation(current, "phase")]},
             )
             if written is not None:
                 return current.phase
-        written = await storage.patch_if(workspace_id, {"phase": "terminating"}, where={"phase": ["pending", "running", "failed"]})
+        written = await storage.patch_if(workspace_id, mark, where={"phase": ["pending", "running", "failed"]})
         return current.phase if written is not None else None
 
     async def _after_a_failed_destroy(
@@ -619,7 +649,7 @@ class WorkspaceRegistry:
                     await storage.patch_if(workspace_id, {"phase": marked_from}, where={"phase": ["terminating"]})
                 return
             cause = " ".join(str(exc).split()) or type(exc).__name__
-            reason = f"the delete did not finish ({type(exc).__name__}: {cause[:300]}); the runtime may be partly torn down: delete it again"
+            reason = unfinished_delete_reason(f"{type(exc).__name__}: {cause[:300]}")
             written = await storage.patch_if(
                 workspace_id, {"phase": "failed", "failure_reason": reason}, where={"phase": ["terminating"]},
             )

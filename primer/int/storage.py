@@ -291,6 +291,27 @@ class Storage(ABC, Generic[ModelT]):
         a number is never a string or a bool, ``None`` matches an absent field or JSON null.
         """
 
+    async def patch_if_or_current(
+        self,
+        id: str,
+        patch: Mapping[str, Any] | None = None,
+        *,
+        where: Mapping[str | tuple[str, ...], Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None = None,
+        conn: Any | None = None,
+    ) -> tuple[ModelT | None, ModelT | None]:
+        """:meth:`patch_if`, answering a rejected write with the row as it stands: ``(written, None)`` or ``(None, current)``.
+
+        A caller whose guard was lost wants the row's fresh state (its new ``access.rev``, the value that drifted) to retry or to
+        compare: this hands it back from the same call instead of a second :meth:`get`. Raises exactly what :meth:`patch_if` raises
+        (``NotFoundError`` for a missing row included). This default reads again; the SQLite and Postgres backends answer from the
+        probe they already run on a rejection, so it costs nothing extra there.
+        """
+        written = await self.patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+        if written is not None:
+            return written, None
+        return None, await self.get(id, conn=conn)
+
     @abstractmethod
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
         """Remove the entity with the given id.
@@ -347,6 +368,53 @@ class Storage(ABC, Generic[ModelT]):
             the page before it returns it. The message names the model and the row id, never the
             stored values.
         """
+
+    async def count_by(self, field: str, values: Sequence[str], predicate: Predicate | None = None) -> dict[str, int]:
+        """``{value: number of matching rows}`` for each of ``values`` of a text ``field`` (values with no row are absent), in one grouped query on the
+        SQL backends. This default pages the matching rows (no COUNT per page) for a backend that has no cheaper way."""
+        from collections import Counter
+
+        from primer.model.storage import FieldRef, OffsetPage, Op, Predicate as _Predicate, Value
+
+        if not values:
+            return {}
+        match: _Predicate = _Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=list(values)))
+        if predicate is not None:
+            match = _Predicate(left=match, op=Op.AND, right=predicate)
+        counts: Counter[str] = Counter()
+        offset = 0
+        while True:
+            page = await self.find(match, OffsetPage(offset=offset, length=200, want_total=False))
+            for row in page.items:
+                counts[getattr(row, field)] += 1
+            if len(page.items) < 200:
+                return dict(counts)
+            offset += 200
+
+    #: Whether ``find`` / ``find_ids`` / ``count_by`` render an ``Op.IN`` against :class:`primer.model.storage.IdsOf` as a subquery. A backend
+    #: that does not would read it as an empty ``IN`` (no rows), so a caller builds one only when this is true.
+    supports_ids_of: bool = False
+
+    async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
+        """``(id, access)`` of every row matching ``predicate``, ordered by id: the two things a sharing check needs, without decoding the rows.
+
+        ``access`` is the row's stored ``access`` block as JSON (``None`` when the row has none). A backend overrides this with one keyset-paged
+        query that selects only those two columns, no ``COUNT``; this default reads full pages, for a backend that has no cheaper way.
+        """
+        from primer.model.storage import OffsetPage
+
+        out: list[tuple[str, dict[str, Any] | None]] = []
+        offset = 0
+        while True:
+            page = await self.find(predicate, OffsetPage(offset=offset, length=200, want_total=False))
+            for row in page.items:
+                access = getattr(row, "access", None)
+                out.append((row.id, access.model_dump(mode="json") if access is not None else None))
+            if len(page.items) < 200:
+                break
+            offset += 200
+        out.sort(key=lambda pair: pair[0])
+        return out
 
     @abstractmethod
     async def find(

@@ -45,11 +45,11 @@ def _arguments(text: str, start: int, end: int) -> int:
     return sum(1 for p in parts if p.strip())
 
 
-def scan(src: str) -> tuple[int, list[int]]:
-    """``(mutate call sites seen, line numbers of the ones whose chain ends without a rejection handler)``."""
+def scan(src: str, opener: re.Pattern = _MUTATE) -> tuple[int, list[int]]:
+    """``(call sites seen, line numbers of the ones whose chain ends without a rejection handler)``."""
     text = blank(src, strings=True, templates=True)
     sites, bad = 0, []
-    for m in _MUTATE.finditer(text):
+    for m in opener.finditer(text):
         sites += 1
         end = close_of(text, m.end() - 1)
         if end < 0:
@@ -76,11 +76,11 @@ def scan(src: str) -> tuple[int, list[int]]:
     return sites, bad
 
 
-def _tree(root: Path) -> tuple[int, list[str]]:
+def _tree(root: Path, opener: re.Pattern = _MUTATE) -> tuple[int, list[str]]:
     sites, offenders = 0, []
     for path in sorted([*root.rglob("*.js"), *root.rglob("*.jsx")]):
         try:
-            n, bad = scan(path.read_text(encoding="utf-8"))
+            n, bad = scan(path.read_text(encoding="utf-8"), opener)
         except ValueError as exc:      # the lexer lost its place in the file: say which one
             raise ValueError(f"{path.relative_to(root)}: {exc}") from exc
         sites += n
@@ -180,4 +180,20 @@ def test_no_mutate_chain_in_the_console_ends_without_a_rejection_handler() -> No
     assert not offenders, (
         "a promise chained onto mutate(...) is a NEW promise: it rejects with the refusal and nothing handles it (an unhandledrejection per 422 or 409). "
         "End the chain with .catch(...) or .then(onDone, onFail), or await it: " + ", ".join(offenders)
+    )
+
+
+# The sidebar's file verbs (UI-L2): SH_api.file* is a raw apiFetch, not mutate - the same
+# unhandled-rejection shape when a chain on it ends without a rejection handler (a 403 on a
+# read-only workspace or a 404 toasts nothing and leaves the promise unhandled).
+_FILE_MUTATE = re.compile(r"\.file(Move|Delete|Write|Upload)\s*\(")
+
+
+def test_no_file_mutation_chain_in_the_console_ends_without_a_rejection_handler() -> None:
+    sites, offenders = _tree(UI, opener=_FILE_MUTATE)
+
+    assert sites >= 6, f"the scan found {sites} SH_api.file* call sites: it is looking at the wrong files"
+    assert not offenders, (
+        "a promise chained onto SH_api.file*(...) rejects with the refusal and nothing handles it: a 403 on a read-only "
+        "workspace or a 404 toasts nothing. End the chain with .catch(...) or .then(onDone, onFail): " + ", ".join(offenders)
     )

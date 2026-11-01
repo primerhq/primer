@@ -39,7 +39,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from primer.model.principal import ActorRef, PrincipalRef
@@ -47,6 +47,33 @@ from primer.model.principal import ActorRef, PrincipalRef
 
 if TYPE_CHECKING:
     from primer.model.chat import ToolResultPart
+
+
+# ===========================================================================
+# The deadline of one graph wait (GR-4)
+# ===========================================================================
+
+#: The cap a wait that names no timeout of its own gets: the park's fallback (``primer.session.dispatch``) and each pending graph entry's.
+DEFAULT_WAIT_SECONDS = 3600.0
+
+
+def wait_deadline(timeout: float | None, now: datetime | None = None) -> str:
+    """The absolute deadline (ISO-8601, UTC) of a graph wait starting at ``now``: its own ``timeout``, else the cap.
+
+    Stamped on a pending graph entry when its node parks, so a re-park on its siblings does not restart its clock."""
+    start = now or datetime.now(timezone.utc)
+    return (start + timedelta(seconds=DEFAULT_WAIT_SECONDS if timeout is None else timeout)).isoformat()
+
+
+def parse_wait_deadline(value: Any) -> datetime | None:
+    """A pending graph entry's stored ``deadline``; None when it has none (written before GR-4) or it cannot be read (a damaged checkpoint)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 # ===========================================================================
@@ -398,6 +425,18 @@ class ToolContext:
 #: The cancel reason the worker delivers to an execution whose lease it lost (``_CancelScope.cancel``): the
 #: session may belong to another worker now, so the execution must not write to it on its way out.
 CANCEL_REASON_PREEMPTED = "preempted"
+
+
+def scoped_event_key(prefix: str, ctx: "ToolContext", node_id: str | None = None) -> str:
+    """``{prefix}:{session_id}:{node}:{tool_call_id}`` (the node only inside a graph), the key a ``watch`` or ``evwait`` park waits on.
+
+    A provider repeats ``call_0`` in every conversation and two fan-out siblings of one superstep can share one, so the graph node is folded in as
+    ``timer_event_key`` and ``ask_user`` do (GS-33). Outside a graph (``node_id`` None) the key is ``{prefix}:{session_id}:{tool_call_id}``, as it
+    always was; a park written before this keeps the key it has (the waker reads the stored key).
+    """
+    if node_id is not None:
+        return f"{prefix}:{ctx.session_id}:{node_id}:{ctx.tool_call_id}"
+    return f"{prefix}:{ctx.session_id}:{ctx.tool_call_id}"
 
 
 def timer_event_key(ctx: "ToolContext", node_id: str | None = None) -> str:

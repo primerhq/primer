@@ -79,6 +79,11 @@ def _atomic_write_bytes(target: pathlib.Path, content: bytes, mode: int | None) 
             os.chmod(tmp_path, mode)
         elif existing_mode is not None:
             os.chmod(tmp_path, existing_mode)
+        else:
+            # mkstemp makes 0600; a new file gets what a plain open would give it (review of workspaces, W55a).
+            umask = os.umask(0)
+            os.umask(umask)
+            os.chmod(tmp_path, 0o666 & ~umask)
         os.replace(tmp_path, target)
     except BaseException:
         try:
@@ -172,10 +177,58 @@ async def _run_git(state_dir: str, *args: str, allow_empty_repo: bool = False) -
     Raises :class:`OpError` (EINTERNAL) on non-zero exit unless ``allow_empty_repo``
     is True and git exits 128 complaining about an empty repo.
 
-    Kills the subprocess and raises :class:`OpError` (EINTERNAL) if the
-    process exceeds the deadline read from ``PRIMER_SUBPROCESS_TIMEOUT_SECONDS``
-    (default 120 s).
+    Stops the subprocess (SIGTERM, then SIGKILL) and raises :class:`OpError`
+    (EINTERNAL) if the process exceeds the deadline read from
+    ``PRIMER_SUBPROCESS_TIMEOUT_SECONDS`` (default 120 s). A failure on an
+    ``index.lock`` older than that deadline removes the lock and retries once.
     """
+    try:
+        return await _run_git_once(state_dir, args, allow_empty_repo)
+    except OpError as exc:
+        # A lock left by a git that was killed outright (an OOM kill, an older SIGKILL) is older than any live git holds it.
+        if "index.lock" not in exc.message or not _remove_stale_index_lock(state_dir):
+            raise
+    return await _run_git_once(state_dir, args, allow_empty_repo)
+
+
+def _remove_stale_index_lock(state_dir: str) -> bool:
+    """Remove ``.git/index.lock`` when it is older than the subprocess timeout; True when removed (or already gone)."""
+    lock = pathlib.Path(state_dir) / ".git" / "index.lock"
+    try:
+        age = _time.time() - lock.stat().st_mtime
+        if age <= _subprocess_timeout():
+            return False
+        lock.unlink()
+    except FileNotFoundError:
+        return True  # gone since the failure: the retry may proceed
+    except OSError:
+        return False
+    log.warning("removed a stale %s (%.0fs old)", lock, age)
+    return True
+
+
+# How long a git that timed out gets to clean up after SIGTERM before SIGKILL.
+_TERMINATE_GRACE_S: float = 2.0
+
+
+async def _stop_git(proc: asyncio.subprocess.Process) -> None:
+    """SIGTERM first: git removes its lockfiles on it. SIGKILL left ``.git/index.lock`` behind and wedged every later
+    commit (GI-6)."""
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE_S)
+    except TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+
+
+async def _run_git_once(state_dir: str, args: tuple[str, ...], allow_empty_repo: bool) -> tuple[str, str]:
     timeout = _subprocess_timeout()
     proc = await asyncio.create_subprocess_exec(
         "git",
@@ -191,11 +244,7 @@ async def _run_git(state_dir: str, *args: str, allow_empty_repo: bool = False) -
             timeout=timeout,
         )
     except TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.wait()
+        await _stop_git(proc)
         raise OpError(
             ErrorCode.EINTERNAL,
             f"git {' '.join(args)} timed out after {timeout}s",
@@ -262,6 +311,25 @@ def _resolve_safe(raw_path: str, workspace_root: str) -> pathlib.Path:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_entry_safe(raw_path: str, workspace_root: str) -> pathlib.Path:
+    """The entry ``raw_path`` names, for an operation on the entry itself (delete): :func:`_resolve_safe`, except that when the final component is a
+    symlink the entry is the LINK (review of workspaces, W15). The directory it lives in is resolved and contained; the link's target is neither
+    followed nor judged, so a link to a file outside the workspace is removed as a link and the outside file is untouched."""
+    root = pathlib.Path(workspace_root).resolve()
+    lexical_raw = pathlib.PurePosixPath(raw_path) if pathlib.PurePosixPath(raw_path).is_absolute() else None
+    lexical = pathlib.Path(os.path.normpath(raw_path if lexical_raw is not None else root / raw_path))
+    if lexical.name in ("", ".", "..") or lexical == root:
+        return _resolve_safe(raw_path, workspace_root)
+    entry = lexical.parent.resolve() / lexical.name
+    if not entry.is_symlink():
+        return _resolve_safe(raw_path, workspace_root)
+    try:
+        entry.parent.relative_to(root)
+    except ValueError:
+        raise OpError(ErrorCode.EACCES, f"Path escapes workspace root: {raw_path!r}")
+    return entry
+
+
 def _os_err_to_op_error(exc: OSError, path: str) -> OpError:
     """Map an :class:`OSError` to the appropriate :class:`OpError`."""
     if exc.errno == errno.ENOENT:
@@ -309,7 +377,7 @@ def _refuse_unless_regular(mode: int, raw_path: str) -> None:
 async def read_file(
     args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
 ) -> dict:
-    """``read_file`` op → ``{content_b64}``; read-only, takes no lock.
+    """``read_file`` op → ``{content_b64}``; read-only, takes no lock. ``offset`` (protocol 1.5, optional) starts the read at that byte.
 
     Only a regular file is read. The ``stat`` of the path is checked first, and then the file is opened with ``O_NONBLOCK`` and the
     DESCRIPTOR is checked with ``fstat``, so the check and the read are about the same file: a process in the workspace that swaps a
@@ -319,6 +387,10 @@ async def read_file(
     """
     raw_path: str = args.get("path", "")
     resolved = _resolve_safe(raw_path, workspace_root)
+    # Protocol 1.5: read from this byte offset (a tap reads only what a log gained). Absent or null: from the start, as before.
+    offset = args.get("offset")
+    if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int) or offset < 0):
+        raise OpError(ErrorCode.EPROTOCOL, f"offset must be a non-negative integer, got {offset!r}")
 
     def _read() -> bytes:
         try:
@@ -336,6 +408,8 @@ async def read_file(
             raise _os_err_to_op_error(exc, raw_path)
         try:
             _refuse_unless_regular(os.fstat(fd).st_mode, raw_path)
+            if offset:
+                os.lseek(fd, offset, os.SEEK_SET)  # past the end reads nothing
             chunks: list[bytes] = []
             while chunk := os.read(fd, 1 << 20):
                 chunks.append(chunk)
@@ -472,11 +546,11 @@ async def stat(
 async def delete(args: dict, workspace_root: str, locks: WorkspaceLockTable) -> dict:
     """``delete`` op → ``{ok}`` (file or empty directory); Tier-A locked."""
     raw_path: str = args.get("path", "")
-    resolved = _resolve_safe(raw_path, workspace_root)
+    resolved = _resolve_entry_safe(raw_path, workspace_root)
 
     def _delete() -> None:
         try:
-            st = os.stat(resolved)
+            st = os.lstat(resolved)  # a symlink is deleted as the link it is: its target is never touched (W15)
         except OSError as exc:
             raise _os_err_to_op_error(exc, raw_path)
         if _stat_mod.S_ISDIR(st.st_mode):
@@ -528,11 +602,7 @@ async def _ensure_state_repo(state_dir: str) -> None:
     try:
         _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.wait()
+        await _stop_git(proc)
         raise OpError(
             ErrorCode.EINTERNAL,
             f"git init timed out after {timeout}s",
@@ -556,11 +626,7 @@ async def _ensure_state_repo(state_dir: str) -> None:
         try:
             await asyncio.wait_for(proc2.communicate(), timeout=timeout)
         except TimeoutError:
-            try:
-                proc2.kill()
-            except ProcessLookupError:
-                pass
-            await proc2.wait()
+            await _stop_git(proc2)
             raise OpError(
                 ErrorCode.EINTERNAL,
                 f"git config timed out after {timeout}s",
@@ -586,37 +652,65 @@ async def state_commit(
     allow_empty: bool = bool(args.get("allow_empty", False))
 
     state_dir = os.path.join(workspace_root, ".state")
-    await _ensure_state_repo(state_dir)
 
-    # Write files to disk and collect paths to stage.
-    staged: list[str] = []
-    for rel_path, content_b64 in files.items():
-        try:
-            content = base64.b64decode(content_b64)
-        except Exception as exc:
-            raise OpError(ErrorCode.EPROTOCOL, f"Invalid base64 for {rel_path!r}: {exc}")
-        dest = pathlib.Path(state_dir) / rel_path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(content)
-        staged.append(rel_path)
+    def _write_files() -> list[str]:
+        """Write files to disk and collect paths to stage."""
+        staged: list[str] = []
+        for rel_path, content_b64 in files.items():
+            try:
+                content = base64.b64decode(content_b64)
+            except Exception as exc:
+                raise OpError(ErrorCode.EPROTOCOL, f"Invalid base64 for {rel_path!r}: {exc}")
+            dest = pathlib.Path(state_dir) / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content)
+            staged.append(rel_path)
+        return staged
 
-    # Stage new/modified files.
-    if staged:
-        await _run_git(state_dir, "add", "--", *staged)
+    async def _commit() -> dict:
+        # One commit at a time per repo across every connection (GI-5): the platform's commit lock is per process, and
+        # two commits interleaving here failed on git's locks or took in each other's files.
+        async with (locks or _STATE_LOCKS).hold_scope(os.path.realpath(state_dir)):
+            await _ensure_state_repo(state_dir)
+            staged = await asyncio.to_thread(_write_files)
 
-    # Delete files.
-    if deletes:
-        await _run_git(state_dir, "rm", "--quiet", "--ignore-unmatch", "--", *deletes)
+            # Stage new/modified files.
+            if staged:
+                await _run_git(state_dir, "add", "--", *staged)
 
-    # Commit.
-    commit_args = ["commit", "--quiet", "-m", message]
-    if allow_empty:
-        commit_args.insert(1, "--allow-empty")
-    await _run_git(state_dir, *commit_args)
+            # Delete files.
+            if deletes:
+                await _run_git(state_dir, "rm", "--quiet", "--ignore-unmatch", "--", *deletes)
 
-    # Return the HEAD sha.
-    sha_raw, _ = await _run_git(state_dir, "rev-parse", "HEAD")
-    return {"sha": sha_raw.strip()}
+            # Commit.
+            commit_args = ["commit", "--quiet", "-m", message]
+            if allow_empty:
+                commit_args.insert(1, "--allow-empty")
+            await _run_git(state_dir, *commit_args)
+
+            # Return the HEAD sha.
+            sha_raw, _ = await _run_git(state_dir, "rev-parse", "HEAD")
+            return {"sha": sha_raw.strip()}
+
+    # Shielded: a commit whose connection closed still completes (as it did when it ran inline), so its staged files
+    # never ride into the next commit under another session's trailers.
+    task = asyncio.ensure_future(_commit())
+    _COMMITS.add(task)
+    task.add_done_callback(_commit_done)
+    return await asyncio.shield(task)
+
+
+# The server passes its app-wide table (shared by every connection); a direct caller passes none and gets this one.
+_STATE_LOCKS = WorkspaceLockTable()
+
+# Strong references to the commits in flight (see ``state_commit``): the loop keeps only weak ones to its tasks.
+_COMMITS: set[asyncio.Task[dict]] = set()
+
+
+def _commit_done(task: asyncio.Task[dict]) -> None:
+    _COMMITS.discard(task)
+    if not task.cancelled():
+        task.exception()  # retrieved: nobody awaits a commit whose connection closed
 
 
 async def state_read(
@@ -633,16 +727,18 @@ async def state_read(
     paths: list[str] = args.get("paths") or []
     state_dir = pathlib.Path(workspace_root) / ".state"
 
-    result: dict[str, str | None] = {}
-    for rel_path in paths:
-        target = state_dir / rel_path
-        if target.exists() and target.is_file():
-            content = target.read_bytes()
-            result[rel_path] = base64.b64encode(content).decode()
-        else:
-            result[rel_path] = None
+    def _read() -> dict[str, str | None]:
+        result: dict[str, str | None] = {}
+        for rel_path in paths:
+            target = state_dir / rel_path
+            if target.exists() and target.is_file():
+                content = target.read_bytes()
+                result[rel_path] = base64.b64encode(content).decode()
+            else:
+                result[rel_path] = None
+        return result
 
-    return {"files": result}
+    return {"files": await asyncio.to_thread(_read)}  # off the loop (GI-10)
 
 
 async def state_history(
@@ -701,8 +797,8 @@ HANDLERS: dict[str, object] = {
 
 
 # ---------------------------------------------------------------------------
-# Mutating-op-as-task: keep the runtime message loop free while a writer parks
-# on a busy Tier-A lock (mirrors exec.start_exec).
+# Single-shot-op-as-task: keep the runtime message loop free while a writer
+# parks on a busy lock or a long op runs (mirrors exec.start_exec).
 # ---------------------------------------------------------------------------
 
 
@@ -712,9 +808,11 @@ class MutatingOpRegistry:
     ``write_file``/``append_line``/``delete`` acquire a Tier-A write lock and
     may PARK on a busy scope/path lock. The server spawns each as a tracked
     task (mirrors :class:`~primer_runtime.exec.ExecRegistry`) so a parked
-    writer never blocks the single runtime message loop - reads/list/stat/state
-    on the same connection stay serviceable. ``cancel_all`` is invoked on WS
-    close to tear down any op still waiting on a lock.
+    writer never blocks the single runtime message loop. Every other
+    single-shot op (reads, list, stat, the git state ops) runs the same way
+    since GI-10, so HEALTH never waits behind one. ``cancel_all`` is invoked on
+    WS close to tear down any op still in flight (a ``state_commit`` finishes
+    behind its shield).
     """
 
     def __init__(self) -> None:

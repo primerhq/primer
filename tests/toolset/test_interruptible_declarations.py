@@ -160,14 +160,14 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     (WORKSPACES_TOOLSET_ID, "resume_workspace_session"),
     # pivot P3: the delivery (the pending row, or the USER_INPUT record, the row and the claim), then the ledger row, then two events, with no transaction
     (WORKSPACES_TOOLSET_ID, "message_session"),
-    # task 01a10e2f (+ model_profile, task 01a111d1 D5; + artifact_storage_provider, plan 09 Task 3): a row write THEN a registry cache
+    # task 01a10e2f (+ model_profile, task 01a111d1 D5; + artifact_storage_provider, plan 09 Task 3; + tool_approval_policy, GS-28): a row write THEN a registry cache
     # eviction (the entities that carry an invalidation hook)
     *{
         (SYSTEM_TOOLSET_ID, f"{verb}_{entity}")
         for verb in ("update", "delete")
         for entity in (
             "llm_provider", "embedding_provider", "cross_encoder_provider", "toolset", "semantic_search_provider",
-            "model_profile", "artifact_storage_provider",
+            "model_profile", "artifact_storage_provider", "tool_approval_policy",
         )
     },
     # task 01a111d1 (D5 2a): the toolset row, then the registry's cached adapter evicted

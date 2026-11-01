@@ -9,9 +9,11 @@ request-translation logic in this file.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, ClassVar
 
@@ -21,11 +23,13 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from primer.access.person import person_for_tool
 from primer.common.log import redact_url_secrets
+from primer.common.netguard import EgressRefused
 from primer.common.mcp_errors import classify_mcp_exception
 from primer.int.toolset import ToolsetProvider
 from primer.llm._failure import mask_values
 from primer.model.chat import Tool, ToolCallResult
-from primer.model.except_ import ConfigError, PrimerError
+from primer.model.except_ import AuthRequiredError, ConfigError, PrimerError
+from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.model.provider import (
     HttpConfig,
     McpConfig,
@@ -63,6 +67,34 @@ def is_mcp_task_tool(tool: mcp_types.Tool) -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+#: How long a tool listing is kept, and a listing failure (a dead server is asked once per this, not once per turn).
+LIST_CACHE_TTL_SECONDS = 30.0
+LIST_FAILURE_TTL_SECONDS = 15.0
+
+
+class McpEgressRefused(ConfigError):
+    """The toolset's MCP server is at an internal address and the toolset was not authored by an admin (SSRF guard, review of workspaces W25)."""
+
+
+def _egress_refusal(exc: BaseException, _seen: set[int] | None = None) -> EgressRefused | None:
+    """The :class:`EgressRefused` inside ``exc`` (through exception groups and the cause / context chain), else ``None``."""
+    seen = _seen if _seen is not None else set()
+    if id(exc) in seen:
+        return None
+    seen.add(id(exc))
+    if isinstance(exc, EgressRefused):
+        return exc
+    for inner in getattr(exc, "exceptions", ()):
+        found = _egress_refusal(inner, seen)
+        if found is not None:
+            return found
+    for inner in (exc.__cause__, exc.__context__):
+        if inner is not None:
+            found = _egress_refusal(inner, seen)
+            if found is not None:
+                return found
+    return None
 
 
 class McpToolsetProvider(ToolsetProvider):
@@ -105,8 +137,19 @@ class McpToolsetProvider(ToolsetProvider):
         client_name: str = "primer",
         client_version: str = "0.0.1",
         allowed_stdio_commands: frozenset[str] | None = None,
+        egress_guard: bool | Callable[[], Awaitable[bool]] = False,
+        list_cache_ttl_seconds: float = LIST_CACHE_TTL_SECONDS,
+        list_failure_ttl_seconds: float = LIST_FAILURE_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """``allowed_stdio_commands``: when set, ``stdio_cfg.command[0]``
+        """``list_cache_ttl_seconds`` / ``list_failure_ttl_seconds``: how long a tool listing, and a listing failure, is kept (see ``_fetch_mcp_tools``).
+
+        ``egress_guard``: whether an http / sse connection goes through the egress guard (:mod:`primer.toolset.mcp_egress`: internal
+        addresses refused at connect time, ``PRIMER_EGRESS_ALLOW`` opts them in). A callable is awaited per dispatch, so a role change of the
+        toolset's author takes effect without rebuilding the provider. The registry guards every toolset an admin did not author; ``False``
+        (the default) leaves a transient or test provider as it was.
+
+        ``allowed_stdio_commands``: when set, ``stdio_cfg.command[0]``
         must match one of these strings exactly or :meth:`_open_session`
         raises :class:`ConfigError`. ``None`` (the default) means no
         allowlist is enforced -- the caller has decided either that all
@@ -120,12 +163,54 @@ class McpToolsetProvider(ToolsetProvider):
         self._client_name = client_name
         self._client_version = client_version
         self._allowed_stdio_commands = allowed_stdio_commands
+        self._egress_guard = egress_guard
 
         # Cache of MCP tool names that advertise task-style execution.
         # Populated as a side-effect of ``list_tools`` so subsequent
         # ``call`` invocations can route task tools to the yielding
         # path without re-listing.
         self._task_tools: set[str] = set()
+
+        # The listing cache. The provider is cached per toolset (and dropped with it when the toolset changes: ProviderRegistry), the tool manager
+        # is rebuilt every turn, so without this every turn paid a handshake and tools/list per MCP toolset, and a dead server a full listing
+        # timeout. Key: (user, OAuth token fingerprint, egress guard state, config hash), so one person's listing is never another's.
+        self._list_ttl = list_cache_ttl_seconds
+        self._failure_ttl = list_failure_ttl_seconds
+        self._clock = clock
+        self._config_hash = hashlib.sha256(config.model_dump_json().encode()).hexdigest()[:16]
+        self._list_cache: dict[tuple, tuple[float, list[mcp_types.Tool], set[str]]] = {}
+        self._list_failures: dict[tuple, tuple[float, BaseException]] = {}
+
+    def invalidate_listing(self) -> None:
+        """Forget every cached listing and failure (the next listing asks the server)."""
+        self._list_cache.clear()
+        self._list_failures.clear()
+
+    async def _list_key(self) -> tuple:
+        """The cache key for the acting person. Reading the token here is what keeps a sign-out from being hidden by the cache: a person with no
+        usable sign-in raises exactly as an uncached listing would, before any cached entry is looked at."""
+        person = person_for_tool(None)
+        fingerprint = None
+        http_cfg = self._config.config
+        if isinstance(http_cfg, HttpConfig) and http_cfg.oauth is not None and self._oauth is not None:
+            target = OAuthTarget.from_toolset(
+                Toolset(id=self._toolset_id, provider=ToolsetProviderType.MCP, config=self._config), person,
+            )
+            assert target is not None
+            token = await self._oauth.access_token(target)
+            fingerprint = hashlib.sha256(token.encode()).hexdigest()[:16]
+        guard = self._egress_guard
+        guarded = await guard() if callable(guard) else bool(guard)
+        return (person.user_id, fingerprint, guarded, self._config_hash)
+
+    async def note_list_timeout(self) -> None:
+        """A listing of this toolset ran out of time (the turn gave up on it): remember that briefly, so the next turn does not wait the full
+        listing timeout again for a server that has not come back."""
+        try:
+            key = await self._list_key()
+        except Exception:  # noqa: BLE001 - the timeout is already the answer; a key that cannot be built just means no note
+            return
+        self._list_failures[key] = (self._clock() + self._failure_ttl, TimeoutError("did not list its tools in time"))
 
     def _classified(self, exc: Exception) -> PrimerError:
         """``classify_mcp_exception(exc)`` with the toolset's configured header values masked in its text.
@@ -171,6 +256,10 @@ class McpToolsetProvider(ToolsetProvider):
         del tool_name  # uniform floor across this toolset's tools
         return "user"
 
+    def is_yielding(self, tool_name: str) -> bool:
+        """A task-mode tool parks the turn (:meth:`call` raises ``YieldToWorker``); known from the latest listing."""
+        return tool_name in self._task_tools
+
     async def list_tools(
         self,
         *,
@@ -186,6 +275,36 @@ class McpToolsetProvider(ToolsetProvider):
             yield self._mcp_tool_to_primer(mcp_tool)
 
     async def _fetch_mcp_tools(
+        self,
+        *,
+        principal: str | None = None,
+    ) -> list[mcp_types.Tool]:
+        """The tool listing: the cached one while it is fresh, else :meth:`_fetch_mcp_tools_uncached` (whose answer, or failure, is kept briefly).
+
+        A sign-in or auth failure is never kept (signing in again must work at once), and neither is a cancellation.
+        """
+        key = await self._list_key()
+        now = self._clock()
+        hit = self._list_cache.get(key)
+        if hit is not None and hit[0] > now:
+            self._task_tools = set(hit[2])
+            return list(hit[1])
+        failed = self._list_failures.get(key)
+        if failed is not None and failed[0] > now:
+            raise failed[1]
+        try:
+            tools = await self._fetch_mcp_tools_uncached(principal=principal)
+        except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            if not isinstance(exc, (McpSignInRequiredError, AuthRequiredError)):
+                self._list_failures[key] = (self._clock() + self._failure_ttl, exc)
+            raise
+        self._list_failures.pop(key, None)
+        self._list_cache[key] = (self._clock() + self._list_ttl, list(tools), set(self._task_tools))
+        return tools
+
+    async def _fetch_mcp_tools_uncached(
         self,
         *,
         principal: str | None = None,
@@ -256,6 +375,8 @@ class McpToolsetProvider(ToolsetProvider):
             try:
                 result = await session.call_tool(tool_name, arguments=arguments)
             except Exception as exc:
+                # The call failed: the server may have changed under a cached listing (a removed tool, a restart). Re-list on the next turn.
+                self.invalidate_listing()
                 raise self._classified(exc) from exc
 
             return self._mcp_call_result_to_primer(result)
@@ -446,6 +567,8 @@ class McpToolsetProvider(ToolsetProvider):
                 k: v.get_secret_value() for k, v in http_cfg.headers.items()
             }
             headers = base_headers if base_headers else None
+            guard = self._egress_guard
+            guarded = await guard() if callable(guard) else bool(guard)
             auth: McpBearerAuth | None = None
             if http_cfg.oauth is not None and self._oauth is not None:
                 target = OAuthTarget.from_toolset(
@@ -487,26 +610,37 @@ class McpToolsetProvider(ToolsetProvider):
                 if self._config.transport == TransportType.SSE:
                     from mcp.client.sse import sse_client
 
+                    sse_kwargs: dict[str, Any] = {}
+                    if guarded:
+                        from primer.toolset.mcp_egress import guarded_mcp_http_client
+
+                        sse_kwargs["httpx_client_factory"] = guarded_mcp_http_client
                     async with sse_client(
-                        url=http_cfg.url, headers=headers, auth=auth,
+                        url=http_cfg.url, headers=headers, auth=auth, **sse_kwargs,
                     ) as (read, write):
-                        async with ClientSession(read, write) as session:
+                        async with ClientSession(read, write, read_timeout_seconds=self._config.read_timeout_seconds) as session:
                             await session.initialize()
                             yield session
                 else:
                     from mcp.client.streamable_http import streamable_http_client
                     from mcp.shared._httpx_utils import create_mcp_http_client
 
+                    if guarded:
+                        from primer.toolset.mcp_egress import guarded_mcp_http_client as create_mcp_http_client  # noqa: PLC0415
+
                     async with create_mcp_http_client(headers=headers, auth=auth) as http_client:
                         async with streamable_http_client(
                             url=http_cfg.url, http_client=http_client,
                         ) as (read, write):
-                            async with ClientSession(read, write) as session:
+                            async with ClientSession(read, write, read_timeout_seconds=self._config.read_timeout_seconds) as session:
                                 await session.initialize()
                                 yield session
             except (ConfigError, GeneratorExit):
                 raise
             except Exception as exc:
+                refusal = _egress_refusal(exc) if guarded else None
+                if refusal is not None:
+                    raise McpEgressRefused(f"toolset {self._toolset_id!r}: {refusal}") from exc
                 if auth is not None and auth.sign_in_required is not None:
                     from primer.model.mcp_oauth import McpSignInRequiredError
 
@@ -557,7 +691,7 @@ class McpToolsetProvider(ToolsetProvider):
 
         try:
             read, write = await stack.enter_async_context(stdio_client(params))
-            session = await stack.enter_async_context(ClientSession(read, write))
+            session = await stack.enter_async_context(ClientSession(read, write, read_timeout_seconds=self._config.read_timeout_seconds))
             await session.initialize()
         except FileNotFoundError as exc:
             await stack.aclose()
@@ -606,6 +740,9 @@ class McpToolsetProvider(ToolsetProvider):
                     "handshake (not an MCP server, or it exited "
                     "immediately)"
                 ) from exc
+            if isinstance(exc, Exception):
+                # Classified here, not by each caller: call and the task requests enter the session outside their own try (AG-M15).
+                raise self._classified(exc) from exc
             raise
 
         logger.info(
@@ -622,6 +759,7 @@ class McpToolsetProvider(ToolsetProvider):
             description=t.description or "",
             toolset_id=self._toolset_id,
             args_schema=t.input_schema or {"type": "object", "properties": {}},
+            yields=is_mcp_task_tool(t),
         )
 
     def _mcp_call_result_to_primer(
@@ -640,6 +778,9 @@ class McpToolsetProvider(ToolsetProvider):
             text_chunks.append(
                 "```json\n" + json.dumps(non_text, indent=2) + "\n```"
             )
+        if not text_chunks and r.structured_content is not None:
+            # A result with only structuredContent reached the model as "" (AG-L3).
+            text_chunks.append(json.dumps(r.structured_content))
 
         extended: dict[str, Any] | None = None
         if non_text:

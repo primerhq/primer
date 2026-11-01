@@ -71,6 +71,8 @@ _RESERVED_ROOTS = (
 class WikiBuild:
     pages: dict[str, WikiPage]
     content_hash: str
+    source_hash: str = ""
+    """The hash of the hand-written and legacy pages alone: what a release changes, and a live toolset set does not."""
 
 
 # ---- links ---------------------------------------------------------------------
@@ -262,7 +264,7 @@ def build_wiki(
     pages = dict(sorted(pages.items()))
     for path, target in unresolved_links(pages):
         logger.warning("wiki: page %r links to %r, which is not a wiki page", path, target)
-    return WikiBuild(pages=pages, content_hash=hash_pages(pages))
+    return WikiBuild(pages=pages, content_hash=hash_pages(pages), source_hash=hash_pages({**authored, **legacy}))
 
 
 __all__ = [

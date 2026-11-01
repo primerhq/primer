@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from primer.model.workspace_session import SessionMessageKind
-from primer.session.replay import visible_records
+from primer.session.replay import _COMPACTION, _REWIND, visible_records
 from primer.session.terminals import CLOSES, TurnWindowScanner, is_graph_end, payload_of
 
 _DONE = SessionMessageKind.DONE.value
@@ -80,4 +80,57 @@ def session_usage(raw_lines: list[str]) -> SessionUsage:
     )
 
 
-__all__ = ["SessionUsage", "session_usage"]
+class UsageFold:
+    """:func:`session_usage` as state that goes on from where it stopped: feed it the lines appended since, in file order.
+
+    ``visible_records`` is a walk in file order, so for a log that only gains lines the fold is additive; a compaction marker replaces everything
+    before it (the fold starts over at the marker), and a rewind marker cannot be undone from totals: :meth:`feed` then returns False and
+    the caller folds the whole log with :func:`session_usage`. ``consumed`` and ``guard`` are the reader's bookkeeping (bytes of the log folded
+    so far and the last bytes of them, to tell that the log still starts with what was folded).
+    """
+
+    def __init__(self) -> None:
+        self.consumed = 0
+        self.guard = b""
+        self._reset()
+
+    def _reset(self) -> None:
+        self.turns = self.model_calls = self.last_in = self.last_out = 0
+        self.tot_in = self.tot_out = self.tot_cached = self.tot_reasoning = 0
+        self.scanner = TurnWindowScanner()
+
+    def feed(self, raw_lines: list[str]) -> bool:
+        """Fold the lines; False when one of them is a rewind marker (the fold is then unusable)."""
+        from primer.session.replay import _parse
+
+        for rec in _parse(raw_lines):
+            kind = rec.get("kind")
+            if kind == _REWIND:
+                return False
+            if kind == _COMPACTION:
+                self._reset()
+            if self.scanner.feed(rec) == CLOSES:
+                self.turns += 1
+            if kind != _DONE or is_graph_end(rec):
+                continue
+            self.model_calls += 1
+            usage = payload_of(rec).get("usage")
+            if not isinstance(usage, dict):
+                continue
+            self.last_in = usage.get("input_tokens", 0)
+            self.last_out = usage.get("output_tokens", 0)
+            self.tot_in += self.last_in
+            self.tot_out += self.last_out
+            self.tot_cached += usage.get("cached_input_tokens", 0)
+            self.tot_reasoning += usage.get("reasoning_tokens", 0)
+        return True
+
+    def usage(self) -> SessionUsage:
+        return SessionUsage(
+            turns=self.turns, model_calls=self.model_calls, last_input_tokens=self.last_in, last_output_tokens=self.last_out,
+            total_input_tokens=self.tot_in, total_output_tokens=self.tot_out, total_cached_input_tokens=self.tot_cached,
+            total_reasoning_tokens=self.tot_reasoning,
+        )
+
+
+__all__ = ["SessionUsage", "UsageFold", "session_usage"]

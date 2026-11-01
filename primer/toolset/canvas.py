@@ -55,6 +55,7 @@ from primer.canvas.wait import (
 )
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.event import EventSubscription, SessionWakeSink
+from primer.events.stable_head import stable_head
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.yield_ import ToolContext, YieldCancelled, YieldTimeout, Yielded
 from primer.toolset._describe import make_tool
@@ -410,7 +411,7 @@ def _make_canvas_wait(service: CanvasService, storage_provider: "StorageProvider
         )
         events = storage_provider.get_event_store()
         try:
-            await events.set_cursor(created.id, await events.max_id())
+            await events.set_cursor(created.id, await stable_head(events))
             row = await service.snapshot(session_id, workspace_id=workspace_id)
         except Exception:
             await _discard(storage_provider, created.id)

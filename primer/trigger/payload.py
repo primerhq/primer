@@ -1,6 +1,7 @@
 """Jinja2 sandboxed renderer for subscription payload templates.
 
-Mirrors the harness template renderer in ``primer/harness/template.py``.
+Mirrors the harness template renderer in ``primer/harness/template.py``,
+bounded in time, output and repetition (``primer/common/bounded_template.py``).
 """
 
 from __future__ import annotations
@@ -9,7 +10,8 @@ from typing import Any
 
 from jinja2 import StrictUndefined
 from jinja2.exceptions import TemplateError as JinjaTemplateError, UndefinedError
-from jinja2.sandbox import SandboxedEnvironment
+
+from primer.common.bounded_template import BoundedSandboxedEnvironment, render_bounded
 
 
 class PayloadTemplateError(Exception):
@@ -18,8 +20,8 @@ class PayloadTemplateError(Exception):
         self.message = message
 
 
-def _env() -> SandboxedEnvironment:
-    env = SandboxedEnvironment(undefined=StrictUndefined, autoescape=False)
+def _env() -> BoundedSandboxedEnvironment:
+    env = BoundedSandboxedEnvironment(undefined=StrictUndefined, autoescape=False)
     env.filters["tojson"] = lambda obj: json.dumps(obj)
     return env
 
@@ -38,7 +40,7 @@ def render_payload(
     env = _env()
     try:
         tmpl = env.from_string(template)
-        return tmpl.render(**fire_context)
+        return render_bounded(tmpl, fire_context)
     except UndefinedError as exc:
         raise PayloadTemplateError(str(exc)) from exc
     except JinjaTemplateError as exc:

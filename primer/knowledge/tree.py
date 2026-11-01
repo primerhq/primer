@@ -18,10 +18,24 @@ from primer.int.document_content import DocumentContentStore
 from primer.int.storage import Storage
 from primer.model.collection import Document, _utcnow
 from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
+from primer.model.payload_too_large import PayloadTooLargeError
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
 
 STRICT_SLUG_RE = re.compile(r"[a-z0-9-]+")
+
+DOCUMENT_BODY_CAP = 1024 * 1024
+"""Largest document body, in UTF-8 bytes, a USER door accepts (D5). Internal writers (the system collection, harness) are not capped."""
+BODY_CAP_MESSAGE = "document body exceeds the 1 MiB cap"
+
+
+def check_body_size(body: str) -> None:
+    """Refuse a body over :data:`DOCUMENT_BODY_CAP` at a user door (KN-12); the services themselves stay uncapped for internal writers."""
+    if len(body.encode("utf-8")) > DOCUMENT_BODY_CAP:
+        raise PayloadTooLargeError(BODY_CAP_MESSAGE, limit_bytes=DOCUMENT_BODY_CAP)
+
+#: Parent ids per ``parent_id IN (...)`` query.
+_PARENTS_PER_QUERY = 200
 
 Indexer = Callable[..., Awaitable[None]]
 Unindexer = Callable[..., Awaitable[None]]
@@ -40,6 +54,10 @@ class TreeReadResult(BaseModel):
     document: Document
     body: str
     children: list[TreeNode]
+
+
+class _Moved(Exception):
+    """The row moved between update's read and its write."""
 
 
 def _new_document_id() -> str:
@@ -103,12 +121,33 @@ class DocumentTreeService:
         offset, page = 0, 200
         while True:
             resp = await self._docs.find(
-                predicate, OffsetPage(offset=offset, length=page)
+                predicate, OffsetPage(offset=offset, length=page, want_total=False)
             )
             out.extend(resp.items)
             if len(resp.items) < page:
                 return out
             offset += page
+
+    async def _children_of(
+        self, collection_id: str, parent_ids: list[str],
+    ) -> list[Document]:
+        """The children of every parent in ``parent_ids`` in one query per page (``parent_id = ANY(...)``), not one query per parent."""
+        out: list[Document] = []
+        for i in range(0, len(parent_ids), _PARENTS_PER_QUERY):
+            predicate = (
+                Q(Document).where("collection_id", collection_id)
+                .where_in("parent_id", parent_ids[i:i + _PARENTS_PER_QUERY]).build()
+            )
+            offset, page = 0, 200
+            while True:
+                resp = await self._docs.find(
+                    predicate, OffsetPage(offset=offset, length=page, want_total=False)
+                )
+                out.extend(resp.items)
+                if len(resp.items) < page:
+                    break
+                offset += page
+        return out
 
     async def _resolve_parent(
         self, collection_id: str, parent: str
@@ -160,31 +199,53 @@ class DocumentTreeService:
     async def update(self, *, collection_id: str, path: str,
                      body: str | None = None, title: str | None = None,
                      meta: dict[str, Any] | None = None) -> Document:
-        doc = await self.resolve(collection_id=collection_id, path=path)
-        updated = doc.model_copy(update={
-            "title": doc.title if title is None else title,
-            "meta": doc.meta if meta is None else meta,
-            "updated_at": _utcnow(),
-        })
-        async with self._sp.transaction() as conn:
-            await self._docs.update(updated, conn=conn)
-            if body is not None:
-                await self._content.upsert(
-                    document_id=doc.id, collection_id=collection_id,
-                    path=doc.path, content=body, conn=conn,
-                )
+        fields: dict[str, Any] = {"updated_at": _utcnow()}
+        if title is not None:
+            fields["title"] = title
+        if meta is not None:
+            fields["meta"] = meta
+        while True:
+            doc = await self.resolve(collection_id=collection_id, path=path)
+            patch = doc.model_copy(update=fields).model_dump(mode="json", include=set(fields))
+            try:
+                async with self._sp.transaction() as conn:
+                    # Content first, the order move() takes its rows in; the guarded patch then writes only these fields, and only while
+                    # the row still sits at the path read, so a move that committed meanwhile is never reverted (KN-19f).
+                    if body is not None:
+                        await self._content.upsert(
+                            document_id=doc.id, collection_id=collection_id,
+                            path=doc.path, content=body, conn=conn,
+                        )
+                    updated = await self._docs.patch_if(doc.id, patch, where={"path": [doc.path]}, conn=conn)
+                    if updated is None:
+                        raise _Moved  # rolls the content write back
+                break
+            except _Moved:
+                continue  # answer as if the move ran first: resolve the path again
         if body is not None and self._indexer is not None:
             await self._indexer(document=updated, content=body)
         return updated
 
     async def move(self, *, collection_id: str, path: str,
                    new_parent: str, new_slug: str | None = None,
-                   strict_slugs: bool = True) -> Document:
+                   strict_slugs: bool = True,
+                   allow_missing_parent: bool = False) -> Document:
+        """Move ``path`` under ``new_parent`` (and rename it to ``new_slug``), carrying its subtree.
+
+        ``allow_missing_parent`` is the path-addressed door's tolerance (``DocumentService.move``: it has always been able to move a document into
+        a directory that has no row of its own, as ``put_document`` can write one): a ``new_parent`` path holding no document is then used as a
+        plain path prefix with no parent row, and none is invented. The tree routes leave it off and refuse such a parent.
+        """
         doc = await self.resolve(collection_id=collection_id, path=path)
         slug = new_slug or doc.slug
         if strict_slugs and not STRICT_SLUG_RE.fullmatch(slug):
             raise BadRequestError(f"slug {slug!r} must match [a-z0-9-]+")
-        parent_id, parent_path = await self._resolve_parent(collection_id, new_parent)
+        try:
+            parent_id, parent_path = await self._resolve_parent(collection_id, new_parent)
+        except NotFoundError:
+            if not allow_missing_parent:
+                raise
+            parent_id, parent_path = None, new_parent
         if parent_path == doc.path or parent_path.startswith(doc.path + "/"):
             raise BadRequestError(
                 f"cannot move {doc.path!r} into its own subtree {parent_path!r}"
@@ -261,20 +322,28 @@ class DocumentTreeService:
                    depth: int = 1) -> list[TreeNode]:
         parent_id, _ = await self._resolve_parent(collection_id, parent)
         out: list[TreeNode] = []
-        frontier: list[tuple[str | None, int]] = [(parent_id, 1)]
-        while frontier:
-            pid, level = frontier.pop(0)
-            for node in await self._child_nodes(collection_id, pid):
-                out.append(node)
-                if level < depth and node.has_children:
-                    frontier.append((node.document_id, level + 1))
+        level_kids = await self._children(collection_id, parent_id)
+        level = 1
+        while level_kids:
+            # One query for the children of the whole level: they say which of this level's nodes have children, and (while
+            # the walk goes deeper) they are the next level.
+            grand = await self._children_of(collection_id, [k.id for k in level_kids])
+            has_children = {g.parent_id for g in grand}
+            for k in sorted(level_kids, key=lambda d: d.slug):
+                out.append(TreeNode(
+                    path=k.path, slug=k.slug, title=k.title or k.slug,
+                    document_id=k.id, has_children=k.id in has_children,
+                ))
+            level_kids = grand if level < depth else []
+            level += 1
         return sorted(out, key=lambda n: n.path)
 
-
-    async def read(self, *, collection_id: str, path: str) -> TreeReadResult:
+    async def read(self, *, collection_id: str, path: str,
+                   with_children: bool = True) -> TreeReadResult:
+        """The page at ``path``; ``with_children=False`` skips the child listing (``children`` is empty) for a caller that only compares the page."""
         doc = await self.resolve(collection_id=collection_id, path=path)
         body = await self._content.get(doc.id)
-        children = await self._child_nodes(collection_id, doc.id)
+        children = await self._child_nodes(collection_id, doc.id) if with_children else []
         return TreeReadResult(document=doc, body=body or "", children=children)
 
     async def _child_nodes(
@@ -283,14 +352,14 @@ class DocumentTreeService:
         kids = sorted(
             await self._children(collection_id, parent_id), key=lambda d: d.slug
         )
-        nodes: list[TreeNode] = []
-        for k in kids:
-            grand = await self._children(collection_id, k.id)
-            nodes.append(TreeNode(
+        has_children = {g.parent_id for g in await self._children_of(collection_id, [k.id for k in kids])}
+        return [
+            TreeNode(
                 path=k.path, slug=k.slug, title=k.title or k.slug,
-                document_id=k.id, has_children=bool(grand),
-            ))
-        return nodes
+                document_id=k.id, has_children=k.id in has_children,
+            )
+            for k in kids
+        ]
 
 
 __all__ = ["DocumentTreeService", "TreeNode", "TreeReadResult", "STRICT_SLUG_RE"]

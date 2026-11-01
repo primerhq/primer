@@ -1,0 +1,146 @@
+{
+ "this-install": [
+  "# This install\n\nThis is the map of THIS install. It is rebuilt from live state at every startup (and agent, graph and collection pages update on change), and it is read-only: grep it, read it, do not write to it. It lists only what is public; your own and shared entities are in the console and the CRUD tools.\n\n- [agents](this-install/agents) - every public agent, its purpose and its model\n- [graphs](this-install/graphs) - every public graph and what it orchestrates\n- [collections](this-install/collections) - every public collection on this install\n- [workspaces](this-install/workspaces) - every public workspace and its phase\n- [providers](this-install/providers) - LLM, embedding and search backends\n",
+  "This install",
+  {
+   "kind": "live",
+   "summary": "live list of agents, graphs, collections, workspaces and providers"
+  }
+ ],
+ "this-install/agents": [
+  "# Agents\n\n- [agent-000](this-install/agents/agent-000)\n- [agent-001](this-install/agents/agent-001)\n- [agent-002](this-install/agents/agent-002)\n- [agent-003](this-install/agents/agent-003)\n- [agent-004](this-install/agents/agent-004)\n- [operator](this-install/agents/operator)\n",
+  "Agents",
+  {
+   "kind": "live",
+   "summary": "every public agent on this install"
+  }
+ ],
+ "this-install/agents/agent-000": [
+  "# agent-000\n\nUser-supplied description: \"helper 0\"\n\n- model profile: a private profile\n",
+  "agent-000",
+  {
+   "kind": "live",
+   "summary": ""
+  }
+ ],
+ "this-install/agents/agent-001": [
+  "# agent-001\n\nUser-supplied description: \"helper 1\"\n\n- model profile: `prof`\n",
+  "agent-001",
+  {
+   "kind": "live",
+   "summary": ""
+  }
+ ],
+ "this-install/agents/agent-002": [
+  "# agent-002\n\nUser-supplied description: \"helper 2\"\n\n- model profile: a private profile\n",
+  "agent-002",
+  {
+   "kind": "live",
+   "summary": ""
+  }
+ ],
+ "this-install/agents/agent-003": [
+  "# agent-003\n\nUser-supplied description: \"helper 3\"\n\n- model profile: `prof`\n",
+  "agent-003",
+  {
+   "kind": "live",
+   "summary": ""
+  }
+ ],
+ "this-install/agents/agent-004": [
+  "# agent-004\n\nUser-supplied description: \"helper 4\"\n\n- model profile: a private profile\n",
+  "agent-004",
+  {
+   "kind": "live",
+   "summary": ""
+  }
+ ],
+ "this-install/agents/operator": [
+  "# operator\n\nUser-supplied description: \"The operator of this primer install: answers, delegates and conducts. Use when you need the platform's front door for any request. Returns the answer itself, or the result of the specialists it invoked.\"\n\n- model profile: `prof`\n",
+  "operator",
+  {
+   "kind": "live",
+   "summary": ""
+  }
+ ],
+ "this-install/collections": [
+  "# Collections\n\n- [notes](this-install/collections/notes)\n",
+  "Collections",
+  {
+   "kind": "live",
+   "summary": "every public collection on this install"
+  }
+ ],
+ "this-install/collections/notes": [
+  "# notes\n\nUser-supplied description: \"my notes\"\n\n- search: fulltext\n",
+  "notes",
+  {
+   "kind": "live",
+   "summary": ""
+  }
+ ],
+ "this-install/graphs": [
+  "# Graphs\n\n_(none)_\n",
+  "Graphs",
+  {
+   "kind": "live",
+   "summary": "every public graph on this install"
+  }
+ ],
+ "this-install/providers": [
+  "# Providers\n\nEverything this install can talk to, by class.\n\n- [llm](this-install/providers/llm) - chat/completion backends\n- [model-profiles](this-install/providers/model-profiles) - what agents bind to\n- [embedding](this-install/providers/embedding) - vector embedders\n- [semantic-search](this-install/providers/semantic-search) - vector stores\n",
+  "Providers",
+  {
+   "kind": "live",
+   "summary": "LLM, embedding and search backends"
+  }
+ ],
+ "this-install/providers/embedding": [
+  "# Embedding providers\n\n_(none)_\n",
+  "Embedding providers",
+  {
+   "kind": "live",
+   "summary": "vector embedders"
+  }
+ ],
+ "this-install/providers/llm": [
+  "# LLM providers\n\n- [prov](this-install/providers/llm/prov) - anthropic\n",
+  "LLM providers",
+  {
+   "kind": "live",
+   "summary": "chat/completion backends"
+  }
+ ],
+ "this-install/providers/llm/prov": [
+  "# LLM provider prov\n\n- type: anthropic\n- config keys (values omitted): api_key\n",
+  "LLM provider prov",
+  {
+   "kind": "live",
+   "summary": ""
+  }
+ ],
+ "this-install/providers/model-profiles": [
+  "# Model profiles\n\nAn agent names a profile, not a model. These are the profiles this install has registered.\n\n- prof - m on prov, context 1000\n",
+  "Model profiles",
+  {
+   "kind": "live",
+   "summary": "what agents bind to"
+  }
+ ],
+ "this-install/providers/semantic-search": [
+  "# Semantic-search providers\n\n_(none)_\n",
+  "Semantic-search providers",
+  {
+   "kind": "live",
+   "summary": "vector stores"
+  }
+ ],
+ "this-install/workspaces": [
+  "# Workspaces\n\nPlaces sessions run. One page each.\n\nNo workspaces exist yet.\n",
+  "Workspaces",
+  {
+   "kind": "live",
+   "summary": "every public workspace and its phase"
+  }
+ ]
+}

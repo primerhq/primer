@@ -16,6 +16,7 @@ from primer.events.dispatcher import EventDispatcher
 from primer.knowledge.system_collection import (
     SYSTEM_COLLECTION_ID,
     regenerate_system_collection,
+    settle,
 )
 from primer.knowledge.tree import DocumentTreeService
 from primer.model.access import Access
@@ -71,6 +72,7 @@ async def test_storage_mutation_converges_via_the_subscription(sp):
               model=AgentModel(profile_id="prov--m"))
     )
     assert await dispatcher.drain_once() >= 1
+    await settle()  # the subtree index is rebuilt once per burst, after it
 
     tree = DocumentTreeService(sp)
     page = await tree.read(collection_id=SYSTEM_COLLECTION_ID,
@@ -86,6 +88,7 @@ async def test_storage_mutation_converges_via_the_subscription(sp):
         row.model_copy(update={"description": "rewritten purpose"})
     )
     await dispatcher.drain_once()
+    await settle()
     page = await tree.read(collection_id=SYSTEM_COLLECTION_ID,
                            path="this-install/agents/agent-ev")
     assert "rewritten purpose" in page.body
@@ -93,6 +96,7 @@ async def test_storage_mutation_converges_via_the_subscription(sp):
     # Delete takes the page away.
     await sp.get_storage(Agent).delete("agent-ev")
     await dispatcher.drain_once()
+    await settle()
     with pytest.raises(NotFoundError):
         await tree.read(collection_id=SYSTEM_COLLECTION_ID,
                         path="this-install/agents/agent-ev")

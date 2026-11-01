@@ -35,9 +35,11 @@ is per-client; the second is per-deployment.
 ## Mental model
 
 An **API token** is a row in the `ApiToken` storage table. It carries
-a SHA-256 hash of the token plaintext, a short prefix (for display in
-listings - never the full secret), the user who owns it, an optional
-expiry, an immutable scopes list, and a soft-delete `revoked_at`. The
+a SHA-256 hash of the token plaintext, a short prefix (the first 8
+characters after the fixed `primer_pat_`, for display in listings to tell
+tokens apart - never the full secret; rows made before keep their old
+prefix), the user who owns it, an optional expiry (a time without a zone
+is read as UTC), an immutable scopes list, and a soft-delete `revoked_at`. The
 plaintext leaves the server **exactly once**, in the response to the
 POST that created the token. Listing, GETting, or otherwise touching
 the row afterward returns the hash + prefix only. If a user loses a
@@ -241,7 +243,12 @@ server side.
   behind a reverse proxy must set `FORWARDED_ALLOW_IPS` to the proxy
   (uvicorn then reads the real client from the forwarded header), or every
   client shares the proxy's address and the throttle key degrades to the
-  username alone.
+  username alone. An IPv6 client counts as its whole /64. One address also
+  has a budget of failed sign-ins across all usernames (30), and a busy
+  server answers `503` (`busy`, `Retry-After: 1`) instead of queueing
+  without bound. `POST /v1/auth/change-password` is throttled per user
+  the same way (`429` after five wrong current passwords). Passwords are
+  at most 4096 characters.
 - **Approval-required tools are not callable over MCP.** Even with the
   `mcp` scope and the tool allowlisted, a tool whose effective approval
   policy is `required` is refused at `tools/call` - MCP has no surface

@@ -69,7 +69,7 @@ async def test_a_python_toolset_registers_and_lists_its_tools(
         assert body["registration_error"] is None
         # The level is a property of THIS deployment, not a constant.
         assert body["isolation_level"] in {
-            "container", "seccomp", "sandbox-exec", "rlimit-only",
+            "container", "landlock", "seccomp", "sandbox-exec", "rlimit-only",
         }
     finally:
         await _cleanup(client, tid)

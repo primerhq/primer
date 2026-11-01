@@ -1233,6 +1233,8 @@ class TestMessagesJsonlAppendRewriteRace:
             _binding(), id="sess-race", instructions="hello"
         )
         sid = session.session_id
+        if session.append_only():
+            pytest.skip("an append-only log has no read->rewrite gap to race (tests/session/test_message_log_concurrency.py covers it)")
         rel = f"sessions/{sid}/messages.jsonl"
         event_line = b'{"seq":99,"kind":"assistant_token","text":"streamed-event"}\n'
 

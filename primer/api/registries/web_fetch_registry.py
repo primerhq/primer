@@ -8,6 +8,9 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from primer.api.registries._invalidation import BusInvalidated
+from primer.api.registries.retirement import RETIRE_IDLE_SECONDS, AdapterRetirement
+from primer.int.coordinator import InvalidationTopic
 from primer.model.except_ import NotFoundError
 from primer.model.web_fetch import WebFetchProvider, WebFetchProviderType
 from primer.web_fetch.adapter import WebFetchAdapter, WebFetchProviderError
@@ -18,27 +21,36 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class WebFetchRegistry:
+class WebFetchRegistry(BusInvalidated):
     def __init__(self, *, storage: "Storage[WebFetchProvider]",
-                 factory: Callable[[WebFetchProvider], WebFetchAdapter] | None = None) -> None:
+                 factory: Callable[[WebFetchProvider], WebFetchAdapter] | None = None,
+                 retire_idle_seconds: float = RETIRE_IDLE_SECONDS) -> None:
+        self._retirement = AdapterRetirement(retire_idle_seconds)
+        self._init_invalidation(InvalidationTopic.WEB_FETCH_PROVIDER)
         self._storage = storage
         self._factory = factory or default_web_fetch_factory
         self._instances: dict[str, WebFetchAdapter] = {}
         self._lock = asyncio.Lock()
+        # Bumped by every eviction and flush: a get that read its row before one never caches what it built (GX-4).
+        self._generation = 0
 
     async def get(self, provider_id: str) -> WebFetchAdapter:
         async with self._lock:
             cached = self._instances.get(provider_id)
             if cached is not None:
                 return cached
+        generation = self._generation
         row = await self._storage.get(provider_id)
         if row is None:
             raise NotFoundError(f"web fetch provider {provider_id!r} does not exist")
-        candidate = self._factory(row)
+        candidate = self._retirement.track(self._factory(row))
         async with self._lock:
             winner = self._instances.get(provider_id)
             if winner is None:
-                self._instances[provider_id] = candidate
+                if self._generation == generation:
+                    self._instances[provider_id] = candidate
+                else:
+                    self._retirement.retire(candidate)  # built from a row read before an eviction: for this caller only
                 return candidate
         try:
             await candidate.aclose()
@@ -46,16 +58,22 @@ class WebFetchRegistry:
             logger.warning("WebFetchRegistry: race-loser aclose failed: %s", exc)
         return winner
 
-    async def invalidate(self, provider_id: str) -> None:
+    async def _invalidate_local(self, provider_id: str) -> None:
         async with self._lock:
+            self._generation += 1
             inst = self._instances.pop(provider_id, None)
         if inst is not None:
-            try:
-                await inst.aclose()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("WebFetchRegistry.invalidate: aclose failed: %s", exc)
+            self._retirement.retire(inst)         # closed once its in-flight calls are done (GX-1)
+
+    def _flush_local(self) -> None:
+        """A bus reconnect may have dropped evictions: retire every cached adapter (in-flight calls finish), so the next get rebuilds."""
+        self._generation += 1
+        instances, self._instances = list(self._instances.values()), {}
+        for inst in instances:
+            self._retirement.retire(inst)
 
     async def aclose(self) -> None:
+        await self._unbind_invalidation_bus()
         async with self._lock:
             instances = list(self._instances.values())
             self._instances.clear()
@@ -64,6 +82,7 @@ class WebFetchRegistry:
                 await inst.aclose()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("WebFetchRegistry.aclose: instance close failed: %s", exc)
+        await self._retirement.close_all()
 
 
 def default_web_fetch_factory(provider: WebFetchProvider) -> WebFetchAdapter:

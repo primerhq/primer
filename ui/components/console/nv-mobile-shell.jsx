@@ -124,9 +124,11 @@ function NV_mobileInboxView(it, who, shownAll, level) {
 }
 
 // known === false: the queue has not loaded (or its first fetch failed), so "Nothing waiting on you" would be a claim nobody has checked.
-function NV_mobileInboxHeading(count, known) {
+// `total` (optional) is the server's count when the page holds only the newest of more (GU-8): the heading says how many wait, not how many are shown.
+function NV_mobileInboxHeading(count, known, total) {
   if (!count && known === false) return { title: "Inbox", count: "" };
-  return { title: "Inbox", count: count ? count + " waiting on you" : "Nothing waiting on you" };
+  var shown = total > count ? total : count;
+  return { title: "Inbox", count: shown ? shown + " waiting on you" : "Nothing waiting on you" };
 }
 
 // Approve or Deny the call a card showed. The decision names the card's own tool_call_id, so a session that has since parked on
@@ -305,11 +307,14 @@ function NV_MobileInboxCard(props) {
 // user's queue, so it needs the queue to have loaded: while the first fetch is in flight the panel says so, and when it failed it shows the error
 // with Try again (props.error, props.onRetry). A poll that fails AFTER a good load keeps what was loaded (stale-while-error).
 function NV_MobileInboxPanel(props) {
-  var heading = NV_mobileInboxHeading(props.items.length, props.loaded);
+  var heading = NV_mobileInboxHeading(props.items.length, props.loaded, props.total);
   var body;
   if (props.items.length) {
     body = (
       <div className="nv-mob-ib-list">
+        {props.total > props.items.length ? (
+          <div className="pr-paged-note" role="note" data-testid="nv-mob-ib-cut">Showing the newest {props.items.length} of {props.total}.</div>
+        ) : null}
         {props.items.map(function (it) {
           return <NV_MobileInboxCard key={SH_pendingId(it.session_id, it.gate_id, it.tool_call_id)} item={it} onResolved={props.onResolved} />;
         })}
@@ -428,6 +433,18 @@ function NV_MobileChatScreen(props) {
 // route instead.
 // ---------------------------------------------------------------------------
 
+// A failed read of the Files tab (a 403, a 503 from the runtime) says so, with the server's own words and a Retry, instead of reading as "no files yet" (GU-10).
+// Shown only while nothing has loaded: a poll that fails after a good load keeps what was shown.
+function NV_MobileReadError(props) {
+  return (
+    <div className="card-list-empty" role="alert" data-testid={props.testid}>
+      <div>{props.what}</div>
+      <div>{NV_errText(props.error)}</div>
+      <button type="button" className="nv-btn-secondary touch-target" data-testid={props.testid + "-retry"} onClick={props.onRetry}>Retry</button>
+    </div>
+  );
+}
+
 function NV_MobileFileView(props) {
   var con = NV_useConsole();
   var path = props.path;
@@ -440,7 +457,9 @@ function NV_MobileFileView(props) {
   var binary = meta.encoding === "base64";
   return (
     <div className="nv-mob-file-view" data-testid={"nv-mob-file-view:" + path}>
-      {binary ? (
+      {read.error && !read.data ? (
+        <NV_MobileReadError testid="nv-mob-file-error" what="Couldn't open this file." error={read.error} onRetry={read.refetch} />
+      ) : binary ? (
         <div className="card-list-empty">
           {path} is binary - open it on desktop to view.
         </div>
@@ -479,7 +498,7 @@ function NV_MobileFileScreen(props) {
 // three has a load-order dependency on either of the others.
 function NV_Mobile_Pulse(props) {
   var statusSnap = typeof window.useSessionStore === "function"
-    ? window.useSessionStore(props.wid, props.sid, "status")
+    ? window.useSessionStore(props.wid, props.sid, "status", { records: false })
     : null;
   if (!statusSnap || !statusSnap.verb) return null;
   return <span className="nv-dot-pulse" title="running" />;
@@ -543,16 +562,7 @@ function NV_MobileSpaces(props) {
     function (signal) { return SH_api.allSessions(signal); },
     { pollMs: 5000, deps: [] }
   );
-  var inboxRes = window.primerApi.useResource(
-    "nv-rail-inbox",
-    function (signal) {
-      return SH_api.pendingAttention(signal).catch(function (err) {
-        if (err && err.status !== 404) throw err;
-        return { items: [] };
-      });
-    },
-    { pollMs: 10000, deps: [] }
-  );
+  var inboxRes = SH_useAttention(con.workspaces || []);
 
   var expandedState = React.useState({});
   var expanded = expandedState[0];
@@ -612,7 +622,7 @@ function NV_MobileSpaces(props) {
       <div className="nv-mob-sp-head">
         <h1 className="nv-mob-ib-h">Spaces</h1>
         {/* The command palette is the console's only search (workspaces, sessions, files, verbs); a phone has no keyboard chord for it. */}
-        <button type="button" className="nv-mob-search touch-target" data-testid="nv-mob-search"
+        <button type="button" className="nv-mob-search touch-target" data-testid="nv-mob-search" data-focus-home="true"
           aria-label="Search" title="Search"
           onClick={function () { if (con.paletteRef && con.paletteRef.current) con.paletteRef.current.open(); }}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
@@ -1117,7 +1127,9 @@ function NV_MobileFiles() {
         <div className="card-list-empty">Pick a workspace to browse its files.</div>
       ) : history ? (
         <div className="card-list" data-testid="nv-mob-files-history-list">
-          {!commitRows.length ? (
+          {commits.error && !commits.data ? (
+            <NV_MobileReadError testid="nv-mob-commits-error" what="Couldn't load the turn commits." error={commits.error} onRetry={commits.refetch} />
+          ) : !commitRows.length ? (
             <div className="card-list-empty">No turn commits yet.</div>
           ) : null}
           {commitRows.map(function (c) {
@@ -1137,7 +1149,9 @@ function NV_MobileFiles() {
         </div>
       ) : (
         <div className="card-list" data-testid="nv-mob-files-tree">
-          {!items.length ? (
+          {tree.error && !tree.data ? (
+            <NV_MobileReadError testid="nv-mob-tree-error" what="Couldn't load the files." error={tree.error} onRetry={tree.refetch} />
+          ) : !items.length ? (
             <div className="card-list-empty">This workspace has no files yet.</div>
           ) : null}
           {items.map(function (entry) { return row(entry, 0); })}
@@ -1228,12 +1242,7 @@ function NV_MobileProfileTheme() {
       </div>
       <button type="button" className="nv-btn-secondary nv-mob-logout touch-target"
         data-testid="nv-mob-logout"
-        onClick={function () {
-          fetch("/v1/auth/logout", { method: "POST" }).then(
-            function () { window.location.reload(); },
-            function () { window.location.reload(); }
-          );
-        }}>Log out</button>
+        onClick={function () { NV_signOut(con, "/auth/logout"); }}>Log out</button>
     </div>
   );
 }
@@ -1695,17 +1704,9 @@ function NV_MobileShell() {
   // use-resource.js dedupes by that string, so switching between the
   // desktop and mobile shells at a resize boundary never runs two
   // independent poll loops side by side.
-  var inboxRes = window.primerApi.useResource(
-    "nv-rail-inbox",
-    function (signal) {
-      return SH_api.pendingAttention(signal).catch(function (err) {
-        if (err && err.status !== 404) throw err;
-        return { items: [] };
-      });
-    },
-    { pollMs: 10000, deps: [] }
-  );
+  var inboxRes = SH_useAttention(con.workspaces || []);
   var inboxItems = (inboxRes.data && inboxRes.data.items) || [];
+  var inboxTotal = SH_attentionTotal(inboxRes.data);
 
   // Tap-driven nudge, same compromise nv-rail.jsx's own Inbox makes: one
   // EventSource per workspace, so this only watches whichever workspace
@@ -1713,15 +1714,20 @@ function NV_MobileShell() {
   // workspaces' attention changes still arrive within one 10s poll.
   // Debounced so a burst of frames from the same session doesn't refetch
   // once per frame.
-  var refetchTimerRef = React.useRef(null);
-  window.useWorkspaceTapListener(con.wid, function (ev) {
+  var refetchThrottleRef = React.useRef({});
+  React.useEffect(function () { return function () { PR_cancelThrottle(refetchThrottleRef.current); }; }, []);
+  // The Files tab's read of the workspace row (same key, one cache entry): a gone workspace's tap is not held, or the hub would reopen its
+  // 404 with backoff (UI-L1), as on the desktop rail.
+  var wsRow = window.primerApi.useResource(
+    con.wid ? SH_api.keys.workspace(con.wid) : null,
+    function (signal) { return SH_api.workspace(con.wid, signal); },
+    { pollMs: 0, deps: [con.wid] }
+  );
+  var wsGone = typeof window.NV_isWorkspaceGone === "function" && window.NV_isWorkspaceGone(wsRow.error);
+  window.useWorkspaceTapListener(wsGone ? null : con.wid, function (ev) {
     var cls = ev && ev["class"];
     if (cls !== "yielded" && cls !== "resumed" && cls !== "done") return;
-    if (refetchTimerRef.current) return;
-    inboxRes.refetch();
-    refetchTimerRef.current = setTimeout(function () {
-      refetchTimerRef.current = null;
-    }, 500);
+    PR_trailingThrottle(refetchThrottleRef.current, 500, function () { inboxRes.refetch(); });
   });
 
   // M5 spec pt 6: an incoming con.overlay naming a desktop-only overlay
@@ -1768,9 +1774,9 @@ function NV_MobileShell() {
   var tabs = [
     {
       id: "inbox",
-      label: "Inbox" + (inboxItems.length > 0 ? " (" + inboxItems.length + ")" : ""),
+      label: "Inbox" + (inboxTotal > 0 ? " (" + inboxTotal + ")" : ""),
       content: (
-        <NV_MobileInboxPanel items={inboxItems} onResolved={inboxRes.refetch}
+        <NV_MobileInboxPanel items={inboxItems} total={inboxTotal} onResolved={inboxRes.refetch}
           loaded={inboxRes.data != null} error={inboxRes.error} onRetry={inboxRes.refetch}
           onStart={function () { setStartRequested(true); setActiveTab("spaces"); }} />
       ),

@@ -30,7 +30,7 @@ from primer.int.llm import LLM
 from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm._reasoning import openresponses_extended
 from primer.llm._openai_common import build_sampling_params as _build_sampling_params_impl
-from primer.llm._openai_common import fit_openai_reasoning_request
+from primer.llm._openai_common import fit_openai_reasoning_request, parse_tool_arguments
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.model.except_ import (
     ConfigError,
@@ -632,11 +632,7 @@ def _translate_event(  # noqa: C901  (intentional dispatch table)
         idx = _resolve_index(state, item_id, None)
         call_id = state.item_call_id.get(item_id, "")
         raw_args = getattr(event, "arguments", "") or "{}"
-        try:
-            parsed = json.loads(raw_args)
-        except json.JSONDecodeError:
-            parsed = {}
-        return [ToolCallEnd(id=call_id, arguments=parsed, index=idx)]
+        return [ToolCallEnd(id=call_id, arguments=parse_tool_arguments(raw_args), index=idx)]
 
     if etype == "response.audio.delta":
         item_id = getattr(event, "item_id", "") or ""
@@ -935,6 +931,7 @@ class OpenResponsesLLM(LLM):
             self._client = AsyncOpenAI(
                 base_url=str(self._config.url),
                 api_key=key,
+                max_retries=0,  # RetryingLLM owns the retry policy (AG-H5)
             )
         return self._client
 

@@ -40,6 +40,7 @@ from primer.graph._node_refs import (
     _ToolDispatchBarrier,
     await_tool_dispatch_barrier,
 )
+from primer.common.bounded_template import off_loop
 from primer.graph.template import render_input_template
 from primer.model.chat import Message, StreamEvent, TextPart, ToolResultPart, ToolTurnCapReached
 from primer.model.graph import GraphContext, NodeOutput, _AgentNodeRef
@@ -230,8 +231,8 @@ class _AgentNodeMixin:
         tool_manager = await self._select_node_tool_manager(node, agent)
 
         # Render the input template -> single user-role Message.
-        rendered = render_input_template(
-            node.input_template, context=context, extra_scope=extra_scope
+        rendered = await off_loop(
+            render_input_template, node.input_template, context=context, extra_scope=extra_scope
         )
         new_user_msg = Message(role="user", parts=[TextPart(text=rendered)])
 
@@ -499,8 +500,8 @@ class _AgentNodeMixin:
         # instance's template uses fanout_index / fanout_item, and the checkpoint restores the
         # instance (``_fanout_instances``) before this runs. Passing none made the render fail
         # on the undefined name, or quietly gave the model a different prompt.
-        rendered = render_input_template(
-            node.input_template, context=context,
+        rendered = await off_loop(
+            render_input_template, node.input_template, context=context,
             extra_scope=_fanout_scope(self._fanout_instances.get(pending.node_id)),
         )
         new_user_msg = Message(role="user", parts=[TextPart(text=rendered)])

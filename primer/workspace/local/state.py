@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from pathlib import Path
@@ -96,6 +98,9 @@ class LocalStateRepo:
     not locked -- ``git log`` and ``git show`` operate on read-only
     snapshots.
     """
+
+    #: ``commit(appends=...)`` extends a file by appending (Task 14 stage 2); a repo without this attribute is committed whole-file.
+    supports_append = True
 
     def __init__(
         self,
@@ -277,8 +282,13 @@ class LocalStateRepo:
         call_id: str | None = None,
         files: dict[str, str | bytes] | None = None,
         delete_files: list[str] | None = None,
+        appends: dict[str, bytes] | None = None,
     ) -> str:
         """Stage files under sessions/<session_id>/, commit with trailers.
+
+        ``appends`` adds bytes to the end of a file instead of replacing it (Task 14 stage 2): the file is extended by an O_APPEND write (a
+        missing final newline is supplied first, as the whole-file writers do) and staged, so a commit that only adds lines to
+        ``messages.jsonl`` rewrites none of it. The caller holds the file's lock (the session's messages lock) across the append.
 
         ``files`` keys are paths relative to the session slot
         (e.g. ``"messages.jsonl"`` or ``"memory/note.md"``); values are
@@ -322,12 +332,14 @@ class LocalStateRepo:
                 await asyncio.to_thread(
                     target.parent.mkdir, parents=True, exist_ok=True
                 )
-                if isinstance(content, bytes):
-                    await asyncio.to_thread(target.write_bytes, content)
-                else:
-                    await asyncio.to_thread(
-                        target.write_text, content, encoding="utf-8"
-                    )
+                await asyncio.to_thread(_write_atomic, target, content)
+                staged_paths.append(self._repo_relative(target))
+
+            for rel, data in (appends or {}).items():
+                _validate_relative_path(rel)
+                target = slot / rel
+                await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(_append_bytes, target, data)
                 staged_paths.append(self._repo_relative(target))
 
             # Stage them.
@@ -681,6 +693,15 @@ class LocalStateRepo:
             return None
         return await asyncio.to_thread(target.read_bytes)
 
+    async def stat_state_file(self, path: str) -> tuple[int, int] | None:
+        """``(size, mtime_ns)`` of a file under ``.state/``, or ``None`` when it is absent: a cheap way to tell that a file read before is unchanged."""
+        _validate_relative_path(path)
+        try:
+            info = await asyncio.to_thread((self._path / path).stat)
+        except FileNotFoundError:
+            return None
+        return info.st_size, info.st_mtime_ns
+
     # ---- internals -------------------------------------------------------
 
     def _repo_relative(self, p: Path) -> str:
@@ -732,6 +753,30 @@ class LocalStateRepo:
         Kills the subprocess and raises :class:`SubprocessTimeoutError` if it
         does not complete within ``self._subprocess_timeout_seconds``.
         """
+        try:
+            return await self._run_git_once(args, allow_empty_repo=allow_empty_repo)
+        except _GitCommandError as exc:
+            # A lock left by a git that was killed outright (a crashed pod, an older SIGKILL) is older than any git could still be holding it.
+            if "index.lock" not in exc.stderr or not self._remove_stale_index_lock():
+                raise
+        return await self._run_git_once(args, allow_empty_repo=allow_empty_repo)
+
+    def _remove_stale_index_lock(self) -> bool:
+        """Remove ``.git/index.lock`` when it is older than the subprocess timeout (no live git holds a lock that long); True when removed."""
+        lock = self._path / ".git" / "index.lock"
+        try:
+            age = time.time() - lock.stat().st_mtime
+            if age <= self._subprocess_timeout_seconds:
+                return False
+            lock.unlink()
+        except FileNotFoundError:
+            return True  # gone since the failure: the retry may proceed
+        except OSError:
+            return False
+        logger.warning("removed a stale %s (%.0fs old)", lock, age)
+        return True
+
+    async def _run_git_once(self, args: tuple[str, ...], *, allow_empty_repo: bool) -> tuple[bytes, bytes]:
         proc = await asyncio.create_subprocess_exec(
             "git",
             "-C",
@@ -746,11 +791,19 @@ class LocalStateRepo:
                 timeout=self._subprocess_timeout_seconds,
             )
         except TimeoutError as exc:
+            # SIGTERM first: git removes its lockfiles on it. SIGKILL leaves ``.git/index.lock`` behind and wedges every later commit (W14).
             try:
-                proc.kill()
+                proc.terminate()
             except ProcessLookupError:
                 pass
-            await proc.wait()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE_SECONDS)
+            except TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
             raise SubprocessTimeoutError(
                 f"git {' '.join(args)} timed out after "
                 f"{self._subprocess_timeout_seconds}s"
@@ -772,6 +825,35 @@ class LocalStateRepo:
 # ===========================================================================
 # Helpers
 # ===========================================================================
+
+
+def _append_bytes(target: Path, data: bytes) -> None:
+    """Add ``data`` to the end of ``target`` (created if absent) in one O_APPEND write, after a newline if the file does not end in one."""
+    lead = b""
+    try:
+        with open(target, "rb") as existing:
+            existing.seek(0, os.SEEK_END)
+            if existing.tell() > 0:
+                existing.seek(-1, os.SEEK_END)
+                lead = b"" if existing.read(1) == b"\n" else b"\n"
+    except FileNotFoundError:
+        pass
+    with open(target, "ab") as out:
+        out.write(lead + data)
+
+
+# How long a git that timed out gets to clean up after SIGTERM before SIGKILL.
+_TERMINATE_GRACE_SECONDS = 2.0
+
+
+def _write_atomic(target: Path, content: str | bytes) -> None:
+    """Write through a temp file and ``os.replace``, so a reader (``list_sessions`` re-reads ``session.json`` from disk) never sees a torn file."""
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    if isinstance(content, bytes):
+        tmp.write_bytes(content)
+    else:
+        tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, target)
 
 
 class _GitCommandError(RuntimeError):

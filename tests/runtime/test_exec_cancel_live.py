@@ -82,7 +82,7 @@ async def live(tmp_path: Path) -> AsyncIterator[tuple[RuntimeClient, Path]]:
 async def test_the_client_reports_a_runtime_that_has_exec_cancel(live) -> None:
     client, _ = live
 
-    assert client.negotiated_version == "1.4"
+    assert client.negotiated_version == "1.5"
 
 
 async def test_cancelling_the_clients_exec_stops_the_command_in_the_runtime_and_frees_the_write_lock(live) -> None:

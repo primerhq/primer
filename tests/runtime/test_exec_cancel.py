@@ -380,7 +380,7 @@ async def test_the_server_reports_protocol_1_4_in_its_hello(server) -> None:
         hello = json.loads((await asyncio.wait_for(ws.receive(), timeout=5.0)).data)
         await ws.close()
 
-    assert hello["result"]["protocol"] == "1.4"
+    assert hello["result"]["protocol"] == "1.5"
 
 
 async def test_exec_cancel_over_the_wire_stops_the_command_and_answers_ok(server) -> None:

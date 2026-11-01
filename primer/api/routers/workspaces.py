@@ -41,9 +41,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import to_jsonable_python
 
+from primer.model.storage import MAX_OFFSET
 from primer.access.person import person_from_request
 from primer.access.policy import level_of, require
-from primer.access.workspaces import readable_workspace_ids, require_session, require_workspace, scope_to_readable_workspaces
+from primer.access.workspaces import require_session, require_workspace, scope_to_readable_workspaces
 from primer.api.routers.access import make_access_router
 from primer.channel.checks import channel_for_binding
 from primer.api.deps import (
@@ -110,11 +111,8 @@ from primer.model.storage import (
     OffsetPage,
     OffsetPageResponse,
     OrderBy,
-    Op,
     PageRequest,
-    Predicate,
 )
-from primer.storage.q import Q
 from primer.model.workspace import (
     WORKSPACE_ID_PATTERN,
     WorkspaceEventsConfig,
@@ -129,7 +127,7 @@ from primer.model.workspace import (
 )
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.state_helpers import has_unsafe_commit_chars
-from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
+from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_tree_for_resolved, reserved_trees
 from primer.workspace.row_writes import WORKSPACE_PHASES, write_workspace_fields
 from primer.workspace.diagnostic import (
     DIAGNOSTIC_COMMANDS,
@@ -147,7 +145,8 @@ from primer.workspace.template_privilege import (
     refusal_message,
 )
 from primer.workspace.template_secrets import restore_template_secrets
-from primer.session.mutation_lock import session_lifecycle_lock
+from primer.bus.watch_notify import wake_watchers_best_effort
+from primer.session.mutation_lock import KeyedLock, session_lifecycle_lock
 from primer.model.yield_ import gate_id_of, with_wake_park
 from primer.session.pending_gates import undecided_pending_gates
 from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
@@ -786,7 +785,6 @@ workspace_access_router = make_access_router(
 
 _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
 
-_SESSION_COUNT_PAGE_SIZE = 200
 
 
 class WorkspaceRowOut(WorkspaceRow):
@@ -835,22 +833,8 @@ async def _enrich_with_session_counts(
     """Attach a live session count, and the ``is_default`` flag, to one page of workspaces."""
     session_storage = get_storage_provider(request).get_storage(WorkspaceSession)
 
-    counts: Counter[str] = Counter()
-    page_ids = [item.id for item in resp.items]
-    if page_ids:
-        # Only the page's workspaces (P2 Task 2): a bounded walk scoped by a
-        # where_in, never a scan of every session row.
-        predicate = Q(WorkspaceSession).where_in("workspace_id", page_ids).build()
-        offset = 0
-        while True:
-            page = await session_storage.find(
-                predicate, OffsetPage(offset=offset, length=_SESSION_COUNT_PAGE_SIZE)
-            )
-            for session in page.items:
-                counts[session.workspace_id] += 1
-            if len(page.items) < _SESSION_COUNT_PAGE_SIZE:
-                break
-            offset += _SESSION_COUNT_PAGE_SIZE
+    # Only the page's workspaces, in ONE grouped count (P2 Task 2 scoped it by where_in; M1 drops the walk over every session row).
+    counts = await session_storage.count_by("workspace_id", [item.id for item in resp.items])
 
     default_id = await resolve_default_workspace_id(get_storage_provider(request), person_from_request(request))
     # ``dict(item)``, not ``item.model_dump()``: the field values as the storage read them, so nothing is validated again. A dump
@@ -926,19 +910,14 @@ async def list_workspaces(
     storage=Depends(get_workspace_storage),
 ) -> _PageResp:
     refuse_secret_fields(WorkspaceRow, order_by=order_by)
-    # The readable set (P2 Task 2): admins get no filter (``None``);
-    # everyone else gets ``id IN <their readable ids>``.
-    ids = await readable_workspace_ids(
-        get_storage_provider(request), person_from_request(request)
-    )
-    if ids is not None and not ids:
+    # The readable set (P2 Task 2): admins get no filter (``None``); everyone else only the workspaces they read, in the query.
+    nothing, scoped = await scope_to_readable_workspaces(get_storage_provider(request), person_from_request(request), field="id")
+    if nothing:
         resp: _PageResp = _empty_page(page)
-    elif ids is None:
+    elif scoped is None:
         resp = await storage.list(page, order_by=order_by)
     else:
-        resp = await storage.find(
-            Q(WorkspaceRow).where_in("id", ids).build(), page, order_by=order_by
-        )
+        resp = await storage.find(scoped, page, order_by=order_by)
     return await _enrich_with_session_counts(resp, request)
 
 
@@ -953,17 +932,11 @@ async def find_workspaces(
     storage=Depends(get_workspace_storage),
 ) -> _PageResp:
     refuse_secret_fields(WorkspaceRow, predicate=body.predicate, order_by=body.order_by)
-    ids = await readable_workspace_ids(
-        get_storage_provider(request), person_from_request(request)
+    nothing, predicate = await scope_to_readable_workspaces(
+        get_storage_provider(request), person_from_request(request), body.predicate, field="id",
     )
-    if ids is not None and not ids:
+    if nothing:
         return _empty_page(body.page)
-    predicate = body.predicate
-    if ids is not None:
-        scoped = Q(WorkspaceRow).where_in("id", ids).build()
-        predicate = scoped if predicate is None else Predicate(
-            left=scoped, op=Op.AND, right=predicate
-        )
     return await storage.find(predicate, body.page, order_by=body.order_by)
 
 
@@ -1469,7 +1442,7 @@ async def list_sessions(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
     limit: int = Query(default=20, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     session_storage=Depends(get_session_storage),
 ) -> dict:
@@ -2316,11 +2289,14 @@ async def steer_session(
     )
     from primer.session.external_tools import (
         CANCEL_REASON_SUPERSEDED,
+        AlreadyDecidedError,
         _pending_targets,
+        _rows_by_tcid,
         apply_tool_results,
         cancel_pending_external,
     )
     from primer.model.principal import PrincipalRef
+    from primer.session.external_calls import flip_external_row
     from primer.session.pending_messages import store_pending_steer
     from primer.session.steer_routing import ROUTE_PENDING, route_steer
     from primer.session.yields import durably_wake_session
@@ -2384,18 +2360,20 @@ async def steer_session(
     #    the park with the synthetic cancelled payload so the turn resumes
     #    and pairs the call before the queued instruction is consumed.
     if body.instruction:
-        cancelled = await cancel_pending_external(
-            call_storage=call_storage, session_id=session_id,
-        )
-        if cancelled and row is not None:
+        # The park decides first (GS-6: the first decision wins, as for the yields cancel and a result): a call is cancelled only if its
+        # park took the cancel, through the same guarded flip, and only then is its row written. A call whose park refused the cancel (a
+        # result landed first) keeps its result and the steer answers 409 already_decided.
+        pending_rows, _ = await _rows_by_tcid(call_storage, session_id=session_id)
+        refused: list[str] = []
+        won: dict[str, str] = {}  # tool_call_id -> the call row the park entry names
+        if row is not None:
             # The cancel names the park whose calls it read (``row``, refreshed above): delivered by key alone and at least once, a copy that arrives after
             # the session re-parked under the same key must not cancel the new call (ticket 01a1208d, #702 review B2).
             payload = with_wake_park(make_cancelled_payload(reason=CANCEL_REASON_SUPERSEDED), row.parked_at)
             woken = None
             for tcid, (key, entry_row_id) in _pending_targets(row).items():
-                # Only a call whose cancel LANDED is woken: a call whose result landed meanwhile (its guarded
-                # row write was rejected, so it is not in ``cancelled``) keeps the reply the park carries.
-                if tcid not in cancelled:
+                # A call whose row already left pending (its result, a cancel or the timeout resolved it) has nothing to cancel.
+                if tcid not in pending_rows:
                     continue
                 # Each cancel is its own leaf of a multi-event park and the flip writes only that leaf, so the leaves
                 # other wakes wrote stay whatever this request read (ticket 01a122cc-effa). A further wake still starts
@@ -2410,19 +2388,37 @@ async def steer_session(
                         "longer waits on it, so it is not woken", tcid, session_id,
                     )
                     continue
-                await durably_wake_session(
+                if not await durably_wake_session(
                     woken,
                     event_key=key,
                     payload=payload,
                     session_storage=sessions,
                     engine=engine,
-                )
+                ):
+                    refused.append(tcid)
+                    continue
+                won[tcid] = entry_row_id or pending_rows[tcid].id
                 try:
                     await event_bus.publish(key, payload)
                 except Exception:  # noqa: BLE001 - durable flip landed
                     logger.exception(
                         "external tool cancel publish failed for %r", key
                     )
+        # The rows follow. A call whose park took the cancel: its row, which may replace a timeout the lazy sweep wrote once the park
+        # moved on. Every other pending call, except one whose park refused the cancel (its winner writes that row).
+        for row_id in won.values():
+            await flip_external_row(
+                call_storage, row_id=row_id, status="cancelled",
+                result={"cancelled": True, "reason": CANCEL_REASON_SUPERSEDED}, replace_timed_out=True,
+            )
+        await cancel_pending_external(
+            call_storage=call_storage, session_id=session_id, tool_call_ids=set(pending_rows) - set(refused) - set(won),
+        )
+        if refused:
+            raise AlreadyDecidedError(
+                f"external tool call(s) {refused!r} on session {session_id!r} were already decided (a result landed first); "
+                "the instruction was not delivered"
+            )
 
         # A session runs one turn at a time, so an instruction that
         # arrives while a turn is still open is queued rather than
@@ -2823,13 +2819,14 @@ def _is_admin(user: Any) -> bool:
     return user is not None and getattr(user, "role", None) == "admin"
 
 
-def _refuse_reserved_read(ws: Any, path: str, user: Any) -> None:
+async def _refuse_reserved_read(ws: Any, path: str, user: Any) -> None:
     """403 ``forbidden_role`` when a non-admin names a path in the runtime's
     ``.state`` / ``.tmp`` trees (A-22). Admins may read them, for debugging.
     The path is classified the way the backend resolves it."""
     if _is_admin(user):
         return
-    tree = reserved_tree_for(ws, path)
+    # Resolved as the backend does, links included: ``ln -s .state x`` must not make ``x/...`` readable (W55d).
+    tree = await reserved_tree_for_resolved(ws, path)
     if tree is not None:
         raise HTTPException(
             status_code=403,
@@ -2867,7 +2864,7 @@ async def file_tree(
 ) -> dict:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     # No origin decoration: with collection mounting retired, every entry
     # is workspace-native and nothing is collection-backed.
     # hidden=true never reveals the reserved trees to a non-admin.
@@ -2914,13 +2911,13 @@ async def list_files(
     path: str = Query(default=".", description="Workspace-relative path"),
     recursive: bool = Query(default=False),
     limit: int = Query(default=200, ge=1, le=2000),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
     user=Depends(require_user),
 ) -> dict:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     # No origin decoration: with collection mounting retired, every
     # entry is workspace-native and nothing is collection-backed.
     #
@@ -2947,7 +2944,10 @@ async def list_files(
     max_entries = (
         min(offset + limit, _MAX_RECURSIVE_WALK_ENTRIES) + 1 if recursive else None
     )
-    entries = await ws.list_files(path, recursive=recursive, max_entries=max_entries)
+    # A non-admin's recursive walk never enters the reserved trees (W55c): they would fill the capped walk with entries the page drops.
+    entries = await ws.list_files(
+        path, recursive=recursive, max_entries=max_entries, **({} if _is_admin(user) else {"skip_reserved": True}),
+    )
     entries = [e for e in entries if not _is_runtime_marker(e.path)]
     # A recursive walk from the root descends into .state / .tmp: a
     # non-admin's page drops those entries (A-22), so it can come back
@@ -2978,8 +2978,17 @@ async def file_info(
 ) -> FileEntry:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     return await ws.file_info(path)
+
+
+#: Serialises a file write's precondition check and the write itself, per (workspace, path) (W55b).
+_FILE_WRITE_LOCKS = KeyedLock()
+
+
+def _file_etag(entry) -> str:
+    """The etag of a file as ``file_info`` reports it: the read serves it and the write's precondition compares against it (one formula)."""
+    return hashlib.md5(f"{entry.modified_at.isoformat()}:{entry.size_bytes}".encode()).hexdigest()
 
 
 @files_router.get(
@@ -3004,7 +3013,10 @@ async def read_file(
 ) -> FileReadResponse:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
+    # The etag describes the file as it was BEFORE the bytes were read (review of workspaces, W55b): a write landing in between then makes the
+    # client's etag stale (its own write is refused) instead of newer than the content it holds.
+    entry = await ws.file_info(path)
     raw = await ws.read_file(path)
     if encoding == "text":
         try:
@@ -3016,10 +3028,9 @@ async def read_file(
             ) from exc
     else:
         content = base64.b64encode(raw).decode("ascii")
-    entry = await ws.file_info(path)
     mtime_iso = entry.modified_at.isoformat()
     mtime = entry.modified_at.timestamp()
-    etag = hashlib.md5(f"{mtime_iso}:{len(raw)}".encode()).hexdigest()
+    etag = _file_etag(entry)
     return FileReadResponse(
         path=path,
         encoding=encoding,
@@ -3045,7 +3056,7 @@ async def download_file(
 ) -> StreamingResponse:
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    _refuse_reserved_read(ws, path, user)
+    await _refuse_reserved_read(ws, path, user)
     raw = await ws.read_file(path)
 
     async def _gen():
@@ -3073,10 +3084,13 @@ async def make_dir(
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    event_bus=Depends(get_event_bus),
 ) -> None:
     await _require_workspace(request, workspace_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     await ws.make_dir(path)
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=path, scheduler=scheduler, event_bus=event_bus, event_type="created")
 
 
 @files_router.delete(
@@ -3094,10 +3108,13 @@ async def delete_file(
         description="Delete a non-empty directory and all its contents",
     ),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    event_bus=Depends(get_event_bus),
 ) -> None:
     await _require_workspace(request, workspace_id, AccessLevel.FULL)
     ws = await registry.get_workspace(workspace_id)
     await ws.delete_file(path, recursive=recursive)
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=path, scheduler=scheduler, event_bus=event_bus, event_type="deleted")
 
 
 @files_router.post(
@@ -3112,6 +3129,8 @@ async def move_file(
     src: str = Query(..., description="Source workspace-relative path"),
     dst: str = Query(..., description="Destination workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    event_bus=Depends(get_event_bus),
 ) -> None:
     """Move / rename ``src`` to ``dst`` within one workspace.
 
@@ -3135,6 +3154,9 @@ async def move_file(
                 ),
             },
         ) from exc
+    # The source is gone and the destination is new: a session watching either path is woken.
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=src, scheduler=scheduler, event_bus=event_bus, event_type="deleted")
+    await wake_watchers_best_effort(workspace_id=workspace_id, path=dst, scheduler=scheduler, event_bus=event_bus, event_type="created")
 
 
 @files_router.put(
@@ -3184,68 +3206,53 @@ async def write_file(
     # Writes into the reserved trees are refused for everyone (the backend's
     # _refuse_reserved). Refuse BEFORE the precondition stat below, or
     # 404-vs-412 tells a caller whether a .state / .tmp file exists (A-22).
-    reserved = reserved_tree_for(ws, path)
+    reserved = await reserved_tree_for_resolved(ws, path)
     if reserved is not None:
         raise BadRequestError(
             f"refusing to mutate path inside reserved tree {reserved!r}: "
             f"{path!r}"
         )
-    if etag is not None or if_unmodified_since_hdr is not None:
-        try:
-            entry = await ws.file_info(path)
-        except NotFoundError:
-            entry = None
-        if entry is not None:
-            conflict = False
-            if etag is not None:
-                current_etag = hashlib.md5(
-                    f"{entry.modified_at.isoformat()}:{entry.size_bytes}".encode()
-                ).hexdigest()
-                if etag != current_etag:
-                    conflict = True
-            elif if_unmodified_since_hdr is not None:
-                try:
-                    parsed_date = email.utils.parsedate_to_datetime(
-                        if_unmodified_since_hdr
-                    )
-                    if entry.modified_at > parsed_date:
+    # The precondition check and the write are ONE step per (workspace, path): without the lock two editors holding one etag both passed the
+    # check and both wrote (review of workspaces, W55b). In-process only (one event loop per API worker): another worker is not covered.
+    async with _FILE_WRITE_LOCKS.acquire(f"{workspace_id}\0{path}"):
+        if etag is not None or if_unmodified_since_hdr is not None:
+            try:
+                entry = await ws.file_info(path)
+            except NotFoundError:
+                entry = None
+            if entry is not None:
+                conflict = False
+                if etag is not None:
+                    if etag != _file_etag(entry):
                         conflict = True
-                except Exception:  # noqa: BLE001 - ignore malformed header
-                    pass
-            if conflict:
-                problem = ProblemDetails(
-                    type="/errors/precondition-failed",
-                    title="Precondition Failed",
-                    status=412,
-                    detail="The file has been modified since the precondition was recorded.",
-                    instance=request.url.path,
-                )
-                return JSONResponse(
-                    status_code=412,
-                    content=problem.model_dump(exclude_none=True),
-                    media_type=PROBLEM_JSON_MEDIA_TYPE,
-                )
-    await ws.write_file(path, raw)
-    # Deterministically wake any watch_files-parked session in this
-    # workspace whose watched paths match the just-written file. This
-    # reuses the event-bus -> YieldEventListener resume path; inotify
-    # stays as the backstop. Best-effort: a wake failure must never fail
-    # the write itself.
-    try:
-        from primer.bus.watch_notify import wake_watch_files_on_write
-
-        await wake_watch_files_on_write(
-            workspace_id=workspace_id,
-            path=path,
-            scheduler=scheduler,
-            event_bus=event_bus,
-        )
-    except Exception:  # noqa: BLE001 - wake is best-effort
-        logger.exception(
-            "wake_watch_files_on_write failed for workspace=%r path=%r",
-            workspace_id,
-            path,
-        )
+                elif if_unmodified_since_hdr is not None:
+                    try:
+                        parsed_date = email.utils.parsedate_to_datetime(
+                            if_unmodified_since_hdr
+                        )
+                        if entry.modified_at > parsed_date:
+                            conflict = True
+                    except Exception:  # noqa: BLE001 - ignore malformed header
+                        pass
+                if conflict:
+                    problem = ProblemDetails(
+                        type="/errors/precondition-failed",
+                        title="Precondition Failed",
+                        status=412,
+                        detail="The file has been modified since the precondition was recorded.",
+                        instance=request.url.path,
+                    )
+                    return JSONResponse(
+                        status_code=412,
+                        content=problem.model_dump(exclude_none=True),
+                        media_type=PROBLEM_JSON_MEDIA_TYPE,
+                    )
+        await ws.write_file(path, raw)
+    # Deterministically wake any watch_files-parked session in this workspace whose watched paths match the just-written file (the event-bus ->
+    # YieldEventListener resume path; inotify stays as the backstop). Best-effort: a wake failure never fails the write itself.
+    await wake_watchers_best_effort(
+        workspace_id=workspace_id, path=path, scheduler=scheduler, event_bus=event_bus, event_type="modified",
+    )
     return Response(status_code=204)
 
 

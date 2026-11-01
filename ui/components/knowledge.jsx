@@ -66,6 +66,16 @@ function KN_Tree({ cid, parent, depth, expanded, toggle, selectedPath, onSelect,
   if (nodes.loading && !nodes.data) {
     return <div className="muted text-sm" style={{ paddingLeft: 8 + depth * 14 }}>Loading…</div>;
   }
+  // UI-L9a: a failed tree read used to render an empty column with no way to
+  // tell why or to retry; show the refusal's words and the Retry.
+  if (nodes.error && !nodes.data) {
+    return (
+      <div className="muted text-sm" style={{ paddingLeft: 8 + depth * 14 }} data-testid="kn-tree-error">
+        {window.primerApi.readRefusal(nodes.error).message}{" "}
+        <Btn size="sm" data-testid="kn-tree-retry" onClick={nodes.refetch}>Retry</Btn>
+      </div>
+    );
+  }
   return (
     <>
       {items.map((n) => (
@@ -137,10 +147,34 @@ function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged,
     { pollMs: null },
   );
 
+  // The last body and title this pane seeded the editor with: a re-read
+  // (the save refetch, an agent's write, the tab-wake refetch) re-seeds
+  // only when the path changed or the editor still holds exactly what was
+  // seeded. A re-read whose value equals the editor's is in sync (the
+  // save's own refetch lands this way) and becomes the new seed. An
+  // unsaved edit - body or title - is the operator's and the pane keeps
+  // it (UI-M3).
+  const seeded = React.useRef({ path: null, body: null, title: null });
+
   React.useEffect(() => {
     if (doc.data) {
-      setDraft(doc.data.body ?? "");
-      setTitle(doc.data.document?.title || "");
+      const body = doc.data.body ?? "";
+      const newTitle = doc.data.document?.title || "";
+      const seedBody = path !== seeded.current.path
+        || draft === seeded.current.body
+        || draft === body;
+      const seedTitle = path !== seeded.current.path
+        || title === seeded.current.title
+        || title === newTitle;
+      if (seedBody) {
+        setDraft(body);
+        seeded.current.body = body;
+      }
+      if (seedTitle) {
+        setTitle(newTitle);
+        seeded.current.title = newTitle;
+      }
+      seeded.current.path = path;
     }
   }, [doc.data, path]);
 
@@ -164,6 +198,9 @@ function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged,
         `/collections/${encodeURIComponent(cid)}/docs?path=${encodeURIComponent(path)}`,
         { body: draft, title: title || null },
       );
+      // The cache still holds the pre-save body; bring it to the saved
+      // body now so a later wake refetch lands nothing new.
+      doc.refetch();
       pushToast && pushToast({
         kind: "success", title: "Document saved", detail: path,
       });
@@ -262,14 +299,17 @@ function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged,
 
       {readOnly ? (
         <div className="kn-doc-body">
+          {/* renderMarkdown returns React children, not an HTML string: an
+              __html of the array stringifies to "[object Object]". */}
           {looksMarkdown && window.renderMarkdown
-            ? <div dangerouslySetInnerHTML={{ __html: window.renderMarkdown(body) }} />
+            ? <div>{window.renderMarkdown(body)}</div>
             : <pre className="mono">{body}</pre>}
         </div>
       ) : (
         <>
           <input
             className="input"
+            data-testid="kn-doc-title"
             value={title}
             placeholder="Title (defaults to the slug)"
             onChange={(e) => setTitle(e.target.value)}
@@ -279,6 +319,7 @@ function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged,
           <textarea
             className="input mono"
             style={{ minHeight: 320 }}
+            data-testid="kn-doc-body"
             value={draft ?? ""}
             onChange={(e) => setDraft(e.target.value)}
             disabled={ro && !readOnly}
@@ -520,11 +561,13 @@ function KN_GrepBox({ collection, onJump }) {
   const [q, setQ] = React.useState("");
   const [pathPrefix, setPathPrefix] = React.useState("");
   const [res, setRes] = React.useState(null);
+  const [grepError, setGrepError] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
 
   const run = async () => {
     if (!q) return;
     setBusy(true);
+    setGrepError(null);
     try {
       const out = await apiFetch(
         "GET",
@@ -533,6 +576,11 @@ function KN_GrepBox({ collection, onJump }) {
         + (pathPrefix ? `&path_prefix=${encodeURIComponent(pathPrefix)}` : ""),
       );
       setRes(out);
+    } catch (err) {
+      // A 400 (an invalid regex) clears the previous hits and says why,
+      // instead of leaving them up with no error state (UI-L6).
+      setRes(null);
+      setGrepError(window.primerApi.readRefusal(err).message);
     } finally {
       setBusy(false);
     }
@@ -544,6 +592,7 @@ function KN_GrepBox({ collection, onJump }) {
         <input
           className="input mono"
           placeholder="grep (regex)"
+          data-testid="kn-grep-input"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") run(); }}
@@ -555,8 +604,14 @@ function KN_GrepBox({ collection, onJump }) {
           value={pathPrefix}
           onChange={(e) => setPathPrefix(e.target.value)}
         />
-        <Btn icon="search" onClick={run} disabled={busy}>Grep</Btn>
+        <Btn icon="search" onClick={run} disabled={busy} data-testid="kn-grep-run">Grep</Btn>
       </div>
+      {grepError ? (
+        <div className="text-sm" data-testid="kn-grep-error"
+             style={{ color: "var(--red)" }}>
+          {grepError}
+        </div>
+      ) : null}
       {res ? (
         <div className="col" style={{ gap: 2 }}>
           {res.hits.length === 0 ? <div className="muted text-sm">No matches.</div> : null}
@@ -564,6 +619,7 @@ function KN_GrepBox({ collection, onJump }) {
             <a
               key={`${h.path}:${h.line}`}
               className="mono text-sm"
+              data-testid="kn-grep-hit"
               onClick={() => onJump(h.path, h.line)}
             >
               {h.path}:{h.line} — {h.excerpt}

@@ -50,6 +50,15 @@ class WorkerConfig(BaseModel):
     heartbeat_interval_seconds: int = Field(default=10, ge=1, le=60)
     lease_ttl_seconds: int = Field(default=30, ge=5, le=300)
     poll_interval_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
+    deltas_in_process_only: bool = Field(
+        default=False,
+        description=(
+            "Send the live token-delta and phase frames of a turn to this process's own subscribers only, with no cross-process publish (on Postgres, "
+            "no NOTIFY). Set it ONLY when this process also serves every tap / SSE reader of the sessions it runs (one API+worker process): in a "
+            "split API / worker deployment, or with a second API replica, live tokens would stop reaching readers in the other processes. Ticks and "
+            "every other event are unaffected. Default off: frames cross processes."
+        ),
+    )
     drain_timeout_seconds: int = Field(default=120, ge=1)
     max_attempts: int = Field(default=5, ge=1, le=100)
     base_backoff_seconds: float = Field(default=2.0, ge=0.1)
@@ -70,6 +79,31 @@ class WorkerConfig(BaseModel):
         description=(
             "Ordinal distinguishing worker processes that share a host. "
             "Used only to build the stable metric label."
+        ),
+    )
+    session_log_append_only: bool = Field(
+        default=False,
+        description=(
+            "Task 14 stage 2. Write a session's messages.jsonl by appending only the new lines (an O_APPEND write under the session's messages "
+            "lock, staged and committed as that file's delta) instead of reading the whole file and writing it back for every turn, steer and "
+            "compaction marker. The file's bytes and the commit history (count, subjects, files per commit) are identical either way; "
+            "only the I/O differs. A state repo that cannot append (a sandbox) keeps writing the whole file. Default OFF until it has soaked."
+        ),
+    )
+    session_log_verify_reads: bool = Field(
+        default=False,
+        description=(
+            "Compare every cached read of a session's messages.jsonl with a full parse and fail loudly on a mismatch (Task 14 stage 1). "
+            "Costs one full parse per read, so it is for tests and a canary instance; the cache itself is always on."
+        ),
+    )
+    parallel_readonly_tool_calls: bool = Field(
+        default=False,
+        description=(
+            "When a model emits several tool calls in one message and EVERY one is a tool declared read-only (Tool.read_only), without an "
+            "approval policy, and not yielding, notifying or uninterruptible, run them concurrently and answer in call order. Any other "
+            "batch runs one call after another, exactly as before. Default OFF: today's serial order is documented behaviour (a Stop and an "
+            "approval reason about it), so the gain is opt-in."
         ),
     )
     tool_calls_as_claims_enabled: bool = Field(

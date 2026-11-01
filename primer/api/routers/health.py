@@ -261,7 +261,8 @@ async def health(request: Request) -> HealthStatus:
         # guessed when there is no live worker or any of them has not
         # reported: an undercount would read as a measurement.
         try:
-            workers = await scheduler.list_workers()
+            # Bounded: health must answer inside a container probe's timeout even when the database does not (GS-3).
+            workers = await asyncio.wait_for(scheduler.list_workers(), 1.0)
             live = [w for w in workers if w.status != "dead"]
             pool_capacity = sum(w.capacity for w in live)
             if live and all(w.in_flight is not None for w in live):

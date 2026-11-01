@@ -26,6 +26,8 @@ What the repair does, per row, only when the live config class refuses it:
 in storage, secrets in the clear, and is written back as one.
 
 The log names the row id and the provider and never the config. Idempotent: a repaired row validates, so a second run finds nothing.
+Only ``openai`` rows can be refused, so only those are read, and a repair is written with ``patch_if``: the config alone, the rest of the
+document as stored (PERF-T16).
 """
 
 from __future__ import annotations
@@ -38,11 +40,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable
 from primer.model.providers.embedding import OpenAIConfig, OpenAIEmbeddingFlavor
-from primer.model.storage import OffsetPage
+from primer.storage.migrations._rows import iter_rows
+from primer.storage.q import Q
 
 logger = logging.getLogger(__name__)
-
-_PAGE = 200
 
 #: The base URL an ``openai`` row with no usable endpoint gets: on the reserved ``.invalid`` domain, and https. The row keeps its stored key, and a use of it sends
 #: ``Authorization: Bearer <key>``: over http that would go to whatever resolves the name (a search list, an NXDOMAIN-hijacking resolver), while no CA can issue a
@@ -90,20 +91,12 @@ class M008EmbeddingProviderRepair:
 
     async def apply(self, sp: StorageProvider) -> None:
         storage = sp.get_storage(EmbeddingProvider)
-        rows: list[EmbeddingProvider] = []
-        offset = 0
-        while True:
-            page = await storage.list(OffsetPage(offset=offset, length=_PAGE))
-            rows.extend(page.items)
-            if len(page.items) < _PAGE:
-                break
-            offset += _PAGE
-        for row in rows:
+        async for row in iter_rows(storage, predicate=Q(EmbeddingProvider).where("provider", "openai").build()):
             repair = _repaired(row.provider, row.config)
             if repair is None:
                 continue
             new_config, reason = repair
-            await storage.update(row.model_copy(update={"config": new_config}))
+            await storage.patch_if(row.id, {"config": new_config}, where={"provider": ["openai"]})
             logger.warning(
                 "repaired an embedding provider row the provider-keyed validator refuses",
                 extra={"provider_id": row.id, "provider": row.provider, "repair": reason},

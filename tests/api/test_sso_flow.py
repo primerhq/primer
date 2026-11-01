@@ -766,9 +766,11 @@ async def _login_as(
 
 
 async def _link(client_: httpx.AsyncClient, provider_id: str, **params) -> httpx.Response:
-    return await client_.get(
-        f"/v1/auth/sso/{provider_id}/link", params=params, follow_redirects=False,
-    )
+    """POST the link route; the answer carries the IdP URL, shaped here as the 302 the old GET gave."""
+    posted = await client_.post(f"/v1/auth/sso/{provider_id}/link", params=params)
+    if posted.status_code != 200:
+        return posted
+    return httpx.Response(302, headers={"location": posted.json()["url"]})
 
 
 def _second_client(app) -> httpx.AsyncClient:

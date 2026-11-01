@@ -19,6 +19,8 @@ already supports out of the box.
 
 from __future__ import annotations
 
+import logging
+
 import re
 from collections import defaultdict
 
@@ -26,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
 
+from primer.model.storage import MAX_OFFSET
 from primer.access.person import Person, person_from_request
 from primer.access.policy import require
 from primer.access.workspaces import require_session
@@ -96,6 +99,9 @@ async def _agent_pre_update(entity: Agent, existing: Agent, request: Request) ->
         )
     except EntityCheckError as exc:
         raise _agent_check_as_rest_error(exc) from exc
+
+
+logger = logging.getLogger(__name__)
 
 
 async def _agent_pre_delete(entity: Agent, request: Request) -> None:
@@ -357,7 +363,7 @@ async def get_graph_run_turn_log(
     graph_id: str = Path(..., description="Graph id"),
     run_id: str = Path(..., description="Run id (WorkspaceSession or GraphThread id)"),
     limit: int = Query(default=200, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     since_seq: int | None = Query(default=None, ge=0),
     graphs=Depends(get_graph_storage),
     sessions=Depends(get_session_storage),
@@ -404,7 +410,7 @@ async def get_graph_node_turn_log(
     run_id: str = Path(..., description="Run id (WorkspaceSession or GraphThread id)"),
     node_id: str = Path(..., description="Node id"),
     limit: int = Query(default=200, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     since_seq: int | None = Query(default=None, ge=0),
     graphs=Depends(get_graph_storage),
     sessions=Depends(get_session_storage),
@@ -599,19 +605,13 @@ async def _load_run_node_states(
         except PrimerError:
             raise
         except Exception as exc:  # noqa: BLE001 -- surfaced, not swallowed
-            raise PrimerError(
-                f"Could not read node state for graph run {run_id!r}: "
-                f"{type(exc).__name__}: {exc}",
-                cause=exc,
-            ) from exc
+            logger.exception("compute: reading the node state of graph run %r failed", run_id)
+            raise PrimerError(f"Could not read node state for graph run {run_id!r}", cause=exc) from exc
         try:
             payload = json.loads(raw.decode("utf-8"))
         except ValueError as exc:  # JSONDecodeError + UnicodeDecodeError
-            raise PrimerError(
-                f"Node state for graph run {run_id!r} is corrupt "
-                f"({type(exc).__name__}: {exc})",
-                cause=exc,
-            ) from exc
+            logger.exception("compute: the node state of graph run %r is corrupt", run_id)
+            raise PrimerError(f"Node state for graph run {run_id!r} is corrupt", cause=exc) from exc
         node_states = payload.get("node_states") if isinstance(payload, dict) else None
         if not isinstance(node_states, dict):
             raise PrimerError(
@@ -728,6 +728,7 @@ async def _query_storage_turn_log(
         FieldRef,
         OffsetPage,
         Op,
+        OrderBy,
         Predicate,
         Value,
     )
@@ -770,7 +771,8 @@ async def _query_storage_turn_log(
             ),
         )
     page = OffsetPage(offset=offset, length=limit)
-    response = await storage.find(predicate, page)
+    # By seq, so seq 2 comes before seq 10 whatever order the rows were stored in (GS-30).
+    response = await storage.find(predicate, page, order_by=[OrderBy(field="seq", direction="asc")])
     items = [_record_to_event_dict(r) for r in response.items]
     return {
         "items": items,

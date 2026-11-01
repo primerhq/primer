@@ -113,6 +113,7 @@ class HuggingFaceCrossEncoder(CrossEncoder):
         self._provider = provider
         self._config: HuggingFaceCrossEncoderConfig = provider.config
         self._models: dict[str, STCrossEncoder] = {}
+        self._loading: dict[str, asyncio.Task[STCrossEncoder]] = {}
         if rate_limiter is None:
             from primer.coordinator.in_memory import InMemoryRateLimiter
             rate_limiter = InMemoryRateLimiter()
@@ -143,26 +144,38 @@ class HuggingFaceCrossEncoder(CrossEncoder):
                 f"model {name!r} is not registered on cross-encoder "
                 f"provider {self._provider.id!r}"
             )
-        if name not in self._models:
-            token_value = (
-                self._config.token.get_secret_value()
-                if self._config.token is not None
-                else None
-            )
+        if name in self._models:
+            return self._models[name]
+        # Concurrent cold calls share one load (the registry caches one adapter per provider); a shielded wait keeps one caller's
+        # cancellation from cancelling the others, and a failed load is not kept, so the next call retries.
+        task = self._loading.get(name)
+        if task is None:
+            task = asyncio.create_task(self._load(name))
+            task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+            self._loading[name] = task
+        return await asyncio.shield(task)
+
+    async def _load(self, name: str) -> STCrossEncoder:
+        try:
+            # No token and an empty one both mean anonymous.
+            token_value = self._config.token.get_secret_value() if self._config.token is not None else None
             kwargs: dict = {}
             max_len = self._max_pair_length.get(name)
             if max_len is not None:
                 kwargs["max_length"] = max_len
             try:
-                self._models[name] = await asyncio.to_thread(
+                model = await asyncio.to_thread(
                     STCrossEncoder,
                     name,
-                    token=token_value,
+                    token=token_value or None,
                     **kwargs,
                 )
             except Exception as exc:  # noqa: BLE001
                 raise _classify_hf_exception(exc) from exc
-        return self._models[name]
+            self._models[name] = model
+            return model
+        finally:
+            self._loading.pop(name, None)
 
     async def score(  # type: ignore[override]
         self,

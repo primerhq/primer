@@ -22,6 +22,7 @@ from primer.model.channel import (
 )
 from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage
+from primer.storage.q import Q
 
 
 if TYPE_CHECKING:
@@ -47,8 +48,12 @@ class ChannelRegistry:
         artifact_registry: object | None = None,
         workspace_registry: object | None = None,
         scheduler: object | None = None,
+        owns_inbound: bool = True,
     ) -> None:
         self._channels = channel_storage
+        #: False in a worker-only process (W7): its adapters take outbound-only connections (no poller, gateway or
+        #: socket) and install no inbound handlers, so they never compete with the API process for inbound events.
+        self.owns_inbound = owns_inbound
         self._providers = channel_provider_storage
         self._inbox = inbox
         self._storage_provider = storage_provider
@@ -57,6 +62,7 @@ class ChannelRegistry:
         self._artifact_registry = artifact_registry
         self._workspace_registry = workspace_registry
         self._scheduler = scheduler
+        self._stt_registry: object | None = None
         self._adapters: dict[str, ChannelAdapter] = {}
         self._lock = asyncio.Lock()
 
@@ -70,6 +76,7 @@ class ChannelRegistry:
 
     def set_session_wiring(
         self, *, workspace_registry: object | None, scheduler: object | None,
+        stt_registry: object | None = None,
     ) -> None:
         """Late-bind the session collaborators (built after this registry).
 
@@ -78,6 +85,7 @@ class ChannelRegistry:
         """
         self._workspace_registry = workspace_registry
         self._scheduler = scheduler
+        self._stt_registry = stt_registry
 
     def peek_adapter(self, channel_id: str) -> ChannelAdapter | None:
         """Return the already-built adapter for ``channel_id``, or None.
@@ -118,8 +126,11 @@ class ChannelRegistry:
                 artifact_registry=self._artifact_registry,
                 workspace_registry=self._workspace_registry,
                 scheduler=self._scheduler,
+                owns_inbound=self.owns_inbound,
             )
-            await adapter.initialize()
+            adapter.stt_registry = self._stt_registry
+            # The factory has initialized the adapter: a second initialize() acquired the shared connection twice, so
+            # invalidate never closed it (W8).
             self._adapters[channel_id] = adapter
             return adapter
 
@@ -203,7 +214,7 @@ class ChannelRegistry:
         started = 0
         offset = 0
         while True:
-            page = await channel_storage.list(OffsetPage(offset=offset, length=200))
+            page = await channel_storage.list(OffsetPage(offset=offset, length=200, want_total=False))
             items = list(page.items)
             for channel in items:
                 cfg = getattr(channel, "config", None)
@@ -284,6 +295,29 @@ class ChannelRegistry:
                     logger.exception(
                         "ChannelRegistry: invalidate aclose for %s", cid,
                     )
+
+    async def invalidate_provider(self, provider_id: str, *, rewarm: bool) -> None:
+        """Close the adapters of ``provider_id``'s channels (read from storage), then, with ``rewarm``, bring its
+        chat-enabled channels back online against the edited provider (W34).
+
+        Every adapter of the provider is closed before any is rebuilt, so the shared connection really closes and the
+        rebuild opens a fresh one (a rotated token is used). Other providers' adapters are untouched. ``rewarm`` is for
+        a process that owns inbound only. No-op without a storage provider.
+        """
+        if self._storage_provider is None:
+            return
+        query = Q(Channel).where("provider_id", provider_id).build()
+        channel_ids: list[str] = []
+        while True:
+            page = await self._channels.find(query, OffsetPage(offset=len(channel_ids), length=200))
+            channel_ids.extend(channel.id for channel in page.items)
+            if len(page.items) < 200:
+                break
+        for channel_id in channel_ids:
+            await self.invalidate(channel_id=channel_id)
+        if rewarm:
+            for channel_id in channel_ids:
+                await self.rewarm_if_chat_enabled(channel_id)
 
     async def aclose(self) -> None:
         await self.invalidate()

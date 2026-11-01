@@ -50,7 +50,7 @@ from primer.agent.tail import CompactionSplit, split_for_compaction
 from primer.common.context_overflow import is_context_overflow
 from primer.common.log import redact_credentials
 from primer.llm._reasoning import profile_extended, profile_stream
-from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
+from primer.llm._tokenizer.char_fallback import _estimate_part, count_tokens_char_fallback, text_tokens
 from primer.model.chat import (
     CompactionSummary,
     Error,
@@ -707,7 +707,7 @@ class CompactionStrategy:
 
         Per :class:`Part` type:
 
-        * :class:`TextPart` -- ``ceil(len(text) / 4)``.
+        * :class:`TextPart` -- ``ceil(len(text) / 4)``, except that each CJK ideograph, kana or hangul character counts one token (GI-19).
         * :class:`ToolCallPart` -- ``50 + len(name) + ceil(len(json.dumps(arguments)) / 4)``.
         * :class:`ToolResultPart` -- ``20 + ceil(len(output) / 4)``.
         * :class:`ImagePart` -- 1000 tokens (Anthropic / OpenAI ballpark).
@@ -724,18 +724,8 @@ class CompactionStrategy:
 
     @staticmethod
     def _estimate_part_tokens(part: Part) -> int:
-        if isinstance(part, TextPart):
-            return -(-len(part.text) // 4)  # ceil division
-        if isinstance(part, ToolCallPart):
-            args_len = len(json.dumps(part.arguments, ensure_ascii=False))
-            return 50 + len(part.name) + -(-args_len // 4)
-        if isinstance(part, ToolResultPart):
-            return 20 + -(-len(part.output) // 4)
-        media = media_tokens(part)
-        if media is not None:
-            return media
-        # Unknown / future part -- be conservative.
-        return 200
+        # The same heuristic as the fallback counter (one definition, so the two cannot drift), memoised per call part.
+        return _estimate_part(part)
 
     # ---- Pruning tier -----------------------------------------------------
 
@@ -751,7 +741,7 @@ class CompactionStrategy:
         for mi, msg in enumerate(history):
             for pi, part in enumerate(msg.parts):
                 if isinstance(part, ToolResultPart):
-                    tokens = 20 + -(-len(part.output) // 4)
+                    tokens = 20 + text_tokens(part.output)
                     result_token_estimates.append((mi, pi, tokens))
 
         total_tokens = sum(t for _, _, t in result_token_estimates)
@@ -880,7 +870,8 @@ class CompactionStrategy:
         if tool_manager is None:
             return 0
         try:
-            return self.estimate_fixed_overhead([], await tool_manager.list_tools(principal=principal))
+            offered = [t for t in await tool_manager.list_tools(principal=principal) if not t.yields]  # as _summarise_with_tools
+            return self.estimate_fixed_overhead([], offered)
         except Exception:  # noqa: BLE001 -- an estimate for the retry's sizing: not worth failing the recovery for
             logger.debug("compaction: the tool catalogue could not be sized for the summariser's retry", exc_info=True)
             return 0
@@ -1019,7 +1010,8 @@ class CompactionStrategy:
         ``event_sink`` (surfaced as debug/activity events); the intermediate
         assistant/tool messages are DISCARDED -- only the model's final text is
         returned as the summary. An empty final text (e.g. the model spent its
-        turn writing files) falls back to a marker rather than erroring.
+        turn writing files) falls back to a marker rather than erroring, when
+        at least one tool ran; with none it raises like the text-only path.
 
         Returns ``(summary_text, cut_round)``: ``cut_round`` is the round (1-based) in which the loop overflowed
         and was ended with the summary it had already written, else ``0``.
@@ -1029,7 +1021,15 @@ class CompactionStrategy:
             if max_tool_turns is not None and max_tool_turns > 0
             else DEFAULT_COMPACTION_TOOL_TURNS
         )
-        tools = await tool_manager.list_tools(principal=principal)
+        # A yielding tool acts before it parks (an external call row, an MCP task, a child run) and compaction cannot park:
+        # the summariser is not offered one, and a call to one is answered without dispatching it.
+        tools: list[Tool] = []
+        withheld: set[str] = set()
+        for tool in await tool_manager.list_tools(principal=principal):
+            if tool.yields:
+                withheld.add(tool.id)
+            else:
+                tools.append(tool)
         profile_knobs = profile_extended(
             llm, getattr(model, "config", None), model=model.model_name,
         )
@@ -1037,6 +1037,7 @@ class CompactionStrategy:
         summary_text = ""
         tool_round = 0
         cut_round = 0
+        executed = 0
         while True:
             buffered: list[StreamEvent] = []
             try:
@@ -1106,21 +1107,28 @@ class CompactionStrategy:
 
             result_parts: list[ToolResultPart] = []
             for call in tool_calls:
-                try:
-                    rp = await tool_manager.execute(call, principal=principal)
-                except Exception as exc:  # noqa: BLE001
-                    # INTENTIONAL divergence from the turn loop's contract
-                    # (loop.py / base.py re-raise AuthRequiredError + let
-                    # YieldToWorker propagate): compaction runs OUTSIDE the
-                    # turn's park/auth machinery, so propagating either would
-                    # corrupt park/resume state. Swallowing is safe -- the
-                    # approval gate raises YieldToWorker *before* dispatch, so
-                    # this fails closed (no un-approved side effect). Net effect:
-                    # auth/approval/yielding tools (ask_user, sleep, watch_files)
-                    # simply produce an error result during compaction and the
-                    # model moves on. Do NOT "harmonize" this to re-raise.
-                    # (CancelledError is a BaseException and still propagates.)
-                    rp = ToolResultPart(id=call.id, output=redact_credentials(str(exc)), error=True)
+                if call.name in withheld:
+                    rp = ToolResultPart(
+                        id=call.id, output=f"tool {call.name!r} pauses the turn and is not available during compaction",
+                        error=True,
+                    )
+                else:
+                    executed += 1
+                    try:
+                        rp = await tool_manager.execute(call, principal=principal)
+                    except Exception as exc:  # noqa: BLE001
+                        # INTENTIONAL divergence from the turn loop's contract
+                        # (loop.py / base.py re-raise AuthRequiredError + let
+                        # YieldToWorker propagate): compaction runs OUTSIDE the
+                        # turn's park/auth machinery, so propagating either would
+                        # corrupt park/resume state. Swallowing is safe -- the
+                        # approval gate raises YieldToWorker *before* dispatch, so
+                        # this fails closed (no un-approved side effect). Net effect:
+                        # auth/approval/yielding tools (ask_user, sleep, watch_files)
+                        # simply produce an error result during compaction and the
+                        # model moves on. Do NOT "harmonize" this to re-raise.
+                        # (CancelledError is a BaseException and still propagates.)
+                        rp = ToolResultPart(id=call.id, output=redact_credentials(str(exc)), error=True)
                 result_parts.append(rp)
                 await self._sink(
                     event_sink,
@@ -1136,6 +1144,9 @@ class CompactionStrategy:
             ]
 
         if not summary_text:
+            if not executed:
+                # nothing written and no tool ran: as the text-only summariser, keep the history rather than fold it away
+                raise ServerError("compaction produced empty summary text")
             summary_text = (
                 "(compaction delegated the detail to tools -- the earlier "
                 "conversation was written out via the compaction tool calls; "

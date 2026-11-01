@@ -60,6 +60,13 @@ _PLURAL = "tool_approval_policies"
 _TAG = "tool_approval_policies"
 
 
+async def _invalidate_policies(_entity_id: str, request: Request) -> None:
+    """A policy row changed: the gate's cached verdicts are stale in every process (GS-28)."""
+    resolver = getattr(request.app.state, "approval_resolver", None)
+    if resolver is not None:
+        await resolver.invalidate_everywhere()
+
+
 def _get_tool_approval_policy_storage(request: Request):
     """Storage dependency for ToolApprovalPolicy."""
     sp = get_storage_provider(request)
@@ -430,6 +437,9 @@ def make_tool_approval_router() -> APIRouter:
         tag=_TAG,
         on_pre_create=on_pre_create,
         on_pre_update=on_pre_update,
+        on_create=_invalidate_policies,
+        on_update=_invalidate_policies,
+        on_delete=_invalidate_policies,
     )
     router.include_router(crud)
 
@@ -437,7 +447,7 @@ def make_tool_approval_router() -> APIRouter:
     async def invalidate(
         approval_resolver=Depends(get_approval_resolver),
     ) -> dict[str, str]:
-        approval_resolver.invalidate()
+        await approval_resolver.invalidate_everywhere()
         return {"status": "accepted"}
 
     return router

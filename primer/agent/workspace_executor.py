@@ -35,13 +35,17 @@ from primer.model.workspace_session import (
     _UserInputWaiting,
 )
 from primer.model.yield_ import ToolWaitPark, YieldToWorker
+from primer.session.persistence import WorkspaceWriteTimeout
 from primer.workspace.instructions import workspace_instructions_parts
 
 
 class _EventLog(Protocol):
-    """The slice of the dispatch layer's event-log writer a compaction marker needs."""
+    """The slice of the dispatch layer's event-log writer the executor writes beside: a compaction marker's seq, and the
+    flush that puts the records the turn has numbered ahead of its Message lines."""
 
     async def reserve_seq(self) -> int: ...
+
+    async def flush(self) -> None: ...
 
 
 if TYPE_CHECKING:
@@ -170,10 +174,22 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         the latter internally), matching every other acquirer, and nothing
         inside this critical section appends to messages.jsonl, so the
         non-reentrant lock cannot be re-taken by this task.
+
+        The turn's event-log writer is flushed first, when one is bound (AG-M2): a Message line carries no seq and is
+        tagged with the last seq before it, so lines written ahead of the records the writer still buffers were tagged
+        with the turn's user_input seq, and a rewind to it left the answer in the model's history. The writer takes the
+        messages lock itself, so the flush runs before ours (as ``reserve_seq`` does for a compaction marker).
         """
         refuse_compaction_summaries(turn_messages, "messages.jsonl")
+        if self._event_log is not None:
+            try:
+                await self._event_log.flush()
+            except WorkspaceWriteTimeout:
+                # The writer gave up on the workspace and logged what it lost; the turn's messages are still written.
+                logger.warning(
+                    "session %s: the turn's records were not made durable before its messages", self._session.session_id,
+                )
         async with self._session.messages_lock:
-            new_text = await self._appended_jsonl(turn_messages)
             newest_assistant = next((m for m in reversed(turn_messages) if m.role == "assistant"), None)
             excerpt = _summary_excerpt_from_messages(turn_messages)
             sid_short = self._session.session_id[-12:]
@@ -181,11 +197,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 subject = f"turn[{sid_short}]: {excerpt}"
             else:
                 subject = f"turn[{sid_short}]: assistant turn"
-            await self._session.commit_state(
-                summary=subject,
-                op="message",
-                files={"messages.jsonl": new_text},
-            )
+            await self._commit_messages(summary=subject, op="message", new_messages=turn_messages)
             if newest_assistant is not None:
                 self._persisted_assistant = newest_assistant
 
@@ -280,9 +292,10 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # messages lock itself, so it runs before ours.
         reserved = await self._event_log.reserve_seq() if self._event_log is not None else None
         async with self._session.messages_lock:
-            existing = await self._read_messages_jsonl_text()
-            boundary_seq = _max_event_log_seq(existing)
-            carried = await self._lines_after_snapshot(existing, snapshot)
+            existing = "" if self._append_only() else await self._read_messages_jsonl_text()
+            view = await self._log_view()
+            boundary_seq = view.max_seq
+            carried = self._lines_after_snapshot(view.history, snapshot)
             kept_tail = [*kept_tail, *carried]
             now = datetime.now(timezone.utc)
             marker = SessionMessageRecord(
@@ -322,18 +335,18 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 },
                 created_at=now,
             )
-            if existing and not existing.endswith("\n"):
-                existing += "\n"
-            new_jsonl = existing + marker.model_dump_json() + "\n"
-            await self._session.commit_state(
-                summary=f"{self._session.session_id}: compaction marker",
-                op="message",
-                files={"messages.jsonl": new_jsonl},
-            )
+            summary = f"{self._session.session_id}: compaction marker"
+            if self._append_only():
+                await self._session.commit_state(summary=summary, op="message", appends={"messages.jsonl": (marker.model_dump_json() + "\n").encode()})
+            else:
+                if existing and not existing.endswith("\n"):
+                    existing += "\n"
+                new_jsonl = existing + marker.model_dump_json() + "\n"
+                await self._session.commit_state(summary=summary, op="message", files={"messages.jsonl": new_jsonl})
         return carried
 
-    async def _lines_after_snapshot(
-        self, existing: str, snapshot: "list[Message] | None",
+    def _lines_after_snapshot(
+        self, current: "list[Message]", snapshot: "list[Message] | None",
     ) -> list["Message"]:
         """The Message lines in the persisted history that ``snapshot`` does not hold.
 
@@ -343,9 +356,6 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         rather than something wrong."""
         if not snapshot:
             return []
-        from primer.workspace.session import reconstruct_compacted_history
-
-        current = await asyncio.to_thread(reconstruct_compacted_history, existing.splitlines())
         if len(current) <= len(snapshot):
             return []
         if [m.role for m in current[: len(snapshot)]] != [m.role for m in snapshot]:
@@ -368,12 +378,19 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         Returns the marker-aware history snapshot the base loop compacts.
         """
         async with self._session.messages_lock:
-            self._window_token = self._session._state.begin_compaction(self._session.session_id)
-            text = await self._read_messages_jsonl_text()
-            if not text:
-                self._window_last_compaction = (None, None)
-                return []
-            history, last = await asyncio.to_thread(self._history_and_last_compaction, text)
+            token = self._window_token = self._session._state.begin_compaction(self._session.session_id)
+            try:
+                view = await self._log_view()
+                if view.size == 0:
+                    self._window_last_compaction = (None, None)
+                    return []
+                history, last = view.history, view.compaction
+            except BaseException:
+                # The callers open the window outside the try that closes it: a read that fails or is cancelled closes
+                # it here, or the flag stays set and the next wake's message is held in memory (AG-M6). No steer can
+                # have been deferred to it: the lock has been held since the flag was set.
+                self._session._state.end_compaction(self._session.session_id, token)
+                raise
             self._window_last_compaction = (last.tokens_after, last.noted)
             return history
 
@@ -412,14 +429,10 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             if not pending:
                 return []
             try:
-                new_jsonl = await self._appended_jsonl(pending)
-                await self._session.commit_state(
-                    summary=(
-                        f"{self._session.session_id}: apply "
-                        f"{len(pending)} deferred steer(s)"
-                    ),
+                await self._commit_messages(
+                    summary=f"{self._session.session_id}: apply {len(pending)} deferred steer(s)",
                     op="user_instruction",
-                    files={"messages.jsonl": new_jsonl},
+                    new_messages=pending,
                 )
             except Exception:
                 logger.exception(
@@ -563,6 +576,34 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
 
     # ---- Internals -------------------------------------------------------
 
+    def _append_only(self) -> bool:
+        """Whether this session's log is written by appending (``WorkerConfig.session_log_append_only``, stage 2). A duck-typed session says no."""
+        append_only = getattr(self._session, "append_only", None)
+        return bool(append_only()) if callable(append_only) else False
+
+    async def _commit_messages(self, *, summary: str, op: str, new_messages: list[Message]) -> None:
+        """Add ``new_messages`` to ``messages.jsonl`` and commit: the new lines alone when the log is append-only, else the whole file
+        rewritten from what was read. The caller holds the session's messages lock across this, either way."""
+        if self._append_only():
+            payload = ("\n".join(m.model_dump_json() for m in new_messages) + "\n").encode()
+            await self._session.commit_state(summary=summary, op=op, appends={"messages.jsonl": payload})  # type: ignore[arg-type]
+        else:
+            await self._session.commit_state(summary=summary, op=op, files={"messages.jsonl": await self._appended_jsonl(new_messages)})  # type: ignore[arg-type]
+
+    async def _log_view(self):
+        """The session's cached view of ``messages.jsonl`` (see :meth:`AgentSession.log_view`); a duck-typed session with no such method
+        (a test double) gets a cache of this executor's own over its ``read_state_file``."""
+        log_view = getattr(self._session, "log_view", None)
+        if log_view is not None:
+            return await log_view()
+        from primer.workspace.message_log import MessageLogCache
+
+        cache = self.__dict__.get("_own_log_cache")
+        if cache is None:
+            cache = self._own_log_cache = MessageLogCache()
+        rel = self._messages_jsonl_rel()
+        return await cache.view(lambda: self._session._state.read_state_file(rel))
+
     def _messages_jsonl_rel(self) -> str:
         """Return the ``messages.jsonl`` path relative to the state repo root.
 
@@ -589,30 +630,9 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         one synthetic assistant summary (see
         :func:`reconstruct_compacted_history`).
         """
-        raw = await self._session._state.read_state_file(self._messages_jsonl_rel())
-        if not raw:
-            return []
-        text = raw.decode("utf-8")
-
-        def _parse() -> list[Message]:
-            # Deferred import: reconstruct_compacted_history lives in
-            # primer.workspace.session; a module-top import would pull the
-            # primer.workspace package initialisation into primer.agent's
-            # import graph. Imported here (off the event loop, in the thread).
-            from primer.workspace.session import reconstruct_compacted_history
-
-            return reconstruct_compacted_history(text.splitlines())
-
-        return await asyncio.to_thread(_parse)
-
-    @staticmethod
-    def _history_and_last_compaction(text: str):
-        """The marker-aware history and the newest compaction's state, from ONE read of ``messages.jsonl``."""
-        # Deferred import, as in _read_messages_jsonl.
-        from primer.workspace.session import last_compaction_state, reconstruct_compacted_history
-
-        lines = text.splitlines()
-        return reconstruct_compacted_history(lines), last_compaction_state(lines)
+        # The session's cached view of the log (Task 14, stage 1): one read, only the lines appended since the last read are parsed, and the
+        # decode and parse run off the loop.
+        return (await self._log_view()).history
 
     async def _last_compaction(self) -> tuple[int | None, tuple[str, str] | None]:
         """``(tokens_after, noted)`` of the newest compaction: what the window's snapshot read already said when the
@@ -620,13 +640,8 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         cached, self._window_last_compaction = self._window_last_compaction, None
         if cached is not None:
             return cached
-        text = await self._read_messages_jsonl_text()
-        if not text:
-            return None, None
-        # Deferred import, as in _read_messages_jsonl.
-        from primer.workspace.session import last_compaction_state
-
-        return tuple(await asyncio.to_thread(last_compaction_state, text.splitlines()))  # type: ignore[return-value]
+        state = (await self._log_view()).compaction
+        return state.tokens_after, state.noted
 
     async def _appended_jsonl(self, new_messages: list[Message]) -> str:
         existing = await self._read_messages_jsonl_text()

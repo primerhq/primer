@@ -85,8 +85,9 @@ async def test_an_exception_out_of_the_managers_execute_exports_no_credential(ex
 
     monkeypatch.setattr(manager, "_execute_inner", _raises)
 
-    with pytest.raises(RuntimeError):
-        await manager.execute(ToolCallPart(id="c", name="a__foo", arguments={}))
+    # W16 (ruling D1): the manager answers it as an error result; the span still records the failure, masked.
+    result = await manager.execute(ToolCallPart(id="c", name="a__foo", arguments={}))
+    assert result.error is True
 
     text = _everything_exported(exporter)
     _assert_clean(text)

@@ -251,3 +251,63 @@ async def test_the_runner_applies_it_to_a_database_at_version_eight(sp: StorageP
 
     assert version == LATEST_VERSION and (await sp.get_system_state()).schema_version == LATEST_VERSION
     assert (await _raw(sp))["docker-custom"]["backend"]["image"] == DOCKER_RUNTIME_IMAGE
+
+
+# ---- golden characterization (PERF-T16) -------------------------------------------------------------------------------------------------------------------------------
+
+from primer.storage.migrations.m009_docker_template_runtime_image import WorkspaceTemplate as TemplateView  # noqa: E402
+from primer.storage.migrations.m009_docker_template_runtime_image import _previous_image  # noqa: E402
+from tests.storage._migration_golden import assert_golden, insert_raw  # noqa: E402
+
+
+async def _old_apply(sp: StorageProvider) -> None:
+    """Migration 9 as it was before PERF-T16, frozen: read every row, ``update`` each container row that names another image."""
+    storage = sp.get_storage(TemplateView)
+    rows = []
+    offset = 0
+    while True:
+        page = await storage.list(OffsetPage(offset=offset, length=200, want_total=False))
+        rows.extend(page.items)
+        if len(page.items) < 200:
+            break
+        offset += 200
+    for row in rows:
+        moved, _ = _previous_image(row.backend)
+        if not moved:
+            continue
+        await storage.update(row.model_copy(update={"backend": {**row.backend, "image": DOCKER_RUNTIME_IMAGE}}))
+
+
+def _container(image: Any = None, **extra: Any) -> dict[str, Any]:
+    return {"kind": "container", "image": image, **extra}
+
+
+async def _golden_seed(sp: StorageProvider) -> None:
+    await insert_raw(sp, TemplateView, {
+        "t-py": {"backend": _container("python:3.12", cpu_cores=2, network={"egress": "deny_all"}), "env": {"TOKEN": SECRET}, "n": 1.5},
+        "t-empty": {"description": "d", "backend": _container("")},
+        "t-null": {"backend": _container(None)},
+        "t-noimage": {"backend": {"kind": "container", "cpu_cores": 1}},
+        "t-runtime": {"backend": _container(DOCKER_RUNTIME_IMAGE)},
+        "t-other-tag": {"backend": _container("primer/workspace-runtime:1.0")},
+        "t-num": {"backend": _container(5)},
+        "t-float": {"backend": _container(1.5)},
+        "t-bool": {"backend": _container(True)},
+        "t-dict": {"backend": _container({"name": DOCKER_RUNTIME_IMAGE})},
+        "t-list": {"backend": _container([DOCKER_RUNTIME_IMAGE])},
+        "t-image-first": {"backend": {"image": "python:3.12", "kind": "container"}},
+        "t-k8s": {"backend": {"kind": "kubernetes", "image": "reg:5000/rt:1"}},
+        "t-local": {"backend": {"kind": "local"}},
+        "t-kind-case": {"backend": {"kind": "Container", "image": "python:3.12"}},
+        "t-nokind": {"backend": {"image": "python:3.12"}},
+        "t-nullkind": {"backend": {"kind": None, "image": "python:3.12"}},
+        "t-nobackend": {"description": "legacy"},
+        "t-nullbackend": {"backend": None},
+        "t-strbackend": {"backend": "container"},
+        "t-listbackend": {"backend": ["container", "python:3.12"]},
+    })
+
+
+@pytest.mark.asyncio
+async def test_golden_rows_match_the_old_implementation_and_a_second_run_changes_nothing(tmp_path: Path) -> None:
+    await assert_golden(tmp_path, _golden_seed, (TemplateView,), _old_apply, _migration().apply)

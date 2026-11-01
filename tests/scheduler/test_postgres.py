@@ -17,6 +17,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 import pytest
 
@@ -454,3 +455,97 @@ async def test_initialize_does_not_lock_the_workers_table_once_it_has_the_load_c
         async with holder.transaction():
             await holder.fetch("SELECT * FROM workers")  # an ACCESS SHARE lock, held until the transaction ends
             await asyncio.wait_for(sched.initialize(), timeout=3.0)
+
+
+# ---------------------------------------------------------------------------
+# Schema isolation (CORE-8): the workers table and the session-status
+# metric must live in the deployment's own db_schema, not in public.
+# Two deployments sharing a cluster with distinct db_schema must not
+# see (or kill) each other's worker rows.
+# ---------------------------------------------------------------------------
+
+
+def _provider_in_schema(schema: str) -> PostgresStorageProvider:
+    cfg = _parse_dsn(require_postgres_url("the schema-isolation scheduler tests"))
+    return PostgresStorageProvider(cfg.model_copy(update={"db_schema": schema}))
+
+
+async def test_workers_lands_in_the_configured_schema_not_public():
+    """Pre-fix red: the unqualified DDL lands in public for every
+    deployment, so the table is not in primer_s1 and a second schema's
+    scheduler lists this deployment's worker."""
+    sp_a = _provider_in_schema("primer_s1")
+    await sp_a.initialize()
+    try:
+        async with sp_a.pool.acquire() as conn:
+            await conn.execute('DROP TABLE IF EXISTS "primer_s1"."workers"')
+        sched_a = PostgresScheduler(
+            storage_provider=sp_a, config=PostgresSchedulerConfig(),
+        )
+        await sched_a.initialize()
+        try:
+            await sched_a.register_worker(
+                worker_id="w-a", host="h", pid=1, capacity=1,
+            )
+            async with sp_a.pool.acquire() as conn:
+                landed = await conn.fetchval(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'primer_s1' AND table_name = 'workers'"
+                )
+            assert landed is not None, (
+                "the workers table must be created in the deployment's own schema"
+            )
+            assert [w.id for w in await sched_a.list_workers()] == ["w-a"]
+
+            # A second deployment on another schema sees none of the
+            # first deployment's rows.
+            sp_b = _provider_in_schema(f"primer_s2_{uuid4().hex[:8]}")
+            await sp_b.initialize()
+            try:
+                sched_b = PostgresScheduler(
+                    storage_provider=sp_b, config=PostgresSchedulerConfig(),
+                )
+                await sched_b.initialize()
+                await sched_b.register_worker(
+                    worker_id="w-b", host="h", pid=1, capacity=1,
+                )
+                assert [w.id for w in await sched_b.list_workers()] == ["w-b"]
+                assert [w.id for w in await sched_a.list_workers()] == ["w-a"]
+            finally:
+                async with sp_b.pool.acquire() as conn:
+                    await conn.execute(f'DROP SCHEMA "{sp_b.schema}" CASCADE')
+                await sp_b.aclose()
+        finally:
+            await sched_a.aclose()
+    finally:
+        await sp_a.aclose()
+
+
+async def test_metrics_db_snapshot_counts_sessions_in_the_configured_schema():
+    """Pre-fix red: to_regclass('sessions') resolves against public, so
+    the deployment's own sessions rows are never counted."""
+    sp = _provider_in_schema("primer_s1")
+    await sp.initialize()
+    try:
+        async with sp.pool.acquire() as conn:
+            await conn.execute('DROP TABLE IF EXISTS "primer_s1"."sessions"')
+            await conn.execute(
+                'CREATE TABLE "primer_s1"."sessions" ('
+                "id text PRIMARY KEY, data jsonb NOT NULL, "
+                "created_at timestamptz NOT NULL DEFAULT now(), "
+                "updated_at timestamptz NOT NULL DEFAULT now())"
+            )
+            await conn.execute(
+                "INSERT INTO \"primer_s1\".\"sessions\" (id, data) "
+                'VALUES (\'s1\', \'{"status": "active"}\'::jsonb)'
+            )
+        sched = PostgresScheduler(
+            storage_provider=sp, config=PostgresSchedulerConfig(),
+        )
+        try:
+            snap = await sched.metrics_db_snapshot()
+            assert snap["primer_sessions_active"] == {"active": 1}
+        finally:
+            await sched.aclose()
+    finally:
+        await sp.aclose()

@@ -386,13 +386,14 @@ class TestReindexFailureKeepsOldChunks:
         # Re-index with an embedder that raises mid-pipeline.
         bad_reg = AsyncMock()
         bad_reg.get_embedder = AsyncMock(return_value=_RaisingEmb())
+        # The text is edited: an unchanged document is not re-embedded at all (M5), so there would be no embedder call to fail.
         with pytest.raises(PrimerError):
             await index_document(
-                document=_document(text="\n\n".join(["a" * 800, "b" * 800])),
+                document=_document(text="\n\n".join(["a" * 800, "b" * 800, "c" * 800])),
                 collection=_collection(),
                 provider_registry=bad_reg,
                 semantic_search_registry=ssr,
-                content_store=_body_store(text="\n\n".join(["a" * 800, "b" * 800])),
+                content_store=_body_store(text="\n\n".join(["a" * 800, "b" * 800, "c" * 800])),
             )
 
         # The old chunks must still be present/searchable.

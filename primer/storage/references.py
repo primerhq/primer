@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from primer.model.except_ import RowDecodeError
 from primer.model.graph import Graph
+from primer.model.model_profile import ModelProfile
 from primer.model.storage import CursorPage, FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.trigger import Subscription
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
@@ -81,7 +82,7 @@ async def first_referencing_row(
     match: Predicate = Predicate(left=FieldRef(name=field), op=op, right=Value(value=parent_id))
     if also is not None:
         match = Predicate(left=match, op=Op.AND, right=also)
-    page = await storage.find(match, OffsetPage(offset=0, length=1))
+    page = await storage.find(match, OffsetPage(offset=0, length=1, want_total=False))
     return page.items[0] if page.items else None
 
 
@@ -171,6 +172,11 @@ async def first_graph_with_subgraph_node(storage: Any, parent_id: str) -> Any | 
     return await _first_graph_with_node(storage, parent_id, node_kind="graph", id_attr="graph_id", skip_own_row=True)
 
 
+async def first_graph_with_profile_override(storage: Any, parent_id: str) -> Any | None:
+    """A graph whose agent node overrides the model profile with ``parent_id`` (graph save validates that id)."""
+    return await _first_graph_with_node(storage, parent_id, node_kind="agent", id_attr="profile_id", skip_own_row=False)
+
+
 @dataclass(frozen=True)
 class ReferenceSpec:
     """One child kind that blocks a parent's deletion, declared once for the REST route and the system tool.
@@ -190,6 +196,11 @@ AGENT_REFERENCES: tuple[ReferenceSpec, ...] = (
     ReferenceSpec("graph", Graph, "nodes[].agent_id", lookup=first_graph_with_agent_node),
     ReferenceSpec("session", WorkspaceSession, "binding.agent_id", lookup=first_live_session_bound_to_agent),
     ReferenceSpec("trigger subscription", Subscription, "config.agent_id"),
+)
+
+# What blocks a model profile's deletion besides an agent and an aggregate member (those two are declared where the profile guards are).
+MODEL_PROFILE_GRAPH_REFERENCE = ReferenceSpec(
+    "graph", Graph, "nodes[].profile_id", lookup=first_graph_with_profile_override,
 )
 
 GRAPH_REFERENCES: tuple[ReferenceSpec, ...] = (
@@ -258,6 +269,7 @@ async def default_agent_refusal(storage_provider: Any, agent_id: str, *, exempt:
 __all__ = [
     "AGENT_REFERENCES",
     "GRAPH_REFERENCES",
+    "MODEL_PROFILE_GRAPH_REFERENCE",
     "Lookup",
     "ReferenceSpec",
     "UnreadableRow",

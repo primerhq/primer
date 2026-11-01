@@ -3,13 +3,13 @@
 ``mini_react_context(jsx_path)`` returns a MiniRacer context holding
 
 * a hook runtime (``useState``, ``useEffect`` with dependency arrays and cleanups, ``useRef``, ``useCallback``, ``useMemo``,
-  ``useReducer``, ``useId``) and ``React.createElement`` / ``Fragment``, which together render a function-component tree to a plain element
+  ``useReducer``, ``useId``, ``useSyncExternalStore``), ``React.memo`` and ``React.createElement`` / ``Fragment``, which together render a function-component tree to a plain element
   tree, re-render it until no state change is pending, and run each effect after the render that changed its dependencies; plus the
   element helpers the shared components call (``isValidElement``, ``cloneElement``, ``Children.toArray``), implemented as React does them;
 * the file's real code, transpiled with the same Babel the server bundles with.
 
 What it deliberately is not: a DOM, a scheduler, or a reconciler. State lives per component position and type, an instance that
-leaves the tree runs its cleanups and loses its state, and the whole tree is re-rendered on every change. That is enough to drive
+leaves the tree runs its cleanups and loses its state, and the whole tree is re-rendered on every change (a ``React.memo`` whose props held keeps its output). That is enough to drive
 a component through "mount, click, props change" and read what it rendered or called.
 
 Class components run too (``React.Component``, ``setState``, ``componentDidMount``/``componentDidUpdate``, and ``static getDerivedStateFromError`` makes one an error boundary), and an object
@@ -28,7 +28,8 @@ Where it differs from React, so a green test here is not read as more than it is
   ``ref`` as an ordinary prop and ignores ``defaultProps``. An API the harness lacks throws where the component calls it: add it here, as React does it, rather than
   stubbing it in the test (a stub that does something else, or nothing, tests the stub).
 
-Driver API, inside the context (``MR``): ``MR.mount(Component, props)``, ``MR.rerender(props?)``, ``MR.find(testid)`` (the element
+Driver API, inside the context (``MR``): ``MR.mount(Component, props)``, ``MR.rerender(props?)``, ``MR.settle()`` (re-render only
+if a state change is pending, as React does, and say whether it did), ``MR.find(testid)`` (the element
 or null), ``MR.findAll(prefix)``, ``MR.findProp(name, value)`` (the first element, a component's or a host's, whose prop ``name`` is
 exactly ``value``, else null: how a test reaches a component by the ``testid`` prop it was handed, and calls its ``onToggle`` or ``onChange``),
 ``MR.click(testid)``, ``MR.texts()``, ``MR.subtree(testid)`` (every element at or under the one with that
@@ -128,10 +129,11 @@ var window = globalThis;
   function useState(init) {
     var s = slotAt();
     if (!("v" in s)) {
+      var owner = current;
       s.v = typeof init === "function" ? init() : init;
       s.set = function (next) {
         var nv = typeof next === "function" ? next(s.v) : next;
-        if (!Object.is(nv, s.v)) { s.v = nv; dirty = true; }
+        if (!Object.is(nv, s.v)) { s.v = nv; dirty = true; owner.stale = true; }
       };
     }
     return [s.v, s.set];
@@ -139,8 +141,9 @@ var window = globalThis;
   function useReducer(reducer, init) {
     var s = slotAt();
     if (!("v" in s)) {
+      var owner = current;
       s.v = init;
-      s.dispatch = function (a) { var nv = reducer(s.v, a); if (!Object.is(nv, s.v)) { s.v = nv; dirty = true; } };
+      s.dispatch = function (a) { var nv = reducer(s.v, a); if (!Object.is(nv, s.v)) { s.v = nv; dirty = true; owner.stale = true; } };
     }
     return [s.v, s.dispatch];
   }
@@ -169,6 +172,19 @@ var window = globalThis;
       pendingEffects.push({ slot: s, fn: fn });
     }
   }
+  // The snapshot is read at render; the store is subscribed after the render (again whenever `subscribe` changes, as React does), and a
+  // notification re-renders only when the snapshot moved.
+  function useSyncExternalStore(subscribe, getSnapshot) {
+    var owner = current;
+    var value = getSnapshot();
+    var s = slotAt();
+    s.get = getSnapshot;
+    s.v = value;
+    useEffect(function () {
+      return subscribe(function () { if (!Object.is(s.get(), s.v)) { dirty = true; owner.stale = true; } });
+    }, [subscribe]);
+    return value;
+  }
   function renderNode(node, path, visited) {
     if (node == null || typeof node === "boolean" || typeof node === "string" || typeof node === "number") return;
     if (Array.isArray(node)) {
@@ -181,7 +197,9 @@ var window = globalThis;
       if (typeof node === "object") throw notAChild(node);
       return;
     }
-    if (typeof node.type === "function" && node.type !== Fragment && node.type.prototype && node.type.prototype.isReactComponent) {
+    if (node.type && node.type.$$memo) {
+      renderMemo(node, path, visited);
+    } else if (typeof node.type === "function" && node.type !== Fragment && node.type.prototype && node.type.prototype.isReactComponent) {
       renderClass(node, path, visited);
     } else if (typeof node.type === "function" && node.type !== Fragment) {
       var id = path + "/" + typeId(node.type) + (node.key != null ? "#" + node.key : "");
@@ -191,6 +209,7 @@ var window = globalThis;
       var prev = current;
       current = inst;
       var out;
+      inst.stale = false;
       try { out = node.type(node.props); } finally { current = prev; }
       node.out = out;
       renderNode(out, id, visited);
@@ -209,11 +228,12 @@ var window = globalThis;
     var prevProps = null;
     if (fresh) {
       inst.obj = new node.type(node.props);
-      inst.obj.__mr_dirty = function () { dirty = true; };
+      inst.obj.__mr_dirty = function () { dirty = true; inst.stale = true; };
     } else {
       prevProps = inst.obj.props;
     }
     inst.obj.props = node.props;
+    inst.stale = false;
     var obj = inst.obj;
     try {
       node.out = obj.render();
@@ -227,6 +247,35 @@ var window = globalThis;
     var hook = fresh ? obj.componentDidMount : obj.componentDidUpdate;
     if (typeof hook === "function") pendingEffects.push({ slot: {}, fn: function () { if (fresh) obj.componentDidMount(); else obj.componentDidUpdate(prevProps); } });
   }
+  // React.memo: the wrapped component renders again only when a prop changed (shallowly, or by `compare`) or state at or under it
+  // changed; otherwise its last output stands and everything under it stays mounted.
+  function memo(type, compare) { return { $$memo: true, type: type, compare: compare || null }; }
+  function shallowEqual(a, b) {
+    var ka = Object.keys(a), kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (var i = 0; i < ka.length; i++) {
+      if (!Object.prototype.hasOwnProperty.call(b, ka[i]) || !Object.is(a[ka[i]], b[ka[i]])) return false;
+    }
+    return true;
+  }
+  function renderMemo(node, path, visited) {
+    var id = path + "/" + typeId(node.type) + (node.key != null ? "#" + node.key : "");
+    var m = instances[id] || (instances[id] = { hooks: [] });
+    visited[id] = true;
+    var keep = m.ids && (node.type.compare || shallowEqual)(m.props, node.props)
+      && m.ids.every(function (k) { return instances[k] && !instances[k].stale; });
+    if (!keep) {
+      var inner = createElement(node.type.type, node.props);
+      var seen = {};
+      renderNode(inner, id, seen);
+      m.ids = Object.keys(seen);
+      m.props = node.props;
+      m.out = inner;
+    }
+    m.ids.forEach(function (k) { visited[k] = true; });
+    node.out = m.out;
+  }
+  function rendersOut(type) { return (typeof type === "function" && type !== Fragment) || !!(type && type.$$memo); }
   function Component(props) { this.props = props; this.state = null; }
   Component.prototype.isReactComponent = {};
   Component.prototype.setState = function (partial) {
@@ -264,7 +313,7 @@ var window = globalThis;
     if (Array.isArray(node)) { node.forEach(function (c) { walk(c, visit); }); return; }
     if (!node.__el) return;
     visit(node);
-    if (typeof node.type === "function" && node.type !== Fragment) walk(node.out, visit);
+    if (rendersOut(node.type)) walk(node.out, visit);
     else walk(node.children, visit);
   }
   function findAll(prefix) {
@@ -297,18 +346,21 @@ var window = globalThis;
       if (n == null || typeof n === "boolean") return;
       if (typeof n === "string" || typeof n === "number") { out.push(String(n)); return; }
       if (Array.isArray(n)) { n.forEach(collect); return; }
-      if (n.__el) collect(typeof n.type === "function" && n.type !== Fragment ? n.out : n.children);
+      if (n.__el) collect(rendersOut(n.type) ? n.out : n.children);
     })(root.tree);
     return out;
   }
   g.React = {
     createElement: createElement, Fragment: Fragment, Component: Component, useState: useState, useReducer: useReducer, useRef: useRef,
     useMemo: useMemo, useCallback: useCallback, useEffect: useEffect, useLayoutEffect: useEffect, useId: useId,
+    useSyncExternalStore: useSyncExternalStore, memo: memo,
     isValidElement: isValidElement, cloneElement: cloneElement, Children: { toArray: childrenToArray },
   };
   g.MR = {
     mount: function (type, props) { root = { type: type, props: props || {}, tree: null }; flush(); },
     rerender: function (props) { if (props) root.props = props; flush(); },
+    // React renders only on a state change: re-render when one is pending (a setter, a store notification), else nothing. Returns whether it rendered.
+    settle: function () { if (!dirty) return false; flush(); return true; },
     find: find, findAll: findAll, findProp: findProp, texts: texts,
     subtree: function (testid) {
       var start = find(testid);

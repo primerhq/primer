@@ -375,6 +375,9 @@ class _BaseAgentExecutor(ABC):
         write; later the loop ends it and the rounds that completed are
         kept.
         """
+        # No schema from the caller: the agent's own is the default (``Agent.response_format``; AG-M3, ruling D14).
+        if response_format is None:
+            response_format = self._agent.response_format
         # An output cap that fills the window can never be served by a provider that checks it. The reactive guard in
         # ``_recover_from_overflow`` acts only AFTER a rejection, so say it up front, once per turn, and run the turn
         # anyway (a server that clamps the cap serves it). An aggregated profile (no provider of its own) is skipped:
@@ -420,6 +423,7 @@ class _BaseAgentExecutor(ABC):
         fixed_overhead = await self.fixed_overhead_tokens(tools)
         snapshot = await self._open_compaction_window()
         notes: list[ExtendedEvent] = []
+        drained: list[Message] = []
         try:
             history = (
                 snapshot if snapshot is not None else await self._load_history()
@@ -462,7 +466,10 @@ class _BaseAgentExecutor(ABC):
                     },
                 )
         finally:
-            await self._close_compaction_window()
+            drained = await self._close_compaction_window() or []
+        # the steers deferred while the window was open are on disk now, after the marker: this turn answers them too
+        # (AG-M6), as the overflow replay does
+        history = [*history, *drained]
         for note in notes:
             await self._emit(note)
             yield note

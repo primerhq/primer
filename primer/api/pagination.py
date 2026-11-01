@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from primer.model.except_ import BadRequestError
 from primer.model.storage import (
+    MAX_OFFSET,
     CursorPage,
     OffsetPage,
     OrderBy,
@@ -27,6 +28,7 @@ def parse_page(
     offset: int | None = Query(
         default=None,
         ge=0,
+        le=MAX_OFFSET,
         description="Offset pagination cursor. Mutually exclusive with `cursor`.",
     ),
     cursor: str | None = Query(

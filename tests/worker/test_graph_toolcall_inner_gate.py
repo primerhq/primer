@@ -53,6 +53,7 @@ from tests.agent.test_inner_dispatch import ADMIN, USER, _Recorder, _Yielding
 from tests.agent.test_tool_manager_approval_gate import _PoliciesOnlyResolver
 from tests.graph.test_workspace_executor import _make_state_repo
 from tests.toolset.test_call_tool_door import _Registry
+from tests._support.toolset_rows import seed_public_toolset_rows
 
 # Re-export so pytest resolves the real system toolset fixtures the neighbouring call_tool tests use.
 from tests.toolset.test_system import _llm, pr, sp, system_toolset  # noqa: F401
@@ -412,6 +413,12 @@ async def test_what_the_operator_is_shown_for_a_call_tool_gate_is_the_inner_tool
 @pytest.fixture
 def rec() -> _Recorder:
     return _Recorder({"user_x": "user", "admin_x": "admin"})
+
+
+@pytest.fixture(autouse=True)
+async def _test_toolset_rows(sp):  # noqa: F811
+    """The test toolsets are served by the registry directly, so give them the stored rows a real toolset has."""
+    await seed_public_toolset_rows(sp, "rec", "y")
 
 
 @pytest.fixture

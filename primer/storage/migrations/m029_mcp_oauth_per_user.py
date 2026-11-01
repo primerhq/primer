@@ -4,7 +4,7 @@ Before this step a toolset had ONE token row, stored under the toolset id, used 
 belongs to one person, stored under ``token_key(toolset, user)`` and naming both in ``toolset_id`` / ``user_id``; a client-credentials sign-in stays
 the shared row under the bare toolset id. Each token row that names no ``toolset_id`` yet (its id is then the toolset id):
 
-* a browser row moves to its heir: the user whose id is its ``connected_by``, else the ENABLED admin whose username it is (the admin who connected
+* a browser row is COPIED to its heir (and the bare row stays as the shared copy, stamped, so an auth-disabled install that once had users keeps its sign-ins): the user whose id is its ``connected_by``, else the ENABLED admin whose username it is (the admin who connected
   it; a name now held by a plain user, or by a disabled admin, does not count: review finding 3), else the first enabled admin (the enabled admin
   ``User`` with the oldest ``created_at``). Not the toolset's owner: the token is an upstream account, and handing it to someone who never held it
   would be an escalation through a credential. The copy keeps every stored field (the sealed tokens as their ciphertext, the version, the lease);
@@ -14,9 +14,11 @@ the shared row under the bare toolset id. Each token row that names no ``toolset
 Every pending sign-in is dropped (they last ten minutes, and the old ones name no person). Registered clients are primer's, not a person's, and stay.
 
 What the step reads is frozen here: the three table names (each view's class name selects its table) and the key function. The views keep every
-stored field (``extra="allow"``), so a row the live models may reject is still read and copied whole; no sealed value is opened or logged. Every row
-is read before any is written. A row that already names its toolset is done, so a second run changes nothing; a run that died after writing the
-heir's copy and before deleting the bare row finishes the delete and leaves the copy as it is.
+stored field (``extra="allow"``), so a row the live models may reject is still read and copied whole; no sealed value is opened or logged. The users
+are read first (their ids and the admins are kept). Token rows are then paged by id (keyset, PERF-T16) selecting ``toolset_id IS NULL``, exactly the
+rows the step acts on: the heir's copy it creates (an id after the cursor) and the bare row it stamps both name their toolset, so neither is ever
+paged. Pending rows are paged by id and each is deleted after it is read, behind the cursor. A row that already names its toolset is done, so a second run changes nothing; a run that died after writing the
+heir's copy and before stamping the bare row finishes the stamp and leaves the copy as it is.
 """
 
 from __future__ import annotations
@@ -28,13 +30,12 @@ from datetime import datetime
 from pydantic import ConfigDict
 
 from primer.int.storage_provider import StorageProvider
+from primer.storage.migrations._rows import iter_rows
 from primer.model.common import Identifiable
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.storage import CursorPage
+from primer.storage.q import Q
 
 logger = logging.getLogger(__name__)
-
-_PAGE = 200
 
 
 class _View(Identifiable):
@@ -64,17 +65,6 @@ def _token_key(toolset_id: str, user_id: str) -> str:
     return "u-" + hashlib.sha256(f"{toolset_id}\0{user_id}".encode()).hexdigest()
 
 
-async def _all_rows(store) -> list[Identifiable]:
-    rows: list[Identifiable] = []
-    cursor: str | None = None
-    while True:
-        page = await store.list(CursorPage(cursor=cursor, length=_PAGE))
-        rows.extend(page.items)
-        cursor = page.next_cursor
-        if cursor is None:
-            return rows
-
-
 class M029McpOAuthPerUser:
     """Move each browser token set to the person who connected it (else the first admin), stamp every token row, drop pending sign-ins."""
 
@@ -84,20 +74,18 @@ class M029McpOAuthPerUser:
     async def apply(self, sp: StorageProvider) -> None:
         tokens = sp.get_storage(McpOAuthTokenSet)
         pending = sp.get_storage(McpOAuthPendingSignIn)
-        users = await _all_rows(sp.get_storage(User))
-        token_rows = await _all_rows(tokens)
-        pending_rows = await _all_rows(pending)
-
-        by_id = {u.id for u in users}
-        admins = [u for u in users if u.role == "admin" and not u.disabled]
+        by_id: set[str] = set()
+        admins: list[User] = []
+        async for u in iter_rows(sp.get_storage(User)):
+            by_id.add(u.id)
+            if u.role == "admin" and not u.disabled:
+                admins.append(u)
         by_name = {u.username: u.id for u in admins if u.username}
         dated = [u for u in admins if u.created_at is not None]
         first_admin = min(dated, key=lambda u: u.created_at).id if dated else None
 
         moved = stamped = 0
-        for row in token_rows:
-            if row.toolset_id is not None:
-                continue
+        async for row in iter_rows(tokens, predicate=Q(McpOAuthTokenSet).where_null("toolset_id").build()):
             assert row.id is not None
             heir = None
             if row.grant != "client_credentials":
@@ -111,13 +99,12 @@ class M029McpOAuthPerUser:
                 await tokens.create(row.model_copy(update={"id": _token_key(row.id, heir), "toolset_id": row.id, "user_id": heir}))
             except ConflictError:
                 pass                                    # an earlier run wrote the copy and died before the delete
-            try:
-                await tokens.delete(row.id)
-            except NotFoundError:
-                pass
+            # The bare id stays, stamped as the shared row: an auth-disabled install that once had users acts as the system person, which reads
+            # only that row, and would otherwise find every OAuth toolset signed out (GR-14). The heir's copy is the person's own sign-in.
+            await tokens.update(row.model_copy(update={"toolset_id": row.id, "user_id": None}))
             moved += 1
         dropped = 0
-        for row in pending_rows:
+        async for row in iter_rows(pending):
             try:
                 await pending.delete(row.id)
             except NotFoundError:

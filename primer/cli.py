@@ -48,7 +48,7 @@ import uvicorn
 import yaml
 
 from primer.api.app import create_app, _build_storage_provider
-from primer.api.config import AppConfig
+from primer.api.config import UVICORN_GRACEFUL_SHUTDOWN_SECONDS, AppConfig
 from primer.common.log import configure_logging
 from primer.model.scheduler import RuntimeMode
 
@@ -144,6 +144,7 @@ def _run_uvicorn(config: AppConfig) -> None:  # pragma: no cover
         host=config.host,
         port=config.port,
         log_level=config.log_level,
+        timeout_graceful_shutdown=UVICORN_GRACEFUL_SHUTDOWN_SECONDS,
     )
 
 
@@ -228,9 +229,13 @@ def run_init(
         )
         from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
 
+        from primer.storage.migrations import prepare_storage
+
         storage_provider = _build_storage_provider(cfg)
         await storage_provider.initialize()
         try:
+            # Baseline (or migrate) exactly as the API's first boot does, so that boot has nothing to replay (GR-8).
+            await prepare_storage(storage_provider)
             root_dir = Path("~/.primer").expanduser()
             runner = BootstrapRunner(
                 storage=storage_provider,

@@ -20,7 +20,7 @@ import random
 from collections.abc import AsyncIterator
 
 import httpx
-from openai import APIConnectionError, AsyncOpenAI
+from openai import AsyncOpenAI
 
 from primer.int.tts import TTS
 from primer.model.except_ import ConfigError
@@ -29,7 +29,7 @@ from primer.model.provider import (
     TextToSpeechProviderType,
 )
 from primer.model.speech import SpeechError
-from primer.speech._errors import speech_error_from_exception
+from primer.speech._errors import is_replayable, speech_error_from_exception
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,7 @@ class OpenAITTS(TTS):
             self._client = AsyncOpenAI(
                 base_url=str(self._config.url),
                 api_key=key,
+                max_retries=0,  # the row's max_retries is the only policy (W50)
             )
         return self._client
 
@@ -71,7 +72,10 @@ class OpenAITTS(TTS):
         BETWEEN chunks, not the whole response."""
         limits = self._provider.limits
         connect = limits.connect_timeout_seconds or _DEFAULT_CONNECT_SECONDS
-        read = limits.request_timeout_seconds or _DEFAULT_READ_SECONDS
+        # None is "no bound" (Limits.request_timeout_seconds: "Set to None to disable"); 0 is no real bound either, and keeps the fallback.
+        read = limits.request_timeout_seconds
+        if read is not None and read <= 0:
+            read = _DEFAULT_READ_SECONDS
         return httpx.Timeout(connect=connect, read=read, write=read, pool=connect)
 
     async def stream(
@@ -100,13 +104,14 @@ class OpenAITTS(TTS):
                             yield chunk
                 return
             except Exception as exc:  # noqa: BLE001 -- error is a value here
-                # A failed CONNECT is safe to replay. A half-consumed
-                # audio stream is not: replaying it would concatenate two
-                # partial syntheses into one incoherent clip.
+                # A transport failure (connect, timeout, 429, 5xx) is safe to
+                # replay. A half-consumed audio stream is not: replaying it
+                # would concatenate two partial syntheses into one
+                # incoherent clip.
                 replayable = (
                     yielded == 0
                     and attempt < attempts - 1
-                    and isinstance(exc, APIConnectionError)
+                    and is_replayable(exc)
                 )
                 logger.warning(
                     "TTS synthesis failed",
@@ -119,7 +124,7 @@ class OpenAITTS(TTS):
                     },
                 )
                 if not replayable:
-                    yield speech_error_from_exception(exc)
+                    yield speech_error_from_exception(exc, self._provider)
                     return
                 await asyncio.sleep(
                     random.uniform(

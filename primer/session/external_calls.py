@@ -32,8 +32,14 @@ async def resolve_external_row(
     status: ExternalToolCallStatus,
     result: Any,
     is_error: bool,
+    replace_timed_out: bool = False,
 ) -> ExternalToolCall | None:
     """Move one ``pending`` row to ``status`` with ONE guarded write.
+
+    ``replace_timed_out`` is for a writer whose park step WON (GS-6): it also
+    replaces a ``timed_out`` the lazy sweep wrote after the park moved on (the
+    sweep times out a call no park waits on, which a winner can still be about
+    to record), so the row follows the park's decision.
 
     ``patch_if(row_id, {status, result, is_error, resolved_at},
     where={"status": ["pending"]})``: the database applies it only while
@@ -64,7 +70,9 @@ async def resolve_external_row(
         },
         inf_nan_mode="null",
     )
-    return await storage.patch_if(row_id, patch, where={"status": ["pending"]})
+    return await storage.patch_if(
+        row_id, patch, where={"status": ["pending", "timed_out"] if replace_timed_out else ["pending"]},
+    )
 
 
 async def flip_external_row(
@@ -74,8 +82,9 @@ async def flip_external_row(
     status: ExternalToolCallStatus,
     result: Any,
     is_error: bool = True,
+    replace_timed_out: bool = False,
 ) -> None:
-    """Best-effort resolve of an external call's audit row.
+    """Best-effort resolve of an external call's audit row (``replace_timed_out``: see :func:`resolve_external_row`).
 
     The park/pending slot is the execution source of truth; a missing or
     already-resolved row must never fail the surrounding flow. The write
@@ -87,7 +96,7 @@ async def flip_external_row(
         return
     try:
         await resolve_external_row(
-            storage, row_id, status=status, result=result, is_error=is_error,
+            storage, row_id, status=status, result=result, is_error=is_error, replace_timed_out=replace_timed_out,
         )
     except NotFoundError:
         return

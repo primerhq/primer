@@ -195,6 +195,15 @@ class _Compiler:
         self._ctx.close()
 
 
+# One V8 call per inline script held a worker thread for seconds on a body of thousands of tiny scripts (GU-23): a batch compiles its first this many, and says how
+# many it left out. The check is an early warning, never a gate, so leaving the rest unchecked is safe.
+MAX_SCRIPTS_CHECKED = 200
+
+
+def _skipped(count: int) -> str:
+    return f"{count} more script{'s were' if count != 1 else ' was'} not checked"
+
+
 def _unchecked(number: int) -> str:
     return f"script {number} could not be checked: the syntax check failed"
 
@@ -258,6 +267,7 @@ def check_html_scripts_many(bodies: Sequence[str]) -> dict[str, list[str]]:
     unique = list(dict.fromkeys(bodies))
     found_by_body: dict[str, dict[int, list[str]]] = {}
     hidden_by_body: dict[str, str] = {}
+    skipped_by_body: dict[str, int] = {}
     inline_tasks: list[tuple[int, int, str, str]] = []
     for html in unique:
         parser = _Scripts()
@@ -269,7 +279,10 @@ def check_html_scripts_many(bodies: Sequence[str]) -> dict[str, list[str]]:
                 if attribute in attrs:
                     found.setdefault(number, []).extend(_check_url(number, attribute, attrs[attribute]))
             if read and "src" not in attrs and _is_classic(attrs.get("type")):
-                inline_tasks.append((len(inline_tasks), number, text, html))
+                if len(inline_tasks) < MAX_SCRIPTS_CHECKED:
+                    inline_tasks.append((len(inline_tasks), number, text, html))
+                else:
+                    skipped_by_body[html] = skipped_by_body.get(html, 0) + 1
         found_by_body[html] = found
         hidden = _hidden(html.lower().count("<script"), sum(1 for _attrs, _text, read in parser.scripts if read))
         if hidden is not None:
@@ -281,6 +294,7 @@ def check_html_scripts_many(bodies: Sequence[str]) -> dict[str, list[str]]:
             found_by_body[html].setdefault(number, []).append(problem)
     return {
         html: [problem for number in sorted(found) for problem in found[number]] + ([hidden_by_body[html]] if html in hidden_by_body else [])
+        + ([_skipped(skipped_by_body[html])] if html in skipped_by_body else [])
         for html, found in found_by_body.items()
     }
 
@@ -297,4 +311,4 @@ def check_html_scripts(html: str) -> list[str]:
 check_html_scripts.many = check_html_scripts_many  # type: ignore[attr-defined]
 
 
-__all__ = ["SCRIPT_HOSTS", "check_html_scripts", "check_html_scripts_many"]
+__all__ = ["MAX_SCRIPTS_CHECKED", "SCRIPT_HOSTS", "check_html_scripts", "check_html_scripts_many"]

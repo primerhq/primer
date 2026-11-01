@@ -1,0 +1,76 @@
+{
+ "git": [
+  {
+   "files": [
+    "sessions/<sid>/agent.json",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "<sid>: attach"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: hello"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: assistant turn"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: drawn"
+  }
+ ],
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "a1a89dbf784f113b"
+    ]
+   ],
+   "role": "user",
+   "text": "draw a box"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "ba1ffaaa2a07ec38"
+    ]
+   ],
+   "role": "assistant",
+   "text": "drawn"
+  }
+ ],
+ "max_event_log_seq": 3,
+ "messages_jsonl": {
+  "bytes": 539,
+  "lines": [
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"draw a box\"}]}",
+   "{\"seq\":1,\"kind\":\"canvas_op\",\"payload\":{\"op\":\"add\",\"id\":\"box\"},\"created_at\":\"<ts>\",\"node_id\":null}",
+   "{\"seq\":2,\"kind\":\"canvas_event\",\"payload\":{\"event\":\"click\",\"id\":\"box\"},\"created_at\":\"<ts>\",\"node_id\":null}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"drawn\"}]}",
+   "{\"seq\":3,\"kind\":\"canvas_event\",\"payload\":{\"event\":\"click\",\"id\":\"box\"},\"created_at\":\"<ts>\",\"node_id\":null}"
+  ],
+  "sha": "2cc3b468df5ec73d"
+ },
+ "pending": []
+}

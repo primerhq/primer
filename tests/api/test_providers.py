@@ -13,11 +13,14 @@ Also covers entity-specific endpoints:
 
 from __future__ import annotations
 
+import asyncio
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import SecretStr
 
+from primer.api.registries.retirement import AdapterRetirement
 from primer.api.registries import ProviderRegistry
 from primer.model.common import dump_for_storage
 from primer.model.provider import (
@@ -142,7 +145,7 @@ class TestLLMProviderCRUD:
         body = dump_for_storage(_llm())
         await client.post("/v1/llm_providers", json=body)
         delete = await client.delete("/v1/llm_providers/anthropic-1")
-        assert delete.status_code == 204
+        assert delete.status_code == 204, delete.text
         get = await client.get("/v1/llm_providers/anthropic-1")
         assert get.status_code == 404
 
@@ -195,6 +198,7 @@ class TestCascadeInvalidation:
         sentinel_v2 = MagicMock()
         sentinel_v2.aclose = AsyncMock()
         registry._llm_factory = lambda _p: sentinel_v1  # type: ignore[attr-defined]
+        registry._retirement = AdapterRetirement(0.01)  # type: ignore[attr-defined]   # a replaced adapter closes once idle (GX-1)
         first = await registry.get_llm("anthropic-1")
         assert first is sentinel_v1
 
@@ -205,6 +209,7 @@ class TestCascadeInvalidation:
 
         second = await registry.get_llm("anthropic-1")
         assert second is sentinel_v2
+        await asyncio.sleep(0.1)
         sentinel_v1.aclose.assert_awaited_once()
 
 
@@ -431,7 +436,7 @@ class TestProbeUrlStringification:
         captured: dict = {}
 
         class FakeAsyncClient:
-            def __init__(self, *, host, headers=None):
+            def __init__(self, *, host, headers=None, timeout=None):
                 captured["host"] = host
 
             async def list(self):
@@ -511,7 +516,7 @@ class TestOllamaContextLengthDiscovery:
         from primer.api.routers.providers import _probe_ollama_models
 
         class FakeAsyncClient:
-            def __init__(self, *, host, headers=None):
+            def __init__(self, *, host, headers=None, timeout=None):
                 pass
 
             async def list(self):
@@ -540,7 +545,7 @@ class TestOllamaContextLengthDiscovery:
         from primer.api.routers.providers import _probe_ollama_models
 
         class FakeAsyncClient:
-            def __init__(self, *, host, headers=None):
+            def __init__(self, *, host, headers=None, timeout=None):
                 pass
 
             async def list(self):

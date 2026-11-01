@@ -215,3 +215,25 @@ async def test_wid_cache_is_bounded_lru(fake_storage_provider) -> None:
     await _seed(fake_storage_provider, _session("s5", "W"))
     assert await router._resolve_wid("s5") == "W"
     assert set(router._wid_by_sid) == {"s3", "s4", "s5"}
+
+
+async def test_an_unknown_session_is_looked_up_once_then_remembered_briefly(fake_storage_provider):
+    """Perf plan Task 13: a tick for a session with no row used to cost a storage read on EVERY tick."""
+    from tests.perf.counting import CountingStorageProvider
+
+    clock = {"now": 100.0}
+    counting = CountingStorageProvider(fake_storage_provider)
+    bus = InMemoryEventBus()
+    await bus.initialize()
+    router = WorkspaceTapRouter(bus, counting.get_storage(WorkspaceSession), clock=lambda: clock["now"])
+    with counting.counted() as c:
+        for _ in range(5):
+            assert await router._resolve_wid("ghost") is None
+        assert c.calls("get", model="WorkspaceSession") == 1
+        clock["now"] += 10  # past the memory
+        assert await router._resolve_wid("ghost") is None
+        assert c.calls("get", model="WorkspaceSession") == 2
+    await fake_storage_provider.get_storage(WorkspaceSession).create(_session("ghost", "w1"))
+    clock["now"] += 3
+    assert await router._resolve_wid("ghost") == "w1", "once the row exists the next lookup after the memory finds it"
+    await bus.aclose()

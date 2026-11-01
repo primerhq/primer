@@ -15,6 +15,7 @@ than a shared import: ``agent/`` must not import ``graph/`` (``graph/`` imports
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 import logging
 import re
 from typing import Any
@@ -66,6 +67,19 @@ _ENV.filters["fromjson"] = _fromjson
 _ENV.filters["strip_fences"] = _strip_fences
 
 
+@lru_cache(maxsize=256)
+def _compiled(joined: str):
+    """The compiled template for a joined prompt text: a turn renders the same text every round, so it is compiled once. A syntax error is
+    raised (and, as an exception, never cached)."""
+    try:
+        return _ENV.from_string(joined)
+    except TemplateSyntaxError as exc:
+        raise BadRequestError(
+            f"render_system_prompt: template syntax error at line "
+            f"{exc.lineno}: {exc.message}"
+        ) from exc
+
+
 def render_system_prompt(
     system_prompt: list[str], ctx: ExecutionContext
 ) -> str:
@@ -75,14 +89,7 @@ def render_system_prompt(
     :class:`BadRequestError` on template syntax or render error (e.g. a
     StrictUndefined miss), mirroring :mod:`primer.graph.template`.
     """
-    joined = "\n\n".join(system_prompt)
-    try:
-        compiled = _ENV.from_string(joined)
-    except TemplateSyntaxError as exc:
-        raise BadRequestError(
-            f"render_system_prompt: template syntax error at line "
-            f"{exc.lineno}: {exc.message}"
-        ) from exc
+    compiled = _compiled("\n\n".join(system_prompt))
     try:
         return compiled.render(ctx=ctx)
     except TemplateError as exc:

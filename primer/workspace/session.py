@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Iterable
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -46,6 +47,7 @@ from primer.model.workspace_session import (
 
 if TYPE_CHECKING:
     from primer.model.workspace import Op
+    from primer.workspace.message_log import LogView
     from primer.workspace.local.cache import LocalTruncationStore
     from primer.workspace.local.state import LocalStateRepo
     from primer.workspace.tool import WorkspaceTool
@@ -156,6 +158,71 @@ def _kept_tail(payload: dict) -> tuple[list[Message], int]:
         return [Message(role="assistant", parts=[TextPart(text=UNREADABLE_TAIL_NOTE)])], 0
 
 
+class HistoryFold:
+    """The state of :func:`reconstruct_compacted_history` between two lines, so a log read before can be continued with only its new lines
+    (Task 14, stage 1). ``feed`` lines in file order; :meth:`messages` is what the one-shot function returns for everything fed so far."""
+
+    def __init__(self) -> None:
+        self.summary_text: str | None = None
+        self.summary_after = 0
+        # Each Message is carried with the last seq seen before it was written. Message lines are seqless, so that is the only way to
+        # decide later whether a rewind naming a seq covers them.
+        self.carried: list[tuple[int, Message]] = []
+        self.summary_seq = -1
+        self.seen_seq = 0
+
+    def feed(self, raw_lines: Iterable[str]) -> None:
+        marker_kind = SessionMessageKind.COMPACTION_MARKER.value
+        rewind_kind = SessionMessageKind.REWIND_MARKER.value
+        for line in raw_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            seq = obj.get("seq")
+            if isinstance(seq, int):
+                self.seen_seq = seq
+            if obj.get("kind") == marker_kind:
+                # A marker replaces everything read so far EXCEPT the tail it was
+                # written with: the compactor kept those messages verbatim (the last
+                # few turns and the input the model had not answered), and they are
+                # carried at the marker's own seq so a rewind treats them as written
+                # with it.
+                payload = obj.get("payload") or {}
+                self.summary_text = payload.get("summary") or None
+                self.summary_seq = self.seen_seq
+                kept, self.summary_after = _kept_tail(payload)
+                self.carried = [(self.seen_seq, m) for m in kept]
+                continue
+            if obj.get("kind") == rewind_kind:
+                to_seq = (obj.get("payload") or {}).get("to_seq")
+                if isinstance(to_seq, int):
+                    self.carried = [(s, m) for s, m in self.carried if s <= to_seq]
+                    # A compaction inside the rewound span goes with it:
+                    # its summary stood in for messages that are now cut,
+                    # so replaying it would resurrect them as prose.
+                    if self.summary_text is not None and self.summary_seq > to_seq:
+                        self.summary_text = None
+                        self.summary_seq = -1
+                continue
+            if "role" in obj and "parts" in obj:
+                self.carried.append((self.seen_seq, Message.model_validate(obj)))
+            # else: a non-marker event-log record -> not LLM history, skip.
+
+    def messages(self) -> list[Message]:
+        msgs = [m for _s, m in self.carried]
+        if self.summary_text:
+            summary = CompactionSummary(role="assistant", parts=[TextPart(text=self.summary_text)])
+            k = min(self.summary_after, len(msgs))
+            return [*msgs[:k], summary, *msgs[k:]]
+        return msgs
+
+
 def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
     """Rebuild the LLM history from ``messages.jsonl`` lines, honoring markers.
 
@@ -179,61 +246,9 @@ def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
     _read_messages_jsonl`` and :meth:`AgentSession.take_pending_messages` -- so
     neither replays uncompacted history after a compaction.
     """
-    summary_text: str | None = None
-    summary_after = 0
-    # Each Message is carried with the last seq seen before it was
-    # written. Message lines are seqless, so that is the only way to
-    # decide later whether a rewind naming a seq covers them.
-    carried: list[tuple[int, Message]] = []
-    summary_seq = -1
-    seen_seq = 0
-    marker_kind = SessionMessageKind.COMPACTION_MARKER.value
-    rewind_kind = SessionMessageKind.REWIND_MARKER.value
-    for line in raw_lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        seq = obj.get("seq")
-        if isinstance(seq, int):
-            seen_seq = seq
-        if obj.get("kind") == marker_kind:
-            # A marker replaces everything read so far EXCEPT the tail it was
-            # written with: the compactor kept those messages verbatim (the last
-            # few turns and the input the model had not answered), and they are
-            # carried at the marker's own seq so a rewind treats them as written
-            # with it.
-            payload = obj.get("payload") or {}
-            summary_text = payload.get("summary") or None
-            summary_seq = seen_seq
-            kept, summary_after = _kept_tail(payload)
-            carried = [(seen_seq, m) for m in kept]
-            continue
-        if obj.get("kind") == rewind_kind:
-            to_seq = (obj.get("payload") or {}).get("to_seq")
-            if isinstance(to_seq, int):
-                carried = [(s, m) for s, m in carried if s <= to_seq]
-                # A compaction inside the rewound span goes with it:
-                # its summary stood in for messages that are now cut,
-                # so replaying it would resurrect them as prose.
-                if summary_text is not None and summary_seq > to_seq:
-                    summary_text = None
-                    summary_seq = -1
-            continue
-        if "role" in obj and "parts" in obj:
-            carried.append((seen_seq, Message.model_validate(obj)))
-        # else: a non-marker event-log record -> not LLM history, skip.
-    msgs = [m for _s, m in carried]
-    if summary_text:
-        summary = CompactionSummary(role="assistant", parts=[TextPart(text=summary_text)])
-        k = min(summary_after, len(msgs))
-        return [*msgs[:k], summary, *msgs[k:]]
-    return msgs
+    fold = HistoryFold()
+    fold.feed(raw_lines)
+    return fold.messages()
 
 
 class LastCompaction(NamedTuple):
@@ -242,6 +257,66 @@ class LastCompaction(NamedTuple):
     tokens_after: int | None = None
     noted: tuple[str, str] | None = None
     """``(outcome, reason)`` of the newest ``compaction_note`` since the newest marker, ``None`` when there is none."""
+
+
+class CompactionFold:
+    """The state of :func:`last_compaction_state` between two lines (see :class:`HistoryFold`), plus the highest event-log ``seq``
+    seen (what ``_max_event_log_seq`` answers), so ONE pass over the new lines of the log feeds every reader."""
+
+    def __init__(self) -> None:
+        self.last: tuple[int, int | None] | None = None  # (seq of the marker, its tokens_after)
+        self.noted: tuple[int, tuple[str, str]] | None = None  # (seq of the note, (outcome, reason))
+        self.max_seq = 0
+
+    def feed(self, raw_lines: Iterable[str]) -> None:
+        marker_kind = SessionMessageKind.COMPACTION_MARKER.value
+        rewind_kind = SessionMessageKind.REWIND_MARKER.value
+        note_kind = SessionMessageKind.COMPACTION_NOTE.value
+        for line in raw_lines:
+            if marker_kind not in line and rewind_kind not in line and note_kind not in line:
+                # the file is mostly messages and event records: only these lines are parsed for the compaction state, but
+                # every record line may carry the highest seq
+                self._note_seq(line)
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if "kind" in obj and isinstance(obj.get("seq"), int) and obj["seq"] > self.max_seq:
+                self.max_seq = obj["seq"]
+            seq = obj.get("seq") if isinstance(obj.get("seq"), int) else 0
+            payload = obj.get("payload") or {}
+            kind = obj.get("kind")
+            if kind == marker_kind:
+                tokens = payload.get("tokens_after")
+                known = isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0
+                self.last = (seq, tokens if known else None)
+                self.noted = None
+            elif kind == rewind_kind:
+                to_seq = payload.get("to_seq")
+                if isinstance(to_seq, int):
+                    if self.last is not None and self.last[0] > to_seq:
+                        self.last, self.noted = None, None
+                    elif self.noted is not None and self.noted[0] > to_seq:
+                        self.noted = None       # the note was cut away: its verdict is no longer on the record
+            elif kind == note_kind and isinstance(payload.get("outcome"), str) and isinstance(payload.get("reason"), str):
+                self.noted = (seq, (payload["outcome"], payload["reason"]))
+
+    def _note_seq(self, line: str) -> None:
+        """``_max_event_log_seq`` for a line the compaction state does not parse: only a record (a ``kind`` and an integer ``seq``) counts."""
+        if '"seq"' not in line or '"kind"' not in line:
+            return
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if isinstance(obj, dict) and "kind" in obj and isinstance(obj.get("seq"), int) and obj["seq"] > self.max_seq:
+            self.max_seq = obj["seq"]
+
+    def state(self) -> LastCompaction:
+        return LastCompaction(self.last[1] if self.last else None, self.noted[1] if self.noted else None)
 
 
 def last_compaction_state(raw_lines: "list[str]") -> LastCompaction:
@@ -258,38 +333,9 @@ def last_compaction_state(raw_lines: "list[str]") -> LastCompaction:
     of the same run and is not noted again, so a prompt that stays unreducible or skipped is noted once,
     not on every turn. The next marker, a different verdict, or a rewind that cuts the note away ends the run.
     """
-    marker_kind = SessionMessageKind.COMPACTION_MARKER.value
-    rewind_kind = SessionMessageKind.REWIND_MARKER.value
-    note_kind = SessionMessageKind.COMPACTION_NOTE.value
-    last: tuple[int, int | None] | None = None  # (seq of the marker, its tokens_after)
-    noted: tuple[int, tuple[str, str]] | None = None  # (seq of the note, (outcome, reason))
-    for line in raw_lines:
-        if marker_kind not in line and rewind_kind not in line and note_kind not in line:
-            continue  # the file is mostly messages and event records: only these lines are parsed
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        seq = obj.get("seq") if isinstance(obj.get("seq"), int) else 0
-        payload = obj.get("payload") or {}
-        kind = obj.get("kind")
-        if kind == marker_kind:
-            tokens = payload.get("tokens_after")
-            known = isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0
-            last = (seq, tokens if known else None)
-            noted = None
-        elif kind == rewind_kind:
-            to_seq = payload.get("to_seq")
-            if isinstance(to_seq, int):
-                if last is not None and last[0] > to_seq:
-                    last, noted = None, None
-                elif noted is not None and noted[0] > to_seq:
-                    noted = None       # the note was cut away: its verdict is no longer on the record
-        elif kind == note_kind and isinstance(payload.get("outcome"), str) and isinstance(payload.get("reason"), str):
-            noted = (seq, (payload["outcome"], payload["reason"]))
-    return LastCompaction(last[1] if last else None, noted[1] if noted else None)
+    fold = CompactionFold()
+    fold.feed(raw_lines)
+    return fold.state()
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +411,9 @@ class AgentSession:
         self._info = session_info
         self._binding = agent_binding
         self._state = state_repo
+        self._log_cache = None  # the session's MessageLogCache, made on first use (see ``log_view``)
+        #: Task 14 stage 2: write this session's log by appending the new lines. ``None`` follows ``WorkerConfig.session_log_append_only``.
+        self.session_log_append_only: bool | None = None
         self._cache = truncation_store
         self._tools: list["WorkspaceTool"] = list(workspace_tools)
         self._lock = asyncio.Lock()
@@ -493,6 +542,13 @@ class AgentSession:
 
     # ---- Runtime-facing per-turn surface ---------------------------------
 
+    def append_only(self) -> bool:
+        """Whether the log is written by appending (the flag is on and the state repo can append)."""
+        from primer.workspace.message_log import append_only_default
+
+        on = append_only_default() if self.session_log_append_only is None else self.session_log_append_only
+        return bool(on and getattr(self._state, "supports_append", False))
+
     async def commit_state(
         self,
         *,
@@ -501,8 +557,12 @@ class AgentSession:
         tool: str | None = None,
         call_id: str | None = None,
         files: dict[str, str | bytes] | None = None,
+        appends: dict[str, bytes] | None = None,
     ) -> str:
-        """Commit one turn's writes to this session's slot. Returns SHA."""
+        """Commit one turn's writes to this session's slot. Returns SHA.
+
+        ``appends`` (only when :meth:`append_only` is true) adds bytes to the end of a file instead of rewriting it.
+        """
         if self._info.status == SessionStatus.ENDED:
             raise ConflictError(
                 f"cannot commit state on ENDED session {self.session_id!r}"
@@ -514,6 +574,7 @@ class AgentSession:
             tool=tool,
             call_id=call_id,
             files=files,
+            **({"appends": appends} if appends else {}),
         )
         self._touch_last_activity()
         return sha
@@ -665,16 +726,22 @@ class AgentSession:
                     )
                     self._info = updated_info
                     return instruction
-                new_messages_jsonl = await self._appended_messages_jsonl(message)
-                await self._state.commit(
-                    self.session_id,
-                    summary=f"user[{sid_short}]: {excerpt}" if excerpt else f"user[{sid_short}]: user_instruction",
-                    op="user_instruction",
-                    files={
-                        "messages.jsonl": new_messages_jsonl,
-                        "session.json": updated_info.model_dump_json(indent=2),
-                    },
-                )
+                summary = f"user[{sid_short}]: {excerpt}" if excerpt else f"user[{sid_short}]: user_instruction"
+                if self.append_only():
+                    await self._state.commit(
+                        self.session_id, summary=summary, op="user_instruction",
+                        files={"session.json": updated_info.model_dump_json(indent=2)},
+                        appends={"messages.jsonl": (message.model_dump_json() + "\n").encode()},
+                    )
+                else:
+                    new_messages_jsonl = await self._appended_messages_jsonl(message)
+                    await self._state.commit(
+                        self.session_id, summary=summary, op="user_instruction",
+                        files={
+                            "messages.jsonl": new_messages_jsonl,
+                            "session.json": updated_info.model_dump_json(indent=2),
+                        },
+                    )
             self._info = updated_info
             return instruction
 
@@ -825,6 +892,23 @@ class AgentSession:
             )
             self._info = updated_info
 
+    async def log_view(self) -> "LogView":
+        """The session's ``messages.jsonl`` as the cache last read it, continued with whatever was appended since (Task 14, stage 1).
+
+        One cache per session object, so the readers of a turn (history, compaction state, the highest event-log seq, the messages since the last
+        answer) share one read and parse each new line once.
+        """
+        from primer.workspace.message_log import MessageLogCache
+
+        if self._log_cache is None:
+            self._log_cache = MessageLogCache()
+        rel = f"sessions/{self.session_id}/messages.jsonl"
+        stat_state_file = getattr(self._state, "stat_state_file", None)
+        return await self._log_cache.view(
+            lambda: self._state.read_state_file(rel),
+            (lambda: stat_state_file(rel)) if stat_state_file is not None else None,
+        )
+
     async def take_pending_messages(self) -> list[Message]:
         """Return the messages added since the last assistant turn.
 
@@ -841,13 +925,7 @@ class AgentSession:
         works for both local and sandbox (container/k8s) backends, and shares
         the marker reassembly with ``WorkspaceAgentExecutor._read_messages_jsonl``.
         """
-        rel = f"sessions/{self.session_id}/messages.jsonl"
-        raw: bytes | None = await self._state.read_state_file(rel)
-
-        def _parse(data: bytes) -> list[Message]:
-            return reconstruct_compacted_history(data.decode("utf-8").splitlines())
-
-        all_messages = _parse(raw) if raw else []
+        all_messages = (await self.log_view()).history
         last_assistant_idx = -1
         for i, msg in enumerate(all_messages):
             if msg.role == "assistant":

@@ -114,7 +114,7 @@ function setInterval() { return 0; } function clearInterval() {}
 function setTimeout() { return 0; } function clearTimeout() {}
 var SESSION_ROW = { session_id: "s1", binding: { kind: "graph", graph_id: "g1" } };
 var SH_api = { keys: new Proxy({}, { get: function (t, name) { return function (sid) { return String(name) + ":" + sid; }; } }) };
-window.useWorkspaceTap = function () { return { events: [] }; };
+window.WTAP_events = function () { return []; };
 window.useWorkspaceTapListener = function () {};
 window.useSessionStore = function (wid, sid, channel) { return window.SS_getSnapshot(window.SS_getStore(wid, sid), channel); };
 window.SD_GraphRunView = function () { return null; };

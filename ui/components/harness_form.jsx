@@ -12,6 +12,13 @@
 // Custom widget: provider picker (generic)
 // ============================================================================
 
+// A select hands back text: give the schema's own member back (a numeric enum stays a number, GU-19); the blank option clears to null.
+function HF_enumPick(members, text) {
+  if (text === "") return null;
+  const hit = members.find((m) => String(m) === text);
+  return hit === undefined ? text : hit;
+}
+
 function HF_ProviderPicker({ endpoint, value, onChange, label }) {
   const { useResource, apiFetch } = window.primerApi;
   const key = "hf-provider-picker:" + endpoint;
@@ -218,7 +225,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
         <select
           className="select"
           value={value ?? ""}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChange(HF_enumPick(schema.enum, e.target.value))}
           style={{ width: "100%" }}
         >
           <option value="">— select —</option>

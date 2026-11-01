@@ -34,6 +34,7 @@ from pydantic_core import to_jsonable_python
 
 from primer.int.coordinator import (
     ROLE_HARNESS_SWEEPER,
+    ROLE_SESSION_RETENTION,
     ROLE_SESSION_MESSAGING_SWEEPER,
     ROLE_STUCK_SESSION_SWEEPER,
     ROLE_TIMEOUT_SWEEPER,
@@ -126,6 +127,7 @@ class _BackgroundTask:
                 continue
             work: asyncio.Task | None = None
             lost: asyncio.Task | None = None
+            back_off = False
             try:
                 work = asyncio.create_task(self._run(), name=self._name)
                 lost = asyncio.create_task(
@@ -134,6 +136,20 @@ class _BackgroundTask:
                 await asyncio.wait(
                     {work, lost}, return_when=asyncio.FIRST_COMPLETED,
                 )
+                if work.done() and not work.cancelled():
+                    # work ended by itself (its _run raised or returned).
+                    # Without this the exception is only found by the GC,
+                    # and a _run that fails at once would spin
+                    # acquire/start/fail against the database with no
+                    # backoff (CORE-13).
+                    exc = work.exception()
+                    if exc is not None:
+                        logger.error(
+                            "background task %s ended with an error; "
+                            "backing off before re-acquiring",
+                            self._name, exc_info=exc,
+                        )
+                    back_off = True
             finally:
                 for t in (work, lost):
                     if t is not None and not t.done():
@@ -146,6 +162,11 @@ class _BackgroundTask:
                     await lease.release()
                 except Exception:  # noqa: BLE001
                     pass
+            if back_off:
+                try:
+                    await asyncio.sleep(retry_seconds)
+                except asyncio.CancelledError:
+                    return
 
     async def stop(self) -> None:
         self._stopping = True
@@ -166,7 +187,7 @@ class TimerScheduler(_BackgroundTask):
     """Publishes empty events for timer parks whose deadline is due.
 
     Wakes the ``sleep`` tool (and any future timer-style yields) by
-    NOTIFY-ing the bus when the row's ``parked_until`` <= now. The
+    NOTIFY-ing the bus when the key's deadline <= now. The
     bus listener then flips the parked row to resumable; the worker
     pool wakes via ``session_ready`` and resumes the turn.
 
@@ -472,6 +493,18 @@ class StuckSessionSweeper(_BackgroundTask):
             left=FieldRef(name="turn_no"),
             op=Op.EQ,
             right=Value(value=0),
+        )
+        # Ended rows never un-stick (CORE-14): _never_started rejects
+        # them anyway, but excluding them in the query keeps the
+        # ever-growing ended turn-0 set out of every 30 s page.
+        predicate = Predicate(
+            left=predicate,
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="status"),
+                op=Op.NE,
+                right=Value(value=SessionStatus.ENDED.value),
+            ),
         )
         out: list = []
         offset, page_size = 0, _MAX_PAGE
@@ -840,6 +873,55 @@ class HarnessSweeper(_BackgroundTask):
                 break
 
 
+class SessionRetentionSweeper(_BackgroundTask):
+    """Deletes ENDED sessions older than ``session_retention_days``, oldest first, in bounded batches (GR-6, ruling D16).
+
+    Leader-elected like the other sweepers. A tick that filled its batch runs the next one soon; an idle tick waits the full interval. With no
+    retention configured the sweeper is never started.
+    """
+
+    role = ROLE_SESSION_RETENTION
+
+    def __init__(
+        self,
+        *,
+        storage_provider,
+        retention_days: int,
+        workspace_registry=None,
+        batch: int = 100,
+        interval_seconds: float = 3600.0,
+        busy_seconds: float = 30.0,
+    ) -> None:
+        super().__init__(name="session-retention")
+        self._sp = storage_provider
+        self._days = retention_days
+        self._registry = workspace_registry
+        self._batch = batch
+        self._interval = interval_seconds
+        self._busy = busy_seconds
+
+    async def sweep_once(self, *, now: datetime | None = None) -> int:
+        from primer.session.purge import sweep_ended_sessions
+
+        return await sweep_ended_sessions(
+            self._sp, retention_days=self._days, batch=self._batch, workspace_registry=self._registry, now=now,
+        )
+
+    async def _run(self) -> None:
+        while not self._stopping:
+            deleted = 0
+            try:
+                deleted = await self.sweep_once()
+                if deleted:
+                    logger.info("session-retention: deleted %d ended session(s)", deleted)
+            except Exception:  # noqa: BLE001
+                logger.exception("session-retention: sweep failed")
+            try:
+                await asyncio.sleep(self._busy if deleted >= self._batch else self._interval)
+            except asyncio.CancelledError:
+                break
+
+
 # ===========================================================================
 # Storage-based lookup helpers
 # ===========================================================================
@@ -879,38 +961,55 @@ async def _iter_parked_sessions(session_storage: Storage):
         offset += _PARKED_PAGE_SIZE
 
 
+async def _iter_parks(scheduler: Any, prefix: str):
+    """Yield every parked session whose ``parked_event_key`` starts with ``prefix``, read from session storage.
+
+    The scheduler only carries the storage provider; a scheduler built without one has no parks to find. Paged through every row (the old Postgres
+    query stopped at 200 with no order).
+    """
+    provider = getattr(scheduler, "_storage", None)
+    if provider is None:
+        return
+    from primer.model.workspace_session import WorkspaceSession
+
+    async for sess in _iter_parked_sessions(provider.get_storage(WorkspaceSession)):
+        key = sess.parked_event_key
+        if key is not None and key.startswith(prefix):
+            yield sess
+
+
 async def _find_due_timer_keys(session_storage: Storage) -> list[str]:
-    """Find ``timer:*`` parked event_keys whose deadline is due (all rows)."""
+    """Find the ``timer:*`` keys of parked sessions whose deadline is due (all rows).
+
+    Every key of a park is judged on its own deadline (GR-4, ``pending_key_deadlines``): a graph park's ``sleep`` that is not its primary key
+    fires too, at its own deadline.
+    """
+    from primer.session.pending_gates import pending_key_deadlines
+
     now = datetime.now(timezone.utc)
     return [
-        sess.parked_event_key
+        key
         async for sess in _iter_parked_sessions(session_storage)
-        if (
-            sess.parked_event_key is not None
-            and sess.parked_event_key.startswith("timer:")
-            and sess.parked_until is not None
-            and sess.parked_until <= now
-        )
+        for key, deadline in pending_key_deadlines(sess).items()
+        if key.startswith("timer:") and deadline <= now
     ]
 
 
 async def _find_expired_non_timer_keys(session_storage: Storage) -> list[str]:
-    """Find non-``timer:`` parked event_keys whose deadline elapsed (all rows).
+    """Find the non-``timer:`` keys of parked sessions whose deadline elapsed (all rows).
 
-    These are the parks whose external event never fired -- the
+    These are the waits whose external event never fired -- the
     sweeper publishes a timeout marker so the resume hook produces
-    a YieldTimeout result.
+    a YieldTimeout result. Each key on its own deadline, as above.
     """
+    from primer.session.pending_gates import pending_key_deadlines
+
     now = datetime.now(timezone.utc)
     return [
-        sess.parked_event_key
+        key
         async for sess in _iter_parked_sessions(session_storage)
-        if (
-            sess.parked_event_key is not None
-            and not sess.parked_event_key.startswith("timer:")
-            and sess.parked_until is not None
-            and sess.parked_until <= now
-        )
+        for key, deadline in pending_key_deadlines(sess).items()
+        if not key.startswith("timer:") and deadline <= now
     ]
 
 

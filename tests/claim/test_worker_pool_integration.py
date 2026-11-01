@@ -297,3 +297,41 @@ async def test_pool_pushes_lease_ttl_to_engine():
         assert engine.lease_ttl_seconds == 45
     finally:
         await pool.drain_and_stop(timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_a_claim_ready_wake_claims_at_once_whatever_the_poll_interval():
+    """Perf plan Task 3 (H4), characterization: the poll interval is only the fallback. The ``claim_ready`` hint sets the pool's wake event
+    (``_engine_bus_loop``), and an idle claim loop claims on it immediately, so a longer poll interval costs no latency."""
+    dispatched: list[str] = []
+    engine = InMemoryClaimEngine(adapters={})
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=2, claim_batch_size=2, heartbeat_interval_seconds=1, poll_interval_seconds=30.0),
+        scheduler=_NullScheduler(),
+        storage=None,               # type: ignore[arg-type]
+        workspace_registry=None,    # type: ignore[arg-type]
+        provider_registry=None,     # type: ignore[arg-type]
+        engine=engine,
+    )
+
+    async def _record_and_release(lease: ClaimLease) -> None:
+        dispatched.append(lease.entity_id)
+        await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
+
+    await pool.start()
+    pool._dispatch = {ClaimKind.SESSION: _record_and_release}
+    try:
+        for _ in range(100):  # the loop has polled once, found nothing and is now waiting out its (30 s) interval
+            if pool._claims_empty_total >= 1:
+                break
+            await asyncio.sleep(0.02)
+        assert pool._claims_empty_total >= 1 and dispatched == []
+        await engine.upsert(ClaimKind.SESSION, "sess-wake", priority=10)
+        pool._wake.set()  # what a claim_ready NOTIFY does
+        for _ in range(100):
+            if dispatched:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        await pool.drain_and_stop(timeout=2.0)
+    assert dispatched == ["sess-wake"], "the wake did not claim within 2s although the poll interval is 30s"

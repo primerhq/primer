@@ -504,7 +504,7 @@ class TestTheKnobsReachTheWire:
         real = AsyncOpenAI
         monkeypatch.setattr(
             "primer.llm.openchat.AsyncOpenAI",
-            lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle)), max_retries=0),
+            lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle))),
         )
         await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.OLLAMA)), _cfg(ReasoningLevel.HIGH), model="llama3.1:8b")
         assert [("reasoning_effort" in b) for b in bodies] == [True, False]
@@ -580,7 +580,7 @@ class TestTheKnobsReachTheWire:
         real = AsyncOpenAI
         monkeypatch.setattr(
             "primer.llm.openchat.AsyncOpenAI",
-            lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle)), max_retries=0),
+            lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle))),
         )
         from primer.model.chat import Tool
 

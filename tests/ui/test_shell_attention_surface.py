@@ -56,7 +56,7 @@ def test_the_tap_invalidates_the_feed_live() -> None:
         assert f'"{cls}"' in src, cls
     # The poll stays as the fallback layer (same pattern as the rest of
     # the shell) - this is additive, not a replacement.
-    assert "pollMs: 10000" in src or "pollMs: 5000" in src
+    assert "pollMs: 10000" in (ROOT / "ui" / "components" / "shell" / "sh-api.jsx").read_text(encoding="utf-8")
 
 
 def test_attention_is_an_inbox_and_a_dot_never_a_sound() -> None:
@@ -78,5 +78,5 @@ def test_decisions_render_inline_from_the_shared_model() -> None:
 def test_cross_workspace_attention_lives_on_the_dashboard() -> None:
     src = SYSTEM.read_text(encoding="utf-8")
     assert "NV_AttentionEverywhere" in src
-    assert "pendingYields" in src
+    assert "SH_useAttention" in src  # with the per-workspace 404 fallback (pendingYields) inside it, sh-api.jsx
     assert "Needs a human" in src

@@ -19,6 +19,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from openai import AsyncOpenAI
 
 from primer.common.openai_errors import classify_openai_exception
@@ -54,6 +55,9 @@ from primer.model.provider import (
 
 
 logger = logging.getLogger(__name__)
+
+#: The TCP connect bound when the row sets none, as the speech adapters use.
+_DEFAULT_CONNECT_SECONDS = 5.0
 
 
 # --------------------------------------------------------------------------- #
@@ -176,10 +180,12 @@ def _translate_response(resp: Any) -> EmbedResponse:
     """Translate an OpenAI embeddings response into the universal
     :class:`EmbedResponse`.
 
-    Pure function. The SDK returns embeddings in input order with
-    explicit ``index`` fields; we preserve those. OpenAI does not
-    surface per-input metadata, so :attr:`Embedding.extended` is always
-    ``None`` for this adapter. Request-level usage is taken from
+    Pure function. Callers zip ``response.embeddings`` to their inputs by
+    position, so the vectors must come back in input order: sort on the
+    explicit ``index`` field rather than trusting ``data`` order (batched
+    OpenAI-compatible backends may answer out of order, KN-19c). OpenAI
+    does not surface per-input metadata, so :attr:`Embedding.extended` is
+    always ``None`` for this adapter. Request-level usage is taken from
     ``resp.usage.prompt_tokens`` (defensive ``getattr`` so a future SDK
     rename leaves ``input_tokens=None`` rather than crashing).
     """
@@ -189,7 +195,7 @@ def _translate_response(resp: Any) -> EmbedResponse:
             vector=list(item.embedding),
             extended=None,
         )
-        for item in resp.data
+        for item in sorted(resp.data, key=lambda i: i.index)
     ]
     usage: EmbeddingUsage | None = None
     if getattr(resp, "usage", None) is not None:
@@ -279,9 +285,16 @@ class OpenAIEmbedder(Embedder):
                 if self._config.api_key is not None
                 else ""
             ) or "no-key-required"
+            limits = self._provider.limits
+            # The row's policy, not the SDK's defaults (2 retries, 600 s): its max_retries is the only retry policy (no wrapper sits above
+            # an embedder), and a stalled endpoint fails after the row's request timeout (None disables the read bound).
+            connect = limits.connect_timeout_seconds or _DEFAULT_CONNECT_SECONDS
+            read = limits.request_timeout_seconds
             self._client = AsyncOpenAI(
                 base_url=str(self._config.url),
                 api_key=key,
+                max_retries=limits.max_retries,
+                timeout=httpx.Timeout(connect=connect, read=read, write=read, pool=connect),
             )
         return self._client
 

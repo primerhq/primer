@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from primer.toolset.python_runner import runners as runners_mod
 from primer.toolset.python_runner.protocol import build_request
 from primer.toolset.python_runner.runners import LocalHardenedRunner
 
@@ -33,6 +34,13 @@ pytestmark = pytest.mark.skipif(
     sys.platform not in ("linux", "darwin") or shutil.which("setsid") is None,
     reason="process groups, ps and setsid are needed",
 )
+
+@pytest.fixture(autouse=True)
+def _no_landlock(monkeypatch):
+    """These tests have the tool write its pid to a path of the test's own choosing, which Landlock (rightly) refuses outside the tool's scratch
+    dir. What is under test is process-group handling, not file confinement (tests/toolset/python_runner/test_runner_confinement.py)."""
+    monkeypatch.setattr(runners_mod, "detect_landlock_abi", lambda: 0)
+
 
 MODULE = (
     "import os, time\n"

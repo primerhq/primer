@@ -982,6 +982,16 @@ async def _dispatch_tool_calls(
     if await_dispatch_barrier is not None:
         await await_dispatch_barrier()
 
+    if (
+        getattr(tool_manager, "parallel_readonly_tool_calls", False)
+        and len(calls) > 1
+        and not (interrupt is not None and interrupt.is_set())
+        and all([await tool_manager.is_parallel_safe(call) for call in calls])
+    ):
+        return await _dispatch_parallel(
+            calls, tool_manager=tool_manager, principal=principal, interrupt=interrupt, stopped_calls_out=stopped_calls_out,
+        )
+
     result_parts: list[ToolResultPart] = []
     for index, call in enumerate(calls):
         if interrupt is not None and interrupt.is_set():
@@ -1044,6 +1054,56 @@ async def _dispatch_tool_calls(
     if not result_parts:
         return []
     return [Message(role="tool", parts=list(result_parts))]
+
+
+async def _dispatch_parallel(
+    calls: list[ToolCallPart],
+    *,
+    tool_manager: ToolExecutionManager,
+    principal: str | None,
+    interrupt: "asyncio.Event | None",
+    stopped_calls_out: "list[ToolCallPart] | None",
+) -> list[Message]:
+    """Run a batch of calls that :meth:`ToolExecutionManager.is_parallel_safe` approved at the same time; answer in call order (L9).
+
+    Each call is its own task, raced against the Stop exactly as a serial call is (:func:`run_stoppable`), so a Stop cancels the ones still
+    running and every call is answered: finished calls keep their real results, the others the same "interrupted" answer. A
+    :class:`PrimerError` becomes that call's error result (as in the serial loop); an :class:`AuthRequiredError` (or anything else) cancels
+    the siblings and propagates. No call here can park, so there is no park stamping.
+    """
+
+    async def run_one(call: ToolCallPart) -> tuple[ToolResultPart, bool]:
+        try:
+            if interrupt is None:
+                return await tool_manager.execute(call, principal=principal), False
+            result = await run_stoppable(
+                lambda: tool_manager.execute(call, principal=principal),
+                interrupt=interrupt,
+                interruptible=lambda: tool_manager.is_interruptible_call(call),
+                name=call.name,
+            )
+            if result is None:
+                return ToolResultPart(id=call.id, output=_PARK_STOPPED_REFUSAL, error=True), True
+            return result, False
+        except AuthRequiredError:
+            raise
+        except PrimerError as exc:  # defence-in-depth, as in the serial loop.
+            return ToolResultPart(id=call.id, output=redact_credentials(str(exc)), error=True), False
+
+    tasks = [asyncio.ensure_future(run_one(call)) for call in calls]
+    try:
+        outcomes = await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    result_parts: list[ToolResultPart] = []
+    for call, (part, stopped) in zip(calls, outcomes, strict=True):
+        if stopped and stopped_calls_out is not None:
+            stopped_calls_out.append(call)
+        result_parts.append(part)
+    return [Message(role="tool", parts=result_parts)]
 
 
 async def _dispatch_as_claims(

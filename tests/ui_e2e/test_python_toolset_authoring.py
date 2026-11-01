@@ -60,7 +60,7 @@ def test_the_editor_shows_derived_tools_and_the_isolation_level(
         badge = page.locator('[data-testid="python-isolation-level"]')
         expect(badge).to_be_visible()
         assert badge.get_attribute("data-level") in {
-            "container", "seccomp", "sandbox-exec", "rlimit-only",
+            "container", "landlock", "seccomp", "sandbox-exec", "rlimit-only",
         }
     finally:
         _drop(base_url, tid)

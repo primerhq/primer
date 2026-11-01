@@ -65,6 +65,40 @@ class TestRegistry:
 # ---------------------------------------------------------------------------
 
 
+class TestIsFreshInstall:
+    """Core review finding 5: "fresh" is decided from the data, never from the bootstrap marker alone (real SQLite)."""
+
+    async def test_an_empty_database_is_fresh(self, sp: StorageProvider) -> None:
+        from primer.storage.migrations import is_fresh_install
+
+        assert await is_fresh_install(sp) is True
+
+    async def test_a_migration_stamp_makes_it_an_existing_install(self, sp: StorageProvider) -> None:
+        from datetime import UTC, datetime
+
+        from primer.storage.migrations import is_fresh_install
+
+        await sp.set_schema_version(20, migrated_at=datetime.now(UTC))
+        assert await is_fresh_install(sp) is False
+
+    async def test_a_row_in_a_user_table_makes_it_an_existing_install(self, sp: StorageProvider) -> None:
+        from datetime import UTC, datetime
+
+        from primer.model.user import User
+        from primer.storage.migrations import is_fresh_install
+
+        await sp.get_storage(User).create(User(id="u1", username="ada", created_at=datetime.now(UTC), role="admin"))
+        assert await is_fresh_install(sp) is False
+
+    async def test_a_completed_bootstrap_makes_it_an_existing_install(self, sp: StorageProvider) -> None:
+        from datetime import UTC, datetime
+
+        from primer.storage.migrations import is_fresh_install
+
+        await sp.set_bootstrap_completed(datetime.now(UTC))
+        assert await is_fresh_install(sp) is False
+
+
 class TestRunMigrations:
     async def test_fresh_install_baselines_without_applying(
         self, sp: StorageProvider, monkeypatch: pytest.MonkeyPatch
@@ -183,6 +217,68 @@ class TestSetSchemaVersion:
         await sp.set_schema_version(4)
         state = await sp.get_system_state()
         assert state.schema_version == 4
+
+
+class TestSingleBootCharacterization:
+    """What one boot does today, pinned before the concurrent-boot lock (GR-1) wraps the chain; these must not change."""
+
+    @staticmethod
+    def _spy(sp: StorageProvider, monkeypatch: pytest.MonkeyPatch, *, fail_once_at: int | None = None) -> tuple[list[int], list[int]]:
+        applied: list[int] = []
+        stamps: list[int] = []
+        failed: list[int] = []
+        for migration in MIGRATIONS:
+            async def _apply(_sp, v=migration.version):
+                if v == fail_once_at and not failed:
+                    failed.append(v)
+                    raise RuntimeError(f"crash in migration {v}")
+                applied.append(v)
+            monkeypatch.setattr(migration, "apply", _apply, raising=False)
+        real_stamp = sp.set_schema_version
+
+        async def _stamp(version, *, migrated_at=None):
+            stamps.append(version)
+            await real_stamp(version, migrated_at=migrated_at)
+
+        monkeypatch.setattr(sp, "set_schema_version", _stamp)
+        return applied, stamps
+
+    async def test_a_fresh_install_baselines_straight_to_latest(self, sp: StorageProvider, monkeypatch: pytest.MonkeyPatch) -> None:
+        applied, stamps = self._spy(sp, monkeypatch)
+        assert await run_migrations(sp, is_fresh_install=True) == LATEST_VERSION
+        assert applied == [] and stamps == [LATEST_VERSION]
+
+    async def test_an_upgrade_applies_each_pending_migration_once_in_order_and_stamps_each(
+        self, sp: StorageProvider, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await sp.set_schema_version(20)
+        applied, stamps = self._spy(sp, monkeypatch)
+        assert await run_migrations(sp, is_fresh_install=False) == LATEST_VERSION
+        assert applied == stamps == list(range(21, LATEST_VERSION + 1))
+        assert (await sp.get_system_state()).schema_version == LATEST_VERSION
+
+    async def test_a_newer_database_is_refused_and_nothing_is_written(self, sp: StorageProvider, monkeypatch: pytest.MonkeyPatch) -> None:
+        from datetime import UTC, datetime
+
+        stamped_at = datetime(2026, 1, 1, tzinfo=UTC)
+        await sp.set_schema_version(LATEST_VERSION + 3, migrated_at=stamped_at)
+        applied, stamps = self._spy(sp, monkeypatch)
+        assert await run_migrations(sp, is_fresh_install=False) == LATEST_VERSION + 3
+        state = await sp.get_system_state()
+        assert applied == [] and stamps == []
+        assert state.schema_version == LATEST_VERSION + 3 and state.last_migration_at == stamped_at
+
+    async def test_a_crash_after_migration_k_resumes_at_k_plus_one(self, sp: StorageProvider, monkeypatch: pytest.MonkeyPatch) -> None:
+        await sp.set_schema_version(20)
+        applied, stamps = self._spy(sp, monkeypatch, fail_once_at=23)
+        with pytest.raises(RuntimeError, match="crash in migration 23"):
+            await run_migrations(sp, is_fresh_install=False)
+        assert applied == stamps == [21, 22]
+        assert (await sp.get_system_state()).schema_version == 22
+        applied.clear()
+        stamps.clear()
+        assert await run_migrations(sp, is_fresh_install=False) == LATEST_VERSION
+        assert applied == stamps == list(range(23, LATEST_VERSION + 1))
 
 
 def _recording_apply(version: int, sink: list[int]):

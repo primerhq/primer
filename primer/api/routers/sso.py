@@ -24,7 +24,7 @@ Authenticated router (``sso_authed_router``, ``require_user`` applied at
 ``include_router`` time in ``_app_routes.py``) — account linking + the
 caller's linked-identity list:
 
-* ``GET /{provider_id}/link``      — same Authorization Code + PKCE
+* ``POST /{provider_id}/link``     - same Authorization Code + PKCE
   flow as ``/{provider_id}/login``, but requires an active session and
   stamps the signed state with ``mode="link"`` plus the CURRENT user's
   id (never a URL/query param). Reuses the exact same
@@ -81,7 +81,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from primer.api.deps import (
@@ -92,6 +92,7 @@ from primer.api.deps import (
 )
 from primer.api.routers.auth import _set_session_cookie
 from primer.api.user_default import ensure_default_for_request
+from primer.auth.user_writes import write_user_fields
 from primer.auth import oidc
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.oidc import OidcProvider, UserIdentity
@@ -251,11 +252,30 @@ async def _derive_unique_username(
     return candidate
 
 
+async def _find_live_identity(identity_storage, user_storage, provider_id: str, subject: str) -> UserIdentity | None:
+    """The identity for ``(provider_id, subject)``, or ``None``. A row whose user is gone is deleted and counts as absent (GS-16)."""
+    identity = await _find_identity(identity_storage, provider_id, subject)
+    if identity is not None and await user_storage.get(identity.user_id) is None:
+        with contextlib.suppress(NotFoundError):
+            await identity_storage.delete(identity.id)
+        return None
+    return identity
+
+
 def _reject(status_code: int, error: str, message: str | None = None) -> HTTPException:
     detail: dict[str, str] = {"error": error}
     if message:
         detail["message"] = message
     return HTTPException(status_code=status_code, detail=detail)
+
+
+def _public_failure(status_code: int, error: str, message: str, exc: Exception) -> HTTPException:
+    """A refusal that carries FIXED words: the exception text (a discovery URL, a token endpoint's body) goes to the log under an error id."""
+    error_id = uuid.uuid4().hex[:12]
+    logger.warning("sso failure error_id=%s error=%s detail=%s", error_id, error, exc)
+    refusal = _reject(status_code, error, message)
+    refusal.detail["error_id"] = error_id
+    return refusal
 
 
 async def _resolve_or_provision_user(
@@ -268,12 +288,10 @@ async def _resolve_or_provision_user(
     email: str | None,
 ) -> User:
     """Resolve strictly on ``(provider_id, subject)``. Never auto-links by email."""
-    identity = await _find_identity(identity_storage, provider_id, subject)
+    identity = await _find_live_identity(identity_storage, user_storage, provider_id, subject)
     if identity is not None:
         user = await user_storage.get(identity.user_id)
-        if user is None:
-            # Data-integrity gap (identity row survived a user delete) —
-            # treat as unresolvable, never silently re-provision.
+        if user is None:  # deleted between the check and this read: fail closed, the next sign-in starts clean
             raise _reject(403, "account_disabled", "identity has no matching account")
         if user.disabled:
             raise _reject(403, "account_disabled")
@@ -288,19 +306,24 @@ async def _resolve_or_provision_user(
     # never trusted here) — a misconfigured "admin" must never let the JIT
     # path auto-provision an admin account.
     role = state.sso_default_access if state.sso_default_access in ("restricted", "user") else "restricted"
-    username = await _derive_unique_username(
-        user_storage, provider_id=provider_id, subject=subject, email=email,
-    )
     now = datetime.now(timezone.utc)
-    new_user = User(
-        id=f"user-{uuid.uuid4().hex[:12]}",
-        username=username,
-        email=email,
-        password_hash=None,
-        role=role,
-        created_at=now,
-    )
-    created_user = await user_storage.create(new_user)
+    for attempt in range(_USERNAME_ATTEMPTS):
+        username = await _derive_unique_username(
+            user_storage, provider_id=provider_id, subject=subject, email=email,
+        )
+        try:
+            created_user = await user_storage.create(User(
+                id=f"user-{uuid.uuid4().hex[:12]}",
+                username=username,
+                email=email,
+                password_hash=None,
+                role=role,
+                created_at=now,
+            ))
+            break
+        except ConflictError:  # the name was taken between the check and the write (the unique index): derive another
+            if attempt == _USERNAME_ATTEMPTS - 1:
+                raise _reject(409, "sso_race_unresolved") from None
     try:
         await identity_storage.create(
             UserIdentity(
@@ -334,9 +357,13 @@ async def _resolve_or_provision_user(
     return created_user
 
 
+_USERNAME_ATTEMPTS = 5
+
+
 async def _link_identity(
     *,
     identity_storage,
+    user_storage,
     target_user_id: str,
     provider_id: str,
     subject: str,
@@ -358,7 +385,7 @@ async def _link_identity(
     ``(provider_id, subject)`` is the actual backstop, and we catch
     :class:`ConflictError` and re-resolve rather than letting it 500.
     """
-    existing = await _find_identity(identity_storage, provider_id, subject)
+    existing = await _find_live_identity(identity_storage, user_storage, provider_id, subject)
     if existing is not None:
         if existing.user_id != target_user_id:
             raise _reject(
@@ -403,7 +430,7 @@ async def list_sso_providers(
     rows: list[OidcProvider] = []
     offset = 0
     while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE))
+        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE, want_total=False))
         rows.extend(page.items)
         if len(page.items) < _PAGE_SIZE:
             break
@@ -436,7 +463,7 @@ async def _begin_oidc_flow(
         metadata = await oidc.discover(provider.discovery_url)
         await oidc.fetch_jwks(metadata.jwks_uri)
     except oidc.OidcError as exc:
-        raise _reject(502, "provider_unreachable", str(exc)) from exc
+        raise _public_failure(502, "provider_unreachable", "The sign-in provider could not be reached.", exc) from exc
 
     code_verifier, code_challenge = oidc.make_pkce()
     state_value = oidc.gen_state()
@@ -513,14 +540,17 @@ async def sso_login(
         return response
 
 
-@sso_authed_router.get("/{provider_id}/link")
+@sso_authed_router.post("/{provider_id}/link")
 async def sso_link(
     provider_id: str,
     request: Request,
     return_to: str | None = Query(default=None),
     storage=Depends(get_oidc_provider_storage),
-) -> RedirectResponse:
+) -> JSONResponse:
     """Authenticated equivalent of ``/login`` -- links a provider identity.
+
+    A POST that answers ``{"url": <IdP authorize URL>}`` with the state cookie set; the console follows the URL. A GET used to
+    start the link, so a page the user merely visited could make their browser begin one (GS-39).
 
     ``require_user`` runs at include-router time (see ``_app_routes.py``),
     so by the time this handler executes ``request.state.user`` is always
@@ -529,10 +559,13 @@ async def sso_link(
     stamped into the SIGNED state, never trusted from the URL/query.
     """
     user: User = request.state.user
-    return await _begin_oidc_flow(
+    started = await _begin_oidc_flow(
         provider_id=provider_id, request=request, return_to=return_to, storage=storage,
         extra_state={"mode": "link", "user_id": user.id},
     )
+    answer = JSONResponse({"url": started.headers["location"]})
+    answer.raw_headers.extend(h for h in started.raw_headers if h[0] == b"set-cookie")
+    return answer
 
 
 @sso_router.get("/{provider_id}/callback", name="sso_callback")
@@ -641,7 +674,7 @@ async def _complete_oidc_flow(
             id_token, provider=provider, metadata=metadata, jwks=jwks, nonce=nonce,
         )
     except oidc.OidcError as exc:
-        raise _reject(400, "sso_validation_failed", str(exc)) from exc
+        raise _public_failure(400, "sso_validation_failed", "Sign-in with the provider could not be completed.", exc) from exc
 
     subject = claims["sub"]
     email = claims.get("email") if claims.get("email_verified") is True else None
@@ -665,6 +698,7 @@ async def _complete_oidc_flow(
             raise _reject(403, "account_disabled")
         identity = await _link_identity(
             identity_storage=user_identity_storage,
+            user_storage=user_storage,
             target_user_id=target_user_id,
             provider_id=provider.id,
             subject=subject,
@@ -710,22 +744,33 @@ async def list_my_sso_identities(
     rows: list[UserIdentity] = []
     offset = 0
     while True:
-        page = await identity_storage.find(predicate, OffsetPage(offset=offset, length=_PAGE_SIZE))
+        page = await identity_storage.find(predicate, OffsetPage(offset=offset, length=_PAGE_SIZE, want_total=False))
         rows.extend(page.items)
         if len(page.items) < _PAGE_SIZE:
             break
         offset += _PAGE_SIZE
 
+    # The provider names in one ``id IN`` find per 200 ids, not one read per
+    # identity row: a deleted provider still answers, its raw id as the
+    # display name (the human-readable name is gone).
+    provider_ids = list({row.provider_id for row in rows})
+    names: dict[str, str] = {}
+    for start in range(0, len(provider_ids), _PAGE_SIZE):
+        chunk = provider_ids[start : start + _PAGE_SIZE]
+        page = await provider_storage.find(
+            Q(OidcProvider).where_in("id", chunk).build(),
+            OffsetPage(offset=0, length=len(chunk)),
+        )
+        names.update({provider.id: provider.name for provider in page.items})
+
     out: list[SsoIdentityOut] = []
     for row in rows:
-        # Tolerate a deleted provider -- must not 500; fall back to the
-        # raw id as a display name since the human-readable name is gone.
-        provider = await provider_storage.get(row.provider_id)
+        name = names.get(row.provider_id)
         out.append(
             SsoIdentityOut(
                 id=row.id,
                 provider_id=row.provider_id,
-                provider_name=provider.name if provider is not None else row.provider_id,
+                provider_name=name if name is not None else row.provider_id,
                 subject=row.subject,
                 email=row.email,
                 created_at=row.created_at,
@@ -756,11 +801,18 @@ async def unlink_sso_identity(
         await identity_storage.delete(identity_id)
     except NotFoundError:
         pass  # already gone -- unlink is idempotent from the caller's view
+    # Every session this identity opened ends (GS-41); the caller keeps theirs unless it came through this very provider.
+    saved = await write_user_fields(get_storage_provider(request).get_storage(User), user.id, {}, bump_epoch=True)
+    response = Response(status_code=204)
+    actor = getattr(request.state, "actor", None)
+    source = getattr(actor, "source", None) or "local"
+    if getattr(request.state, "api_token", None) is None and source != row.provider_id:
+        _set_session_cookie(request, response, saved, src=source)
     logger.info(
         "sso.unlink success user_id=%s identity_id=%s provider_id=%s",
         user.id, identity_id, row.provider_id,
     )
-    return Response(status_code=204)
+    return response
 
 
 __all__ = ["sso_router", "sso_authed_router"]

@@ -132,7 +132,10 @@ secret the current key cannot open) is a 409 asking someone with full access to
 sign in first (`start_sign_in(may_reregister=...)`, review finding 1). The first
 registration of a toolset is made by whoever starts first. With
 `PRIMER_PUBLIC_URL` set the redirect URI is the deployment's, not the caller's,
-and every start behaves as before.
+so a moved public URL re-registers for anyone; a registration that must be
+renewed (another issuer, a client secret the current key cannot open, as on a
+process whose `PRIMER_ENCRYPTION_KEY` differs) is still a 409 for a caller below
+full access (GX-13).
 The start answer also sets the `primer_mcp_oauth` cookie: a fresh nonce,
 HttpOnly, `SameSite=Lax`, scoped to the callback path, living as long as the
 pending sign-in (600 s), and `Secure` when the callback is https. The pending row
@@ -336,11 +339,36 @@ servers that send them are named by the MCP server's metadata (audit G4-15). A
 larger document is not used, and a larger token or registration answer is a
 temporary server error; a revocation answer's body is never read.
 
+Who may point an MCP toolset at an internal address (review of workspaces, W25).
+An http / sse MCP toolset is user-tier, and the server sends requests to its URL on
+create (the probe) and on every listing. A URL that writes an internal address out
+(a loopback, link-local, private or cloud-metadata IP literal, or `localhost`) is
+admin-only to save: `toolset_admin_reason` (`primer/toolset/toolset_checks.py`)
+returns the reason on the REST route, the system tools and a harness install alike.
+A name that resolves to an internal address is caught at connect time:
+`McpToolsetProvider` connects through `primer/toolset/mcp_egress.py`
+(`GuardedNetworkBackend` on the SDK's `httpx2` pool: the name is resolved on every new
+connection, any internal answer is refused with `McpEgressRefused`, and the connection
+goes to the address that passed, so a name re-bound after the save is refused too)
+unless an admin authored the toolset (`author_is_trusted`: an enabled admin owns it, or
+it has no owner, as a platform-seeded or harness-installed row; read per dispatch, so
+a role change applies at once). The create probe for a caller below admin goes through
+the same guard and answers 403 `forbidden_role` instead of a port scan. A save by a caller
+below admin also resolves the URL's host once (`check_mcp_url_resolves_public`, bounded
+at 2 s, off the loop, `PRIMER_EGRESS_ALLOW` honoured, a failed lookup refuses nothing)
+and is refused with the same reason when any answer is internal: this closes a full
+grantee of an admin-owned toolset repointing it at a name that resolves internal (its
+admin author makes it trusted, so the connect-time guard does not run). Active DNS
+rebinding against such a toolset remains (the name can be re-bound after the snapshot);
+it needs a hostile grantee the admin chose and the attacker's DNS. The operator's
+`PRIMER_EGRESS_ALLOW` opts internal servers back in for everyone.
+
 The OAuth client does not call private addresses an MCP server names (audit
 G4-08). Its transport (`primer/toolset/oauth/egress.py`) routes each request by
 host and port: the MCP URL's own host and port, and those of a token endpoint the
-toolset configures, are reached directly (the MCP URL is chosen by the toolset's
-author and is not guarded); any other host or port (another service on the MCP
+toolset configures, are reached directly by the OAuth client (the MCP client's own
+connection to the MCP URL is guarded unless an admin authored the toolset: below);
+any other host or port (another service on the MCP
 server's machine, the protected-resource document a 401 points at, the
 authorization server's metadata, token, registration and revocation endpoints)
 passes `primer.common.ssrf`'s private-destination policy at connect time
@@ -349,7 +377,11 @@ the address that passed. A refused endpoint is a 400 naming the URL (a refresh
 keeps its tokens and reports `error`). The only opt-in is the policy's existing
 one, `workspace_allow_private_url_sources` (`PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES`),
 for deployments whose MCP servers use an authorization server on a private
-network. Like the web tools' guarded client, the explicit transport means httpx
+network; it lets private and loopback addresses through and NEVER link-local or
+cloud-metadata ones (ruling D19), so a hostile MCP server's OAuth endpoints cannot
+reach the metadata service because an operator wanted a file server. The address
+rule itself is `primer/common/addrules.py`, shared with `netguard` (every IPv6 form
+that carries an IPv4 address is judged by it: mapped, NAT64, 6to4, compatible, SIIT). Like the web tools' guarded client, the explicit transport means httpx
 does not apply `HTTP(S)_PROXY` to these calls.
 
 ## 10. Testing patterns

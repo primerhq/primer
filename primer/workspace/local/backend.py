@@ -177,11 +177,12 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
         # re-attach after cache eviction looks up the wrong id and 404s.
         workspace_id = workspace_id or _generate_workspace_id()
         ws_root = self._refuse_escaping(workspace_id)
-        # exist_ok: a directory left by an earlier install used to crash
-        # the seed on EVERY boot of a fresh database (FileExistsError out
-        # of ensure_default_workspace). The durable row is authoritative
-        # and the files are materialised below, so adopt the directory.
-        await asyncio.to_thread(ws_root.mkdir, parents=True, exist_ok=True)
+        # A directory left by an earlier install used to crash the seed on
+        # EVERY boot of a fresh database (FileExistsError out of
+        # ensure_default_workspace). The durable row is authoritative and
+        # the files are materialised below, so adopt the directory; but a
+        # failed create removes only a directory it made itself (review W53).
+        made_root = await asyncio.to_thread(_make_dir, ws_root)
 
         try:
             # Resolve every FileSource variant (inline/url/document/secret)
@@ -203,11 +204,12 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
             )
         except Exception:
             # Roll back the partially-built workspace directory so a
-            # retry sees a clean root.
-            try:
-                await asyncio.to_thread(shutil.rmtree, ws_root)
-            except Exception:  # noqa: BLE001
-                pass
+            # retry sees a clean root; an adopted one keeps its files.
+            if made_root:
+                try:
+                    await asyncio.to_thread(shutil.rmtree, ws_root)
+                except Exception:  # noqa: BLE001
+                    pass
             raise
 
         async with self._lock:
@@ -290,7 +292,8 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
         async with self._lock:
             ws = self._workspaces.pop(workspace_id, None)
         if ws is None:
-            raise NotFoundError(f"workspace {workspace_id!r} not found")
+            await self._destroy_uncached(workspace_id)
+            return
         try:
             # The workspace is going away, so the sessions on it end with it; a plain aclose() only releases the handle.
             await ws.end_all_sessions()
@@ -301,6 +304,21 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
                 extra={"workspace_id": workspace_id, "error": str(exc)},
             )
         await asyncio.to_thread(shutil.rmtree, ws.root, ignore_errors=True)
+
+    async def _destroy_uncached(self, workspace_id: str) -> None:
+        """Remove the directory of a workspace this process never materialised (after a restart, or a delete run in a worker).
+
+        It went with the row only when cached, so a later create of the same id adopted the old files and ``.state``
+        history (review W2). The id gets create's check (:meth:`_refuse_escaping`): an escaping id or a symlinked
+        workspace is never followed, and counts as nothing on disk, as before. ``NotFoundError`` when nothing is there.
+        """
+        try:
+            ws_root = self._refuse_escaping(workspace_id)
+        except ValidationError:
+            ws_root = None
+        if ws_root is None or not await asyncio.to_thread(ws_root.is_dir):
+            raise NotFoundError(f"workspace {workspace_id!r} not found")
+        await asyncio.to_thread(shutil.rmtree, ws_root, ignore_errors=True)
 
     # ---- internals ------------------------------------------------------
 
@@ -383,6 +401,17 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
 # ===========================================================================
 # Helpers
 # ===========================================================================
+
+
+def _make_dir(path: Path) -> bool:
+    """``mkdir -p`` that says whether it made *path* (False: the directory was already there)."""
+    try:
+        path.mkdir(parents=True)
+    except FileExistsError:
+        if not path.is_dir():
+            raise
+        return False
+    return True
 
 
 def _warn_unenforced(template: WorkspaceTemplate) -> None:

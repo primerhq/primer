@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from primer.access.person import Person
-from primer.access.policy import level_of, readable_ids, require
+from primer.access.policy import level_of, readable_ids, require, visible_predicate
 from primer.model.access import AccessLevel
 from primer.model.except_ import AccessDeniedError, NotFoundError
 from primer.model.storage import Op, Predicate
@@ -150,12 +150,21 @@ async def scope_to_readable_workspaces(
     ``(True, ...)``: the caller answers an empty page without a query. The filter is part of the query, so a page and its total are
     counted over what the person may read (plan P2 Task 5; a post-filter would leak the others' count and starve the window).
     """
-    from primer.model.storage import FieldRef, Value
+    from primer.model.storage import FieldRef, IdsOf, OffsetPage, Value
 
-    ids = await readable_workspace_ids(sp, person)
-    if ids is None:
+    if person.is_admin:
         return False, predicate
-    if not ids:
-        return True, predicate
-    scoped = Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=ids))
+    workspaces = sp.get_storage(Workspace)
+    if getattr(workspaces, "supports_ids_of", False) is True:
+        # The id set stays in the database (a semi-join); this one-row read keeps the callers' "reads nothing" answer, given without a query.
+        visible = visible_predicate(person)
+        if not (await workspaces.find(visible, OffsetPage(offset=0, length=1, want_total=False))).items:
+            return True, predicate
+        # ``field == "id"``: the rows are the workspaces themselves, and ``id IN (SELECT id ... WHERE visible)`` is ``visible``.
+        scoped = visible if field == "id" else Predicate(left=FieldRef(name=field), op=Op.IN, right=IdsOf(model=Workspace, where=visible))
+    else:
+        ids = await readable_workspace_ids(sp, person)
+        if not ids:
+            return True, predicate
+        scoped = Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=ids))
     return False, scoped if predicate is None else Predicate(left=scoped, op=Op.AND, right=predicate)

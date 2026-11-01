@@ -83,6 +83,10 @@ function NV_canvasValidateFrameMessage(msg) {
   }
   if (t === "open_link") {
     if (typeof msg.url !== "string" || !msg.url) return null;
+    // UI-L4: the console opens this URL after the confirm (window.open), so the
+    // console side must not steer it to another scheme - the same rule the
+    // vendor's markdown link renderer uses (http(s) and mailto only).
+    if (!/^(https?:|mailto:)/i.test(msg.url)) return null;
     var o = { type: "open_link", url: msg.url };
     if (msg.element !== undefined) {
       if (!CV_isFrameId(msg.element)) return null;
@@ -230,6 +234,25 @@ function NV_registerCanvasVerbs(registry, focused) {
 
 // --- the frame (the sandboxed iframe + the bridge) ------------------------------
 
+// The elements whose busy mark the console clears: each was clicked at a (rev, event_seq), and a snapshot where either has moved means the agent (or the server's
+// refusal) has answered (GU-2). `pending` is {element: {rev, seq}}; `data` the latest snapshot.
+function NV_canvasBusyCleared(pending, data) {
+  if (!data) return [];
+  return Object.keys(pending).filter(function (id) {
+    return pending[id].rev !== data.rev || pending[id].seq !== data.event_seq;
+  });
+}
+
+// Whether a canvas error message is worth a toast: the first of each message, and only a few distinct ones per frame, so an Html element that throws in a loop
+// does not flood the console's chrome (GU-24). `seen` is a per-frame object.
+function NV_canvasErrorIsNew(seen, message) {
+  var key = String(message);
+  if (seen[key]) return false;
+  if (Object.keys(seen).length >= 5) return false;
+  seen[key] = true;
+  return true;
+}
+
 function NV_CanvasFrame(props) {
   var con = NV_useConsole();
   var iframeRef = React.useRef(null);
@@ -270,10 +293,25 @@ function NV_CanvasFrame(props) {
     });
   }
 
+  // The elements clicked and not yet answered, for the renderer's busy mark (GU-2): the console clears it, the renderer's 30 s timer is the last resort.
+  var busyRef = React.useRef({});
+  var errorsSeenRef = React.useRef({});
+  function clearBusy(ids) {
+    var port = portRef.current;
+    ids.forEach(function (id) {
+      delete busyRef.current[id];
+      if (port) port.postMessage({ type: "busy", element: id, on: false });
+    });
+  }
+
   function postEvent(body) {
     SH_api.canvasEvent(props.wid, props.sid, body).then(
       function () { /* a 202: recorded (or a deduped repeat) */ },
-      function (err) { con.toast(window.NV_canvasEventErrorText(err)); }
+      function (err) {
+        // A refused or failed POST answers the click too: the person can press the control again.
+        if (body.element && busyRef.current[body.element]) clearBusy([body.element]);
+        con.toast(window.NV_canvasEventErrorText(err));
+      }
     );
   }
 
@@ -283,6 +321,8 @@ function NV_CanvasFrame(props) {
     if (!m) return;
     if (m.type === "ready") { readyRef.current = true; pushState(); return; }
     if (m.type === "event") {
+      var at = dataRef.current;
+      if (m.kind === "click" && at) busyRef.current[m.element] = { rev: at.rev, seq: at.event_seq };
       postEvent({
         element: m.element, kind: m.kind,
         value: m.value, name: m.name, data: m.data, position: m.position,
@@ -326,7 +366,7 @@ function NV_CanvasFrame(props) {
       });
       return;
     }
-    if (m.type === "error") { con.toast(m.message); return; }
+    if (m.type === "error") { if (NV_canvasErrorIsNew(errorsSeenRef.current, m.message)) con.toast(m.message); return; }
   }
 
   // The console's window `message` listener (ruling 2). It exists only to be
@@ -377,6 +417,7 @@ function NV_CanvasFrame(props) {
   // run_html true, and the renderer transitions inert->frame.
   React.useEffect(function () {
     if (readyRef.current) pushState();
+    clearBusy(NV_canvasBusyCleared(busyRef.current, dataRef.current));
   }, [
     props.data && props.data.rev,
     props.data && props.data.event_seq,

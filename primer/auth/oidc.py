@@ -449,7 +449,7 @@ async def exchange_code(
 
     if resp.status_code >= 400:
         raise OidcError(
-            f"token endpoint returned HTTP {resp.status_code}: {resp.text}"
+            f"token endpoint returned HTTP {resp.status_code}: {resp.text[:500]}"
         )
     try:
         return resp.json()

@@ -18,7 +18,10 @@ the difference is documented in rest-api.md and in the ``create_toolset`` / ``up
 
 from __future__ import annotations
 
+import re
+
 from primer.common.entity_checks import EntityCheckError
+from primer.common.netguard import url_resolves_internal, url_targets_internal_literal
 from primer.common.origin import origin_of
 from primer.model.common import preserve_masked_secrets
 from primer.model.except_ import ValidationError as PrimerValidationError
@@ -63,6 +66,39 @@ def launches_a_command(entity: Toolset) -> bool:
     """True for an MCP toolset on the ``stdio`` transport: the primer process spawns its ``command`` on the server host."""
     config = entity.config
     return entity.provider == ToolsetProviderType.MCP and getattr(config, "transport", None) == TransportType.STDIO
+
+
+def targets_an_internal_address(entity: Toolset) -> bool:
+    """True for an http / sse MCP toolset whose URL writes an internal address out (a loopback, link-local, private or metadata IP literal, or
+    ``localhost``): the server would POST to a host inside the network on create and on every listing (SSRF). A name that RESOLVES internal is
+    refused at connect time (:class:`primer.toolset.mcp.McpToolsetProvider`); ``PRIMER_EGRESS_ALLOW`` opts internal servers back in for both."""
+    config = entity.config
+    if entity.provider != ToolsetProviderType.MCP or getattr(config, "transport", None) not in (TransportType.HTTP, TransportType.SSE):
+        return False
+    inner = getattr(config, "config", None)
+    return isinstance(inner, HttpConfig) and url_targets_internal_literal(str(inner.url))
+
+
+async def check_mcp_url_resolves_public(entity: Toolset, person) -> None:
+    """Refuse a write by a caller below admin that points an http / sse MCP toolset at a NAME which resolves to an internal address.
+
+    The literal rule (:func:`targets_an_internal_address`, in :func:`toolset_admin_reason`) cannot see a name. Without this, a FULL grantee of an
+    admin-owned toolset could repoint it at ``mcp.sneaky.example`` that resolves to ``10.0.0.5``: the toolset's author is an admin, so
+    :func:`primer.toolset.mcp_egress.author_is_trusted` trusts it and neither guard fires. So a non-admin's save resolves the host once (bounded,
+    off the loop, ``PRIMER_EGRESS_ALLOW`` honoured) and is refused with the same reason when ANY answer is internal; a failed lookup refuses
+    nothing, and an admin's save is never resolved. Active DNS rebinding against an admin-owned toolset edited by a grantee remains (the name
+    can be re-bound after this snapshot): acceptable because it needs a hostile grantee the admin chose, the attacker's DNS and an admin-owned toolset,
+    and every toolset a non-admin owns is guarded at connect time. ``person`` is anything with ``is_admin`` (a request's or a tool run's person).
+    Raises :class:`EntityCheckError` (``forbidden``, code ``forbidden_role``).
+    """
+    if person.is_admin or entity.provider != ToolsetProviderType.MCP:
+        return
+    config = entity.config
+    if getattr(config, "transport", None) not in (TransportType.HTTP, TransportType.SSE):
+        return
+    inner = getattr(config, "config", None)
+    if isinstance(inner, HttpConfig) and await url_resolves_internal(str(inner.url)):
+        raise EntityCheckError("forbidden", _INTERNAL_URL_REASON, code="forbidden_role")
 
 
 def runs_python(entity: Toolset) -> bool:
@@ -135,6 +171,11 @@ _STDIO_REASON = (
 _PYTHON_REASON = (
     "Creating or changing a python toolset requires the admin role: its source runs on the server host. Ask an admin."
 )
+_INTERNAL_URL_REASON = (
+    "Pointing an MCP toolset at an internal address (a loopback, link-local, private or cloud-metadata address, or localhost) requires the admin "
+    "role: the server would send requests there when the toolset is created and every time its tools are listed. Use the address of a public server, "
+    "or ask an admin."
+)
 _REPOINT_REASON = (
     "Changing a toolset's URL or OAuth endpoints while keeping its stored secrets requires the admin role, and the stored secrets are kept only "
     "for the same origin (scheme, host and port): re-enter the secrets (headers, OAuth client secret) when changing the URL, or ask an admin."
@@ -153,12 +194,15 @@ def toolset_admin_reason(entity: Toolset, existing: Toolset | None = None) -> st
     Either side counts: a user may not turn an http toolset into a stdio or python one, nor edit one they did not create (even to
     point it at http). An update that changes the URL or the OAuth endpoints while a secret is sent back masked would carry the
     stored secret to the new endpoint, so it is admin-only too; re-entering the secrets lifts it. Every other write stays
-    user-tier, and a delete launches nothing, so it is not gated.
+    user-tier, and a delete launches nothing, so it is not gated. An http / sse toolset whose URL writes an internal address out is admin-only
+    as well (SSRF); an admin may still configure an internal server.
     """
     if launches_a_command(entity) or (existing is not None and launches_a_command(existing)):
         return _STDIO_REASON
     if runs_python(entity) or (existing is not None and runs_python(existing)):
         return _PYTHON_REASON
+    if targets_an_internal_address(entity):
+        return _INTERNAL_URL_REASON
     if existing is not None and repoints_stored_secrets(entity, existing):
         return _REPOINT_REASON
     if existing is not None and oauth_settings_changed(entity, existing):
@@ -199,8 +243,26 @@ def check_oauth_resource_uri(entity: Toolset) -> None:
         raise EntityCheckError("validation", RESOURCE_URI_PROBLEM, code="invalid_resource_uri", field=RESOURCE_URI_FIELD)
 
 
+# A new toolset's id: every tool goes out as ``<toolset_id>__<tool>``, and OpenAI and Anthropic refuse a tool name outside [a-zA-Z0-9_-]{1,64}.
+# 48 characters leaves 14 for ``__`` and the tool's own name. Existing toolsets keep the ids they have (GI-20).
+TOOLSET_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,47}")
+
+
+def check_new_toolset_id(entity: Toolset) -> None:
+    """Refuse a NEW toolset whose id would make a tool name the model providers reject. Create doors only."""
+    if not TOOLSET_ID_PATTERN.fullmatch(entity.id or ""):
+        shown = entity.id if len(entity.id or "") <= 64 else f"{entity.id[:61]}..."
+        raise EntityCheckError(
+            "validation",
+            f"{shown!r} is not a valid toolset id: use 1 to 48 letters, digits, '_' or '-', starting with a letter or digit "
+            "(the id is part of every tool name sent to the model)",
+            field="id",
+        )
+
+
 def check_toolset_on_create(entity: Toolset) -> None:
-    """The create-time checks a tool can run: an OAuth resource indicator on the server's origin, and a python toolset's source must register."""
+    """The create-time checks a tool can run: the id's shape, an OAuth resource indicator on the server's origin, and a python toolset's source must register."""
+    check_new_toolset_id(entity)
     check_oauth_resource_uri(entity)
     if entity.provider == ToolsetProviderType.PYTHON:
         check_python_toolset(entity)
@@ -218,11 +280,15 @@ def check_toolset_on_update(entity: Toolset, existing: Toolset) -> None:
 
 __all__ = [
     "RESOURCE_URI_FIELD",
+    "TOOLSET_ID_PATTERN",
+    "check_mcp_url_resolves_public",
+    "check_new_toolset_id",
     "check_oauth_resource_uri",
     "check_python_toolset",
     "check_toolset_on_create",
     "check_toolset_on_update",
     "launches_a_command",
+    "targets_an_internal_address",
     "oauth_settings_changed",
     "own_python_source_version",
     "repoints_stored_secrets",

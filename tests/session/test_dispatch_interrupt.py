@@ -1741,16 +1741,23 @@ class TestAStopIsNeverLostToTheBus:
 
 
 class _FlakyStorage:
-    """Raises on the first read, then returns a row with the Stop flag set."""
+    """Raises on the first read, then returns a row with the Stop flag set (through ``get`` and the ``id IN`` read alike)."""
 
     def __init__(self) -> None:
         self.reads = 0
 
-    async def get(self, _sid):
+    def _read(self):
         self.reads += 1
         if self.reads == 1:
             raise RuntimeError("db blip")
-        return type("Row", (), {"interrupt_requested": True})()
+        return type("Row", (), {"id": "s1", "interrupt_requested": True})()
+
+    async def get(self, _sid):
+        return self._read()
+
+    async def find(self, _predicate, _page):
+        row = self._read()
+        return type("Page", (), {"items": [row]})()
 
 
 class TestTheWatcher:

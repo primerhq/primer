@@ -410,13 +410,13 @@ async def test_bounded_claim_loop_retries_and_stops_when_exhausted(sp, wiki, mon
     attempts = 0
     real_claim = sc.claim
 
-    async def fail_twice(storage_provider, *, app_version, content_hash):
+    async def fail_twice(storage_provider, *, app_version, content_hash, source_hash=None):
         nonlocal attempts
         attempts += 1
         if attempts < 3:
             return False
         return await real_claim(
-            storage_provider, app_version=app_version, content_hash=content_hash,
+            storage_provider, app_version=app_version, content_hash=content_hash, source_hash=source_hash,
         )
 
     monkeypatch.setattr(sc, "claim", fail_twice)
@@ -428,7 +428,7 @@ async def test_bounded_claim_loop_retries_and_stops_when_exhausted(sp, wiki, mon
     _set_body_line(wiki, "start-here/calling-tools.md", "0.8.0 text")
     exhausted_attempts = 0
 
-    async def always_lose(storage_provider, *, app_version, content_hash):
+    async def always_lose(storage_provider, *, app_version, content_hash, source_hash=None):
         nonlocal exhausted_attempts
         exhausted_attempts += 1
         return False

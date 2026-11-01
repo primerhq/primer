@@ -56,6 +56,8 @@ class Ls(WorkspaceTool):
     sandbox backend's rendering.
     """
 
+    read_only: ClassVar[bool] = True
+
     id: ClassVar[str] = "ls"
     # Kept byte-identical to primer.workspace.sandbox.tools.ls.SandboxLs's
     # description (drift guard: tests/toolset/test_local_tool_

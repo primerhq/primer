@@ -14,7 +14,11 @@ import hashlib
 import json
 from typing import Any
 
-from primer.channel.adapter import PromptEnvelope
+from primer.channel.adapter import PromptEnvelope, utf16_fit
+
+# Telegram text is at most 4096 UTF-16 units after entities parsing (core.telegram.org/bots/api#sendmessage);
+# keep args well under it, as Slack and Discord do.
+_ARGS_MAX = 3500
 
 
 def compute_tag(
@@ -63,6 +67,9 @@ def build_tool_approval_message(
         lines.append(f"Run tool <b>{_esc(envelope.tool_name)}</b>")
         if envelope.tool_args:
             pretty = json.dumps(envelope.tool_args, indent=2, ensure_ascii=False)
+            fit = utf16_fit(pretty, _ARGS_MAX)
+            if fit < len(pretty):
+                pretty = pretty[:fit] + "\n... (truncated)"
             lines.append(f"<pre>{_esc(pretty)}</pre>")
     else:
         # Fallback: render the pre-built prompt string.

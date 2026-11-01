@@ -164,3 +164,24 @@ class _WorkspaceIOShim:
             return await workspace.read_file(full_path)
         except NotFoundError:
             return b""
+
+    async def read_state_tail(
+        self, workspace_id: str, state_relative_path: str, max_bytes: int,
+    ) -> tuple[bytes, bool] | None:
+        """The last ``max_bytes`` of ``<workspace.state_path>/<state_relative_path>`` and whether that is the whole file.
+
+        ``None`` when the workspace backend cannot say how long the file is or read from an offset (the caller reads it whole). The same
+        failure rules as :meth:`read_state_file`: an absent file raises :class:`NotFoundError`, a workspace the registry cannot resolve
+        raises, and neither is mistaken for an empty log.
+        """
+        if self._registry is None:
+            return b"", True
+        workspace = await self._registry.get_workspace(workspace_id)
+        if workspace is None:
+            raise PrimerError(
+                f"workspace {workspace_id!r} could not be resolved while reading {state_relative_path!r}"
+            )
+        full_path = f"{getattr(workspace, 'state_path', '.state')}/{state_relative_path}"
+        from primer.workspace.tail_read import tail_of
+
+        return await tail_of(workspace, full_path, max_bytes)

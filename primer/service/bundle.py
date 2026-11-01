@@ -28,6 +28,9 @@ MAX_BUNDLE_BYTES = 10 * 1024 * 1024
 
 MAX_BUNDLE_FILES = 200
 
+MAX_BUNDLE_MEMBERS = 1000
+"""Every tar member, directories included: a header costs a loop turn even when it carries no bytes (GS-32)."""
+
 MANIFEST_PATH = "service.yaml"
 
 DEFAULT_FUNCTIONS_FILE = "functions.py"
@@ -86,8 +89,12 @@ def _extract(tar_gz: bytes) -> dict[str, bytes]:
 
     files: dict[str, bytes] = {}
     total = 0
+    members = 0
     with tf:
         for member in tf:
+            members += 1
+            if members > MAX_BUNDLE_MEMBERS:
+                raise BundleError(f"the bundle exceeds {MAX_BUNDLE_MEMBERS} members (files and directories)")
             if member.isdir():
                 continue
             if not member.isreg():

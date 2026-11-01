@@ -262,3 +262,54 @@ async def test_the_runner_applies_it_to_a_database_at_version_seven(sp: StorageP
     assert version == LATEST_VERSION and (await sp.get_system_state()).schema_version == LATEST_VERSION
     page = await sp.get_storage(LiveEmbeddingProvider).list(OffsetPage(offset=0, length=100))
     assert len(page.items) == len(BROKEN) + len(HEALTHY)
+
+
+# -- golden characterization (PERF-T16) ---------------------------------------------------------------------------------------------------
+
+from primer.storage.migrations.m008_embedding_provider_repair import EmbeddingProvider as ProviderView  # noqa: E402
+from primer.storage.migrations.m008_embedding_provider_repair import _repaired  # noqa: E402
+from tests.storage._migration_golden import assert_golden, insert_raw  # noqa: E402
+
+
+async def _old_apply(sp) -> None:
+    """Migration 8 as it was before PERF-T16, frozen: read every row, ``update`` each one the live config class refuses."""
+    storage = sp.get_storage(ProviderView)
+    rows = []
+    offset = 0
+    while True:
+        page = await storage.list(OffsetPage(offset=offset, length=200, want_total=False))
+        rows.extend(page.items)
+        if len(page.items) < 200:
+            break
+        offset += 200
+    for row in rows:
+        repair = _repaired(row.provider, row.config)
+        if repair is None:
+            continue
+        new_config, _ = repair
+        await storage.update(row.model_copy(update={"config": new_config}))
+
+
+async def _golden_seed(sp) -> None:
+    await insert_raw(sp, ProviderView, {
+        "e-ok": {"provider": "openai", "config": {"url": URL, "api_key": KEY}, "models": [{"name": "m-1"}]},
+        "e-nourl": {"provider": "openai", "config": {"api_key": KEY}, "limits": {"max_concurrency": 2}, "n": 1.25},
+        "e-token": {"config": {"token": TOKEN}, "provider": "openai"},
+        "e-badurl": {"provider": "openai", "config": {"url": "not a url", "api_key": KEY, "flavor": "lmstudio"}},
+        "e-odd": {"provider": "openai", "config": {"api_key": 5, "flavor": "nope", "x": None}},
+        "e-emptyurl": {"provider": "openai", "config": {"url": "", "api_key": "", "flavor": "openai"}},
+        "e-noconfig": {"provider": "openai"},
+        "e-nullconfig": {"provider": "openai", "config": None},
+        "e-emptyconfig": {"provider": "openai", "config": {}},
+        "e-hf": {"provider": "huggingface", "config": {"url": URL, "api_key": KEY, "flavor": "other"}},
+        "e-gemini": {"provider": "gemini", "config": {}},
+        "e-noprovider": {"config": {"api_key": KEY}},
+        "e-nullprovider": {"provider": None, "config": {"api_key": KEY}},
+        "e-case": {"provider": "OpenAI", "config": {"api_key": KEY}},
+    })
+
+
+async def test_golden_rows_match_the_old_implementation_and_a_second_run_changes_nothing(tmp_path: Path) -> None:
+    from primer.storage.migrations.m008_embedding_provider_repair import M008EmbeddingProviderRepair
+
+    await assert_golden(tmp_path, _golden_seed, (ProviderView,), _old_apply, M008EmbeddingProviderRepair().apply)

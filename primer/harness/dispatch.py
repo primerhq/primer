@@ -35,6 +35,7 @@ from primer.harness.dependencies import (
     canonical_key,
     walk_dependencies,
 )
+from primer.harness.paths import symlink_reason
 from primer.harness.git import (
     HarnessGitError,
     _redact,
@@ -62,6 +63,7 @@ from primer.harness.service import (
     apply_sync,
     apply_uninstall,
     build_rendered_entries,
+    resolved_id,
 )
 from primer.harness.template import (
     HarnessTemplateError,
@@ -87,17 +89,20 @@ from primer.model.storage import OffsetPage
 logger = logging.getLogger(__name__)
 
 
-def _collect_bundle_files(base: Path) -> list[tuple[str, bytes]]:
-    """Walk ``base`` and return (relative_path, bytes) for every non-.git file."""
-    result: list[tuple[str, bytes]] = []
+def _collect_bundle_paths(base: Path) -> list[str]:
+    """Walk ``base`` and return the relative paths of every non-.git file; a symlink is refused (``harness_symlink_refused``). Contents are read by the caller, one file at a time (KN-19k)."""
+    result: list[str] = []
     for p in sorted(base.rglob("*")):
         # Skip the .git directory and everything inside it
         parts = p.relative_to(base).parts
         if parts and parts[0] == ".git":
             continue
+        # A symlink in the repository could name any file the server can read (and a large one is read whole): refused, not followed.
+        reason = symlink_reason(base, p)
+        if reason is not None:
+            raise HarnessGitError("harness_symlink_refused", f"{p.relative_to(base).as_posix()}: {reason}")
         if p.is_file():
-            rel = str(p.relative_to(base))
-            result.append((rel, p.read_bytes()))
+            result.append(str(p.relative_to(base)))
     return result
 
 HARNESS_HEARTBEAT_INTERVAL_SECONDS = 10.0
@@ -228,12 +233,15 @@ async def run_one_harness_operation(
         elif operation == HarnessOperation.SYNC:
             next_status, error_json = await _do_sync(deps, harness)
         elif operation == HarnessOperation.UNINSTALL:
-            await _do_uninstall(deps, harness)
-            # Row is gone, skip release, just publish done.
-            await deps.event_bus.publish(
-                f"harness:{harness_id}:done", {"harness_id": harness_id},
-            )
-            return
+            error_json = await _do_uninstall(deps, harness)
+            if error_json is None:
+                # Row is gone, skip release, just publish done.
+                await deps.event_bus.publish(
+                    f"harness:{harness_id}:done", {"harness_id": harness_id},
+                )
+                return
+            # It stopped part-way and kept the harness and its snapshot: released as ERROR, a retry finishes it.
+            next_status = HarnessStatus.ERROR
         elif operation == HarnessOperation.BUILD:
             next_status, error_json = await _do_build(deps, harness)
         elif operation == HarnessOperation.PUSH:
@@ -452,8 +460,10 @@ async def _do_fetch(
                     )
 
             # Compute parent's own bundle_hash over the subpath (excluding .git)
-            bundle_files = await asyncio.to_thread(_collect_bundle_files, base)
-            parent_bundle_hash = hash_bundle(bundle_files)
+            bundle_paths = await asyncio.to_thread(_collect_bundle_paths, base)
+            parent_bundle_hash = await asyncio.to_thread(
+                hash_bundle, bundle_paths, lambda name: (base / name).read_bytes(),
+            )
 
             # ---- Dependency walk (optional) -----------------------------
             parent_deps = harness_meta.get("dependencies") or []
@@ -730,6 +740,11 @@ def _token_for_dependency(parent_url: str | None, dep_url: str, token: str | Non
     return token
 
 
+def _document_files_by_id(rendered: list[RenderedFile], slug: str) -> dict[str, RenderedFile]:
+    """The document files keyed by resolved id: the parent and a sub may share a template name (GX-5)."""
+    return {resolved_id(f.source_slug or slug, f.template_name): f for f in rendered if f.kind == "document"}
+
+
 async def _render_sub_bundle(
     *,
     dep: ResolvedDependency,
@@ -831,8 +846,10 @@ async def _do_install(
             base = Path(dest)
             if harness.subpath:
                 base = base / harness.subpath
-            parent_bundle_hash = hash_bundle(
-                await asyncio.to_thread(_collect_bundle_files, base),
+            parent_bundle_hash = await asyncio.to_thread(
+                hash_bundle,
+                await asyncio.to_thread(_collect_bundle_paths, base),
+                lambda name: (base / name).read_bytes(),
             )
             if harness.dependencies_resolved:
                 h = hashlib.sha256()
@@ -923,15 +940,7 @@ async def _do_install(
                     {"code": "build_errors", "errors": build_errors.errors}
                 )
 
-            # Build rendered_files_by_name (kept template_name-keyed for
-            # document-content lookups). When multiple subs declare the
-            # same template_name a later entry would overwrite an earlier
-            # one in this dict, but document content lookup matches by
-            # template_name anyway — keep the parent's last to mirror the
-            # entries order (deepest-first then parent).
-            rendered_files_by_name: dict[str, RenderedFile] = {
-                f.template_name: f for f in rendered
-            }
+            rendered_files_by_name = _document_files_by_id(rendered, harness.slug)
 
             overrides_hash = hash_overrides(harness.overrides)
 
@@ -1049,8 +1058,10 @@ async def _do_sync(
             base = Path(dest)
             if harness.subpath:
                 base = base / harness.subpath
-            parent_bundle_hash = hash_bundle(
-                await asyncio.to_thread(_collect_bundle_files, base),
+            parent_bundle_hash = await asyncio.to_thread(
+                hash_bundle,
+                await asyncio.to_thread(_collect_bundle_paths, base),
+                lambda name: (base / name).read_bytes(),
             )
             if harness.dependencies_resolved:
                 h = hashlib.sha256()
@@ -1127,9 +1138,7 @@ async def _do_sync(
                     {"code": "build_errors", "errors": build_errors.errors}
                 )
 
-            rendered_files_by_name: dict[str, RenderedFile] = {
-                f.template_name: f for f in rendered
-            }
+            rendered_files_by_name = _document_files_by_id(rendered, harness.slug)
 
             error = await apply_sync(
                 storage_provider=deps.storage_provider,
@@ -1184,19 +1193,24 @@ async def _do_sync(
 async def _do_uninstall(
     deps: HarnessDispatchDeps,
     harness: Harness,
-) -> None:
-    """Delete all managed entities, rendering, and harness row.
+) -> str | None:
+    """Delete all managed entities, rendering, and harness row; the error JSON when it stopped part-way, else None.
 
-    Caller must NOT call release_harness after this (row is gone).
+    On None the caller must NOT call release_harness (row is gone). On an error the harness row and its rendering are kept
+    (KN-5), so the caller releases the operation as ERROR and a retried uninstall finishes it.
     """
     try:
         await apply_uninstall(
             storage_provider=deps.storage_provider,
             harness=harness,
             cascade=harness.uninstall_cascade,
+            semantic_search_registry=deps.semantic_search_registry,
+            provider_registry=deps.provider_registry,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("_do_uninstall error for harness %s", harness.id)
+        return json.dumps({"code": "uninstall_failed", "message": str(exc)})
+    return None
 
 
 # ---------------------------------------------------------------------------

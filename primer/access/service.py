@@ -19,6 +19,7 @@ from primer.model.common import dump_for_storage
 from primer.model.except_ import AccessDeniedError, ConflictError, NotFoundError, ValidationError
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.user import User
+from primer.storage.cas import patch_if_or_current
 
 #: Upper bound of one user lookup page.
 LOOKUP_MAX = 20
@@ -70,11 +71,21 @@ async def _load(storage: Storage[Any], entity_id: str, what: str) -> Any:
 
 
 async def _user_refs(users: Storage[User], ids: list[str]) -> dict[str, UserRef]:
-    refs: dict[str, UserRef] = {}
-    for uid in ids:
-        user = await users.get(uid)
-        refs[uid] = UserRef(id=uid, username=user.username if user is not None else None)
-    return refs
+    """The refs of every id: one ``id IN`` find per 200 ids, an id with no row
+    resolves to a username-less ref, never an error."""
+    unique = list(dict.fromkeys(ids))
+    found: dict[str, User] = {}
+    for start in range(0, len(unique), 200):  # OffsetPage.length is capped at 200
+        chunk = unique[start : start + 200]
+        page = await users.find(
+            Predicate(left=FieldRef(name="id"), op=Op.IN, right=Value(value=chunk)),
+            OffsetPage(offset=0, length=len(chunk)),
+        )
+        found.update({user.id: user for user in page.items})
+    return {
+        uid: UserRef(id=uid, username=found[uid].username if uid in found else None)
+        for uid in unique
+    }
 
 
 def _view(access: Access, refs: dict[str, UserRef], level: AccessLevel | None) -> AccessView:
@@ -246,27 +257,31 @@ async def rewrite_keeping_access(storage: Storage[Any], entity: Any, *, what: st
     dumped = dump_for_storage(entity)
     patch = {key: value for key, value in dumped.items() if key not in ("id", "access")}
     extra = {} if conn is None else {"conn": conn}
+    current = await storage.get(entity.id, **extra)
     for _ in range(5):
-        current = await storage.get(entity.id, **extra)
         if current is None:
             raise NotFoundError(f"{what} does not exist")
         rev = current.access.rev
         guard = [rev, None] if rev == 0 else [rev]
-        written = await storage.patch_if(entity.id, patch, where={("access", "rev"): guard}, **extra)
+        # A lost race answers with the row as it now stands, so the retry has its new rev without a second read (PERF-T17 L2).
+        written, current = await patch_if_or_current(storage, entity.id, patch, where={("access", "rev"): guard}, **extra)
         if written is not None:
             return written
     raise ConflictError(f"the sharing of {what} kept changing while it was being edited; retry")
 
 
-async def update_keeping_access(storage: Storage[Any], entity: Any, existing: Any, *, what: str) -> Any:
-    """Write every field of ``entity`` except ``access``, guarded on the stored sharing's ``rev``.
+async def update_keeping_access(
+    storage: Storage[Any], entity: Any, existing: Any, *, what: str, keep: tuple[str, ...] = (),
+) -> Any:
+    """Write every field of ``entity`` except ``access`` (and the ``keep`` fields), guarded on the stored sharing's ``rev``.
 
     An update keeps the row's sharing as stored; a blind whole-row write from the snapshot ``existing`` would put back a grant
     an owner revoked between the read and the write. One ``patch_if`` of every other field, fenced on ``access.rev``: a sharing
     change in the gap answers ``ConflictError`` (409) and nothing is written. Same storage event as an update (CRUD ``updated``).
+    ``keep`` names fields another writer owns (a trigger fire's bookkeeping): they stay as stored.
     """
     dumped = dump_for_storage(entity)
-    patch = {key: value for key, value in dumped.items() if key not in ("id", "access")}
+    patch = {key: value for key, value in dumped.items() if key not in ("id", "access", *keep)}
     rev = existing.access.rev
     guard = [rev, None] if rev == 0 else [rev]
     written = await storage.patch_if(entity.id, patch, where={("access", "rev"): guard})

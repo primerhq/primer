@@ -122,8 +122,9 @@ async def test_get_sandbox_missing_container_returns_none() -> None:
 
 @pytest.mark.asyncio
 async def test_get_sandbox_non_running_returns_none(monkeypatch) -> None:
+    # A state a start cannot fix: an exited container is started now (review W21, test_docker_stopped_container_lifecycle.py).
     info = {
-        "State": {"Status": "exited"},
+        "State": {"Status": "dead"},
         "Config": {"Env": ["PRIMER_RUNTIME_TOKEN=tok"]},
     }
     adapter, _ = _adapter_with_container(info)

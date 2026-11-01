@@ -181,14 +181,18 @@ class SessionClaimAdapter(ClaimAdapter):
         # the parked session still shows the worker that ran its turn.
         if outcome.park is not None:
             p = outcome.park
-            await self._patch_owned(entity_id, sess, conn, {
+            owned = {
                 "parked_status": "parked",
                 "parked_event_key": p.parked_event_key,
                 "parked_event_keys": p.parked_event_keys,
                 "parked_until": p.parked_until,
                 "parked_at": p.parked_at,
                 "parked_state": p.parked_state,
-            }, bump=False)
+            }
+            if p.drained_reply_keys is None:
+                await self._patch_owned(entity_id, sess, conn, owned, bump=False)
+            else:
+                await self._repark_carrying_replies(entity_id, sess, conn, owned, p)
             return
 
         # Preserve-park branch: the operator paused a resumable session (the
@@ -226,6 +230,53 @@ class SessionClaimAdapter(ClaimAdapter):
         # worker process that would run it is the thing that died.
         if not outcome.success and self._workspace_registry is not None:
             await self._write_terminal_record(written, outcome, conn)
+
+    async def _repark_carrying_replies(self, entity_id: str, sess, conn, owned: dict, park) -> None:
+        """The park branch of a graph re-park (GR-3): the new park, plus every reply accepted while the resume ran.
+
+        A multi-event row takes a reply to another of its keys while ``resumable`` (``durably_mark_session_resumable``), so one can land
+        while the resume runs, into ``resume_event_payloads``. Writing the new ``parked_state`` whole erased it, and the dropped lease left
+        nothing to run it. Every entry the resume did NOT read (``park.drained_reply_keys``) whose key the new park still waits on is
+        carried onto it, and the row is ``resumable`` (the pool re-arms its lease after the release). An entry the resume read is never
+        carried, even when a node re-parks under the same key: that answer was given to the previous question.
+
+        Fenced on the last reply the read saw (``parked_state.resume_event_key``): every reply that lands writes its own key there, and a
+        multi-event park takes one reply per key, so a reply that lands between this read and the write fails the fence; the row is
+        re-read and the write retried once. A second rejection raises, as ``_patch_owned`` does.
+        """
+        keys = set(park.parked_event_keys or [park.parked_event_key])
+        for attempt in range(2):
+            state = sess.parked_state or {}
+            kept = {
+                leaf: entry for leaf, entry in (state.get("resume_event_payloads") or {}).items()
+                if leaf not in park.drained_reply_keys and isinstance(entry, dict) and entry.get("event_key") in keys
+            }
+            patch = dict(owned)
+            if kept:
+                last = next(reversed(kept.values()))
+                patch["parked_status"] = "resumable"
+                patch["parked_state"] = {
+                    **park.parked_state, "resume_event_payloads": kept,
+                    "resume_event_key": last["event_key"], "resume_event_payload": last.get("payload"),
+                }
+            where = {
+                "workspace_id": [raw_generation(sess, "workspace_id")],
+                ("parked_state", "resume_event_key"): [state.get("resume_event_key")],
+            }
+            try:
+                if await self._storage.patch_if(entity_id, to_jsonable_python(patch), where=where, conn=conn) is not None:
+                    return
+            except NotFoundError:
+                return
+            logger.warning(
+                "session re-park of %s: a reply landed under the release; %s",
+                entity_id, "re-reading and retrying once" if attempt == 0 else "giving up",
+            )
+            if attempt == 0:
+                sess = await self._storage.get(entity_id, conn=conn)
+                if sess is None:
+                    return
+        raise ConflictError(f"session {entity_id!r}: replies landed under the re-park twice; the release is not applied")
 
     async def _patch_owned(self, entity_id: str, sess, conn, owned: dict, *, bump: bool):
         """One ``patch_if`` of the branch's ``owned`` fields (plus the fenced ``turn_no`` bump).

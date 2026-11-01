@@ -184,6 +184,10 @@ class WorkspaceTool(ABC):
     because every workspace tool needs a session for state attribution
     and tmp-cache scoping."""
 
+    read_only: ClassVar[bool] = False
+    """True for a tool that only reads (``ls``, ``read``, ``glob``, ``grep``): a batch made only of such calls may run concurrently when
+    ``WorkerConfig.parallel_readonly_tool_calls`` is on. Default False: a tool must opt in."""
+
     interruptible: ClassVar[bool] = True
     """Whether a Stop may CANCEL a running call of this tool. False for the file
     mutators (``write``, ``edit``, local and sandbox): their write runs in a

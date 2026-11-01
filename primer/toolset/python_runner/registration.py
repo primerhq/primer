@@ -13,6 +13,7 @@ giving authors a decorator to write.
 from __future__ import annotations
 
 import ast
+import math
 from dataclasses import dataclass
 
 from jsonschema.exceptions import ValidationError
@@ -93,7 +94,8 @@ def _timeout_from(dec: ast.Call | ast.Name, default: float, fn: str) -> float:
                 field="timeout_seconds",
                 lineno=getattr(kw.value, "lineno", None),
             ) from exc
-        if value <= 0 or value > TIMEOUT_CEILING_SECONDS:
+        # NaN passes both comparisons, then fails every call (int(nan)).
+        if not math.isfinite(value) or value <= 0 or value > TIMEOUT_CEILING_SECONDS:
             raise RegistrationError(
                 f"{fn}: timeout_seconds must be > 0 and <= "
                 f"{TIMEOUT_CEILING_SECONDS}",

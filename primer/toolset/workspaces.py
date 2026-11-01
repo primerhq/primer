@@ -56,8 +56,9 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.access.person import person_for_tool
-from primer.access.policy import require, visible_predicate
-from primer.access.workspaces import readable_workspace_ids, require_workspace, workspace_level
+from primer.access.policy import readable_parent_filter, require, visible_predicate
+from primer.access.workspaces import require_workspace, workspace_level
+from primer.bus.watch_notify import wake_watchers_best_effort
 from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
 from primer.common.validation_errors import without_input
@@ -105,7 +106,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
     session_state_predicate,
 )
-from primer.model.yield_ import ToolContext, Yielded
+from primer.model.yield_ import ToolContext, Yielded, scoped_event_key
 from primer.session.peer_messages import (
     PEER_MESSAGE_MAX_CHARS,
     ACCESS_NOTE,
@@ -133,7 +134,7 @@ from primer.toolset._system_guards import (
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.workspace.env_names import ENV_NAME_PATTERN, MAX_ENV_NAME_LENGTH, RUNTIME_TOKEN_ENV_NAMES
 from primer.workspace.provider_choices import list_provider_choices
-from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
+from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_tree_for_resolved, reserved_trees
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
     admin_only_settings_held,
@@ -227,14 +228,14 @@ def _outside_a_workspace_session(tool_name: str) -> ToolCallResult:
     return _err(f"{tool_name} works only inside a workspace session", error_type="unsupported-surface")
 
 
-def _refuse_reserved_read(
+async def _refuse_reserved_read(
     ws: Any, path: str, ctx: ToolContext | None,
 ) -> ToolCallResult | None:
     """A ``forbidden`` error when a non-admin names a path in the runtime's
     ``.state`` / ``.tmp`` trees (A-22), else ``None``."""
     if _caller_is_admin(ctx):
         return None
-    tree = reserved_tree_for(ws, path)
+    tree = await reserved_tree_for_resolved(ws, path)  # resolved as the backend does, links included (W55d)
     if tree is None:
         return None
     return _err(
@@ -1081,9 +1082,12 @@ async def _watch_files_handler(
                 error_type="bad-request",
             )
 
+    # Lazy: primer.graph imports the toolsets at package init. The node is folded into the key as ask_user's and the timer's are (GS-33).
+    from primer.graph._node_identity import current_graph_node_id
+
     return Yielded(
         tool_name="",  # provider stamps
-        event_key=f"watch:{ctx.session_id}:{ctx.tool_call_id}",
+        event_key=scoped_event_key("watch", ctx, current_graph_node_id()),
         timeout=args.timeout_seconds,
         resume_metadata={
             "paths": list(args.paths),
@@ -2176,11 +2180,9 @@ def build_workspaces_toolset(
             if refusal is not None:
                 return refusal
         else:
-            ids = await readable_workspace_ids(storage_provider, person, need=AccessLevel.READ)
-            if ids is not None:
-                filters.append(
-                    Predicate(left=FieldRef(name="workspace_id"), op=Op.IN, right=Value(value=ids))
-                )
+            scope = await readable_parent_filter(storage_provider.get_storage(WorkspaceRow), WorkspaceRow, person, "workspace_id")
+            if scope is not None:
+                filters.append(scope)
         if args.workspace_id is not None:
             filters.append(
                 Predicate(
@@ -2885,7 +2887,7 @@ def build_workspaces_toolset(
             return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
-            refused = _refuse_reserved_read(ws, args.path, ctx)
+            refused = await _refuse_reserved_read(ws, args.path, ctx)
             if refused is not None:
                 return refused
             # 01a0645c: recursive=True used to walk the ENTIRE subtree
@@ -2913,6 +2915,8 @@ def build_workspaces_toolset(
             entries = await ws.list_files(
                 args.path, recursive=args.recursive,
                 max_entries=(walk_cap + 1) if walk_cap is not None else None,
+                # A non-admin's walk never enters the reserved trees (W55c): they would fill the capped walk.
+                **({} if _caller_is_admin(ctx) else {"skip_reserved": True}),
             )
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
@@ -2985,7 +2989,7 @@ def build_workspaces_toolset(
             return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
-            refused = _refuse_reserved_read(ws, args.path, ctx)
+            refused = await _refuse_reserved_read(ws, args.path, ctx)
             if refused is not None:
                 return refused
             info = await ws.file_info(args.path)
@@ -3034,7 +3038,7 @@ def build_workspaces_toolset(
             return refusal
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
-            refused = _refuse_reserved_read(ws, args.path, ctx)
+            refused = await _refuse_reserved_read(ws, args.path, ctx)
             if refused is not None:
                 return refused
             raw = await ws.read_file(args.path)
@@ -3106,6 +3110,10 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-found")
         except (BadRequestError, PrimerError) as exc:
             return _err_from_primer(exc, error_type="bad-request")
+        # Every door that changes a workspace file wakes a watch_files park on it (as the REST routes do; review of workspaces, W55h).
+        await wake_watchers_best_effort(
+            workspace_id=args.workspace_id, path=args.path, scheduler=scheduler, event_bus=event_bus, event_type="deleted",
+        )
         return _ok({"deleted": True, "path": args.path})
 
     name, entry = _tool(
@@ -3161,6 +3169,9 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-found")
         except (BadRequestError, PrimerError) as exc:
             return _err_from_primer(exc, error_type="bad-request")
+        await wake_watchers_best_effort(
+            workspace_id=args.workspace_id, path=args.path, scheduler=scheduler, event_bus=event_bus, event_type="modified",
+        )
         return _ok({"path": args.path, "size_bytes": len(raw)})
 
     name, entry = _tool(
@@ -3323,33 +3334,31 @@ def build_workspaces_toolset(
             )
             return events
 
+        # Bounded long-poll: only when the caller asked to wait and a router is wired. The subscription is opened BEFORE the first drain, so a tick
+        # that lands between that drain and the wait is already queued and ends the wait at once (it used to be missed, and cost the whole
+        # ``wait_seconds``). This never parks the agent turn: one timed wait, then one more drain.
+        sub = tap_router.subscribe(args.workspace_id) if args.wait_seconds > 0 and tap_router is not None else None
         try:
-            events = await _drain()
-        except TapSelectorTimeout as exc:
-            # The selector's LIKE patterns ran out of the read's time budget
-            # (G6-4): a clear error result; the cursor is not advanced.
-            return _err(str(exc), error_type="bad-request")
-
-        # Bounded long-poll: only when the immediate drain is empty AND
-        # the caller asked to wait AND a router is wired. This never parks
-        # the agent turn — it is a single timed wait then one more drain.
-        if not events and args.wait_seconds > 0 and tap_router is not None:
-            sub = tap_router.subscribe(args.workspace_id)
             try:
+                events = await _drain()
+            except TapSelectorTimeout as exc:
+                # The selector's LIKE patterns ran out of the read's time budget
+                # (G6-4): a clear error result; the cursor is not advanced.
+                return _err(str(exc), error_type="bad-request")
+            if not events and sub is not None:
                 try:
-                    await asyncio.wait_for(
-                        sub.__anext__(), timeout=args.wait_seconds
-                    )
+                    await asyncio.wait_for(sub.__anext__(), timeout=args.wait_seconds)
                 except (TimeoutError, StopAsyncIteration):
                     # Timed out (or the subscription ended) — fall through
                     # to one more drain, which may still be empty.
                     pass
-            finally:
+                try:
+                    events = await _drain()
+                except TapSelectorTimeout as exc:
+                    return _err(str(exc), error_type="bad-request")
+        finally:
+            if sub is not None:
                 await sub.aclose()
-            try:
-                events = await _drain()
-            except TapSelectorTimeout as exc:
-                return _err(str(exc), error_type="bad-request")
 
         return _ok(
             {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from primer.model.yield_ import ToolContext
@@ -49,7 +51,7 @@ def test_watch_key_is_session_scoped() -> None:
     y = to_yielded(
         {"kind": "watch", "params": {"paths": ["a.txt"]}, "meta": {}},
         tool_name="w",
-        ctx=CTX,
+        ctx=dataclasses.replace(CTX, workspace_id="ws-1"),    # a watch needs a workspace to resolve its paths in
         source_version=1,
     )
     assert y.event_key == "watch:s-1:tc-1"

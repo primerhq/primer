@@ -23,6 +23,7 @@ migration does not care about survives the read-modify-write untouched.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from typing import Any
@@ -30,6 +31,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from primer.int.storage_provider import StorageProvider
+from primer.storage.migrations._rows import iter_rows, read_all
 from primer.model.common import Identifiable
 from primer.model.model_profile import ModelProfile
 from primer.model.storage import OffsetPage
@@ -51,6 +53,26 @@ def synth_profile_id(provider_id: str, model_name: str) -> str:
     return f"{provider_id}--{slug}"
 
 
+def collision_profile_id(provider_id: str, model_name: str) -> str:
+    """The id a model gets when its plain slug is taken by a DIFFERENT model of the same provider (``llama3:8b`` and ``llama3.8b`` both
+    slug to ``llama3-8b``): the slug plus a short hash of the exact name (GR-13)."""
+    digest = hashlib.sha256(model_name.encode("utf-8")).hexdigest()[:8]
+    return f"{synth_profile_id(provider_id, model_name)}-{digest}"
+
+
+async def resolve_profile_id(profiles, provider_id: str, model_name: str) -> tuple[str, bool]:
+    """``(profile id, exists)`` for ``(provider, model)``: the plain slug id when it is free or already this model's, else the hashed one.
+    The profile's recorded ``model_name`` is the mapping, so a re-run and the agent rewrite both find the same id."""
+    plain = synth_profile_id(provider_id, model_name)
+    holder = await profiles.get(plain)
+    if holder is None:
+        return plain, False
+    if holder.model_name == model_name and holder.provider_id == provider_id:
+        return plain, True
+    hashed = collision_profile_id(provider_id, model_name)
+    return hashed, await profiles.get(hashed) is not None
+
+
 class LLMProvider(Identifiable):  # noqa: N801 - name selects the storage table
     """Migration-local view of a provider row, retaining ``models[]``."""
 
@@ -68,17 +90,9 @@ class Agent(Identifiable):  # noqa: N801 - name selects the storage table
 
 
 async def _iter_rows(storage, model_cls):
-    """Page through every row of one table."""
-    offset = 0
-    while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE))
-        if not page.items:
-            return
-        for row in page.items:
-            yield row
-        if len(page.items) < _PAGE:
-            return
-        offset += _PAGE
+    """Page through every row of one table (keyset; see ``_rows``)."""
+    async for row in iter_rows(storage):
+        yield row
 
 
 class M002ModelProfiles:
@@ -102,8 +116,8 @@ class M002ModelProfiles:
                 name = entry.get("name")
                 if not name:
                     continue
-                profile_id = synth_profile_id(row.id, name)
-                if await profiles.get(profile_id) is not None:
+                profile_id, exists = await resolve_profile_id(profiles, row.id, name)
+                if exists:
                     continue
                 await profiles.create(
                     ModelProfile(
@@ -137,8 +151,8 @@ class M002ModelProfiles:
                     extra={"agent_id": row.id},
                 )
                 continue
-            profile_id = synth_profile_id(provider_id, model_name)
-            if await profiles.get(profile_id) is None:
+            profile_id, exists = await resolve_profile_id(profiles, provider_id, model_name)
+            if not exists:
                 # The provider row is gone, so no profile was synthesised.
                 # The agent was already broken; do not invent a target.
                 logger.warning(

@@ -24,6 +24,8 @@ from typing import Any, TypeVar
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
+from primer.common.entity_checks import EntityCheckError
+from primer.common.text_caps import check_text_caps
 from pydantic import ValidationError as PydanticValidationError
 
 from primer.access.person import person_from_request
@@ -170,6 +172,16 @@ async def preserve_masked_secrets_on_update(entity: Any, existing: Any, request:
 # stay N+1-free (see model_profiles.py's reference-count enrichment for
 # the pattern).
 _OnListEnrichHook = Callable[[Any, Request], Awaitable[Any]] | None
+
+
+def _refuse_oversized(entity: Any, existing: Any | None) -> None:
+    """422 at the field when a free-text field is over its cap and is not the stored row's own value (D21, GI-26)."""
+    try:
+        check_text_caps(entity, existing)
+    except EntityCheckError as exc:
+        raise RequestValidationError(
+            [{"type": "value_error", "loc": ("body", exc.field or ""), "msg": exc.message, "input": None}]
+        ) from exc
 
 
 def _refuse_harness_id(entity: Any, existing: Any | None) -> None:
@@ -462,6 +474,7 @@ def make_crud_router(
                     f"{model_cls.__name__} with id {entity.id!r} already exists"
                 )
             refuse_served_masks(entity)
+            _refuse_oversized(entity, None)
             if on_pre_create is not None:
                 await on_pre_create(entity, request)
             _refuse_harness_id(entity, None)  # after the kind's own hook, so its more specific answer stays
@@ -553,9 +566,10 @@ def make_crud_router(
                 )
             if on_pre_delete is not None:
                 await on_pre_delete(existing, request)
+            # The row goes first, then the hook: a cache the hook drops is not refilled from the row before it is gone (GS-23).
+            await storage.delete(entity_id)
             if on_delete is not None:
                 await on_delete(entity_id, request)
-            await storage.delete(entity_id)
 
         # ---- GET /{parent_path_segment}/{parent_id}/{plural}  (list) ------
         _scope_predicate = Predicate(
@@ -631,6 +645,7 @@ def make_crud_router(
                     f"{model_cls.__name__} with id {entity.id!r} already exists"
                 )
             refuse_served_masks(entity)
+            _refuse_oversized(entity, None)
             if owned:
                 # The caller is stamped as the owner and the body's access is
                 # ignored (spec anti-goal 1: access is never writable through
@@ -733,6 +748,7 @@ def make_crud_router(
                 entity.access = existing.access
             if row_guard is not None:
                 await row_guard(existing, request, True)
+            _refuse_oversized(entity, existing)
             if on_pre_update is not None:
                 await on_pre_update(entity, existing, request)  # a managed row answers its own 409 first
             _refuse_harness_id(entity, existing)
@@ -779,9 +795,10 @@ def make_crud_router(
                 await row_guard(existing, request, True)
             if on_pre_delete is not None:
                 await on_pre_delete(existing, request)
+            # The row goes first, then the hook: a cache the hook drops is not refilled from the row before it is gone (GS-23).
+            await storage.delete(entity_id)
             if on_delete is not None:
                 await on_delete(entity_id, request)
-            await storage.delete(entity_id)
 
         # ---- GET /<plural>  (list) ---------------------------------------
         @router.get(

@@ -66,6 +66,7 @@ function SS_getStore(wid, sid) {
     parts: {},           // part_id -> { kind, text, state, final }
     optimistic: {},       // clientId -> { clientId, text, state }
     status: null,         // { verb, object, startedMs } | null
+    _statusSeq: -1,       // the newest durable seq the status has seen (SS_applyRecordStatus)
     // Phase 2 (01a04ddf): the live half of agent_phase. Written only by a
     // PhaseFrame tap delta (class:"phase" - primer/tap/delta.py), so on a
     // fresh mount/refresh this is null until one arrives - the consumer
@@ -85,6 +86,7 @@ function SS_getStore(wid, sid) {
     connState: (window.WTAP_hubConnState
       && window.WTAP_hubConnState(wid)) || "connecting",
     refs: 0,
+    recordRefs: 0,        // the mounted consumers that read records (not status-only; SS_retain)
     _snap: { transcript: null, status: null, gates: null, phase: null, canvas: null },
     _dirty: { transcript: false, status: false, gates: false, phase: false, canvas: false },
     _sub: { transcript: [], status: [], gates: [], phase: [], canvas: [] },
@@ -128,13 +130,16 @@ function SS_insertRecord(store, rec) {
 // part_id are no-ops.
 function SS_finalizePart(store, partId, finalText) {
   var part = store.parts[partId];
-  if (part) {
-    part.final = true;
-    part.state = "done";
-    if (typeof finalText === "string" && finalText.length > 0) part.text = finalText;
-    return true;
+  if (!part) {
+    // The record came first (the deltas ride the bus, the record the durable log or a history read, and the turn persist makes the
+    // record durable while the delta buffer may still hold the part): keep it final, or its late deltas open a second, live copy.
+    store.parts[partId] = { kind: null, text: "", state: "done", final: true };
+    return false;
   }
-  return false;
+  part.final = true;
+  part.state = "done";
+  if (typeof finalText === "string" && finalText.length > 0) part.text = finalText;
+  return true;
 }
 
 // Derive the turn status from the latest frame, mirroring the 3-source merge
@@ -204,6 +209,18 @@ function SS_apply(store, frame) {
   // The hub routes by session_id, but a frame that names another session is
   // dropped (defensive; the store is per-sid).
   if (frame.session_id != null && frame.session_id !== store.sid) return;
+
+  // A store no record-reading consumer has shown since its records were freed (SS_freeRecords), or that only status-only
+  // consumers show, keeps only what a pulse dot and the tap cursor read: a durable record moves its status, its pending send and its high-water, and nothing is appended
+  // (no record, no live part), so a session nobody shows does not grow again. Phase and canvas are fixed-size state.
+  if (store._freed && frame["class"] !== "phase" && frame["class"] !== "canvas") {
+    if (typeof frame.seq === "number") {
+      store._hw = Math.max(store._hw || 0, frame.seq);
+      SS_applyRecordStatus(store, frame);
+      SS_markDirty(store, "status");
+    }
+    return;
+  }
 
   // SEV-2 fix: a legacy `{role, parts}` Message row (no seq at all - see
   // legacyMessages' own comment above) used to fall through every branch
@@ -325,15 +342,6 @@ function SS_apply(store, frame) {
       var finalText = (frame.payload && frame.payload.text) || null;
       SS_finalizePart(store, reconcileId, finalText);
     }
-    // Tap durable frames name their kind field `class` (already read into
-    // `kind` above); REST history records name it `kind` instead (see
-    // SS_insertRecord's own comment) - `kind` alone is blind to a
-    // REST-sourced user_input, which silently skipped both branches
-    // below when seeded from history. recordKind covers both shapes.
-    var recordKind = kind || frame.kind;
-    if (recordKind === "user_input" && store.optimisticSendPending != null) {
-      SS_reconcileOptimistic(store);
-    }
     // SEV-2 fix: a real record superseding an earlier legacy `{role,
     // parts}` placeholder (see the branch above) must drop that
     // placeholder - otherwise the same content would render TWICE once
@@ -356,9 +364,26 @@ function SS_apply(store, frame) {
         });
       }
     }
-    SS_updateStatus(store, frame);
+    SS_applyRecordStatus(store, frame);
     SS_markDirty(store, "transcript");
     SS_markDirty(store, "status");
+  }
+}
+
+// The status side of a durable record (SS_apply, and the status-only catch-up): a user_input settles a pending send, then
+// the record derives the turn status. Tap durable frames name their kind field `class`; REST history records name it
+// `kind` (see SS_insertRecord's own comment) - `class` alone is blind to a REST-sourced user_input, so both are read.
+// The session document re-applies its history page on every poll (UI-M7), so only a user_input newer than the send
+// settles it, and only a record newer than every one already seen moves the status: an older record would walk it back.
+function SS_applyRecordStatus(store, frame) {
+  var recordKind = frame["class"] || frame.kind;
+  if (recordKind === "user_input" && store.optimisticSendPending != null
+      && frame.seq > store.optimisticAfterSeq) {
+    SS_reconcileOptimistic(store);
+  }
+  if (frame.seq > store._statusSeq) {
+    store._statusSeq = frame.seq;
+    SS_updateStatus(store, frame);
   }
 }
 
@@ -608,6 +633,8 @@ function SS_sendUserMessage(store, text, clientId, attachments) {
     state: "pending",
   };
   store.optimisticSendPending = clientId;
+  // The newest record seen so far: a user_input up to it is history, not this send's (SS_applyRecordStatus).
+  store.optimisticAfterSeq = Math.max(SS_highWater(store), store._statusSeq);
   // The "sending" status leg (C4) shows immediately. What it replaces is kept, so a send that fails can give it back.
   var priorStatus = store.status;
   var sendingStatus = { verb: "sending", object: "", startedMs: Date.now() };
@@ -653,22 +680,64 @@ function SS_sendUserMessage(store, text, clientId, attachments) {
 
 // --- refcount / dispose (spec section 4.4) -------------------------------
 
-// refs==0 does NOT clear accumulated state (background sessions keep
-// accumulating); it only stops the active flush + subscription work. The
-// hub retains the store's connection; the store keeps its records.
-function SS_retain(store) {
+// Once no consumer that reads records displays a session, its accumulated
+// records and live parts are freed after a grace, so reopening a tab within a
+// minute does not refetch and a re-mount inside it cancels the free (lead
+// ruling on UI-H1). The status, the optimistic leg and the high-water stay:
+// the pulse dot and the tap cursor still work. A status-only consumer (a pulse
+// dot, `{ records: false }`) never needs records: a session only such
+// consumers show is treated as freed from the start.
+var SS_FREE_AFTER_MS = 60000;
+
+function SS_wantsRecords(opts) {
+  return !(opts && opts.records === false);
+}
+
+function SS_retain(store, opts) {
   store.refs += 1;
+  if (!SS_wantsRecords(opts)) {
+    // Nothing reads its records and no grace is running: it keeps none from now on.
+    if (!store.recordRefs && store._freeTimer == null && !store._freed) SS_freeRecords(store);
+    return store;
+  }
+  store.recordRefs += 1;
+  // Shown again after a free: its history starts over, so the catch-up reads it from the start, as on first open.
+  if (store._freed) {
+    store._freed = false;
+    store._hw = 0;
+  }
+  if (store._freeTimer != null) {
+    clearTimeout(store._freeTimer);
+    store._freeTimer = null;
+  }
   return store;
 }
 
-function SS_dispose(store) {
+function SS_dispose(store, opts) {
   store.refs -= 1;
   if (store.refs <= 0) {
     store.refs = 0;
-    // Stop the pending flush; keep the accumulated state.
     store._flushScheduled = false;
   }
+  if (!SS_wantsRecords(opts)) return store;
+  store.recordRefs = Math.max(0, store.recordRefs - 1);
+  if (!store.recordRefs && store._freeTimer == null && typeof setTimeout === "function") {
+    store._freeTimer = setTimeout(function () {
+      store._freeTimer = null;
+      if (!store.recordRefs) SS_freeRecords(store);
+    }, SS_FREE_AFTER_MS);
+  }
   return store;
+}
+
+function SS_freeRecords(store) {
+  store._freed = true;
+  store._hw = SS_highWater(store);
+  store.records = {};
+  store.recordsBySeq = [];
+  store.parts = {};
+  store.legacyMessages = [];
+  store._snap.transcript = null;
 }
 
 // --- cursor (moved from session-adapter.jsx SA_encodeCursor) ------------
@@ -692,9 +761,10 @@ function SS_encodeCursor(sid, seq) {
 // after its high-water and merges anything the tap missed (guarded so a
 // reconnect + a poll tick cannot thrash the endpoint).
 function SS_highWater(store) {
-  if (store.recordsBySeq.length === 0) return 0;
   var last = store.recordsBySeq[store.recordsBySeq.length - 1];
-  return (last && typeof last.seq === "number") ? last.seq : 0;
+  var seq = (last && typeof last.seq === "number") ? last.seq : 0;
+  // The high-water a free kept (SS_freeRecords), so a freed store still resumes where it was.
+  return Math.max(seq, store._hw || 0);
 }
 
 function SS_catchUp(store) {
@@ -751,21 +821,60 @@ function SS_catchUp(store) {
   });
 }
 
+// The catch-up of a store only a pulse dot reads (no transcript subscriber): one read of the log's tail, applied to the
+// status alone, so the dot shows the same verb without the session's history being downloaded and kept (UI-H1).
+var SS_STATUS_TAIL = 50;
+
+function SS_catchUpStatus(store) {
+  if (store._catchUpInFlight) return;
+  var apiFetch = (window.primerApi && window.primerApi.apiFetch) || null;
+  if (typeof apiFetch !== "function") return;
+  store._catchUpInFlight = true;
+  apiFetch(
+    "GET",
+    "/sessions/" + encodeURIComponent(store.sid) + "/messages?tail=1&limit=" + SS_STATUS_TAIL
+  ).then(function (res) {
+    var items = (res && res.items) || [];
+    // What the store already holds was applied when it arrived, as the full catch-up reads only after the high-water.
+    var after = SS_highWater(store);
+    var applied = false;
+    for (var i = 0; i < items.length; i++) {
+      if (typeof items[i].seq !== "number" || items[i].seq <= after) continue;
+      SS_applyRecordStatus(store, items[i]);
+      applied = true;
+    }
+    if (applied) SS_markDirty(store, "status");
+  }).catch(function () {
+    // best-effort; the next reconnect retries.
+  }).then(function () {
+    store._catchUpInFlight = false;
+  });
+}
+
 // --- React binding (the only React code; guarded so the core loads in a
 // bare test env without React) ------------------------------------------
 if (typeof window !== "undefined" && window.React &&
     typeof window.React.useSyncExternalStore === "function") {
 
-  // Bind a component to one channel of one store. retain() on mount so the
-  // store survives unmount; the underlying connection lives at the hub.
-  window.useSessionStore = function (wid, sid, channel) {
+  // Bind a component to one channel of one store. The store survives
+  // unmount; the underlying connection lives at the hub. A mounted
+  // consumer is one reference (retained on every render, refs only grew).
+  // `opts.records === false` declares a status-only consumer (a pulse dot):
+  // it needs no records, so a session only such consumers show keeps none.
+  window.useSessionStore = function (wid, sid, channel, opts) {
     var store = SS_getStore(wid, sid);
-    SS_retain(store);
-    return window.React.useSyncExternalStore(
+    var records = SS_wantsRecords(opts);
+    var snap = window.React.useSyncExternalStore(
       function (cb) { return SS_subscribe(store, channel, cb); },
       function () { return SS_getSnapshot(store, channel); },
       function () { return SS_getSnapshot(store, channel); }
     );
+    window.React.useEffect(function () {
+      var o = { records: records };
+      SS_retain(store, o);
+      return function () { SS_dispose(store, o); };
+    }, [store, records]);
+    return snap;
   };
 }
 
@@ -781,6 +890,7 @@ window.SS_retain = SS_retain;
 window.SS_dispose = SS_dispose;
 window.SS_setConnState = SS_setConnState;
 window.SS_catchUp = SS_catchUp;
+window.SS_catchUpStatus = SS_catchUpStatus;
 window.SS_highWater = SS_highWater;
 window.SS_encodeCursor = SS_encodeCursor;
 // Exposed for the test harness (and for a future eviction policy): the

@@ -37,9 +37,13 @@ def resolve_workspace_path(root: Path, rel: str) -> Path:
     return candidate
 
 
-def workspace_relative(root: Path, absolute: Path) -> str:
-    """Return ``absolute`` as a forward-slash path relative to ``root``."""
-    return absolute.resolve().relative_to(root.resolve()).as_posix()
+def workspace_relative(root: Path, absolute: Path) -> str | None:
+    """Return ``absolute``, resolved, as a forward-slash path relative to ``root``;
+    ``None`` when it resolves outside the root (a symlink or ``..`` leading out)."""
+    try:
+        return absolute.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return None
 
 
 __all__ = [

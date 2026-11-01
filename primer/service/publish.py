@@ -9,16 +9,30 @@ publish_service tool reuses it verbatim.
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 
 from primer.int.artifact_storage import ArtifactStorage
 from primer.int.storage_provider import StorageProvider
+from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.service import Service, ServiceVersion
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.service.bundle import ValidatedBundle
+from primer.storage._patch import raw_generation
+
+logger = logging.getLogger(__name__)
 
 RETAINED_VERSIONS = 20
 """Newest versions kept per service; the active version is always kept."""
+
+_CREATE_ATTEMPTS = 3
+_POINTER_ATTEMPTS = 5
+"""A concurrent publish can steal the computed version number: both read
+the same latest version and both target next_number. The unique
+(service_id, version) index (KN-19j) makes the loser's create a
+ConflictError; re-reading and retrying a few times settles ordinary
+races without unbounded spinning. Exhausted attempts re-raise, which the
+API renders as a 409 the client can retry."""
 
 
 def _mime_for(path: str) -> str:
@@ -59,34 +73,79 @@ async def publish_version(
     """Persist ``bundle`` as the service's next version.
 
     The caller has already validated the bundle; this function only
-    stores. Activation is a pointer swap on the service row; retention
-    prunes to the newest :data:`RETAINED_VERSIONS`, never touching the
-    active version.
+    stores. Two concurrent publishes may compute the same version
+    number; the unique (service_id, version) index makes the loser's
+    create a ConflictError, which is retried on a fresh read (KN-19j).
+    A failed create deletes the artifacts it put, so a publish never
+    leaves orphan artifacts behind. Activation is a pointer swap on
+    the service row; retention prunes to the newest
+    :data:`RETAINED_VERSIONS`, never touching the active version.
     """
-    existing = await _all_versions(sp, service.id)
-    next_number = max((v.version for v in existing), default=0) + 1
-
     files: dict[str, str] = {}
     for path, data in bundle.files.items():
         files[path] = await artifacts.put(
             data=data, mime_type=_mime_for(path), filename=path
         )
 
-    version = ServiceVersion(
-        service_id=service.id,
-        version=next_number,
-        manifest=bundle.manifest,
-        files=files,
-        functions=bundle.functions,
-    )
-    created = await sp.get_storage(ServiceVersion).create(version)
+    try:
+        created = await _create_next_version(sp, service, bundle, files)
+    except Exception:
+        # The version row did not land, so nothing references the
+        # artifacts just put: delete them (KN-19j).
+        for artifact_id in files.values():
+            try:
+                await artifacts.delete(artifact_id)
+            except Exception:
+                logger.warning(
+                    "failed to delete an artifact orphaned by a failed publish",
+                    extra={"artifact_id": artifact_id, "service_id": service.id},
+                )
+        raise
 
     if activate:
-        service.active_version_id = created.id
-        await sp.get_storage(Service).update(service)
+        service = await _point_at(sp, service, created.id)
 
-    await _prune(sp, artifacts, service=service, versions=existing + [created])
+    # Re-read for retention: a concurrent publish may have added a row
+    # since this publish read the version list.
+    await _prune(
+        sp, artifacts, service=service,
+        versions=await _all_versions(sp, service.id),
+    )
     return created
+
+
+async def _create_next_version(
+    sp: StorageProvider,
+    service: Service,
+    bundle: ValidatedBundle,
+    files: dict[str, str],
+) -> ServiceVersion:
+    """Create the next ServiceVersion, retrying on a stolen number."""
+    storage = sp.get_storage(ServiceVersion)
+    conflict: ConflictError | None = None
+    for _ in range(_CREATE_ATTEMPTS):
+        existing = await _all_versions(sp, service.id)
+        next_number = max((v.version for v in existing), default=0) + 1
+        version = ServiceVersion(
+            service_id=service.id,
+            version=next_number,
+            manifest=bundle.manifest,
+            files=files,
+            functions=bundle.functions,
+        )
+        try:
+            return await storage.create(version)
+        except ConflictError as exc:
+            # A concurrent publish took this number: re-read and take
+            # the next one.
+            conflict = exc
+    # Only reachable when every attempt lost the race; re-raise the
+    # conflict (the API renders ConflictError as a 409 the client
+    # retries).
+    raise conflict or ConflictError(
+        f"version create failed for service {service.name!r} after "
+        f"{_CREATE_ATTEMPTS} attempts"
+    )
 
 
 async def _prune(
@@ -124,9 +183,25 @@ async def activate_version(
             f"version {version_id!r} does not belong to service "
             f"{service.name!r}"
         )
-    service.active_version_id = version.id
-    await sp.get_storage(Service).update(service)
-    return service
+    return await _point_at(sp, service, version.id)
+
+
+async def _point_at(sp: StorageProvider, service: Service, version_id: str) -> Service:
+    """Write ONLY ``active_version_id`` (a field-scoped patch), so a ``viewer_auth`` or description edit that landed since ``service`` was read
+    survives (GS-26). Guarded on the pointer read just before, re-read and retried when another publish moved it first."""
+    storage = sp.get_storage(Service)
+    for _ in range(_POINTER_ATTEMPTS):
+        current = await storage.get(service.id)
+        if current is None:
+            raise NotFoundError(f"Service {service.id!r} does not exist")
+        written = await storage.patch_if(
+            service.id, {"active_version_id": version_id},
+            where={"active_version_id": [raw_generation(current, "active_version_id")]},
+        )
+        if written is not None:
+            service.active_version_id = written.active_version_id     # callers hold this object: its pointer follows the row
+            return written
+    raise ConflictError(f"service {service.name!r} was changed by another publish; try again")
 
 
 __all__ = [

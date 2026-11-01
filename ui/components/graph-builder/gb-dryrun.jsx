@@ -1,9 +1,14 @@
-/* global React */
+/* global React, Btn */
 // GB_DryRunDrawer - resolve templates before spending a token. WIRING.md §2.1A.
 // Falls back to a local static check when POST /graphs/{id}/dry_run is absent.
 
 function GB_DryRunDrawer(props) {
-  const { result, loading, sampleInput, onSampleInput, onRecheck, onClose, onFix, onSelectNode, onRun, canRun } = props;
+  const { result, loading, sampleInput, onSampleInput, onRecheck, onClose, onFix, onSelectNode, onRun, canRun, dirty, running } = props;
+  // D10: a run starts from the SAVED graph. Unsaved edits keep the Run
+  // natively off (the label says to save first); a request that is in flight
+  // keeps it busy-but-focusable instead of natively disabled, so the operator
+  // does not lose focus while the start is out (the busy-buttons ratchet).
+  const runAvailable = canRun && !dirty;
   const nodes = (result && result.nodes) || [];
   const blockers = (result && result.blockers) || [];
   const shape = (result && result.shape) || {};
@@ -138,21 +143,24 @@ function GB_DryRunDrawer(props) {
             <div>Loops · {shape.loops || 0}</div>
             <div>Pauses for a human · {shape.human_pauses || 0}</div>
           </div>
-          <button
-            type="button"
+          <Btn
+            busy={running}
             onClick={onRun}
-            disabled={!canRun}
+            disabled={!runAvailable}
+            title={canRun && dirty ? "Save the draft first - the run starts from the saved graph." : null}
             style={{
               marginTop: "auto", padding: 8, borderRadius: 8, fontSize: "var(--fs-12)",
-              cursor: canRun ? "pointer" : "not-allowed",
-              background: canRun ? "var(--accent)" : "var(--bg-2)",
-              border: `1px solid ${canRun ? "var(--accent)" : "var(--border-strong)"}`,
-              color: canRun ? "var(--accent-fg)" : "var(--text-4)",
-              fontWeight: canRun ? 600 : 400,
+              cursor: runAvailable ? "pointer" : "not-allowed",
+              background: runAvailable ? "var(--accent)" : "var(--bg-2)",
+              border: `1px solid ${runAvailable ? "var(--accent)" : "var(--border-strong)"}`,
+              color: runAvailable ? "var(--accent-fg)" : "var(--text-4)",
+              fontWeight: runAvailable ? 600 : 400,
             }}
           >
-            {canRun ? "Run this graph" : `Run · fix ${blockers.length || 1} blocker${(blockers.length || 1) === 1 ? "" : "s"} first`}
-          </button>
+            {canRun
+              ? (running ? "Starting…" : dirty ? "Save first to run" : "Run this graph")
+              : `Run · fix ${blockers.length || 1} blocker${(blockers.length || 1) === 1 ? "" : "s"} first`}
+          </Btn>
         </div>
       </div>
     </div>

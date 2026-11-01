@@ -61,6 +61,7 @@ from pydantic import BaseModel, Field
 from primer.api.deps import get_user_storage
 from primer.auth.passwords import hash_password
 from primer.auth.user_writes import write_user_fields
+from primer.model.except_ import ConflictError
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.user import User
 
@@ -238,7 +239,7 @@ async def _count_protected_admins(storage) -> int:
     count = 0
     offset = 0
     while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE))
+        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE, want_total=False))
         count += sum(1 for u in page.items if _is_protected_admin(u))
         if len(page.items) < _PAGE_SIZE:
             break
@@ -329,7 +330,13 @@ async def create_admin_user(
         # the end user.
         must_change_password=bool(pw_plain),
     )
-    created = await storage.create(user)
+    # The hash took tens of ms: look again right before the write; the unique index on usernames is the backstop (GS-20).
+    if await _find_user_by_username(storage, username) is not None:
+        _raise_duplicate_username(username)
+    try:
+        created = await storage.create(user)
+    except ConflictError:
+        _raise_duplicate_username(username)
     logger.info(
         "admin_users.create id=%s username=%s role=%s",
         created.id, created.username, created.role,
@@ -348,7 +355,7 @@ async def list_admin_users(
     rows: list[User] = []
     offset = 0
     while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE))
+        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE, want_total=False))
         rows.extend(page.items)
         if len(page.items) < _PAGE_SIZE:
             break
@@ -423,6 +430,10 @@ async def update_admin_user(
         if getattr(updated, name) != getattr(existing, name)
     }
     saved = await write_user_fields(storage, user_id, fields, bump_epoch=password_reset)
+    if _is_protected_admin(existing) and not _is_protected_admin(saved) and await _count_protected_admins(storage) == 0:
+        # A concurrent change took the other admin while this one was written (GS-19): put this edit back.
+        await write_user_fields(storage, user_id, {name: getattr(existing, name) for name in fields}, bump_epoch=False)
+        _raise_last_admin()
     logger.info("admin_users.update id=%s", saved.id)
     return AdminUserOut.from_user(saved, generated_password=plaintext)
 
@@ -456,11 +467,34 @@ async def delete_admin_user(
     sp = get_storage_provider(request)
     if not existing.disabled:
         await write_user_fields(storage, user_id, {"disabled": True}, bump_epoch=True)
+        if _is_protected_admin(existing) and await _count_protected_admins(storage) == 0:
+            # A concurrent change took the other admin while this one was disabled (GS-19): enable it again.
+            await write_user_fields(storage, user_id, {"disabled": False}, bump_epoch=False)
+            _raise_last_admin()
     heir = await heir_for(sp, person_from_request(request))
     summary = await hand_over(sp, user_id, heir)
     await forget_user_sign_ins(sp, user_id)
+    await _forget_identities(sp, user_id)
     await storage.delete(user_id)
     logger.info("admin_users.delete id=%s heir=%s handed_over=%s", user_id, heir, summary)
+
+
+async def _forget_identities(sp, user_id: str) -> None:
+    """Delete the user's SSO identities so the person can sign in through the provider again (GS-16)."""
+    from primer.model.except_ import NotFoundError
+    from primer.model.oidc import UserIdentity
+    from primer.storage.q import Q
+
+    identities = sp.get_storage(UserIdentity)
+    while True:
+        page = await identities.find(Q(UserIdentity).where("user_id", user_id).build(), OffsetPage(offset=0, length=_PAGE_SIZE))
+        for row in page.items:
+            try:
+                await identities.delete(row.id)
+            except NotFoundError:
+                pass
+        if len(page.items) < _PAGE_SIZE:
+            return
 
 
 __all__ = ["admin_users_router", "AdminUserOut", "AdminUserListResponse"]

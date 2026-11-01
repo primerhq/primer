@@ -470,3 +470,21 @@ async def test_maintain_indexes_reports_reindex_when_indexed(tmp_path):
         assert reports[0].action == "reindex"
     finally:
         await p.aclose()
+
+
+@pytest.mark.asyncio
+async def test_put_many_writes_one_batch_and_list_chunk_texts_projects_text_and_fingerprint(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    await store.put_many([
+        _record(doc="d1", chunk="0", vec=[0.1, 0.2, 0.3], text="one", meta={"path": "p", "embedder": "emb|m"}),
+        _record(doc="d1", chunk="1", vec=[0.3, 0.2, 0.1], text="two", meta={"path": "p", "embedder": "emb|m"}),
+        _record(doc="d2", chunk="0", vec=[0.5, 0.5, 0.5], text="legacy", meta={"path": "q"}),
+    ])
+    assert await store.list_chunk_texts("col-a") == [
+        ("d1", "0", "one", "emb|m"), ("d1", "1", "two", "emb|m"), ("d2", "0", "legacy", None),
+    ]
+    assert await store.list_chunk_texts("col-a", "d2") == [("d2", "0", "legacy", None)]
+    assert len(await store.get("col-a", "d1")) == 2
+    await store.put_many([_record(doc="d1", chunk="0", vec=[0.9, 0.9, 0.9], text="one v2", meta={"embedder": "emb|m2"})])  # upserts
+    assert (await store.list_chunk_texts("col-a", "d1"))[0] == ("d1", "0", "one v2", "emb|m2")

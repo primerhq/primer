@@ -23,12 +23,15 @@ from typing import Any
 from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field
 
+from primer.model.storage import MAX_OFFSET
 from primer.access.person import person_from_request
 from primer.access.workspaces import require_session, scope_to_readable_workspaces
 from primer.model.access import AccessLevel
-from primer.api.deps import get_external_tool_call_storage, get_storage_provider
+from primer.api.deps import get_claim_engine, get_external_tool_call_storage, get_storage_provider
 from primer.api.errors import common_responses
+from primer.int.claim import ClaimEngine
 from primer.model.external_tool import ExternalToolCall
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.model.storage import OffsetPage
 from primer.session.external_calls import resolve_external_row
 from primer.storage.q import Q
@@ -47,8 +50,34 @@ class PendingExternalCall(BaseModel):
     node_id: str | None = None
 
 
-async def sweep_expired(storage, rows: list[ExternalToolCall]) -> None:
+async def _park_took_the_timeout(sessions, engine, row: ExternalToolCall) -> bool:
+    """Whether the timeout decided ``row``'s call at its park (GS-6: the first decision wins).
+
+    The park decides first, through the same guarded flip a result and a cancel take, with the timeout marker the
+    timeout sweeper sends; a redelivery of a timeout the park already took answers True. A park that refused it holds
+    another decision, whose writer writes the row. A call no live park waits on (the session is gone or ended, or its park
+    moved on) can no longer be decided by anyone, so the timeout stands.
+    """
+    from primer.session.external_tools import _pending_targets
+    from primer.session.yields import durably_wake_session
+    from primer.worker.yield_runtime import make_timeout_payload
+
+    session = await sessions.get(row.session_id) if row.session_id else None
+    target = _pending_targets(session).get(row.tool_call_id) if session is not None else None
+    if session is None or session.status == SessionStatus.ENDED or target is None or target[1] not in (None, row.id):
+        return True
+    return await durably_wake_session(
+        session, event_key=target[0], payload=make_timeout_payload(), session_storage=sessions, engine=engine,
+    )
+
+
+async def sweep_expired(storage, rows: list[ExternalToolCall], *, sessions=None, engine=None) -> None:
     """Flip pending rows whose ``timeout_at`` has passed to timed_out.
+
+    With ``sessions`` (the session storage) a row is timed out only when its
+    park took the timeout (:func:`_park_took_the_timeout`); a row whose park
+    holds a result or a cancel is left to that writer. Without it (a caller
+    with no session store) the row is timed out as before.
 
     Each flip is one guarded write (``resolve_external_row``), so a row
     that left ``pending`` since it was read (a result or a cancel landed)
@@ -60,10 +89,12 @@ async def sweep_expired(storage, rows: list[ExternalToolCall]) -> None:
     now = datetime.now(UTC)
     for row in rows:
         if row.status == "pending" and row.timeout_at and row.timeout_at < now:
-            fresh = await resolve_external_row(
-                storage, row.id, status="timed_out",
-                result={"timed_out": True}, is_error=True,
-            )
+            fresh = None
+            if sessions is None or await _park_took_the_timeout(sessions, engine, row):
+                fresh = await resolve_external_row(
+                    storage, row.id, status="timed_out",
+                    result={"timed_out": True}, is_error=True,
+                )
             if fresh is None:
                 fresh = await storage.get(row.id)
             if fresh is None:
@@ -72,11 +103,11 @@ async def sweep_expired(storage, rows: list[ExternalToolCall]) -> None:
                 setattr(row, name, getattr(fresh, name))
 
 
-async def _pending_for(storage, *, field: str, value: str) -> dict:
+async def _pending_for(storage, *, field: str, value: str, sessions, engine) -> dict:
     q = Q(ExternalToolCall).where(field, value).where("status", "pending")
     page = await storage.find(q.build(), OffsetPage(offset=0, length=200))
     rows = list(page.items)
-    await sweep_expired(storage, rows)
+    await sweep_expired(storage, rows, sessions=sessions, engine=engine)
     items = [
         PendingExternalCall(
             tool_call_id=r.tool_call_id,
@@ -102,12 +133,16 @@ async def session_pending(
     session_id: str = Path(...),
     storage=Depends(get_external_tool_call_storage),
     storage_provider=Depends(get_storage_provider),
+    engine: ClaimEngine | None = Depends(get_claim_engine),
 ) -> dict:
     # Access (P2 Task 3): the pending list is a read of the session (it
     # names its tool calls and their arguments), so it needs read on the
     # workspace the session lives in; a stranger answers the missing-row text.
     await require_session(storage_provider, person_from_request(request), session_id, AccessLevel.READ)
-    return await _pending_for(storage, field="session_id", value=session_id)
+    return await _pending_for(
+        storage, field="session_id", value=session_id,
+        sessions=storage_provider.get_storage(WorkspaceSession), engine=engine,
+    )
 
 
 @external_tools_router.get(
@@ -120,10 +155,11 @@ async def list_external_tool_calls(
     status: str | None = Query(default=None),
     session_id: str | None = Query(default=None),
     chat_id: str | None = Query(default=None),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     limit: int = Query(default=50, ge=1, le=200),
     storage=Depends(get_external_tool_call_storage),
     storage_provider=Depends(get_storage_provider),
+    engine: ClaimEngine | None = Depends(get_claim_engine),
 ) -> dict:
     # The status filter is applied post-sweep on purpose: a pending row
     # whose deadline passed must be reported (and persisted) as
@@ -147,7 +183,7 @@ async def list_external_tool_calls(
     else:
         page = await storage.list(OffsetPage(offset=offset, length=limit))
     rows = list(page.items)
-    await sweep_expired(storage, rows)
+    await sweep_expired(storage, rows, sessions=storage_provider.get_storage(WorkspaceSession), engine=engine)
     items = [r.model_dump(mode="json") for r in rows]
     if status:
         items = [i for i in items if i["status"] == status]

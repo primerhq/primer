@@ -75,20 +75,15 @@ def test_unlink_deletes_identity() -> None:
 
 
 def test_link_provider_diff_and_redirect_anchor() -> None:
-    """Providers not yet linked get a 'Link <name>' button whose onClick
-    is a full-page browser navigation (not an apiFetch call) — the /v1
-    prefix is required because this is a real browser URL, not an API
-    base-relative path."""
+    """Providers not yet linked get a 'Link <name>' button that POSTs to the link route (a GET could be started by any
+    page) and then navigates the browser to the IdP URL the answer carries."""
     src = _src()
     assert "/auth/sso/providers" in src
-    assert 'window.location.href = "/v1/auth/sso/"' in src
-    assert '"/link"' in src
+    assert 'apiFetch("POST", "/auth/sso/" + encodeURIComponent(p.id) + "/link")' in src
+    assert "window.location.href = r.url" in src
+    assert 'window.location.href = "/v1/auth/sso/"' not in src
     # Diff against already-linked provider_ids.
     assert "linkedProviderIds" in src or "provider_id" in src
-    # The provider id must be encoded before it's spliced into the nav URL
-    # (guards against a future edit dropping the encode — unescaped-id nav
-    # injection).
-    assert "encodeURIComponent(p.id)" in src
 
 
 def test_empty_state_present() -> None:

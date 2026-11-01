@@ -135,6 +135,7 @@ function NV_Studio() {
     { pollMs: 0, deps: [con.wid] }
   );
   var wsGone = NV_isWorkspaceGone(wsRow.error);
+  // A gone workspace is not the rail's selection: its tap listener would hold the hub, which reopens a 404'd tap with backoff (UI-L1).
 
   function renderDoc(tab) { return NV_renderStudioDoc(con, tab); }
 
@@ -142,7 +143,7 @@ function NV_Studio() {
     <div className="nv-studio" data-testid="nv-studio">
       <div className="nv-rail" data-testid="nv-rail" role="navigation" aria-label="Sessions and workspaces">
         <window.NV_Rail
-          selectedWorkspaceId={con.wid}
+          selectedWorkspaceId={wsGone ? null : con.wid}
           onSelectWorkspace={function (wid) {
             var verb = con.registry.get("workspace.switch");
             if (verb) verb.run({ wid: wid });

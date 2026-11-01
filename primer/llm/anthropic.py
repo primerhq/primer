@@ -463,6 +463,8 @@ class _StreamState:
 
 _STOP_REASON_MAP: dict[str, StopReason] = {
     "max_tokens": "max_tokens",
+    # The model ran out of context window: it stopped for lack of room, as max_tokens says (AG-L10).
+    "model_context_window_exceeded": "max_tokens",
     "stop_sequence": "stop_sequence",
     "tool_use": "tool_use",
     "pause_turn": "stop",
@@ -790,7 +792,8 @@ class AnthropicLLM(LLM):
                 if self._config.api_key is not None
                 else ""
             )
-            self._client = AsyncAnthropic(api_key=key)
+            # No SDK retries: RetryingLLM owns the policy (AG-H5).
+            self._client = AsyncAnthropic(api_key=key, max_retries=0)
         return self._client
 
     async def aclose(self) -> None:

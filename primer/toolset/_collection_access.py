@@ -12,13 +12,12 @@ from __future__ import annotations
 from typing import Any
 
 from primer.access.person import Person
-from primer.access.policy import readable_ids, require
+from primer.access.policy import readable_parent_filter, require
 from primer.model.access import AccessLevel
 from primer.model.chat import ToolCallResult
-from primer.model.collection import Collection, Document
+from primer.model.collection import Collection
 from primer.model.except_ import AccessDeniedError, NotFoundError
 from primer.model.storage import Predicate
-from primer.storage.q import Q
 from primer.toolset._helpers import err
 
 
@@ -56,8 +55,7 @@ async def collection_for(
 
 async def readable_documents(collections: Any, person: Person) -> Predicate | None:
     """``collection_id IN <collections person can read>`` for a document list; ``None`` for admins (no filter)."""
-    ids = await readable_ids(collections, person)
-    return None if ids is None else Q(Document).where_in("collection_id", ids).build()
+    return await readable_parent_filter(collections, Collection, person, "collection_id")
 
 
 __all__ = ["collection_for", "readable_documents"]
