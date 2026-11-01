@@ -90,7 +90,9 @@ async def run_engine_memory(pool: "WorkerPool", engine_lease: "ClaimLease") -> N
     from primer.knowledge.document_service import DocumentService
     from primer.knowledge.indexing import make_document_indexer, make_document_path_rewriter, make_document_unindexer
     from primer.memory.jobs import MemoryDeps, run_memory_job
+    from primer.memory.reflect import session_message_loader
     from primer.memory.store import MemoryStore
+    from primer.worker.io_shim import _WorkspaceIOShim
 
     recorder = recorder_for(pool._storage, pool._event_bus)
     documents = DocumentService(
@@ -108,6 +110,7 @@ async def run_engine_memory(pool: "WorkerPool", engine_lease: "ClaimLease") -> N
         engine=pool._engine,
         recorder=recorder,
         store=MemoryStore(pool._storage, documents, recorder),
+        load_messages=session_message_loader(pool._storage, _WorkspaceIOShim(workspace_registry=pool._workspace_registry).read_state_file),
         now=lambda: datetime.now(timezone.utc),
     )
     outcome = ReleaseOutcome(success=False, drop_lease=True)

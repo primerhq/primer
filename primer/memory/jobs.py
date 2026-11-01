@@ -19,6 +19,7 @@ from primer.int.claim import ClaimKind, Lease, ReleaseOutcome
 from primer.model.agent import Agent
 from primer.model.chat import Message, ToolCallPart
 from primer.model.except_ import ConflictError
+from primer.memory.reflect import ReflectionTransient
 from primer.model.memory import AgentMemory, MemoryJob
 
 logger = logging.getLogger(__name__)
@@ -27,14 +28,16 @@ logger = logging.getLogger(__name__)
 JOB_LIFETIME = timedelta(days=7)
 #: A reflection needs at least this many turns since the last one.
 MIN_TURNS = 2
+#: A reflection whose model cannot be reached is tried this many times, then given up on.
+MAX_ATTEMPTS = 3
 
 
 @dataclass
 class MemoryDeps:
     """What every job runner is handed; built once by the worker from its own registries.
 
-    ``store`` is the ``MemoryStore`` of Task 3. ``load_messages`` (optional) reads a reflect job's session messages for the triviality gate; Task 7
-    supplies it, and without it that half of the gate waits for the runner.
+    ``store`` is the ``MemoryStore`` of Task 3. ``load_messages`` reads a reflect job's session messages (the triviality gate and the reflection); without it
+    that half of the gate does not apply and a reflection is skipped as having no transcript.
     """
 
     sp: Any
@@ -157,7 +160,9 @@ async def consume_budget(sp: Any, settings: AgentMemory, now: datetime) -> Agent
 
 
 async def run_reflect(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: AgentMemory) -> None:
-    raise NotImplementedError("reflection lands with Task 7")
+    from primer.memory.reflect import reflect
+
+    await reflect(deps, job, agent, settings)
 
 
 async def run_curate(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: AgentMemory) -> None:
@@ -227,7 +232,16 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
             await jobs.patch_if(job.id, {"reflected_turn": job.target_turn}, where={"agent_id": [job.agent_id]})
             return _DROP
         settings = await consume_budget(sp, settings, now)
-        await run_reflect(deps, job, agent, settings)
+        try:
+            await run_reflect(deps, job, agent, settings)
+        except ReflectionTransient as exc:
+            # the claim engine's normal backoff retries it; after MAX_ATTEMPTS the reflection is given up on, with its event
+            if lease.attempt_count + 1 < MAX_ATTEMPTS:
+                return ReleaseOutcome(success=False, last_error=str(exc)[:500])
+            await deps.recorder.emit(
+                "memory.reflection.skipped", payload={"session_id": job.session_id, "reason": "llm_unavailable", "detail": str(exc)[:200]},
+                actor=f"memory:{agent.id}", entity_kind="agent", entity_id=agent.id,
+            )
     elif job.kind == "curate":
         await run_curate(deps, job, agent, settings)
     else:
