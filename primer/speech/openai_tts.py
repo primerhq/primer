@@ -72,7 +72,10 @@ class OpenAITTS(TTS):
         BETWEEN chunks, not the whole response."""
         limits = self._provider.limits
         connect = limits.connect_timeout_seconds or _DEFAULT_CONNECT_SECONDS
-        read = limits.request_timeout_seconds or _DEFAULT_READ_SECONDS
+        # None is "no bound" (Limits.request_timeout_seconds: "Set to None to disable"); 0 is no real bound either, and keeps the fallback.
+        read = limits.request_timeout_seconds
+        if read is not None and read <= 0:
+            read = _DEFAULT_READ_SECONDS
         return httpx.Timeout(connect=connect, read=read, write=read, pool=connect)
 
     async def stream(
@@ -121,7 +124,7 @@ class OpenAITTS(TTS):
                     },
                 )
                 if not replayable:
-                    yield speech_error_from_exception(exc)
+                    yield speech_error_from_exception(exc, self._provider)
                     return
                 await asyncio.sleep(
                     random.uniform(

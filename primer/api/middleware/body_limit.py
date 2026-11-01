@@ -41,18 +41,19 @@ class _BodyTooLarge(HTTPException):
         self.limit = limit
 
 
-# (method, path pattern, config field) for the routes that legitimately take big bodies.
+# (method, path pattern, config field) for the routes that legitimately take big bodies. The patterns take an optional trailing slash: this runs
+# before routing, where `/files/` is still a different path from `/files` (FastAPI redirects it afterwards).
 _OVERRIDES: tuple[tuple[str, str, str], ...] = (
-    ("PUT", rf"^/{API_VERSION}/workspaces/[^/]+/files$", "workspace_file_max_body_bytes"),
-    ("POST", rf"^/{API_VERSION}/services/[^/]+/versions$", "service_publish_max_body_bytes"),
+    ("PUT", rf"^/{API_VERSION}/workspaces/[^/]+/files/?$", "workspace_file_max_body_bytes"),
+    ("POST", rf"^/{API_VERSION}/services/[^/]+/versions/?$", "service_publish_max_body_bytes"),
 )
 
 
 # (method, path pattern, cap) for the routes whose bodies are small by contract: the cap is the route's, never above ``max_body_bytes``.
 # The canvas routes (pivot P5 S6) bound a body before the service walks what is in it (the #790 review).
 _FIXED_CAPS: tuple[tuple[str, str, int], ...] = (
-    ("POST", rf"^/{API_VERSION}/workspaces/[^/]+/sessions/[^/]+/canvas/events$", MAX_EVENT_BODY_BYTES),
-    ("POST", rf"^/{API_VERSION}/workspaces/[^/]+/sessions/[^/]+/canvas/ops$", MAX_OPS_BODY_BYTES),
+    ("POST", rf"^/{API_VERSION}/workspaces/[^/]+/sessions/[^/]+/canvas/events/?$", MAX_EVENT_BODY_BYTES),
+    ("POST", rf"^/{API_VERSION}/workspaces/[^/]+/sessions/[^/]+/canvas/ops/?$", MAX_OPS_BODY_BYTES),
 )
 
 

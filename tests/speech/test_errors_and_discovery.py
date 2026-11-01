@@ -6,8 +6,13 @@ import httpx
 import pytest
 
 from primer.model.speech import SpeechError, WARMING_UP_CODE
+from types import SimpleNamespace
+
 from primer.speech._errors import speech_error_from_exception
 from primer.speech.discovery import list_models, list_voices
+
+
+_ROW = SimpleNamespace(config=SimpleNamespace(api_key=None, url="http://x"), id="p")
 
 
 class _Status(Exception):
@@ -17,20 +22,20 @@ class _Status(Exception):
 
 
 def test_503_maps_to_a_retriable_warming_up_error() -> None:
-    err = speech_error_from_exception(_Status(503))
+    err = speech_error_from_exception(_Status(503), _ROW)
     assert isinstance(err, SpeechError)
     assert err.code == WARMING_UP_CODE
     assert err.retriable is True
 
 
 def test_other_failures_are_not_retriable() -> None:
-    err = speech_error_from_exception(_Status(401))
+    err = speech_error_from_exception(_Status(401), _ROW)
     assert err.retriable is False
     assert err.code != WARMING_UP_CODE
 
 
 def test_a_plain_exception_still_produces_an_error_value() -> None:
-    err = speech_error_from_exception(RuntimeError("boom"))
+    err = speech_error_from_exception(RuntimeError("boom"), _ROW)
     assert isinstance(err, SpeechError)
     assert "boom" in err.message
 

@@ -68,7 +68,10 @@ class OpenAIASR(ASR):
         that is still progressing."""
         limits = self._provider.limits
         connect = limits.connect_timeout_seconds or _DEFAULT_CONNECT_SECONDS
-        read = limits.request_timeout_seconds or _DEFAULT_READ_SECONDS
+        # None is "no bound" (Limits.request_timeout_seconds: "Set to None to disable"); 0 is no real bound either, and keeps the fallback.
+        read = limits.request_timeout_seconds
+        if read is not None and read <= 0:
+            read = _DEFAULT_READ_SECONDS
         return httpx.Timeout(connect=connect, read=read, write=read, pool=connect)
 
     async def transcribe(
@@ -106,7 +109,7 @@ class OpenAIASR(ASR):
                     },
                 )
                 if not replayable:
-                    return speech_error_from_exception(exc)
+                    return speech_error_from_exception(exc, self._provider)
                 await asyncio.sleep(backoff_delay(
                     attempt + 1,
                     base=limits.retry_backoff_seconds,
