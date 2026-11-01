@@ -245,6 +245,13 @@ store is refused (409 `cascade_blocked`), and so is a store that still holds rec
 `count`), because its artifacts are read from it. A `db` provider other than the reserved one writes no record, so it can always be
 deleted once it is not active. A delete or an edit of a row evicts its cached store in every process (`invalidate`).
 
+**Moving a store that holds artifacts.** An edit that changes the kind, a filesystem `root`, or an S3 `bucket` or `prefix` is refused while the
+row holds records (409 `artifact_provider_holds_artifacts`, `field` naming it). An S3 `endpoint_url` or `region` change is refused unless the NEW
+settings can read one of them (GX-14): `check_artifact_provider_update` builds a store from the new row and does a `HEAD` of one held artifact (no
+download), within `PROBE_TIMEOUT_S`, and closes it. Found: the edit passes (a renamed host, a corrected region). Not found, or the read fails or times
+out: it is refused, and the message says the new endpoint or region cannot see the N artifacts. `S3ArtifactConfig.LOCATION_FIELDS` is the one
+definition of location that `S3ArtifactStorage.serves` and this check both read.
+
 What is left of the put and select races is a window two statements wide: a delete whose check ran before the record (or the selection)
 was written and whose row delete lands after the re-read.
 

@@ -165,12 +165,11 @@ class S3ArtifactStorage(ArtifactStorage):
         return self._closed
 
     def serves(self, row: ArtifactStorageProvider) -> bool:
-        """True for an S3 row with this store's bucket, prefix, endpoint and region: the four values that say where its objects are. New keys or
-        another addressing style reach the same objects."""
+        """True for an S3 row with this store's bucket, prefix, endpoint and region: the values that say where its objects are
+        (``S3ArtifactConfig.LOCATION_FIELDS``, the same definition the update check uses). New keys or another addressing style reach the same objects."""
         if row.provider is not ArtifactStorageProviderType.S3:
             return False
-        mine, theirs = self._config, row.config
-        return (theirs.bucket, theirs.prefix, theirs.endpoint_url, theirs.region) == (mine.bucket, mine.prefix, mine.endpoint_url, mine.region)
+        return row.config.location() == self._config.location()
 
     def key_for(self, artifact_id: str) -> str:
         """``prefix + artifact_id``. Raises ``ValueError`` for an id that is not a backend artifact id, before any key is built."""
@@ -296,6 +295,25 @@ class S3ArtifactStorage(ArtifactStorage):
             mime_type=response.get("ContentType") or "application/octet-stream",
             filename=unquote(filename) if filename is not None else None,
         )
+
+    async def exists(self, artifact_id: str) -> bool:
+        """Whether the object is there, by a metadata read (``HEAD``): nothing is downloaded. Missing reads as False, like :meth:`get` (including
+        the 403 a least-privilege policy answers for a missing key); an outage or a refused read is raised."""
+        key = self._key_or_none(artifact_id, "read")
+        if key is None:
+            return False
+        client = await self._ready()
+        from botocore.exceptions import ClientError
+
+        try:
+            await client.head_object(Bucket=self.bucket, Key=key)
+        except ClientError as exc:
+            if _error_code(exc) in _MISSING_CODES:
+                return False
+            if _error_code(exc) in ("AccessDenied", "403") and await self._cannot_list(client, key):
+                return False
+            raise
+        return True
 
     async def _cannot_list(self, client: Any, key: str) -> bool:
         """True when these credentials lack ``s3:ListBucket``: S3 then answers a read of a MISSING key with 403 AccessDenied instead of 404

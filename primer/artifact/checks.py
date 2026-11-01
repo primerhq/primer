@@ -11,19 +11,31 @@ default id therefore comes from the leaf ``primer.model.providers.artifact`` (``
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Callable
 
 from primer.artifact.filesystem import check_root, prepare_root
 from primer.artifact.routing import count_artifacts_held
 from primer.common.entity_checks import EntityCheckError
+from primer.int.artifact_storage import ArtifactStorage
+from primer.model.artifact import ArtifactLocation
 from primer.model.except_ import ConfigError
 from primer.int.storage_provider import StorageProvider
-from primer.model.provider import ArtifactStorageProvider, ArtifactStorageProviderType
+from primer.model.provider import ArtifactStorageProvider, ArtifactStorageProviderType, S3ArtifactConfig
+from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.providers.artifact import (
     ACTIVE_ARTIFACT_STORAGE_CONFIG_ID,
     DEFAULT_ARTIFACT_PROVIDER_ID,
     S3_KEYS_INCOMPLETE_MESSAGE,
     ActiveArtifactStorageConfig,
 )
+
+logger = logging.getLogger(__name__)
+
+#: How long the live probe's steps may take together, and how long each best-effort cleanup step may take after a failure. The probe (GX-15: a silent
+#: endpoint would otherwise hold the request for the client's retries, minutes for S3) and the update check's verification read (GX-14) share them.
+PROBE_TIMEOUT_S = 20.0
+CLEANUP_TIMEOUT_S = 5.0
 
 #: Appended to the create and update descriptors of the system ``artifact_storage_provider`` tools: the agent reads the rule before it writes.
 ARTIFACT_DEFAULT_WRITE_NOTE = (
@@ -86,37 +98,87 @@ async def check_artifact_provider_delete(storage_provider: StorageProvider, prov
 
 
 def _moved_field(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider) -> str | None:
+    """The first location field the edit changes that no verification can allow (the kind, a filesystem root, an S3 bucket or prefix), or ``None``."""
     if entity.provider is not existing.provider:
         return "provider"
     if entity.provider is ArtifactStorageProviderType.FILESYSTEM and entity.config.root != existing.config.root:
         return "config.root"
     if entity.provider is ArtifactStorageProviderType.S3:
-        if entity.config.bucket != existing.config.bucket:
-            return "config.bucket"
-        if entity.config.prefix != existing.config.prefix:
-            return "config.prefix"
+        for name in S3ArtifactConfig.LOCATION_FIELDS:
+            if name not in S3ArtifactConfig.VERIFIABLE_FIELDS and getattr(entity.config, name) != getattr(existing.config, name):
+                return f"config.{name}"
     return None
+
+
+def _relocated_field(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider) -> str | None:
+    """The first S3 endpoint or region change of the edit (the location fields that may still reach the same objects), or ``None``."""
+    if entity.provider is ArtifactStorageProviderType.S3 and existing.provider is ArtifactStorageProviderType.S3:
+        for name in S3ArtifactConfig.VERIFIABLE_FIELDS:
+            if getattr(entity.config, name) != getattr(existing.config, name):
+                return f"config.{name}"
+    return None
+
+
+async def _new_settings_reach_the_objects(
+    storage_provider: StorageProvider, entity: ArtifactStorageProvider, build: Callable[..., ArtifactStorage] | None,
+) -> bool:
+    """Build a store from the NEW row and look, by a metadata read, for one artifact the provider holds. False when it is not found or the read
+    fails (a dead or unreachable endpoint, refused keys), within ``PROBE_TIMEOUT_S``. The temporary store is closed."""
+    from primer.artifact.factory import build_artifact_storage
+
+    held = Predicate(left=FieldRef(name="provider_id"), op=Op.EQ, right=Value(value=entity.id))
+    page = await storage_provider.get_storage(ArtifactLocation).find(held, OffsetPage(offset=0, length=1))
+    if not page.items:
+        return True                                   # nothing to look for: the count raced to zero
+    store = None
+    try:
+        async with asyncio.timeout(PROBE_TIMEOUT_S):
+            store = (build or build_artifact_storage)(entity, storage_provider=storage_provider)
+            await store.initialize()
+            return bool(await store.exists(page.items[0].id))
+    except Exception:  # noqa: BLE001 - every failure to read is a failure to reach the objects
+        logger.info("artifact provider %r: the new settings could not read a held artifact", entity.id, exc_info=True)
+        return False
+    finally:
+        if store is not None:
+            try:
+                async with asyncio.timeout(CLEANUP_TIMEOUT_S):
+                    await store.aclose()
+            except Exception:  # noqa: BLE001 - the answer is already decided
+                logger.warning("artifact provider %r: closing the verification store failed", entity.id, exc_info=True)
 
 
 async def check_artifact_provider_update(
     storage_provider: StorageProvider,
     entity: ArtifactStorageProvider,
     existing: ArtifactStorageProvider,
+    *,
+    build: Callable[..., ArtifactStorage] | None = None,
 ) -> None:
-    """Refuse a location-key change while stored artifacts still name the row."""
+    """Refuse a location change while stored artifacts still name the row.
+
+    A bucket, prefix, root or kind change is refused outright. An S3 endpoint or region change is refused unless a store built from the NEW settings
+    can read one of the artifacts the row holds (GX-14): a renamed host or a corrected region reaches the same objects, a new empty server does not.
+    """
     field = _moved_field(entity, existing)
+    verify = field is None
+    if verify:
+        field = _relocated_field(entity, existing)
     if field is None:
         return
     count = await count_artifacts_held(storage_provider, entity.id)
-    if count:
-        raise EntityCheckError(
-            "conflict",
-            f"artifact provider {entity.id!r} holds {count} artifact(s) at its current location; changing {field} would leave them unreadable. "
-            "Register a new provider and select it as the active store instead",
-            code="artifact_provider_holds_artifacts",
-            field=field,
-            extra={"count": count},
-        )
+    if not count:
+        return
+    if verify and await _new_settings_reach_the_objects(storage_provider, entity, build):
+        return
+    message = (
+        f"artifact provider {entity.id!r} holds {count} artifact(s), and the new {field.removeprefix('config.')} cannot see them (a read of one from the "
+        "new settings failed); changing it would leave them unreadable. Register a new provider and select it as the active store instead"
+        if verify else
+        f"artifact provider {entity.id!r} holds {count} artifact(s) at its current location; changing {field} would leave them unreadable. "
+        "Register a new provider and select it as the active store instead"
+    )
+    raise EntityCheckError("conflict", message, code="artifact_provider_holds_artifacts", field=field, extra={"count": count})
 
 
 def filesystem_root_is_new(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider | None) -> bool:

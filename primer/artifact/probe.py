@@ -8,7 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from primer.artifact.checks import prepare_artifact_provider
+# The bounds live in checks (the update check's verification read uses the same ones, GX-14); checks cannot import this module.
+from primer.artifact.checks import CLEANUP_TIMEOUT_S, PROBE_TIMEOUT_S, prepare_artifact_provider
 from primer.artifact.factory import build_artifact_storage
 from primer.common.log import redact_credentials
 from primer.int.artifact_storage import ArtifactStorage
@@ -21,12 +22,6 @@ logger = logging.getLogger(__name__)
 PROBE_DATA = b"primer artifact storage probe"
 PROBE_MIME = "text/plain"
 PROBE_FILENAME = "primer-probe.txt"
-#: How long the probe's steps may take together. Test and the active-store selection run it inline, and a silent endpoint would otherwise hold
-#: the request for the client's retries, minutes for S3 (GX-15).
-PROBE_TIMEOUT_S = 20.0
-#: How long each best-effort cleanup step (removing the probe object, closing the store) may take after a failure.
-CLEANUP_TIMEOUT_S = 5.0
-
 ProbeStep = Literal["prepare", "build", "initialize", "put", "get", "delete"]
 
 

@@ -88,7 +88,26 @@ async def test_moving_a_store_that_holds_artifacts_is_refused(
     assert await app.state.storage_provider.get_storage(ArtifactStorageProvider).get(row_id) == rows[row_id]
 
 
-async def test_readdressing_a_store_that_holds_artifacts_is_allowed(client, app, tmp_path) -> None:
+async def test_readdressing_a_store_to_a_host_that_cannot_read_its_artifacts_is_refused(client, app, tmp_path) -> None:
+    """GX-14: an endpoint or region change is allowed only if the new settings can read a held artifact; this host does not exist."""
+    rows = await _seed_held(app, tmp_path)
+    body = rows["s3-held"].model_dump(mode="json")
+    body["config"].update(endpoint_url="http://127.0.0.1:1", region="eu-west-1")
+
+    response = await client.put("/v1/artifact_storage_providers/s3-held", json=body)
+
+    assert response.status_code == 409, response.text
+    extensions = response.json()["extensions"]
+    assert extensions["error"] == "artifact_provider_holds_artifacts" and extensions["field"] == "config.endpoint_url" and extensions["count"] == 3
+    assert (await app.state.storage_provider.get_storage(ArtifactStorageProvider).get("s3-held")) == rows["s3-held"]
+
+
+async def test_readdressing_a_store_whose_new_settings_reach_its_artifacts_is_allowed(client, app, tmp_path, monkeypatch) -> None:
+    """The verification itself is pinned against S3 servers in tests/artifact/test_s3_relocation_check.py; here the route lets a verified edit through."""
+    async def reaches(*args, **kwargs) -> bool:
+        return True
+
+    monkeypatch.setattr("primer.artifact.checks._new_settings_reach_the_objects", reaches)
     rows = await _seed_held(app, tmp_path)
     body = rows["s3-held"].model_dump(mode="json")
     body["config"].update(endpoint_url="http://minio.internal:9000", region="eu-west-1")

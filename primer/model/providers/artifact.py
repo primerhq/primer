@@ -78,6 +78,13 @@ class S3ArtifactConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    #: The values that say where the objects are: ONE definition, read by ``S3ArtifactStorage.serves`` and by the pre-write update check
+    #: (``primer.artifact.checks``). New keys or another addressing style reach the same objects and are not part of it.
+    LOCATION_FIELDS: ClassVar[tuple[str, ...]] = ("bucket", "prefix", "endpoint_url", "region")
+    #: The location fields an edit may change when the new settings still reach the stored objects (a renamed host, a corrected region): the update
+    #: check verifies it by reading one held artifact. The others (bucket, prefix) name the objects themselves and are refused while any are held.
+    VERIFIABLE_FIELDS: ClassVar[tuple[str, ...]] = ("endpoint_url", "region")
+
     bucket: str = Field(..., description="Target bucket name.")
     prefix: str = Field(default="", description="Key prefix for stored objects.")
     endpoint_url: NonAdminStrippedUrlStr | None = Field(
@@ -105,6 +112,10 @@ class S3ArtifactConfig(BaseModel):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    def location(self) -> tuple[Any, ...]:
+        """The values of :attr:`LOCATION_FIELDS`, in order."""
+        return tuple(getattr(self, name) for name in self.LOCATION_FIELDS)
 
     def missing_key(self) -> Literal["access_key", "secret_key"] | None:
         """The key a half pair lacks: ``secret_key`` when only the access key is set, ``access_key`` when only the secret key is, ``None`` for
