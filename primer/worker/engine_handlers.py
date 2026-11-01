@@ -89,35 +89,38 @@ async def run_engine_memory(pool: "WorkerPool", engine_lease: "ClaimLease") -> N
     from primer.int.claim import ReleaseOutcome
     from primer.knowledge.document_service import DocumentService
     from primer.knowledge.indexing import make_document_indexer, make_document_path_rewriter, make_document_unindexer
-    from primer.memory.jobs import MemoryDeps, run_memory_job
+    from primer.memory.jobs import MemoryDeps, report_job_error, run_memory_job
     from primer.memory.reflect import session_message_loader
     from primer.memory.store import MemoryStore
     from primer.worker.io_shim import _WorkspaceIOShim
 
-    recorder = recorder_for(pool._storage, pool._event_bus)
-    documents = DocumentService(
-        pool._storage,
-        indexer=make_document_indexer(
-            storage_provider=pool._storage, provider_registry=pool._provider_registry, semantic_search_registry=pool._semantic_search_registry,
-        ),
-        unindexer=make_document_unindexer(storage_provider=pool._storage, semantic_search_registry=pool._semantic_search_registry),
-        path_rewriter=make_document_path_rewriter(storage_provider=pool._storage, semantic_search_registry=pool._semantic_search_registry),
-    )
-    deps = MemoryDeps(
-        sp=pool._storage,
-        provider_registry=pool._provider_registry,
-        semantic_search_registry=pool._semantic_search_registry,
-        engine=pool._engine,
-        recorder=recorder,
-        store=MemoryStore(pool._storage, documents, recorder),
-        load_messages=session_message_loader(pool._storage, _WorkspaceIOShim(workspace_registry=pool._workspace_registry).read_state_file),
-        now=lambda: datetime.now(timezone.utc),
-    )
     outcome = ReleaseOutcome(success=False, drop_lease=True)
+    deps = None
     try:
+        recorder = recorder_for(pool._storage, pool._event_bus)
+        documents = DocumentService(
+            pool._storage,
+            indexer=make_document_indexer(
+                storage_provider=pool._storage, provider_registry=pool._provider_registry, semantic_search_registry=pool._semantic_search_registry,
+            ),
+            unindexer=make_document_unindexer(storage_provider=pool._storage, semantic_search_registry=pool._semantic_search_registry),
+            path_rewriter=make_document_path_rewriter(storage_provider=pool._storage, semantic_search_registry=pool._semantic_search_registry),
+        )
+        deps = MemoryDeps(
+            sp=pool._storage,
+            provider_registry=pool._provider_registry,
+            semantic_search_registry=pool._semantic_search_registry,
+            engine=pool._engine,
+            recorder=recorder,
+            store=MemoryStore(pool._storage, documents, recorder),
+            load_messages=session_message_loader(pool._storage, _WorkspaceIOShim(workspace_registry=pool._workspace_registry).read_state_file),
+            now=lambda: datetime.now(timezone.utc),
+        )
         outcome = await run_memory_job(deps, engine_lease)
-    except Exception:
+    except Exception as exc:
         logger.exception("engine memory job %s raised", engine_lease.entity_id)
+        if deps is not None:
+            await report_job_error(deps, engine_lease, exc)
     finally:
         await pool._release_lease(engine_lease, outcome)
 
