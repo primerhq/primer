@@ -235,6 +235,7 @@ async def test_a_cancel_resumes_the_session_cancelled(world, monkeypatch, tool):
     )
     app = create_test_app(storage_provider=world.sp, provider_registry=registry)  # type: ignore[arg-type]
     app.state.event_bus = world.bus
+    app.state.claim_engine = world.engine  # production always wires the API's claim engine (the workers' engine) when sessions run
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
         await client.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
         cancelled = await client.post(f"/v1/sessions/{SID}/yields/{CALL}/cancel", json={"reason": "not needed any more"})
