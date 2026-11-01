@@ -276,6 +276,14 @@ class ToolCallPart(BaseModel):
         ...,
         description="Parsed arguments object the model passed to the tool.",
     )
+    thought_signature: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "Gemini-only opaque signature (base64) the model attached to this call; sent back on the next request of the "
+            "tool round, where Gemini 3 requires it. Omitted from the serialised part when absent."
+        ),
+    )
 
 
 class ToolResultPart(BaseModel):
@@ -982,6 +990,11 @@ class ToolCallEnd(BaseModel):
         ...,
         ge=0,
         description="Flat per-block index assigned by the adapter.",
+    )
+    thought_signature: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Gemini-only opaque signature (base64) carried into ToolCallPart.thought_signature. Omitted when absent.",
     )
 
 
@@ -1909,6 +1922,7 @@ def output_to_message(events: Iterable[StreamEvent]) -> Message:
     text_buffers: dict[int, list[str]] = {}
     tool_call_names: dict[str, str] = {}
     tool_call_args: dict[str, dict[str, Any]] = {}
+    tool_call_signatures: dict[str, str] = {}
 
     # Track first-appearance order with unified keys: ("text", index) or ("tool", id).
     # Insertion-ordered list preserves the order text/tool blocks began streaming.
@@ -1926,6 +1940,8 @@ def output_to_message(events: Iterable[StreamEvent]) -> Message:
             tool_call_names[event.id] = event.name
         elif isinstance(event, ToolCallEnd):
             tool_call_args[event.id] = event.arguments
+            if event.thought_signature is not None:
+                tool_call_signatures[event.id] = event.thought_signature
         # All other events (StreamStart, Done, Error, Usage, ReasoningDelta,
         # MediaDelta, ToolCallDelta, ExtendedEvent) are intentionally ignored.
 
@@ -1943,6 +1959,7 @@ def output_to_message(events: Iterable[StreamEvent]) -> Message:
                     id=key,
                     name=tool_call_names[key],
                     arguments=tool_call_args[key],
+                    thought_signature=tool_call_signatures.get(key),
                 )
             )
 

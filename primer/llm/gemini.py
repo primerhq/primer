@@ -14,6 +14,7 @@ mapping details.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from collections.abc import Iterable
@@ -252,7 +253,10 @@ def _part_to_gemini(part: Part, name_lookup: dict[str, str]) -> gtypes.Part:
                 id=part.id,
                 name=part.name,
                 args=part.arguments,
-            )
+            ),
+            thought_signature=(
+                base64.b64decode(part.thought_signature) if part.thought_signature is not None else None
+            ),
         )
 
     if isinstance(part, ToolResultPart):
@@ -637,7 +641,11 @@ def _part_to_events(
         out.append(
             ToolCallDelta(id=call_id, arguments_delta=json.dumps(args), index=idx)
         )
-        out.append(ToolCallEnd(id=call_id, arguments=args, index=idx))
+        signature = getattr(part, "thought_signature", None)
+        out.append(ToolCallEnd(
+            id=call_id, arguments=args, index=idx,
+            thought_signature=base64.b64encode(signature).decode("ascii") if isinstance(signature, bytes) else None,
+        ))
         return out
 
     inline = getattr(part, "inline_data", None)
