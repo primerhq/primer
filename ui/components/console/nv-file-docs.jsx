@@ -19,23 +19,43 @@ function NV_FileDoc(props) {
   var conflictState = React.useState(false);
   var conflict = conflictState[0];
   var setConflict = conflictState[1];
+  // The last successful save's body plus the read object the save went out
+  // against. The render shows the body only while that read is still the
+  // read on file: a refetch landing different content (an agent's write in
+  // between) must show that content in the same render, because the save's
+  // etag no longer matches the disk. A refetch that keeps the same read
+  // object (or identical content) still shows the body, which equals it.
+  var savedRef = React.useRef(null);
+  // A save already in flight; a second save would ride the same etag out
+  // and 412 into a false "changed on disk" banner.
+  var savingRef = React.useRef(false);
 
   var meta = read.data || {};
   var etag = meta.etag || null;
   var binary = meta.encoding === "base64";
   var tooBig = (meta.size_bytes || 0) > NV_FILE_EDIT_MAX_BYTES;
-  var content = draft == null ? (meta.content || "") : draft;
+  var saved = savedRef.current;
+  var content = draft != null ? draft
+    : (saved && saved.data === read.data ? saved.body : (meta.content || ""));
 
   function save(force) {
     if (draft == null) return;
-    SH_api.fileWrite(con.wid, path, draft, force ? null : etag).then(
+    if (savingRef.current) return;
+    savingRef.current = true;
+    var sent = draft;
+    SH_api.fileWrite(con.wid, path, sent, force ? null : etag).then(
       function () {
-        setDraft(null);
+        savingRef.current = false;
+        // Keystrokes typed while the write was out are the next edit:
+        // clear the draft only if it is still exactly what went out.
+        setDraft(function (cur) { return cur === sent ? null : cur; });
+        savedRef.current = { body: sent, data: read.data };
         setConflict(false);
         read.refetch();
         con.toast("Saved " + path);
       },
       function (err) {
+        savingRef.current = false;
         if (err && err.status === 412) { setConflict(true); return; }
         con.toast("Save failed: " + (err && (err.detail || err.message)));
       }
@@ -44,10 +64,16 @@ function NV_FileDoc(props) {
 
   React.useEffect(function () {
     function onKey(ev) {
-      if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "s") {
-        ev.preventDefault();
-        save(false);
-      }
+      if (!((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "s")) return;
+      // Only this editor saves: with two file docs open, one Ctrl+S must
+      // not write both, and a Ctrl+S aimed at another surface's input
+      // must not write at all. The nearest file-doc root of the focused
+      // element is this doc's root exactly when focus is inside it.
+      var el = document.activeElement;
+      var root = el && el.closest ? el.closest('[data-testid^="nv-file-doc:"]') : null;
+      if (!root || root.getAttribute("data-testid") !== "nv-file-doc:" + path) return;
+      ev.preventDefault();
+      save(false);
     }
     window.addEventListener("keydown", onKey);
     return function () { window.removeEventListener("keydown", onKey); };
