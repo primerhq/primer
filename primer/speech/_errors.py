@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 from primer.common.openai_errors import classify_openai_exception
+from primer.llm._retry import is_retryable
 from primer.model.speech import SpeechError, WARMING_UP_CODE
+
+
+def is_replayable(exc: Exception) -> bool:
+    """A transport failure (connect, timeout, 429, 5xx) the row's ``max_retries`` replays when nothing was yielded.
+
+    The SDK's own retries are off (W50), so this is the one retry rule; it covers what the SDK retried before.
+    """
+    return is_retryable(classify_openai_exception(exc))
 
 
 def speech_error_from_exception(exc: Exception) -> SpeechError:
@@ -29,4 +38,4 @@ def speech_error_from_exception(exc: Exception) -> SpeechError:
     )
 
 
-__all__ = ["speech_error_from_exception"]
+__all__ = ["is_replayable", "speech_error_from_exception"]
