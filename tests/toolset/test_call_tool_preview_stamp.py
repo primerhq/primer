@@ -64,10 +64,18 @@ class _NoRows:
     async def get(self, _id):
         return None  # no user toolset row: the access check has nothing to read
 
-    async def find(self, _predicate, _page):
+    async def find(self, predicate, _page):
         from types import SimpleNamespace
 
-        return SimpleNamespace(items=[])  # the batched toolset-use read finds no row: every built-in tool is usable
+        from primer.model.access import Access
+        from primer.model.provider import Toolset, ToolsetProviderType
+
+        # The batched toolset-use read: the inner toolsets are served by the registry below without a stored row, so give each a public one
+        # (a toolset with no row is not available, GX-2).
+        ids = predicate.right.value
+        return SimpleNamespace(items=[
+            Toolset(id=i, provider=ToolsetProviderType.INTERNAL, access=Access(public=True)) for i in (ids if isinstance(ids, list) else [ids])
+        ])
 
 
 class _Registry:
