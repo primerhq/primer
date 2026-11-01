@@ -180,6 +180,19 @@ exception type/message (traceback included only under
 `viewer_auth=console`). `GET /svc/_client/primer.js` serves the no-build
 client (`Primer.fn(name, args)`; `Primer.tool` arrives with phase 3).
 
+The gateway admits a bounded number of calls at once (`limits.gateway_max_concurrent`, default 32, plus an optional
+`limits.gateway_max_per_service`): a call over a cap answers `503` with the fixed title "the service is busy, try again shortly" and
+`Retry-After: 1` at once, never queueing, because each admitted call is a python process and a `viewer_auth=none` service is anonymous.
+
+### Names, the version pointer and publish limits
+
+`name` is the `/svc/{name}/` URL, so it is unique: create and rename answer `409 service_name_taken` for a held name, and a unique index
+(`service_name_uniq`, both backends, created only when no duplicate name exists, otherwise logged and the app check stays the fence) backs it
+against a race. Only publish and activate move `active_version_id`, each with a field-scoped `patch_if` on that one field, so a concurrent
+`viewer_auth` or description edit survives them; a create or PUT body's `active_version_id` is ignored (the stored value stays), which also stops
+a console edit dialog opened before a publish from rolling it back. Bundle validation runs in a worker thread and counts every tar member,
+directories included (`MAX_BUNDLE_MEMBERS`, 1000), against its cap.
+
 ### Console
 
 The shell reaches services through the `services` overlay (list,

@@ -133,6 +133,10 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             "(json_extract(data,'$.provider_id'), json_extract(data,'$.subject'))",
         ),
     ],
+    "service": [
+        # Mirrors the postgres entry (GS-9): the name is the /svc URL; created only when no duplicate name exists.
+        ("name_uniq", True, "(json_extract(data,'$.name'))"),
+    ],
     "user": [
         # Mirrors the postgres entry (GS-20); created only when no duplicate username exists.
         ("username_uniq", True, "(json_extract(data,'$.username'))"),
@@ -169,7 +173,7 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
 # Tolerate the violation for this (table, suffix) pair only (log and
 # continue without the index); every other hot-field index keeps
 # raising.
-_DUP_TOLERANT_UNIQUE_INDEXES = (("serviceversion", "service_version_uniq"), ("user", "username_uniq"))
+_DUP_TOLERANT_UNIQUE_INDEXES = (("serviceversion", "service_version_uniq"), ("user", "username_uniq"), ("service", "name_uniq"))
 
 
 def _table_name_for(model_class: type[BaseModel]) -> str:

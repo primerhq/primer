@@ -23,6 +23,7 @@ from primer.service.gateway import (
     ArgsInvalid,
     FunctionNotFound,
     FunctionRaised,
+    GatewayBusy,
     RunnerUnavailable,
     call_function,
 )
@@ -178,6 +179,17 @@ async def svc_gateway_function(
                 "status": 422,
                 "errors": exc.errors,
             },
+            media_type="application/problem+json",
+        )
+    except GatewayBusy:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "type": "/errors/busy",
+                "title": "the service is busy, try again shortly",
+                "status": 503,
+            },
+            headers={"Retry-After": "1"},
             media_type="application/problem+json",
         )
     except RunnerUnavailable as exc:
