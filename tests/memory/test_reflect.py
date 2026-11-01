@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -15,7 +14,7 @@ from primer.memory.jobs import MemoryDeps
 from primer.memory.reflect import DEFAULT_REFLECTION_PROMPT, reflect, used_entries
 from primer.memory.store import MemoryStore
 from primer.model.agent import Agent, AgentModel
-from primer.model.chat import ExtendedPart, Message, TextPart, ToolCallPart, ToolResultPart
+from primer.model.chat import ExtendedPart, MemoryNotesPart, Message, TextPart, ToolCallPart, ToolResultPart
 from primer.model.collection import Collection
 from primer.model.memory import AgentMemory, MemoryAdd, MemoryJob
 from primer.model.model_profile import ModelProfile
@@ -190,7 +189,7 @@ async def test_credit_ignored_for_unused_entries(sp, llm) -> None:
 
 async def test_trial_candidate_promoted_on_helpful_success(sp, llm) -> None:
     agent, mem, job = await _setup(sp)
-    notes = ExtendedPart.model_construct(extended=SimpleNamespace(type="memory_notes", paths=["active/other", "candidates/known"], trial="candidates/known"))
+    notes = ExtendedPart(extended=MemoryNotesPart(paths=["active/other", "candidates/known"], trial="candidates/known"))
     deps = _deps(sp, llm, [Message(role="system", parts=[notes]), *_transcript()])
     await _seed(deps, "Known")
     llm.answers = [_run([{"op": "credit", "name": "known", "verdict": "helpful", "reason": "r"}], ok=True)]
@@ -272,6 +271,6 @@ def test_used_entries_reads_search_and_read_document_calls_on_this_collection_on
         ]),
     ]
     assert used_entries(messages, CID) == ({"one", "two", "three"}, None)
-    notes = ExtendedPart.model_construct(extended=SimpleNamespace(type="memory_notes", paths=["active/four"], trial="candidates/five"))
+    notes = ExtendedPart(extended=MemoryNotesPart(paths=["active/four"], trial="candidates/five"))
     names, trial = used_entries([Message(role="system", parts=[notes]), *messages], CID)
     assert names == {"one", "two", "three", "four", "five"} and trial == "five"

@@ -25,6 +25,7 @@ from primer.model.access import AccessLevel
 from primer.model.agent import Agent
 from primer.model.chat import (
     ExtendedPart,
+    MemoryNotesPart,
     Message,
     TextPart,
     ToolCallPart,
@@ -50,7 +51,6 @@ _CHARS_PER_TOKEN = 4
 #: Related entry bodies sent with the transcript, at most.
 RELATED_ENTRIES = 5
 _CLIP = 500
-_NOTES_KIND = "memory_notes"
 
 
 
@@ -101,10 +101,9 @@ def used_entries(messages: list[Message], collection_id: str) -> tuple[set[str],
                 call = calls[part.id]
                 paths = _search_paths(part.output) if call.name == "collections__search" else [str(call.arguments.get("path", ""))]
                 names.update(n for n in map(_entry_name, paths) if n)
-            elif isinstance(part, ExtendedPart) and getattr(part.extended, "type", None) == _NOTES_KIND:
-                found = [n for n in map(_entry_name, getattr(part.extended, "paths", [])) if n]
-                names.update(found)
-                if getattr(part.extended, "trial", None):
+            elif isinstance(part, ExtendedPart) and isinstance(part.extended, MemoryNotesPart):
+                names.update(n for n in map(_entry_name, part.extended.paths) if n)
+                if part.extended.trial:
                     trial = _entry_name(part.extended.trial) or part.extended.trial
                     names.add(trial)
     return names, trial

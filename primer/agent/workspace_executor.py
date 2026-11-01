@@ -20,13 +20,13 @@ import json
 import logging
 from datetime import datetime, timezone
 from contextlib import aclosing
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from primer.agent.base import _BaseAgentExecutor, refuse_compaction_summaries
 from primer.agent.compaction import CompactionStrategy
 from primer.agent.tool_manager import ToolExecutionManager
-from primer.model.chat import Message
+from primer.model.chat import Message, TextPart
 from primer.model.except_ import ConflictError
 from primer.model.graph import build_execution_context
 from primer.model.workspace_session import (
@@ -87,6 +87,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         workspace_instructions: str | None = None,
         memory_parts: Sequence[str] = (),
         memory_index: str = "",
+        memory_lookup: "Callable[[str], Awaitable[Message | None]] | None" = None,
     ) -> None:
         # Extend the agent's system prompt with the workspace fragment
         # so the LLM sees workspace-tool documentation in its system
@@ -121,6 +122,8 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             tool_calls_as_claims_enabled=tool_calls_as_claims_enabled,
         )
         self._session = session
+        # Agent memory's per-turn lookup (``None`` unless the agent opted in): asked with the user's message, it answers the notes to show or None.
+        self._memory_lookup = memory_lookup
         self._execution_context = build_execution_context(
             surface="workspace",
             workspace_id=session.workspace_id,
@@ -160,6 +163,25 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         self._event_log = writer
 
     # ---- Subclass hooks --------------------------------------------------
+
+    async def _with_turn_messages(self, history: list[Message], messages: list[Message]) -> list[Message]:
+        """Agent memory's notes: asked once per turn with the user's message. The prompt of THIS turn carries the notes text; the log keeps only the
+        marker (what was shown), placed before the user's message, so later turns neither resend the notes nor lose what the reflection credits.
+        A lookup that answers nothing or fails leaves the turn as it was."""
+        self._turn_notes = None
+        if self._memory_lookup is None:
+            return messages
+        text = "\n".join(p.text for m in messages if m.role == "user" for p in m.parts if isinstance(p, TextPart))
+        try:
+            notes = await self._memory_lookup(text)
+        except Exception:  # noqa: BLE001 - memory never fails a turn
+            logger.warning("agent memory: the per-turn lookup failed; the turn runs without notes", exc_info=True)
+            return messages
+        if notes is None:
+            return messages
+        self._turn_notes = notes.model_copy(update={"parts": [p for p in notes.parts if isinstance(p, TextPart)]})
+        marker = notes.model_copy(update={"parts": [p for p in notes.parts if not isinstance(p, TextPart)]})
+        return [marker, *messages]
 
     async def _load_history(self) -> list[Message]:
         """Read every message from the session's ``messages.jsonl``."""
