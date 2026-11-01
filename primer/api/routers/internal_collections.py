@@ -13,7 +13,7 @@ Config (singleton row at id ``_internal_collections_config``):
   {"configured": false}`` instead (the console asks that way: a 404 is
   a red "Failed to load resource" console error even when it is the
   expected "off" state).
-* ``DELETE /v1/internal_collections/config`` — clear the row, disable search
+* ``DELETE /v1/internal_collections/config`` - clear the row, disable search
   on the system collection, and drop the four reserved collections from the
   backing SSP so a subsequent re-PUT with a different embedding model
   can rebuild cleanly. Custom (non-IC) collections in the same SSP
@@ -21,9 +21,9 @@ Config (singleton row at id ``_internal_collections_config``):
 
 Bootstrap:
 
-* ``POST   /v1/internal_collections/bootstrap`` — enables semantic search
+* ``POST   /v1/internal_collections/bootstrap`` - enables semantic search
   on the system collection and indexes it, inline. Idempotent.
-* ``GET    /v1/internal_collections/bootstrap/status`` — the system
+* ``GET    /v1/internal_collections/bootstrap/status`` - the system
   collection's search state in the console's polling vocabulary.
 
 The row is the system collection's search toggle. The per-entity ``/search``
