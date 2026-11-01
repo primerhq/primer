@@ -10,16 +10,18 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from primer.model.storage import CursorPage
+from primer.model.storage import CursorPage, Predicate
 
 PAGE = 200
 
 
-async def iter_rows(storage: Any, *, page_size: int = PAGE) -> AsyncIterator[Any]:
-    """Every row of one table, a page at a time (never the whole table at once)."""
+async def iter_rows(storage: Any, *, predicate: Predicate | None = None, page_size: int = PAGE) -> AsyncIterator[Any]:
+    """Every row of one table (or only those matching ``predicate``), a page at a time (never the whole table at once).
+
+    A step may write the row it was handed: the next page seeks past its id, so the write cannot make a row skip or repeat."""
     cursor: str | None = None
     while True:
-        page = await storage.list(CursorPage(cursor=cursor, length=page_size))
+        page = await storage.find(predicate, CursorPage(cursor=cursor, length=page_size))
         for row in page.items:
             yield row
         cursor = page.next_cursor
