@@ -173,6 +173,22 @@ def test_a_url_doc_that_is_already_a_restored_tab_is_focused_not_duplicated(ctx)
     assert _js(ctx, f"TG_activeDoc({json.dumps(merged)})")["ref"] == "b"
 
 
+@pytest.mark.parametrize("url_ref", ["b", "not-saved"])
+def test_the_url_documents_group_keeps_its_id_through_the_restore(ctx, url_ref) -> None:
+    """The restore lands after the first render (it waits for the auth status) and the shell keys a group by its id: a stored id on the group
+    holding the URL's document remounted that document, which refetched its session row from nothing, so a palette open across it lost the
+    session verbs (the canvas journey's Show Canvas row was dropped and never came back)."""
+    live = _js(ctx, f'TG_openTab(TG_init({{groupId: "live"}}), {{kind: "session", ref: "{url_ref}"}}, {{}})')
+    saved = {"v": 1, "focused": "g1", "groups": [
+        {"id": "g1", "active": "session:b", "tabs": [{"kind": "session", "ref": "a"}, {"kind": "session", "ref": "b"}]},
+        {"id": "g2", "tabs": [{"kind": "wiki", "ref": "home"}]},
+    ]}
+    merged = _js(ctx, f"TG_restoreInto({json.dumps(live)}, {json.dumps(saved)}, {json.dumps(KINDS)})")
+    assert merged["focusedGroupId"] == "live"
+    assert [g["id"] for g in merged["groups"]] == ["live", "g2"]
+    assert _js(ctx, f"TG_activeDoc({json.dumps(merged)})")["ref"] == url_ref
+
+
 def test_the_shell_stores_per_user_only_after_it_has_restored() -> None:
     """Wiring pins: the key names the user (known once the auth status has loaded), the restore runs once and BEFORE the first write, and a corrupt
     stored value never breaks boot."""
