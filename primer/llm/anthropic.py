@@ -463,6 +463,8 @@ class _StreamState:
 
 _STOP_REASON_MAP: dict[str, StopReason] = {
     "max_tokens": "max_tokens",
+    # The model ran out of context window: it stopped for lack of room, as max_tokens says (AG-L10).
+    "model_context_window_exceeded": "max_tokens",
     "stop_sequence": "stop_sequence",
     "tool_use": "tool_use",
     "pause_turn": "stop",
